@@ -31,7 +31,7 @@ use serde_json::Value;
 use crate::eq::walk::{CHAINS, DEVICES, MAX_RACKS, PLUGIN, RACK as RACK_CLASS};
 use crate::eq::walk::{Item, answered, get, items, refused};
 
-use super::keys::{KeyMissing, KeyParams, device_of};
+use super::keys::{KeyMissing, KeyParams, PARAMETERS_AS_TEXT, device_of};
 
 /// The name of the rack whose first macro switches autotune.
 pub const RACK: &str = "Latencies";
@@ -83,6 +83,9 @@ pub enum Missing {
     Twice(usize),
     /// The rack has no parameter [`MACRO`].
     NoMacro,
+    /// The rack's parameter list came as text ([`PARAMETERS_AS_TEXT`]: the
+    /// script loaded in Live predates its codec's fix, #140).
+    ParametersAsText,
 }
 
 impl std::fmt::Display for Missing {
@@ -91,6 +94,7 @@ impl std::fmt::Display for Missing {
             Missing::NoRack => write!(f, "no rack named {RACK}"),
             Missing::Twice(n) => write!(f, "{n} racks named {RACK}"),
             Missing::NoMacro => write!(f, "the {RACK} rack has no parameter {MACRO}"),
+            Missing::ParametersAsText => write!(f, "{PARAMETERS_AS_TEXT}"),
         }
     }
 }
@@ -241,7 +245,11 @@ impl Find {
         if let Some(why) = refused(parameters) {
             return Step::Failed(why);
         }
-        let Some(selector) = parameters.and_then(answered).and_then(macro_of) else {
+        let listed = parameters.and_then(answered);
+        if as_text(listed) {
+            return Step::Done(Err(Missing::ParametersAsText));
+        }
+        let Some(selector) = listed.and_then(macro_of) else {
             return Step::Done(Err(Missing::NoMacro));
         };
         if let Some(why) = refused(chains) {
@@ -288,6 +296,12 @@ fn param(item: &Item<'_>) -> Param {
     }
 }
 
+/// Whether a list answer came as text: the script loaded in Live took a
+/// Live vector for no list (#140, a device's parameters).
+fn as_text(data: Option<&Value>) -> bool {
+    data.is_some_and(Value::is_string)
+}
+
 /// The rack's parameter [`MACRO`] in its parameters' list answer.
 fn macro_of(data: &Value) -> Option<Param> {
     items(data).get(MACRO).map(param)
@@ -308,7 +322,11 @@ fn plugin(path: &str, selector: Param, slot: Option<&Value>) -> Step {
     if let Some(why) = refused(slot) {
         return Step::Failed(why);
     }
-    let params = slot.and_then(answered).map(items).unwrap_or_default();
+    let listed = slot.and_then(answered);
+    if as_text(listed) {
+        return done(selector, Err(KeyMissing::ParametersAsText));
+    }
+    let params = listed.map(items).unwrap_or_default();
     let names: Vec<&str> = params.iter().map(|item| item.name).collect();
     let key = device_of(&names).and_then(|found| {
         let (Some(key), Some(scale)) = (params.get(found.key), params.get(found.scale)) else {

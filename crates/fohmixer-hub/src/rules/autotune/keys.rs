@@ -77,6 +77,14 @@ pub struct KeyParams {
     pub scale: usize,
 }
 
+/// Why a device's parameter list could not be read (#140): Live answered it
+/// as text, as the FohMixer script does for a Live vector class its codec
+/// did not know (a device's `Device.ATimeableValueVector`, the PC with
+/// 1.10.0's script). The script loaded in Live is older than the fix, and
+/// a Live restart loads the new one.
+pub const PARAMETERS_AS_TEXT: &str = "Live answered the parameter list as text: the FohMixer \
+                                      script loaded in Live predates the fix for it; restart Live";
+
 /// Why a target has no key device. It never makes the selector's find
 /// missing: the target's macro is still found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +96,8 @@ pub enum KeyMissing {
     /// The plug-in has neither the Auto-Tune Artist's Key and Scale nor
     /// AudioGridder's slots.
     NoKeyParams,
+    /// The plug-in's parameter list came as text ([`PARAMETERS_AS_TEXT`]).
+    ParametersAsText,
 }
 
 impl std::fmt::Display for KeyMissing {
@@ -96,6 +106,7 @@ impl std::fmt::Display for KeyMissing {
             KeyMissing::NoChain => write!(f, "the Latencies rack has no chain"),
             KeyMissing::Plugins(n) => write!(f, "chain 0 holds {n} plug-ins, not one"),
             KeyMissing::NoKeyParams => write!(f, "the plug-in has no Key/Scale parameters"),
+            KeyMissing::ParametersAsText => write!(f, "{PARAMETERS_AS_TEXT}"),
         }
     }
 }

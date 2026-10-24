@@ -661,3 +661,16 @@ fn missing_says_why_in_words() {
         "the Latencies rack has no parameter 1"
     );
 }
+
+#[test]
+fn a_parameter_list_as_text_says_why_in_words() {
+    assert_eq!(Missing::ParametersAsText.to_string(), AS_TEXT);
+    assert_eq!(KeyMissing::ParametersAsText.to_string(), AS_TEXT);
+    assert_eq!(PARAMETERS_AS_TEXT, AS_TEXT);
+    assert!(as_text(Some(&json!(
+        "<Device.ATimeableValueVector object at 0x1>"
+    ))));
+    assert!(!as_text(Some(&json!([]))));
+    assert!(!as_text(Some(&Value::Null)));
+    assert!(!as_text(None));
+}
