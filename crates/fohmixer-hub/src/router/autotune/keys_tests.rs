@@ -981,3 +981,50 @@ async fn a_lost_key_value_follows_the_device_afresh() {
     router.autotune_delivery(&key_sub, None, None);
     assert_eq!(router.autotune.targets[STREAM].values.0, Some(0.25));
 }
+
+#[tokio::test]
+async fn a_target_that_leaves_the_layout_lets_its_key_device_go() {
+    // PR 2a review M5: no Live listener of a key device outlives its target.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, _own, _rx) = offline_router(dir.path());
+    router.handle(layout(1, vec![stream()]));
+    find(&mut router, found_with(Ok(gridder(1))));
+    assert_eq!(
+        router.subs.subscriptions("band"),
+        6,
+        "the transport, the playhead and tempo, the macro, the Key and the Scale"
+    );
+    router.handle(layout(2, Vec::new()));
+    assert_eq!(router.subs.subscriptions("band"), 1, "the rules' transport");
+    assert!(router.autotune.targets.is_empty());
+}
+
+#[tokio::test]
+async fn a_lost_rack_lets_its_key_device_go() {
+    // PR 2a review M5: a rack gone takes its macro and its key device's
+    // listeners with it; the set's playhead stays followed.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, _own, _rx) = offline_router(dir.path());
+    router.handle(layout(1, vec![stream()]));
+    find(&mut router, found_with(Ok(gridder(1))));
+    let key_sub = router.autotune.targets[STREAM].key_sub.clone().unwrap();
+    deliver(&mut router, &key_sub, 0.5);
+    assert_eq!(router.subs.subscriptions("band"), 6);
+    let walk = router.autotune.targets[STREAM].walk;
+    router.autotune_found(STREAM, walk, Err("no rack named Latencies".into()));
+    assert_eq!(
+        router.subs.subscriptions("band"),
+        3,
+        "the transport and the playhead and tempo"
+    );
+    let target = &router.autotune.targets[STREAM];
+    assert_eq!(
+        (
+            &target.key,
+            &target.key_sub,
+            &target.scale_sub,
+            target.values
+        ),
+        (&None, &None, &None, (None, None))
+    );
+}
