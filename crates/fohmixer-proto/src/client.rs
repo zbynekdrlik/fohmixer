@@ -624,6 +624,23 @@ pub struct AutotuneState {
     pub targets: Vec<AutotuneTargetState>,
 }
 
+/// Where a target's key stands (#140 PR 2b; spec §5): nothing written yet
+/// (`no_key`), a write on its way and not read back yet (`writing`), the
+/// read-back showed the key written (`confirmed`) or another key or none
+/// (`mismatch`), Live refused the write or the read (`refused`: a Max map
+/// holds the parameter), or its values changed since the hub confirmed
+/// its key (`another_writer`: shown, never fought).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyState {
+    NoKey,
+    Writing,
+    Confirmed,
+    Mismatch,
+    Refused,
+    AnotherWriter,
+}
+
 /// One AUTOTUNE target's key device in `GET /api/status` (#140 PR 2): which
 /// device holds its Key and Scale (`auto_tune`, `gridder`) and its path,
 /// their values as last heard (both), the key they show (`F#m`; none for a

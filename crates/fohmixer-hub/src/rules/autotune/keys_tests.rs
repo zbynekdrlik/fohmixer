@@ -369,3 +369,245 @@ fn a_reset_makes_the_same_song_a_start_again() {
     assert_eq!(k.now(), OUT);
     assert_eq!(k.on_position((Some(31), Some(f))), Some(KeyWhy::Song));
 }
+
+// --- PR 2b: the value to write, the read-back, the retry, the lateness ---
+
+const DISABLED: &str = "Value cannot be set, the parameter is disabled";
+
+fn minor(root: u8) -> Key {
+    Key { root, minor: true }
+}
+
+#[test]
+fn the_constants_of_the_writes() {
+    assert_eq!((NUDGE, SAME_VALUE_EPS, LATE_BOUND_MS), (0.25, 1e-6, 100.0));
+}
+
+#[test]
+fn the_centre_is_written_unless_it_is_already_there() {
+    assert_eq!(write_value(2, 11, None), 2.0 / 11.0);
+    assert_eq!(write_value(2, 11, Some(0.0)), 2.0 / 11.0);
+    assert_eq!(write_value(2, 11, Some(2.0 / 11.0)), 2.25 / 11.0);
+    assert_eq!(write_value(11, 11, Some(1.0)), 10.75 / 11.0);
+    // The quarter step's own value is no centre: the centre again.
+    assert_eq!(write_value(2, 11, Some(2.25 / 11.0)), 2.0 / 11.0);
+    // The scale's steps: Major and Minor over 28.
+    assert_eq!(write_value(0, 28, Some(0.0)), 0.25 / 28.0);
+    assert_eq!(write_value(1, 28, Some(1.0 / 28.0)), 1.25 / 28.0);
+    assert_eq!(write_value(1, 28, Some(0.0)), 1.0 / 28.0);
+}
+
+#[test]
+fn the_centre_is_within_its_epsilon_only() {
+    // Exactly the epsilon away is no longer the centre.
+    assert_eq!(write_value(0, 11, Some(SAME_VALUE_EPS)), 0.0);
+    assert_eq!(write_value(0, 11, Some(0.9e-6)), 0.25 / 11.0);
+    assert_eq!(write_value(0, 11, Some(-0.9e-6)), 0.25 / 11.0);
+    assert_eq!(write_value(5, 11, Some(5.0 / 11.0 + 2e-6)), 5.0 / 11.0);
+}
+
+#[test]
+fn a_float32_echo_of_the_centre_counts_as_the_centre() {
+    assert_eq!(write_value(2, 11, Some(0.1818181872367859)), 2.25 / 11.0); // spike part 2
+    assert_eq!(write_value(10, 11, Some(0.9090909361839294)), 10.25 / 11.0);
+    let echo = f64::from((6.0_f64 / 11.0) as f32);
+    assert_eq!(write_value(6, 11, Some(echo)), 6.25 / 11.0);
+}
+
+#[test]
+fn a_keys_values_are_its_root_and_scale_steps() {
+    assert_eq!(key_values(major(2), (None, None)), (2.0 / 11.0, 0.0));
+    assert_eq!(key_values(minor(6), (None, None)), (6.0 / 11.0, 1.0 / 28.0));
+    // Each against its own current value.
+    assert_eq!(
+        key_values(minor(6), (Some(6.0 / 11.0), Some(0.0))),
+        (6.25 / 11.0, 1.0 / 28.0)
+    );
+    assert_eq!(
+        key_values(minor(6), (Some(0.5), Some(1.0 / 28.0))),
+        (6.0 / 11.0, 1.25 / 28.0)
+    );
+    assert_eq!(
+        key_values(major(11), (Some(1.0), Some(0.0))),
+        (10.75 / 11.0, 0.25 / 28.0)
+    );
+}
+
+#[test]
+fn a_nudged_value_reads_back_as_the_same_key() {
+    for root in 0..12u8 {
+        for minor in [false, true] {
+            let k = Key { root, minor };
+            let centre = key_values(k, (None, None));
+            let nudged = key_values(k, (Some(centre.0), Some(centre.1)));
+            assert_eq!(judge(k, centre), Readback::Confirmed);
+            assert_eq!(judge(k, nudged), Readback::Confirmed, "{k:?}");
+            assert_ne!(centre, nudged);
+            assert_ne!(centre.0, nudged.0, "{k:?}");
+            assert_ne!(centre.1, nudged.1, "{k:?}");
+        }
+    }
+}
+
+#[test]
+fn a_wrong_step_is_shown_not_confirmed() {
+    let a = Key {
+        root: 9,
+        minor: false,
+    };
+    assert_eq!(
+        judge(a, (2.0 / 11.0, 0.0)),
+        Readback::Shows(Some(Key {
+            root: 2,
+            minor: false
+        }))
+    );
+    assert_eq!(judge(a, (9.0 / 11.0, 2.0 / 28.0)), Readback::Shows(None));
+    assert_eq!(
+        judge(a, (9.0 / 11.0, 1.0 / 28.0)),
+        Readback::Shows(Some(minor(9)))
+    );
+    assert_eq!(judge(a, (9.0 / 11.0, 0.0)), Readback::Confirmed);
+    assert_eq!(
+        serde_json::to_value([
+            Readback::Confirmed,
+            Readback::Shows(None),
+            Readback::Refused("x".into())
+        ])
+        .unwrap(),
+        serde_json::json!(["confirmed", {"shows": null}, {"refused": "x"}])
+    );
+}
+
+#[test]
+fn a_mismatch_is_retried_once_per_key() {
+    let a = Key {
+        root: 9,
+        minor: false,
+    };
+    let mut t = KeyTarget::new();
+    assert_eq!(t.state(), KeyState::NoKey);
+    assert_eq!(t.wanted(), None);
+    t.want(a);
+    t.sent();
+    assert_eq!(t.state(), KeyState::Writing);
+    assert_eq!(t.wanted(), Some(a));
+    assert_eq!(
+        t.written(Readback::Refused(DISABLED.into())),
+        Some(KeyWhy::Retry)
+    );
+    assert_eq!(t.written(Readback::Refused(DISABLED.into())), None);
+    assert_eq!(t.state(), KeyState::Refused);
+    // The same key again (the next song start): no second retry.
+    t.want(a);
+    t.sent();
+    assert_eq!(t.written(Readback::Shows(None)), None);
+    assert_eq!(t.state(), KeyState::Mismatch);
+    // Another key gets its own retry.
+    t.want(Key {
+        root: 2,
+        minor: false,
+    });
+    assert_eq!(t.written(Readback::Shows(None)), Some(KeyWhy::Retry));
+    // A confirmed write needs none, and leaves the retry where it was.
+    let mut c = KeyTarget::new();
+    c.want(a);
+    c.sent();
+    assert_eq!(c.written(Readback::Confirmed), None);
+    assert_eq!(c.state(), KeyState::Confirmed);
+    assert_eq!(c.written(Readback::Shows(None)), Some(KeyWhy::Retry));
+    assert_eq!(c.written(Readback::Shows(None)), None);
+}
+
+#[test]
+fn a_wanted_key_with_no_outcome_yet_is_writing() {
+    let mut t = KeyTarget::new();
+    t.want(major(0));
+    assert_eq!(t.state(), KeyState::Writing);
+}
+
+#[test]
+fn a_value_heard_between_writes_is_another_writer() {
+    let a = major(9);
+    let mut t = KeyTarget::new();
+    assert!(!t.heard((2.0 / 11.0, 0.0)), "nothing wanted");
+    t.want(a);
+    t.sent();
+    assert!(!t.heard((2.0 / 11.0, 0.0)), "while writing");
+    assert_eq!(t.written(Readback::Confirmed), None);
+    assert!(t.heard((2.0 / 11.0, 0.0)));
+    assert!(!t.heard((9.0 / 11.0, 0.0)), "A's own values");
+    assert!(!t.heard((9.25 / 11.0, 0.25 / 28.0)), "A nudged");
+    t.another();
+    assert_eq!(t.state(), KeyState::AnotherWriter);
+    // The next write takes over: its own echoes are no other writer.
+    t.want(major(2));
+    t.sent();
+    assert_eq!(t.state(), KeyState::Writing);
+    assert!(
+        !t.heard((9.0 / 11.0, 0.0)),
+        "while writing, after a confirmed key"
+    );
+    assert_eq!(t.written(Readback::Confirmed), None);
+    assert_eq!(t.state(), KeyState::Confirmed);
+}
+
+#[test]
+fn a_refused_or_mismatched_target_is_no_other_writer() {
+    // A Max map holds the parameter: Live keeps its own value; the target
+    // stays refused (spec §5: shown as refused until the maps are off).
+    let a = major(9);
+    let mut t = KeyTarget::new();
+    t.want(a);
+    t.sent();
+    t.written(Readback::Refused(DISABLED.into()));
+    assert!(!t.heard((2.0 / 11.0, 0.0)));
+    t.written(Readback::Shows(None));
+    assert!(!t.heard((2.0 / 11.0, 0.0)));
+    assert_eq!(t.state(), KeyState::Mismatch);
+}
+
+#[test]
+fn every_key_state_has_its_word() {
+    let words = [
+        (KeyState::NoKey, "no_key"),
+        (KeyState::Writing, "writing"),
+        (KeyState::Confirmed, "confirmed"),
+        (KeyState::Mismatch, "mismatch"),
+        (KeyState::Refused, "refused"),
+        (KeyState::AnotherWriter, "another_writer"),
+    ];
+    for (state, word) in words {
+        assert_eq!(state_word(state), word);
+        assert_eq!(
+            serde_json::to_value(state).unwrap(),
+            serde_json::json!(word)
+        );
+    }
+}
+
+#[test]
+fn lateness_counts_beats_at_the_tempo_plus_the_round_trip() {
+    assert_eq!(late_ms(22897.0, 22897.0, 120.0, 12.0), 12.0);
+    assert!((late_ms(22896.93, 22897.0, 120.0, 12.0) - (-23.0)).abs() < 1e-6);
+    assert!((late_ms(22897.1, 22897.0, 120.0, 0.0) - 50.0).abs() < 1e-6);
+    assert!((late_ms(100.5, 100.0, 60.0, 5.0) - 505.0).abs() < 1e-6);
+}
+
+#[test]
+fn the_bar_shows_its_root_and_scale() {
+    assert_eq!(bar_shows(Some(0), Some("Major")), Some(major(0)));
+    assert_eq!(bar_shows(Some(11), Some("Minor")), Some(minor(11)));
+    assert_eq!(bar_shows(Some(12), Some("Major")), None);
+    assert_eq!(bar_shows(Some(300), Some("Major")), None);
+    assert_eq!(bar_shows(Some(3), Some("Dorian")), None);
+    assert_eq!(bar_shows(None, Some("Major")), None);
+    assert_eq!(bar_shows(Some(3), None), None);
+    assert_eq!(bar_state(major(0), Some(major(0))), BarState::Confirmed);
+    assert_eq!(bar_state(major(0), Some(minor(0))), BarState::Shows);
+    assert_eq!(bar_state(major(0), None), BarState::Shows);
+    assert_eq!(
+        serde_json::to_value([BarState::Confirmed, BarState::Shows]).unwrap(),
+        serde_json::json!(["confirmed", "shows"])
+    );
+}
