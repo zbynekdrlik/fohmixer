@@ -7,7 +7,8 @@ Fixture shape::
 
     {"name": str, "live_version": [12, 2, 5],
      "tracks": [TRACK...], "returns": [TRACK...], "master": TRACK,
-     "cue_points"?: [{"name", "time"}...] (locators, #140; kept in time order)}
+     "cue_points"?: [{"name", "time"}...] (locators, #140; kept in time order),
+     "current_song_time"?: beats, "root_note"?: 0..11, "scale_name"?: str (#140)}
 
     TRACK  = {"name", "color"?, "mute"?, "solo"?, "volume"?, "panning"?,
               "devices"?: [DEVICE...], "children"?: [TRACK...] (makes a group),
@@ -16,7 +17,8 @@ Fixture shape::
     DEVICE = {"template": "plain"|"eq8"|"rack"|"plugin", "name", "class_name"?,
               "parameters"?: [PARAM...], "chains"?: [{"name", "devices"?}],
               "product"?: str (a plugin's class_display_name, #71)}
-    PARAM  = {"name", "value"?, "min"?, "max"?, "display"?, "items"?}
+    PARAM  = {"name", "value"?, "min"?, "max"?, "display"?, "items"?,
+              "enabled"?: false (held as a Max map holds it: writes refused, #140)}
 
 ``display`` is one of volume, pan, items, db, hz, percent, int, plain.
 """
@@ -56,6 +58,9 @@ def build_from_spec(spec):
         Live.Song.CuePoint(song, c["name"], c["time"]) for c in spec.get("cue_points", ())
     ]
     song._sim_sort_cue_points()
+    song._v["current_song_time"] = float(spec.get("current_song_time", 0.0))
+    song._v["root_note"] = int(spec.get("root_note", 0))
+    song._v["scale_name"] = str(spec.get("scale_name", "Major"))
     Live.Application.get_application()._sim_configure(song, spec.get("live_version", (12, 2, 5)))
     return song
 
@@ -95,7 +100,7 @@ def _make_track(song, spec, group, return_names):
 
 
 def _make_param(spec):
-    return Live.DeviceParameter.DeviceParameter(
+    param = Live.DeviceParameter.DeviceParameter(
         spec["name"],
         value=spec.get("value", 0.0),
         lo=spec.get("min", 0.0),
@@ -103,6 +108,9 @@ def _make_param(spec):
         display=spec.get("display", "plain"),
         items=spec.get("items", ()),
     )
+    if not spec.get("enabled", True):
+        param._sim_enable(False)
+    return param
 
 
 def _make_device(spec):

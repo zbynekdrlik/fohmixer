@@ -1,0 +1,262 @@
+"""SimLive for the autotune keys (#140 PR 2): the song clock and a jump of
+``current_song_time``, Live's bar (``root_note``, ``scale_name``), a
+parameter a Max map holds (disabled: Live refuses its writes), their fixture
+keys and the host's ``song`` and ``param`` lines. Names are invented
+(public repository)."""
+
+import sys
+import unittest
+
+import _simpath  # noqa: F401 - puts SimLive on sys.path first
+import host
+import Live
+import site_builder
+
+if host.SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, host.SCRIPT_DIR)
+
+REFUSED = "Value cannot be set, the parameter is disabled"
+SLOT_0 = "live_set tracks 0 devices 0 chains 0 devices 0 parameters 1"
+SLOT_1 = "live_set tracks 0 devices 0 chains 0 devices 0 parameters 2"
+
+
+class _Inline:
+    """Stands in for the host's main thread: runs a call at once."""
+
+    def call(self, fn):
+        return fn()
+
+
+class _Counter:
+    def __init__(self):
+        self.count = 0
+
+    def __call__(self):
+        self.count += 1
+
+
+class _Clock:
+    """A hand-moved clock (seconds)."""
+
+    def __init__(self, now=100.0):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+
+def _site():
+    return site_builder.build_from_spec(
+        {
+            "name": "Keys Site",
+            "current_song_time": 12.0,
+            "root_note": 5,
+            "scale_name": "Minor",
+            "tracks": [
+                {
+                    "name": "Stream A #",
+                    "devices": [
+                        {
+                            "template": "rack",
+                            "name": "Latencies",
+                            "chains": [
+                                {
+                                    "name": "Auto",
+                                    "devices": [
+                                        {
+                                            "template": "plugin",
+                                            "name": "AudioGridder",
+                                            "parameters": [
+                                                {"name": "0:(unused):(unassigned)", "value": 0.25},
+                                                {
+                                                    "name": "1:(unused):(unassigned)",
+                                                    "enabled": False,
+                                                },
+                                            ],
+                                        }
+                                    ],
+                                },
+                                {"name": "Dry"},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+
+def _slot(song, n):
+    return song.tracks[0].devices[0].chains[0].devices[0].parameters[n]
+
+
+class SongClockTest(unittest.TestCase):
+    def test_a_set_of_the_song_time_is_a_jump_that_fires_its_listener(self):
+        song = _site()
+        self.assertEqual(song.current_song_time, 12.0, "the fixture's")
+        fired = _Counter()
+        song.add_current_song_time_listener(fired)
+        song.current_song_time = 40.5
+        self.assertEqual((song.current_song_time, fired.count), (40.5, 1))
+        with self.assertRaises(TypeError):
+            song.current_song_time = "later"
+        self.assertEqual(song.current_song_time, 40.5)
+
+    def test_the_clock_advances_the_song_time_at_the_tempo_while_playing(self):
+        song = _site()
+        clock = _Clock()
+        song_clock = host.SongClock(song, 30.0, clock)
+        fired = _Counter()
+        song.add_current_song_time_listener(fired)
+        song.start_playing()
+        for _ in range(2):
+            clock.now += 0.5
+            song_clock._tick()
+        self.assertAlmostEqual(song.current_song_time, 14.0, places=12)
+        self.assertEqual(fired.count, 2)
+        # Stopped: it stands, and a later start does not jump by the pause.
+        song.stop_playing()
+        clock.now += 3.0
+        song_clock._tick()
+        self.assertAlmostEqual(song.current_song_time, 14.0, places=12)
+        song.start_playing()
+        clock.now += 0.25
+        song_clock._tick()
+        self.assertAlmostEqual(song.current_song_time, 14.5, places=12)
+        self.assertEqual(fired.count, 3)
+        # Another tempo: 90 bpm is 1.5 beats a second.
+        song.tempo = 90.0
+        clock.now += 1.0
+        song_clock._tick()
+        self.assertAlmostEqual(song.current_song_time, 16.0, places=12)
+
+    def test_the_clock_runs_on_a_live_timer_at_its_rate(self):
+        song = _site()
+        song_clock = host.SongClock(song, 30.0, _Clock())
+        timer = song_clock._timer
+        self.assertIsInstance(timer, Live.Base.Timer)
+        self.assertAlmostEqual(timer.interval, 1000.0 / 30.0)
+        self.assertTrue(timer.repeat)
+        song_clock.start()
+        self.assertTrue(timer.running)
+        song_clock.stop()
+        self.assertFalse(timer.running)
+
+
+class LiveBarTest(unittest.TestCase):
+    def test_root_note_takes_an_index_on_lives_scale(self):
+        song = _site()
+        self.assertEqual((song.root_note, song.scale_name), (5, "Minor"), "the fixture's")
+        fired = _Counter()
+        song.add_root_note_listener(fired)
+        song.root_note = 9
+        self.assertEqual((song.root_note, fired.count), (9, 1))
+        for bad in (12, -1, 1.5, "A", True):
+            with self.assertRaises(RuntimeError, msg=repr(bad)) as raised:
+                song.root_note = bad
+            self.assertEqual(str(raised.exception), "Invalid value")
+        self.assertEqual((song.root_note, fired.count), (9, 1))
+
+    def test_scale_name_is_an_observable_string(self):
+        song = _site()
+        fired = _Counter()
+        song.add_scale_name_listener(fired)
+        song.scale_name = "Major"
+        self.assertEqual((song.scale_name, fired.count), ("Major", 1))
+        with self.assertRaises(TypeError):
+            song.scale_name = 1
+        self.assertEqual(song.scale_name, "Major")
+
+    def test_a_new_song_holds_c_major_at_the_start(self):
+        song = Live.Song.Song("New")
+        self.assertEqual(
+            (song.current_song_time, song.root_note, song.scale_name), (0.0, 0, "Major")
+        )
+
+
+class HeldParameterTest(unittest.TestCase):
+    def test_a_disabled_parameter_refuses_a_write_and_keeps_its_value(self):
+        song = _site()
+        param = _slot(song, 1)
+        param._sim_enable(False)
+        fired = _Counter()
+        param.add_value_listener(fired)
+        with self.assertRaises(RuntimeError) as raised:
+            param.value = 0.5
+        self.assertEqual(str(raised.exception), REFUSED)
+        self.assertEqual((param.value, fired.count), (0.25, 0))
+        param._sim_enable(True)
+        self.assertTrue(param.is_enabled)
+        self.assertEqual(param.state, Live.DeviceParameter.ParameterState.enabled)
+        param.value = 0.5
+        self.assertEqual((param.value, fired.count), (0.5, 1))
+
+    def test_a_fixtures_enabled_false_builds_a_disabled_parameter(self):
+        song = _site()
+        held, free = _slot(song, 2), _slot(song, 1)
+        self.assertFalse(held.is_enabled)
+        self.assertEqual(held.state, Live.DeviceParameter.ParameterState.disabled)
+        self.assertTrue(free.is_enabled)
+        self.assertEqual(free.state, Live.DeviceParameter.ParameterState.enabled)
+        self.assertEqual(free.value, 0.25)
+        self.assertEqual(free.name, "0:(unused):(unassigned)")
+        self.assertEqual(_slot(song, 0).name, "Device On")
+
+
+class HostLineTest(unittest.TestCase):
+    def setUp(self):
+        self.song = _site()
+        self.held = {}
+
+    def line(self, text):
+        return host.control(_Inline(), self.song, text, self.held)
+
+    def test_song_time_jumps_as_a_user_would(self):
+        fired = _Counter()
+        self.song.add_current_song_time_listener(fired)
+        self.assertEqual(self.line("song time 12.5\n"), "SONG 12.5")
+        self.assertEqual((self.song.current_song_time, fired.count), (12.5, 1))
+        self.assertEqual(self.line("song time 130"), "SONG 130.0")
+        for bad in ("song time x", "song time", "song time inf", "song tempo 90", "song"):
+            self.assertEqual(self.line(bad), "SONG -1", bad)
+        self.assertEqual((self.song.current_song_time, fired.count), (130.0, 2))
+
+    def test_param_value_writes_as_another_writer_would(self):
+        fired = _Counter()
+        _slot(self.song, 1).add_value_listener(fired)
+        self.assertEqual(self.line(f"param {SLOT_0} value 0.9"), "PARAM 0.9")
+        self.assertEqual((_slot(self.song, 1).value, fired.count), (0.9, 1))
+        # Held by a map: refused, nothing changes.
+        self.assertEqual(self.line(f"param {SLOT_1} value 0.5"), "PARAM -1")
+        self.assertEqual(_slot(self.song, 2).value, 0.0)
+        # Outside the parameter's range, a bad path, a bad number, no
+        # parameter at the path.
+        for bad in (
+            f"param {SLOT_0} value 2",
+            "param live_set tracks 9 devices 0 parameters 1 value 0.5",
+            f"param {SLOT_0} value x",
+            "param live_set tracks 0 value 0.5",
+            f"param {SLOT_0} colour 1",
+            "param value 1",
+        ):
+            self.assertEqual(self.line(bad), "PARAM -1", bad)
+        self.assertEqual((_slot(self.song, 1).value, fired.count), (0.9, 1))
+
+    def test_param_enabled_holds_or_frees_a_parameter(self):
+        self.assertEqual(self.line(f"param {SLOT_1} enabled 1"), "PARAM 1")
+        self.assertTrue(_slot(self.song, 2).is_enabled)
+        self.assertEqual(self.line(f"param {SLOT_1} value 0.5"), "PARAM 0.5")
+        self.assertEqual(self.line(f"param {SLOT_0} enabled 0"), "PARAM 0")
+        self.assertFalse(_slot(self.song, 1).is_enabled)
+        self.assertEqual(self.line(f"param {SLOT_0} value 0.5"), "PARAM -1")
+        for bad in (
+            f"param {SLOT_0} enabled 2",
+            f"param {SLOT_0} enabled yes",
+            "param live_set tracks 0 enabled 1",
+            "param live_set tracks 9 devices 0 parameters 1 enabled 1",
+        ):
+            self.assertEqual(self.line(bad), "PARAM -1", bad)
+
+
+if __name__ == "__main__":
+    unittest.main()

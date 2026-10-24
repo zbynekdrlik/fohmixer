@@ -38,6 +38,16 @@ WebSocket server is bound. Control lines on stdin (never over the WebSocket):
                                 listener fires; the list stays in time order);
                                 prints ``CUE <cue points>``, or ``CUE -1`` for
                                 a bad line or no such locator
+    song time <beats>           jump the playhead as a user would (#140; the
+                                ``current_song_time`` listener fires); prints
+                                ``SONG <time>``, or ``SONG -1`` for a bad line
+    param <path> value <v>      write the parameter at the LOM <path> as another
+                                writer would (a Max map, a click in Live: its
+                                ``value`` listener fires); prints ``PARAM
+                                <value>``, or ``PARAM -1`` for a bad path or a
+                                refused value (a held parameter refuses)
+    param <path> enabled <0|1>  hold the parameter as a Max map does (0) or free
+                                it (1); prints ``PARAM <0|1>``, or ``PARAM -1``
     clip add <track> <start> <end> <name...>
     clip rename <track> <clip> <name...>
     clip remove <track> <clip>  an arrangement clip of the track at <track>
@@ -47,6 +57,9 @@ WebSocket server is bound. Control lines on stdin (never over the WebSocket):
                                 fires); prints ``CLIP <clips on the track>``,
                                 or ``CLIP -1`` for a bad line or no such
                                 track or clip
+
+While Live plays, the song clock moves ``current_song_time`` at the tempo
+(``SongClock``, 30 Hz, as Live's playhead does between the script's ticks).
 
 SIGTERM or SIGINT calls ``FohMixer.disconnect()`` on the main thread and exits 0.
 Used by the S2 integration tests and by the hub (S3) and UI (S4) tests.
@@ -60,6 +73,7 @@ import signal
 import sys
 import tempfile
 import threading
+import time
 
 import Live
 import site_builder
@@ -70,6 +84,9 @@ SIM_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRIPT_DIR = os.path.join(os.path.dirname(SIM_DIR), "live-script")
 DEFAULT_SITE = os.path.join(SIM_DIR, "fixtures", "test-site.json")
 READY_WAIT_S = 3600.0
+# The song clock's rate: Live's playhead as the script sees it, ~30 times a
+# second (#140).
+SONG_CLOCK_HZ = 30.0
 
 
 def parse_args(argv):
@@ -108,6 +125,34 @@ class MeterAnimation:
             phase = self._step / 7.0 + i
             left = 0.5 + 0.4 * math.sin(phase)
             track._sim_set_meter(left, 0.5 + 0.4 * math.sin(phase + 0.3))
+
+
+class SongClock:
+    """Moves the playhead while Live plays (#140): every tick on a Live timer
+    (``hz`` a second, main thread) it advances ``current_song_time`` by the
+    time since its last tick (``clock``, seconds) at the tempo, and its
+    listener fires; stopped, it stands (and a start does not jump by the
+    pause)."""
+
+    def __init__(self, song, hz, clock=time.monotonic):
+        self._song = song
+        self._clock = clock
+        self._last = clock()
+        self._timer = Live.Base.Timer(callback=self._tick, interval=1000.0 / hz, repeat=True)
+
+    def start(self):
+        self._last = self._clock()
+        self._timer.start()
+
+    def stop(self):
+        self._timer.stop()
+
+    def _tick(self):
+        now = self._clock()
+        elapsed, self._last = now - self._last, now
+        song = self._song
+        if song.is_playing:
+            song._sim_set("current_song_time", song.current_song_time + elapsed * song.tempo / 60.0)
 
 
 def announce_ready(surface):
@@ -294,16 +339,67 @@ def meter_level(text):
     return level if 0.0 <= level <= 1.0 else False
 
 
-def count_listeners(song, prop, text):
-    """The listeners on ``prop`` of the object at ``text`` (main thread); -1 if unresolved."""
+def resolve(song, text):
+    """The object at the LOM path ``text`` (the script's own resolver), or None."""
     from FohMixer.lom import path as lom_path
     from FohMixer.lom.errors import FohError
 
     try:
         obj, _ = lom_path.resolve_path(text, song, Live.Application.get_application())
     except FohError:
+        return None
+    return obj
+
+
+def count_listeners(song, prop, text):
+    """The listeners on ``prop`` of the object at ``text`` (main thread); -1 if unresolved."""
+    obj = resolve(song, text)
+    return -1 if obj is None else obj._sim_listener_count(prop)
+
+
+def song_line(line):
+    """A ``song`` line's time to jump to (beats), or None."""
+    words = line.split()
+    if len(words) != 3 or words[1] != "time":
+        return None
+    return _beats(words[2])
+
+
+def song_time(song, time_beats):
+    """Jump the playhead to ``time_beats`` as a user would (main thread); the
+    time then."""
+    song.current_song_time = time_beats
+    return song.current_song_time
+
+
+def param_line(line):
+    """A ``param`` line's ``(path, verb, value)``, or None: ``value`` takes a
+    number, ``enabled`` 0 or 1."""
+    words = line.split()
+    if len(words) < 4 or words[-2] not in ("value", "enabled"):
+        return None
+    path, verb, text = " ".join(words[1:-2]), words[-2], words[-1]
+    if verb == "enabled":
+        return (path, verb, text == "1") if text in ("0", "1") else None
+    value = _beats(text)
+    return None if value is None else (path, verb, value)
+
+
+def param(song, path, verb, value):
+    """Write the parameter at ``path`` as another writer would (``value``),
+    or hold or free it (``enabled``; main thread); the answer's number, -1
+    for no parameter there or a refused value."""
+    obj = resolve(song, path)
+    if obj is None or not hasattr(obj, "_sim_enable"):
         return -1
-    return obj._sim_listener_count(prop)
+    if verb == "enabled":
+        obj._sim_enable(value)
+        return int(value)
+    try:
+        obj.value = value
+    except (RuntimeError, TypeError):
+        return -1
+    return obj.value
 
 
 def control(main_thread, song, line, held):
@@ -341,6 +437,16 @@ def control(main_thread, song, line, held):
         if parsed is None:
             return "CUE -1"
         return f"CUE {main_thread.call(lambda: cue(song, *parsed))}"
+    if words and words[0] == "song":
+        parsed = song_line(line)
+        if parsed is None:
+            return "SONG -1"
+        return f"SONG {main_thread.call(lambda: song_time(song, parsed))}"
+    if words and words[0] == "param":
+        parsed = param_line(line)
+        if parsed is None:
+            return "PARAM -1"
+        return f"PARAM {main_thread.call(lambda: param(song, *parsed))}"
     if words and words[0] == "clip":
         parsed = clip_line(line)
         if parsed is None:
@@ -380,10 +486,13 @@ def main(argv=None):
     if args.meters_hz > 0:
         animation = MeterAnimation(song, args.meters_hz, held)
         animation.start()
+    song_clock = SongClock(song, SONG_CLOCK_HZ)
+    song_clock.start()
 
     def on_stop():
         if animation is not None:
             animation.stop()
+        song_clock.stop()
         surface.disconnect()
 
     signal.signal(signal.SIGTERM, lambda signum, frame: main_thread.request_stop())
