@@ -628,7 +628,10 @@ pub struct AutotuneState {
 /// device holds its Key and Scale (`auto_tune`, `gridder`) and its path,
 /// their values as last heard (both), the key they show (`F#m`; none for a
 /// scale step other than Major or Minor), or why it has none (`problem`).
-/// Every field is absent in an older hub's answer.
+/// For `gridder` the values and `shows` are Live's side of AudioGridder's
+/// slots only, never the remote plug-in: the spike read a slot on C while
+/// its remote Auto-Tune was on Bb (spec §5). Every field is absent in an
+/// older hub's answer.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct KeyTargetStatus {
     #[serde(default)]
