@@ -112,6 +112,10 @@ pub(super) struct AutotuneIo {
     /// Each Live set with targets: its playhead and key in force (#140 PR
     /// 2).
     pub positions: BTreeMap<String, Position>,
+    /// The Live sets whose newest song map was read since their connect:
+    /// only such a map gives a key in force (PR 2a review M1: the map from
+    /// before a disconnect may be another set's).
+    pub current_maps: BTreeSet<String>,
 }
 
 impl AutotuneIo {
@@ -131,6 +135,7 @@ impl AutotuneIo {
             told: None,
             held: BTreeSet::new(),
             positions: BTreeMap::new(),
+            current_maps: BTreeSet::new(),
         };
         io.told = Some(io.state());
         io

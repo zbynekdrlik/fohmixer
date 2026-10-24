@@ -261,11 +261,18 @@ impl Router {
     }
 
     /// The key in force of `instance` at its position on its newest song
-    /// map (stale or not: a read in flight keeps the old map until it
-    /// answers, so the key never flickers to none): a change is one `key`
-    /// record.
+    /// map, once one was read since the set's connect (PR 2a review M1);
+    /// within a connection stale or not (a read in flight keeps the old map
+    /// until it answers, so the key never flickers to none): a change is
+    /// one `key` record.
     pub(super) fn autotune_position(&mut self, instance: &str) {
-        let map = self.songmap.maps.get(instance).map(|read| &read.map);
+        let current = self.autotune.current_maps.contains(instance);
+        let map = self
+            .songmap
+            .maps
+            .get(instance)
+            .filter(|_| current)
+            .map(|read| &read.map);
         let Some(position) = self.autotune.positions.get_mut(instance) else {
             return;
         };
@@ -284,16 +291,20 @@ impl Router {
         );
     }
 
-    /// A new song map of `instance` was stored (`songmap_read`): the key in
-    /// force judged on it.
+    /// A new song map of `instance` was stored (`songmap_read`): it is the
+    /// set's current map, and the key in force is judged on it.
     pub(in crate::router) fn autotune_map_read(&mut self, instance: &str) {
+        self.autotune.current_maps.insert(instance.to_string());
         self.autotune_position(instance);
     }
 
-    /// `instance` went offline: its playhead's values end and its key in
-    /// force is forgotten (the first position after the connect is a song
-    /// start); the subscriptions stay (the table resolves them again).
+    /// `instance` went offline: its map is no longer current (PR 2a review
+    /// M1: until the connect's read answers there is no key in force), its
+    /// playhead's values end and its key in force is forgotten (the first
+    /// key after the connect is a song start); the subscriptions stay (the
+    /// table resolves them again).
     pub(super) fn autotune_position_offline(&mut self, instance: &str) {
+        self.autotune.current_maps.remove(instance);
         if let Some(position) = self.autotune.positions.get_mut(instance) {
             position.time = None;
             position.playing = None;
