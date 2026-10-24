@@ -1,6 +1,7 @@
 use serde_json::json;
 
 use super::*;
+use crate::live::client::LiveError;
 
 fn key(watch: &Watch) -> String {
     let (instance, target, prop) = watch.target();
@@ -442,7 +443,7 @@ fn a_failed_read_is_tried_again_connect_retries_times_in_a_row() {
     let mut k = keeper();
     let actions = k.value(&tracks_key("band"), Some(&list(1)));
     let mut seq = apply(&mut k, actions).reads[0].1;
-    let failed: Result<Vec<Value>, String> = Err("timeout".into());
+    let failed: Result<Vec<Value>, String> = Err(LiveError::Timeout.to_string());
     for _ in 0..CONNECT_RETRIES {
         assert_eq!(
             k.read_done("band", seq, Step::Devices, &failed),
@@ -519,7 +520,7 @@ fn a_second_batch_that_keeps_failing_is_tried_again_connect_retries_times_in_a_r
     let actions = k.value(&tracks_key("band"), Some(&list(1)));
     let mut seq = apply(&mut k, actions).reads[0].1;
     let devices = Ok(vec![ok(json!([device("Device", "Tuner")]))]);
-    let failed: Result<Vec<Value>, String> = Err("timeout".into());
+    let failed: Result<Vec<Value>, String> = Err(LiveError::Timeout.to_string());
     for _ in 0..CONNECT_RETRIES {
         let actions = k.read_done("band", seq, Step::Devices, &devices);
         assert!(matches!(
@@ -830,7 +831,7 @@ fn a_connect_reads_the_tuners_again_once_the_lists_are_known() {
     let actions = k.value(&tracks_key("band"), Some(&list(1)));
     let mut seq = apply(&mut k, actions).reads[0].1;
     // The retries run out while Live is away…
-    let failed: Result<Vec<Value>, String> = Err("timeout".into());
+    let failed: Result<Vec<Value>, String> = Err(LiveError::Timeout.to_string());
     for _ in 0..CONNECT_RETRIES {
         k.read_done("band", seq, Step::Devices, &failed);
         let actions = k.retry("band");
@@ -858,8 +859,7 @@ fn a_retry_while_the_instance_is_offline_reads_nothing_and_its_connect_reads() {
     let mut k = keeper();
     let actions = k.value(&tracks_key("band"), Some(&list(1)));
     let seq = apply(&mut k, actions).reads[0].1;
-    let failed: Result<Vec<Value>, String> =
-        Err(crate::live::client::LiveError::Timeout.to_string());
+    let failed: Result<Vec<Value>, String> = Err(LiveError::Timeout.to_string());
     assert_eq!(
         k.read_done("band", seq, Step::Devices, &failed),
         vec![Action::Retry {
@@ -885,7 +885,12 @@ fn the_markers_are_settled_once_a_read_since_a_failure_or_a_disconnect_answers_w
     let (_, seq, _, _) = applied.reads.pop().expect("a read");
     assert!(!k.settled("band"), "a read runs");
     // A failed read: none runs, yet the markers may be old.
-    let actions = k.read_done("band", seq, Step::Devices, &Err("x".to_string()));
+    let actions = k.read_done(
+        "band",
+        seq,
+        Step::Devices,
+        &Err(LiveError::Timeout.to_string()),
+    );
     apply(&mut k, actions);
     assert!(!k.settled("band"), "the read failed");
     // Tried again, it answers whole: settled.

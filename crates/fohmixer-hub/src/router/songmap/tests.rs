@@ -751,7 +751,7 @@ async fn a_trigger_during_a_read_reads_again_once_after_it() {
     // A failed read keeps the map and also reads once more when asked.
     router.songmap_trigger("band");
     router.songmap_trigger("band");
-    answer(&mut router, 3, Err("Live did not answer".into()));
+    answer(&mut router, 3, Err("no result within 3 s".into()));
     assert_eq!(router.songmap.reads, 4);
     assert_eq!(router.songmap.maps["band"].read_no, 2);
 }
@@ -981,18 +981,18 @@ async fn a_failed_read_keeps_the_map_and_is_recorded_warn() {
     answer(&mut router, 1, Ok(listing()));
     let _ = songmap_records(&events);
     router.songmap_trigger("band");
-    answer(&mut router, 2, Err("Live did not answer".into()));
+    answer(&mut router, 2, Err("no result within 3 s".into()));
     let got = songmap_records(&events);
     assert_eq!(
         got,
         vec![
-            json!({"instance": "band", "read_no": 2, "ms": 7, "error": "Live did not answer",
+            json!({"instance": "band", "read_no": 2, "ms": 7, "error": "no result within 3 s",
                     "stale": true, "retry": true})
         ]
     );
     assert_eq!(report(&mut router, "band").unwrap().read_no, 1);
     assert!(crate::events::is_warn(
-        &json!({"ev": "songmap", "error": "Live did not answer"})
+        &json!({"ev": "songmap", "error": "no result within 3 s"})
     ));
 }
 
@@ -1028,7 +1028,7 @@ async fn a_failed_read_leaves_the_map_stale_and_is_tried_again_after_retry_ms() 
     answer(&mut router, 1, Ok(listing()));
     router.songmap_trigger("band");
     let failed_at = tokio::time::Instant::now();
-    answer(&mut router, 2, Err("Live did not answer".into()));
+    answer(&mut router, 2, Err("no result within 3 s".into()));
     // The kept map is stale: in the status, the report and the record.
     assert!(status(&mut router).songmap[0].stale);
     assert_eq!(
@@ -1065,7 +1065,7 @@ async fn a_failed_read_leaves_the_map_stale_and_is_tried_again_after_retry_ms() 
     assert!(router.songmap.retry.is_empty());
     // The retry's failure is tried again too (#140: a set still loading
     // answers no read for a while).
-    answer(&mut router, 3, Err("Live did not answer".into()));
+    answer(&mut router, 3, Err("no result within 3 s".into()));
     let got = songmap_records(&events);
     assert_eq!(
         (&got[0]["stale"], &got[0]["retry"]),
@@ -1125,7 +1125,7 @@ async fn a_connects_read_is_tried_again_until_live_answers() {
 async fn a_retry_is_void_once_a_read_started_or_the_set_went_offline() {
     let (mut router, _rx, events, _dir) = online();
     router.songmap_trigger("band");
-    answer(&mut router, 1, Err("Live did not answer".into()));
+    answer(&mut router, 1, Err("no result within 3 s".into()));
     // A first read that fails has no map to keep: nothing stale.
     let got = songmap_records(&events);
     assert_eq!(
@@ -1142,7 +1142,7 @@ async fn a_retry_is_void_once_a_read_started_or_the_set_went_offline() {
         read_no: 1,
     });
     assert_eq!(router.songmap.reads, 2, "the void retry read nothing");
-    answer(&mut router, 2, Err("Live did not answer".into()));
+    answer(&mut router, 2, Err("no result within 3 s".into()));
     assert_eq!(router.songmap.retry.get("band"), Some(&2));
     // A disconnect drops it: its message after the reconnect reads nothing.
     router.handle(RouterMsg::Live {
@@ -1158,7 +1158,7 @@ async fn a_retry_is_void_once_a_read_started_or_the_set_went_offline() {
     assert_eq!(router.songmap.reads, 2);
     // A retry of another read than the set's waiting one is void too.
     router.songmap_trigger("band");
-    answer(&mut router, 3, Err("Live did not answer".into()));
+    answer(&mut router, 3, Err("no result within 3 s".into()));
     router.handle(RouterMsg::SongMapRetry {
         instance: "band".into(),
         read_no: 2,
@@ -1229,7 +1229,7 @@ fn a_reads_class_is_its_records_as_written() {
     assert!(songmap_warn(&songmap_error_fields(
         "band",
         2,
-        "Live did not answer",
+        "no result within 3 s",
         3,
         false,
         false
@@ -1310,7 +1310,7 @@ async fn a_known_unchanged_problem_stays_bulk_and_a_change_is_warn() {
 #[test]
 fn a_reads_line_says_what_its_record_says() {
     assert_eq!(
-        read_words(&json!({"error": "Live did not answer"})),
+        read_words(&json!({"error": "no result within 3 s"})),
         "the song map could not be read"
     );
     assert_eq!(
