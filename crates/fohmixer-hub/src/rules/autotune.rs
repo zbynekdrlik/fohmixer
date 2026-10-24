@@ -331,6 +331,14 @@ pub enum Step {
         state: BarState,
         shows: Option<String>,
     },
+    /// The answer to a registration of a Live set's DRY writes with its
+    /// script (#140 PR 3a: `targets` selectors it makes DRY when the hub is
+    /// gone), and why it failed (none: the script keeps them).
+    Safe {
+        instance: String,
+        targets: usize,
+        problem: Option<String>,
+    },
 }
 
 /// Why a page's AUTOTUNE AUT on and tap are refused (#140 PR 2: the keys
@@ -506,19 +514,37 @@ pub fn step_line(step: &Step) -> String {
             },
             shown(shows.as_deref())
         ),
+        Step::Safe {
+            instance,
+            targets,
+            problem: None,
+        } => format!(
+            "AUTOTUNE gave {instance}'s script the DRY writes of {targets} selectors, for when the hub is gone"
+        ),
+        Step::Safe {
+            instance,
+            targets,
+            problem: Some(problem),
+        } => format!(
+            "AUTOTUNE could not give {instance}'s script the DRY writes of {targets} selectors: {problem}"
+        ),
     }
 }
 
 /// Whether a step is logged as a warning: a failed write, a missing rack,
 /// a missing key device, a key not confirmed, another writer, a key change
-/// written later than [`LATE_BOUND_MS`].
+/// written later than [`LATE_BOUND_MS`], a failed registration of the DRY
+/// writes.
 pub fn step_warn(step: &Step) -> bool {
     match step {
         Step::Failed { .. }
         | Step::Missing { .. }
         | Step::GaveUp { .. }
         | Step::KeyMissing { .. }
-        | Step::AnotherWriter { .. } => true,
+        | Step::AnotherWriter { .. }
+        | Step::Safe {
+            problem: Some(_), ..
+        } => true,
         Step::Readback { state, .. } => *state != KeyState::Confirmed,
         Step::Late { ms, .. } => *ms > LATE_BOUND_MS,
         _ => false,

@@ -365,6 +365,15 @@ pub enum RouterMsg {
         keys: Vec<String>,
         outcome: Result<Vec<Value>, String>,
     },
+    /// The answer to AUTOTUNE's registration `seq` of `instance`'s DRY
+    /// writes with its script, `targets` of them (#140 PR 3a): the one
+    /// command's slot, or why there is none.
+    AutotuneSafe {
+        instance: String,
+        seq: u64,
+        targets: usize,
+        outcome: Result<Vec<Value>, String>,
+    },
     /// The answer to key write `write` of `instance`'s targets `keys` (#140
     /// PR 2b; their slots in that order, then Live's bar's when it held it)
     /// and its round trip; a newer write of a target makes it void there.
@@ -940,6 +949,12 @@ impl Router {
                 keys,
                 outcome,
             } => self.autotune_written(&instance, &keys, &outcome),
+            RouterMsg::AutotuneSafe {
+                instance,
+                seq,
+                targets,
+                outcome,
+            } => self.autotune_safe_answered(&instance, seq, targets, &outcome),
             RouterMsg::AutotuneKeysWritten {
                 instance,
                 write,
