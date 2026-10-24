@@ -853,6 +853,28 @@ fn a_connect_reads_the_tuners_again_once_the_lists_are_known() {
 }
 
 #[test]
+fn a_refused_read_is_not_tried_again() {
+    // PR #145 review M2: only Live's silence (a timeout) or its absence
+    // (offline) is worth a retry; the script refusing the read is not.
+    let mut k = keeper();
+    let actions = k.value(&tracks_key("band"), Some(&list(1)));
+    let seq = apply(&mut k, actions).reads[0].1;
+    let refused: Result<Vec<Value>, String> = Err("refused: unknown command".into());
+    assert_eq!(k.read_done("band", seq, Step::Devices, &refused), vec![]);
+    assert!(!k.settled("band"), "the read failed");
+    // The next trigger reads, and an offline Live's failure is retried.
+    let actions = k.value(&tracks_key("band"), Some(&list(2)));
+    let seq = apply(&mut k, actions).reads[0].1;
+    let offline: Result<Vec<Value>, String> = Err(LiveError::Offline.to_string());
+    assert_eq!(
+        k.read_done("band", seq, Step::Devices, &offline),
+        vec![Action::Retry {
+            instance: "band".into()
+        }]
+    );
+}
+
+#[test]
 fn a_retry_while_the_instance_is_offline_reads_nothing_and_its_connect_reads() {
     // #140: with the connect-time bound a failed read is tried again for
     // about two minutes; an offline instance is not read meanwhile.

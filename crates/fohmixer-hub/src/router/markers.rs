@@ -28,8 +28,10 @@
 //!   tag, [`is_marker`]) is one [`Found`]: its first marker's name and how
 //!   many markers it holds. A change of the whole set (every instance) is
 //!   handed to the store.
-//! - **A newer read voids an older answer**; a failed read is tried again
-//!   after `RETRY_MS`, at most [`CONNECT_RETRIES`] times in a row, the song
+//! - **A newer read voids an older answer**; a read that failed because Live
+//!   did not answer or was offline ([`transient`]; a definite refusal is
+//!   not) is tried again after `RETRY_MS`, at most [`CONNECT_RETRIES`]
+//!   times in a row, the song
 //!   map's and the walks' bound (#140, PR #145 review I1: after a set load
 //!   AUTOTUNE's writes and REVERB's window wait for a read that answers, and
 //!   Live answers none while it loads), and never while the instance is
@@ -41,7 +43,7 @@ use fohmixer_proto::markers::migrate::{MigrationRow, Planned};
 use fohmixer_proto::markers::{Found, TUNER_CLASS, TrackKind, is_marker};
 use serde_json::{Value, json};
 
-use super::retries::CONNECT_RETRIES;
+use super::retries::{CONNECT_RETRIES, transient};
 
 /// `live_set`'s list of tracks.
 pub const TRACKS: &str = "tracks";
@@ -508,8 +510,9 @@ impl Keeper {
 
     /// The answer to a batch of read `seq`: the second batch's commands, or
     /// the Tuners found (fresh subscriptions, and the markers when they
-    /// changed). An error is tried again up to [`CONNECT_RETRIES`] times in a
-    /// row.
+    /// changed). An error Live's silence or absence caused ([`transient`]) is
+    /// tried again up to [`CONNECT_RETRIES`] times in a row; a definite
+    /// refusal is not.
     pub fn read_done(
         &mut self,
         instance: &str,
@@ -523,17 +526,22 @@ impl Keeper {
         let Some(pending) = state.pending.as_mut().filter(|p| p.seq == seq) else {
             return Vec::new();
         };
-        let Ok(slots) = outcome else {
-            state.pending = None;
-            state.unsure = true;
-            state.failures += 1;
-            return if state.failures <= CONNECT_RETRIES {
-                vec![Action::Retry {
-                    instance: instance.to_string(),
-                }]
-            } else {
-                Vec::new()
-            };
+        let slots = match outcome {
+            Ok(slots) => slots,
+            Err(why) => {
+                state.pending = None;
+                state.unsure = true;
+                state.failures += 1;
+                // Only Live's silence or its absence is worth a retry (PR #145
+                // review M2); a definite refusal waits for the next trigger.
+                return if transient(why) && state.failures <= CONNECT_RETRIES {
+                    vec![Action::Retry {
+                        instance: instance.to_string(),
+                    }]
+                } else {
+                    Vec::new()
+                };
+            }
         };
         let tuners = match step {
             Step::Devices => {

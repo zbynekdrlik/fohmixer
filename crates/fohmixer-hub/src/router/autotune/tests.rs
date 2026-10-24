@@ -14,8 +14,9 @@ use super::super::retries::{CONNECT_RETRIES, RETRY_MS};
 use super::super::tests::{attach, next_of, offline_router, records, status};
 use super::super::{Router, RouterMsg, layout_msg, markers};
 use super::{
-    AUTOTUNE_CLIENT, PARAMETER_CLASS, TOO_DEEP, Target, autotune_fields, found_write, macro_value,
-    may_write, missing_news, slot_failures, state_of, target_key, walk_again, write_commands,
+    AUTOTUNE_CLIENT, AfterWalk, PARAMETER_CLASS, TOO_DEEP, Target, after_walk, autotune_fields,
+    found_write, macro_value, may_write, missing_news, slot_failures, state_of, target_key,
+    walk_again, write_commands,
 };
 use crate::live::LiveValue;
 use crate::live::client::LiveEvent;
@@ -1378,6 +1379,40 @@ async fn a_failed_walk_gives_up_after_max_retries_until_the_next_trigger() {
     assert_eq!(walk_of(&router, STREAM), w + 2);
 }
 
+#[test]
+fn only_a_walk_live_did_not_answer_is_walked_again() {
+    // PR #145 review M2: a timeout or an offline Live, while retries are
+    // left; a definite refusal waits for the next trigger.
+    assert_eq!(after_walk(true, 1), AfterWalk::Retry);
+    assert_eq!(after_walk(true, CONNECT_RETRIES), AfterWalk::Retry);
+    assert_eq!(after_walk(true, CONNECT_RETRIES + 1), AfterWalk::GiveUp);
+    assert_eq!(after_walk(false, 1), AfterWalk::Wait);
+    assert_eq!(after_walk(false, CONNECT_RETRIES + 1), AfterWalk::Wait);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refused_walk_is_shown_and_not_walked_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, rx) = offline_router(dir.path());
+    router.handle(layout(1, vec![stream()]));
+    let _ = steps(&rx);
+    let w = walk_of(&router, STREAM);
+    router.autotune_walk_failed(STREAM, w, "live error: busy".into());
+    assert_eq!(
+        steps(&rx),
+        vec![
+            json!({"step": "missing", "instance": "band", "target": "live_set tracks 7",
+                    "problem": "live error: busy"})
+        ]
+    );
+    pump(&mut router, &mut own, 3 * RETRY_MS).await;
+    assert_eq!(walk_of(&router, STREAM), w, "never walked again");
+    assert_eq!(steps(&rx), Vec::<Value>::new(), "no give-up");
+    // The next trigger walks it.
+    transport(&mut router, true);
+    assert_eq!(walk_of(&router, STREAM), w + 1);
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_disconnect_ends_a_failed_walks_retry() {
     let dir = tempfile::tempdir().unwrap();
@@ -1429,8 +1464,9 @@ async fn next_asked(script: &mut Script) -> Asked {
 
 #[tokio::test]
 async fn a_refused_read_fails_the_walk_and_a_definite_answer_ends_it() {
-    // #140: only a read Live did not answer or refused is worth a retry;
-    // "no rack named Latencies" is an answer.
+    // #140: a read Live refused fails the walk (a definite refusal, which
+    // waits for the next trigger: PR #145 review M2); "no rack named
+    // Latencies" is an answer.
     let dir = tempfile::tempdir().unwrap();
     let (mut router, mut own, _rx, mut script) = scripted_router(dir.path());
     online(&mut router);

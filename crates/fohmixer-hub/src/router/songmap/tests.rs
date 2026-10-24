@@ -9,7 +9,7 @@ use super::super::{Router, RouterMsg};
 use super::{
     After, CLIPS, CUE_POINTS, Listed, Listing, MAX_TEXTS, Missing, Object, Read, SECTIONS,
     SONGMAP_CLIENT, Trigger, after_read, by_ref, clip_commands, clips_by_index, clips_of, cues_of,
-    first_commands, listed, map_of, next_read, problems_changed, read_words, report_of,
+    first_commands, gives_up, listed, map_of, next_read, problems_changed, read_words, report_of,
     retries_spent, same_names, second_commands, sections_state, songmap_error_fields,
     songmap_fields, songmap_warn, status_of, time_commands, track_went, transport_reads,
     with_gave_up, with_sections_error,
@@ -312,7 +312,8 @@ fn a_time_is_read_through_its_objects_ref_and_class() {
                "args": {"prop": "time"}})
     );
     // A locator deleted since the list was read: its ref is stale, the
-    // read fails (and is tried again, never paired with another's time).
+    // read fails (never paired with another's time; the list's change
+    // reads again).
     let stale = json!({"ok": false, "error": "deleted: live_41", "errorType": "StaleRef"});
     assert_eq!(
         cues_of(&[cue], &[stale]),
@@ -578,8 +579,9 @@ fn the_sections_clips_are_read_through_the_tracks_ref() {
                     "args": {"prop": "arrangement_clips"}})
         ]
     );
-    // A track deleted since the first call fails the read (it is tried
-    // again); any other refusal is an unreadable track (review M9).
+    // A track deleted since the first call fails the read (the track
+    // list's change reads again); any other refusal is an unreadable track
+    // (review M9).
     let stale = json!({"ok": false, "error": "deleted: live_77", "errorType": "StaleRef"});
     assert_eq!(
         track_went(Some(&stale), "live_set tracks 3"),
@@ -1674,4 +1676,53 @@ async fn a_failed_read_gives_up_after_max_retries_until_the_next_trigger() {
     });
     assert!(router.songmap.retries.is_empty());
     assert!(router.songmap.retry.is_empty());
+}
+
+#[test]
+fn only_a_failure_worth_a_retry_gives_up() {
+    // PR #145 review M2: a definite refusal is no give-up, and neither is a
+    // failure a trigger reads after, nor one tried again.
+    assert!(gives_up(true, None));
+    assert!(!gives_up(false, None));
+    assert!(!gives_up(true, Some(After::Read)));
+    assert!(!gives_up(true, Some(After::Retry)));
+    assert_eq!(
+        read_words(&json!({"error": "cue_points: no such property", "retry": false})),
+        "the song map could not be read, Live refused it: no retry"
+    );
+    assert_eq!(
+        read_words(&json!({"error": "instance offline", "retry": true})),
+        "the song map could not be read"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refused_read_is_not_tried_again_and_waits_for_the_next_trigger() {
+    // PR #145 review M2 (the main session's ruling): only a read Live did not
+    // answer, or an offline Live, is tried again; a definite refusal is
+    // recorded with its words, is no give-up, and the next trigger reads.
+    let (mut router, mut rx, events, _dir) = online();
+    router.songmap_trigger("band");
+    answer(&mut router, 1, Ok(listing()));
+    let _ = songmap_records(&events);
+    router.songmap_trigger("band");
+    answer(&mut router, 2, Err("cue_points: no such property".into()));
+    assert_eq!(
+        songmap_records(&events),
+        vec![
+            json!({"instance": "band", "read_no": 2, "ms": 7, "error": "cue_points: no such property",
+                   "stale": true, "retry": false})
+        ]
+    );
+    assert!(router.songmap.retry.is_empty());
+    assert!(router.songmap.retries.is_empty());
+    let none = tokio::time::timeout(
+        std::time::Duration::from_millis(3 * RETRY_MS),
+        a_retry(&mut rx),
+    )
+    .await;
+    assert!(none.is_err(), "no retry");
+    assert_eq!(router.songmap.reads, 2);
+    router.songmap_trigger("band");
+    assert_eq!(router.songmap.reading.get("band"), Some(&3));
 }

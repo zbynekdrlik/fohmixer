@@ -50,7 +50,7 @@ use fohmixer_proto::client::{
 use fohmixer_proto::layout::AutotuneTarget;
 use serde_json::{Value, json};
 
-use super::retries::{CONNECT_RETRIES, RETRY_MS};
+use super::retries::{CONNECT_RETRIES, RETRY_MS, transient};
 use super::{Router, RouterMsg, transport_heard};
 use crate::eq::walk::refused;
 use crate::live::client::LiveHandle;
@@ -346,9 +346,33 @@ pub(super) fn walk_again(failures: u32) -> bool {
     failures <= CONNECT_RETRIES
 }
 
+/// What follows a failed walk (#140).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AfterWalk {
+    /// Walked again after [`RETRY_MS`].
+    Retry,
+    /// Its retries spent: one `gave_up` record, then the next trigger.
+    GiveUp,
+    /// A definite refusal (PR #145 review M2): shown as missing, it waits
+    /// for the next trigger.
+    Wait,
+}
+
+/// What follows a target's failed walk: a retry while Live did not answer
+/// or was offline (`retryable`, [`transient`]) with retries left
+/// ([`walk_again`]), a give-up once they are spent, and nothing more for a
+/// definite refusal.
+pub(super) fn after_walk(retryable: bool, failures: u32) -> AfterWalk {
+    match (retryable, walk_again(failures)) {
+        (false, _) => AfterWalk::Wait,
+        (true, true) => AfterWalk::Retry,
+        (true, false) => AfterWalk::GiveUp,
+    }
+}
+
 /// How a walk ended: its definite answer (the macro, or why there is none
 /// in words), or a read that failed (Live offline, a timeout, a refused
-/// read: #140, worth another walk).
+/// read: #140; only the first two are worth another walk, [`after_walk`]).
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Walked {
     Answered(Result<Found, String>),
@@ -503,9 +527,10 @@ impl Router {
 
     /// A walk's read failed (#140): void unless it is the target's newest
     /// walk; else the target is missing with Live's words (recorded when
-    /// news) and walked again after [`RETRY_MS`] while retries are left
-    /// ([`walk_again`]), or one `gave_up` record (warn) waits for the next
-    /// trigger.
+    /// news) and, when Live did not answer or was offline, walked again
+    /// after [`RETRY_MS`] while retries are left, or one `gave_up` record
+    /// (warn) waits for the next trigger ([`after_walk`]); a definite
+    /// refusal waits for the next trigger.
     pub(super) fn autotune_walk_failed(&mut self, key: &str, walk: u64, why: String) {
         if self.autotune.targets.get(key).map(|t| t.walk) != Some(walk) {
             return;
@@ -517,14 +542,15 @@ impl Router {
         target.walk_failures += 1;
         let failures = target.walk_failures;
         let (instance, track) = (target.instance.clone(), target.track.clone());
-        if walk_again(failures) {
-            let (key, tx) = (key.to_string(), self.io.tx.clone());
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(RETRY_MS)).await;
-                let _ = tx.send(RouterMsg::AutotuneWalkRetry { key, walk });
-            });
-        } else {
-            self.autotune_step(
+        match after_walk(transient(&why), failures) {
+            AfterWalk::Retry => {
+                let (key, tx) = (key.to_string(), self.io.tx.clone());
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(RETRY_MS)).await;
+                    let _ = tx.send(RouterMsg::AutotuneWalkRetry { key, walk });
+                });
+            }
+            AfterWalk::GiveUp => self.autotune_step(
                 Step::GaveUp {
                     instance,
                     target: track,
@@ -532,7 +558,8 @@ impl Router {
                     walks: failures,
                 },
                 None,
-            );
+            ),
+            AfterWalk::Wait => {}
         }
         self.autotune_tell();
     }

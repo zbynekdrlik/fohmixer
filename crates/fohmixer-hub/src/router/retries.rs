@@ -5,6 +5,13 @@
 //! and its reads time out for a while) is read once Live answers. One bound
 //! for all of them: AUTOTUNE's writes and REVERB's window wait for the
 //! marker keeper's read, so its retries must last as long as the others'.
+//!
+//! Only a transient failure is tried again ([`transient`], review M2): Live
+//! did not answer in time, or the instance is offline. A definite refusal
+//! (a path that does not resolve, no such property, a request the script
+//! refused) is shown and waits for the next trigger.
+
+use crate::live::client::LiveError;
 
 /// The wait after a failed read before its retry, in ms.
 pub(super) const RETRY_MS: u64 = 2000;
@@ -18,6 +25,16 @@ pub(super) const RETRY_MS: u64 = 2000;
 /// start to a responding window.
 pub(super) const CONNECT_RETRIES: u32 = 24;
 
+/// Whether a read's failure is worth a retry (PR #145 review M2, the main
+/// session's ruling): Live did not answer within the answer timeout, or the
+/// instance is offline (`LiveError`'s own words, as every call's failure
+/// reaches the router). Anything else is a definite refusal: the script's
+/// words for a slot (a path that does not resolve, no such property, a
+/// stale ref) or for the whole request.
+pub(super) fn transient(error: &str) -> bool {
+    error == LiveError::Timeout.to_string() || error == LiveError::Offline.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -25,5 +42,19 @@ mod tests {
     #[test]
     fn the_connect_time_bound() {
         assert_eq!((RETRY_MS, CONNECT_RETRIES), (2000, 24));
+    }
+
+    #[test]
+    fn only_a_timeout_or_an_offline_live_is_transient() {
+        assert!(transient("no result within 3 s"));
+        assert!(transient("instance offline"));
+        assert!(!transient("refused: unknown command"));
+        assert!(!transient("live error: busy"));
+        assert!(!transient("cue_points: no such property"));
+        assert!(!transient(
+            "live_set tracks 3 arrangement_clips: deleted: live_77"
+        ));
+        assert!(!transient("no result within 3 s, and more"));
+        assert!(!transient(""));
     }
 }
