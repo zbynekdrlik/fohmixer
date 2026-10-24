@@ -9,8 +9,10 @@
 //! next song); it writes the key in force to every key device and Live's
 //! bar and reads each write back: a held parameter is refused with Live's
 //! words and retried once, a released one written, another writer shown
-//! and not fought, a set load written again. AUTOTUNE AUT on and the tap
-//! are refused, and no selector moves (SimLive's per-object set count).
+//! and not fought, a set load written again. With AUTOTUNE AUT off no
+//! selector moves (SimLive's per-object set count: the PA rack stands on
+//! DRY, its macro at 127, the stream racks' at 0); AUT on is taken and a
+//! tap refused (#140 PR 3b).
 #![cfg(unix)]
 
 mod support;
@@ -36,6 +38,8 @@ const MACROS: [&str; 3] = [
     "live_set tracks 1 devices 0 chains 0 devices 0 parameters 1",
     "live_set tracks 2 devices 0 parameters 1",
 ];
+/// Every macro on DRY: the stream racks' at 0, the PA rack's at 127.
+const DRY: [f64; 3] = [0.0, 0.0, 127.0];
 /// Stream B's slots as the fixture holds them: F# (Major).
 const B_KEY: f64 = 0.5;
 const B_SCALE: f64 = 0.0;
@@ -55,14 +59,14 @@ fn site_with(dir: &Path, at: f64, pa_held: bool) -> PathBuf {
         json!({"template": "plugin", "name": "AudioGridder", "product": "AudioGridder",
                "parameters": [slot(0, key, enabled), slot(1, scale, enabled), slot(2, 0.0, true)]})
     };
-    let latencies = |plugin: Value| {
-        json!({"template": "rack", "name": "Latencies",
+    let latencies = |plugin: Value, dry: f64| {
+        json!({"template": "rack", "name": "Latencies", "macros": [dry],
                "chains": [{"name": "Auto", "devices": [plugin]}, {"name": "Dry"}]})
     };
     let stream = |name: &str, plugin: Value| {
         json!({"name": name, "devices": [
             {"template": "rack", "name": "Stream FX",
-             "chains": [{"name": "Chain 1", "devices": [latencies(plugin)]}]},
+             "chains": [{"name": "Chain 1", "devices": [latencies(plugin, 0.0)]}]},
             tuner("+AUTOTUNE")]})
     };
     let auto_tune = json!({"template": "plugin", "name": "Auto-Tune Artist",
@@ -74,7 +78,7 @@ fn site_with(dir: &Path, at: f64, pa_held: bool) -> PathBuf {
         "tracks": [
             stream("Stream A #", gridder(0.0, 0.0, true)),
             stream("Stream B #", gridder(B_KEY, B_SCALE, false)),
-            {"name": "Vocal A #", "devices": [latencies(auto_tune), tuner("+AUTOTUNE:0")]},
+            {"name": "Vocal A #", "devices": [latencies(auto_tune, 127.0), tuner("+AUTOTUNE:0")]},
             {"name": "Sections", "arrangement_clips": [
                 {"name": "Key {G}", "start_time": 50.0, "end_time": 51.0}]}],
         "cue_points": [
@@ -211,10 +215,10 @@ async fn transport(c: &mut Client, verb: &str) {
     assert_eq!(slots[0]["ok"], json!(true), "{slots:?}");
 }
 
-/// No selector moved: every rack's macro still holds `value`, and Live's
-/// setter saw `sets` sets of each (the test's own, if any).
-async fn no_selector_moved(c: &mut Client, host: &mut Host, value: f64, sets: i64) {
-    for path in MACROS {
+/// No selector moved: every rack's macro still holds its `values`, and
+/// Live's setter saw `sets` sets of each (the test's own, if any).
+async fn no_selector_moved(c: &mut Client, host: &mut Host, values: [f64; 3], sets: i64) {
+    for (path, value) in MACROS.into_iter().zip(values) {
         assert_eq!(number(c, path, "value").await, value, "{path}");
         assert_eq!(host.sets("value", path), sets, "{path}");
     }
@@ -382,7 +386,7 @@ fn the_key_in_force_follows_play_and_jumps_and_no_selector_moves() {
         // No selector moved: every macro holds the test's 64, Live's setter
         // saw the test's own set of each and nothing else, and no macro
         // write was recorded.
-        no_selector_moved(&mut a, &mut host, 64.0, 1).await;
+        no_selector_moved(&mut a, &mut host, [64.0; 3], 1).await;
         let records = hub.events();
         assert_eq!(count(&records, "write"), 0);
         assert_eq!(count(&records, "failed"), 0);
@@ -506,7 +510,7 @@ fn a_song_start_writes_and_confirms_the_key() {
             values_at(&mut a, PLUGIN_A).await,
             (f32_of(6.0 / 11.0), f32_of(1.0 / 28.0))
         );
-        no_selector_moved(&mut a, &mut host, 0.0, 0).await;
+        no_selector_moved(&mut a, &mut host, DRY, 0).await;
         assert_eq!(count(&hub.events(), "write"), 0);
         a.close().await;
         hub.stop().await;
@@ -590,7 +594,7 @@ fn a_held_map_refuses_its_keys_until_released() {
         let f_sharp_m = (f32_of(6.0 / 11.0), f32_of(1.0 / 28.0));
         assert_eq!(values_at(&mut a, PLUGIN_B).await, f_sharp_m);
         assert_eq!(values_at(&mut a, PLUGIN_V).await, f_sharp_m);
-        no_selector_moved(&mut a, &mut host, 0.0, 0).await;
+        no_selector_moved(&mut a, &mut host, DRY, 0).await;
         a.close().await;
         hub.stop().await;
         host.stop();
@@ -639,7 +643,7 @@ fn a_reconnect_writes_the_key_again() {
         assert_eq!(values_at(&mut a, PLUGIN_A).await, nudged);
         assert_eq!(values_at(&mut a, PLUGIN_V).await, (0.0, 0.0));
         assert_eq!(number(&mut a, "live_set", "root_note").await, 0.0);
-        no_selector_moved(&mut a, &mut host, 0.0, 0).await;
+        no_selector_moved(&mut a, &mut host, DRY, 0).await;
         a.close().await;
         hub.stop().await;
         host.stop();
@@ -647,19 +651,18 @@ fn a_reconnect_writes_the_key_again() {
 }
 
 #[test]
-fn aut_on_and_a_tap_are_refused_end_to_end() {
+fn aut_on_is_taken_and_a_tap_refused_end_to_end() {
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
-        let host = Host::start_site("band", &site(dir.path()), 0, 0.0);
+        let mut host = Host::start_site("band", &site(dir.path()), 0, 0.0);
         frame(dir.path());
         let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
         hub.status_until(SECS_5, |s| keyed(s) && s.instances[0].playing.is_some())
             .await;
         let mut a = hub.client().await;
-        // Live plays: 1.8.0's AUT on would switch the stream racks on. The
-        // transport's own `autotune` message (playing) comes first, so every
-        // later one is a re-tell (PR 2a review M7).
+        // Live plays between the songs: the transport's own `autotune`
+        // message (playing) comes first.
         transport(&mut a, "start_playing").await;
         a.wait(SECS_5, |m| match m {
             ServerMsg::Autotune(s) if s.playing == Some(true) => Some(()),
@@ -674,7 +677,7 @@ fn aut_on_and_a_tap_are_refused_end_to_end() {
             })
             .await;
         }
-        let records = hub.events_until(SECS_5, |r| count(r, "refused") == 2).await;
+        let records = hub.events_until(SECS_5, |r| count(r, "refused") == 1).await;
         let refused: Vec<Value> = records
             .iter()
             .filter(|r| r["ev"] == "autotune" && r["step"] == "refused")
@@ -682,12 +685,13 @@ fn aut_on_and_a_tap_are_refused_end_to_end() {
             .collect();
         assert_eq!(
             refused,
-            vec![
-                json!(["aut", "keys only until #140 PR 3"]),
-                json!(["tap", "keys only until #140 PR 3"])
-            ]
+            vec![json!([
+                "tap",
+                "the AUTOTUNE tap is gone; a tap opens the singers' panel"
+            ])]
         );
-        // The page is told the state again, once per refusal: AUT off.
+        assert_eq!(count(&records, "flag"), 1);
+        // The page is told AUT on, then the state again for the refusal.
         let mut told = Vec::new();
         let deadline = Instant::now() + SECS_5;
         while told.len() < 2 {
@@ -698,21 +702,11 @@ fn aut_on_and_a_tap_are_refused_end_to_end() {
                 None => break,
             }
         }
-        // Nothing more within 300 ms: no third.
-        let quiet = Instant::now() + QUIET;
-        loop {
-            let left = quiet.saturating_duration_since(Instant::now());
-            match a.next_message(left).await {
-                Some(ServerMsg::Autotune(s)) => told.push(s),
-                Some(_) => {}
-                None => break,
-            }
-        }
         assert_eq!(told.len(), 2, "{told:?}");
-        assert!(told.iter().all(|s| !s.aut && s.playing == Some(true)));
-        for path in MACROS {
-            assert_eq!(number(&mut a, path, "value").await, 0.0, "{path}");
-        }
+        assert!(told.iter().all(|s| s.aut && s.playing == Some(true)));
+        // Out of every song: nothing tunes, no selector moved.
+        tokio::time::sleep(QUIET).await;
+        no_selector_moved(&mut a, &mut host, DRY, 0).await;
         let status = hub.status().await;
         assert_eq!(
             (
@@ -720,7 +714,7 @@ fn aut_on_and_a_tap_are_refused_end_to_end() {
                 status.autotune.writes,
                 status.autotune.taps
             ),
-            (false, 0, 0)
+            (true, 0, 0)
         );
         transport(&mut a, "stop_playing").await;
         a.close().await;

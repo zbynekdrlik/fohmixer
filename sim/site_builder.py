@@ -16,7 +16,8 @@ Fixture shape::
               "arrangement_clips"?: [{"name", "start_time", "end_time"}...] (#140)}
     DEVICE = {"template": "plain"|"eq8"|"rack"|"plugin", "name", "class_name"?,
               "parameters"?: [PARAM...], "chains"?: [{"name", "devices"?}],
-              "product"?: str (a plugin's class_display_name, #71)}
+              "product"?: str (a plugin's class_display_name, #71),
+              "macros"?: [values] (a rack's Macro 1, 2, ... at the start, #140)}
     PARAM  = {"name", "value"?, "min"?, "max"?, "display"?, "items"?,
               "enabled"?: false (held as a Max map holds it: writes refused, #140)}
 
@@ -127,7 +128,11 @@ def _make_device(spec):
             for c in spec.get("chains", ())
         ]
         return Live.RackDevice.RackDevice(
-            spec["name"], spec.get("class_name", "AudioEffectGroupDevice"), chains, params
+            spec["name"],
+            spec.get("class_name", "AudioEffectGroupDevice"),
+            chains,
+            params,
+            macros=spec.get("macros", ()),
         )
     if template == "plain":
         return Live.Device.Device(spec["name"], spec.get("class_name", spec["name"]), params)

@@ -261,6 +261,40 @@ class HostLineTest(unittest.TestCase):
             self.assertEqual(self.line(bad), "PARAM -1", bad)
 
 
+class RackMacroTest(unittest.TestCase):
+    """A rack's macros start at a fixture's ``macros`` (#140 PR 3b: a PA
+    rack stands on DRY at 127), else at 0; the start is no set."""
+
+    def test_a_fixtures_macros_start_the_racks_first_macros(self):
+        song = site_builder.build_from_spec(
+            {
+                "name": "Macro Site",
+                "tracks": [
+                    {
+                        "name": "Vocal A #",
+                        "devices": [
+                            {
+                                "template": "rack",
+                                "name": "Latencies",
+                                "macros": [127.0, 5.0],
+                                "chains": [{"name": "Auto"}, {"name": "Dry"}],
+                            }
+                        ],
+                    },
+                    {"name": "Stream A #", "devices": [{"template": "rack", "name": "Latencies"}]},
+                ],
+            }
+        )
+        rack = song.tracks[0].devices[0]
+        self.assertEqual(
+            [rack.parameters[i].name for i in (1, 2, 8, 9)],
+            ["Macro 1", "Macro 2", "Macro 8", "Chain Selector"],
+        )
+        self.assertEqual([rack.parameters[i].value for i in (1, 2, 3, 8)], [127.0, 5.0, 0.0, 0.0])
+        self.assertEqual(rack.parameters[1]._sim_set_count("value"), 0)
+        self.assertEqual(song.tracks[1].devices[0].parameters[1].value, 0.0)
+
+
 class SetCountTest(unittest.TestCase):
     """Every set through Live's setter counts, refused ones too; SimLive's
     own changes never do (#140 PR 2a review M6)."""

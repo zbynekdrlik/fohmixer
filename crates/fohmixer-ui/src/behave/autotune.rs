@@ -190,6 +190,14 @@ mod tests {
                     state: *state,
                 })
                 .collect(),
+            song: None,
+            key: None,
+            checking: false,
+            singers: Vec::new(),
+            map_problems: 0,
+            map_changes: 0,
+            map_keyed: 0,
+            bar: None,
         }
     }
 

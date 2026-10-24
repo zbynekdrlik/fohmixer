@@ -1,10 +1,13 @@
 //! The fall back to DRY end to end (#140 PR 3a, spec §8) on SimLive: the
 //! autotune keys' set (two stream tracks, each a `Latencies` rack inside
 //! `Stream FX`, `+AUTOTUNE`: on 127, off 0; a PA track's rack on top,
-//! `+AUTOTUNE:0`: on 0, off 127; invented names). The hub finds the three
-//! targets and registers each selector's DRY write with the script, and
-//! every selector reads DRY within 2 s through a raw `get` of the host's
-//! script, the script's log saying so once, when the hub is gone:
+//! `+AUTOTUNE:0`: on 0, off 127, standing on DRY; one song in C; invented
+//! names). AUTOTUNE AUT saved on (#140 PR 3b: kept across a restart), the
+//! hub finds the three targets, registers each selector's DRY write with
+//! the script, writes the keys and, once Live plays in the song, switches
+//! every selector on by the rule; every selector then reads DRY within 2 s
+//! through a raw `get` of the host's script, the script's log saying so
+//! once, when the hub is gone:
 //!
 //! - **frozen** (PR #146 review M1): the hub binary stopped by `SIGSTOP`,
 //!   a hung hub whose TCP stays open; its pings stop, and the script's
@@ -36,39 +39,49 @@ const MACROS: [&str; 3] = [
 const ON: [f64; 3] = [127.0, 127.0, 0.0];
 const DRY: [f64; 3] = [0.0, 0.0, 127.0];
 
-/// The test's own set, as `tests/autotune_keys.rs`'s: no songs.
+/// The test's own set, as `tests/autotune_keys.rs`'s: one song in C, Live
+/// standing at 10 in it.
 fn site(dir: &Path) -> PathBuf {
     let tuner = |name: &str| json!({"template": "plain", "name": name, "class_name": "Tuner"});
     let slot = |n: u32| json!({"name": format!("{n}:(unused):(unassigned)"), "value": 0.0});
     let gridder = json!({"template": "plugin", "name": "AudioGridder", "product": "AudioGridder",
                          "parameters": [slot(0), slot(1), slot(2)]});
-    let latencies = |plugin: Value| {
-        json!({"template": "rack", "name": "Latencies",
+    let latencies = |plugin: Value, dry: f64| {
+        json!({"template": "rack", "name": "Latencies", "macros": [dry],
                "chains": [{"name": "Auto", "devices": [plugin]}, {"name": "Dry"}]})
     };
     let stream = |name: &str| {
         json!({"name": name, "devices": [
             {"template": "rack", "name": "Stream FX",
-             "chains": [{"name": "Chain 1", "devices": [latencies(gridder.clone())]}]},
+             "chains": [{"name": "Chain 1", "devices": [latencies(gridder.clone(), 0.0)]}]},
             tuner("+AUTOTUNE")]})
     };
     let auto_tune = json!({"template": "plugin", "name": "Auto-Tune Artist",
         "product": "Auto-Tune Artist",
         "parameters": [{"name": "Key", "value": 0.0}, {"name": "Scale", "value": 0.0}]});
-    let set = json!({"name": "Safe Site", "tracks": [
+    let set = json!({"name": "Safe Site", "current_song_time": 10.0, "tracks": [
         stream("Stream A #"),
         stream("Stream B #"),
-        {"name": "Vocal A #", "devices": [latencies(auto_tune), tuner("+AUTOTUNE:0")]}]});
+        {"name": "Vocal A #", "devices": [latencies(auto_tune, 127.0), tuner("+AUTOTUNE:0")]}],
+        "cue_points": [
+            {"name": "001 Test One {C 120 4/4}", "time": 0.0},
+            {"name": "SONG END", "time": 200.0}]});
     let path = dir.join("safe-site.json");
     std::fs::write(&path, set.to_string()).unwrap();
     path
 }
 
-/// One page whose rail holds the AUTOTUNE button.
+/// One page whose rail holds the AUTOTUNE button, and AUTOTUNE AUT saved
+/// on.
 fn frame(dir: &Path) {
     let frame = json!({"schema": 2, "default_page": "p", "pages": [{"id": "p", "title": "P",
         "rail": [{"kind": "autotune", "label": "AUTOTUNE"}]}]});
     std::fs::write(dir.join("layout.json"), frame.to_string()).unwrap();
+    std::fs::write(
+        dir.join("hub-state.json"),
+        json!({"autotune_aut": true}).to_string(),
+    )
+    .unwrap();
 }
 
 /// The `autotune` records of `records` that are the step `step`.
@@ -101,10 +114,23 @@ impl Script {
 
     /// Live's value of the parameter at `path`, through `get_prop`.
     async fn value(&mut self, path: &str) -> f64 {
+        let slot = self
+            .request(json!({"target": path, "name": "get_prop", "args": {"prop": "value"}}))
+            .await;
+        slot["data"].as_f64().unwrap()
+    }
+
+    /// Live's transport started (`start_playing`) or stopped.
+    async fn transport(&mut self, verb: &str) {
+        self.request(json!({"target": "live_set", "name": verb, "args": []}))
+            .await;
+    }
+
+    /// One command's slot, answered `ok`.
+    async fn request(&mut self, command: Value) -> Value {
         self.requests += 1;
         let uuid = format!("get{}", self.requests);
-        let request = json!({"uuid": uuid, "commands": [
-            {"target": path, "name": "get_prop", "args": {"prop": "value"}}]});
+        let request = json!({"uuid": uuid, "commands": [command]});
         self.ws
             .send(Message::Text(request.to_string().into()))
             .await
@@ -120,9 +146,9 @@ impl Script {
             };
             let frame: Value = serde_json::from_str(text.as_str()).unwrap();
             if frame["event"] == "result" && frame["uuid"] == uuid.as_str() {
-                let slot = &frame["data"][0];
+                let slot = frame["data"][0].clone();
                 assert_eq!(slot["ok"], json!(true), "{frame}");
-                return slot["data"].as_f64().unwrap();
+                return slot;
             }
         }
     }
@@ -145,11 +171,18 @@ fn registered(records: &[Value]) -> bool {
         .any(|s| s["targets"] == json!(3) && s["problem"].is_null())
 }
 
-/// Every macro set on (here by another writer: the rule that switches them
-/// is #140 PR 3b).
-fn all_on(host: &mut Host) {
-    for (path, on) in MACROS.into_iter().zip(ON) {
-        assert_eq!(host.param(path, "value", on), on, "{path}");
+/// Live plays in the song: the hub's rule switches every selector on once
+/// its key is confirmed (AUT on, the DRY writes kept).
+async fn all_on(live: &mut Script) {
+    live.transport("start_playing").await;
+    let deadline = Instant::now() + SECS_10;
+    loop {
+        let values = live.macros().await;
+        if values == ON {
+            return;
+        }
+        assert!(Instant::now() < deadline, "never on: {values:?}");
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
 
@@ -240,13 +273,13 @@ fn a_frozen_hub_leaves_every_selector_on_dry_within_2_s() {
             );
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        all_on(&mut host);
+        let mut live = Script::connect(host.port).await;
+        all_on(&mut live).await;
         // The hub's pings keep it heard: past the script's 1.5 s of
         // silence, nothing has fallen back.
         tokio::time::sleep(Duration::from_millis(1700)).await;
         let log = host.log_text();
         assert!(!log.contains("hub lost"), "{log}");
-        let mut live = Script::connect(host.port).await;
         assert_eq!(live.macros().await, ON);
         // Frozen with its TCP open: its pings stop.
         let frozen = Instant::now();
@@ -267,6 +300,8 @@ fn a_frozen_hub_leaves_every_selector_on_dry_within_2_s() {
             "{log}"
         );
         assert_eq!(log.matches("hub lost").count(), 1, "{log}");
+        // Each selector set twice through Live's setter: the hub's on, then
+        // the script's DRY. Nothing else wrote them.
         for path in MACROS {
             assert_eq!(host.sets("value", path), 2, "{path}");
         }
@@ -292,10 +327,9 @@ fn a_stopped_hub_leaves_every_selector_on_dry_within_2_s() {
                 .all(|s| s["instance"] == "band" && s["problem"].is_null()),
             "{records:?}"
         );
-        assert!(!hub.status().await.autotune.aut);
-        all_on(&mut host);
+        assert!(hub.status().await.autotune.aut, "AUT kept on");
         let mut live = Script::connect(host.port).await;
-        assert_eq!(live.macros().await, ON);
+        all_on(&mut live).await;
         // Stopped: its tasks end and its sockets close, as a killed
         // process's do.
         let stopped = Instant::now();
@@ -312,7 +346,7 @@ fn a_stopped_hub_leaves_every_selector_on_dry_within_2_s() {
             "{log}"
         );
         assert_eq!(log.matches("hub lost").count(), 1, "{log}");
-        // Each selector set twice through Live's setter: the test's on, then
+        // Each selector set twice through Live's setter: the hub's on, then
         // the script's DRY. Nothing else wrote them.
         for path in MACROS {
             assert_eq!(host.sets("value", path), 2, "{path}");

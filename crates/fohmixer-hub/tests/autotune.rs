@@ -1,11 +1,13 @@
-//! AUTOTUNE end to end (#104, D19; #140 PR 2a) on SimLive: the
+//! AUTOTUNE end to end (#104, D19; #140 PR 2a, PR 3b) on SimLive: the
 //! `+AUTOTUNE` Tuners of a set of our own make the targets; the hub finds
 //! each track's `Latencies` rack (one rack deep on a stream track, on the
 //! track itself on a repro track) and says why a track has none or two.
-//! Until #140 PR 3 nothing switches: a page's AUTOTUNE AUT on and its tap
-//! are refused, a saved AUT on starts off (and is saved off), no transport
-//! change writes a macro, and a host restart (a set load) only walks the
-//! racks again. The keys are `tests/autotune_keys.rs`'.
+//! This set has no song, so nothing tunes: AUT off the hub writes DRY once
+//! to the repro rack, which stands on its chain (its macro at 0), AUT on
+//! is taken and kept across a restart, a tap is refused, no transport
+//! change writes, and a host restart (a set load) walks the racks again
+//! and writes DRY once more. The keys are `tests/autotune_keys.rs`', the
+//! switching `tests/autotune_switch.rs`'.
 #![cfg(unix)]
 
 mod support;
@@ -13,7 +15,7 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use fohmixer_proto::client::{ClientMsg, HubStatus, ServerMsg};
+use fohmixer_proto::client::{ClientMsg, HubStatus, ServerMsg, SwitchWhy};
 use serde_json::{Value, json};
 use support::{Client, Host, TestHub, runtime, serial};
 
@@ -126,7 +128,7 @@ fn count(records: &[Value], step: &str) -> usize {
 }
 
 #[test]
-fn both_kinds_of_rack_are_found_and_nothing_switches() {
+fn both_kinds_of_rack_are_found_and_only_dry_is_written() {
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -148,21 +150,35 @@ fn both_kinds_of_rack_are_found_and_nothing_switches() {
         );
         assert!(!status.autotune.aut);
         let mut a = hub.client().await;
-        // The stream rack's macro between its values, so a write would show.
+        // AUT off: the repro rack stands on its chain (0), so the hub
+        // writes it DRY (127) once (#140 PR 3b); the stream rack is DRY.
+        let status = hub.status_until(SECS_5, |s| s.autotune.writes == 1).await;
+        let decisions: Vec<_> = status
+            .autotune
+            .targets
+            .iter()
+            .map(|t| t.decision.map(|d| (d.on, d.why)))
+            .collect();
+        assert_eq!(
+            decisions[..2],
+            [Some((false, SwitchWhy::Aut)), Some((false, SwitchWhy::Aut))]
+        );
+        // The stream rack's macro between its values, so a write would show
+        // (a page's write: no other writer's move to the chain).
         a.set("band", STREAM_MACRO, "value", json!(64.0)).await;
-        // AUT on and a tap: refused, AUT stays off.
+        // AUT on is taken (no song: nothing tunes), a tap refused.
         set_hub(&mut a, "autotune_aut", true).await;
         set_hub(&mut a, "autotune", false).await;
         let records = hub
-            .events_until(SECS_5, |r| count(&autotune_since(r, 0), "refused") == 2)
+            .events_until(SECS_5, |r| count(&autotune_since(r, 0), "refused") == 1)
             .await;
         let refused: Vec<Value> = autotune_since(&records, 0)
             .into_iter()
             .filter(|r| r["step"] == "refused")
             .map(|r| r["what"].clone())
             .collect();
-        assert_eq!(refused, vec![json!("aut"), json!("tap")]);
-        // Live plays, then stops: nothing is written.
+        assert_eq!(refused, vec![json!("tap")]);
+        // Live plays, then stops: out of every song, nothing is written.
         transport(&mut a, "start_playing").await;
         hub.status_until(SECS_5, |s| s.instances[0].playing == Some(true))
             .await;
@@ -170,7 +186,7 @@ fn both_kinds_of_rack_are_found_and_nothing_switches() {
         hub.status_until(SECS_5, |s| s.instances[0].playing == Some(false))
             .await;
         tokio::time::sleep(Duration::from_millis(300)).await;
-        assert_eq!(macros(&mut a).await, (64.0, 0.0), "no macro moved");
+        assert_eq!(macros(&mut a).await, (64.0, 127.0), "only the DRY moved");
         let status = hub.status().await;
         assert_eq!(
             (
@@ -178,13 +194,14 @@ fn both_kinds_of_rack_are_found_and_nothing_switches() {
                 status.autotune.writes,
                 status.autotune.taps
             ),
-            (false, 0, 0)
+            (true, 1, 0)
         );
         let steps = autotune_since(&hub.events(), 0);
         assert_eq!(count(&steps, "found"), 2);
         assert_eq!(count(&steps, "missing"), 2);
-        assert_eq!(count(&steps, "write"), 0);
-        assert_eq!(count(&steps, "flag"), 0);
+        assert_eq!(count(&steps, "write"), 1);
+        assert_eq!(count(&steps, "select"), 0, "never on");
+        assert_eq!(count(&steps, "flag"), 1);
         assert_eq!(count(&steps, "tap"), 0);
         a.close().await;
         hub.stop().await;
@@ -193,18 +210,16 @@ fn both_kinds_of_rack_are_found_and_nothing_switches() {
 }
 
 #[test]
-fn a_saved_aut_on_starts_off_and_is_saved_off() {
+fn a_saved_aut_on_is_kept() {
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
         let host = Host::start_site("band", &site(dir.path()), 0, 0.0);
         frame(dir.path());
-        // A 1.8.0 hub left AUTOTUNE AUT on.
-        std::fs::write(
-            dir.path().join("hub-state.json"),
-            json!({"stage_aut": false, "autotune_aut": true}).to_string(),
-        )
-        .unwrap();
+        // AUTOTUNE AUT and a singer's off by hand saved on (#140 PR 3b:
+        // kept across a restart).
+        let state = json!({"stage_aut": false, "autotune_aut": true, "autotune_off": ["VOX1"]});
+        std::fs::write(dir.path().join("hub-state.json"), state.to_string()).unwrap();
         let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
         let mut a = hub.client().await;
         let first = a
@@ -213,21 +228,23 @@ fn a_saved_aut_on_starts_off_and_is_saved_off() {
                 _ => None,
             })
             .await;
-        assert!(!first.aut, "told off at attach");
+        assert!(first.aut, "told on at attach");
         let saved: Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("hub-state.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(saved, json!({"stage_aut": false}), "saved off at the start");
-        // Live plays once the racks are found: nothing is written.
+        assert_eq!(saved, state, "kept as it was");
+        assert_eq!(hub.status().await.autotune.singers_off, ["VOX1"]);
+        // Live plays once the racks are found: out of every song, only the
+        // repro rack's DRY is written.
         hub.status_until(SECS_5, ready).await;
         transport(&mut a, "start_playing").await;
         hub.status_until(SECS_5, |s| s.instances[0].playing == Some(true))
             .await;
         tokio::time::sleep(Duration::from_millis(300)).await;
-        assert_eq!(macros(&mut a).await, (0.0, 0.0));
+        assert_eq!(macros(&mut a).await, (0.0, 127.0));
         let status = hub.status().await;
-        assert_eq!((status.autotune.aut, status.autotune.writes), (false, 0));
+        assert_eq!((status.autotune.aut, status.autotune.writes), (true, 1));
         transport(&mut a, "stop_playing").await;
         a.close().await;
         hub.stop().await;
@@ -236,7 +253,7 @@ fn a_saved_aut_on_starts_off_and_is_saved_off() {
 }
 
 #[test]
-fn a_host_restart_walks_the_racks_again_and_writes_nothing() {
+fn a_host_restart_walks_the_racks_again_and_writes_dry_once_more() {
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -245,9 +262,11 @@ fn a_host_restart_walks_the_racks_again_and_writes_nothing() {
         let port = host.port;
         frame(dir.path());
         let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
-        hub.status_until(SECS_5, ready).await;
+        hub.status_until(SECS_5, |s| ready(s) && s.autotune.writes == 1)
+            .await;
         let mut a = hub.client().await;
-        // A set load: SimLive comes back as it was, stopped.
+        // A set load: SimLive comes back as it was, stopped (the repro rack
+        // on its chain again).
         host.stop();
         a.instance_state("band", false, None, SECS_5).await;
         let reloaded = now_ts();
@@ -257,14 +276,15 @@ fn a_host_restart_walks_the_racks_again_and_writes_nothing() {
                 count(&autotune_since(r, reloaded), "found") == 2
             })
             .await;
-        let status = hub
-            .status_until(SECS_5, |s| s.instances[0].online && walked(s))
-            .await;
-        assert_eq!(status.autotune.writes, 0);
-        let steps = autotune_since(&records, reloaded);
+        hub.status_until(SECS_5, |s| {
+            s.instances[0].online && walked(s) && s.autotune.writes == 2
+        })
+        .await;
+        let steps = autotune_since(&hub.events(), reloaded);
         assert_eq!(count(&steps, "failed"), 0, "{steps:?}");
-        assert_eq!(count(&steps, "write"), 0, "{steps:?}");
-        assert_eq!(macros(&mut a).await, (0.0, 0.0));
+        assert_eq!(count(&steps, "write"), 1, "{steps:?}");
+        assert_eq!(macros(&mut a).await, (0.0, 127.0));
+        let _ = records;
         a.close().await;
         hub.stop().await;
         host.stop();
