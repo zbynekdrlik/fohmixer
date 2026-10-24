@@ -151,8 +151,8 @@ fn deliver(router: &mut Router, sub: &str, value: f64) {
 }
 
 /// Song 1 (`001 Test One {<song_key> 120}`) from 0 to its SONG END at 100,
-/// a key clip to G at 50, and song 2 in F#m from 120 to 200 (invented
-/// titles).
+/// a key clip to G at 50, song 2 in F#m from 120 to 200, and song 3 with no
+/// key from 210 to 300 (invented titles).
 fn songs(song_key: &str) -> Listing {
     let cue = |name: String, time: f64| Cue {
         name,
@@ -164,6 +164,8 @@ fn songs(song_key: &str) -> Listing {
             cue("SONG END".into(), 100.0),
             cue("002 Test Two {F#m 90}".into(), 120.0),
             cue("SONG END".into(), 200.0),
+            cue("003 Test Three".into(), 210.0),
+            cue("SONG END".into(), 300.0),
         ],
         clips: vec![ClipName {
             name: "Key {G}".into(),
@@ -273,31 +275,43 @@ fn the_key_in_force_at_a_position_needs_a_map_and_a_position() {
         tempo_sub: None,
         follow: KeyFollow::new(),
     };
-    assert_eq!(key_now(None, &at(Some(10.0), None, None)), None, "no map");
+    assert_eq!(
+        key_now(None, &at(Some(10.0), None, None)),
+        (None, None),
+        "no map"
+    );
     assert_eq!(
         key_now(Some(&map), &at(None, None, None)),
-        None,
+        (None, None),
         "no position"
     );
     assert_eq!(
         key_now(Some(&map), &at(Some(10.0), None, None)),
-        Some((1, major(0)))
+        (Some(1), Some(major(0)))
     );
     // One tick ahead only while known to play.
     let near = Some(49.95);
     assert_eq!(
         key_now(Some(&map), &at(near, Some(true), Some(120.0))),
-        Some((1, major(7)))
+        (Some(1), Some(major(7)))
     );
     assert_eq!(
         key_now(Some(&map), &at(near, Some(false), Some(120.0))),
-        Some((1, major(0)))
+        (Some(1), Some(major(0)))
     );
     assert_eq!(
         key_now(Some(&map), &at(near, None, Some(120.0))),
-        Some((1, major(0)))
+        (Some(1), Some(major(0)))
     );
-    assert_eq!(key_now(Some(&map), &at(Some(110.0), None, None)), None);
+    assert_eq!(
+        key_now(Some(&map), &at(Some(110.0), None, None)),
+        (None, None)
+    );
+    // A keyless song (003) is a song with no key in force.
+    assert_eq!(
+        key_now(Some(&map), &at(Some(250.0), None, None)),
+        (Some(3), None)
+    );
 }
 
 #[test]
@@ -617,7 +631,7 @@ async fn a_stopped_jump_re_evaluates_at_once() {
 }
 
 #[tokio::test]
-async fn leaving_the_song_records_no_key() {
+async fn leaving_the_songs_records_span() {
     let dir = tempfile::tempdir().unwrap();
     let (mut router, _own, rx) = offline_router(dir.path());
     router.handle(layout(1, vec![stream()]));
@@ -626,7 +640,7 @@ async fn leaving_the_song_records_no_key() {
     deliver(&mut router, TIME, 110.0);
     assert_eq!(
         keys_of(&steps(&rx)),
-        vec![key(Some(1), Some("C"), "song"), key(None, None, "no_key")]
+        vec![key(Some(1), Some("C"), "song"), key(None, None, "span")]
     );
     let keys = status(&mut router).autotune.keys;
     assert_eq!(
@@ -636,10 +650,39 @@ async fn leaving_the_song_records_no_key() {
     // Back into the same song: a start again.
     deliver(&mut router, TIME, 20.0);
     assert_eq!(keys_of(&steps(&rx)), vec![key(Some(1), Some("C"), "song")]);
-    // A failed position listener: the position unknown, no key in force.
+    // A failed position listener: the position unknown, no song.
     router.autotune_delivery(TIME, None, Some("gone".into()));
-    assert_eq!(keys_of(&steps(&rx)), vec![key(None, None, "no_key")]);
+    assert_eq!(keys_of(&steps(&rx)), vec![key(None, None, "span")]);
     assert_eq!(status(&mut router).autotune.keys[0].time, None);
+}
+
+#[tokio::test]
+async fn a_keyless_song_is_a_song_with_no_key_in_force() {
+    // PR 2a review M2: song 003 has no key; it is told apart from out of
+    // every song.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, _own, rx) = offline_router(dir.path());
+    router.handle(layout(1, vec![stream()]));
+    map_read(&mut router, 1, songs("C"));
+    // From out of every song into song 3: no key, its song known.
+    deliver(&mut router, TIME, 110.0);
+    deliver(&mut router, TIME, 250.0);
+    assert_eq!(keys_of(&steps(&rx)), vec![key(Some(3), None, "no_key")]);
+    let keys = status(&mut router).autotune.keys;
+    assert_eq!((keys[0].song, keys[0].key.as_deref()), (Some(3), None));
+    // A jump from song 2 straight into song 3: a song start with no key.
+    deliver(&mut router, TIME, 150.0);
+    deliver(&mut router, TIME, 250.0);
+    assert_eq!(
+        keys_of(&steps(&rx)),
+        vec![
+            key(Some(2), Some("F#m"), "song"),
+            key(Some(3), None, "song")
+        ]
+    );
+    // Out of every song after it.
+    deliver(&mut router, TIME, 350.0);
+    assert_eq!(keys_of(&steps(&rx)), vec![key(None, None, "span")]);
 }
 
 #[tokio::test]

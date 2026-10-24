@@ -254,8 +254,9 @@ pub enum Step {
         on: bool,
         why: String,
     },
-    /// The key in force of a Live set changed (#140 PR 2): its song and key
-    /// (none: no key in force), and why.
+    /// The key in force of a Live set changed (#140 PR 2): its song (none:
+    /// out of every song) and key (none: no key in force, a keyless song
+    /// too), and why.
     Key {
         instance: String,
         song: Option<u16>,
@@ -284,11 +285,12 @@ pub enum Step {
 /// first, nothing switches).
 pub const REFUSED_WHY: &str = "keys only until #140 PR 3";
 
-/// A key in force in words: its song and key, or none.
+/// A key in force in words: its song and key, a keyless song, or no song.
 fn key_words(song: Option<u16>, key: Option<&str>) -> String {
     match (song, key) {
         (Some(song), Some(key)) => format!("song {song} {key}"),
-        _ => "no key".to_string(),
+        (Some(song), None) => format!("song {song}, no key"),
+        (None, _) => "no song".to_string(),
     }
 }
 

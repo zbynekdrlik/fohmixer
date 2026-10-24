@@ -318,6 +318,12 @@ fn the_key_steps_are_recorded_and_logged() {
         instance: "band".into(),
         song: None,
         key: None,
+        why: keys::KeyWhy::Span,
+    };
+    let keyless = Step::Key {
+        instance: "band".into(),
+        song: Some(88),
+        key: None,
         why: keys::KeyWhy::NoKey,
     };
     let device = Step::KeyDevice {
@@ -342,7 +348,11 @@ fn the_key_steps_are_recorded_and_logged() {
     );
     assert_eq!(
         step_line(&none),
-        "AUTOTUNE key in force in band: no key (no_key)"
+        "AUTOTUNE key in force in band: no song (span)"
+    );
+    assert_eq!(
+        step_line(&keyless),
+        "AUTOTUNE key in force in band: song 88, no key (no_key)"
     );
     assert_eq!(
         step_line(&Step::Key {
@@ -382,7 +392,7 @@ fn the_key_steps_are_recorded_and_logged() {
         }),
         "AUTOTUNE refuses a page's tap: w"
     );
-    for step in [&song, &none, &device, &refused] {
+    for step in [&song, &none, &keyless, &device, &refused] {
         assert!(!step_warn(step), "{step:?}");
     }
     assert!(step_warn(&missing));
@@ -392,7 +402,11 @@ fn the_key_steps_are_recorded_and_logged() {
     );
     assert_eq!(
         serde_json::to_value(&none).unwrap(),
-        json!({"step": "key", "instance": "band", "song": null, "key": null, "why": "no_key"})
+        json!({"step": "key", "instance": "band", "song": null, "key": null, "why": "span"})
+    );
+    assert_eq!(
+        serde_json::to_value(&keyless).unwrap(),
+        json!({"step": "key", "instance": "band", "song": 88, "key": null, "why": "no_key"})
     );
     assert_eq!(
         serde_json::to_value(&device).unwrap(),

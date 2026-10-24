@@ -12,14 +12,14 @@
 use std::collections::BTreeSet;
 
 use fohmixer_proto::client::{KeyTargetStatus, ServerMsg};
-use fohmixer_proto::songmap::{Key, SongMap};
+use fohmixer_proto::songmap::SongMap;
 use serde_json::Value;
 
 use super::super::{Router, transport_heard};
 use super::{AUTOTUNE_CLIENT, AutotuneIo, missing_news};
 use crate::live::subs::{Cached, ClientId};
 use crate::rules::autotune::find::KeyFound;
-use crate::rules::autotune::keys::{KeyFollow, in_force, shows};
+use crate::rules::autotune::keys::{InForce, KeyFollow, in_force, shows};
 use crate::rules::autotune::{REFUSED_WHY, Step};
 
 /// A Live set's playhead in beats.
@@ -107,12 +107,12 @@ pub(super) fn heard_number(heard: Option<&Result<Value, String>>, was: Option<f6
     }
 }
 
-/// The song and key in force at a set's position on its song map: none
-/// without a map or a position heard; one tick ahead only while it is
-/// known to play.
-pub(super) fn key_now(map: Option<&SongMap>, position: &Position) -> Option<(u16, Key)> {
+/// The song and key in force at a set's position on its song map: no song
+/// and no key without a map or a position heard; one tick ahead only while
+/// it is known to play.
+pub(super) fn key_now(map: Option<&SongMap>, position: &Position) -> InForce {
     let (Some(map), Some(time)) = (map, position.time) else {
-        return None;
+        return (None, None);
     };
     in_force(map, time, position.playing == Some(true), position.tempo)
 }
@@ -276,15 +276,15 @@ impl Router {
         let Some(position) = self.autotune.positions.get_mut(instance) else {
             return;
         };
-        let now = key_now(map, position);
-        let Some(why) = position.follow.on_position(now) else {
+        let (song, key) = key_now(map, position);
+        let Some(why) = position.follow.on_position((song, key)) else {
             return;
         };
         self.autotune_step(
             Step::Key {
                 instance: instance.to_string(),
-                song: now.map(|(song, _)| song),
-                key: now.map(|(_, key)| key.name()),
+                song,
+                key: key.map(|key| key.name()),
                 why,
             },
             None,

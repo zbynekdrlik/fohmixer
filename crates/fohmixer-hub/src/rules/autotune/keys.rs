@@ -13,7 +13,7 @@
 //! writes are PR 2b's.
 
 use fohmixer_proto::songmap::key::{key_index_of, scale_index_of};
-use fohmixer_proto::songmap::{Key, SongMap, key_at};
+use fohmixer_proto::songmap::{Key, SongMap, key_at, song_at};
 use serde::Serialize;
 
 /// The Auto-Tune Artist's Key parameter's name.
@@ -147,12 +147,18 @@ pub fn lookahead_beats(tempo: Option<f64>) -> f64 {
     }
 }
 
+/// Where a position is: its song (none outside every song) and the key in
+/// force there (none outside every song, or in a keyless song: PR 2a review
+/// M2 tells the two apart).
+pub type InForce = (Option<u16>, Option<Key>);
+
 /// The song and key in force at `time` (beats): one tick ahead while
 /// `playing` (a key clip's change is due when the position reaches its
 /// start, spec §6), at the position itself while stopped.
-pub fn in_force(map: &SongMap, time: f64, playing: bool, tempo: Option<f64>) -> Option<(u16, Key)> {
+pub fn in_force(map: &SongMap, time: f64, playing: bool, tempo: Option<f64>) -> InForce {
     let ahead = if playing { lookahead_beats(tempo) } else { 0.0 };
-    key_at(map, time + ahead)
+    let at = time + ahead;
+    (song_at(map, at), key_at(map, at).map(|(_, key)| key))
 }
 
 /// Where the key change of song `song` in force at `time` started: its
@@ -169,18 +175,21 @@ pub fn change_time(map: &SongMap, song: u16, time: f64) -> Option<f64> {
         .map(|change| change.time)
 }
 
-/// Why the key in force changed (the `key` record's `why`).
+/// Why the key in force changed (the `key` record's `why`; spec §7's
+/// names).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyWhy {
     /// A song other than the last one in force (a song start, a jump into
-    /// it).
+    /// it), keyed or not.
     Song,
     /// The same song, another key (a key clip passed, a jump back before
     /// it).
     Change,
-    /// No key in force any more (out of every song, a keyless song).
+    /// Into a keyless song from out of every song: no key in force.
     NoKey,
+    /// Out of every song.
+    Span,
     /// A target found anew (PR 2b's writes).
     Found,
     /// A write's one retry (PR 2b).
@@ -194,23 +203,25 @@ impl KeyWhy {
             KeyWhy::Song => "song",
             KeyWhy::Change => "change",
             KeyWhy::NoKey => "no_key",
+            KeyWhy::Span => "span",
             KeyWhy::Found => "found",
             KeyWhy::Retry => "retry",
         }
     }
 }
 
-/// Why the key in force went from `before` to `now`, if it changed: a span
-/// other than the last one in force is a song start (its key equal or
-/// not), another key in the same span a change, none after one a no key.
-fn why_of(before: Option<(u16, Key)>, now: Option<(u16, Key)>) -> Option<KeyWhy> {
-    match (before, now) {
-        (Some((was_song, was_key)), Some((song, key))) if was_song == song => {
-            (was_key != key).then_some(KeyWhy::Change)
-        }
-        (_, Some(_)) => Some(KeyWhy::Song),
-        (Some(_), None) => Some(KeyWhy::NoKey),
-        (None, None) => None,
+/// Why the position went from `before` to `now`, if anything changed:
+/// another key in the same song is a change; another song entered from a
+/// song is a song start, keyed or not; a song entered from out of every
+/// song is a song start when it has a key, else no key; out of every song
+/// after a song is `span`.
+fn why_of(before: InForce, now: InForce) -> Option<KeyWhy> {
+    let ((was_song, was_key), (song, key)) = (before, now);
+    match (was_song, song) {
+        (_, None) => was_song.map(|_| KeyWhy::Span),
+        (Some(was), Some(song)) if was == song => (was_key != key).then_some(KeyWhy::Change),
+        (Some(_), Some(_)) => Some(KeyWhy::Song),
+        (None, Some(_)) => Some(key.map_or(KeyWhy::NoKey, |_| KeyWhy::Song)),
     }
 }
 
@@ -227,19 +238,18 @@ impl KeyFollow {
         Self::default()
     }
 
-    /// The key in force now (`in_force`'s answer): why it changed, if it
-    /// did. Leaving every song forgets the last one, so coming back into it
-    /// is a song start again.
-    pub fn on_position(&mut self, now: Option<(u16, Key)>) -> Option<KeyWhy> {
+    /// The position's song and key in force now (`in_force`'s answer): why
+    /// it changed, if it did. Leaving every song forgets the last one, so
+    /// coming back into it is a song start again.
+    pub fn on_position(&mut self, now: InForce) -> Option<KeyWhy> {
         let why = why_of(self.now(), now);
-        self.song = now.map(|(song, _)| song);
-        self.key = now.map(|(_, key)| key);
+        (self.song, self.key) = now;
         why
     }
 
     /// The song and key in force, as last told.
-    pub fn now(&self) -> Option<(u16, Key)> {
-        self.song.zip(self.key)
+    pub fn now(&self) -> InForce {
+        (self.song, self.key)
     }
 
     /// A reconnect forgets the last song: its next position is a start.

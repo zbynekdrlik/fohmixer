@@ -628,6 +628,12 @@ fn key_clips(clips: &[ClipName], spans: &mut [Span], problems: &mut Vec<Problem>
     }
 }
 
+/// The song whose span holds `time`, keyed or not (#140 PR 2a review M2: a
+/// keyless song is still a song); none outside every span.
+pub fn song_at(map: &SongMap, time: f64) -> Option<u16> {
+    span_at(&map.spans, time).map(|i| map.spans[i].number)
+}
+
 /// The key in force at `time`: the song whose span holds it, if it has a
 /// key, and its last change at or before `time`, else the song's key.
 pub fn key_at(map: &SongMap, time: f64) -> Option<(u16, Key)> {

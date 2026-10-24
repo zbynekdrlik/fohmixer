@@ -19,6 +19,9 @@ fn major(root: u8) -> Key {
     Key { root, minor: false }
 }
 
+/// A position out of every song.
+const OUT: InForce = (None, None);
+
 /// Song 031 in F from 22766 to its SONG END at 23501, its key clip to G at
 /// 22897 (spec §2.1; invented title).
 fn map_031() -> SongMap {
@@ -199,22 +202,28 @@ fn a_key_clip_is_in_force_one_tick_early_only_while_playing() {
     let m = map_031();
     assert_eq!(
         in_force(&m, 22896.94, true, Some(120.0)),
-        Some((31, major(7)))
+        (Some(31), Some(major(7)))
     );
     assert_eq!(
         in_force(&m, 22896.92, true, Some(120.0)),
-        Some((31, major(5)))
+        (Some(31), Some(major(5)))
     );
     assert_eq!(
         in_force(&m, 22896.94, false, Some(120.0)),
-        Some((31, major(5)))
+        (Some(31), Some(major(5)))
     );
     // No tempo heard yet: no lookahead while playing either.
-    assert_eq!(in_force(&m, 22896.94, true, None), Some((31, major(5))));
-    assert_eq!(in_force(&m, 22897.0, false, None), Some((31, major(7))));
+    assert_eq!(
+        in_force(&m, 22896.94, true, None),
+        (Some(31), Some(major(5)))
+    );
+    assert_eq!(
+        in_force(&m, 22897.0, false, None),
+        (Some(31), Some(major(7)))
+    );
     // Out of the song.
-    assert_eq!(in_force(&m, 23501.0, false, None), None);
-    assert_eq!(in_force(&m, 22765.0, false, None), None);
+    assert_eq!(in_force(&m, 23501.0, false, None), (None, None));
+    assert_eq!(in_force(&m, 22765.0, false, None), (None, None));
 }
 
 #[test]
@@ -228,9 +237,29 @@ fn the_key_in_force_uses_the_cue_time_as_live_reports_it() {
     );
     assert_eq!(
         in_force(&m, 10960.000052291458, false, None),
-        Some((9, major(2)))
+        (Some(9), Some(major(2)))
     );
-    assert_eq!(in_force(&m, 10960.0, false, None), None);
+    assert_eq!(in_force(&m, 10960.0, false, None), (None, None));
+}
+
+#[test]
+fn a_keyless_song_is_a_song_without_a_key_in_force() {
+    // PR 2a review M2: song 088 has no key (spec §2.1); it is still a song.
+    let m = build(
+        &[
+            cue("087 Test {E 100}", 100.0),
+            cue("SONG END", 200.0),
+            cue("088 Test", 300.0),
+            cue("SONG END", 400.0),
+        ],
+        &[],
+    );
+    assert_eq!(in_force(&m, 350.0, false, None), (Some(88), None));
+    assert_eq!(in_force(&m, 250.0, false, None), OUT);
+    assert_eq!(in_force(&m, 150.0, false, None), (Some(87), Some(major(4))));
+    // The lookahead moves the song too: 299.95 at 120 bpm is in 088.
+    assert_eq!(in_force(&m, 299.95, true, Some(120.0)), (Some(88), None));
+    assert_eq!(in_force(&m, 299.95, false, Some(120.0)), OUT);
 }
 
 #[test]
@@ -256,6 +285,7 @@ fn every_why_has_its_word() {
         (KeyWhy::Song, "song"),
         (KeyWhy::Change, "change"),
         (KeyWhy::NoKey, "no_key"),
+        (KeyWhy::Span, "span"),
         (KeyWhy::Found, "found"),
         (KeyWhy::Retry, "retry"),
     ];
@@ -269,51 +299,73 @@ fn every_why_has_its_word() {
 fn the_follower_starts_a_song_once_then_follows_its_changes() {
     let (f, g) = (major(5), major(7));
     let mut k = KeyFollow::new();
-    assert_eq!(k.now(), None);
-    assert_eq!(k.on_position(None), None, "nothing in force, nothing left");
-    assert_eq!(k.on_position(Some((31, f))), Some(KeyWhy::Song));
-    assert_eq!(k.now(), Some((31, f)));
-    assert_eq!(k.on_position(Some((31, f))), None);
-    assert_eq!(k.on_position(Some((31, g))), Some(KeyWhy::Change));
-    assert_eq!(k.now(), Some((31, g)));
-    assert_eq!(k.on_position(None), Some(KeyWhy::NoKey));
-    assert_eq!(k.now(), None);
-    assert_eq!(k.on_position(None), None);
-    assert_eq!(k.on_position(Some((32, g))), Some(KeyWhy::Song)); // same key, new song
+    assert_eq!(k.now(), OUT);
+    assert_eq!(k.on_position(OUT), None, "nothing in force, nothing left");
+    assert_eq!(k.on_position((Some(31), Some(f))), Some(KeyWhy::Song));
+    assert_eq!(k.now(), (Some(31), Some(f)));
+    assert_eq!(k.on_position((Some(31), Some(f))), None);
+    assert_eq!(k.on_position((Some(31), Some(g))), Some(KeyWhy::Change));
+    assert_eq!(k.now(), (Some(31), Some(g)));
+    assert_eq!(k.on_position(OUT), Some(KeyWhy::Span));
+    assert_eq!(k.now(), OUT);
+    assert_eq!(k.on_position(OUT), None);
+    assert_eq!(k.on_position((Some(32), Some(g))), Some(KeyWhy::Song)); // same key, new song
 }
 
 #[test]
 fn a_new_song_in_the_same_key_is_a_song_start() {
     let f = major(5);
     let mut k = KeyFollow::new();
-    k.on_position(Some((31, f)));
-    assert_eq!(k.on_position(Some((32, f))), Some(KeyWhy::Song));
-    assert_eq!(k.now(), Some((32, f)));
+    k.on_position((Some(31), Some(f)));
+    assert_eq!(k.on_position((Some(32), Some(f))), Some(KeyWhy::Song));
+    assert_eq!(k.now(), (Some(32), Some(f)));
 }
 
 #[test]
 fn a_jump_back_before_a_change_is_a_change_not_a_song_start() {
     let (f, g) = (major(5), major(7));
     let mut k = KeyFollow::new();
-    k.on_position(Some((31, g)));
-    assert_eq!(k.on_position(Some((31, f))), Some(KeyWhy::Change));
+    k.on_position((Some(31), Some(g)));
+    assert_eq!(k.on_position((Some(31), Some(f))), Some(KeyWhy::Change));
 }
 
 #[test]
 fn leaving_a_song_and_coming_back_is_a_start_again() {
     let f = major(5);
     let mut k = KeyFollow::new();
-    k.on_position(Some((31, f)));
-    assert_eq!(k.on_position(None), Some(KeyWhy::NoKey));
-    assert_eq!(k.on_position(Some((31, f))), Some(KeyWhy::Song));
+    k.on_position((Some(31), Some(f)));
+    assert_eq!(k.on_position(OUT), Some(KeyWhy::Span));
+    assert_eq!(k.on_position((Some(31), Some(f))), Some(KeyWhy::Song));
+}
+
+#[test]
+fn a_keyless_song_is_told_apart_from_out_of_every_song() {
+    let e = major(4);
+    let mut k = KeyFollow::new();
+    // From out of every song into a keyless song: no key in force, its
+    // song known.
+    assert_eq!(k.on_position((Some(88), None)), Some(KeyWhy::NoKey));
+    assert_eq!(k.now(), (Some(88), None));
+    assert_eq!(k.on_position((Some(88), None)), None, "staying in it");
+    // Out of it: out of every song.
+    assert_eq!(k.on_position(OUT), Some(KeyWhy::Span));
+    assert_eq!(k.on_position(OUT), None);
+    // From a keyed song into a keyless one: a song start with no key.
+    k.on_position((Some(87), Some(e)));
+    assert_eq!(k.on_position((Some(88), None)), Some(KeyWhy::Song));
+    // And back into the keyed one: a song start in its key.
+    assert_eq!(k.on_position((Some(87), Some(e))), Some(KeyWhy::Song));
+    // Out of every song into a keyed one: a song start.
+    k.on_position(OUT);
+    assert_eq!(k.on_position((Some(87), Some(e))), Some(KeyWhy::Song));
 }
 
 #[test]
 fn a_reset_makes_the_same_song_a_start_again() {
     let f = major(5);
     let mut k = KeyFollow::new();
-    k.on_position(Some((31, f)));
+    k.on_position((Some(31), Some(f)));
     k.reset();
-    assert_eq!(k.now(), None);
-    assert_eq!(k.on_position(Some((31, f))), Some(KeyWhy::Song));
+    assert_eq!(k.now(), OUT);
+    assert_eq!(k.on_position((Some(31), Some(f))), Some(KeyWhy::Song));
 }

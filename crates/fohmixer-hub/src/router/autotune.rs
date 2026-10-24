@@ -187,11 +187,11 @@ impl AutotuneIo {
                 .positions
                 .iter()
                 .map(|(instance, p)| {
-                    let now = p.follow.now();
+                    let (song, key) = p.follow.now();
                     KeyInForce {
                         instance: instance.clone(),
-                        song: now.map(|(song, _)| song),
-                        key: now.map(|(_, key)| key.name()),
+                        song,
+                        key: key.map(|key| key.name()),
                         time: p.time,
                         playing: p.playing,
                         tempo: p.tempo,
