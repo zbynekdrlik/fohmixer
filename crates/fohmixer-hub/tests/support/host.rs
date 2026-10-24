@@ -17,7 +17,7 @@ pub struct Host {
     lines: mpsc::Receiver<String>,
     pub port: u16,
     pub instance: String,
-    _logs: tempfile::TempDir,
+    logs: tempfile::TempDir,
 }
 
 impl Host {
@@ -76,8 +76,18 @@ impl Host {
             lines,
             port,
             instance: instance.to_string(),
-            _logs: logs,
+            logs,
         }
+    }
+
+    /// The script's own log so far (`fohmixer-<instance>.log` in the
+    /// host's log folder: its WARNING lines; empty before the first).
+    pub fn log_text(&self) -> String {
+        let path = self
+            .logs
+            .path()
+            .join(format!("fohmixer-{}.log", self.instance));
+        std::fs::read_to_string(path).unwrap_or_default()
     }
 
     /// The hub's config entry of this host.
