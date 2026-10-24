@@ -15,8 +15,8 @@ use super::super::tests::{attach, next_of, offline_router, records, status};
 use super::super::{Router, RouterMsg, layout_msg, markers};
 use super::{
     AUTOTUNE_CLIENT, AfterWalk, PARAMETER_CLASS, TOO_DEEP, Target, after_walk, autotune_fields,
-    found_write, gave_up_problem, macro_value, may_write, missing_news, slot_failures, state_of,
-    target_key, walk_again, write_commands,
+    found_write, gave_up_problem, keeps_found, macro_value, may_write, missing_news, slot_failures,
+    state_of, target_key, walk_again, write_commands,
 };
 use crate::live::LiveValue;
 use crate::live::client::LiveEvent;
@@ -1440,6 +1440,15 @@ async fn a_failed_walk_gives_up_after_max_retries_until_the_next_trigger() {
     walk_failed(&mut router, w + 1);
     pump(&mut router, &mut own, RETRY_MS + RETRY_MS / 2).await;
     assert_eq!(walk_of(&router, STREAM), w + 2);
+}
+
+#[test]
+fn only_a_found_target_whose_walk_live_did_not_answer_keeps_its_rack() {
+    // PR #146 review I3.
+    assert!(keeps_found(true, true));
+    assert!(!keeps_found(true, false), "nothing found to keep");
+    assert!(!keeps_found(false, true), "a definite refusal drops it");
+    assert!(!keeps_found(false, false));
 }
 
 #[test]

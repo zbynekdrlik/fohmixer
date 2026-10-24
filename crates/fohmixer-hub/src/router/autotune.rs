@@ -386,6 +386,14 @@ pub(super) fn after_walk(retryable: bool, failures: u32) -> AfterWalk {
     }
 }
 
+/// Whether a target keeps what it found through a failed walk (PR #146
+/// review I3): a found one whose walk Live did not answer (`retryable`:
+/// busy, a timeout, offline) keeps its ref and its DRY registration, since
+/// the script holds the object; a definite refusal drops them.
+pub(super) fn keeps_found(retryable: bool, found: bool) -> bool {
+    retryable && found
+}
+
 /// A target's problem once its walks gave up (PR #145 review M7): Live's
 /// words, and that it gave up after `tries` failed walks, so `/api/status`
 /// tells a stopped retry from a running one.
@@ -556,22 +564,27 @@ impl Router {
 
     /// A walk's read failed (#140): void unless it is the target's newest
     /// walk; else the target is missing with Live's words (recorded when
-    /// news) and, when Live did not answer or was offline, walked again
-    /// after [`RETRY_MS`] while retries are left, or one `gave_up` record
-    /// (warn) waits for the next trigger ([`after_walk`]); a definite
-    /// refusal waits for the next trigger.
+    /// news), unless it was found and Live only did not answer (PR #146
+    /// review I3, [`keeps_found`]: its ref and its DRY write stay), and,
+    /// when Live did not answer or was offline, walked again after
+    /// [`RETRY_MS`] while retries are left, or one `gave_up` record (warn)
+    /// waits for the next trigger ([`after_walk`]); a definite refusal waits
+    /// for the next trigger.
     pub(super) fn autotune_walk_failed(&mut self, key: &str, walk: u64, why: String) {
-        if self.autotune.targets.get(key).map(|t| t.walk) != Some(walk) {
+        let Some(target) = self.autotune.targets.get(key).filter(|t| t.walk == walk) else {
             return;
+        };
+        let retryable = transient(&why);
+        if !keeps_found(retryable, target.found.is_some()) {
+            self.autotune_target_missing(key, why.clone());
         }
-        self.autotune_target_missing(key, why.clone());
         let Some(target) = self.autotune.targets.get_mut(key) else {
             return;
         };
         target.walk_failures += 1;
         let failures = target.walk_failures;
         let (instance, track) = (target.instance.clone(), target.track.clone());
-        match after_walk(transient(&why), failures) {
+        match after_walk(retryable, failures) {
             AfterWalk::Retry => self.autotune_walk_retry_later(key, walk),
             AfterWalk::GiveUp => {
                 target.problem = Some(gave_up_problem(&why, failures));
