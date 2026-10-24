@@ -1118,6 +1118,135 @@ async fn writes_are_held_while_the_markers_are_unsettled() {
     );
 }
 
+/// The band connected (a set loaded, a Live started).
+fn connect(router: &mut Router) {
+    router.handle(RouterMsg::Live {
+        instance: "band".into(),
+        event: LiveEvent::Connected(crate::live::ConnectInfo {
+            instance: "band".into(),
+            set_name: "set".into(),
+            script_version: "0".into(),
+            live_version: "12".into(),
+        }),
+    });
+}
+
+/// The marker keeper's next read of the band (its one track's `devices`),
+/// unanswered; every other call before it is passed over (and fails).
+fn markers_call(script: &mut Script) -> Option<Asked> {
+    let devices = json!({"target": "live_set tracks 0", "name": "get_prop",
+                         "args": {"prop": "devices"}});
+    while let Some(asked) = script.try_call() {
+        if asked.commands == vec![devices.clone()] {
+            return Some(asked);
+        }
+    }
+    None
+}
+
+/// Live answers the marker keeper's read: no device on its one track.
+async fn markers_answered(
+    router: &mut Router,
+    own: &mut UnboundedReceiver<RouterMsg>,
+    script: &mut Script,
+) {
+    markers_call(script)
+        .expect("a read of the markers")
+        .answer(vec![ok(json!([]))]);
+    let msg = next_of(own, "the markers' read", |m| {
+        matches!(m, RouterMsg::MarkersRead { .. })
+    })
+    .await;
+    router.handle(msg);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slow_set_load_writes_the_key_once_the_markers_read_answers() {
+    // PR #145 review I1: a set load (a disconnect, then a connect while Live
+    // still loads the set) holds the band's writes until a read of the
+    // marker keeper answers, and that read fails for as long as Live loads:
+    // here five times, more than the keeper's three retries of 1.12.0. The
+    // song map and the walks recover meanwhile; the key must too.
+    let dir = tempfile::tempdir().unwrap();
+    let (router, mut own, rx, mut script) = scripted_router(dir.path());
+    let store = std::sync::Arc::new(crate::layout::store_in(
+        dir.path(),
+        std::path::Path::new("layout.json"),
+        vec!["band".into()],
+    ));
+    let mut router = router.with_layout(store);
+    connect(&mut router);
+    ready_stream(&mut router, (0.5, 1.0 / 28.0));
+    // The keeper knows the band's one track and reads it whole.
+    let actions = router.markers.value(
+        "band|live_set|tracks|false",
+        Some(&json!([{"$ref": "t0", "name": "Bass #"}])),
+    );
+    router.markers_apply(actions);
+    markers_answered(&mut router, &mut own, &mut script).await;
+    deliver(&mut router, TIME, 10.0);
+    confirm(&mut router, &mut own, &mut script).await;
+    let _ = steps(&rx);
+    // The set load: offline, then connected while Live still loads.
+    router.handle(RouterMsg::Live {
+        instance: "band".into(),
+        event: LiveEvent::Disconnected,
+    });
+    connect(&mut router);
+    map_read(&mut router, 2, songs());
+    find(&mut router, STREAM, rack(7, ""));
+    heard(&mut router, STREAM, (2.0 / 11.0, 0.0));
+    // Song 3 starts: held, nothing written.
+    deliver(&mut router, TIME, 250.0);
+    // The keeper's read and its retries fail five times.
+    for n in 1..=5 {
+        let read = markers_call(&mut script).unwrap_or_else(|| panic!("read {n}"));
+        drop(read);
+        let failed = next_of(&mut own, "the read's failure", |m| {
+            matches!(m, RouterMsg::MarkersRead { .. })
+        })
+        .await;
+        router.handle(failed);
+        let retry = next_of(&mut own, "the read's retry", |m| {
+            matches!(m, RouterMsg::MarkersRetry { .. })
+        })
+        .await;
+        router.handle(retry);
+    }
+    let got = steps(&rx);
+    assert_eq!(of(&got, "key_write"), Vec::<Value>::new(), "{got:?}");
+    assert_eq!(
+        of(&got, "held"),
+        vec![json!({"step": "held", "instance": "band", "on": true, "why": "offline"})]
+    );
+    // Live answers the sixth: the hold ends, the target is walked again,
+    // and its answer writes F#m once, the bar with it.
+    markers_answered(&mut router, &mut own, &mut script).await;
+    find(&mut router, STREAM, rack(7, ""));
+    let [root, scale] = set_bar(6, "Minor");
+    assert_eq!(
+        confirm(&mut router, &mut own, &mut script).await,
+        vec![
+            set_ref("k7", 6.0 / 11.0),
+            set_ref("s7", 1.0 / 28.0),
+            root,
+            scale
+        ]
+    );
+    find(&mut router, STREAM, rack(7, ""));
+    no_call(&mut script);
+    let got = steps(&rx);
+    assert_eq!(
+        of(&got, "held"),
+        vec![json!({"step": "held", "instance": "band", "on": false, "why": "settled"})]
+    );
+    assert_eq!(
+        of(&got, "key_write"),
+        vec![key_write("F#m", "found", &["#8"], true)]
+    );
+    assert_eq!(states(&mut router), vec![Some(KeyState::Confirmed)]);
+}
+
 #[tokio::test]
 async fn a_found_target_waits_for_both_its_values_with_the_bar_it_owes() {
     // A held song start owes the key and the bar; after the release the
