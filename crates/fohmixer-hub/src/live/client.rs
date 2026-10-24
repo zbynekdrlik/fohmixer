@@ -45,6 +45,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use super::{
@@ -144,6 +145,12 @@ pub enum LiveEvent {
         data: Vec<Value>,
     },
     Values(Vec<LiveValue>),
+    /// The script closed the connection with a reason (PR #146 review M5;
+    /// `close_words`: e.g. `1001 silent`, a script 1.13.0+ that heard
+    /// nothing from the hub for 1.5 s), just before [`LiveEvent::Disconnected`].
+    Closed {
+        why: String,
+    },
 }
 
 /// Where the events go: called with the instance name, from its task.
@@ -403,6 +410,19 @@ async fn refusing<T>(
     }
 }
 
+/// What a script's close frame says (PR #146 review M5): its code and its
+/// reason (`1001 silent`), its code alone without a reason; none for a
+/// close without a body.
+pub(crate) fn close_words(frame: Option<&CloseFrame>) -> Option<String> {
+    frame.map(|frame| {
+        let code = u16::from(frame.code);
+        match frame.reason.as_str() {
+            "" => code.to_string(),
+            reason => format!("{code} {reason}"),
+        }
+    })
+}
+
 /// Whether a failed attempt is the first of an outage (a warning; the
 /// retries are debug lines).
 pub(crate) fn first_of_outage(failures: u64) -> bool {
@@ -541,6 +561,8 @@ impl Session<'_> {
             last_heartbeat: Instant::now(),
             last_link: Instant::now(),
         };
+        // What the script's close frame said, if it said anything.
+        let mut closed: Option<String> = None;
         let mut tick = tokio::time::interval(BUSY_CHECK);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let end = loop {
@@ -548,7 +570,11 @@ impl Session<'_> {
                 frame = stream.next() => {
                     let text = match frame {
                         Some(Ok(Message::Text(text))) => text,
-                        Some(Ok(Message::Close(_)) | Err(_)) | None => break End::Lost,
+                        Some(Ok(Message::Close(frame))) => {
+                            closed = close_words(frame.as_ref());
+                            break End::Lost;
+                        }
+                        Some(Err(_)) | None => break End::Lost,
                         Some(Ok(_)) => continue,
                     };
                     match parse_frame(text.as_str()) {
@@ -607,8 +633,12 @@ impl Session<'_> {
         *lock(self.snapshot) = Snapshot::default();
         tracing::info!(
             instance = self.name,
+            close = ?closed.as_deref().unwrap_or("-"),
             "disconnected from the FohMixer script"
         );
+        if let Some(why) = closed {
+            self.emit(LiveEvent::Closed { why });
+        }
         self.emit(LiveEvent::Disconnected);
         end
     }
@@ -900,6 +930,21 @@ mod tests {
             .await
             .expect("the writer ends at its first failed write")
             .unwrap();
+    }
+
+    #[test]
+    fn a_close_frame_is_told_by_its_code_and_reason() {
+        use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+        let frame = |code: u16, reason: &str| CloseFrame {
+            code: CloseCode::from(code),
+            reason: reason.to_string().into(),
+        };
+        assert_eq!(
+            close_words(Some(&frame(1001, "silent"))).as_deref(),
+            Some("1001 silent")
+        );
+        assert_eq!(close_words(Some(&frame(1000, ""))).as_deref(), Some("1000"));
+        assert_eq!(close_words(None), None);
     }
 
     #[test]

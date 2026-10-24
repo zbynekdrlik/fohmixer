@@ -549,6 +549,12 @@ pub struct Router {
     beat: Beat,
 }
 
+/// The `link` record of a script's close with a reason (PR #146 review
+/// M5): its instance and the close's words (`1001 silent`).
+pub(crate) fn closed_fields(instance: &str, why: &str) -> Value {
+    json!({"instance": instance, "closed": why})
+}
+
 /// The router's beat (PR #146 review I1): a [`RouterMsg::Beat`] every
 /// `period`, so an idle loop still turns and stamps its `Beat`; it ends
 /// with the router's channel.
@@ -1051,6 +1057,11 @@ impl Router {
                 // The song map follows the set's lists (#140).
                 self.songmap_connected(instance);
                 self.broadcast_instance(instance);
+            }
+            LiveEvent::Closed { why } => {
+                // The script's reason (PR #146 review M5), before its
+                // disconnect: a silent hub's close tells from a crash.
+                self.io.events.record("link", closed_fields(instance, &why));
             }
             LiveEvent::Disconnected => {
                 if let Some(state) = self.states.get_mut(instance) {
@@ -1594,6 +1605,35 @@ mod tests {
         assert!(!beat.fresh());
         ticks.await.unwrap();
         writer.abort();
+    }
+
+    #[tokio::test]
+    async fn a_scripts_close_with_a_reason_is_a_link_record() {
+        // PR #146 review M5: a silent hub's close is told from a crash.
+        assert_eq!(
+            closed_fields("band", "1001 silent"),
+            json!({"instance": "band", "closed": "1001 silent"})
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, _own, rx) = offline_router(dir.path());
+        router.handle(RouterMsg::Live {
+            instance: "band".into(),
+            event: LiveEvent::Closed {
+                why: "1001 silent".into(),
+            },
+        });
+        let got: Vec<Value> = records(&rx)
+            .into_iter()
+            .filter(|r| r["ev"] == "link")
+            .map(|mut r| {
+                r.as_object_mut().unwrap().remove("ts");
+                r
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![json!({"ev": "link", "instance": "band", "closed": "1001 silent"})]
+        );
     }
 
     #[tokio::test(start_paused = true)]

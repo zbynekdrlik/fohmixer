@@ -460,6 +460,52 @@ fn heartbeats_are_read_while_a_request_write_waits() {
 }
 
 #[test]
+fn a_script_that_closes_with_a_reason_is_reported_with_it() {
+    // PR #146 review M5: a script 1.13.0+ closes a hub it heard nothing
+    // from for 1.5 s with 1001 `silent`; the hub tells it before the
+    // disconnect.
+    use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+    let _serial = serial();
+    runtime().block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let connect =
+                json!({"event": "connect", "data": {"instance": "band", "set_name": "Fake"}});
+            ws.send(Message::Text(connect.to_string().into()))
+                .await
+                .unwrap();
+            let frame = CloseFrame {
+                code: CloseCode::Away,
+                reason: "silent".to_string().into(),
+            };
+            let _ = ws.close(Some(frame)).await;
+            while let Some(Ok(_)) = ws.next().await {}
+        });
+        let seen = Seen::default();
+        let (_live, _task) = LiveHandle::spawn(&cfg(port), seen.events());
+        seen.wait(Duration::from_secs(3), |e| {
+            matches!(e, LiveEvent::Connected(_)).then_some(())
+        })
+        .await;
+        let why = seen
+            .wait(Duration::from_secs(3), |e| match e {
+                LiveEvent::Closed { why } => Some(why.clone()),
+                _ => None,
+            })
+            .await;
+        assert_eq!(why, "1001 silent");
+        seen.wait(Duration::from_secs(3), |e| {
+            matches!(e, LiveEvent::Disconnected).then_some(())
+        })
+        .await;
+    });
+}
+
+#[test]
 fn a_port_that_answers_as_another_instance_is_never_used() {
     let _serial = serial();
     runtime().block_on(async {
