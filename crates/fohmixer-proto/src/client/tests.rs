@@ -708,6 +708,7 @@ fn api_bodies_round_trip() {
             sections: crate::songmap::SectionsState::FirstOf(2),
             at_ms: 1_790_000_300,
             stale: true,
+            gave_up: true,
         }],
     };
     let json = serde_json::to_value(&status).unwrap();
@@ -782,7 +783,16 @@ fn api_bodies_round_trip() {
     assert_eq!(
         json["songmap"],
         json!([{"instance": "band", "songs": 166, "keyed": 165, "changes": 8, "problems": 0,
-                "sections": {"first_of": 2}, "at_ms": 1_790_000_300_u64, "stale": true}])
+                "sections": {"first_of": 2}, "at_ms": 1_790_000_300_u64, "stale": true,
+                "gave_up": true}])
+    );
+    // A hub before the give-ups (PR #145 review M7) names none.
+    let mut before_give_ups = json["songmap"][0].clone();
+    before_give_ups.as_object_mut().unwrap().remove("gave_up");
+    assert!(
+        !serde_json::from_value::<SongMapStatus>(before_give_ups)
+            .unwrap()
+            .gave_up
     );
     // A hub before the song map (#140) names none.
     let mut older = json.clone();

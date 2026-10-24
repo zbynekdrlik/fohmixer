@@ -161,6 +161,10 @@ pub enum Action {
     },
     /// Ask `retry` for the instance after `RETRY_MS`.
     Retry { instance: String },
+    /// A failed read's retries are spent (#140; PR #145 review M7): the
+    /// instance waits for the next trigger (a list change, a connect), and
+    /// the router says so; `tries` counts the reads that failed in a row.
+    GaveUp { instance: String, tries: u32 },
     /// The markers found changed: every instance's, sorted.
     Found(Vec<Found>),
     /// The migration (#68 PR C): `set_prop name` of the Tuner `target` (its
@@ -534,12 +538,17 @@ impl Keeper {
                 state.failures += 1;
                 // Only Live's silence or its absence is worth a retry (PR #145
                 // review M2); a definite refusal waits for the next trigger.
-                return if transient(why) && state.failures <= CONNECT_RETRIES {
+                return if !transient(why) {
+                    Vec::new()
+                } else if state.failures <= CONNECT_RETRIES {
                     vec![Action::Retry {
                         instance: instance.to_string(),
                     }]
                 } else {
-                    Vec::new()
+                    vec![Action::GaveUp {
+                        instance: instance.to_string(),
+                        tries: state.failures,
+                    }]
                 };
             }
         };

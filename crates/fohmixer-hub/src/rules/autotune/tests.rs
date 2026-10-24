@@ -625,7 +625,7 @@ fn a_target_given_up_is_recorded_and_warns() {
         instance: "band".into(),
         target: "live_set tracks 4".into(),
         problem: "no result within 3 s".into(),
-        walks: 25,
+        tries: 25,
     };
     assert_eq!(
         step_line(&gave_up),
@@ -636,6 +636,6 @@ fn a_target_given_up_is_recorded_and_warns() {
     assert_eq!(
         serde_json::to_value(&gave_up).unwrap(),
         json!({"step": "gave_up", "instance": "band", "target": "live_set tracks 4",
-               "problem": "no result within 3 s", "walks": 25})
+               "problem": "no result within 3 s", "tries": 25})
     );
 }

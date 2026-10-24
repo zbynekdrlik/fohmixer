@@ -156,6 +156,9 @@ pub(super) struct SongMapIo {
     /// was no retry (a trigger, the connect): at [`CONNECT_RETRIES`] a failure
     /// waits for the next trigger.
     pub retries: BTreeMap<String, u32>,
+    /// The sets whose reads gave up (their retries spent) and wait for the
+    /// next trigger: `/api/status` says so (PR #145 review M7).
+    pub gave_up: BTreeSet<String>,
     /// The reads' own counter.
     pub reads: u64,
     /// Each subscription (hub key) and its set.
@@ -175,13 +178,16 @@ impl SongMapIo {
     pub fn status(&self) -> Vec<SongMapStatus> {
         self.maps
             .iter()
-            .map(|(instance, read)| status_of(instance, read, self.stale.contains(instance)))
+            .map(|(instance, read)| {
+                let stale = self.stale.contains(instance);
+                status_of(instance, read, stale, self.gave_up.contains(instance))
+            })
             .collect()
     }
 }
 
 /// A set's map in `/api/status`.
-pub(super) fn status_of(instance: &str, read: &Read, stale: bool) -> SongMapStatus {
+pub(super) fn status_of(instance: &str, read: &Read, stale: bool, gave_up: bool) -> SongMapStatus {
     let n = counts(&read.map);
     SongMapStatus {
         instance: instance.to_string(),
@@ -192,6 +198,7 @@ pub(super) fn status_of(instance: &str, read: &Read, stale: bool) -> SongMapStat
         sections: read.sections,
         at_ms: read.at_ms,
         stale,
+        gave_up,
     }
 }
 
@@ -560,11 +567,13 @@ pub(super) fn with_sections_error(mut fields: Value, error: Option<&str>) -> Val
 }
 
 /// A failed read's record once its retries are spent (#140): `gave_up`, and
-/// how many retries were made; the set waits for its next trigger.
-pub(super) fn with_gave_up(mut fields: Value, retries: u32) -> Value {
+/// how many reads failed in a row (`tries`: the first and its retries, the
+/// unit every give-up record counts in, PR #145 review M10); the set waits
+/// for its next trigger.
+pub(super) fn with_gave_up(mut fields: Value, tries: u32) -> Value {
     if let Some(record) = fields.as_object_mut() {
         record.insert("gave_up".into(), json!(true));
-        record.insert("retries".into(), json!(retries));
+        record.insert("tries".into(), json!(tries));
     }
     fields
 }
@@ -745,6 +754,7 @@ impl Router {
         };
         let live = live.clone();
         self.songmap.retry.remove(instance);
+        self.songmap.gave_up.remove(instance);
         if retry {
             *self
                 .songmap
@@ -835,7 +845,8 @@ impl Router {
                     self.songmap.retries.remove(instance);
                 }
                 if gives_up(retryable, after) {
-                    with_gave_up(fields, retries)
+                    self.songmap.gave_up.insert(instance.to_string());
+                    with_gave_up(fields, retries + 1)
                 } else {
                     fields
                 }
@@ -894,6 +905,7 @@ impl Router {
         self.songmap.dirty.remove(instance);
         self.songmap.retry.remove(instance);
         self.songmap.retries.remove(instance);
+        self.songmap.gave_up.remove(instance);
         // The first read after the next connect is judged as a first one.
         self.songmap.last_problems.remove(instance);
         if let Some((key, _)) = self.songmap.clips.get(instance) {

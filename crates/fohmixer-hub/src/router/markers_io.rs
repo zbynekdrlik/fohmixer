@@ -72,6 +72,9 @@ impl Router {
                     commands,
                 } => self.markers_read(instance, seq, step, commands),
                 markers::Action::Retry { instance } => self.markers_retry(instance),
+                markers::Action::GaveUp { instance, tries } => {
+                    tracing::warn!(instance = %instance, tries, "the hub gave up reading the Tuner markers until the next list change or connect: REVERB's window and AUTOTUNE's hold stay");
+                }
                 markers::Action::Found(found) => self.markers_found(found),
                 markers::Action::Rename {
                     instance,

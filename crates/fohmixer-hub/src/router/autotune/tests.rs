@@ -15,8 +15,8 @@ use super::super::tests::{attach, next_of, offline_router, records, status};
 use super::super::{Router, RouterMsg, layout_msg, markers};
 use super::{
     AUTOTUNE_CLIENT, AfterWalk, PARAMETER_CLASS, TOO_DEEP, Target, after_walk, autotune_fields,
-    found_write, macro_value, may_write, missing_news, slot_failures, state_of, target_key,
-    walk_again, write_commands,
+    found_write, gave_up_problem, macro_value, may_write, missing_news, slot_failures, state_of,
+    target_key, walk_again, write_commands,
 };
 use crate::live::LiveValue;
 use crate::live::client::LiveEvent;
@@ -1364,8 +1364,18 @@ async fn a_failed_walk_gives_up_after_max_retries_until_the_next_trigger() {
         gave_up,
         vec![
             json!({"step": "gave_up", "instance": "band", "target": "live_set tracks 7",
-                    "problem": "no result within 3 s", "walks": CONNECT_RETRIES + 1})
+                    "problem": "no result within 3 s", "tries": CONNECT_RETRIES + 1})
         ]
+    );
+    // `/api/status` says it gave up, and after how many tries (PR #145
+    // review M7).
+    assert_eq!(
+        status(&mut router).autotune.targets[0].problem.as_deref(),
+        Some("no result within 3 s (gave up after 25 tries, until the next trigger)")
+    );
+    assert_eq!(
+        gave_up_problem("instance offline", 3),
+        "instance offline (gave up after 3 tries, until the next trigger)"
     );
     pump(&mut router, &mut own, 3 * RETRY_MS).await;
     assert_eq!(walk_of(&router, STREAM), w, "no retry after the last");

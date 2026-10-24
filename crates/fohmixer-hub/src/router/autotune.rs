@@ -370,6 +370,13 @@ pub(super) fn after_walk(retryable: bool, failures: u32) -> AfterWalk {
     }
 }
 
+/// A target's problem once its walks gave up (PR #145 review M7): Live's
+/// words, and that it gave up after `tries` failed walks, so `/api/status`
+/// tells a stopped retry from a running one.
+pub(super) fn gave_up_problem(why: &str, tries: u32) -> String {
+    format!("{why} (gave up after {tries} tries, until the next trigger)")
+}
+
 /// How a walk ended: its definite answer (the macro, or why there is none
 /// in words), or a read that failed (Live offline, a timeout, a refused
 /// read: #140; only the first two are worth another walk, [`after_walk`]).
@@ -544,15 +551,18 @@ impl Router {
         let (instance, track) = (target.instance.clone(), target.track.clone());
         match after_walk(transient(&why), failures) {
             AfterWalk::Retry => self.autotune_walk_retry_later(key, walk),
-            AfterWalk::GiveUp => self.autotune_step(
-                Step::GaveUp {
-                    instance,
-                    target: track,
-                    problem: why,
-                    walks: failures,
-                },
-                None,
-            ),
+            AfterWalk::GiveUp => {
+                target.problem = Some(gave_up_problem(&why, failures));
+                self.autotune_step(
+                    Step::GaveUp {
+                        instance,
+                        target: track,
+                        problem: why,
+                        tries: failures,
+                    },
+                    None,
+                );
+            }
             AfterWalk::Wait => {}
         }
         self.autotune_tell();

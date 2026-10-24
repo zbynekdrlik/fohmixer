@@ -454,7 +454,13 @@ fn a_failed_read_is_tried_again_connect_retries_times_in_a_row() {
         let actions = k.retry("band");
         seq = apply(&mut k, actions).reads[0].1;
     }
-    assert_eq!(k.read_done("band", seq, Step::Devices, &failed), vec![]);
+    assert_eq!(
+        k.read_done("band", seq, Step::Devices, &failed),
+        vec![Action::GaveUp {
+            instance: "band".into(),
+            tries: CONNECT_RETRIES + 1
+        }]
+    );
     // A success resets the count.
     let actions = k.retry("band");
     seq = apply(&mut k, actions).reads[0].1;
@@ -540,7 +546,13 @@ fn a_second_batch_that_keeps_failing_is_tried_again_connect_retries_times_in_a_r
         seq = apply(&mut k, actions).reads[0].1;
     }
     k.read_done("band", seq, Step::Devices, &devices);
-    assert_eq!(k.read_done("band", seq, Step::Classes, &failed), vec![]);
+    assert_eq!(
+        k.read_done("band", seq, Step::Classes, &failed),
+        vec![Action::GaveUp {
+            instance: "band".into(),
+            tries: CONNECT_RETRIES + 1
+        }]
+    );
 }
 
 #[test]
@@ -837,7 +849,13 @@ fn a_connect_reads_the_tuners_again_once_the_lists_are_known() {
         let actions = k.retry("band");
         seq = apply(&mut k, actions).reads[0].1;
     }
-    assert_eq!(k.read_done("band", seq, Step::Devices, &failed), vec![]);
+    assert_eq!(
+        k.read_done("band", seq, Step::Devices, &failed),
+        vec![Action::GaveUp {
+            instance: "band".into(),
+            tries: CONNECT_RETRIES + 1
+        }]
+    );
     // …a connect reads again, and its failure is tried again.
     let actions = k.connected("band");
     let applied = apply(&mut k, actions);
