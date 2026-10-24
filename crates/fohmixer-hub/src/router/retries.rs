@@ -22,10 +22,14 @@ pub(super) const RETRY_MS: u64 = 2000;
 /// How many retries in a row a failed connect-time read gets before it
 /// waits for the next trigger (#140, the PC on 24.10.2026: the hub connected
 /// while the band Live was still loading its set, and every read for a
-/// while timed out). Each try costs at most the 3 s answer timeout
-/// (`live::client::REQUEST_TIMEOUT`) plus [`RETRY_MS`], so 24 retries cover
-/// about two minutes: over twice the 54 s the PC's band Live took from its
-/// start to a responding window.
+/// while timed out). A retry comes [`RETRY_MS`] after each failure, so the
+/// window is a range (PR #145 review M3): 24 x 2 s = 48 s when every try
+/// fails at once (Live offline), up to 24 x 5 s = 2 minutes when each waits
+/// out the 3 s answer timeout (`live::client::REQUEST_TIMEOUT`; a song map
+/// read that fails on a later call takes longer). The PC's band Live took
+/// 54 s from its start to a responding window. A retry that falls due while
+/// Live is busy waits uncounted ([`due`]), so a stalled load does not use
+/// them up.
 pub(super) const CONNECT_RETRIES: u32 = 24;
 
 /// Whether a read's failure is worth a retry (PR #145 review M2, the main

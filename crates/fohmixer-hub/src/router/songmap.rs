@@ -25,11 +25,12 @@
 //! never paired with another one's time) in calls of at most `TIME_CHUNK`
 //! commands, one after another. A failed
 //! call ends the read with its error and keeps the old map, stale, and the
-//! read is tried again every [`RETRY_MS`] while the set stays connected, up
-//! to [`CONNECT_RETRIES`] times (#140: a set still loading answers no read for
-//! a while; a later trigger reads afresh and starts the count over), when
-//! Live did not answer or was offline ([`transient`]; a definite refusal
-//! waits for the next trigger); a
+//! read is tried again [`RETRY_MS`] after each failure while the set stays
+//! connected, at most [`CONNECT_RETRIES`] times in a row (#140: a set still
+//! loading answers no read for a while; a later trigger reads afresh and
+//! starts the count over), when Live did not answer or was offline
+//! ([`transient`]; a definite refusal waits for the next trigger, and a
+//! retry due while Live is busy waits, uncounted); a
 //! disconnect voids the read
 //! in flight (its answer's number is no longer the set's; its task is
 //! aborted, so it asks Live for nothing more) and keeps the last map, stale
