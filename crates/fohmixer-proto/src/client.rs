@@ -666,9 +666,9 @@ pub struct AutotuneTargetStatus {
 }
 
 /// A Live set's key in force in `GET /api/status` (#140 PR 2): the song
-/// and its key (`F#m`) the playhead is in, none outside every song or in a
-/// keyless one, and the position it was judged at: the playhead (beats),
-/// the transport and the tempo as last heard.
+/// the playhead is in (none outside every song) and its key (`F#m`; none
+/// in a keyless song), and the position it was judged at: the playhead
+/// (beats), the transport and the tempo as last heard.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct KeyInForce {
     #[serde(default)]
