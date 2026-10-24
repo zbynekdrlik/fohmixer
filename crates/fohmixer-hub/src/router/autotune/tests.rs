@@ -1179,7 +1179,7 @@ async fn a_track_list_change_registers_no_dry_write_by_the_old_index() {
             .autotune
             .safe
             .get("band")
-            .and_then(|safe| safe.list.clone())
+            .map(|safe| safe.list.clone())
     };
     let both = vec![("p0".to_string(), 0), ("p1".to_string(), 127)];
     // The stream rack (off 0) on track 0 and the repro rack (off 127) on 1.

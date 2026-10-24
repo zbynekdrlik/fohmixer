@@ -374,6 +374,13 @@ pub enum RouterMsg {
         targets: usize,
         outcome: Result<Vec<Value>, String>,
     },
+    /// The retry of `instance`'s failed registration `seq` is due (#140 PR
+    /// 3a, PR #146 review I2); void once the set registered since or went
+    /// offline.
+    AutotuneSafeRetry {
+        instance: String,
+        seq: u64,
+    },
     /// The answer to key write `write` of `instance`'s targets `keys` (#140
     /// PR 2b; their slots in that order, then Live's bar's when it held it)
     /// and its round trip; a newer write of a target makes it void there.
@@ -955,6 +962,9 @@ impl Router {
                 targets,
                 outcome,
             } => self.autotune_safe_answered(&instance, seq, targets, &outcome),
+            RouterMsg::AutotuneSafeRetry { instance, seq } => {
+                self.autotune_safe_retry(&instance, seq);
+            }
             RouterMsg::AutotuneKeysWritten {
                 instance,
                 write,

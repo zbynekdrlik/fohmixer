@@ -243,6 +243,7 @@ impl AutotuneIo {
                     }
                 })
                 .collect(),
+            safe: self.safe_status(),
         }
     }
 

@@ -16,16 +16,24 @@
 //! - **The connection:** the script keeps a list per connection, so a
 //!   disconnect forgets the registration (`autotune_offline`), and the
 //!   connect's walks register afresh.
-//! - **An answer:** one `safe` record (warn when it failed). A failed one
-//!   leaves the hub not knowing what the script holds, so the next change
-//!   sends the list again, whatever it is.
+//! - **An answer:** one `safe` record (warn when it failed). Only the
+//!   script's OK makes a registration `kept` (PR #146 review I2: #140 PR 3b
+//!   switches a selector on only under a kept one); until then it is
+//!   `sent`. A failed one leaves the hub not knowing what the script holds
+//!   (`failed`), so the next change sends the list again, whatever it is;
+//!   one Live did not answer (`retries::transient`: a timeout, offline) is
+//!   also sent again `RETRY_MS` after it, up to `CONNECT_RETRIES` in a row
+//!   (a due retry waits, uncounted, while Live is busy), a refusal never.
+//!   `/api/status` `autotune.safe` shows each set's state.
 //!
 //! Nothing here writes a selector.
 
+use fohmixer_proto::client::{SafeState, SafeStatus};
 use serde_json::{Value, json};
 
+use super::super::retries::{Due, RETRY_MS, transient};
 use super::super::{Router, RouterMsg};
-use super::{AutotuneIo, PARAMETER_CLASS, may_write};
+use super::{AfterWalk, AutotuneIo, PARAMETER_CLASS, after_walk, gave_up_problem, may_write};
 use crate::eq::walk::refused;
 use crate::rules::autotune::Step;
 
@@ -36,11 +44,17 @@ pub const SAFE_WRITES: &str = "safe_writes";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::router) struct Safe {
     /// The DRY writes sent last: each found macro's `$ref` and its target's
-    /// off value, in the layout's order; none when that registration failed
-    /// (what the script holds is not known).
-    pub list: Option<Vec<(String, u8)>>,
-    /// That registration's number: an answer of another is void.
+    /// off value, in the layout's order.
+    pub list: Vec<(String, u8)>,
+    /// That registration's number: an answer or a retry of another is void.
     pub seq: u64,
+    /// Where it stands: on its way, kept by the script, or failed (what the
+    /// script holds is not known).
+    pub state: SafeState,
+    /// Why it failed (with the give-up once its retries are spent).
+    pub problem: Option<String>,
+    /// Its failures in a row Live did not answer (the retries' count).
+    pub failures: u32,
 }
 
 /// The script's `safe_writes` of `writes` (each macro's `$ref` and DRY
@@ -60,11 +74,12 @@ pub(super) fn safe_commands(writes: &[(&str, u8)]) -> Vec<Value> {
 
 /// Whether `list` must be registered: it is not what the script holds
 /// (`held`; none since the connect, when the script holds nothing, so an
-/// empty list needs no registration).
+/// empty list needs no registration; after a failure that is not known,
+/// so any list goes).
 pub(super) fn safe_news(held: Option<&Safe>, list: &[(String, u8)]) -> bool {
     match held {
         None => !list.is_empty(),
-        Some(safe) => safe.list.as_deref() != Some(list),
+        Some(safe) => safe.state == SafeState::Failed || safe.list != list,
     }
 }
 
@@ -79,7 +94,29 @@ pub(super) fn safe_problem(outcome: &Result<Vec<Value>, String>) -> Option<Strin
     }
 }
 
+/// What `/api/status` says of a failed registration: Live's words, and
+/// once its retries are spent (`after`), that it gave up after `tries`.
+pub(super) fn failed_problem(why: &str, after: AfterWalk, tries: u32) -> String {
+    match after {
+        AfterWalk::GiveUp => gave_up_problem(why, tries),
+        AfterWalk::Retry | AfterWalk::Wait => why.to_string(),
+    }
+}
+
 impl AutotuneIo {
+    /// Each Live set's registration as `/api/status` shows it.
+    pub(super) fn safe_status(&self) -> Vec<SafeStatus> {
+        self.safe
+            .iter()
+            .map(|(instance, safe)| SafeStatus {
+                instance: instance.clone(),
+                state: safe.state,
+                targets: safe.list.len(),
+                problem: safe.problem.clone(),
+            })
+            .collect()
+    }
+
     /// `set`'s DRY writes: each found target's macro `$ref` with its off
     /// value, in the layout's order (Live's), whatever AUT is.
     pub(super) fn safe_list(&self, set: &str) -> Vec<(String, u8)> {
@@ -96,11 +133,17 @@ impl AutotuneIo {
 
 impl Router {
     /// Registers `instance`'s DRY writes with its script when they are not
-    /// what it holds ([`safe_news`]). Not while the set's writes are held
-    /// or its markers are not settled (`may_write`); the hold's release, or
-    /// the read that settles the markers, registers then. The answer comes
-    /// back as [`RouterMsg::AutotuneSafe`].
+    /// what it holds ([`safe_news`]), a change point: the failures' count
+    /// starts over. Not while the set's writes are held or its markers are
+    /// not settled (`may_write`); the hold's release, or the read that
+    /// settles the markers, registers then. The answer comes back as
+    /// [`RouterMsg::AutotuneSafe`].
     pub(in crate::router) fn autotune_safe(&mut self, instance: &str) {
+        self.autotune_safe_now(instance, 0);
+    }
+
+    /// [`Router::autotune_safe`] with `failures` already counted (a retry).
+    fn autotune_safe_now(&mut self, instance: &str, failures: u32) {
         let holding = self.autotune.held.contains(instance);
         if !may_write(holding, self.reverb_settled(instance)) {
             return;
@@ -120,8 +163,11 @@ impl Router {
         self.autotune.safe.insert(
             instance.to_string(),
             Safe {
-                list: Some(list),
+                list,
                 seq,
+                state: SafeState::Sent,
+                problem: None,
+                failures,
             },
         );
         let (instance, tx) = (instance.to_string(), self.io.tx.clone());
@@ -137,9 +183,11 @@ impl Router {
     }
 
     /// A registration's answer: void unless it is `instance`'s newest
-    /// since its connect; one `safe` record (warn when it failed). A failed
-    /// one leaves what the script holds unknown, so the next change sends
-    /// the list again, whatever it is.
+    /// since its connect; one `safe` record (warn when it failed). The
+    /// script's OK makes it `kept`; a failure `failed` (the next change
+    /// sends the list again, whatever it is), and one Live did not answer
+    /// is sent again after [`RETRY_MS`] while retries are left
+    /// ([`after_walk`], the walks' rule), a refusal never.
     pub(in crate::router) fn autotune_safe_answered(
         &mut self,
         instance: &str,
@@ -156,9 +204,24 @@ impl Router {
             return;
         };
         let problem = safe_problem(outcome);
-        if problem.is_some() {
-            safe.list = None;
-        }
+        let retry = match &problem {
+            None => {
+                safe.state = SafeState::Kept;
+                safe.problem = None;
+                safe.failures = 0;
+                false
+            }
+            Some(why) => {
+                let retryable = transient(why);
+                if retryable {
+                    safe.failures += 1;
+                }
+                let after = after_walk(retryable, safe.failures);
+                safe.state = SafeState::Failed;
+                safe.problem = Some(failed_problem(why, after, safe.failures));
+                after == AfterWalk::Retry
+            }
+        };
         self.autotune_step(
             Step::Safe {
                 instance: instance.to_string(),
@@ -167,6 +230,40 @@ impl Router {
             },
             None,
         );
+        if retry {
+            self.autotune_safe_retry_later(instance, seq);
+        }
+    }
+
+    /// Asks for a retry of `instance`'s failed registration `seq` after
+    /// [`RETRY_MS`] ([`RouterMsg::AutotuneSafeRetry`]).
+    fn autotune_safe_retry_later(&self, instance: &str, seq: u64) {
+        let (instance, tx) = (instance.to_string(), self.io.tx.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(RETRY_MS)).await;
+            let _ = tx.send(RouterMsg::AutotuneSafeRetry { instance, seq });
+        });
+    }
+
+    /// A failed registration's retry is due: sent again with its failures
+    /// counted, unless it is no longer the set's newest or failed (a newer
+    /// registration, a disconnect: void); while Live is busy it waits
+    /// another [`RETRY_MS`], uncounted (as the walks' retries).
+    pub(in crate::router) fn autotune_safe_retry(&mut self, instance: &str, seq: u64) {
+        let Some(failures) = self
+            .autotune
+            .safe
+            .get(instance)
+            .filter(|safe| safe.seq == seq && safe.state == SafeState::Failed)
+            .map(|safe| safe.failures)
+        else {
+            return;
+        };
+        if self.retry_due(instance) == Due::Wait {
+            self.autotune_safe_retry_later(instance, seq);
+            return;
+        }
+        self.autotune_safe_now(instance, failures);
     }
 }
 
