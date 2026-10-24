@@ -891,7 +891,7 @@ fn api_bodies_round_trip() {
     assert_eq!(before_autotune.autotune, AutotuneStatus::default());
     assert_eq!(
         serde_json::to_value(AutotuneStatus::default()).unwrap(),
-        json!({"aut": false, "writes": 0, "taps": 0, "targets": [], "keys": []})
+        json!({"aut": false, "writes": 0, "taps": 0, "targets": [], "keys": [], "safe": []})
     );
     assert_eq!(
         serde_json::from_value::<HubStatus>(json.clone())
