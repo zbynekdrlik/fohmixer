@@ -2,15 +2,15 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use fohmixer_proto::client::{
-    AutotuneState, AutotuneTargetStatus, HUB_AUTOTUNE, HUB_AUTOTUNE_AUT, HUB_STAGE_AUT, ServerMsg,
-    TargetState,
+    AutotuneState, AutotuneTargetStatus, HUB_AUTOTUNE_AUT, HUB_STAGE_AUT, KeyTargetStatus,
+    ServerMsg, TargetState,
 };
 use fohmixer_proto::layout::{Anchor, AutotuneTarget, Binding, Layout};
 use serde_json::{Value, json};
 
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use super::super::tests::{attach, next_of, offline_router, offline_router_with, records, status};
+use super::super::tests::{attach, next_of, offline_router, records, status};
 use super::super::{Router, RouterMsg, layout_msg, markers};
 use super::{
     AUTOTUNE_CLIENT, PARAMETER_CLASS, TOO_DEEP, Target, autotune_fields, found_write, macro_value,
@@ -19,10 +19,9 @@ use super::{
 use crate::live::LiveValue;
 use crate::live::client::LiveEvent;
 use crate::outbox::Outbox;
-use crate::rules::HubState;
-use crate::rules::autotune::Step;
 use crate::rules::autotune::find::Found;
-use crate::rules::reverb::Saved;
+use crate::rules::autotune::keys::KeyMissing;
+use crate::rules::autotune::{Step, Why};
 
 /// The repro target (on 0) and the stream target (on 127) of the band.
 const REPRO: &str = "band|live_set tracks 6";
@@ -68,6 +67,7 @@ fn found(index: u32) -> Found {
     Found {
         path: format!("live_set tracks {index} devices 0 parameters 1"),
         id: format!("p{index}"),
+        key: Err(KeyMissing::NoChain),
     }
 }
 
@@ -266,6 +266,10 @@ fn a_targets_state_is_missing_waiting_or_its_macro_against_its_on_value() {
         sub: None,
         value,
         wrote: None,
+        key: None,
+        key_sub: None,
+        scale_sub: None,
+        values: (None, None),
     };
     assert_eq!(
         state_of(&at(None, Some("no rack named Latencies"), None)),
@@ -316,8 +320,8 @@ async fn a_layout_walks_each_new_target_and_keeps_the_found_ones() {
     find(&mut router, STREAM, 7);
     assert_eq!(
         router.subs.subscriptions("band"),
-        3,
-        "the rules' transport and both macros"
+        5,
+        "the rules' transport, the band's playhead and tempo (#140) and both macros"
     );
     router.handle(layout(2, vec![repro(), target(8, "#9", 127, 0)]));
     assert_eq!(walk_of(&router, REPRO), w6, "kept: not walked again");
@@ -326,7 +330,7 @@ async fn a_layout_walks_each_new_target_and_keeps_the_found_ones() {
     assert!(walk_of(&router, PLAIN) > w7);
     assert_eq!(
         router.subs.subscriptions("band"),
-        2,
+        4,
         "track 7's macro let go"
     );
     assert_eq!(router.autotune.order, vec![REPRO, PLAIN]);
@@ -395,7 +399,9 @@ async fn a_found_target_is_followed_and_told_to_every_page() {
         steps(&rx),
         vec![
             json!({"step": "found", "instance": "band", "target": "live_set tracks 7",
-                    "path": "live_set tracks 7 devices 0 parameters 1"})
+                    "path": "live_set tracks 7 devices 0 parameters 1"}),
+            json!({"step": "key_missing", "instance": "band", "target": "live_set tracks 7",
+                    "problem": "the Latencies rack has no chain"}),
         ]
     );
     assert_eq!(told(&page), vec![], "still waiting for its value");
@@ -421,6 +427,13 @@ async fn a_found_target_is_followed_and_told_to_every_page() {
             state: TargetState::On,
             path: Some("live_set tracks 7 devices 0 parameters 1".into()),
             problem: None,
+            key: Some(KeyTargetStatus {
+                device: None,
+                path: None,
+                values: None,
+                shows: None,
+                problem: Some("the Latencies rack has no chain".into()),
+            }),
         }]
     );
     // A later value off its on value: off.
@@ -444,10 +457,14 @@ async fn a_stale_walk_answer_is_dropped() {
     router.autotune_found(STREAM, older, Ok(found(7)));
     assert_eq!(router.autotune.targets[STREAM].found, None);
     assert_eq!(steps(&rx), Vec::<Value>::new());
-    assert_eq!(router.subs.subscriptions("band"), 1, "the transport only");
+    assert_eq!(
+        router.subs.subscriptions("band"),
+        3,
+        "the transport and the playhead only"
+    );
     find(&mut router, STREAM, 7);
     assert_eq!(router.autotune.targets[STREAM].found, Some(found(7)));
-    assert_eq!(router.subs.subscriptions("band"), 2);
+    assert_eq!(router.subs.subscriptions("band"), 4);
     // An answer for a key no layout names does nothing.
     router.autotune_found("band|live_set tracks 30", 1, Ok(found(30)));
     assert!(
@@ -474,7 +491,11 @@ async fn a_walk_answer_after_a_disconnect_is_void() {
     // unsubscribed, the walk on its way voided.
     assert_eq!(router.autotune.targets[REPRO].found, None);
     assert_eq!(router.autotune.targets[REPRO].sub, None);
-    assert_eq!(router.subs.subscriptions("band"), 1, "the transport only");
+    assert_eq!(
+        router.subs.subscriptions("band"),
+        3,
+        "the transport and the playhead only"
+    );
     let _ = steps(&rx);
     router.autotune_found(STREAM, walk, Ok(found(7)));
     assert_eq!(router.autotune.targets[STREAM].found, None);
@@ -490,54 +511,16 @@ async fn a_walk_answer_after_a_disconnect_is_void() {
     );
 }
 
-#[tokio::test]
-async fn aut_on_writes_the_transport_at_once_records_and_saves_once() {
-    let dir = tempfile::tempdir().unwrap();
-    let (mut router, _rx, rx) = offline_router(dir.path());
-    let page = attach(&mut router, 1);
-    router.handle(layout(1, vec![stream()]));
-    find(&mut router, STREAM, 7);
-    transport(&mut router, false);
-    let _ = steps(&rx);
-    let _ = told(&page);
-    set_hub(&mut router, HUB_AUTOTUNE_AUT, json!(true));
-    assert_eq!(
-        steps(&rx),
-        vec![
-            json!({"step": "flag", "on": true, "client": 1, "peer": "10.0.0.1"}),
-            json!({"step": "write", "instance": "band", "on": false, "why": "flag",
-                   "targets": ["#8"]}),
-        ]
-    );
-    let saved: Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.path().join("hub-state.json")).unwrap())
-            .unwrap();
-    assert_eq!(saved, json!({"stage_aut": false, "autotune_aut": true}));
-    assert!(told(&page).last().unwrap().aut, "every page is told");
-    // On again: recorded, nothing written or saved.
-    std::fs::remove_file(dir.path().join("hub-state.json")).unwrap();
-    set_hub(&mut router, HUB_AUTOTUNE_AUT, json!(true));
-    assert_eq!(
-        steps(&rx),
-        vec![json!({"step": "flag", "on": true, "client": 1, "peer": "10.0.0.1"})]
-    );
-    assert!(!dir.path().join("hub-state.json").exists());
-    let now = status(&mut router);
-    assert!(now.autotune.aut);
-    assert_eq!(now.autotune.writes, 1);
-    // Off: saved again, nothing written.
-    set_hub(&mut router, HUB_AUTOTUNE_AUT, json!(false));
-    assert_eq!(
-        steps(&rx),
-        vec![json!({"step": "flag", "on": false, "client": 1, "peer": "10.0.0.1"})]
-    );
-    let saved: Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.path().join("hub-state.json")).unwrap())
-            .unwrap();
-    assert_eq!(saved, json!({"stage_aut": false}));
+/// AUTOTUNE AUT turned on from inside, as #140 PR 3's rule will: since PR
+/// 2a no page and no saved flag can (`keys_tests.rs`), so these tests of
+/// the selector's writes drive the rule directly; its writes are made.
+fn rule_on(router: &mut Router) {
+    for (set, on) in router.autotune.rule.set_flag(true) {
+        router.autotune_write(&set, on, Why::Flag);
+    }
 }
 
-/// A router whose `hub-state.json` had AUTOTUNE AUT on.
+/// A router with AUTOTUNE AUT on (from inside: [`rule_on`]).
 fn aut_on(
     dir: &std::path::Path,
 ) -> (
@@ -545,26 +528,24 @@ fn aut_on(
     tokio::sync::mpsc::UnboundedReceiver<RouterMsg>,
     std::sync::mpsc::Receiver<Value>,
 ) {
-    offline_router_with(
-        dir,
-        HubState {
-            stage_aut: false,
-            reverb: Saved::default(),
-            fader_links: Vec::new(),
-            autotune_aut: true,
-        },
-    )
+    let (mut router, rx, records) = offline_router(dir);
+    rule_on(&mut router);
+    (router, rx, records)
 }
 
 #[tokio::test]
 async fn a_start_writes_on_and_a_stop_writes_off_once_per_change() {
     let dir = tempfile::tempdir().unwrap();
     let (mut router, _rx, rx) = aut_on(dir.path());
-    assert!(router.autotune.state().aut, "AUT as saved");
+    assert!(router.autotune.state().aut, "AUT on (from inside)");
     router.handle(layout(1, vec![repro(), stream()]));
     find(&mut router, REPRO, 6);
     find(&mut router, STREAM, 7);
-    assert_eq!(steps(&rx).len(), 2, "two found, nothing written yet");
+    assert_eq!(
+        steps(&rx).len(),
+        4,
+        "two found (each without a key device), nothing written yet"
+    );
     transport(&mut router, true);
     let write = |on: bool| {
         json!({"step": "write", "instance": "band", "on": on, "why": "transport",
@@ -603,10 +584,13 @@ async fn a_target_found_after_the_start_gets_the_rules_last_write_once() {
     assert_eq!(steps(&rx), Vec::<Value>::new(), "nothing found: no write");
     find(&mut router, STREAM, 7);
     let got = steps(&rx);
-    assert_eq!(got.len(), 2);
-    assert_eq!(got[0]["step"], "found");
+    assert_eq!(got.len(), 3);
     assert_eq!(
-        got[1],
+        (&got[0]["step"], &got[1]["step"]),
+        (&json!("found"), &json!("key_missing"))
+    );
+    assert_eq!(
+        got[2],
         json!({"step": "write", "instance": "band", "on": true, "why": "found",
                "targets": ["#8"]})
     );
@@ -614,7 +598,7 @@ async fn a_target_found_after_the_start_gets_the_rules_last_write_once() {
     find(&mut router, REPRO, 6);
     let got = steps(&rx);
     assert_eq!(
-        got[1],
+        got[2],
         json!({"step": "write", "instance": "band", "on": true, "why": "found",
                "targets": ["Vox 2"]})
     );
@@ -629,29 +613,6 @@ async fn a_target_found_after_the_start_gets_the_rules_last_write_once() {
 }
 
 #[tokio::test]
-async fn a_tap_writes_every_found_target_and_names_the_page() {
-    let dir = tempfile::tempdir().unwrap();
-    let (mut router, _rx, rx) = offline_router(dir.path());
-    let _page = attach(&mut router, 1);
-    router.handle(layout(1, vec![repro(), stream()]));
-    find(&mut router, REPRO, 6);
-    find(&mut router, STREAM, 7);
-    let _ = steps(&rx);
-    set_hub(&mut router, HUB_AUTOTUNE, json!(false));
-    assert_eq!(
-        steps(&rx),
-        vec![
-            json!({"step": "tap", "on": false, "client": 1, "peer": "10.0.0.1"}),
-            json!({"step": "write", "instance": "band", "on": false, "why": "tap",
-                   "targets": ["Vox 2", "#8"]}),
-        ]
-    );
-    let now = status(&mut router);
-    assert_eq!((now.autotune.taps, now.autotune.writes), (1, 0));
-    assert!(!now.autotune.aut);
-}
-
-#[tokio::test]
 async fn a_failed_write_is_recorded_per_target_and_walks_it_again() {
     let dir = tempfile::tempdir().unwrap();
     let (mut router, mut rx, records_rx) = offline_router(dir.path());
@@ -659,7 +620,8 @@ async fn a_failed_write_is_recorded_per_target_and_walks_it_again() {
     router.handle(layout(1, vec![stream()]));
     find(&mut router, STREAM, 7);
     let before = walk_of(&router, STREAM);
-    set_hub(&mut router, HUB_AUTOTUNE, json!(true));
+    rule_on(&mut router);
+    transport(&mut router, true);
     let _ = steps(&records_rx);
     let written = next_of(&mut rx, "the write's answer", |m| {
         matches!(m, RouterMsg::AutotuneWritten { .. })
@@ -692,11 +654,8 @@ async fn other_hub_keys_fall_through_to_stage_aut_and_its_error() {
     let (mut router, _rx, _records) = offline_router(dir.path());
     let page = attach(&mut router, 1);
     page.take();
-    for (key, value) in [
-        (HUB_AUTOTUNE_AUT, json!(1)),
-        (HUB_AUTOTUNE, json!("on")),
-        ("autotune_lol", json!(true)),
-    ] {
+    // (A tap of any value is refused, no error: `keys_tests.rs`.)
+    for (key, value) in [(HUB_AUTOTUNE_AUT, json!(1)), ("autotune_lol", json!(true))] {
         set_hub(&mut router, key, value);
         let replies = page.take().unwrap();
         assert!(
@@ -803,7 +762,7 @@ async fn a_lost_macro_drops_its_value_and_walks_it_again() {
     router.autotune_delivery(&sub, None, None);
     assert_eq!(walk_of(&router, STREAM), walk + 1);
     // Another key: nothing.
-    router.autotune_delivery("band|live_set|tempo|false", Some(json!(120.0)), None);
+    router.autotune_delivery("band|live_set|cue_points|false", Some(json!(120.0)), None);
     assert_eq!(router.autotune.targets[STREAM].value, None);
 }
 
@@ -981,6 +940,7 @@ fn found_at(router: &mut Router, key: &str, index: u32, id: &str) {
         Ok(Found {
             path: format!("live_set tracks {index} devices 0 parameters 1"),
             id: id.into(),
+            key: Err(KeyMissing::NoChain),
         }),
     );
 }
@@ -1017,7 +977,7 @@ type Tagged = (
 /// AUTOTUNE rail button): the stream rack's Tuner `+AUTOTUNE` on band
 /// track 0 and the repro rack's `+AUTOTUNE:0` on track 1, composed from
 /// the keeper's own read; both racks found (`p0`, `p1`), Live stopped,
-/// AUTOTUNE AUT on (both written off).
+/// AUTOTUNE AUT on (from inside, [`rule_on`]: both written off).
 async fn tagged() -> Tagged {
     let dir = tempfile::tempdir().unwrap();
     let frame = json!({"schema": 2, "default_page": "p", "pages": [{"id": "p", "title": "P",
@@ -1050,7 +1010,7 @@ async fn tagged() -> Tagged {
     );
     found_at(&mut router, AT0, 0, "p0");
     found_at(&mut router, AT1, 1, "p1");
-    set_hub(&mut router, HUB_AUTOTUNE_AUT, json!(true));
+    rule_on(&mut router);
     assert_eq!(
         writes(&steps(&rx)),
         vec![write_of(false, "flag", &["#1", "#2"])]
@@ -1241,6 +1201,7 @@ async fn a_rack_replaced_at_the_same_path_is_followed_afresh_and_written_once() 
         Ok(Found {
             path: found(7).path,
             id: "p7b".into(),
+            key: Err(KeyMissing::NoChain),
         }),
     );
     // The new rack gets the decision once, through its own ref.

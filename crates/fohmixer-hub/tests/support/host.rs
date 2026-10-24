@@ -174,6 +174,37 @@ impl Host {
             .unwrap_or_else(|| panic!("not a CLIP line: {answer}"))
     }
 
+    /// Jumps SimLive's playhead to `beats` as a user would (#140); the
+    /// time then (-1: a bad line).
+    pub fn song_time(&mut self, beats: f64) -> f64 {
+        let answer = self.answer(&format!("song time {beats}"));
+        answer
+            .strip_prefix("SONG ")
+            .and_then(|t| t.parse().ok())
+            .unwrap_or_else(|| panic!("not a SONG line: {answer}"))
+    }
+
+    /// Writes the parameter at `path` (`verb` `value`) as another writer
+    /// would, or holds (0) or frees (1) it as a Max map does (`enabled`,
+    /// #140); the answer's number (-1: no parameter there, or refused).
+    pub fn param(&mut self, path: &str, verb: &str, value: f64) -> f64 {
+        let answer = self.answer(&format!("param {path} {verb} {value}"));
+        answer
+            .strip_prefix("PARAM ")
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("not a PARAM line: {answer}"))
+    }
+
+    /// The sets of `prop` through Live's setter on the object at `path` since
+    /// the host started, refused ones too (#140; -1: none there).
+    pub fn sets(&mut self, prop: &str, path: &str) -> i64 {
+        let answer = self.answer(&format!("sets {prop} {path}"));
+        answer
+            .strip_prefix("SETS ")
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("not a SETS line: {answer}"))
+    }
+
     /// The Live listeners on `prop` of the object at `path` (-1: none there).
     pub fn listeners(&mut self, prop: &str, path: &str) -> i64 {
         let answer = self.answer(&format!("listeners {prop} {path}"));

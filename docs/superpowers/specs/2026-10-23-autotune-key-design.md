@@ -10,6 +10,7 @@ Status: approved by the owner on 2026-10-23, with English texts on the surface a
 - Tóninu piesne berie z lokátora piesne `{F 95 4/4 …}`.
 - Zmenu tóniny v piesni berie z klipu na stope Sections, napríklad `Chorus {G}`.
 - Tóninu zapíše do každého Auto-Tune (stream cez AudioGridder, PA priamo) aj do lišty Live a spätne si ju prečíta.
+- V streame vie spätne prečítať len hodnotu v Live, nie samotný Auto-Tune v AudioGridderi (test 24.10.). Preto tam tóninu zapíše znova na začiatku každej piesne. Tak to chceš: tóniny prepína v PA aj v streame.
 
 **Kedy autotune ladí**
 
@@ -40,7 +41,7 @@ Status: approved by the owner on 2026-10-23, with English texts on the surface a
 
 - kontrolný rack hlavnej speváčky, Max mapovače, automatizácia tónin a CC36 sa nepoužijú.
 - Mapovania CC36 sú už zmazané (23.10.).
-- Mapovače prestanú zapisovať pri nasadení, aby nezapisovali dvaja naraz. Odstránia sa až po prvom úspešnom evente, na tvoje áno.
+- Mapovače prestanú zapisovať pri nasadení, aby nezapisovali dvaja naraz. Musia sa vypnúť, nestačí zmazať automatizáciu: kým bežia, Live zápis hubu odmietne (test 24.10.). Odstránia sa až po prvom úspešnom evente, na tvoje áno.
 
 **Nasadenie**
 
@@ -194,30 +195,48 @@ A pure module (in the proto crate, beside `markers.rs`, or in the hub; *(call)*:
 
 - **Targets.** Each tagged track's `Latencies` rack is found as today. Inside it is the autotune device, the one in the rack's chain 0 *(call: true for all 11 racks today; the builder confirms)*. Exactly one is required, otherwise a problem, and that track gets no autotune.
   - **PA:** the Auto-Tune Artist plug-in, with its parameters `Key` and `Scale`.
-  - **Stream:** the AudioGridder plug-in, with its automation slot 0 (Key) and slot 1 (Scale), per the decoded plug-in state. Live labels them `0:(unused):(unassigned)` / `1:…`. The PC spike (§11) confirms the mapping, e.g. by `str_for_value`, before any write.
+  - **Stream:** the AudioGridder plug-in, with its automation slot 0 (Key) and slot 1 (Scale), per the decoded plug-in state. Live labels them `0:(unused):(unassigned)` / `1:…` (LOM parameters 1 and 2; 0 is `Device On`).
+    - The PC spike confirmed the mapping on 2026-10-24 (§11 step 2; #140, parts 1 and 2).
+    - A slot runs 0.0–1.0 and is not quantized. Its `str_for_value` gives plain numbers (`0.00` … `1.00`), never a key name, so the hub reads numbers and maps them itself.
+    - Track 6's slot 0 at 100/127 showed KEY A in the remote window, and round(0.787 × 11) = 9 = A.
+    - Each AudioGridder hosts smartDeess and Auto-Tune Artist. Its editor shows the remote window of the plug-in selected in AudioGridder's own list.
   - The master singer's rack holds a second, native Auto-Tune in a chain no value selects. It is not a target.
 - **Values.**
   - Key: root `k` → `k/11` (12 steps, C … B).
   - Scale: Major `0`, Minor `1/28` (29 steps), as read on the PC.
   - Live's bar: `root_note = k`, `scale_name = "Major" | "Minor"`.
   - The builder reads each parameter's `min`/`max` and quantization on the PC and keeps the conversion in one pure, tested function.
+  - **A write always changes Live's value *(call)*.** A slot write that changes the value reaches the remote plug-in (spike part 2). Whether rewriting the value the slot already holds reaches it is not known: Live may skip an unchanged value.
+    - So the hub writes the step's centre `i/n`.
+    - When the parameter already holds that value, the hub writes `(i + 0.25)/n` instead, or `(i − 0.25)/n` for the last step.
+    - Both read back as the same step (round half up).
+    - This holds for every target, so the code has one path.
 - **When.**
   - The keys are written whenever the key in force changes: a new span, a key clip passed, a jump, a stop and start elsewhere, a set load, a reconnect, a target found anew (`$ref` changed).
-  - Every stream key is also written again at every song start.
+  - Every stream key is also written again at every song start *(call: every target's, the PA's too: one path, and a PA rewrite costs nothing)*.
+  - **No AudioGridder reconnect can be seen in the LOM.** When the spike ended a rack's sandbox, the device stayed active, its `latency_in_samples` stayed 12226 and Live's slot was unchanged. The rewrite at every song start therefore bounds a reconnect's effect.
 - **Read-back.** Every target's Key and Scale values are observed. After every write the hub also reads them explicitly (`get_prop`): a rewrite of an unchanged value fires no listener.
   - A PA value equals what was written: a real read-back of the plug-in.
-  - An AudioGridder value is Live's side of the slot. The spike (§11, step 1) decides whether a change inside the remote Auto-Tune comes back there, and what a reconnect does.
-  - **If the spike shows that Live's slot is not a real read-back, the owner decides before PR 2 is written:**
-    - either the 5 stream tracks tune on Live's own copy, with a rewrite at every song start and after every AudioGridder reconnect the hub can detect;
-    - or they stay on DRY until a real read-back exists.
-    - The PA is not affected either way.
+  - **An AudioGridder value is only Live's side of the slot, never the remote plug-in** (spike, 2026-10-24):
+    - before the spike's write, track 5's slot read 0.0 (C) while its remote Auto-Tune was on Bb. After a set load the plug-in keeps its saved state, not Live's slot value.
+    - A write that changed the slot reached the plug-in at once, and the plug-in kept that key across a sandbox reconnect.
+  - **DECIDED (owner, 2026-10-24): the hub switches the keys in both the PA and the stream.** The owner's reasoning: the keys already switch in the stream Auto-Tune today, through AudioGridder.
+    - The 5 stream tracks tune on what the hub writes to Live's slots: at every key change, at every song start, at set load (a reconnect of the script) and at a target found anew.
+    - A stream track's key counts as confirmed when its write went through and Live's slot reads back the wanted step. The hub never sees the remote plug-in itself, and today's maps never checked it either.
+    - So a stream mismatch means only a failed write, or a slot that differs from what the hub wrote. A key changed inside the remote window is not seen until the next song start rewrites it.
   - A value that differs from the wanted key, or a write that failed, is a **mismatch**:
     - that track's chain goes to DRY;
     - the mismatch is recorded and shown on the button;
     - the hub writes again, bounded *(call: once at once, then at the next key change; never a write loop against another writer)*.
-- **One writer.** The old Max mapping devices write the same parameters. Their writes stop at the deployment, before the hub writes:
-  - by removing the arrangement automation of the master's "Tune KEY"/"Scale" macros, or by turning the 4 mapping devices off;
-  - the builder chooses with evidence that neither changes any audio path or latency (file diff, reported latency, and the rehearsal's listening).
+- **One writer.** The old Max mapping devices write the same parameters. Their writes stop at the deployment, before the hub writes.
+  - **The maps hold their targets (spike part 1):**
+    - every parameter maps A–D drive reads `is_enabled false` (`state 2`): the 5 mapped stream racks' slots 0 and 1, and the PA Auto-Tune Artists' Key/Scale;
+    - Live refuses every LOM write to them with `Value cannot be set, the parameter is disabled`. The spike's write on a mapped slot was refused, and the value stayed.
+    - So removing the master's "Tune KEY"/"Scale" automation alone is not enough. **Maps A–D must be switched off or removed** before the hub writes.
+  - **Before the first write, the builder checks on the PC** that a switched-off map releases its targets (they read `is_enabled true`). Whether it does is not known yet.
+  - The builder also shows with evidence that switching the maps off changes no audio path or latency: a file diff, the reported latency, and the rehearsal's listening.
+    - The maps sit in the chains `KEY map` / `Scale map` (zone 0–0) of the master singer's outer vocal rack.
+  - Until the maps are off, every hub write to their targets is refused. It is recorded as a mismatch (`refused`) and changes nothing.
   - A value that changes without the hub writing it is shown as "another writer", never fought.
 - **Live's bar** is written with each new key and read back. A mismatch there is shown but gates nothing.
 
@@ -316,6 +335,14 @@ If the hub stops while autotune is selected, a stop would no longer select DRY, 
    - Does the remote plug-in keep the key across an AudioGridder reconnect?
 
    The remote window is looked at only, never clicked (#71's lesson). The answers go to #140 and decide §5's AudioGridder read-back.
+
+   **Done on 2026-10-24** (band Live stopped, the racks on DRY, nothing saved; #140, parts 1 and 2).
+   - Clicks: the owner allowed one click on AudioGridder's own plug-in list on track 5, plus one to put the selection back. Nothing was clicked inside Auto-Tune.
+   - **`str_for_value`:** no. It gives plain numbers.
+   - **A change in the remote window coming back:** not tried, since that needs a click inside Auto-Tune. After a set load, the slot (C) and the plug-in (Bb) disagreed.
+   - **The key across a reconnect:** yes. After only that rack's sandbox was ended, the plug-in came back with the last key written through the slot.
+   - **Also found:** the maps' targets refuse LOM writes (§5 "One writer").
+   - The owner's decision on the read-back is in §5.
 3. **The set changes** (the owner's yes; saved with Ctrl+S, then read back from the saved file):
    - the 11 Tuner tags;
    - the 3 PA Auto-Tune Artists switched on;
@@ -350,7 +377,12 @@ If the hub stops while autotune is selected, a stop would no longer select DRY, 
 - **The PRs and the PC steps, in this order *(call)*.** Each PR is its own green PR, deployed and verified.
   1. **PR 1: the song map and its report.** It is read-only on the PC: the map is checked against the set and against verification 2 before anything writes.
   2. **The AudioGridder spike on the PC** (§11 step 2). It comes before PR 2 is written, and its answer settles §5's stream read-back. On a negative answer the owner decides first.
-  3. **PR 2: keys written and read back.** Nothing switches: AUT cannot be turned on, and the 1.8.0 tap's write is removed, so no selector moves. Deployed together with these PC steps (the owner's yes):
+  3. **PR 2: keys written and read back.** Nothing switches: AUT cannot be turned on, and the 1.8.0 tap's write is removed, so no selector moves.
+     - Its plan (`docs/superpowers/plans/2026-10-24-autotune-keys.md`) splits it in two *(call)*:
+       - **2a, read-only:** the key devices found, their values observed, the key in force followed along the playhead;
+       - **2b:** the writes.
+     - Each part is deployed and verified on its own.
+     - Deployed together with these PC steps (the owner's yes; the maps' switch-off goes with 2b):
      - the 11 Tuner tags;
      - the 3 PA Auto-Tune Artists on;
      - the old Max writers stopped (§5);

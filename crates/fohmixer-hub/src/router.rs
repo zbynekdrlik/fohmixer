@@ -378,7 +378,7 @@ pub enum RouterMsg {
 }
 
 /// The router's part of `/api/status`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RouterStatus {
     pub subscriptions: BTreeMap<String, usize>,
     /// The groups the unfold keeper holds, per instance (#58).
@@ -497,13 +497,16 @@ pub struct Router {
 
 impl Router {
     /// A router over these instances, with the persisted hub values
-    /// (`hub-state.json`: STAGE AUT, REVERB, the fader links' switches).
+    /// (`hub-state.json`: STAGE AUT, REVERB, the fader links' switches;
+    /// AUTOTUNE AUT stays off until #140 PR 3, so a saved `true` is saved
+    /// off at once).
     pub fn new(
         live: BTreeMap<String, LiveHandle>,
-        state: HubState,
+        mut state: HubState,
         data_dir: PathBuf,
         io: RouterIo,
     ) -> Self {
+        let autotune_saved = std::mem::take(&mut state.autotune_aut);
         // The rules follow every instance's transport from the start (the
         // table resolves it at the connect).
         let mut subs = Subs::new(live.keys().cloned());
@@ -521,7 +524,7 @@ impl Router {
                     })
             })
             .collect();
-        Self {
+        let router = Self {
             subs,
             names: NameCheck::default(),
             clients: HashMap::new(),
@@ -541,7 +544,7 @@ impl Router {
             stage_target: None,
             reverb: reverb::ReverbIo::new(&state.reverb),
             links: FaderLinks::new(&state.fader_links),
-            autotune: autotune::AutotuneIo::new(state.autotune_aut),
+            autotune: autotune::AutotuneIo::new(autotune_saved),
             songmap: songmap::SongMapIo::default(),
             state,
             transport,
@@ -557,7 +560,11 @@ impl Router {
             layout_store: None,
             markers_pending: None,
             markers_generation: 0,
+        };
+        if autotune_saved {
+            router.save_state();
         }
+        router
     }
 
     /// Serves messages until [`RouterMsg::Stop`], then releases the Stream

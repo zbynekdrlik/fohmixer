@@ -305,3 +305,122 @@ fn every_step_has_its_line_and_only_failures_warn() {
         json!(["flag", "tap", "found"])
     );
 }
+
+#[test]
+fn the_key_steps_are_recorded_and_logged() {
+    let song = Step::Key {
+        instance: "band".into(),
+        song: Some(31),
+        key: Some("G".into()),
+        why: keys::KeyWhy::Change,
+    };
+    let none = Step::Key {
+        instance: "band".into(),
+        song: None,
+        key: None,
+        why: keys::KeyWhy::Span,
+    };
+    let keyless = Step::Key {
+        instance: "band".into(),
+        song: Some(88),
+        key: None,
+        why: keys::KeyWhy::NoKey,
+    };
+    let device = Step::KeyDevice {
+        instance: "band".into(),
+        target: "live_set tracks 7".into(),
+        device: keys::KeyDevice::Gridder,
+        path: "live_set tracks 7 devices 0 chains 0 devices 0 chains 0 devices 0".into(),
+    };
+    let missing = Step::KeyMissing {
+        instance: "band".into(),
+        target: "live_set tracks 6".into(),
+        problem: "chain 0 holds 2 plug-ins, not one".into(),
+    };
+    let refused = Step::Refused {
+        what: "aut".into(),
+        why: REFUSED_WHY.into(),
+    };
+    assert_eq!(REFUSED_WHY, "keys only until #140 PR 3");
+    assert_eq!(
+        step_line(&song),
+        "AUTOTUNE key in force in band: song 31 G (change)"
+    );
+    assert_eq!(
+        step_line(&none),
+        "AUTOTUNE key in force in band: no song (span)"
+    );
+    assert_eq!(
+        step_line(&keyless),
+        "AUTOTUNE key in force in band: song 88, no key (no_key)"
+    );
+    assert_eq!(
+        step_line(&Step::Key {
+            instance: "master".into(),
+            song: Some(2),
+            key: Some("F#m".into()),
+            why: keys::KeyWhy::Song,
+        }),
+        "AUTOTUNE key in force in master: song 2 F#m (song)"
+    );
+    assert_eq!(
+        step_line(&device),
+        "AUTOTUNE found band live_set tracks 7's key device (gridder): \
+         live_set tracks 7 devices 0 chains 0 devices 0 chains 0 devices 0"
+    );
+    assert_eq!(
+        step_line(&Step::KeyDevice {
+            instance: "band".into(),
+            target: "live_set tracks 1".into(),
+            device: keys::KeyDevice::AutoTune,
+            path: "p".into(),
+        }),
+        "AUTOTUNE found band live_set tracks 1's key device (auto_tune): p"
+    );
+    assert_eq!(
+        step_line(&missing),
+        "AUTOTUNE has no key device for band live_set tracks 6: chain 0 holds 2 plug-ins, not one"
+    );
+    assert_eq!(
+        step_line(&refused),
+        "AUTOTUNE refuses a page's aut: keys only until #140 PR 3"
+    );
+    assert_eq!(
+        step_line(&Step::Refused {
+            what: "tap".into(),
+            why: "w".into(),
+        }),
+        "AUTOTUNE refuses a page's tap: w"
+    );
+    for step in [&song, &none, &keyless, &device, &refused] {
+        assert!(!step_warn(step), "{step:?}");
+    }
+    assert!(step_warn(&missing));
+    assert_eq!(
+        serde_json::to_value(&song).unwrap(),
+        json!({"step": "key", "instance": "band", "song": 31, "key": "G", "why": "change"})
+    );
+    assert_eq!(
+        serde_json::to_value(&none).unwrap(),
+        json!({"step": "key", "instance": "band", "song": null, "key": null, "why": "span"})
+    );
+    assert_eq!(
+        serde_json::to_value(&keyless).unwrap(),
+        json!({"step": "key", "instance": "band", "song": 88, "key": null, "why": "no_key"})
+    );
+    assert_eq!(
+        serde_json::to_value(&device).unwrap(),
+        json!({"step": "key_device", "instance": "band", "target": "live_set tracks 7",
+               "device": "gridder",
+               "path": "live_set tracks 7 devices 0 chains 0 devices 0 chains 0 devices 0"})
+    );
+    assert_eq!(
+        serde_json::to_value(&missing).unwrap(),
+        json!({"step": "key_missing", "instance": "band", "target": "live_set tracks 6",
+               "problem": "chain 0 holds 2 plug-ins, not one"})
+    );
+    assert_eq!(
+        serde_json::to_value(&refused).unwrap(),
+        json!({"step": "refused", "what": "aut", "why": "keys only until #140 PR 3"})
+    );
+}

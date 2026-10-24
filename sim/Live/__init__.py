@@ -178,6 +178,9 @@ class _Prop:
         return obj._v[self.name]
 
     def __set__(self, obj, value):
+        # Every set through Live's setter counts, refused or not (#140 PR 2a
+        # review M6: the hub tests prove "nothing written" by count).
+        obj._sets[self.name] = obj._sets.get(self.name, 0) + 1
         if self.readonly:
             raise AttributeError(f"can't set attribute '{self.name}'")
         _guard()
@@ -228,6 +231,7 @@ class _LiveObject:
         object.__setattr__(self, "_live_ptr", next(_ptr_seq))
         self._v = {}
         self._listeners = {}
+        self._sets = {}
 
     def __getattribute__(self, name):
         if name[:1] != "_" and object.__getattribute__(self, "_deleted"):
@@ -272,6 +276,12 @@ class _LiveObject:
 
     def _sim_listener_count(self, prop):
         return len(self._listeners.get(prop, ()))
+
+    def _sim_set_count(self, prop):
+        """How many sets of ``prop`` came through Live's setter (the LOM's
+        ``obj.prop = value``: a script's ``set_prop``, a host line), refused
+        ones too; SimLive's own changes (``_sim_set``) never count."""
+        return self._sets.get(prop, 0)
 
     def _sim_children(self):
         return []
@@ -378,7 +388,14 @@ def _format(kind, value, items):
     return f"{value:.2f}"
 
 
+PARAMETER_DISABLED = "Value cannot be set, the parameter is disabled"
+
+
 def _param_value(param, value):
+    # A parameter a Max map holds (#140 spike part 1: `is_enabled` false,
+    # `state` disabled): Live refuses every LOM write with this text.
+    if not param._v["is_enabled"]:
+        raise RuntimeError(PARAMETER_DISABLED)
     value = _float(value)
     if not param._v["min"] <= value <= param._v["max"]:
         raise RuntimeError("Invalid value")
@@ -433,6 +450,12 @@ class _DeviceParameterClass(_LiveObject):
         _guard()
         if self._v["automation_state"] == _AutomationState.overridden:
             self._sim_set("automation_state", _AutomationState.playing)
+
+    def _sim_enable(self, on):
+        """Free the parameter (``on``) or hold it as a Max map does (#140):
+        ``is_enabled`` and ``state`` follow; a held one refuses writes."""
+        self._v["is_enabled"] = bool(on)
+        self._sim_set("state", _ParameterState.enabled if on else _ParameterState.disabled)
 
 
 _export(DeviceParameter, _DeviceParameterClass, "DeviceParameter")
@@ -737,17 +760,41 @@ def _tempo(song, value):
     return value
 
 
+def _song_time(song, value):
+    return _float(value)
+
+
+def _root_note(song, value):
+    """Live's bar's key (#140, spec A.5): an index on Live's scale, C = 0 to
+    B = 11; anything else is refused."""
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 11:
+        return value
+    raise RuntimeError("Invalid value")
+
+
 class _SongClass(_LiveObject):
     is_playing = _Prop(coerce=_bool)
     tempo = _Prop(coerce=_tempo)
     name = _Prop(readonly=True, observable=False)
+    # #140 PR 2: the playhead (beats; a set is a jump, the host's song clock
+    # moves it while playing) and Live's bar's key and scale.
+    current_song_time = _Prop(coerce=_song_time)
+    root_note = _Prop(coerce=_root_note)
+    scale_name = _Prop(coerce=_str)
     # cue_points (#140): observable on the PC's Live 12.4.6, kept in time
     # order as Live keeps it.
     _listened = ("tracks", "return_tracks", "visible_tracks", "cue_points")
 
     def __init__(self, name=""):
         super().__init__()
-        self._v.update(is_playing=False, tempo=120.0, name=name)
+        self._v.update(
+            is_playing=False,
+            tempo=120.0,
+            name=name,
+            current_song_time=0.0,
+            root_note=0,
+            scale_name="Major",
+        )
         self._tracks = []
         self._returns = []
         self._master = None

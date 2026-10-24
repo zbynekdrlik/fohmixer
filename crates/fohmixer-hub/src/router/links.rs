@@ -242,9 +242,9 @@ mod tests {
     #[tokio::test]
     async fn a_switch_saved_keeps_every_other_hub_value_as_loaded() {
         // #130 review M2: the router saves the hub state whole, so a link's
-        // save keeps STAGE AUT on, REVERB's keys and AUTOTUNE AUT (#104) as
-        // `hub-state.json` had them (PR 4 reads `reverb_low` across a
-        // restart).
+        // save keeps STAGE AUT on and REVERB's keys as `hub-state.json` had
+        // them (PR 4 reads `reverb_low` across a restart). AUTOTUNE AUT
+        // (#104) stays off until #140 PR 3: the start saved it off.
         let dir = tempfile::tempdir().unwrap();
         let loaded = HubState {
             stage_aut: true,
@@ -278,8 +278,7 @@ mod tests {
                 "reverb_aut": true,
                 "reverb_low": {"by": "stop", "faders": [
                     {"instance": "band", "label": "Rev ST", "back": 0.85, "left": 0.6}]},
-                "fader_links": [{"instance": "band", "id": "REV", "on": false}],
-                "autotune_aut": true
+                "fader_links": [{"instance": "band", "id": "REV", "on": false}]
             })
         );
     }

@@ -450,6 +450,27 @@ fn key_clips_change_the_key_from_their_start() {
 }
 
 #[test]
+fn the_song_at_a_time_is_its_spans_keyed_or_not() {
+    let m = build(
+        &[
+            cue("087 T {E 100}", 100.0),
+            cue("SONG END", 200.0),
+            cue("088 T", 300.0),
+            cue("SONG END", 400.0),
+        ],
+        &[],
+    );
+    assert_eq!(song_at(&m, 100.0), Some(87));
+    assert_eq!(song_at(&m, 199.9), Some(87));
+    assert_eq!(song_at(&m, 200.0), None, "its end is out of it");
+    assert_eq!(song_at(&m, 99.9), None);
+    assert_eq!(song_at(&m, 250.0), None);
+    assert_eq!(song_at(&m, 350.0), Some(88), "a keyless song is a song");
+    assert_eq!(key_at(&m, 350.0), None);
+    assert_eq!(song_at(&SongMap::default(), 1.0), None);
+}
+
+#[test]
 fn changes_are_in_time_order_and_each_holds_until_the_next() {
     let m = build(
         &[cue("133 T {G 120}", 75000.0), cue("SONG END", 76000.0)],
