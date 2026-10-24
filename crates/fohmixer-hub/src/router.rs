@@ -1508,6 +1508,78 @@ mod tests {
     use super::*;
     use fohmixer_proto::client::AckItem;
 
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_router_stops_its_writers_pings() {
+        // PR #146 review I1: the pings say the router decides, not only that
+        // the process lives. While its loop turns (a beat comes every 200
+        // ms) its writers ping; once it no longer turns (here it stopped;
+        // a hang or a panic is the same to the beat) the pings stop within
+        // 600 ms, and the script falls back 1.5 s after the last one.
+        use crate::live::client::{BEAT_FRESH_MS, Beat, ROUTER_BEAT_MS, write_requests};
+        use tokio_tungstenite::tungstenite::Message;
+        let dir = tempfile::tempdir().unwrap();
+        let (router, own, _records) = offline_router(dir.path());
+        let tx = router.io.tx.clone();
+        let beat = Beat::router();
+        let start = tokio::time::Instant::now();
+        let pings = Arc::new(std::sync::Mutex::new(Vec::<u128>::new()));
+        let log = Arc::clone(&pings);
+        let sink = Box::pin(futures_util::sink::unfold((), move |(), m: Message| {
+            let log = Arc::clone(&log);
+            async move {
+                if matches!(m, Message::Ping(_)) {
+                    log.lock().unwrap().push(start.elapsed().as_millis());
+                }
+                Ok::<(), std::convert::Infallible>(())
+            }
+        }));
+        let (_texts, texts) = mpsc::unbounded_channel::<String>();
+        let writer = tokio::spawn(write_requests(sink, texts, beat.clone()));
+        let routed = tokio::spawn(router.with_beat(beat.clone()).run(own));
+        let ticks = tokio::spawn(beat_ticks(
+            tx.clone(),
+            std::time::Duration::from_millis(ROUTER_BEAT_MS),
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(2950)).await;
+        assert_eq!(
+            *pings.lock().unwrap(),
+            vec![500, 1000, 1500, 2000, 2500],
+            "pings while the loop turns"
+        );
+        assert!(beat.fresh());
+        tx.send(RouterMsg::Stop).unwrap();
+        routed.await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
+        assert_eq!(
+            *pings.lock().unwrap(),
+            vec![500, 1000, 1500, 2000, 2500, 3000, 3500],
+            "the last stamp at 2950 ms: pings until {} ms after it, none later",
+            BEAT_FRESH_MS
+        );
+        assert!(!beat.fresh());
+        ticks.await.unwrap();
+        writer.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_beat_ticks_every_200_ms_until_the_router_is_gone() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let ticks = tokio::spawn(beat_ticks(tx, std::time::Duration::from_millis(200)));
+        let start = tokio::time::Instant::now();
+        let mut at = Vec::new();
+        for _ in 0..3 {
+            let msg = rx.recv().await.unwrap();
+            assert!(matches!(msg, RouterMsg::Beat));
+            at.push(start.elapsed().as_millis());
+        }
+        assert_eq!(at, vec![200, 400, 600]);
+        drop(rx);
+        tokio::time::timeout(std::time::Duration::from_secs(1), ticks)
+            .await
+            .expect("the ticks end with the router's channel")
+            .unwrap();
+    }
+
     fn router(dir: &std::path::Path) -> Router {
         let (tx, _) = mpsc::unbounded_channel();
         Router::new(

@@ -679,7 +679,11 @@ mod tests {
         let start = tokio::time::Instant::now();
         let sent: Sent = Arc::default();
         let (out, texts) = mpsc::unbounded_channel::<String>();
-        let writer = tokio::spawn(write_requests(recording(start, Arc::clone(&sent)), texts));
+        let writer = tokio::spawn(write_requests(
+            recording(start, Arc::clone(&sent)),
+            texts,
+            Beat::steady(),
+        ));
         tokio::time::sleep(Duration::from_millis(1250)).await;
         let pings = |sent: &Sent| -> Vec<Duration> {
             sent.lock()
@@ -729,6 +733,75 @@ mod tests {
             .unwrap();
     }
 
+    #[test]
+    fn a_routers_beat_is_fresh_for_600_ms() {
+        // PR #146 review I1: the router stamps it every 200 ms at least.
+        assert_eq!((ROUTER_BEAT_MS, BEAT_FRESH_MS), (200, 600));
+        assert!(beat_fresh(0, 0));
+        assert!(beat_fresh(599, 0));
+        assert!(!beat_fresh(600, 0), "600 ms old");
+        assert!(!beat_fresh(5000, 1000));
+        assert!(beat_fresh(1000, 1000));
+        assert!(beat_fresh(10, 20), "a stamp after the reading");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_routers_beat_ages_unless_stamped_and_a_steady_one_never() {
+        let beat = Beat::router();
+        assert!(beat.fresh(), "fresh from its start");
+        tokio::time::sleep(Duration::from_millis(599)).await;
+        assert!(beat.fresh());
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        assert!(!beat.fresh(), "600 ms without a stamp");
+        beat.stamp();
+        assert!(beat.fresh());
+        let copy = beat.clone();
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert!(!copy.fresh());
+        copy.stamp();
+        assert!(beat.fresh(), "a copy shares the stamp");
+        let steady = Beat::steady();
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        assert!(steady.fresh(), "a beat no router drives never ages");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_writer_pings_only_while_the_routers_beat_is_fresh() {
+        // PR #146 review I1: a router that hung or panicked stamps no more,
+        // so its writers stop pinging and the script falls back to DRY.
+        let start = tokio::time::Instant::now();
+        let beat = Beat::router();
+        let sent: Sent = Arc::default();
+        let (_out, texts) = mpsc::unbounded_channel::<String>();
+        let writer = tokio::spawn(write_requests(
+            recording(start, Arc::clone(&sent)),
+            texts,
+            beat.clone(),
+        ));
+        let pings = |sent: &Sent| -> Vec<Duration> {
+            sent.lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, m)| matches!(m, Message::Ping(_)))
+                .map(|(at, _)| *at)
+                .collect()
+        };
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert_eq!(
+            pings(&sent),
+            vec![Duration::from_millis(500)],
+            "none at 1000 ms: the beat is 1000 ms old"
+        );
+        beat.stamp();
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        assert_eq!(
+            pings(&sent),
+            vec![Duration::from_millis(500), Duration::from_millis(1500)],
+            "again while fresh, none at 2000 ms"
+        );
+        writer.abort();
+    }
+
     #[tokio::test(start_paused = true)]
     async fn the_writer_ends_when_a_ping_cannot_be_written() {
         let failing = Box::pin(futures_util::sink::unfold(
@@ -736,7 +809,7 @@ mod tests {
             |(), _message: Message| async move { Err::<(), &str>("the socket is gone") },
         ));
         let (_out, texts) = mpsc::unbounded_channel::<String>();
-        let writer = tokio::spawn(write_requests(failing, texts));
+        let writer = tokio::spawn(write_requests(failing, texts, Beat::steady()));
         tokio::time::timeout(Duration::from_secs(2), writer)
             .await
             .expect("the writer ends at its first failed write")
