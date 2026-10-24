@@ -628,9 +628,9 @@ async fn leaving_the_song_records_no_key() {
         keys_of(&steps(&rx)),
         vec![key(Some(1), Some("C"), "song"), key(None, None, "no_key")]
     );
-    let now = &status(&mut router).autotune.keys[0];
+    let keys = status(&mut router).autotune.keys;
     assert_eq!(
-        (now.song, now.key.as_deref(), now.time),
+        (keys[0].song, keys[0].key.as_deref(), keys[0].time),
         (None, None, Some(110.0))
     );
     // Back into the same song: a start again.
