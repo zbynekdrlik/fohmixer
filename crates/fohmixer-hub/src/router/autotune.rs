@@ -50,7 +50,7 @@ use fohmixer_proto::client::{
 use fohmixer_proto::layout::AutotuneTarget;
 use serde_json::{Value, json};
 
-use super::songmap::{MAX_RETRIES, RETRY_MS};
+use super::retries::{CONNECT_RETRIES, RETRY_MS};
 use super::{Router, RouterMsg, transport_heard};
 use crate::eq::walk::refused;
 use crate::live::client::LiveHandle;
@@ -340,10 +340,10 @@ pub(super) fn autotune_fields(step: &Step, client: Option<ClientId>, peer: Optio
 
 /// Whether a target whose walks failed `failures` times in a row (this
 /// one included) is walked again after [`RETRY_MS`] (#140): up to
-/// [`MAX_RETRIES`] retries, the song map's bound; then it waits for the
+/// [`CONNECT_RETRIES`] retries, the song map's bound; then it waits for the
 /// next trigger.
 pub(super) fn walk_again(failures: u32) -> bool {
-    failures <= MAX_RETRIES
+    failures <= CONNECT_RETRIES
 }
 
 /// How a walk ended: its definite answer (the macro, or why there is none

@@ -26,7 +26,7 @@
 //! commands, one after another. A failed
 //! call ends the read with its error and keeps the old map, stale, and the
 //! read is tried again every [`RETRY_MS`] while the set stays connected, up
-//! to [`MAX_RETRIES`] times (#140: a set still loading answers no read for
+//! to [`CONNECT_RETRIES`] times (#140: a set still loading answers no read for
 //! a while; a later trigger reads afresh and starts the count over); a
 //! disconnect voids the read
 //! in flight (its answer's number is no longer the set's; its task is
@@ -42,6 +42,7 @@ use fohmixer_proto::songmap::{
 };
 use serde_json::{Value, json};
 
+use super::retries::{CONNECT_RETRIES, RETRY_MS};
 use super::{Router, RouterMsg};
 use crate::eq::walk::{answered, get, items, refused};
 use crate::live::client::LiveHandle;
@@ -60,17 +61,6 @@ pub const CUE_POINTS: &str = "cue_points";
 pub const CLIPS: &str = "arrangement_clips";
 /// The problem texts a `songmap` record carries at most.
 pub const MAX_TEXTS: usize = 20;
-/// A failed read (no disconnect) is tried again after this, in ms (the
-/// unfold and marker keepers' `RETRY_MS`; #140 review M3).
-pub const RETRY_MS: u64 = 2000;
-/// How many times in a row a failed read is tried again before it waits
-/// for the next trigger (#140, the PC on 24.10.2026: the hub connected while
-/// the band Live was still loading its set, and every read for a while
-/// timed out). Each try costs at most the 3 s answer timeout
-/// (`live::client::REQUEST_TIMEOUT`) plus [`RETRY_MS`], so 24 retries cover
-/// about two minutes: over twice the 54 s the PC's band Live took from its
-/// start to a responding window. AUTOTUNE's walks use the same bound.
-pub const MAX_RETRIES: u32 = 24;
 
 /// One read's map.
 #[derive(Debug, Clone, PartialEq)]
@@ -161,7 +151,7 @@ pub(super) struct SongMapIo {
     /// number (a read started, a disconnect or a later failure voids it).
     pub retry: BTreeMap<String, u64>,
     /// The retries each set's failed reads made since its last read that
-    /// was no retry (a trigger, the connect): at [`MAX_RETRIES`] a failure
+    /// was no retry (a trigger, the connect): at [`CONNECT_RETRIES`] a failure
     /// waits for the next trigger.
     pub retries: BTreeMap<String, u32>,
     /// The reads' own counter.
@@ -273,7 +263,7 @@ pub(super) fn after_read(failed: bool, spent: bool, dirty: bool) -> Option<After
 /// since its last read that was no retry): then a failure waits for the
 /// next trigger (#140).
 pub(super) fn retries_spent(retries: u32) -> bool {
-    retries >= MAX_RETRIES
+    retries >= CONNECT_RETRIES
 }
 
 /// What a trigger does with a read running (`reading`) and one more already

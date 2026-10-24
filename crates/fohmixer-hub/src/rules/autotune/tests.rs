@@ -620,7 +620,7 @@ fn the_write_steps_are_recorded_and_logged() {
 
 #[test]
 fn a_target_given_up_is_recorded_and_warns() {
-    // #140: a walk that failed MAX_RETRIES + 1 times in a row.
+    // #140: a walk that failed CONNECT_RETRIES + 1 times in a row.
     let gave_up = Step::GaveUp {
         instance: "band".into(),
         target: "live_set tracks 4".into(),

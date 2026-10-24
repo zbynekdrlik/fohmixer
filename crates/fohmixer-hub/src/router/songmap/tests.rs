@@ -3,13 +3,14 @@ use fohmixer_proto::songmap::{ClipName, Counts, Cue, Key, ProblemKind, SectionsS
 use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedReceiver;
 
+use super::super::retries::{CONNECT_RETRIES, RETRY_MS};
 use super::super::tests::{next_of, offline_router, records, status};
 use super::super::{Router, RouterMsg};
 use super::{
-    After, CLIPS, CUE_POINTS, Listed, Listing, MAX_RETRIES, MAX_TEXTS, Missing, Object, RETRY_MS,
-    Read, SECTIONS, SONGMAP_CLIENT, Trigger, after_read, by_ref, clip_commands, clips_by_index,
-    clips_of, cues_of, first_commands, listed, map_of, next_read, problems_changed, read_words,
-    report_of, retries_spent, same_names, second_commands, sections_state, songmap_error_fields,
+    After, CLIPS, CUE_POINTS, Listed, Listing, MAX_TEXTS, Missing, Object, Read, SECTIONS,
+    SONGMAP_CLIENT, Trigger, after_read, by_ref, clip_commands, clips_by_index, clips_of, cues_of,
+    first_commands, listed, map_of, next_read, problems_changed, read_words, report_of,
+    retries_spent, same_names, second_commands, sections_state, songmap_error_fields,
     songmap_fields, songmap_warn, status_of, time_commands, track_went, transport_reads,
     with_gave_up, with_sections_error,
 };
@@ -1577,14 +1578,17 @@ async fn a_disconnect_ends_the_reads_task_so_it_asks_live_nothing_more() {
 #[test]
 fn a_failed_reads_retries_are_spent_at_max_retries() {
     // #140: about two minutes of a set still loading (24 x (3 s + 2 s)).
-    assert_eq!(MAX_RETRIES, 24);
+    assert_eq!(CONNECT_RETRIES, 24);
     assert!(!retries_spent(0));
-    assert!(!retries_spent(MAX_RETRIES - 1));
-    assert!(retries_spent(MAX_RETRIES));
-    assert!(retries_spent(MAX_RETRIES + 1));
+    assert!(!retries_spent(CONNECT_RETRIES - 1));
+    assert!(retries_spent(CONNECT_RETRIES));
+    assert!(retries_spent(CONNECT_RETRIES + 1));
     // A failed read with its retries spent is not tried again; a trigger
     // that came meanwhile still reads.
-    assert_eq!(after_read(true, retries_spent(MAX_RETRIES), false), None);
+    assert_eq!(
+        after_read(true, retries_spent(CONNECT_RETRIES), false),
+        None
+    );
     assert_eq!(
         after_read(true, retries_spent(3), false),
         Some(After::Retry)
@@ -1617,10 +1621,10 @@ fn a_read_that_gave_up_says_so() {
 #[tokio::test(start_paused = true)]
 async fn a_failed_read_gives_up_after_max_retries_until_the_next_trigger() {
     // #140: a set that never answers is not read for good: after
-    // MAX_RETRIES retries one warn record, then nothing until a trigger.
+    // CONNECT_RETRIES retries one warn record, then nothing until a trigger.
     let (mut router, mut rx, events, _dir) = online();
     router.songmap_trigger("band");
-    let last = u64::from(MAX_RETRIES) + 1;
+    let last = u64::from(CONNECT_RETRIES) + 1;
     for read_no in 1..last {
         answer(&mut router, read_no, Err("no result within 3 s".into()));
         let due = tokio::time::timeout(
@@ -1632,7 +1636,7 @@ async fn a_failed_read_gives_up_after_max_retries_until_the_next_trigger() {
         .expect("the router's tasks run");
         router.handle(due);
     }
-    assert_eq!(router.songmap.retries.get("band"), Some(&MAX_RETRIES));
+    assert_eq!(router.songmap.retries.get("band"), Some(&CONNECT_RETRIES));
     let _ = songmap_records(&events);
     answer(&mut router, last, Err("no result within 3 s".into()));
     let got = songmap_records(&events);
@@ -1640,7 +1644,7 @@ async fn a_failed_read_gives_up_after_max_retries_until_the_next_trigger() {
         got,
         vec![
             json!({"instance": "band", "read_no": last, "ms": 7, "error": "no result within 3 s",
-                   "stale": false, "retry": false, "gave_up": true, "retries": MAX_RETRIES})
+                   "stale": false, "retry": false, "gave_up": true, "retries": CONNECT_RETRIES})
         ]
     );
     assert!(router.songmap.retry.is_empty());

@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use super::super::songmap::{MAX_RETRIES, RETRY_MS};
+use super::super::retries::{CONNECT_RETRIES, RETRY_MS};
 use super::super::tests::{attach, next_of, offline_router, records, status};
 use super::super::{Router, RouterMsg, layout_msg, markers};
 use super::{
@@ -1182,7 +1182,7 @@ async fn a_failed_walk_is_walked_again_after_retry_ms() {
     // within 3 s") and nothing walked it again until a page's flag. A
     // failed walk (here Live offline in its task) is walked again every
     // RETRY_MS while its set is online.
-    let retry_ms = super::super::songmap::RETRY_MS;
+    let retry_ms = RETRY_MS;
     let dir = tempfile::tempdir().unwrap();
     let (mut router, mut own, _records) = offline_router(dir.path());
     online(&mut router);
@@ -1288,10 +1288,10 @@ async fn a_rack_replaced_at_the_same_path_is_followed_afresh_and_written_once() 
 #[test]
 fn a_failed_walk_is_walked_again_up_to_max_retries() {
     // #140: the song map's bound, about two minutes of a set still loading.
-    assert_eq!((MAX_RETRIES, RETRY_MS), (24, 2000));
+    assert_eq!((CONNECT_RETRIES, RETRY_MS), (24, 2000));
     assert!(walk_again(1));
-    assert!(walk_again(MAX_RETRIES));
-    assert!(!walk_again(MAX_RETRIES + 1));
+    assert!(walk_again(CONNECT_RETRIES));
+    assert!(!walk_again(CONNECT_RETRIES + 1));
 }
 
 /// The band's target's walk `walk` failed with Live's words.
@@ -1347,7 +1347,7 @@ async fn a_failed_walk_gives_up_after_max_retries_until_the_next_trigger() {
     let (mut router, mut own, rx) = offline_router(dir.path());
     router.handle(layout(1, vec![stream()]));
     let _ = steps(&rx);
-    for n in 1..=MAX_RETRIES {
+    for n in 1..=CONNECT_RETRIES {
         let w = walk_of(&router, STREAM);
         walk_failed(&mut router, w);
         pump(&mut router, &mut own, RETRY_MS + RETRY_MS / 2).await;
@@ -1363,7 +1363,7 @@ async fn a_failed_walk_gives_up_after_max_retries_until_the_next_trigger() {
         gave_up,
         vec![
             json!({"step": "gave_up", "instance": "band", "target": "live_set tracks 7",
-                    "problem": "no result within 3 s", "walks": MAX_RETRIES + 1})
+                    "problem": "no result within 3 s", "walks": CONNECT_RETRIES + 1})
         ]
     );
     pump(&mut router, &mut own, 3 * RETRY_MS).await;

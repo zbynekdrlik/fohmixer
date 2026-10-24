@@ -77,6 +77,7 @@ mod links;
 mod markers;
 #[path = "router/markers_io.rs"]
 mod markers_io;
+mod retries;
 #[path = "router/reverb.rs"]
 mod reverb;
 #[path = "router/songmap.rs"]
