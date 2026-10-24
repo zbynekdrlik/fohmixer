@@ -298,10 +298,15 @@ fn a_held_stream_slot_keeps_that_track_dry_and_the_pa_tunes() {
         set_hub(&mut a, "autotune_aut", json!(true)).await;
         transport(&mut a, "start_playing").await;
         macros_until(&mut a, TUNING, SECS_10).await;
+        // The echoes of the one batch reach the hub one by one, in no fixed
+        // order: the state told once all three tune.
         let state = a
             .wait(SECS_10, |m| match m {
                 ServerMsg::Autotune(s)
-                    if s.singers.len() == 2 && s.singers[1].pa == TrackState::Tune =>
+                    if s.singers.len() == 2
+                        && s.singers[1].pa == TrackState::Tune
+                        && s.singers[0].stream == TrackState::Tune
+                        && s.singers[0].pa == TrackState::Tune =>
                 {
                     Some(s.clone())
                 }

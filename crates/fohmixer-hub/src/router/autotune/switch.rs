@@ -202,9 +202,7 @@ impl AutotuneIo {
 
     /// Why a found target is not fine: its problem, else its key's.
     fn why_of(&self, target: &Target) -> Option<String> {
-        if target.found.is_none() {
-            return None;
-        }
+        target.found.as_ref()?;
         let part = part(target.spec.on);
         if let Some(trouble) = trouble(target) {
             return Some(format!("{part}: {trouble}"));

@@ -422,7 +422,18 @@ async fn a_found_target_is_followed_and_told_to_every_page() {
                     "problem": "the Latencies rack has no chain"}),
         ]
     );
-    assert_eq!(told(&page), vec![], "still waiting for its value");
+    // The pages are told its singer's key device problem; the target
+    // still waits for its value.
+    let found = told(&page);
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        states(&found[0]),
+        vec![("#8".to_string(), TargetState::Waiting)]
+    );
+    assert_eq!(
+        found[0].singers[0].why.as_deref(),
+        Some("stream: the Latencies rack has no chain")
+    );
     // Live answers the listeners: the macro at 127, the transport stopped.
     // AUT off: the hub wants DRY, so its first value is written DRY (#140
     // PR 3b).

@@ -1496,6 +1496,7 @@ async fn the_pages_are_told_the_singers_and_the_key() {
     set_hub(&mut router, HUB_AUTOTUNE_AUT, json!(true));
     transport(&mut router, true);
     live.settle(&mut router).await;
+    assert_eq!(live.written(), vec![batch(&[("p6", 0.0), ("p7", 127.0)])]);
     let state = router.autotune.state();
     assert_eq!(
         (state.singers[0].stream, state.singers[0].pa),
