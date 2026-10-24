@@ -430,9 +430,9 @@ fn a_song_start_writes_and_confirms_the_key() {
             })
             .await;
         assert_eq!(status.autotune.keys[0].bar.as_deref(), Some("C"));
-        // Stream A's slots held C already: a quarter step beside it; the
+        // Stream A's slots held C already: a nudge beside it; the
         // Auto-Tune Artist gets the centres.
-        let nudged = (f32_of(0.25 / 11.0), f32_of(0.25 / 28.0));
+        let nudged = (f32_of(0.05 / 11.0), f32_of(0.05 / 28.0));
         assert_eq!(values_at(&mut a, PLUGIN_A).await, nudged);
         assert_eq!(values_at(&mut a, PLUGIN_V).await, (0.0, 0.0));
         assert_eq!(
@@ -635,7 +635,7 @@ fn a_reconnect_writes_the_key_again() {
         for label in ["#1", "#2", "#3"] {
             assert_eq!(writes_to(&records, label), 1, "{label}: {records:?}");
         }
-        let nudged = (f32_of(0.25 / 11.0), f32_of(0.25 / 28.0));
+        let nudged = (f32_of(0.05 / 11.0), f32_of(0.05 / 28.0));
         assert_eq!(values_at(&mut a, PLUGIN_A).await, nudged);
         assert_eq!(values_at(&mut a, PLUGIN_V).await, (0.0, 0.0));
         assert_eq!(number(&mut a, "live_set", "root_note").await, 0.0);

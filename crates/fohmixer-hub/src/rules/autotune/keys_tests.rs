@@ -407,20 +407,20 @@ fn minor(root: u8) -> Key {
 
 #[test]
 fn the_constants_of_the_writes() {
-    assert_eq!((NUDGE, SAME_VALUE_EPS, LATE_BOUND_MS), (0.25, 1e-6, 100.0));
+    assert_eq!((NUDGE, SAME_VALUE_EPS, LATE_BOUND_MS), (0.05, 1e-6, 100.0));
 }
 
 #[test]
 fn the_centre_is_written_unless_it_is_already_there() {
     assert_eq!(write_value(2, 11, None), 2.0 / 11.0);
     assert_eq!(write_value(2, 11, Some(0.0)), 2.0 / 11.0);
-    assert_eq!(write_value(2, 11, Some(2.0 / 11.0)), 2.25 / 11.0);
-    assert_eq!(write_value(11, 11, Some(1.0)), 10.75 / 11.0);
-    // The quarter step's own value is no centre: the centre again.
-    assert_eq!(write_value(2, 11, Some(2.25 / 11.0)), 2.0 / 11.0);
+    assert_eq!(write_value(2, 11, Some(2.0 / 11.0)), 2.05 / 11.0);
+    assert_eq!(write_value(11, 11, Some(1.0)), 10.95 / 11.0);
+    // The nudged value is no centre: the centre again.
+    assert_eq!(write_value(2, 11, Some(2.05 / 11.0)), 2.0 / 11.0);
     // The scale's steps: Major and Minor over 28.
-    assert_eq!(write_value(0, 28, Some(0.0)), 0.25 / 28.0);
-    assert_eq!(write_value(1, 28, Some(1.0 / 28.0)), 1.25 / 28.0);
+    assert_eq!(write_value(0, 28, Some(0.0)), 0.05 / 28.0);
+    assert_eq!(write_value(1, 28, Some(1.0 / 28.0)), 1.05 / 28.0);
     assert_eq!(write_value(1, 28, Some(0.0)), 1.0 / 28.0);
 }
 
@@ -428,17 +428,17 @@ fn the_centre_is_written_unless_it_is_already_there() {
 fn the_centre_is_within_its_epsilon_only() {
     // Exactly the epsilon away is no longer the centre.
     assert_eq!(write_value(0, 11, Some(SAME_VALUE_EPS)), 0.0);
-    assert_eq!(write_value(0, 11, Some(0.9e-6)), 0.25 / 11.0);
-    assert_eq!(write_value(0, 11, Some(-0.9e-6)), 0.25 / 11.0);
+    assert_eq!(write_value(0, 11, Some(0.9e-6)), 0.05 / 11.0);
+    assert_eq!(write_value(0, 11, Some(-0.9e-6)), 0.05 / 11.0);
     assert_eq!(write_value(5, 11, Some(5.0 / 11.0 + 2e-6)), 5.0 / 11.0);
 }
 
 #[test]
 fn a_float32_echo_of_the_centre_counts_as_the_centre() {
-    assert_eq!(write_value(2, 11, Some(0.1818181872367859)), 2.25 / 11.0); // spike part 2
-    assert_eq!(write_value(10, 11, Some(0.9090909361839294)), 10.25 / 11.0);
+    assert_eq!(write_value(2, 11, Some(0.1818181872367859)), 2.05 / 11.0); // spike part 2
+    assert_eq!(write_value(10, 11, Some(0.9090909361839294)), 10.05 / 11.0);
     let echo = f64::from((6.0_f64 / 11.0) as f32);
-    assert_eq!(write_value(6, 11, Some(echo)), 6.25 / 11.0);
+    assert_eq!(write_value(6, 11, Some(echo)), 6.05 / 11.0);
 }
 
 #[test]
@@ -448,16 +448,56 @@ fn a_keys_values_are_its_root_and_scale_steps() {
     // Each against its own current value.
     assert_eq!(
         key_values(minor(6), (Some(6.0 / 11.0), Some(0.0))),
-        (6.25 / 11.0, 1.0 / 28.0)
+        (6.05 / 11.0, 1.0 / 28.0)
     );
     assert_eq!(
         key_values(minor(6), (Some(0.5), Some(1.0 / 28.0))),
-        (6.0 / 11.0, 1.25 / 28.0)
+        (6.0 / 11.0, 1.05 / 28.0)
     );
     assert_eq!(
         key_values(major(11), (Some(1.0), Some(0.0))),
-        (10.75 / 11.0, 0.25 / 28.0)
+        (10.95 / 11.0, 0.05 / 28.0)
     );
+}
+
+/// The step a plug-in hears under VST3's standard discrete mapping:
+/// `min(steps, floor(v × (steps + 1)))` (PR #144 review I2).
+fn vst3_step(v: f64, steps: u8) -> u8 {
+    let n = f64::from(steps);
+    (v * (n + 1.0)).floor().min(n) as u8
+}
+
+#[test]
+fn a_nudged_value_stays_in_its_step_under_both_mappings() {
+    // PR #144 review I2, as ruled: Auto-Tune Artist's own names round
+    // (spec A.4, `key_index_of`), but VST3's standard discrete mapping
+    // floors over steps + 1 bins; AudioGridder passes the value on. The
+    // centre and the nudged value must land on the same step under both,
+    // for every key and both scales.
+    for (steps, indexes) in [(KEY_STEPS, 0..=11u8), (SCALE_STEPS, 0..=1u8)] {
+        for index in indexes {
+            let centre = write_value(index, steps, None);
+            let nudged = write_value(index, steps, Some(centre));
+            assert_ne!(centre, nudged, "{index}/{steps}");
+            for value in [centre, nudged] {
+                let rounded = if steps == KEY_STEPS {
+                    key_index_of(value)
+                } else {
+                    scale_index_of(value)
+                };
+                assert_eq!(rounded, index, "rounding {value} ({index}/{steps})");
+                assert_eq!(
+                    vst3_step(value, steps),
+                    index,
+                    "VST3 {value} ({index}/{steps})"
+                );
+            }
+        }
+    }
+    // The mapping as the review gave it: 0.25 would move G# to A.
+    assert_eq!(vst3_step(8.25 / 11.0, KEY_STEPS), 9);
+    assert_eq!(vst3_step(8.05 / 11.0, KEY_STEPS), 8);
+    assert_eq!(vst3_step(1.0, KEY_STEPS), 11);
 }
 
 #[test]
@@ -564,7 +604,7 @@ fn a_value_heard_between_writes_is_another_writer() {
     assert_eq!(t.written(Readback::Confirmed), None);
     assert!(t.heard((2.0 / 11.0, 0.0)));
     assert!(!t.heard((9.0 / 11.0, 0.0)), "A's own values");
-    assert!(!t.heard((9.25 / 11.0, 0.25 / 28.0)), "A nudged");
+    assert!(!t.heard((9.05 / 11.0, 0.05 / 28.0)), "A nudged");
     t.another();
     assert_eq!(t.state(), KeyState::AnotherWriter);
     // The next write takes over: its own echoes are no other writer.

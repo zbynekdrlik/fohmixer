@@ -612,7 +612,7 @@ async fn a_song_start_writes_every_key_device_and_the_bar() {
     no_call(&mut script);
     // Song 1 starts: D, every key device and the bar in one call through
     // their `$ref`s; the stream's Scale already holds Major's centre, so it
-    // is written a quarter step beside it.
+    // is written a nudge (0.05 of a step) beside it.
     deliver(&mut router, TIME, 10.0);
     let write = call(&mut script);
     let [root, scale] = set_bar(2, "Major");
@@ -622,7 +622,7 @@ async fn a_song_start_writes_every_key_device_and_the_bar() {
             set_ref("k6", 2.0 / 11.0),
             set_ref("s6", 0.0),
             set_ref("k7", 2.0 / 11.0),
-            set_ref("s7", 0.25 / 28.0),
+            set_ref("s7", 0.05 / 28.0),
             root,
             scale
         ]
@@ -683,7 +683,7 @@ async fn a_song_start_writes_every_key_device_and_the_bar() {
             (
                 Some("D"),
                 Some(KeyState::Confirmed),
-                Some([2.0 / 11.0, 0.25 / 28.0])
+                Some([2.0 / 11.0, 0.05 / 28.0])
             )
         ]
     );
@@ -710,14 +710,14 @@ async fn an_equal_key_at_the_next_song_start_is_written_nudged() {
             scale.clone()
         ]
     );
-    // Song 2 is in D too: Live holds both centres, so each goes a quarter
-    // step beside its centre.
+    // Song 2 is in D too: Live holds both centres, so each goes a nudge
+    // beside its centre.
     deliver(&mut router, TIME, 130.0);
     assert_eq!(
         confirm(&mut router, &mut own, &mut script).await,
         vec![
-            set_ref("k7", 2.25 / 11.0),
-            set_ref("s7", 0.25 / 28.0),
+            set_ref("k7", 2.05 / 11.0),
+            set_ref("s7", 0.05 / 28.0),
             root.clone(),
             scale.clone()
         ]
@@ -897,7 +897,7 @@ async fn a_wrong_read_back_is_a_mismatch_retried_once() {
     let retry = call(&mut script);
     assert_eq!(
         retry.commands,
-        vec![set_ref("k7", 2.0 / 11.0), set_ref("s7", 0.25 / 28.0)]
+        vec![set_ref("k7", 2.0 / 11.0), set_ref("s7", 0.05 / 28.0)]
     );
     written(&mut router, &mut own, retry, vec![ok(Value::Null); 2]).await;
     let read = call(&mut script);
@@ -1160,7 +1160,7 @@ async fn a_track_inserted_above_a_target_is_no_other_writer_and_writes_nothing_b
     let commands = confirm(&mut router, &mut own, &mut script).await;
     assert_eq!(
         commands,
-        vec![set_ref("k7x", 2.0 / 11.0), set_ref("s7x", 0.25 / 28.0)]
+        vec![set_ref("k7x", 2.0 / 11.0), set_ref("s7x", 0.05 / 28.0)]
     );
     assert_eq!(
         of(&steps(&rx), "key_write"),
@@ -1209,7 +1209,7 @@ async fn a_stale_ref_walks_the_target_again_and_writes_it_found() {
     heard(&mut router, STREAM, (0.5, 0.0));
     assert_eq!(
         confirm(&mut router, &mut own, &mut script).await,
-        vec![set_ref("k7b", 2.0 / 11.0), set_ref("s7b", 0.25 / 28.0)]
+        vec![set_ref("k7b", 2.0 / 11.0), set_ref("s7b", 0.05 / 28.0)]
     );
     let got = steps(&rx);
     assert_eq!(
@@ -1248,7 +1248,7 @@ async fn a_write_to_a_replaced_device_is_void_there() {
     heard(&mut router, STREAM, (0.5, 0.0));
     assert_eq!(
         confirm(&mut router, &mut own, &mut script).await,
-        vec![set_ref("k7b", 2.0 / 11.0), set_ref("s7b", 0.25 / 28.0)]
+        vec![set_ref("k7b", 2.0 / 11.0), set_ref("s7b", 0.05 / 28.0)]
     );
 }
 
@@ -1320,10 +1320,10 @@ async fn a_target_found_after_the_song_start_gets_the_key_once_its_values_are_he
     deliver(&mut router, &scale_sub, 0.0);
     assert_eq!(
         confirm(&mut router, &mut own, &mut script).await,
-        vec![set_ref("k6", 2.0 / 11.0), set_ref("s6", 0.25 / 28.0)]
+        vec![set_ref("k6", 2.0 / 11.0), set_ref("s6", 0.05 / 28.0)]
     );
     // Its values again, and found again: nothing more.
-    heard(&mut router, PA, (2.0 / 11.0, 0.25 / 28.0));
+    heard(&mut router, PA, (2.0 / 11.0, 0.05 / 28.0));
     find(&mut router, PA, rack(6, ""));
     no_call(&mut script);
     assert_eq!(
