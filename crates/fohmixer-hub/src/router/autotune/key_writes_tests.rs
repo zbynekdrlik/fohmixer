@@ -960,6 +960,9 @@ async fn a_key_change_records_its_lateness() {
     deliver(&mut router, TEMPO_KEY, 120.0);
     deliver(&mut router, TIME, 10.0);
     confirm(&mut router, &mut own, &mut script).await;
+    // Live plays on to just before the clip (one script tick a delivery).
+    deliver(&mut router, TIME, 49.9);
+    no_call(&mut script);
     let _ = steps(&rx);
     // A tick before the clip at 50, at 120 bpm: G is written 25 ms before
     // it, plus the write's round trip (within what this test measured).
@@ -1010,6 +1013,43 @@ async fn a_key_change_records_its_lateness() {
         ]
     );
     assert_eq!(of(&got, "late"), Vec::<Value>::new());
+}
+
+#[tokio::test]
+async fn a_jump_past_a_key_clip_while_playing_records_no_lateness() {
+    // PR #144 review M1, as ruled: lateness is a clip crossed in continuous
+    // play; a jump or a locate past it, playing or not, records none (a
+    // jump 10 beats past the clip at 120 bpm would read "5000 ms late").
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, rx, mut script) = scripted_router(dir.path());
+    ready_stream(&mut router, (0.5, 1.0 / 28.0));
+    transport(&mut router, true);
+    deliver(&mut router, TEMPO_KEY, 120.0);
+    deliver(&mut router, TIME, 10.0);
+    confirm(&mut router, &mut own, &mut script).await;
+    let _ = steps(&rx);
+    deliver(&mut router, TIME, 60.0);
+    confirm(&mut router, &mut own, &mut script).await;
+    let got = steps(&rx);
+    assert_eq!(
+        of(&got, "key_write"),
+        vec![key_write("G", "change", &["#8"], true)]
+    );
+    assert_eq!(of(&got, "late"), Vec::<Value>::new(), "a jump");
+    // A locate back before the clip, then Live plays across it: a crossing.
+    deliver(&mut router, TIME, 49.9);
+    confirm(&mut router, &mut own, &mut script).await;
+    deliver(&mut router, TIME, 49.95);
+    confirm(&mut router, &mut own, &mut script).await;
+    let got = steps(&rx);
+    assert_eq!(
+        of(&got, "key_write"),
+        vec![
+            key_write("D", "change", &["#8"], true),
+            key_write("G", "change", &["#8"], true)
+        ]
+    );
+    assert_eq!(of(&got, "late").len(), 1, "a crossing: {got:?}");
 }
 
 #[tokio::test]
