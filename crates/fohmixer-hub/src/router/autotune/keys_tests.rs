@@ -297,7 +297,7 @@ fn the_key_in_force_at_a_position_needs_a_map_and_a_position() {
         key_now(Some(&map), &at(near, None, Some(120.0))),
         Some((1, major(0)))
     );
-    assert_eq!(key_now(Some(&map), &at(Some(150.0), None, None)), None);
+    assert_eq!(key_now(Some(&map), &at(Some(110.0), None, None)), None);
 }
 
 #[test]

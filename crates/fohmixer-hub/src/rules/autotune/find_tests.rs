@@ -564,7 +564,7 @@ fn a_refused_read_of_the_rack_its_chain_or_its_plug_in_fails_the_find() {
     let (mut find, rack_path) = to_the_rack();
     find.answer(&parts(&rack_path, chains(&rack_path, 1)));
     assert_eq!(
-        find.answer(&[refusal.clone()]),
+        find.answer(std::slice::from_ref(&refusal)),
         Step::Failed("stale".into())
     );
     // The plug-in's parameters refused.
