@@ -1726,3 +1726,51 @@ async fn a_refused_read_is_not_tried_again_and_waits_for_the_next_trigger() {
     router.songmap_trigger("band");
     assert_eq!(router.songmap.reading.get("band"), Some(&3));
 }
+
+/// The band's Live busy (`on`: its heartbeats overdue) or ready again.
+fn busy(on: bool) -> RouterMsg {
+    RouterMsg::Live {
+        instance: "band".into(),
+        event: LiveEvent::Busy {
+            busy: on,
+            changed: true,
+            tick_age_ms: if on { 400.0 } else { 20.0 },
+            reason: on.then(|| "no heartbeat for 301 ms".to_string()),
+        },
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_retry_due_while_live_is_busy_waits_uncounted_and_reads_nothing() {
+    // PR #145 review M1 (the main session's ruling): a stalled Live (its
+    // heartbeats overdue while it loads a set) gets no read queued behind
+    // the stall; the retry reads once Live is ready, and only that counts.
+    let (mut router, mut rx, _events, _dir) = online();
+    router.songmap_trigger("band");
+    answer(&mut router, 1, Err("no result within 3 s".into()));
+    router.handle(busy(true));
+    for n in 1..=3 {
+        let due = tokio::time::timeout(
+            std::time::Duration::from_millis(2 * RETRY_MS),
+            a_retry(&mut rx),
+        )
+        .await
+        .expect("due again")
+        .expect("the router's tasks run");
+        router.handle(due);
+        assert_eq!(router.songmap.reads, 1, "no read while busy ({n})");
+        assert!(router.songmap.retries.is_empty(), "not counted ({n})");
+        assert_eq!(router.songmap.retry.get("band"), Some(&1));
+    }
+    router.handle(busy(false));
+    let due = tokio::time::timeout(
+        std::time::Duration::from_millis(2 * RETRY_MS),
+        a_retry(&mut rx),
+    )
+    .await
+    .expect("due again")
+    .expect("the router's tasks run");
+    router.handle(due);
+    assert_eq!(router.songmap.reading.get("band"), Some(&2));
+    assert_eq!(router.songmap.retries.get("band"), Some(&1));
+}

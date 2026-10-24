@@ -9,6 +9,7 @@ use fohmixer_proto::markers::Found;
 use fohmixer_proto::markers::migrate::MigrationStatus;
 use serde_json::Value;
 
+use super::retries::Due;
 use super::{MARKERS_CLIENT, Router, RouterMsg, cached_value, layout_msg, markers, write_failure};
 use crate::layout::LayoutStore;
 use crate::live::subs::Cached;
@@ -200,6 +201,19 @@ impl Router {
                 outcome,
             });
         });
+    }
+
+    /// A retry of the keeper's read fell due (or a failed rename asks for a
+    /// read): while Live is busy it waits another `RETRY_MS`, uncounted and
+    /// asking Live nothing (PR #145 review M1); else the keeper reads (none
+    /// while the instance is offline: its connect reads).
+    pub(super) fn markers_retried(&mut self, instance: String) {
+        if self.retry_due(&instance) == Due::Wait {
+            self.markers_retry(instance);
+            return;
+        }
+        let actions = self.markers.retry(&instance);
+        self.markers_apply(actions);
     }
 
     /// Asks the keeper to read `instance` again after `RETRY_MS`.

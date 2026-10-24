@@ -9,8 +9,11 @@
 //! Only a transient failure is tried again ([`transient`], review M2): Live
 //! did not answer in time, or the instance is offline. A definite refusal
 //! (a path that does not resolve, no such property, a request the script
-//! refused) is shown and waits for the next trigger.
+//! refused) is shown and waits for the next trigger. A retry that falls due
+//! while Live is busy waits, uncounted, and asks Live nothing ([`due`],
+//! review M1).
 
+use super::Router;
 use crate::live::client::LiveError;
 
 /// The wait after a failed read before its retry, in ms.
@@ -35,6 +38,33 @@ pub(super) fn transient(error: &str) -> bool {
     error == LiveError::Timeout.to_string() || error == LiveError::Offline.to_string()
 }
 
+/// What a retry that falls due does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Due {
+    /// It reads now (a counted retry).
+    Read,
+    /// It waits another [`RETRY_MS`], uncounted, and asks Live nothing.
+    Wait,
+}
+
+/// What a due retry does (PR #145 review M1, the main session's ruling):
+/// while its instance is busy (`live::busy_reason`: Live's main-thread tick
+/// late or its heartbeats overdue, as while it loads a set) a read would
+/// only wait in the script's queue behind the stall, time out, and still
+/// cost the script its work once Live runs again; so the retry waits, not
+/// counted, and reads once Live is ready.
+pub(super) fn due(busy: bool) -> Due {
+    if busy { Due::Wait } else { Due::Read }
+}
+
+impl Router {
+    /// What `instance`'s due retry does now ([`due`] on its busy state, as
+    /// the instance's heartbeats tell it).
+    pub(super) fn retry_due(&self, instance: &str) -> Due {
+        due(self.states.get(instance).is_some_and(|state| state.busy))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -42,6 +72,12 @@ mod tests {
     #[test]
     fn the_connect_time_bound() {
         assert_eq!((RETRY_MS, CONNECT_RETRIES), (2000, 24));
+    }
+
+    #[test]
+    fn a_retry_due_while_live_is_busy_waits() {
+        assert_eq!(due(true), Due::Wait);
+        assert_eq!(due(false), Due::Read);
     }
 
     #[test]

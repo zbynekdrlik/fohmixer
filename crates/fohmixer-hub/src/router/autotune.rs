@@ -50,7 +50,7 @@ use fohmixer_proto::client::{
 use fohmixer_proto::layout::AutotuneTarget;
 use serde_json::{Value, json};
 
-use super::retries::{CONNECT_RETRIES, RETRY_MS, transient};
+use super::retries::{CONNECT_RETRIES, Due, RETRY_MS, transient};
 use super::{Router, RouterMsg, transport_heard};
 use crate::eq::walk::refused;
 use crate::live::client::LiveHandle;
@@ -543,13 +543,7 @@ impl Router {
         let failures = target.walk_failures;
         let (instance, track) = (target.instance.clone(), target.track.clone());
         match after_walk(transient(&why), failures) {
-            AfterWalk::Retry => {
-                let (key, tx) = (key.to_string(), self.io.tx.clone());
-                tokio::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(RETRY_MS)).await;
-                    let _ = tx.send(RouterMsg::AutotuneWalkRetry { key, walk });
-                });
-            }
+            AfterWalk::Retry => self.autotune_walk_retry_later(key, walk),
             AfterWalk::GiveUp => self.autotune_step(
                 Step::GaveUp {
                     instance,
@@ -564,12 +558,29 @@ impl Router {
         self.autotune_tell();
     }
 
+    /// Asks for a retry of the target's failed walk `walk` after
+    /// [`RETRY_MS`] ([`RouterMsg::AutotuneWalkRetry`]).
+    fn autotune_walk_retry_later(&self, key: &str, walk: u64) {
+        let (key, tx) = (key.to_string(), self.io.tx.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(RETRY_MS)).await;
+            let _ = tx.send(RouterMsg::AutotuneWalkRetry { key, walk });
+        });
+    }
+
     /// A failed walk's retry is due: the target is walked again, unless it
-    /// was walked since (a trigger, a disconnect: the retry is void).
+    /// was walked since (a trigger, a disconnect: the retry is void); while
+    /// its Live is busy it waits another [`RETRY_MS`], uncounted (PR #145
+    /// review M1).
     pub(super) fn autotune_walk_retry(&mut self, key: &str, walk: u64) {
-        if self.autotune.targets.get(key).map(|t| t.walk) == Some(walk) {
-            self.autotune_walk_now(key);
+        let Some(target) = self.autotune.targets.get(key).filter(|t| t.walk == walk) else {
+            return;
+        };
+        if self.retry_due(&target.instance) == Due::Wait {
+            self.autotune_walk_retry_later(key, walk);
+            return;
         }
+        self.autotune_walk_now(key);
     }
 
     /// A walk's answer: a stale one (a newer walk, a disconnect) does

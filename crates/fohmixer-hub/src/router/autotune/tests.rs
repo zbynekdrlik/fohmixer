@@ -1414,6 +1414,24 @@ async fn a_refused_walk_is_shown_and_not_walked_again() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_walk_retry_due_while_live_is_busy_waits_uncounted() {
+    // PR #145 review M1: while the band's Live is busy (a set loading) a
+    // due retry waits another RETRY_MS, walks nothing and counts nothing.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, _rx) = offline_router(dir.path());
+    router.handle(layout(1, vec![stream()]));
+    let w = walk_of(&router, STREAM);
+    walk_failed(&mut router, w);
+    router.states.get_mut("band").unwrap().busy = true;
+    pump(&mut router, &mut own, 3 * RETRY_MS + RETRY_MS / 2).await;
+    assert_eq!(walk_of(&router, STREAM), w, "no walk while busy");
+    assert_eq!(router.autotune.targets[STREAM].walk_failures, 1);
+    router.states.get_mut("band").unwrap().busy = false;
+    pump(&mut router, &mut own, RETRY_MS).await;
+    assert_eq!(walk_of(&router, STREAM), w + 1, "walked once Live is ready");
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_disconnect_ends_a_failed_walks_retry() {
     let dir = tempfile::tempdir().unwrap();
     let (mut router, mut own, _rx) = offline_router(dir.path());

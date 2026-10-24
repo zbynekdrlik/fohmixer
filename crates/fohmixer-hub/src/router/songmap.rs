@@ -44,7 +44,7 @@ use fohmixer_proto::songmap::{
 };
 use serde_json::{Value, json};
 
-use super::retries::{CONNECT_RETRIES, RETRY_MS, transient};
+use super::retries::{CONNECT_RETRIES, Due, RETRY_MS, transient};
 use super::{Router, RouterMsg};
 use crate::eq::walk::{answered, get, items, refused};
 use crate::live::client::LiveHandle;
@@ -868,9 +868,15 @@ impl Router {
     }
 
     /// A failed read's retry is due: it reads, unless it is void (a read
-    /// started since, a disconnect, or another failed read's retry).
+    /// started since, a disconnect, or another failed read's retry); while
+    /// Live is busy it waits another [`RETRY_MS`], uncounted (PR #145 review
+    /// M1).
     pub(super) fn songmap_retry(&mut self, instance: &str, read_no: u64) {
         if self.songmap.retry.get(instance) != Some(&read_no) {
+            return;
+        }
+        if self.retry_due(instance) == Due::Wait {
+            self.songmap_retry_later(instance, read_no);
             return;
         }
         self.songmap.retry.remove(instance);

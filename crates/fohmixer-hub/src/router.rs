@@ -749,10 +749,7 @@ impl Router {
                 }
                 self.autotune_release(&instance, "settled");
             }
-            RouterMsg::MarkersRetry { instance } => {
-                let actions = self.markers.retry(&instance);
-                self.markers_apply(actions);
-            }
+            RouterMsg::MarkersRetry { instance } => self.markers_retried(instance),
             RouterMsg::MarkersSettle { generation } => self.markers_settled(generation),
             RouterMsg::Applied {
                 instance,
@@ -2549,6 +2546,36 @@ mod tests {
             "a retry of the band"
         );
         assert!(started.elapsed() >= std::time::Duration::from_millis(retries::RETRY_MS - 100));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_markers_retry_due_while_live_is_busy_waits_and_reads_nothing() {
+        // PR #145 review M1: a stalled Live gets no read queued behind the
+        // stall; the retry waits another RETRY_MS and reads once Live is
+        // ready.
+        let dir = tempfile::tempdir().unwrap();
+        let (router, mut rx, _records) = offline_router(dir.path());
+        let store = Arc::new(crate::layout::store_in(
+            dir.path(),
+            std::path::Path::new("layout.json"),
+            vec!["band".into()],
+        ));
+        let mut router = router.with_layout(store);
+        router.states.get_mut("band").unwrap().busy = true;
+        router.handle(RouterMsg::MarkersRetry {
+            instance: "band".into(),
+        });
+        let started = tokio::time::Instant::now();
+        let next = next_of(&mut rx, "a message", |_| true).await;
+        assert!(
+            matches!(next, RouterMsg::MarkersRetry { ref instance } if instance == "band"),
+            "waited again, no read"
+        );
+        assert!(started.elapsed() >= std::time::Duration::from_millis(retries::RETRY_MS));
+        router.states.get_mut("band").unwrap().busy = false;
+        router.handle(next);
+        let read = next_of(&mut rx, "a message", |_| true).await;
+        assert!(matches!(read, RouterMsg::MarkersRead { .. }), "a read");
     }
 
     #[tokio::test]
