@@ -9,7 +9,7 @@
 //! the key in force changed ([`KeyFollow`], [`KeyWhy`]).
 //!
 //! PR 2b adds the writes' pure parts: the value to write ([`write_value`],
-//! [`key_values`]: a step's centre, or a quarter step beside it when Live
+//! [`key_values`]: a step's centre, or a nudge beside it when Live
 //! already holds the centre), the read-back's judgement ([`judge`],
 //! [`Readback`]), each target's write state with its one retry
 //! ([`KeyTarget`], [`KeyState`]), a key change's lateness ([`late_ms`])
@@ -37,9 +37,13 @@ pub const GRIDDER_SCALE: usize = 2;
 pub const LOOKAHEAD_MS: f64 = 35.0;
 /// The lookahead at most, in beats: never earlier than one beat.
 pub const MAX_LOOKAHEAD_BEATS: f64 = 1.0;
-/// A quarter step: how far beside a step's centre a value Live already
-/// holds is written (spec §5: a write always changes Live's value).
-pub const NUDGE: f64 = 0.25;
+/// How far beside a step's centre (in steps) a value Live already holds is
+/// written (spec §5: a write always changes Live's value). 0.05 stays in
+/// the step under both a rounding plug-in (`round(v × n)`, Auto-Tune
+/// Artist's own names) and VST3's discrete mapping (`floor(v × (n + 1))`),
+/// for every key and both scales; a quarter step left it there for G#, A
+/// and Bb (PR #144 review I2).
+pub const NUDGE: f64 = 0.05;
 /// Within this of a step's centre a value is that centre: Live keeps a
 /// parameter's value as a float32 (the PC read 2/11 back as
 /// 0.1818181872367859).
@@ -306,7 +310,7 @@ impl KeyFollow {
 /// The value to write for step `index` of `steps` (spec §5, A.4): the
 /// step's centre `index / steps`; when Live already holds it (`current`
 /// within [`SAME_VALUE_EPS`] of it: a rewrite of an equal value may never
-/// reach a remote plug-in), a quarter step ([`NUDGE`]) above it, or below
+/// reach a remote plug-in), a nudge ([`NUDGE`] of a step) above it, or below
 /// it for the last step. Both read back as the same step (half up).
 pub fn write_value(index: u8, steps: u8, current: Option<f64>) -> f64 {
     let (i, n) = (f64::from(index), f64::from(steps));

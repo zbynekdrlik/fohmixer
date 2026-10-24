@@ -10,7 +10,7 @@
 //!   set and the bar (`song`, `change`); a target found anew, or owed the
 //!   key since a disconnect, a held write or another device, is written
 //!   alone (`found`) once its Key and Scale values are heard, so the
-//!   quarter-step rule (`keys::write_value`) sees what Live holds; a write
+//!   nudge rule (`keys::write_value`) sees what Live holds; a write
 //!   not confirmed is written once more at once (`retry`, once per key).
 //!   A keyless song and out of every song write nothing.
 //! - **Held** as the macros are (`may_write`, `autotune_hold`): while the
