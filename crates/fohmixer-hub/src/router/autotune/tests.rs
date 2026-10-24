@@ -22,6 +22,7 @@ use crate::outbox::Outbox;
 use crate::rules::HubState;
 use crate::rules::autotune::Step;
 use crate::rules::autotune::find::Found;
+use crate::rules::autotune::keys::KeyMissing;
 use crate::rules::reverb::Saved;
 
 /// The repro target (on 0) and the stream target (on 127) of the band.
@@ -68,6 +69,7 @@ fn found(index: u32) -> Found {
     Found {
         path: format!("live_set tracks {index} devices 0 parameters 1"),
         id: format!("p{index}"),
+        key: Err(KeyMissing::NoChain),
     }
 }
 
@@ -981,6 +983,7 @@ fn found_at(router: &mut Router, key: &str, index: u32, id: &str) {
         Ok(Found {
             path: format!("live_set tracks {index} devices 0 parameters 1"),
             id: id.into(),
+            key: Err(KeyMissing::NoChain),
         }),
     );
 }
@@ -1241,6 +1244,7 @@ async fn a_rack_replaced_at_the_same_path_is_followed_afresh_and_written_once() 
         Ok(Found {
             path: found(7).path,
             id: "p7b".into(),
+            key: Err(KeyMissing::NoChain),
         }),
     );
     // The new rack gets the decision once, through its own ref.
