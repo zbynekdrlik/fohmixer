@@ -1190,8 +1190,11 @@ async fn a_failed_walk_is_walked_again_after_retry_ms() {
     router.handle(layout(1, vec![stream()]));
     let first = walk_of(&router, STREAM);
     pump(&mut router, &mut own, 2 * retry_ms + retry_ms / 2).await;
-    assert!(
-        walk_of(&router, STREAM) >= first + 2,
+    // Exactly twice more: each retry RETRY_MS after its failure (PR #145
+    // review M4: no back-to-back burst).
+    assert_eq!(
+        walk_of(&router, STREAM),
+        first + 2,
         "walked {} times",
         walk_of(&router, STREAM) - first + 1
     );
@@ -1317,7 +1320,10 @@ async fn a_failed_walk_is_walked_again_and_a_definite_answer_is_not() {
         ]
     );
     assert_eq!(router.autotune.targets[STREAM].walk_failures, 1);
-    pump(&mut router, &mut own, RETRY_MS + RETRY_MS / 2).await;
+    // Not before RETRY_MS (PR #145 review M4), then once.
+    pump(&mut router, &mut own, RETRY_MS - 1).await;
+    assert_eq!(walk_of(&router, STREAM), w0, "not walked before RETRY_MS");
+    pump(&mut router, &mut own, RETRY_MS / 2).await;
     let w1 = walk_of(&router, STREAM);
     assert_eq!(w1, w0 + 1, "walked again");
     // An older walk's failure is void.

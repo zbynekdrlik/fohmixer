@@ -1004,7 +1004,8 @@ fn a_read_is_followed_by_a_read_a_retry_or_nothing() {
     assert_eq!(after_read(false, false, true), Some(After::Read));
     assert_eq!(after_read(true, false, true), Some(After::Read));
     assert_eq!(after_read(true, true, true), Some(After::Read));
-    // A failed read is tried once more; a failed retry is not.
+    // A failed read worth a retry is tried again while retries are left;
+    // with them spent it is not, nor a definite refusal (not retryable).
     assert_eq!(after_read(true, false, false), Some(After::Retry));
     assert_eq!(after_read(true, true, false), None);
     assert_eq!(after_read(false, false, false), None);
