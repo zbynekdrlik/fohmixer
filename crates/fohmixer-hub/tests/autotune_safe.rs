@@ -2,19 +2,26 @@
 //! autotune keys' set (two stream tracks, each a `Latencies` rack inside
 //! `Stream FX`, `+AUTOTUNE`: on 127, off 0; a PA track's rack on top,
 //! `+AUTOTUNE:0`: on 0, off 127; invented names). The hub finds the three
-//! targets and registers each selector's DRY write with the script; its
-//! pings keep it heard; killed, every selector reads DRY within 2 s through
-//! a raw `get` of the host's script, and the script's log says so once.
+//! targets and registers each selector's DRY write with the script, and
+//! every selector reads DRY within 2 s through a raw `get` of the host's
+//! script, the script's log saying so once, when the hub is gone:
+//!
+//! - **frozen** (PR #146 review M1): the hub binary stopped by `SIGSTOP`,
+//!   a hung hub whose TCP stays open; its pings stop, and the script's
+//!   silence check falls back (before, its pings kept it heard);
+//! - **stopped**: the in-process hub's stop, its tasks ended and its
+//!   sockets closed, as a killed process's are.
 #![cfg(unix)]
 
 mod support;
 
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use support::{Host, TestHub, runtime, serial};
+use support::{Host, TestHub, events_in, runtime, serial};
 use tokio_tungstenite::tungstenite::Message;
 
 const SECS_10: Duration = Duration::from_secs(10);
@@ -130,23 +137,155 @@ impl Script {
     }
 }
 
+/// Whether `records` hold the script's OK of a registration of all three
+/// selectors.
+fn registered(records: &[Value]) -> bool {
+    steps_of(records, "safe")
+        .iter()
+        .any(|s| s["targets"] == json!(3) && s["problem"].is_null())
+}
+
+/// Every macro set on (here by another writer: the rule that switches them
+/// is #140 PR 3b).
+fn all_on(host: &mut Host) {
+    for (path, on) in MACROS.into_iter().zip(ON) {
+        assert_eq!(host.param(path, "value", on), on, "{path}");
+    }
+}
+
+/// Reads the macros until each is DRY; how long that took from `since`.
+async fn dry_within(live: &mut Script, since: Instant, limit: Duration) -> Duration {
+    loop {
+        let values = live.macros().await;
+        let elapsed = since.elapsed();
+        if values == DRY {
+            return elapsed;
+        }
+        assert!(elapsed < limit, "{values:?} after {elapsed:?}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// The hub binary over the host on `port`, its data folder `dir` (the
+/// frame there), on a port of its own; asked to stop when dropped, woken
+/// first when frozen.
+struct HubProcess {
+    child: Child,
+}
+
+impl HubProcess {
+    fn start(dir: &Path, port: u16) -> Self {
+        let toml = format!("instances = [{{ name = \"band\", port = {port} }}]\n");
+        std::fs::write(dir.join("fohmixer-hub.toml"), toml).unwrap();
+        let log = std::fs::File::create(dir.join("hub.log")).unwrap();
+        let child = Command::new(env!("CARGO_BIN_EXE_fohmixer-hub"))
+            .env("PORT", "0")
+            .env("FOHMIXER_DATA", dir)
+            .env("NO_COLOR", "1")
+            .env_remove("RUST_LOG")
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log.try_clone().unwrap()))
+            .stderr(Stdio::from(log))
+            .spawn()
+            .expect("spawn fohmixer-hub");
+        Self { child }
+    }
+
+    /// Sends the signal `name` (STOP, CONT, TERM): never a force-end.
+    fn signal(&self, name: &str) {
+        let sent = Command::new("kill")
+            .args(["-s", name, &self.child.id().to_string()])
+            .status()
+            .expect("run kill");
+        assert!(sent.success(), "SIG{name} not sent");
+    }
+}
+
+impl Drop for HubProcess {
+    /// Woken (a frozen hub takes no TERM), asked to stop, waited for.
+    fn drop(&mut self) {
+        if let Ok(None) = self.child.try_wait() {
+            for name in ["CONT", "TERM"] {
+                let _ = Command::new("kill")
+                    .args(["-s", name, &self.child.id().to_string()])
+                    .status();
+            }
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < deadline {
+                if let Ok(Some(_)) = self.child.try_wait() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+}
+
 #[test]
-fn a_killed_hub_leaves_every_selector_on_dry_within_2_s() {
+fn a_frozen_hub_leaves_every_selector_on_dry_within_2_s() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = Host::start_site("band", &site(dir.path()), 0, 0.0);
+        frame(dir.path());
+        let hub = HubProcess::start(dir.path(), host.port);
+        // The hub finds the three targets and the script keeps their DRY
+        // writes, AUT off.
+        let deadline = Instant::now() + SECS_10;
+        while !registered(&events_in(dir.path())) {
+            assert!(
+                Instant::now() < deadline,
+                "never registered: {}",
+                std::fs::read_to_string(dir.path().join("hub.log")).unwrap_or_default()
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        all_on(&mut host);
+        // The hub's pings keep it heard: past the script's 1.5 s of
+        // silence, nothing has fallen back.
+        tokio::time::sleep(Duration::from_millis(1700)).await;
+        let log = host.log_text();
+        assert!(!log.contains("hub lost"), "{log}");
+        let mut live = Script::connect(host.port).await;
+        assert_eq!(live.macros().await, ON);
+        // Frozen with its TCP open: its pings stop.
+        let frozen = Instant::now();
+        hub.signal("STOP");
+        let dry_after = dry_within(&mut live, frozen, Duration::from_secs(2)).await;
+        assert!(dry_after <= Duration::from_secs(2), "{dry_after:?}");
+        println!(
+            "every selector on DRY {} ms after the freeze",
+            dry_after.as_millis()
+        );
+        let log = host.log_text();
+        assert!(
+            log.contains("hub lost (silence): set 3 autotune selectors to DRY, 0 already there"),
+            "{log}"
+        );
+        assert!(
+            log.contains("the hub said nothing for 1.5 s, closing it"),
+            "{log}"
+        );
+        assert_eq!(log.matches("hub lost").count(), 1, "{log}");
+        for path in MACROS {
+            assert_eq!(host.sets("value", path), 2, "{path}");
+        }
+        hub.signal("CONT");
+        drop(hub);
+        drop(live);
+        host.stop();
+    });
+}
+
+#[test]
+fn a_stopped_hub_leaves_every_selector_on_dry_within_2_s() {
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
         let mut host = Host::start_site("band", &site(dir.path()), 0, 0.0);
         frame(dir.path());
         let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
-        // The hub finds the three targets and registers their DRY writes,
-        // AUT off.
-        let records = hub
-            .events_until(SECS_10, |r| {
-                steps_of(r, "safe")
-                    .iter()
-                    .any(|s| s["targets"] == json!(3) && s["problem"].is_null())
-            })
-            .await;
+        let records = hub.events_until(SECS_10, registered).await;
         assert!(
             steps_of(&records, "safe")
                 .iter()
@@ -154,41 +293,22 @@ fn a_killed_hub_leaves_every_selector_on_dry_within_2_s() {
             "{records:?}"
         );
         assert!(!hub.status().await.autotune.aut);
-        // Every selector on autotune (here by another writer: the rule that
-        // switches them is #140 PR 3b).
-        for (path, on) in MACROS.into_iter().zip(ON) {
-            assert_eq!(host.param(path, "value", on), on, "{path}");
-        }
-        // The hub's pings keep it heard: past the script's 1.5 s of
-        // silence, nothing has fallen back.
-        tokio::time::sleep(Duration::from_millis(2000)).await;
-        let log = host.log_text();
-        assert!(!log.contains("hub lost"), "{log}");
+        all_on(&mut host);
         let mut live = Script::connect(host.port).await;
         assert_eq!(live.macros().await, ON);
-        // The hub killed: within 2 s every selector reads DRY.
-        let killed = Instant::now();
+        // Stopped: its tasks end and its sockets close, as a killed
+        // process's do.
+        let stopped = Instant::now();
         drop(hub);
-        loop {
-            let values = live.macros().await;
-            if values == DRY {
-                break;
-            }
-            assert!(
-                killed.elapsed() < Duration::from_secs(2),
-                "{values:?} after {:?}",
-                killed.elapsed()
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        let dry_after = killed.elapsed();
+        let dry_after = dry_within(&mut live, stopped, Duration::from_secs(2)).await;
+        assert!(dry_after <= Duration::from_secs(2), "{dry_after:?}");
         println!(
-            "every selector on DRY {} ms after the kill",
+            "every selector on DRY {} ms after the stop",
             dry_after.as_millis()
         );
         let log = host.log_text();
         assert!(
-            log.contains("hub lost (disconnect): set 3 autotune selectors to DRY"),
+            log.contains("hub lost (disconnect): set 3 autotune selectors to DRY, 0 already there"),
             "{log}"
         );
         assert_eq!(log.matches("hub lost").count(), 1, "{log}");
