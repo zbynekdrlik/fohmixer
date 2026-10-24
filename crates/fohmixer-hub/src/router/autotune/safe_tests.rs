@@ -604,3 +604,31 @@ async fn a_retry_is_void_after_a_newer_registration_or_a_disconnect_and_waits_wh
     );
     assert_eq!(safe_status(&mut router), Vec::new());
 }
+
+#[tokio::test(start_paused = true)]
+async fn an_old_retry_is_void_when_the_newer_registration_failed_too() {
+    // The gate's mutant of the retry's check (`&&` -> `||`): a retry of
+    // an older registration must not send a newer failed one early, beside
+    // that one's own retry.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, _rx, mut script) = scripted_router(dir.path());
+    let asked = both_found(&mut router, &mut own, &mut script).await;
+    answered(&mut router, &mut own, asked, None).await;
+    // Half a retry later a change point sends the list again, and Live
+    // does not answer that one either: its retry is due RETRY_MS later.
+    pump(&mut router, &mut own, RETRY_MS / 2).await;
+    assert!(next_safe(&mut script).is_none(), "not yet");
+    router.autotune_release("band", "settled");
+    let (_, newer) = registration(&mut script);
+    answered(&mut router, &mut own, newer, None).await;
+    assert_eq!(router.autotune.safe["band"].state, SafeState::Failed);
+    // The first one's retry falls due first: void.
+    pump(&mut router, &mut own, RETRY_MS * 3 / 4).await;
+    assert!(next_safe(&mut script).is_none(), "the old retry is void");
+    // The newer one's own retry sends it, once.
+    pump(&mut router, &mut own, RETRY_MS).await;
+    let (again, _asked) = registration(&mut script);
+    assert_eq!(again, writes(&[("p6", 127.0), ("p7", 0.0)]));
+    assert!(next_safe(&mut script).is_none(), "once");
+    assert_eq!(router.autotune.safe["band"].failures, 1);
+}
