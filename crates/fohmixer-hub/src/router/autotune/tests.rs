@@ -354,7 +354,12 @@ async fn a_target_of_an_offline_set_waits_for_its_connect() {
     router.handle(layout(1, vec![stream()]));
     let early = tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv()).await;
     assert!(
-        !matches!(early, Ok(Some(RouterMsg::AutotuneFound { .. }))),
+        !matches!(
+            early,
+            Ok(Some(
+                RouterMsg::AutotuneFound { .. } | RouterMsg::AutotuneWalkFailed { .. }
+            ))
+        ),
         "no walk while the band is offline"
     );
     assert_eq!(
@@ -363,20 +368,18 @@ async fn a_target_of_an_offline_set_waits_for_its_connect() {
     );
     online(&mut router);
     router.autotune_connected("band");
+    // The offline instance's task answers no read: since #140 a failed
+    // walk, never a definite answer.
     let walked = next_of(&mut rx, "the connect's walk", |m| {
-        matches!(m, RouterMsg::AutotuneFound { .. })
+        matches!(m, RouterMsg::AutotuneWalkFailed { .. })
     })
     .await;
-    let RouterMsg::AutotuneFound { key, walk, outcome } = walked else {
+    let RouterMsg::AutotuneWalkFailed { key, walk, why } = walked else {
         unreachable!()
     };
     assert_eq!(
-        (key.as_str(), walk, outcome),
-        (
-            STREAM,
-            walk_of(&router, STREAM),
-            Err("instance offline".to_string())
-        )
+        (key.as_str(), walk, why.as_str()),
+        (STREAM, walk_of(&router, STREAM), "instance offline")
     );
 }
 
