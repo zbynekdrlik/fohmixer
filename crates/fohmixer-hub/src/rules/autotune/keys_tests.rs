@@ -197,6 +197,33 @@ fn no_tempo_means_no_lookahead() {
 }
 
 #[test]
+fn a_stopped_set_keeps_its_lookahead_until_its_playhead_moves() {
+    // PR 2a review M4, as ruled.
+    assert!((kept_ahead(true, Some(120.0), 0.0, false) - 0.07).abs() < 1e-12);
+    assert!(
+        (kept_ahead(true, Some(120.0), 0.5, true) - 0.07).abs() < 1e-12,
+        "playing: one tick at its tempo"
+    );
+    assert_eq!(kept_ahead(true, None, 0.07, false), 0.0, "no tempo heard");
+    assert_eq!(
+        kept_ahead(false, Some(120.0), 0.07, false),
+        0.07,
+        "a stop keeps it"
+    );
+    assert_eq!(
+        kept_ahead(false, Some(90.0), 0.07, false),
+        0.07,
+        "a tempo heard while stopped too"
+    );
+    assert_eq!(
+        kept_ahead(false, Some(120.0), 0.07, true),
+        0.0,
+        "a locate ends it"
+    );
+    assert_eq!(kept_ahead(false, None, 0.03, false), 0.03);
+}
+
+#[test]
 fn a_key_clip_is_in_force_one_tick_early_only_while_playing() {
     // 031 → G at 22897 (spec §2.1), 120 bpm: 0.07 beats ahead.
     let m = map_031();

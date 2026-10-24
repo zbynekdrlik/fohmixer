@@ -165,6 +165,22 @@ pub fn lookahead_beats(tempo: Option<f64>) -> f64 {
     }
 }
 
+/// The lookahead a set's key in force is judged with (beats; spec §6, PR
+/// 2a review M4 as ruled): a playing set's one tick at its tempo; a set
+/// not known to play keeps the one it was last judged with (`kept`) until
+/// its playhead moves (`moved`: a jump, a locate), then none. So a stop
+/// (or a lost transport) alone never judges the key again: a stop one
+/// tick before a key clip keeps the clip's key.
+pub fn kept_ahead(playing: bool, tempo: Option<f64>, kept: f64, moved: bool) -> f64 {
+    if playing {
+        lookahead_beats(tempo)
+    } else if moved {
+        0.0
+    } else {
+        kept
+    }
+}
+
 /// Where a position is: its song (none outside every song) and the key in
 /// force there (none outside every song, or in a keyless song: PR 2a review
 /// M2 tells the two apart).

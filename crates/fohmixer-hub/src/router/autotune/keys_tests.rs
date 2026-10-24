@@ -274,6 +274,7 @@ fn the_key_in_force_at_a_position_needs_a_map_and_a_position() {
         time_sub: None,
         tempo_sub: None,
         follow: KeyFollow::new(),
+        ahead: 0.0,
         bar: None,
         bar_writing: None,
         bar_owed: false,
@@ -316,6 +317,33 @@ fn the_key_in_force_at_a_position_needs_a_map_and_a_position() {
         key_now(Some(&map), &at(Some(250.0), None, None)),
         (Some(3), None)
     );
+}
+
+#[test]
+fn a_stopped_set_is_judged_with_the_lookahead_it_kept() {
+    // PR 2a review M4: the lookahead a stop kept, until the playhead moves.
+    let listing = songs("C");
+    let map = build(&listing.cues, &listing.clips);
+    let at = |playing: Option<bool>, ahead: f64| Position {
+        time: Some(49.95),
+        playing,
+        tempo: Some(120.0),
+        time_sub: None,
+        tempo_sub: None,
+        follow: KeyFollow::new(),
+        ahead,
+        bar: None,
+        bar_writing: None,
+        bar_owed: false,
+        late: None,
+    };
+    let (c, g) = (Some(major(0)), Some(major(7)));
+    assert_eq!(key_now(Some(&map), &at(Some(false), 0.07)), (Some(1), g));
+    assert_eq!(key_now(Some(&map), &at(Some(false), 0.0)), (Some(1), c));
+    assert_eq!(key_now(Some(&map), &at(None, 0.07)), (Some(1), g));
+    // Playing: one tick at its own tempo, whatever was kept.
+    assert_eq!(key_now(Some(&map), &at(Some(true), 0.0)), (Some(1), g));
+    assert_eq!(key_now(Some(&map), &at(Some(true), -1.0)), (Some(1), g));
 }
 
 #[test]

@@ -21,7 +21,9 @@ use super::super::{Router, transport_heard};
 use super::{AUTOTUNE_CLIENT, AutotuneIo, missing_news};
 use crate::live::subs::{Cached, ClientId};
 use crate::rules::autotune::find::KeyFound;
-use crate::rules::autotune::keys::{InForce, KeyFollow, KeyTarget, KeyWhy, in_force, shows};
+use crate::rules::autotune::keys::{
+    InForce, KeyFollow, KeyTarget, KeyWhy, in_force, kept_ahead, shows,
+};
 use crate::rules::autotune::{REFUSED_WHY, Step};
 
 /// A Live set's playhead in beats.
@@ -33,10 +35,12 @@ pub const VALUE: &str = "value";
 
 /// One Live set's playhead as AUTOTUNE follows it: the position, the
 /// transport and the tempo as last heard (none before, and after a
-/// disconnect), its subscriptions, and its key in force; and Live's bar as
-/// the key writes keep it (#140 PR 2b): what its last read-back showed,
-/// the newest write that holds it with its key, whether a held write owes
-/// it the key, and the newest key change's lateness to record.
+/// disconnect), its subscriptions, and its key in force with the lookahead
+/// it was judged with (`ahead`, kept while the set is not known to play
+/// until its playhead moves: PR 2a review M4); and Live's bar as the key
+/// writes keep it (#140 PR 2b): what its last read-back showed, the newest
+/// write that holds it with its key, whether a held write owes it the key,
+/// and the newest key change's lateness to record.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(in crate::router) struct Position {
     pub time: Option<f64>,
@@ -45,6 +49,7 @@ pub(in crate::router) struct Position {
     pub time_sub: Option<String>,
     pub tempo_sub: Option<String>,
     pub follow: KeyFollow,
+    pub ahead: f64,
     pub bar: Option<String>,
     pub bar_writing: Option<(u64, Key)>,
     pub bar_owed: bool,
@@ -127,13 +132,17 @@ pub(super) fn heard_number(heard: Option<&Result<Value, String>>, was: Option<f6
 }
 
 /// The song and key in force at a set's position on its song map: no song
-/// and no key without a map or a position heard; one tick ahead only while
-/// it is known to play.
+/// and no key without a map or a position heard; one tick ahead while it
+/// is known to play, else the lookahead it kept (PR 2a review M4).
 pub(super) fn key_now(map: Option<&SongMap>, position: &Position) -> InForce {
     let (Some(map), Some(time)) = (map, position.time) else {
         return (None, None);
     };
-    in_force(map, time, position.playing == Some(true), position.tempo)
+    if position.playing == Some(true) {
+        in_force(map, time, true, position.tempo)
+    } else {
+        in_force(map, time + position.ahead, false, None)
+    }
 }
 
 /// A target's key device in `/api/status`: the device, its path, its two
@@ -206,6 +215,7 @@ impl Router {
             time_sub,
             tempo_sub,
             follow: KeyFollow::new(),
+            ahead: 0.0,
             bar: None,
             bar_writing: None,
             bar_owed: false,
@@ -273,14 +283,26 @@ impl Router {
             return;
         };
         match part {
-            PositionPart::Time => position.time = heard_number(heard.as_ref(), position.time),
+            PositionPart::Time => {
+                let time = heard_number(heard.as_ref(), position.time);
+                // A stopped set's playhead moved: its kept lookahead ends.
+                position.ahead = kept_ahead(
+                    position.playing == Some(true),
+                    position.tempo,
+                    position.ahead,
+                    time != position.time,
+                );
+                position.time = time;
+            }
             PositionPart::Tempo => position.tempo = heard_number(heard.as_ref(), position.tempo),
         }
         self.autotune_position(instance);
     }
 
     /// A set's transport as AUTOTUNE hears it (none: the listener failed):
-    /// the key in force judged again (the lookahead is a playing set's).
+    /// the key in force judged again (the lookahead is a playing set's; a
+    /// stop keeps the one it was judged with, so a stop alone changes
+    /// nothing: PR 2a review M4).
     pub(super) fn autotune_position_playing(&mut self, instance: &str, playing: Option<bool>) {
         let Some(position) = self.autotune.positions.get_mut(instance) else {
             return;
@@ -307,6 +329,12 @@ impl Router {
         let Some(position) = self.autotune.positions.get_mut(instance) else {
             return;
         };
+        position.ahead = kept_ahead(
+            position.playing == Some(true),
+            position.tempo,
+            position.ahead,
+            false,
+        );
         let (song, key) = key_now(map, position);
         let Some(why) = position.follow.on_position((song, key)) else {
             return;
@@ -345,6 +373,7 @@ impl Router {
             position.playing = None;
             position.tempo = None;
             position.follow.reset();
+            position.ahead = 0.0;
             position.bar = None;
             position.bar_writing = None;
             position.bar_owed = false;
