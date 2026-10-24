@@ -212,7 +212,11 @@ pub enum Control {
 pub const MACRO_MAX: u8 = 127;
 
 /// One `+AUTOTUNE` track (#104): its track by index, its label (its
-/// marker's, or `#<index + 1>`), the values of its rack's first macro.
+/// marker's, or `#<index + 1>`), the values of its rack's first macro, and
+/// since #140 PR 3b its singer (spec §7): its marker's own `+ID`, else its
+/// one `+MUTE` id; none for a singer of its own ([`singer_of`]). A marker
+/// with no `+ID` and two or more `+MUTE` ids names no singer and has the
+/// target problem `two_singers` (no autotune for that track).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AutotuneTarget {
@@ -220,6 +224,20 @@ pub struct AutotuneTarget {
     pub label: String,
     pub on: u8,
     pub off: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub singer: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub two_singers: bool,
+}
+
+/// A target's singer (#140 PR 3b, spec §7): its singer's id (`+ID`, the
+/// paired `+MUTE`), or `#<label>` for a singer of its own (an id never
+/// starts with `#`: [`crate::markers::valid_group_name`]).
+pub fn singer_of(target: &AutotuneTarget) -> String {
+    target
+        .singer
+        .clone()
+        .unwrap_or_else(|| format!("#{}", target.label))
 }
 
 /// A strip: its binding, its kind, and how it is drawn and guarded.

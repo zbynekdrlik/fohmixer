@@ -166,6 +166,10 @@ pub enum TagProblem {
     BadAutotune { tag: String },
     /// A second `+AUTOTUNE` tag (the first counts; #104).
     SecondAutotune { tag: String },
+    /// A `+AUTOTUNE` Tuner with no `+ID` and two or more `+MUTE` ids
+    /// (#140 PR 3b, spec §7): which singer it is is not known, so the track
+    /// gets no autotune.
+    TwoSingers,
 }
 
 /// Whether a Tuner's name makes it a marker: a quote or a `+` token.
@@ -286,7 +290,27 @@ pub fn parse(name: &str) -> Marker {
     } else if marker.groups.is_empty() {
         marker.problems.push(TagProblem::NoGroup);
     }
+    if names_two_singers(&marker) {
+        marker.problems.push(TagProblem::TwoSingers);
+    }
     marker
+}
+
+/// Whether a marker's `+AUTOTUNE` track names two singers or more (#140 PR
+/// 3b): no `+ID` of its own and two or more `+MUTE` ids.
+fn names_two_singers(marker: &Marker) -> bool {
+    marker.autotune.is_some() && marker.id.is_none() && marker.mutes.len() > 1
+}
+
+/// The singer of a marker's `+AUTOTUNE` track (#140 PR 3b, spec §7): its
+/// own `+ID`, else its one `+MUTE` id; none for two or more (a problem) or
+/// none (a singer of its own).
+fn singer(marker: &Marker) -> Option<String> {
+    match (&marker.id, marker.mutes.as_slice()) {
+        (Some(id), _) => Some(id.clone()),
+        (None, [one]) => Some(one.clone()),
+        (None, _) => None,
+    }
 }
 
 /// A `+ID:<id>` tag (`token`, its argument `arg`): the strip's id, once.
@@ -875,7 +899,8 @@ fn fill_links(layout: &mut Layout, frame: &[(LinkId, String)], partners: &[Vec<L
 }
 
 /// The `+AUTOTUNE` tracks (#104), placed or not, in Live's order (the
-/// entries are in it): each track by index, its label, its macro's values.
+/// entries are in it): each track by index, its label, its macro's values,
+/// its singer and whether it names two (#140 PR 3b).
 fn autotune_targets(entries: &[Entry<'_>]) -> Vec<AutotuneTarget> {
     entries
         .iter()
@@ -885,6 +910,8 @@ fn autotune_targets(entries: &[Entry<'_>]) -> Vec<AutotuneTarget> {
                 label: entry.label(),
                 on: on.on(),
                 off: on.off(),
+                singer: singer(&entry.marker),
+                two_singers: names_two_singers(&entry.marker),
             })
         })
         .collect()

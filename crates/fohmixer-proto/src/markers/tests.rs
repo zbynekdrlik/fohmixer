@@ -1827,12 +1827,19 @@ fn autotune_controls(layout: &Layout) -> Vec<Vec<AutotuneTarget>> {
         .collect()
 }
 
-fn autotune_at(anchor: Anchor, label: &str, on: u8, off: u8) -> AutotuneTarget {
+fn autotune_at(
+    anchor: Anchor,
+    label: &str,
+    (on, off): (u8, u8),
+    singer: Option<&str>,
+) -> AutotuneTarget {
     AutotuneTarget {
         binding: at("band", anchor),
         label: label.into(),
         on,
         off,
+        singer: singer.map(str::to_string),
+        two_singers: false,
     }
 }
 
@@ -1850,10 +1857,11 @@ fn compose_fills_every_autotune_control_with_the_tagged_tracks_in_lives_order() 
         found("band", TrackKind::Track, 5, r#""Hand" +G:TALKSHOW"#),
     ];
     let composed = compose(&autotune_frame(), &tagged);
+    // Track 3's `+ID` and track 9's `+MUTE` name one singer (#140 PR 3b).
     let want = vec![
-        autotune_at(Anchor::TrackAt { index: 3 }, "Vox 1", 0, 127),
-        autotune_at(Anchor::TrackAt { index: 9 }, "#10", 127, 0),
-        autotune_at(Anchor::ReturnAt { index: 0 }, "#1", 127, 0),
+        autotune_at(Anchor::TrackAt { index: 3 }, "Vox 1", (0, 127), Some("V1")),
+        autotune_at(Anchor::TrackAt { index: 9 }, "#10", (127, 0), Some("V1")),
+        autotune_at(Anchor::ReturnAt { index: 0 }, "#1", (127, 0), None),
     ];
     let pages: Vec<&str> = composed
         .layout
@@ -1890,6 +1898,108 @@ fn compose_fills_every_autotune_control_with_the_tagged_tracks_in_lives_order() 
         strip_in(&composed.layout, "vocals", "Vox 1").mute_links,
         vec![at("band", Anchor::TrackAt { index: 9 })]
     );
+}
+
+/// The autotune targets `compose` makes of these band tracks' Tuners (each
+/// `(index, name)`), and every marker problem.
+fn autotune_of(tuners: &[(u32, &str)]) -> (Vec<AutotuneTarget>, Vec<MarkerReport>) {
+    let tracks: Vec<Found> = tuners
+        .iter()
+        .map(|(index, name)| found("band", TrackKind::Track, *index, name))
+        .collect();
+    let composed = compose(&autotune_frame(), &tracks);
+    (composed.layout.autotune_targets(), composed.problems)
+}
+
+#[test]
+fn a_pa_tuner_names_its_singer_by_its_id() {
+    // #140 PR 3b, spec §7: a PA strip's `+ID` is its singer.
+    let (targets, _) = autotune_of(&[(1, "+G:STAGE:2 +ID:VOX1 +AUTOTUNE:0")]);
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].singer.as_deref(), Some("VOX1"));
+    assert!(!targets[0].two_singers);
+    assert_eq!(crate::layout::singer_of(&targets[0]), "VOX1");
+    // Its own `+ID` comes first, also beside two `+MUTE` ids.
+    let m = parse(r#""Vox 1" +G:VOCALS +ID:VOX1 +MUTE:A +MUTE:B +AUTOTUNE:0"#);
+    assert_eq!(singer(&m), Some("VOX1".to_string()));
+    assert!(!names_two_singers(&m));
+    assert!(!m.problems.contains(&TagProblem::TwoSingers));
+}
+
+#[test]
+fn a_stream_tuner_names_its_singer_by_its_one_mute() {
+    // #127's pair: the PA strip `+ID:VOX1` and the stream track's Tuner
+    // `+MUTE:VOX1 +AUTOTUNE` are one singer.
+    let (targets, _) = autotune_of(&[
+        (3, r#""Vox 1" +G:VOCALS +ID:VOX1 +AUTOTUNE:0"#),
+        (9, "+MUTE:VOX1 +AUTOTUNE"),
+    ]);
+    let singers: Vec<Option<&str>> = targets.iter().map(|t| t.singer.as_deref()).collect();
+    assert_eq!(singers, [Some("VOX1"), Some("VOX1")]);
+    assert!(targets.iter().all(|t| !t.two_singers));
+    let m = parse("+MUTE:VOX1 +AUTOTUNE");
+    assert_eq!(singer(&m), Some("VOX1".to_string()));
+    assert!(!names_two_singers(&m));
+}
+
+#[test]
+fn two_mutes_on_an_autotune_tuner_are_a_problem() {
+    // Spec §7: which singer it is is not known, so no autotune for it.
+    assert_eq!(
+        parse("+MUTE:A +MUTE:B +AUTOTUNE").problems,
+        vec![TagProblem::TwoSingers]
+    );
+    let m = parse("+MUTE:A +MUTE:B +MUTE:C +AUTOTUNE");
+    assert!(names_two_singers(&m));
+    assert_eq!(singer(&m), None);
+    // Without `+AUTOTUNE` two mutes are #127's links, no problem.
+    assert_eq!(parse("+MUTE:A +MUTE:B").problems, vec![]);
+    assert!(!names_two_singers(&parse("+MUTE:A +MUTE:B")));
+    // One mute is a singer.
+    assert!(!names_two_singers(&parse("+MUTE:A +AUTOTUNE")));
+    let (targets, problems) = autotune_of(&[
+        (3, r#""A" +G:VOCALS +ID:A"#),
+        (4, r#""B" +G:VOCALS +ID:B"#),
+        (9, "+MUTE:A +MUTE:B +AUTOTUNE"),
+    ]);
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].singer, None);
+    assert!(targets[0].two_singers);
+    let reported: Vec<&MarkerReport> = problems.iter().filter(|r| r.index == 9).collect();
+    assert_eq!(reported.len(), 1);
+    assert_eq!(reported[0].problems, vec![TagProblem::TwoSingers]);
+    assert_eq!(
+        serde_json::to_value(TagProblem::TwoSingers).unwrap(),
+        json!({"code": "two_singers"})
+    );
+    // The target says so on the wire; a plain one carries neither field.
+    assert_eq!(
+        serde_json::to_value(&targets[0]).unwrap(),
+        json!({"binding": {"instance": "band", "anchor": {"kind": "track_at", "index": 9}},
+               "label": "#10", "on": 127, "off": 0, "two_singers": true})
+    );
+}
+
+#[test]
+fn a_tagged_track_without_ids_is_a_singer_of_its_own() {
+    let (targets, _) = autotune_of(&[(6, r#""Vox 7" +G:VOCALS +AUTOTUNE"#)]);
+    assert_eq!(targets[0].singer, None);
+    assert!(!targets[0].two_singers);
+    assert_eq!(crate::layout::singer_of(&targets[0]), "#Vox 7");
+    assert_eq!(singer(&parse("+AUTOTUNE")), None);
+    let mut named = targets[0].clone();
+    named.singer = Some("VOX7".into());
+    assert_eq!(crate::layout::singer_of(&named), "VOX7");
+    assert_eq!(
+        serde_json::to_value(&named).unwrap()["singer"],
+        json!("VOX7")
+    );
+    // A target from before #140 PR 3b (no singer fields) still reads.
+    let older: AutotuneTarget = serde_json::from_value(json!({
+        "binding": {"instance": "band", "anchor": {"kind": "track_at", "index": 6}},
+        "label": "Vox 7", "on": 127, "off": 0}))
+    .unwrap();
+    assert_eq!(older, targets[0]);
 }
 
 #[test]
