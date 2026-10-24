@@ -853,9 +853,56 @@ async fn a_disconnect_drops_the_position_and_key_values() {
         Vec::<Value>::new(),
         "forgotten, not recorded"
     );
-    // The first position after the connect is a song start again.
+    // The previous session's map gives no key in force (#140 PR 2a review
+    // M1); the next connect's map read does, a song start again.
+    deliver(&mut router, TIME, 10.0);
+    assert_eq!(keys_of(&steps(&rx)), Vec::<Value>::new());
+    map_read(&mut router, 2, songs("C"));
+    assert_eq!(keys_of(&steps(&rx)), vec![key(Some(1), Some("C"), "song")]);
+}
+
+#[tokio::test]
+async fn a_reconnect_has_no_key_in_force_until_its_maps_read() {
+    // PR 2a review M1: a set loaded meanwhile has other songs; the map from
+    // before the disconnect never gives the new session a key.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, _own, rx) = offline_router(dir.path());
+    router.handle(layout(1, vec![stream()]));
+    map_read(&mut router, 1, songs("C"));
     deliver(&mut router, TIME, 10.0);
     assert_eq!(keys_of(&steps(&rx)), vec![key(Some(1), Some("C"), "song")]);
+    router.handle(RouterMsg::Live {
+        instance: "band".into(),
+        event: LiveEvent::Disconnected,
+    });
+    router.handle(RouterMsg::Live {
+        instance: "band".into(),
+        event: LiveEvent::Connected(crate::live::ConnectInfo {
+            instance: "band".into(),
+            set_name: "set".into(),
+            script_version: "0".into(),
+            live_version: "12".into(),
+        }),
+    });
+    deliver(&mut router, TEMPO_KEY, 120.0);
+    deliver(&mut router, TIME, 10.0);
+    assert_eq!(
+        keys_of(&steps(&rx)),
+        Vec::<Value>::new(),
+        "no key from the previous session's map"
+    );
+    let keys = status(&mut router).autotune.keys;
+    assert_eq!(
+        (keys[0].song, keys[0].key.as_deref(), keys[0].time),
+        (None, None, Some(10.0))
+    );
+    // The connect's read answers: the key in force at once, a song start.
+    map_read(&mut router, 2, songs("C"));
+    assert_eq!(keys_of(&steps(&rx)), vec![key(Some(1), Some("C"), "song")]);
+    assert_eq!(
+        status(&mut router).autotune.keys[0].key.as_deref(),
+        Some("C")
+    );
 }
 
 #[tokio::test]
