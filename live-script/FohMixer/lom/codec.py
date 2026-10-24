@@ -45,11 +45,17 @@ def _is_live_type(cls):
     return module == "Live" or module.startswith("Live.")
 
 
+# The modules Live's vector classes were read in on the PC: ``Base`` (a track
+# list, #58) and ``Device`` (a device's parameters, #140). Taken by name,
+# whatever the ``Live`` module shows: the general check below can only add.
+VECTOR_MODULES = ("Base", "Device")
+
+
 def _live_module(module):
-    """Whether a class's ``__module__`` is one of Live's: ``Live``, ``Live.*``,
-    or the bare name of one of its modules, as Live's own classes report it
-    (``Base`` for a track list, ``Device`` for a device's parameters)."""
-    if module == "Live" or module.startswith("Live."):
+    """Whether a class's ``__module__`` is one of Live's: a module its vectors
+    were read in (``VECTOR_MODULES``), ``Live``, ``Live.*``, or the bare name
+    of another of its modules, as Live's own classes report it."""
+    if module in VECTOR_MODULES or module == "Live" or module.startswith("Live."):
         return True
     return isinstance(getattr(Live, module, None), types.ModuleType)
 
