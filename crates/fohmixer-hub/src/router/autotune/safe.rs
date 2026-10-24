@@ -25,6 +25,15 @@
 //!   also sent again `RETRY_MS` after it, up to `CONNECT_RETRIES` in a row
 //!   (a due retry waits, uncounted, while Live is busy), a refusal never.
 //!   `/api/status` `autotune.safe` shows each set's state.
+//! - **A ref gone (PR #146 review N1):** the script refuses a list with a
+//!   target that does not resolve whole (a rack deleted after a walk kept
+//!   its ref). The hub then asks the script for each listed ref's value:
+//!   the targets whose ref it answers stale or unknown are dropped (and
+//!   walked again), and the rest are registered again; one stale ref
+//!   never leaves the whole set unregistered.
+//! - **The decision:** a registration sent or failed is no armed fall back,
+//!   kept is (PR #146 review I2): every change of it decides the set (a
+//!   selector on goes DRY at once while its registration is not kept).
 //!
 //! Nothing here writes a selector.
 
@@ -34,11 +43,17 @@ use serde_json::{Value, json};
 use super::super::retries::{Due, RETRY_MS, transient};
 use super::super::{Router, RouterMsg};
 use super::{AfterWalk, AutotuneIo, PARAMETER_CLASS, after_walk, gave_up_problem, may_write};
+use crate::eq::close::{STALE_REF, UNKNOWN_REF};
 use crate::eq::walk::refused;
-use crate::rules::autotune::Step;
+use crate::rules::autotune::{Cause, Step};
 
 /// The script's command that keeps a connection's DRY writes.
 pub const SAFE_WRITES: &str = "safe_writes";
+/// The script's words when a listed target does not resolve (`<n> safe
+/// write target(s) do not resolve`): a ref gone.
+pub const DO_NOT_RESOLVE: &str = "do not resolve";
+/// A target's problem once its ref is gone (PR #146 review N1).
+pub const REF_GONE: &str = "its rack's selector is gone from Live";
 
 /// What the hub registered with a Live set's script since its connect.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +107,45 @@ pub(super) fn safe_problem(outcome: &Result<Vec<Value>, String>) -> Option<Strin
         Err(why) => Some(why.clone()),
         Ok(slots) => refused(slots.first()),
     }
+}
+
+/// Whether a registration's refusal names a target that does not resolve
+/// (a ref gone: the hub asks which).
+pub(super) fn does_not_resolve(problem: &str) -> bool {
+    problem.contains(DO_NOT_RESOLVE)
+}
+
+/// The probe of a refused registration's refs: each one's `value` through
+/// its `$ref` and class, in one call.
+pub(super) fn probe_commands(ids: &[String]) -> Vec<Value> {
+    ids.iter()
+        .map(|id| {
+            json!({
+                "target": {"$ref": id, "class": PARAMETER_CLASS},
+                "name": "get_prop",
+                "args": {"prop": "value"},
+            })
+        })
+        .collect()
+}
+
+/// The refs of `ids` the probe's answer names gone: the script answered
+/// them stale (the object was deleted) or unknown; none when the call
+/// failed (nothing is known).
+pub(super) fn gone_refs(ids: &[String], outcome: &Result<Vec<Value>, String>) -> Vec<String> {
+    let Ok(slots) = outcome else {
+        return Vec::new();
+    };
+    ids.iter()
+        .zip(slots)
+        .filter(|(_, slot)| {
+            matches!(
+                slot.get("errorType").and_then(Value::as_str),
+                Some(STALE_REF | UNKNOWN_REF)
+            )
+        })
+        .map(|(id, _)| id.clone())
+        .collect()
 }
 
 /// What `/api/status` says of a failed registration: Live's words, and
@@ -170,16 +224,19 @@ impl Router {
                 failures,
             },
         );
-        let (instance, tx) = (instance.to_string(), self.io.tx.clone());
+        let tx = self.io.tx.clone();
+        let set = instance.to_string();
         tokio::spawn(async move {
             let outcome = result.await.map_err(|e| e.to_string());
             let _ = tx.send(RouterMsg::AutotuneSafe {
-                instance,
+                instance: set,
                 seq,
                 targets,
                 outcome,
             });
         });
+        // Not kept until the script says so: a selector on goes DRY.
+        self.autotune_decide(instance, Cause::Safe);
     }
 
     /// A registration's answer: void unless it is `instance`'s newest
@@ -222,6 +279,7 @@ impl Router {
                 after == AfterWalk::Retry
             }
         };
+        let gone = problem.as_deref().is_some_and(does_not_resolve);
         self.autotune_step(
             Step::Safe {
                 instance: instance.to_string(),
@@ -233,6 +291,73 @@ impl Router {
         if retry {
             self.autotune_safe_retry_later(instance, seq);
         }
+        if gone {
+            self.autotune_safe_probe(instance, seq);
+        }
+        self.autotune_decide(instance, Cause::Safe);
+    }
+
+    /// Asks the script which refs of `instance`'s refused registration
+    /// `seq` are gone; the answer comes back as
+    /// [`RouterMsg::AutotuneSafeProbed`].
+    fn autotune_safe_probe(&self, instance: &str, seq: u64) {
+        let (Some(safe), Some(live)) = (self.autotune.safe.get(instance), self.live.get(instance))
+        else {
+            return;
+        };
+        let ids: Vec<String> = safe.list.iter().map(|(id, _)| id.clone()).collect();
+        let result = live.call(probe_commands(&ids));
+        let (instance, tx) = (instance.to_string(), self.io.tx.clone());
+        tokio::spawn(async move {
+            let outcome = result.await.map_err(|e| e.to_string());
+            let _ = tx.send(RouterMsg::AutotuneSafeProbed {
+                instance,
+                seq,
+                ids,
+                outcome,
+            });
+        });
+    }
+
+    /// The probe's answer (void unless `instance`'s newest registration is
+    /// still the refused `seq`): every target whose ref is gone is dropped
+    /// (missing, walked again: a rack replaced is found anew), and the rest
+    /// is registered again.
+    pub(in crate::router) fn autotune_safe_probed(
+        &mut self,
+        instance: &str,
+        seq: u64,
+        ids: &[String],
+        outcome: &Result<Vec<Value>, String>,
+    ) {
+        let current = self
+            .autotune
+            .safe
+            .get(instance)
+            .is_some_and(|safe| safe.seq == seq && safe.state == SafeState::Failed);
+        if !current {
+            return;
+        }
+        let gone = gone_refs(ids, outcome);
+        if gone.is_empty() {
+            return;
+        }
+        let keys: Vec<String> = self
+            .autotune
+            .keys_in_order(instance)
+            .into_iter()
+            .filter(|key| {
+                self.autotune.targets[key]
+                    .found
+                    .as_ref()
+                    .is_some_and(|found| gone.contains(&found.id))
+            })
+            .collect();
+        for key in keys {
+            self.autotune_ref_gone(&key);
+            self.autotune_walk(&key);
+        }
+        self.autotune_safe(instance);
     }
 
     /// Asks for a retry of `instance`'s failed registration `seq` after

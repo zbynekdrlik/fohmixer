@@ -28,7 +28,9 @@
 //!   and is never written against; never while the set is held or before
 //!   the target's walk confirmed its device again (PR 2a review M3).
 //!
-//! Nothing here writes a macro or a chain selector.
+//! Nothing here writes a macro or a chain selector: each outcome hands
+//! the decision (#140 PR 3b, `switch.rs`) the key's new state, before a
+//! retry goes (a read-back that disagrees takes a selected track to DRY).
 
 use std::time::{Duration, Instant};
 
@@ -40,12 +42,12 @@ use super::keys::LateNote;
 use super::{PARAMETER_CLASS, may_write};
 use crate::eq::close::STALE_REF;
 use crate::eq::walk::{answered, get, refused};
-use crate::rules::autotune::Step;
 use crate::rules::autotune::find::KeyFound;
 use crate::rules::autotune::keys::{
     KeyState, KeyTarget, KeyWhy, Readback, bar_shows, bar_state, change_time, crossed, judge,
     key_values, late_ms, lookahead_beats, shows,
 };
+use crate::rules::autotune::{Cause, Step};
 
 /// Live's bar's key: an index on Live's scale, C = 0 to B = 11 (spec A.5).
 pub const BAR_ROOT: &str = "root_note";
@@ -354,7 +356,8 @@ impl Router {
     /// slots in that order, then Live's bar's): the change's lateness
     /// (`late`), each target whose newest write it is refused (`readback`,
     /// a stale `$ref` walked again) or read back, the read-back's call for
-    /// the others and the bar, and one retry of the refused ones.
+    /// the others and the bar, the set decided (a refused key is no key:
+    /// DRY), and one retry of the refused ones.
     pub(in crate::router) fn autotune_keys_written(
         &mut self,
         instance: &str,
@@ -411,6 +414,7 @@ impl Router {
             }
         }
         self.autotune_key_read(instance, write, read, bar.is_some());
+        self.autotune_decide(instance, Cause::Key);
         if let Some(key) = again {
             self.autotune_key_write(instance, &retry, key, KeyWhy::Retry);
         }
@@ -453,7 +457,9 @@ impl Router {
     /// The read-back of write `write` of `instance`'s targets `keys` (their
     /// slots in that order, then Live's bar's): each target whose newest
     /// write it is takes the values read and is judged (`readback`), Live's
-    /// bar too (`bar`), and the ones not confirmed are retried once.
+    /// bar too (`bar`), the set is decided (the keys first at a switch-on:
+    /// a confirmed key turns its track on), and the ones not confirmed are
+    /// retried once.
     pub(in crate::router) fn autotune_keys_read(
         &mut self,
         instance: &str,
@@ -498,6 +504,7 @@ impl Router {
                 None,
             );
         }
+        self.autotune_decide(instance, Cause::Key);
         if let Some(key) = again {
             self.autotune_key_write(instance, &retry, key, KeyWhy::Retry);
         }
@@ -553,7 +560,8 @@ impl Router {
 
     /// A value of a target's key device heard: another writer's when it no
     /// longer shows the key the hub confirmed there (`another_writer`, once
-    /// per key, never written against; see [`judged_for_another`]).
+    /// per key, never written against; see [`judged_for_another`]); its
+    /// track is decided again (its key is no longer confirmed: DRY).
     pub(super) fn autotune_another(&mut self, key: &str) {
         let Some(target) = self.autotune.targets.get_mut(key) else {
             return;
@@ -569,12 +577,14 @@ impl Router {
             return;
         }
         target.keyt.another();
+        let instance = target.instance.clone();
         let step = Step::AnotherWriter {
-            instance: target.instance.clone(),
+            instance: instance.clone(),
             target: target.track.clone(),
             shows: shows(key_value, scale_value).map(|key| key.name()),
         };
         self.autotune_step(step, None);
+        self.autotune_decide(&instance, Cause::Key);
     }
 
     /// A target's key writes forgotten (a disconnect, another device, its

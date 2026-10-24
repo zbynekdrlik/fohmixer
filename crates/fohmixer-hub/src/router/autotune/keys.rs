@@ -6,15 +6,16 @@
 //! map (`rules::autotune::keys::in_force`, a read in flight keeping the old
 //! map until it answers) and records each change (`key`), each key device
 //! found (`key_device`) and each one missing (`key_missing`, when news).
-//! It also refuses a page's AUTOTUNE AUT on and tap until #140 PR 3
-//! (`refused`). It hands the writes (PR 2b, `key_writes.rs`) a song start
-//! and a key change of the set, a target found, and every key or scale
-//! value heard (another writer, a key owed until its values were heard).
+//! It also refuses a page's AUTOTUNE tap (`refused`, #140 PR 3b). It hands
+//! the writes (PR 2b, `key_writes.rs`) a song start and a key change of the
+//! set, a target found, and every key or scale value heard (another writer,
+//! a key owed until its values were heard), and each change of the key in
+//! force to the decision (PR 3b, `switch.rs`).
 
 use std::collections::BTreeSet;
 
 use fohmixer_proto::client::{KeyTargetStatus, ServerMsg};
-use fohmixer_proto::songmap::{Key, SongMap};
+use fohmixer_proto::songmap::{Key, SongMap, counts};
 use serde_json::Value;
 
 use super::super::{Router, transport_heard};
@@ -24,7 +25,7 @@ use crate::rules::autotune::find::KeyFound;
 use crate::rules::autotune::keys::{
     InForce, KeyFollow, KeyTarget, KeyWhy, in_force, kept_ahead, shows,
 };
-use crate::rules::autotune::{REFUSED_WHY, Step};
+use crate::rules::autotune::{Cause, REFUSED_WHY, Step};
 
 /// A Live set's playhead in beats.
 pub const CURRENT_SONG_TIME: &str = "current_song_time";
@@ -322,7 +323,10 @@ impl Router {
     /// until it answers, so the key never flickers to none): a change is
     /// one `key` record, and a song start or a key change with a key in
     /// force writes it to every target of the set (#140 PR 2b; a keyless
-    /// song or out of every song writes nothing: the keys stay).
+    /// song or out of every song writes nothing: the keys stay). Each
+    /// change decides the set's selectors (#140 PR 3b), after the key's
+    /// write went out; a song start first ends every selector guard's give
+    /// up (spec §7: until the next song start).
     pub(super) fn autotune_position(&mut self, instance: &str) {
         let current = self.autotune.current_maps.contains(instance);
         let map = self
@@ -353,17 +357,32 @@ impl Router {
             },
             None,
         );
+        let keys = self.autotune.keys_in_order(instance);
+        if why == KeyWhy::Song {
+            for k in &keys {
+                if let Some(target) = self.autotune.targets.get_mut(k) {
+                    target.guard.reset();
+                }
+            }
+        }
         if let Some(key) = key.filter(|_| matches!(why, KeyWhy::Song | KeyWhy::Change)) {
-            let keys = self.autotune.keys_in_order(instance);
             self.autotune_key_write(instance, &keys, key, why);
         }
+        self.autotune_decide(instance, Cause::Position);
     }
 
     /// A new song map of `instance` was stored (`songmap_read`): it is the
-    /// set's current map, and the key in force is judged on it.
+    /// set's current map, its counts go to the pages, and the key in force
+    /// is judged on it.
     pub(in crate::router) fn autotune_map_read(&mut self, instance: &str) {
         self.autotune.current_maps.insert(instance.to_string());
+        if let Some(read) = self.songmap.maps.get(instance) {
+            self.autotune
+                .counts
+                .insert(instance.to_string(), counts(&read.map));
+        }
         self.autotune_position(instance);
+        self.autotune_tell();
     }
 
     /// `instance` went offline: its map is no longer current (PR 2a review
@@ -499,9 +518,10 @@ impl Router {
         self.autotune_key_owed(key);
     }
 
-    /// A page's AUTOTUNE AUT on or tap (`what`), refused until #140 PR 3:
-    /// recorded, and that page told the state again (its button shows what
-    /// the hub holds); nothing is written and nothing saved.
+    /// A page's AUTOTUNE tap (`what`), refused since #140 PR 3b (the tap is
+    /// gone; in PR 3c's surface a tap opens the singers' panel): recorded,
+    /// and that page told the state again (its button shows what the hub
+    /// holds); nothing is written and nothing saved.
     pub(super) fn autotune_refused(&self, client: ClientId, what: &str) {
         self.autotune_step(
             Step::Refused {

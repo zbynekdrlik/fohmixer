@@ -39,6 +39,8 @@ fn target(index: u32, label: &str, on: u8, off: u8) -> AutotuneTarget {
         label: label.into(),
         on,
         off,
+        singer: None,
+        two_singers: false,
     }
 }
 

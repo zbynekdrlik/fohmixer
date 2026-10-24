@@ -33,7 +33,7 @@ const TRANSPORT: &str = "band|live_set|is_playing|false";
 /// The stream rack's AudioGridder (its Latencies rack on the track).
 const PLUGIN: &str = "live_set tracks 7 devices 0 chains 0 devices 0";
 const MACRO: &str = "live_set tracks 7 devices 0 parameters 1";
-const REFUSED: &str = "keys only until #140 PR 3";
+const REFUSED: &str = "the AUTOTUNE tap is gone; a tap opens the singers' panel";
 
 fn stream() -> AutotuneTarget {
     AutotuneTarget {
@@ -45,6 +45,8 @@ fn stream() -> AutotuneTarget {
         label: "#8".into(),
         on: 127,
         off: 0,
+        singer: None,
+        two_singers: false,
     }
 }
 
@@ -569,12 +571,19 @@ async fn a_missing_key_device_is_recorded_once_and_keeps_the_macro() {
         4,
         "the transport, the playhead and tempo, the macro"
     );
-    // The macro's value still makes the state.
+    // The macro's value still makes the state; on its chain with AUT off,
+    // it is written DRY (#140 PR 3b).
     answer(&mut router, |_, prop| match prop {
         "is_playing" => json!(false),
         _ => json!(127.0),
     });
     router.flush();
+    assert_eq!(
+        steps(&rx),
+        vec![
+            json!({"step": "write", "instance": "band", "cause": "found", "on": [], "off": ["#8"]})
+        ]
+    );
     let now = status(&mut router).autotune;
     assert_eq!(now.targets[0].state, TargetState::On);
     assert_eq!(
@@ -870,37 +879,39 @@ async fn a_set_without_targets_lets_its_position_go() {
 }
 
 #[tokio::test]
-async fn aut_on_is_refused_and_writes_nothing() {
+async fn aut_on_is_taken_and_saved() {
+    // #140 PR 3b: AUT on switches; a selector is on only with its key
+    // confirmed (here none: no key device), so nothing goes on.
     let dir = tempfile::tempdir().unwrap();
     let (mut router, mut own, rx) = offline_router(dir.path());
     let page = attach(&mut router, 1);
     router.handle(layout(1, vec![stream()]));
     find(&mut router, found_with(Err(KeyMissing::NoChain)));
-    // Live plays: 1.8.0's AUT on would write the macro on at once.
     transport(&mut router, true);
     let _ = steps(&rx);
     let _ = told(&page);
     set_hub(&mut router, HUB_AUTOTUNE_AUT, json!(true));
     assert_eq!(
         steps(&rx),
-        vec![json!({"step": "refused", "what": "aut", "why": REFUSED,
-                    "client": 1, "peer": "10.0.0.1"})]
+        vec![json!({"step": "flag", "on": true, "client": 1, "peer": "10.0.0.1"})]
     );
-    assert!(!router.autotune.state().aut);
-    // The page is told the state again (unchanged: AUT off).
-    let again = told(&page);
-    assert_eq!(again, vec![router.autotune.state()]);
-    assert!(!again[0].aut);
+    assert!(router.autotune.state().aut);
+    assert!(told(&page).last().is_some_and(|s| s.aut), "told on");
     assert!(!wrote(&mut own).await, "nothing goes to Live");
-    assert!(!dir.path().join("hub-state.json").exists(), "nothing saved");
-    assert_eq!(status(&mut router).autotune.writes, 0);
-    // AUT off is taken as before: its record, nothing saved (no change).
+    let saved: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("hub-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(saved["autotune_aut"], json!(true));
+    // AUT off: its record, saved off.
     set_hub(&mut router, HUB_AUTOTUNE_AUT, json!(false));
     assert_eq!(
         steps(&rx),
         vec![json!({"step": "flag", "on": false, "client": 1, "peer": "10.0.0.1"})]
     );
-    assert!(!dir.path().join("hub-state.json").exists());
+    let saved: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("hub-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(saved, json!({"stage_aut": false}));
     assert!(!wrote(&mut own).await);
 }
 
@@ -936,7 +947,8 @@ async fn a_tap_is_refused_and_writes_nothing() {
 }
 
 #[tokio::test]
-async fn a_persisted_aut_on_starts_off() {
+async fn aut_is_kept_across_a_restart() {
+    // #140 PR 3b: a saved AUT on starts on; nothing is saved at the start.
     let dir = tempfile::tempdir().unwrap();
     let (mut router, _own, _rx) = offline_router_with(
         dir.path(),
@@ -945,16 +957,21 @@ async fn a_persisted_aut_on_starts_off() {
             reverb: Saved::default(),
             fader_links: Vec::new(),
             autotune_aut: true,
+            autotune_off: vec!["VOX1".into()],
         },
     );
-    assert!(!router.autotune.state().aut);
-    assert!(!status(&mut router).autotune.aut);
-    let saved: Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.path().join("hub-state.json")).unwrap())
-            .unwrap();
-    assert_eq!(saved, json!({"stage_aut": false}), "saved off at once");
+    assert!(router.autotune.state().aut);
+    let now = status(&mut router).autotune;
+    assert!(now.aut);
+    assert_eq!(now.singers_off, ["VOX1"]);
+    assert!(!dir.path().join("hub-state.json").exists(), "nothing saved");
     let page = attach(&mut router, 1);
-    assert!(!told(&page)[0].aut, "told off at attach");
+    assert!(told(&page)[0].aut, "told on at attach");
+    assert!(
+        crate::router::autotune::AutotuneIo::new(true, Vec::new())
+            .rule
+            .is_on()
+    );
 }
 
 #[tokio::test]

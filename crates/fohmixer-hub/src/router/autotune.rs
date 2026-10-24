@@ -2,69 +2,76 @@
 //! target's `Latencies` rack (`rules::autotune::find`, a bounded walk per
 //! target, a newer walk voiding an older answer), follows its first macro's
 //! value (its own subscriber, [`AUTOTUNE_CLIENT`]), hands the rule
-//! (`rules::autotune`) the layout's Live sets, their transport, the pages'
-//! flag and taps, and carries out its writes: each Live set's found macros
-//! written through their `$ref` in one `live.call` batch (never by an index
-//! path: a device inserted above would move it), each step an `autotune`
-//! record and a log line, AUTOTUNE AUT in `hub-state.json` (saved whole),
-//! and the state to every page when it changed.
+//! (`rules::autotune`) the layout's Live sets, their transport and the
+//! pages' flag, and decides every target (`autotune/switch.rs`, #140 PR
+//! 3b): each Live set's selectors whose decision differs from what Live
+//! shows are written through their `$ref` in one `live.call` batch (never
+//! by an index path: a device inserted above would move it), each step an
+//! `autotune` record and a log line, AUTOTUNE AUT and the singers off by
+//! hand in `hub-state.json` (saved whole), and the state to every page
+//! when it changed.
 //!
 //! The refs die with the script's connection: a disconnect drops every
 //! found ref and value of that Live set and voids its walks in flight
 //! before anything else; its connect walks them again. A write that failed
 //! walks its target again (a stale ref, a deleted rack); a track-list
 //! change walks the set's targets again (an index then names another
-//! track), keeping what they found until the answer.
+//! track), keeping what they found until the answer. A walk's answer read
+//! by an index the hub's track list no longer names (its list's push still
+//! on its way, PR #146 review M2) is no answer: it is walked again
+//! ([`MOVED_TRACK`]).
 //!
 //! **The keys (#140 PR 2a, `autotune/keys.rs`):** each found rack's key
 //! device (the find's chain 0) has its Key and Scale values followed, and
 //! each Live set with targets its playhead (`current_song_time`, `tempo`):
 //! the key in force along the set's newest song map, one `key` record per
-//! change. Until #140 PR 3 a page's AUTOTUNE AUT on and tap are refused (a
-//! `refused` record, the state told again to that page) and a saved AUT on
-//! starts off, so nothing writes the macros.
+//! change. A page's AUTOTUNE tap is refused (a `refused` record, the state
+//! told again to that page).
 //!
 //! **The key writes (#140 PR 2b, `autotune/key_writes.rs`):** the key in
 //! force is written to every found key device (through its parameters'
 //! `$ref`s) and Live's bar at every song start and key change, to a target
 //! found anew, and after a hold; each write is read back, a mismatch
-//! retried once, another writer shown and never fought. No selector moves.
+//! retried once, another writer shown and never fought.
 //!
 //! **The fall back to DRY (#140 PR 3a, `autotune/safe.rs`):** every
 //! found selector's DRY write (its macro's `$ref` and off value, whatever
 //! AUT is) is registered with the set's script, which makes them when the
 //! hub is gone; a registration goes when the found set changed, never
-//! while the set's writes are held.
+//! while the set's writes are held. A selector is on only while its set's
+//! registration is kept with it.
 //!
 //! **Nothing is written by a stale index (PR #139 review I1, REVERB's
 //! window):** from a disconnect or a track-list change, and whenever a
 //! write meets the set's markers unsettled (`reverb_settled`: the marker
 //! keeper's read runs or a composition waits), the set's writes are held
-//! (one `held` record), the rule's decisions kept; once the markers
-//! settled (the keeper's read, the quiet time, a layout served) the hold
-//! ends (one record) and its targets are walked again, and each answer
-//! writes the set's decision once to a macro not yet written with it
-//! (`found_write`: another `$ref`, or none written since the hold or the
-//! disconnect).
+//! (one `held` record): a hold first writes DRY through the last known
+//! refs to every selector the rule had on (spec §7), then nothing goes;
+//! once the markers settled (the keeper's read, the quiet time, a layout
+//! served) the hold ends (one record), its targets are walked again and
+//! the set is decided again.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use fohmixer_proto::client::{
     AutotuneState, AutotuneStatus, AutotuneTargetState, AutotuneTargetStatus, HUB_AUTOTUNE,
-    HUB_AUTOTUNE_AUT, KeyInForce, ServerMsg, TargetState,
+    HUB_AUTOTUNE_AUT, HUB_AUTOTUNE_SINGER, KeyInForce, ServerMsg, TargetState, hub_key,
 };
-use fohmixer_proto::layout::AutotuneTarget;
+use fohmixer_proto::layout::{Anchor, AutotuneTarget};
+use fohmixer_proto::songmap::Counts;
 use serde_json::{Value, json};
 
+use super::markers::{RETURNS, TRACKS};
 use super::retries::{CONNECT_RETRIES, Due, RETRY_MS, transient};
 use super::{Router, RouterMsg, transport_heard};
-use crate::eq::walk::refused;
+use crate::eq::walk::{answered, get, refused};
 use crate::live::client::LiveHandle;
 use crate::live::subs::{Cached, ClientId};
 use crate::outbox::Outbox;
 use crate::rules::autotune::find::{self, Find, Found, KeyFound};
 use crate::rules::autotune::keys::KeyTarget;
-use crate::rules::autotune::{AutotuneAut, Step, Why, step_line, step_warn, target_state};
+use crate::rules::autotune::switch::{Decision, SelectorGuard};
+use crate::rules::autotune::{AutotuneAut, Cause, Step, step_line, step_warn, target_state};
 
 #[path = "autotune/keys.rs"]
 mod keys;
@@ -74,6 +81,8 @@ mod key_writes;
 #[path = "autotune/safe.rs"]
 mod safe;
 use safe::Safe;
+#[path = "autotune/switch.rs"]
+mod switch;
 
 /// AUTOTUNE's subscriber of its targets' values (clients count up from 1;
 /// the unfold and marker keepers and REVERB are `MAX`, `MAX − 1`,
@@ -84,6 +93,11 @@ pub const TOO_DEEP: &str = "the devices nest too deep";
 /// The `$ref` class of a rack's macro (the script refuses a ref to anything
 /// else).
 pub const PARAMETER_CLASS: &str = "DeviceParameter";
+/// Why a walk's answer is void (PR #146 review M2): the track at its index
+/// is another than the hub's track list says, so the list's push is on its
+/// way (its change walks the target again); walked again like a read Live
+/// did not answer.
+pub const MOVED_TRACK: &str = "the track at its index is another than the hub's track list";
 
 /// One target of the layout, and what the hub found of it.
 #[derive(Debug, Clone, PartialEq)]
@@ -102,9 +116,14 @@ pub(super) struct Target {
     pub sub: Option<String>,
     /// The macro's value as last heard.
     pub value: Option<f64>,
-    /// The `$ref` the set's decision was last written to; none since a
-    /// disconnect or a held write (the decision is owed).
-    pub wrote: Option<String>,
+    /// Its last decision (#140 PR 3b): none until its rack is found, and
+    /// again from a disconnect or another macro found.
+    pub decision: Option<Decision>,
+    /// The guard against another writer on its selector (spec §7).
+    pub guard: SelectorGuard,
+    /// The hub's write of its selector on its way (`true`: the autotune
+    /// chain), until Live's next value of it: that value is its echo.
+    pub writing: Option<bool>,
     /// Its key device (#140 PR 2): none until its rack is found, else the
     /// device or why there is none (the find's words).
     pub key: Option<Result<KeyFound, String>>,
@@ -157,19 +176,17 @@ pub(super) struct AutotuneIo {
     pub safe: BTreeMap<String, Safe>,
     /// The registrations' own counter.
     pub safe_seq: u64,
+    /// Each Live set's song map counts, as last read (the pages' state).
+    pub counts: BTreeMap<String, Counts>,
 }
 
 impl AutotuneIo {
-    /// AUTOTUNE with AUT off, whatever was persisted (`saved`): until #140
-    /// PR 3 nothing switches, so a saved AUT on is logged and starts off
-    /// (the router saves it off). Its state as every page gets it at attach
-    /// is the one told (a layout without targets tells nothing new).
-    pub fn new(saved: bool) -> Self {
-        if saved {
-            tracing::warn!("AUTOTUNE AUT stays off until #140 PR 3");
-        }
+    /// AUTOTUNE with AUT and the singers off by hand as persisted (#140 PR
+    /// 3b: kept across a restart). Its state as every page gets it at
+    /// attach is the one told (a layout without targets tells nothing new).
+    pub fn new(saved: bool, off: Vec<String>) -> Self {
         let mut io = Self {
-            rule: AutotuneAut::new(false),
+            rule: AutotuneAut::new(saved, off),
             targets: BTreeMap::new(),
             order: Vec::new(),
             walks: 0,
@@ -180,22 +197,37 @@ impl AutotuneIo {
             key_writes: 0,
             safe: BTreeMap::new(),
             safe_seq: 0,
+            counts: BTreeMap::new(),
         };
         io.told = Some(io.state());
         io
     }
 
-    /// The state every page is told: AUT, the first target's Live set's
-    /// transport and each target's state, in Live's order.
-    pub fn state(&self) -> AutotuneState {
-        let targets: Vec<&Target> = self
-            .order
+    /// The targets in the layout's order (Live's).
+    fn ordered(&self) -> Vec<&Target> {
+        self.order
             .iter()
             .filter_map(|key| self.targets.get(key))
-            .collect();
+            .collect()
+    }
+
+    /// The state every page is told: AUT, the first target's Live set's
+    /// transport and each target's state, in Live's order; since #140 PR
+    /// 3b that set's song and key in force, whether a key is being
+    /// checked, the singers, its song map's counts and Live's bar.
+    pub fn state(&self) -> AutotuneState {
+        let targets = self.ordered();
+        let first = targets.first().map(|t| t.instance.as_str());
+        let position = first.and_then(|set| self.positions.get(set));
+        let (song, key) = position.map_or((None, None), |p| p.follow.now());
+        let counts = first
+            .and_then(|set| self.counts.get(set))
+            .copied()
+            .unwrap_or_default();
+        let playing = first.and_then(|set| self.rule.playing(set));
         AutotuneState {
             aut: self.rule.is_on(),
-            playing: targets.first().and_then(|t| self.rule.playing(&t.instance)),
+            playing,
             targets: targets
                 .iter()
                 .map(|t| AutotuneTargetState {
@@ -203,6 +235,19 @@ impl AutotuneIo {
                     state: state_of(t),
                 })
                 .collect(),
+            song,
+            key: key.map(|key| key.name()),
+            checking: switch::checking(
+                self.rule.is_on(),
+                playing,
+                key,
+                targets.iter().map(|t| self.check_of(t)),
+            ),
+            singers: self.singers(),
+            map_problems: counts.problems,
+            map_changes: counts.changes,
+            map_keyed: counts.keyed,
+            bar: position.and_then(|p| p.bar.clone()),
         }
     }
 
@@ -211,7 +256,7 @@ impl AutotuneIo {
         AutotuneStatus {
             aut: self.rule.is_on(),
             writes: self.rule.writes(),
-            taps: self.rule.taps(),
+            taps: 0,
             targets: self
                 .order
                 .iter()
@@ -225,6 +270,7 @@ impl AutotuneIo {
                     path: t.found.as_ref().map(|f| f.path.clone()),
                     problem: t.problem.clone(),
                     key: t.key.as_ref().map(|k| key_status(k, t.values, &t.keyt)),
+                    decision: t.decision,
                 })
                 .collect(),
             keys: self
@@ -244,6 +290,7 @@ impl AutotuneIo {
                 })
                 .collect(),
             safe: self.safe_status(),
+            singers_off: self.rule.singers_off(),
         }
     }
 
@@ -331,14 +378,6 @@ pub(super) fn same_macro(was: Option<&Found>, now: &Found) -> bool {
     was.is_some_and(|was| was.path == now.path && was.id == now.id)
 }
 
-/// The write a found target gets: its set's decision, only when the macro
-/// found (`id`) is not the one it was last written to (`wrote`: none since
-/// a disconnect or a held write). The same macro found again keeps what
-/// Live holds.
-pub(super) fn found_write(wrote: Option<&str>, id: &str, wanted: Option<bool>) -> Option<bool> {
-    wanted.filter(|_| wrote != Some(id))
-}
-
 /// Whether a Live set's writes may go now: its hold is not open and its
 /// markers are settled (`reverb_settled`; PR #139 review I1).
 pub(super) fn may_write(holding: bool, settled: bool) -> bool {
@@ -389,10 +428,64 @@ pub(super) fn after_walk(retryable: bool, failures: u32) -> AfterWalk {
 
 /// Whether a target keeps what it found through a failed walk (PR #146
 /// review I3): a found one whose walk Live did not answer (`retryable`:
-/// busy, a timeout, offline) keeps its ref and its DRY registration, since
-/// the script holds the object; a definite refusal drops them.
+/// busy, a timeout, offline, or [`MOVED_TRACK`]) keeps its ref and its DRY
+/// registration, since the script holds the object; a definite refusal
+/// drops them.
 pub(super) fn keeps_found(retryable: bool, found: bool) -> bool {
     retryable && found
+}
+
+/// Whether a failed walk is walked again (#140): Live did not answer or
+/// was offline ([`transient`]), or the track at its index moved
+/// ([`MOVED_TRACK`]: the list's push is on its way).
+pub(super) fn walk_retryable(why: &str) -> bool {
+    transient(why) || why == MOVED_TRACK
+}
+
+/// The track a walk must find at its target's index (PR #146 review M2):
+/// the list (`tracks` or `return_tracks`), the index and the track's `$ref`
+/// as the hub's list holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct TrackCheck {
+    pub list: &'static str,
+    pub index: usize,
+    pub id: String,
+}
+
+/// The `$ref` of item `index` of a list value as the script encodes it
+/// (`[{"$ref", "path", "class", "name"}, …]`).
+pub(super) fn item_ref(list: &Value, index: usize) -> Option<&str> {
+    list.as_array()?.get(index)?.get("$ref")?.as_str()
+}
+
+/// The check of a walk of a target at `anchor` in `instance`: its list and
+/// index, and the track the hub's list (`lists`, by hub key: the marker
+/// keeper's) names there; none for another anchor or a list not heard (a
+/// set not settled yet holds its writes anyway).
+pub(super) fn track_check(
+    lists: &BTreeMap<String, Value>,
+    instance: &str,
+    anchor: &Anchor,
+) -> Option<TrackCheck> {
+    let (list, index) = match anchor {
+        Anchor::TrackAt { index } => (TRACKS, *index),
+        Anchor::ReturnAt { index } => (RETURNS, *index),
+        _ => return None,
+    };
+    let index = usize::try_from(index).ok()?;
+    let held = lists.get(&hub_key(instance, "live_set", list, false))?;
+    let id = item_ref(held, index)?.to_string();
+    Some(TrackCheck { list, index, id })
+}
+
+/// Whether the list Live answered (`slots`) still has the checked track at
+/// its index.
+pub(super) fn same_track(slots: &[Value], check: &TrackCheck) -> bool {
+    slots
+        .first()
+        .and_then(answered)
+        .and_then(|list| item_ref(list, check.index))
+        == Some(check.id.as_str())
 }
 
 /// A target's problem once its walks gave up (PR #145 review M7): Live's
@@ -413,8 +506,11 @@ pub(super) enum Walked {
 
 /// Finds the `Latencies` rack of the track at `target` (at most
 /// [`find::MAX_READS`] reads): its first macro, or why not in words, or the
-/// read that failed.
-async fn find_rack(live: LiveHandle, target: String) -> Walked {
+/// read that failed. A macro found is checked against `check` (PR #146
+/// review M2): read after the find, the track at the target's index must
+/// still be the one the hub's list names there, else the walk failed
+/// ([`MOVED_TRACK`]).
+async fn find_rack(live: LiveHandle, target: String, check: Option<TrackCheck>) -> Walked {
     let (mut find, mut commands) = Find::start(&target);
     for _ in 0..find::MAX_READS {
         let slots = match live.call(commands).await {
@@ -423,16 +519,30 @@ async fn find_rack(live: LiveHandle, target: String) -> Walked {
         };
         match find.answer(&slots) {
             find::Step::Read(next) => commands = next,
-            find::Step::Done(done) => return Walked::Answered(done.map_err(|m| m.to_string())),
+            find::Step::Done(Ok(found)) => return checked(live, check, found).await,
+            find::Step::Done(Err(missing)) => return Walked::Answered(Err(missing.to_string())),
             find::Step::Failed(why) => return Walked::Failed(why),
         }
     }
     Walked::Answered(Err(TOO_DEEP.to_string()))
 }
 
+/// A macro found, once its track is checked (none to check: as found).
+async fn checked(live: LiveHandle, check: Option<TrackCheck>, found: Found) -> Walked {
+    let Some(check) = check else {
+        return Walked::Answered(Ok(found));
+    };
+    match live.call(vec![get("live_set", check.list)]).await {
+        Ok(slots) if same_track(&slots, &check) => Walked::Answered(Ok(found)),
+        Ok(_) => Walked::Failed(MOVED_TRACK.to_string()),
+        Err(e) => Walked::Failed(e.to_string()),
+    }
+}
+
 impl Router {
     /// A new layout's targets: gone ones let go, new ones walked (kept ones
-    /// keep what they found), the rule told the Live sets, its writes made.
+    /// keep what they found and take the new layout's values), the rule
+    /// told the Live sets, every set decided again.
     pub(super) fn autotune_layout(&mut self, targets: Vec<AutotuneTarget>) {
         let mut wanted: Vec<(String, Target)> = Vec::new();
         for spec in targets {
@@ -453,7 +563,9 @@ impl Router {
                 problem: None,
                 sub: None,
                 value: None,
-                wrote: None,
+                decision: None,
+                guard: SelectorGuard::new(),
+                writing: None,
                 key: None,
                 key_sub: None,
                 scale_sub: None,
@@ -496,24 +608,15 @@ impl Router {
         for key in new {
             self.autotune_walk(&key);
         }
-        let sets: BTreeSet<String> = self
-            .autotune
-            .targets
-            .values()
-            .map(|t| t.instance.clone())
-            .collect();
+        let sets = self.autotune_sets();
         self.autotune_positions(&sets);
         let heard: BTreeMap<String, Option<bool>> = sets
             .iter()
             .map(|s| (s.clone(), self.transport_now(s)))
             .collect();
-        let writes = self
-            .autotune
+        self.autotune
             .rule
             .follow(&sets, |s| heard.get(s).copied().flatten());
-        for (set, on) in writes {
-            self.autotune_write(&set, on, Why::Transport);
-        }
         // A layout served ends the holds of the sets whose markers are
         // settled (as REVERB's window).
         let held: Vec<String> = self.autotune.held.iter().cloned().collect();
@@ -526,7 +629,20 @@ impl Router {
         for name in names {
             self.autotune_safe(&name);
         }
+        // A kept target may carry new values or another singer.
+        for set in sets {
+            self.autotune_decide(&set, Cause::Layout);
+        }
         self.autotune_tell();
+    }
+
+    /// The Live sets of the layout's targets.
+    fn autotune_sets(&self) -> BTreeSet<String> {
+        self.autotune
+            .targets
+            .values()
+            .map(|t| t.instance.clone())
+            .collect()
     }
 
     /// Walks a target again for a trigger (a layout, a connect, a transport
@@ -540,7 +656,10 @@ impl Router {
     }
 
     /// Walks a target (a new walk number: an answer of an older walk is
-    /// void), while its Live set is online; its connect walks it else.
+    /// void), while its Live set is online; its connect walks it else. The
+    /// walk checks the track at its index against the hub's track list as
+    /// it stands now (PR #146 review M2, [`track_check`]): a list change
+    /// handled later walks it again, so its answer is void then anyway.
     fn autotune_walk_now(&mut self, key: &str) {
         let Some(target) = self.autotune.targets.get_mut(key) else {
             return;
@@ -551,11 +670,16 @@ impl Router {
         let (true, Some(live)) = (online, self.live.get(&target.instance)) else {
             return;
         };
+        let check = track_check(
+            &self.reverb.lists,
+            &target.instance,
+            &target.spec.binding.anchor,
+        );
         let (live, track, walk) = (live.clone(), target.track.clone(), target.walk);
         let key = key.to_string();
         let tx = self.io.tx.clone();
         tokio::spawn(async move {
-            let msg = match find_rack(live, track).await {
+            let msg = match find_rack(live, track, check).await {
                 Walked::Answered(outcome) => RouterMsg::AutotuneFound { key, walk, outcome },
                 Walked::Failed(why) => RouterMsg::AutotuneWalkFailed { key, walk, why },
             };
@@ -567,15 +691,16 @@ impl Router {
     /// walk; else the target is missing with Live's words (recorded when
     /// news), unless it was found and Live only did not answer (PR #146
     /// review I3, [`keeps_found`]: its ref and its DRY write stay), and,
-    /// when Live did not answer or was offline, walked again after
-    /// [`RETRY_MS`] while retries are left, or one `gave_up` record (warn)
-    /// waits for the next trigger ([`after_walk`]); a definite refusal waits
-    /// for the next trigger.
+    /// when Live did not answer, was offline or the track at its index
+    /// moved ([`walk_retryable`]), walked again after [`RETRY_MS`] while
+    /// retries are left, or one `gave_up` record (warn) waits for the next
+    /// trigger ([`after_walk`]); a definite refusal waits for the next
+    /// trigger.
     pub(super) fn autotune_walk_failed(&mut self, key: &str, walk: u64, why: String) {
         let Some(target) = self.autotune.targets.get(key).filter(|t| t.walk == walk) else {
             return;
         };
-        let retryable = transient(&why);
+        let retryable = walk_retryable(&why);
         if !keeps_found(retryable, target.found.is_some()) {
             self.autotune_target_missing(key, why.clone());
         }
@@ -591,13 +716,15 @@ impl Router {
                 target.problem = Some(gave_up_problem(&why, failures));
                 self.autotune_step(
                     Step::GaveUp {
-                        instance,
+                        instance: instance.clone(),
                         target: track,
                         problem: why,
                         tries: failures,
                     },
                     None,
                 );
+                // A problem: its selector goes DRY.
+                self.autotune_decide(&instance, Cause::Found);
             }
             AfterWalk::Wait => {}
         }
@@ -630,8 +757,8 @@ impl Router {
     }
 
     /// A walk's answer: a stale one (a newer walk, a disconnect) does
-    /// nothing; a found macro is followed (and gets its set's last write
-    /// when newly found), a missing one says why.
+    /// nothing; a found macro is followed and its set decided, a missing
+    /// one says why.
     pub(super) fn autotune_found(&mut self, key: &str, walk: u64, outcome: Result<Found, String>) {
         let Some(target) = self.autotune.targets.get_mut(key) else {
             return;
@@ -654,23 +781,20 @@ impl Router {
         };
         target.problem = None;
         let was = target.found.replace(found.clone());
-        let wrote = target.wrote.clone();
         let instance = target.instance.clone();
         // Another path, or the same path with a new `$ref` (a rack replaced
         // in place; PR #139 review M1): its value is followed afresh, which
-        // also gives up a listener the script ended.
+        // also gives up a listener the script ended, and its selector is
+        // decided afresh.
         if !same_macro(was.as_ref(), &found) {
+            target.decision = None;
+            target.writing = None;
+            target.guard.reset();
             self.autotune_follow(key, &found);
         }
         self.autotune_key_found(key);
-        if let Some(on) = found_write(
-            wrote.as_deref(),
-            &found.id,
-            self.autotune.rule.wanted(&instance),
-        ) {
-            self.autotune_write_keys(&instance, &[key.to_string()], on, Why::Found);
-        }
         self.autotune_safe(&instance);
+        self.autotune_decide(&instance, Cause::Found);
     }
 
     /// Follows a found macro's value afresh (a new subscription at the found
@@ -710,16 +834,32 @@ impl Router {
     }
 
     fn autotune_target_missing(&mut self, key: &str, why: String) {
+        if let Some(instance) = self.autotune_drop(key, why) {
+            self.autotune_safe(&instance);
+        }
+    }
+
+    /// A target whose selector's ref the script no longer knows (PR #146
+    /// review N1): missing like a rack gone; its set's registration goes
+    /// again once every gone one is dropped.
+    pub(super) fn autotune_ref_gone(&mut self, key: &str) {
+        self.autotune_drop(key, safe::REF_GONE.to_string());
+    }
+
+    /// Drops what a target found (its subscriptions, its key device, its
+    /// decision): missing with `why`, recorded when that is news; its Live
+    /// set.
+    fn autotune_drop(&mut self, key: &str, why: String) -> Option<String> {
         self.autotune_unsub(key);
         self.autotune_key_unsub(key);
         self.autotune_key_forget(key);
-        let Some(target) = self.autotune.targets.get_mut(key) else {
-            return;
-        };
+        let target = self.autotune.targets.get_mut(key)?;
         let news = missing_news(target.problem.as_deref(), &why);
         target.found = None;
         target.key = None;
         target.value = None;
+        target.decision = None;
+        target.writing = None;
         target.problem = Some(why.clone());
         let (instance, track) = (target.instance.clone(), target.track.clone());
         if news {
@@ -732,7 +872,7 @@ impl Router {
                 None,
             );
         }
-        self.autotune_safe(&instance);
+        Some(instance)
     }
 
     /// Ends a target's value subscription (its value with it).
@@ -746,82 +886,9 @@ impl Router {
         }
     }
 
-    /// Writes `on` to every found target of `set`.
-    fn autotune_write(&mut self, set: &str, on: bool, why: Why) {
-        let keys = self.autotune.keys_in_order(set);
-        self.autotune_write_keys(set, &keys, on, why);
-    }
-
-    /// Writes `on` to the found ones of `keys` (targets of `set`), each its
-    /// own on or off value, in one batch through their `$ref`s: recorded
-    /// first; the answer comes back as [`RouterMsg::AutotuneWritten`].
-    /// Nothing found: no record, no call.
-    fn autotune_write_keys(&mut self, set: &str, keys: &[String], on: bool, why: Why) {
-        let holding = self.autotune.held.contains(set);
-        if !may_write(holding, self.reverb_settled(set)) {
-            // Held: the decision is owed to every one of them.
-            for key in keys {
-                if let Some(target) = self.autotune.targets.get_mut(key) {
-                    target.wrote = None;
-                }
-            }
-            self.autotune_hold(set, "markers");
-            return;
-        }
-        let found: Vec<(String, String, String, u8)> = keys
-            .iter()
-            .filter_map(|key| {
-                let t = self.autotune.targets.get(key)?;
-                let f = t.found.as_ref()?;
-                Some((
-                    key.clone(),
-                    f.id.clone(),
-                    t.spec.label.clone(),
-                    macro_value(&t.spec, on),
-                ))
-            })
-            .collect();
-        if found.is_empty() {
-            return;
-        }
-        let Some(live) = self.live.get(set) else {
-            return;
-        };
-        for (key, id, ..) in &found {
-            if let Some(target) = self.autotune.targets.get_mut(key) {
-                target.wrote = Some(id.clone());
-            }
-        }
-        let labels: Vec<String> = found.iter().map(|(_, _, label, _)| label.clone()).collect();
-        self.autotune_step(
-            Step::Write {
-                instance: set.to_string(),
-                on,
-                why,
-                targets: labels,
-            },
-            None,
-        );
-        let pairs: Vec<(&str, u8)> = found
-            .iter()
-            .map(|(_, id, _, value)| (id.as_str(), *value))
-            .collect();
-        let result = live.call(write_commands(&pairs));
-        let written: Vec<String> = found.iter().map(|(key, ..)| key.clone()).collect();
-        let instance = set.to_string();
-        let tx = self.io.tx.clone();
-        tokio::spawn(async move {
-            let outcome = result.await.map_err(|e| e.to_string());
-            let _ = tx.send(RouterMsg::AutotuneWritten {
-                instance,
-                keys: written,
-                outcome,
-            });
-        });
-    }
-
-    /// A write's answer: each target that failed is recorded and walked
-    /// again (a stale ref, a deleted rack); no retry of the write.
+    /// A selector write's answer: each target that failed is recorded and
+    /// walked again (a stale ref, a deleted rack), its write no longer on
+    /// its way (the next decision writes it again); no retry of the write.
     pub(super) fn autotune_written(
         &mut self,
         instance: &str,
@@ -829,11 +896,13 @@ impl Router {
         outcome: &Result<Vec<Value>, String>,
     ) {
         for (key, problem) in slot_failures(outcome, keys) {
-            let target = self
-                .autotune
-                .targets
-                .get(&key)
-                .map_or_else(|| key.clone(), |t| t.track.clone());
+            let target = match self.autotune.targets.get_mut(&key) {
+                Some(t) => {
+                    t.writing = None;
+                    t.track.clone()
+                }
+                None => key.clone(),
+            };
             self.autotune_step(
                 Step::Failed {
                     instance: instance.to_string(),
@@ -847,7 +916,7 @@ impl Router {
     }
 
     /// `instance` connected: its targets are walked (the script's refs start
-    /// over with each connection).
+    /// over with each connection); each answer decides it.
     pub(super) fn autotune_connected(&mut self, instance: &str) {
         for key in self.autotune.keys_of(Some(instance), false) {
             self.autotune_walk(&key);
@@ -856,8 +925,8 @@ impl Router {
     }
 
     /// `instance` went offline: first its walks in flight are voided, then
-    /// every ref and value it found dropped and the rule told; its next
-    /// session starts afresh.
+    /// every ref, value and decision it found dropped and the rule told;
+    /// its next session starts afresh (the script made its DRY writes).
     pub(super) fn autotune_offline(&mut self, instance: &str) {
         let keys = self.autotune.keys_of(Some(instance), false);
         for key in &keys {
@@ -867,7 +936,9 @@ impl Router {
                 target.walk = walk;
                 target.found = None;
                 target.problem = None;
-                target.wrote = None;
+                target.decision = None;
+                target.writing = None;
+                target.guard.reset();
                 target.key = None;
             }
             self.autotune_unsub(key);
@@ -884,8 +955,9 @@ impl Router {
         self.autotune_tell();
     }
 
-    /// `instance`'s track list changed: its targets are walked again (an
-    /// index may name another track now), keeping what they found until the
+    /// `instance`'s track list changed: its writes are held (DRY first
+    /// through the last known refs) and its targets walked again (an index
+    /// may name another track now), keeping what they found until the
     /// answer.
     pub(super) fn autotune_tracks(&mut self, instance: &str) {
         self.autotune_hold(instance, "tracks");
@@ -900,13 +972,18 @@ impl Router {
     }
 
     /// Holds `instance`'s writes (`why`: the cause), recorded once; only
-    /// for a Live set with AUTOTUNE targets.
+    /// for a Live set with AUTOTUNE targets. A selector the rule had on is
+    /// written DRY first, through its last known ref (spec §7: a hold never
+    /// leaves a singer on autotune; refs are objects, never an index).
     fn autotune_hold(&mut self, instance: &str, why: &str) {
         if self.autotune.keys_of(Some(instance), false).is_empty()
-            || !self.autotune.held.insert(instance.to_string())
+            || self.autotune.held.contains(instance)
         {
             return;
         }
+        let going = self.autotune_judge(instance, Cause::Hold, true);
+        self.autotune_select(instance, Cause::Hold, going);
+        self.autotune.held.insert(instance.to_string());
         self.autotune_step(
             Step::Held {
                 instance: instance.to_string(),
@@ -919,9 +996,9 @@ impl Router {
 
     /// Ends `instance`'s hold once its markers are settled (`why`: how),
     /// recorded; its DRY writes are registered as the hold kept its found
-    /// targets (#140 PR 3a), its targets are walked again, and each answer
-    /// writes the set's decision once where it is owed. Settled with no
-    /// hold, a registration a walk's answer left to the markers goes now.
+    /// targets (#140 PR 3a), its targets are walked again and the set is
+    /// decided again. Settled with no hold, a registration a walk's answer
+    /// left to the markers goes now.
     pub(super) fn autotune_release(&mut self, instance: &str, why: &str) {
         if !self.reverb_settled(instance) {
             return;
@@ -942,26 +1019,29 @@ impl Router {
         for key in self.autotune.keys_of(Some(instance), false) {
             self.autotune_walk(&key);
         }
+        self.autotune_decide(instance, Cause::Release);
     }
 
-    /// A transport change of `instance`: the rule's write, and the set's
-    /// unfound targets walked again (found, they get the write).
+    /// A transport change of `instance`: the set's unfound targets walked
+    /// again, the key in force judged, every target decided (a stop is DRY
+    /// at once).
     pub(super) fn autotune_transport(&mut self, instance: &str, playing: bool) {
-        if let Some(on) = self.autotune.rule.on_playing(instance, playing) {
-            self.autotune_write(instance, on, Why::Transport);
-        }
+        self.autotune.rule.on_playing(instance, playing);
         for key in self.autotune.keys_of(Some(instance), true) {
             self.autotune_walk(&key);
         }
         self.autotune_position_playing(instance, Some(playing));
+        self.autotune_decide(instance, Cause::Transport);
         self.autotune_tell();
     }
 
     /// The rules' transport listener of `instance` failed: AUTOTUNE forgets
-    /// its transport.
+    /// its transport, so every target goes DRY (an unknown transport is no
+    /// play).
     pub(super) fn autotune_transport_lost(&mut self, instance: &str) {
         self.autotune.rule.transport_lost(instance);
         self.autotune_position_playing(instance, None);
+        self.autotune_decide(instance, Cause::Transport);
         self.autotune_tell();
     }
 
@@ -985,20 +1065,26 @@ impl Router {
         self.autotune_tell();
     }
 
-    /// A delivery of a target's macro value: a value, or an error (the
-    /// macro's path no longer resolves: its value dropped and the target
-    /// walked again).
+    /// A delivery of a target's macro value: a value (the echo of the
+    /// hub's own write on its way, or judged for another writer: #140 PR
+    /// 3b), or an error (the macro's path no longer resolves: its value
+    /// dropped and the target walked again).
     fn autotune_macro_value(&mut self, key: &str, value: Option<Value>, error: Option<String>) {
         match transport_heard(value, error) {
             Some(Ok(value)) => {
-                if let Some(target) = self.autotune.targets.get_mut(key) {
-                    target.value = value.as_f64();
-                }
+                let Some(target) = self.autotune.targets.get_mut(key) else {
+                    return;
+                };
+                let was = target.value;
+                target.value = value.as_f64();
+                let writing = target.writing.take();
+                self.autotune_heard(key, was, writing);
             }
             Some(Err(error)) => {
                 tracing::warn!(key = %key, error = ?error, "AUTOTUNE lost a rack's macro: it looks again");
                 if let Some(target) = self.autotune.targets.get_mut(key) {
                     target.value = None;
+                    target.writing = None;
                 }
                 self.autotune_walk(key);
             }
@@ -1006,35 +1092,79 @@ impl Router {
         }
     }
 
-    /// A page's `set_hub` of an AUTOTUNE key (`autotune_aut`, `autotune`):
-    /// whether it was one. Until #140 PR 3 only AUT off is taken: AUT on
-    /// and any tap are refused, and nothing is written.
+    /// A page's `set_hub` of an AUTOTUNE key: whether it was one (another,
+    /// or a value it does not take, falls through to the error reply).
+    /// `autotune_aut` takes a bool, `autotune_singer` a singer's `{id,
+    /// off}` (#140 PR 3b), and the tap `autotune` is refused.
     pub(super) fn autotune_set_hub(&mut self, client: ClientId, key: &str, value: &Value) -> bool {
-        match (key, value.as_bool()) {
-            (HUB_AUTOTUNE_AUT, Some(false)) => self.autotune_flag(client, false),
-            (HUB_AUTOTUNE_AUT, Some(true)) => self.autotune_refused(client, "aut"),
-            (HUB_AUTOTUNE, _) => self.autotune_refused(client, "tap"),
+        match key {
+            HUB_AUTOTUNE_AUT => {
+                let Some(on) = value.as_bool() else {
+                    return false;
+                };
+                self.autotune_flag(client, on);
+            }
+            HUB_AUTOTUNE => self.autotune_refused(client, "tap"),
+            HUB_AUTOTUNE_SINGER => {
+                let Some((id, off)) = switch::singer_value(value) else {
+                    return false;
+                };
+                if !self.autotune_has_singer(&id) {
+                    return false;
+                }
+                self.autotune_singer(client, &id, off);
+            }
             _ => return false,
         }
         true
     }
 
-    /// A page set AUTOTUNE AUT: recorded; saved only on a change; turning it
-    /// on writes each set's transport at once.
+    /// A page set AUTOTUNE AUT: recorded; saved only on a change; every set
+    /// decided at once (on: what the rule allows, a selected track only
+    /// once its key is confirmed; off: every target DRY).
     fn autotune_flag(&mut self, client: ClientId, on: bool) {
         let changed = on != self.autotune.rule.is_on();
         self.autotune_step(Step::Flag { on }, Some(client));
-        let writes = self.autotune.rule.set_flag(on);
+        self.autotune.rule.set_flag(on);
         if changed {
             self.state.autotune_aut = on;
             self.save_state();
         }
         self.autotune_tell();
-        for (set, on) in writes {
-            self.autotune_write(&set, on, Why::Flag);
+        for set in self.autotune_sets() {
+            self.autotune_decide(&set, Cause::Flag);
         }
         for key in self.autotune.keys_of(None, true) {
             self.autotune_walk(&key);
+        }
+    }
+
+    /// Whether a target of the layout belongs to the singer `id`.
+    fn autotune_has_singer(&self, id: &str) -> bool {
+        self.autotune
+            .targets
+            .values()
+            .any(|t| fohmixer_proto::layout::singer_of(&t.spec) == id)
+    }
+
+    /// A page switched a singer off by hand or back on (spec §2.2: both of
+    /// its tracks): recorded; saved only on a change; told; every set
+    /// decided.
+    fn autotune_singer(&mut self, client: ClientId, id: &str, off: bool) {
+        self.autotune_step(
+            Step::Singer {
+                id: id.to_string(),
+                off,
+            },
+            Some(client),
+        );
+        if self.autotune.rule.set_singer(id, off) {
+            self.state.autotune_off = self.autotune.rule.singers_off();
+            self.save_state();
+        }
+        self.autotune_tell();
+        for set in self.autotune_sets() {
+            self.autotune_decide(&set, Cause::Singer);
         }
     }
 

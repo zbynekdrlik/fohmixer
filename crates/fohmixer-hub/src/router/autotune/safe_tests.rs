@@ -10,7 +10,10 @@ use super::super::super::retries::{CONNECT_RETRIES, RETRY_MS};
 use super::super::super::tests::{next_of, records, status};
 use super::super::super::{Router, RouterIo, RouterMsg};
 use super::super::AfterWalk;
-use super::{SAFE_WRITES, Safe, failed_problem, safe_commands, safe_news, safe_problem};
+use super::{
+    REF_GONE, SAFE_WRITES, Safe, does_not_resolve, failed_problem, gone_refs, probe_commands,
+    safe_commands, safe_news, safe_problem,
+};
 use crate::live::client::{Asked, LiveEvent, Script, scripted};
 use crate::rules::HubState;
 use crate::rules::autotune::find::Found;
@@ -31,6 +34,8 @@ fn target(index: u32, label: &str, on: u8, off: u8) -> AutotuneTarget {
         label: label.into(),
         on,
         off,
+        singer: None,
+        two_singers: false,
     }
 }
 
@@ -631,4 +636,151 @@ async fn an_old_retry_is_void_when_the_newer_registration_failed_too() {
     assert_eq!(again, writes(&[("p6", 127.0), ("p7", 0.0)]));
     assert!(next_safe(&mut script).is_none(), "once");
     assert_eq!(router.autotune.safe["band"].failures, 1);
+}
+
+#[test]
+fn the_probe_asks_each_ref_and_names_the_ones_gone() {
+    // PR #146 review N1.
+    assert!(does_not_resolve(
+        "bad args: 1 safe write target(s) do not resolve"
+    ));
+    assert!(!does_not_resolve("no such function: safe_writes"));
+    assert!(!does_not_resolve(
+        "bad args: 1 safe write target(s) named twice"
+    ));
+    let ids: Vec<String> = ["p6", "p7", "p8"].map(String::from).to_vec();
+    assert_eq!(
+        probe_commands(&ids[..2]),
+        vec![
+            json!({"target": {"$ref": "p6", "class": "DeviceParameter"}, "name": "get_prop",
+                   "args": {"prop": "value"}}),
+            json!({"target": {"$ref": "p7", "class": "DeviceParameter"}, "name": "get_prop",
+                   "args": {"prop": "value"}}),
+        ]
+    );
+    let stale = json!({"ok": false, "error": "deleted", "errorType": "StaleRef"});
+    let unknown = json!({"ok": false, "error": "unknown id", "errorType": "UnknownRef"});
+    let busy = json!({"ok": false, "error": "busy", "errorType": "RuntimeError"});
+    let value = json!({"ok": true, "data": 0.0});
+    assert_eq!(
+        gone_refs(&ids, &Ok(vec![stale.clone(), value.clone(), unknown])),
+        ["p6", "p8"]
+    );
+    assert_eq!(
+        gone_refs(&ids, &Ok(vec![busy, value.clone(), value])),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        gone_refs(&ids, &Err("instance offline".into())),
+        Vec::<String>::new(),
+        "nothing known"
+    );
+    assert_eq!(gone_refs(&ids, &Ok(vec![stale])), ["p6"], "a short answer");
+    assert_eq!(REF_GONE, "its rack's selector is gone from Live");
+}
+
+/// The next probe of the refs the router asked the scripted Live for (a
+/// walk before it is passed over).
+fn next_probe(script: &mut Script) -> Asked {
+    while let Some(asked) = script.try_call() {
+        if asked
+            .commands
+            .iter()
+            .all(|c| c["name"] == "get_prop" && c["target"]["$ref"].is_string())
+        {
+            return asked;
+        }
+    }
+    panic!("no probe of the refs");
+}
+
+#[tokio::test]
+async fn a_ref_gone_is_dropped_and_the_rest_registered_again() {
+    // PR #146 review N1: the stream's rack was deleted after a walk kept its
+    // ref; the script refuses the whole list. The hub asks which ref is
+    // gone, drops that target and registers the rest.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, rx, mut script) = scripted_router(dir.path());
+    let asked = both_found(&mut router, &mut own, &mut script).await;
+    let refused = json!({"ok": false,
+        "error": "bad args: 1 safe write target(s) do not resolve", "errorType": "OpError"});
+    answered(&mut router, &mut own, asked, Some(refused)).await;
+    assert_eq!(router.autotune.safe["band"].state, SafeState::Failed);
+    let seq = router.autotune.safe["band"].seq;
+    let probe = next_probe(&mut script);
+    assert_eq!(
+        probe.commands,
+        probe_commands(&["p6".to_string(), "p7".to_string()])
+    );
+    // An answer for another registration is void.
+    let stale = json!({"ok": false, "error": "deleted", "errorType": "StaleRef"});
+    let gone = Ok(vec![json!({"ok": true, "data": 127.0}), stale.clone()]);
+    let ids = vec!["p6".to_string(), "p7".to_string()];
+    router.autotune_safe_probed("band", seq + 1, &ids, &gone);
+    assert!(router.autotune.targets[STREAM].found.is_some());
+    // Its own answer: the stream target dropped (missing, walked again),
+    // the PA's DRY write registered alone.
+    let walk = router.autotune.targets[STREAM].walk;
+    probe.answer(vec![json!({"ok": true, "data": 127.0}), stale]);
+    let msg = next_of(&mut own, "the probe's answer", |m| {
+        matches!(m, RouterMsg::AutotuneSafeProbed { .. })
+    })
+    .await;
+    router.handle(msg);
+    let target = &router.autotune.targets[STREAM];
+    assert!(target.found.is_none());
+    assert_eq!(target.problem.as_deref(), Some(REF_GONE));
+    assert!(target.walk > walk, "walked again");
+    assert!(
+        router.autotune.targets[REPRO].found.is_some(),
+        "the PA kept"
+    );
+    let (rest, asked) = registration(&mut script);
+    assert_eq!(rest, writes(&[("p6", 127.0)]));
+    answered(&mut router, &mut own, asked, kept(1)).await;
+    assert_eq!(router.autotune.safe["band"].state, SafeState::Kept);
+    let missing: Vec<Value> = records(&rx)
+        .into_iter()
+        .filter(|r| r["ev"] == "autotune" && r["step"] == "missing")
+        .map(|mut r| {
+            r.as_object_mut().unwrap().remove("ts");
+            r
+        })
+        .collect();
+    assert_eq!(
+        missing,
+        vec![
+            json!({"ev": "autotune", "step": "missing", "instance": "band",
+                    "target": "live_set tracks 7", "problem": REF_GONE})
+        ]
+    );
+    // A probe answer once the set is kept again is void.
+    let seq = router.autotune.safe["band"].seq;
+    router.autotune_safe_probed(
+        "band",
+        seq,
+        &["p6".to_string()],
+        &Ok(vec![json!({"ok": false,
+        "error": "deleted", "errorType": "StaleRef"})]),
+    );
+    assert!(router.autotune.targets[REPRO].found.is_some());
+    assert!(next_safe(&mut script).is_none());
+}
+
+#[tokio::test]
+async fn a_probe_that_finds_nothing_gone_drops_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, _rx, mut script) = scripted_router(dir.path());
+    let asked = both_found(&mut router, &mut own, &mut script).await;
+    let refused = json!({"ok": false,
+        "error": "bad args: 1 safe write target(s) do not resolve", "errorType": "OpError"});
+    answered(&mut router, &mut own, asked, Some(refused)).await;
+    let seq = router.autotune.safe["band"].seq;
+    let ids = vec!["p6".to_string(), "p7".to_string()];
+    router.autotune_safe_probed("band", seq, &ids, &Err("instance offline".into()));
+    assert!(router.autotune.targets[STREAM].found.is_some());
+    assert!(router.autotune.targets[REPRO].found.is_some());
+    assert_eq!(router.autotune.safe["band"].state, SafeState::Failed);
+    let _ = next_probe(&mut script);
+    assert!(next_safe(&mut script).is_none(), "nothing registered again");
 }
