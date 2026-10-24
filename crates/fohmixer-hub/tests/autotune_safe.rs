@@ -112,7 +112,7 @@ impl Script {
                 continue;
             };
             let frame: Value = serde_json::from_str(text.as_str()).unwrap();
-            if frame["event"] == "result" && frame["uuid"] == json!(uuid) {
+            if frame["event"] == "result" && frame["uuid"] == uuid.as_str() {
                 let slot = &frame["data"][0];
                 assert_eq!(slot["ok"], json!(true), "{frame}");
                 return slot["data"].as_f64().unwrap();
