@@ -345,6 +345,25 @@ fn shown(shows: Option<&str>) -> &str {
     shows.unwrap_or("no key")
 }
 
+/// `n` key devices in words.
+fn key_devices(n: usize) -> String {
+    if n == 1 {
+        "1 key device".to_string()
+    } else {
+        format!("{n} key devices")
+    }
+}
+
+/// A key change's lateness in words: ms after its clip's start, or before
+/// it for a write the lookahead made early.
+fn lateness_words(ms: f64) -> String {
+    if ms < 0.0 {
+        format!("{:.1} ms before its start", -ms)
+    } else {
+        format!("{ms:.1} ms after its start")
+    }
+}
+
 /// A step's log line.
 pub fn step_line(step: &Step) -> String {
     match step {
@@ -416,8 +435,8 @@ pub fn step_line(step: &Step) -> String {
             targets,
             bar,
         } => format!(
-            "AUTOTUNE writes {key} to {instance}: {} key devices{} ({})",
-            targets.len(),
+            "AUTOTUNE writes {key} to {instance}: {}{} ({})",
+            key_devices(targets.len()),
             if *bar { " and Live's bar" } else { "" },
             why.word()
         ),
@@ -426,16 +445,23 @@ pub fn step_line(step: &Step) -> String {
             target,
             key,
             state,
-            shows,
-            problem,
+            problem: Some(problem),
+            ..
         } => format!(
-            "AUTOTUNE read back {instance} {target}: {} for {key}, it shows {}{}",
+            "AUTOTUNE {instance} {target}: {} for {key}, nothing read back: {problem}",
+            state_word(*state)
+        ),
+        Step::Readback {
+            instance,
+            target,
+            key,
+            state,
+            shows,
+            problem: None,
+        } => format!(
+            "AUTOTUNE read back {instance} {target}: {} for {key}, it shows {}",
             state_word(*state),
-            shown(shows.as_deref()),
-            problem
-                .as_deref()
-                .map(|p| format!(": {p}"))
-                .unwrap_or_default()
+            shown(shows.as_deref())
         ),
         Step::AnotherWriter {
             instance,
@@ -445,9 +471,10 @@ pub fn step_line(step: &Step) -> String {
             "AUTOTUNE sees another writer on {instance} {target}: it shows {}, not written against",
             shown(shows.as_deref())
         ),
-        Step::Late { instance, song, ms } => {
-            format!("AUTOTUNE wrote {instance} song {song}'s key change {ms:.1} ms after its start")
-        }
+        Step::Late { instance, song, ms } => format!(
+            "AUTOTUNE wrote {instance} song {song}'s key change {}",
+            lateness_words(*ms)
+        ),
         Step::Bar {
             instance,
             key,

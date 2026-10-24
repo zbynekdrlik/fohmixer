@@ -505,7 +505,7 @@ fn the_write_steps_are_recorded_and_logged() {
     );
     assert_eq!(
         step_line(&retry),
-        "AUTOTUNE writes G to band: 1 key devices (retry)"
+        "AUTOTUNE writes G to band: 1 key device (retry)"
     );
     assert_eq!(
         step_line(&confirmed),
@@ -513,7 +513,7 @@ fn the_write_steps_are_recorded_and_logged() {
     );
     assert_eq!(
         step_line(&refused),
-        "AUTOTUNE read back band live_set tracks 1: refused for F#m, it shows no key: \
+        "AUTOTUNE band live_set tracks 1: refused for F#m, nothing read back: \
          live error: Value cannot be set, the parameter is disabled"
     );
     assert_eq!(
@@ -538,7 +538,29 @@ fn the_write_steps_are_recorded_and_logged() {
     );
     assert_eq!(
         step_line(&early),
-        "AUTOTUNE wrote band song 31's key change -23.0 ms after its start"
+        "AUTOTUNE wrote band song 31's key change 23.0 ms before its start"
+    );
+    assert_eq!(
+        step_line(&on_time),
+        "AUTOTUNE wrote band song 1's key change 100.0 ms after its start"
+    );
+    assert_eq!(
+        step_line(&Step::Late {
+            instance: "band".into(),
+            song: 2,
+            ms: 0.0,
+        }),
+        "AUTOTUNE wrote band song 2's key change 0.0 ms after its start"
+    );
+    assert_eq!(
+        step_line(&Step::KeyWrite {
+            instance: "band".into(),
+            key: "C".into(),
+            why: keys::KeyWhy::Found,
+            targets: Vec::new(),
+            bar: true,
+        }),
+        "AUTOTUNE writes C to band: 0 key devices and Live's bar (found)"
     );
     assert_eq!(
         step_line(&bar),

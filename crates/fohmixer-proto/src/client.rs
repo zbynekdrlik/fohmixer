@@ -646,7 +646,12 @@ pub enum KeyState {
 /// their values as last heard (both), the key they show (`F#m`; none for a
 /// scale step other than Major or Minor), or why it has none (`problem`);
 /// since PR 2b the key the hub last wrote there (`want`) and where it
-/// stands (`state`). For `gridder` the values and `shows` are Live's side
+/// stands (`state`). `state` judges `want`, the key LAST WRITTEN there,
+/// not the key in force: while a write is held, or a target found waits
+/// for its values, it still names the old key (or `no_key`). A reader that
+/// asks whether a target holds the key in force compares `want` with the
+/// set's `keys[].key` too (PR #144 review M2). For `gridder` the values and
+/// `shows` are Live's side
 /// of AudioGridder's slots only, never the remote plug-in: the spike read a
 /// slot on C while its remote Auto-Tune was on Bb (spec §5), so `confirmed`
 /// there means the write went through and Live's slot reads the key back.
