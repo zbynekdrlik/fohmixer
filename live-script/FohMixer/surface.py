@@ -8,7 +8,8 @@ tick). A call records ``last_main_tick``, reads the sockets (``poll_in``),
 runs queued commands within the work budget (``Drain``), flushes dirty
 subscriptions, makes the heartbeat when one is due (``Heartbeats``), and
 writes the sockets (``poll_out``); a step that fails is logged and the
-others still run.
+others still run. A connection that ends makes the DRY writes its hub
+registered first (``SafeWrites``, #140 PR 3a), then drops its subscriptions.
 """
 
 import collections
@@ -22,6 +23,7 @@ from . import Config, log
 from .lom import ops
 from .lom.errors import FohError
 from .lom.registry import Registry
+from .safe import SafeWrites
 from .subscriptions import Subscriptions
 from .transport.server import Server
 from .version import VERSION
@@ -160,6 +162,7 @@ class FohMixer(ControlSurface):
         self._last_error_log = {}
         self._registry = Registry()
         self._subs = Subscriptions(self._registry, Config.METER_MIN_INTERVAL_MS)
+        self._safe = SafeWrites(self._log)
         self.last_main_tick = time.monotonic()
         self.connected = True
         self._shown_bind_error = None
@@ -170,7 +173,7 @@ class FohMixer(ControlSurface):
             self._server.inbox,
             self._run_command,
             self._push_result,
-            self._subs.drop_connection,
+            self._connection_gone,
             Config.DRAIN_BUDGET_MS,
             Config.WINDOW_BUDGET_MS,
             Config.WINDOW_MS,
@@ -198,6 +201,10 @@ class FohMixer(ControlSurface):
     @property
     def registry(self):
         return self._registry
+
+    @property
+    def safe(self):
+        return self._safe
 
     def _connect_info(self):
         try:
@@ -266,8 +273,16 @@ class FohMixer(ControlSurface):
                 self.show_message(f"FohMixer: {bind_error}")
         self.schedule_message(1, self._tick)
 
+    def _connection_gone(self, conn):
+        """A connection ended (the hub stopped or crashed, a probe left): its
+        hub's DRY writes first, then its subscriptions go (#140 PR 3a)."""
+        self._safe.fire(conn, "disconnect")
+        self._subs.drop_connection(conn)
+
     def _run_command(self, command, conn):
-        ctx = ops.Context(self.song(), self.application(), self._registry, self._subs, conn)
+        ctx = ops.Context(
+            self.song(), self.application(), self._registry, self._subs, conn, self._safe
+        )
         try:
             return {"ok": True, "data": ops.execute(command, ctx)}
         except FohError as e:
@@ -289,11 +304,14 @@ class FohMixer(ControlSurface):
     # --- lifecycle ---
 
     def disconnect(self):
-        """Live unloads the script (set load/close): stop, say goodbye, release everything."""
+        """Live unloads the script (set load/close): stop, say goodbye, release
+        everything. No DRY write goes: Live is closing the set, and its
+        selectors are saved with it (#140 PR 3a)."""
         self.connected = False
         self._timer.stop()
         self._server.broadcast("disconnect")
         self._server.shutdown(SHUTDOWN_GRACE_S)
+        self._safe.clear()
         self._subs.clear()
         self._registry.clear()
         self._log.warning("FohMixer stopped: instance %s", Config.INSTANCE)
