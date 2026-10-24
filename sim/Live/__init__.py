@@ -122,12 +122,23 @@ class _StringVector(_Vector):
     __slots__ = ()
 
 
+class _TimeableValueVector(_Vector):
+    """A device's ``parameters``: real Live answers it as
+    ``<Device.ATimeableValueVector object at ...>`` (read on the PC, #140),
+    a vector class of the module ``Device``, not ``Base``."""
+
+    __slots__ = ()
+
+
 _export(Base, _Vector, "Vector")
 _export(Base, _StringVector, "StringVector")
+_export(Device, _TimeableValueVector, "ATimeableValueVector")
 # Live's vector classes report the module "Base", not "Live.Base": repr of
-# song.tracks on the PC is "<Base.Vector object at ...>" (#58).
+# song.tracks on the PC is "<Base.Vector object at ...>" (#58); a device's
+# parameters report "Device" (#140).
 _Vector.__module__ = "Base"
 _StringVector.__module__ = "Base"
+_TimeableValueVector.__module__ = "Device"
 
 
 # --- timer -------------------------------------------------------------------------------
@@ -567,7 +578,7 @@ class _DeviceClass(_LiveObject):
 
     @property
     def parameters(self):
-        return _Vector(self._parameters)
+        return _TimeableValueVector(self._parameters)
 
     def _sim_children(self):
         return list(self._parameters)

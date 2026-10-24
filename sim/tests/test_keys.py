@@ -304,6 +304,29 @@ class SetCountTest(unittest.TestCase):
         self.assertEqual(self.line("sets value live_set tracks 9 devices 0"), "SETS -1")
 
 
+class DeviceVectorTest(unittest.TestCase):
+    """A device's ``parameters`` is Live's ``Device.ATimeableValueVector``,
+    as real Live answers it (#140: the PC with 1.10.0), not a ``Base``
+    vector: a script that took only ``Base`` vectors for lists sent it as
+    text. A track's devices and a rack's chains stay ``Base`` vectors."""
+
+    def test_a_devices_parameters_are_a_device_vector(self):
+        song = _site()
+        rack = song.tracks[0].devices[0]
+        plugin = rack.chains[0].devices[0]
+        for device in (rack, plugin):
+            params = device.parameters
+            self.assertEqual(
+                (type(params).__module__, type(params).__name__),
+                ("Device", "ATimeableValueVector"),
+            )
+            self.assertEqual(params[0].name, "Device On")
+            self.assertEqual(list(params), list(device._parameters))
+        for vector in (song.tracks[0].devices, rack.chains, song.tracks):
+            self.assertEqual((type(vector).__module__, type(vector).__name__), ("Base", "Vector"))
+        self.assertIs(Live.Device.ATimeableValueVector, type(rack.parameters))
+
+
 class Float32Test(unittest.TestCase):
     """A plug-in's parameter keeps a written value as Live's float32 (#140
     PR 2b: the PC read 2/11 written to a slot back as 0.1818181872367859);
