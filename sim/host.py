@@ -16,6 +16,12 @@ WebSocket server is bound. Control lines on stdin (never over the WebSocket):
                                 <prop> of the object at the LOM <path> (the
                                 hub tests prove one listener per key), or
                                 ``LISTENERS -1`` when the path does not resolve
+    sets <prop> <path>          print ``SETS <n>``: the sets of <prop> through
+                                Live's setter on the object at the LOM <path>
+                                since the host started, refused ones too (the
+                                hub tests prove "nothing written" by count,
+                                #140), or ``SETS -1`` when the path does not
+                                resolve
     meter "<name>" <level|off>  pin the meters of every track and return named
                                 <name> at <level> (the animation leaves them)
                                 until ``off``; prints ``METER <count>`` (the UI
@@ -357,6 +363,13 @@ def count_listeners(song, prop, text):
     return -1 if obj is None else obj._sim_listener_count(prop)
 
 
+def count_sets(song, prop, text):
+    """The sets of ``prop`` through Live's setter on the object at ``text``
+    (main thread); -1 if unresolved."""
+    obj = resolve(song, text)
+    return -1 if obj is None else obj._sim_set_count(prop)
+
+
 def song_line(line):
     """A ``song`` line's time to jump to (beats), or None."""
     words = line.split()
@@ -455,6 +468,9 @@ def control(main_thread, song, line, held):
     if len(words) == 3 and words[0] == "listeners":
         prop, text = words[1], words[2].strip()
         return f"LISTENERS {main_thread.call(lambda: count_listeners(song, prop, text))}"
+    if len(words) == 3 and words[0] == "sets":
+        prop, text = words[1], words[2].strip()
+        return f"SETS {main_thread.call(lambda: count_sets(song, prop, text))}"
     if words:
         print(f"host: unknown control line: {line.strip()!r}", file=sys.stderr, flush=True)
     return None

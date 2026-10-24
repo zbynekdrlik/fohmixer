@@ -258,5 +258,48 @@ class HostLineTest(unittest.TestCase):
             self.assertEqual(self.line(bad), "PARAM -1", bad)
 
 
+class SetCountTest(unittest.TestCase):
+    """Every set through Live's setter counts, refused ones too; SimLive's
+    own changes never do (#140 PR 2a review M6)."""
+
+    def setUp(self):
+        self.song = _site()
+        self.held = {}
+
+    def line(self, text):
+        return host.control(_Inline(), self.song, text, self.held)
+
+    def test_a_set_through_lives_setter_counts_refused_or_not(self):
+        free, held = _slot(self.song, 1), _slot(self.song, 2)
+        self.assertEqual((free._sim_set_count("value"), held._sim_set_count("value")), (0, 0))
+        free.value = 0.5
+        with self.assertRaises(RuntimeError):
+            held.value = 0.5
+        with self.assertRaises(RuntimeError):
+            free.value = 2.0
+        self.assertEqual((free._sim_set_count("value"), held._sim_set_count("value")), (2, 1))
+        self.assertEqual(free._sim_set_count("name"), 0)
+        with self.assertRaises(AttributeError):
+            free.name = "x"
+        self.assertEqual(free._sim_set_count("name"), 1, "a read-only property's set too")
+        # SimLive's own change (a clock, an animation) is no set.
+        free._sim_set("value", 0.25)
+        self.assertEqual(free._sim_set_count("value"), 2)
+        self.song.root_note = 2
+        self.song.start_playing()
+        self.assertEqual(self.song._sim_set_count("root_note"), 1)
+        self.assertEqual(self.song._sim_set_count("is_playing"), 1)
+        self.assertEqual(self.song._sim_set_count("scale_name"), 0)
+
+    def test_the_sets_line_answers_the_count_at_a_path(self):
+        self.assertEqual(self.line(f"sets value {SLOT_0}"), "SETS 0")
+        self.assertEqual(self.line(f"param {SLOT_0} value 0.9"), "PARAM 0.9")
+        self.assertEqual(self.line(f"param {SLOT_1} value 0.9"), "PARAM -1")
+        self.assertEqual(self.line(f"sets value {SLOT_0}"), "SETS 1")
+        self.assertEqual(self.line(f"sets value {SLOT_1}"), "SETS 1", "a refused set counts")
+        self.assertEqual(self.line("sets root_note live_set"), "SETS 0")
+        self.assertEqual(self.line("sets value live_set tracks 9 devices 0"), "SETS -1")
+
+
 if __name__ == "__main__":
     unittest.main()

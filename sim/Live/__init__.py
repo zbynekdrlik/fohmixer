@@ -178,6 +178,9 @@ class _Prop:
         return obj._v[self.name]
 
     def __set__(self, obj, value):
+        # Every set through Live's setter counts, refused or not (#140 PR 2a
+        # review M6: the hub tests prove "nothing written" by count).
+        obj._sets[self.name] = obj._sets.get(self.name, 0) + 1
         if self.readonly:
             raise AttributeError(f"can't set attribute '{self.name}'")
         _guard()
@@ -228,6 +231,7 @@ class _LiveObject:
         object.__setattr__(self, "_live_ptr", next(_ptr_seq))
         self._v = {}
         self._listeners = {}
+        self._sets = {}
 
     def __getattribute__(self, name):
         if name[:1] != "_" and object.__getattribute__(self, "_deleted"):
@@ -272,6 +276,12 @@ class _LiveObject:
 
     def _sim_listener_count(self, prop):
         return len(self._listeners.get(prop, ()))
+
+    def _sim_set_count(self, prop):
+        """How many sets of ``prop`` came through Live's setter (the LOM's
+        ``obj.prop = value``: a script's ``set_prop``, a host line), refused
+        ones too; SimLive's own changes (``_sim_set``) never count."""
+        return self._sets.get(prop, 0)
 
     def _sim_children(self):
         return []

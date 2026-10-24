@@ -12,7 +12,7 @@
 mod support;
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use fohmixer_proto::client::{ClientMsg, HubStatus, ServerMsg};
 use serde_json::{Value, json};
@@ -226,6 +226,11 @@ fn the_key_in_force_follows_play_and_jumps_and_nothing_is_written_to_live() {
             "between the songs: no key in force"
         );
         let mut a = hub.client().await;
+        // Every rack's macro between its values, so a write of either shows
+        // (PR 2a review M6): the test's own one set of each.
+        for path in MACROS {
+            a.set("band", path, "value", json!(64.0)).await;
+        }
         // A jump into song 1: its start, in C.
         assert_eq!(host.song_time(10.0), 10.0);
         hub.events_until(SECS_5, |r| keys_in(r) == [key(1, "C", "song")])
@@ -252,10 +257,14 @@ fn the_key_in_force_follows_play_and_jumps_and_nothing_is_written_to_live() {
         let now = &status.autotune.keys[0];
         assert_eq!((now.song, now.key.as_deref()), (Some(2), Some("F#m")));
         assert_eq!(now.tempo, Some(120.0));
-        // Nothing was written to Live: every macro and key parameter holds
-        // its fixture value, and so does Live's bar.
+        // Nothing was written to Live: every macro holds the test's 64 and
+        // every key parameter and Live's bar their fixture values; Live's
+        // setter saw the test's own set of each macro and nothing else (a
+        // refused write to Stream B's held slots would count too), and no
+        // write was recorded (PR 2a review M6).
         for path in MACROS {
-            assert_eq!(number(&mut a, path, "value").await, 0.0, "{path}");
+            assert_eq!(number(&mut a, path, "value").await, 64.0, "{path}");
+            assert_eq!(host.sets("value", path), 1, "{path}: the test's own");
         }
         let held = [
             (format!("{PLUGIN_A} parameters 1"), 0.0),
@@ -267,14 +276,21 @@ fn the_key_in_force_follows_play_and_jumps_and_nothing_is_written_to_live() {
         ];
         for (path, value) in &held {
             assert_eq!(number(&mut a, path, "value").await, *value, "{path}");
+            assert_eq!(host.sets("value", path), 0, "{path}");
         }
         assert_eq!(number(&mut a, "live_set", "root_note").await, 3.0);
         assert_eq!(
             a.get("band", "live_set", "scale_name").await,
             json!("Minor")
         );
+        for prop in ["root_note", "scale_name"] {
+            assert_eq!(host.sets(prop, "live_set"), 0, "{prop}");
+        }
         let status = hub.status().await;
         assert_eq!((status.autotune.aut, status.autotune.writes), (false, 0));
+        let records = hub.events();
+        assert_eq!(count(&records, "write"), 0);
+        assert_eq!(count(&records, "failed"), 0);
         // One Live listener per key the hub follows.
         let mut followed: Vec<(String, String)> = MACROS
             .iter()
@@ -303,10 +319,15 @@ fn aut_on_and_a_tap_are_refused_end_to_end() {
         hub.status_until(SECS_5, |s| keyed(s) && s.instances[0].playing.is_some())
             .await;
         let mut a = hub.client().await;
-        // Live plays: 1.8.0's AUT on would switch the stream racks on.
+        // Live plays: 1.8.0's AUT on would switch the stream racks on. The
+        // transport's own `autotune` message (playing) comes first, so every
+        // later one is a re-tell (PR 2a review M7).
         transport(&mut a, "start_playing").await;
-        hub.status_until(SECS_5, |s| s.instances[0].playing == Some(true))
-            .await;
+        a.wait(SECS_5, |m| match m {
+            ServerMsg::Autotune(s) if s.playing == Some(true) => Some(()),
+            _ => None,
+        })
+        .await;
         a.clear();
         for (key, value) in [("autotune_aut", true), ("autotune", true)] {
             a.send(&ClientMsg::SetHub {
@@ -328,15 +349,29 @@ fn aut_on_and_a_tap_are_refused_end_to_end() {
                 json!(["tap", "keys only until #140 PR 3"])
             ]
         );
-        // The page is told the state again: AUT off.
-        let told = a
-            .wait(SECS_5, |m| match m {
-                ServerMsg::Autotune(s) => Some(s.clone()),
-                _ => None,
-            })
-            .await;
-        assert!(!told.aut);
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        // The page is told the state again, once per refusal: AUT off.
+        let mut told = Vec::new();
+        let deadline = Instant::now() + SECS_5;
+        while told.len() < 2 {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match a.next_message(left).await {
+                Some(ServerMsg::Autotune(s)) => told.push(s),
+                Some(_) => {}
+                None => break,
+            }
+        }
+        // Nothing more within 300 ms: no third.
+        let quiet = Instant::now() + Duration::from_millis(300);
+        loop {
+            let left = quiet.saturating_duration_since(Instant::now());
+            match a.next_message(left).await {
+                Some(ServerMsg::Autotune(s)) => told.push(s),
+                Some(_) => {}
+                None => break,
+            }
+        }
+        assert_eq!(told.len(), 2, "{told:?}");
+        assert!(told.iter().all(|s| !s.aut && s.playing == Some(true)));
         for path in MACROS {
             assert_eq!(number(&mut a, path, "value").await, 0.0, "{path}");
         }

@@ -195,6 +195,16 @@ impl Host {
             .unwrap_or_else(|| panic!("not a PARAM line: {answer}"))
     }
 
+    /// The sets of `prop` through Live's setter on the object at `path` since
+    /// the host started, refused ones too (#140; -1: none there).
+    pub fn sets(&mut self, prop: &str, path: &str) -> i64 {
+        let answer = self.answer(&format!("sets {prop} {path}"));
+        answer
+            .strip_prefix("SETS ")
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("not a SETS line: {answer}"))
+    }
+
     /// The Live listeners on `prop` of the object at `path` (-1: none there).
     pub fn listeners(&mut self, prop: &str, path: &str) -> i64 {
         let answer = self.answer(&format!("listeners {prop} {path}"));
