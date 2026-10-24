@@ -1,27 +1,30 @@
-//! AUTOTUNE AUT (#104, D19): while the flag is on, every `+AUTOTUNE`
-//! track's autotune follows its Live set's transport: playing → on,
-//! stopped → off; once per change, at the flag's turn on, and once after a
-//! reconnect (STAGE AUT's rules, `rules.rs`). A tap sets every target by
-//! hand until the next change.
+//! AUTOTUNE AUT (#104, D19; #140 PR 3b): the flag, each followed Live
+//! set's transport, the singers off by hand, and every step's record and
+//! log line. The decision per track is [`switch`] (spec §7: AUT, Live
+//! playing, a keyed song, the singer, the target, the fall back armed, the
+//! key confirmed), the find [`find`] and the keys [`keys`].
 //!
 //! Pure: the router's glue (`router/autotune.rs`) finds each target's
-//! `Latencies` rack ([`find`]), writes its first macro through its `$ref`
-//! and records every [`Step`]. The keys (#140 PR 2) are [`keys`]: until
-//! #140 PR 3 a page can neither turn AUTOTUNE AUT on nor tap AUTOTUNE
-//! ([`Step::Refused`]), so nothing writes the macros.
+//! `Latencies` rack, decides every target (`router/autotune/switch.rs`),
+//! writes its first macro through its `$ref` when the decision differs
+//! from what Live shows and records every [`Step`]. 1.8.0's transport-only
+//! writes and its tap are gone (PR 2a review M10): a page's tap is refused
+//! ([`Step::Refused`], [`REFUSED_WHY`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use fohmixer_proto::client::TargetState;
 use serde::Serialize;
 
-use super::stage_rule;
 use keys::{BarState, KeyDevice, KeyState, KeyWhy, LATE_BOUND_MS, state_word};
+use switch::{SwitchWhy, why_word};
 
 #[path = "autotune/find.rs"]
 pub mod find;
 #[path = "autotune/keys.rs"]
 pub mod keys;
+#[path = "autotune/switch.rs"]
+pub mod switch;
 
 /// A target's value within half a step of its on value is on; any other is
 /// off (today's repro "off" values, 11 to 16 set by hand, read off).
@@ -37,38 +40,29 @@ pub fn target_state(value: Option<f64>, on: u8) -> TargetState {
     }
 }
 
-/// One followed Live set.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-struct Followed {
-    /// Its latest `is_playing` this session.
-    playing: Option<bool>,
-    /// What the rule last wrote this session (a tap never sets it).
-    written: Option<bool>,
-    /// The last write the set's targets got, by the rule or a tap: a target
-    /// found later gets it.
-    last: Option<bool>,
-}
-
 /// The rule's state between events.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutotuneAut {
     on: bool,
-    /// The Live sets of the layout's targets.
-    sets: BTreeMap<String, Followed>,
-    /// The rule's writes since the hub started.
+    /// The Live sets of the layout's targets: each one's `is_playing` as
+    /// last heard this session.
+    sets: BTreeMap<String, Option<bool>>,
+    /// The selector batches the rule sent since the hub started.
     writes: u64,
-    /// The pages' taps since the hub started.
-    taps: u64,
+    /// The singers off by hand (#140 PR 3b, spec §2.2), by
+    /// `layout::singer_of`: kept in `hub-state.json`.
+    singers_off: BTreeSet<String>,
 }
 
 impl AutotuneAut {
-    /// The rule with the persisted flag, following no set yet.
-    pub fn new(on: bool) -> Self {
+    /// The rule with the persisted flag and singers off, following no set
+    /// yet (#140 PR 3b: AUT is kept across a restart).
+    pub fn new(on: bool, off: Vec<String>) -> Self {
         Self {
             on,
             sets: BTreeMap::new(),
             writes: 0,
-            taps: 0,
+            singers_off: off.into_iter().collect(),
         }
     }
 
@@ -80,132 +74,144 @@ impl AutotuneAut {
         self.writes
     }
 
-    pub fn taps(&self) -> u64 {
-        self.taps
+    /// One batch of selector writes went out.
+    pub fn wrote(&mut self) {
+        self.writes += 1;
     }
 
     /// A new layout's Live sets: the ones followed stay as they are, a new
-    /// one takes `transport(set)` as last heard (applied at once), a gone one
-    /// is dropped. The writes to make.
-    pub fn follow(
-        &mut self,
-        sets: &BTreeSet<String>,
-        transport: impl Fn(&str) -> Option<bool>,
-    ) -> Vec<(String, bool)> {
+    /// one takes `transport(set)` as last heard, a gone one is dropped.
+    pub fn follow(&mut self, sets: &BTreeSet<String>, transport: impl Fn(&str) -> Option<bool>) {
         self.sets.retain(|set, _| sets.contains(set));
-        let new: Vec<String> = sets
-            .iter()
-            .filter(|set| !self.sets.contains_key(*set))
-            .cloned()
-            .collect();
-        for set in &new {
-            self.sets.insert(
-                set.clone(),
-                Followed {
-                    playing: transport(set),
-                    written: None,
-                    last: None,
-                },
-            );
+        for set in sets {
+            if !self.sets.contains_key(set) {
+                self.sets.insert(set.clone(), transport(set));
+            }
         }
-        new.into_iter()
-            .filter_map(|set| self.decide(&set).map(|on| (set, on)))
-            .collect()
     }
 
-    /// A set's new `is_playing`: the write to make, if any.
-    pub fn on_playing(&mut self, set: &str, playing: bool) -> Option<bool> {
-        self.sets.get_mut(set)?.playing = Some(playing);
-        self.decide(set)
+    /// A set's new `is_playing` (a set no layout names is not followed).
+    pub fn on_playing(&mut self, set: &str, playing: bool) {
+        if let Some(heard) = self.sets.get_mut(set) {
+            *heard = Some(playing);
+        }
     }
 
-    /// The flag changed: turning it on applies each set's transport at once.
-    /// The writes to make.
-    pub fn set_flag(&mut self, on: bool) -> Vec<(String, bool)> {
-        if on && !self.on {
-            self.sets.values_mut().for_each(|f| f.written = None);
-        }
+    /// The flag (the router decides every target then).
+    pub fn set_flag(&mut self, on: bool) {
         self.on = on;
-        let sets: Vec<String> = self.sets.keys().cloned().collect();
-        sets.into_iter()
-            .filter_map(|set| self.decide(&set).map(|on| (set, on)))
-            .collect()
     }
 
-    /// A page's tap: every set's targets on or off by hand, until the next
-    /// change of its transport (the rule's `written` stays, as STAGE AUT's).
-    pub fn tap(&mut self, on: bool) -> Vec<(String, bool)> {
-        self.taps += 1;
-        self.sets
-            .iter_mut()
-            .map(|(set, f)| {
-                f.last = Some(on);
-                (set.clone(), on)
-            })
-            .collect()
-    }
-
-    /// The set's Live went away: its next session starts afresh (its first
-    /// transport value writes once).
+    /// The set's Live went away: its transport is not known until its next
+    /// session's first value.
     pub fn on_disconnect(&mut self, set: &str) {
-        if let Some(f) = self.sets.get_mut(set) {
-            *f = Followed::default();
-        }
+        self.transport_lost(set);
     }
 
-    /// The set's transport listener failed: its transport is not known until
-    /// the next value (what was written stays).
+    /// The set's transport listener failed: its transport is not known
+    /// until the next value.
     pub fn transport_lost(&mut self, set: &str) {
-        if let Some(f) = self.sets.get_mut(set) {
-            f.playing = None;
+        if let Some(heard) = self.sets.get_mut(set) {
+            *heard = None;
         }
-    }
-
-    /// What a target of `set` found later gets: the set's last write.
-    pub fn wanted(&self, set: &str) -> Option<bool> {
-        self.sets.get(set).and_then(|f| f.last)
     }
 
     /// The set's transport as last heard.
     pub fn playing(&self, set: &str) -> Option<bool> {
-        self.sets.get(set).and_then(|f| f.playing)
+        self.sets.get(set).copied().flatten()
     }
 
-    /// The write the rule wants for `set` now, once per change.
-    fn decide(&mut self, set: &str) -> Option<bool> {
-        let followed = self.sets.get_mut(set)?;
-        let want = stage_rule(self.on, followed.playing?)?;
-        if followed.written == Some(want) {
-            return None;
+    /// A singer switched off by hand or back on: whether that changed what
+    /// the rule holds.
+    pub fn set_singer(&mut self, id: &str, off: bool) -> bool {
+        if off {
+            self.singers_off.insert(id.to_string())
+        } else {
+            self.singers_off.remove(id)
         }
-        followed.written = Some(want);
-        followed.last = Some(want);
-        self.writes += 1;
-        Some(want)
+    }
+
+    /// Whether the singer `id` is off by hand.
+    pub fn is_off(&self, id: &str) -> bool {
+        self.singers_off.contains(id)
+    }
+
+    /// The singers off by hand, sorted (as saved).
+    pub fn singers_off(&self) -> Vec<String> {
+        self.singers_off.iter().cloned().collect()
     }
 }
 
-/// Why AUTOTUNE writes.
+/// What made the hub decide its targets again (#140 PR 3b; the `select`
+/// and `write` records' `cause`, spec §7's `found`, `reconnect` and the
+/// others).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Why {
-    /// The followed transport changed (or was heard first).
+pub enum Cause {
+    /// The set's transport changed.
     Transport,
-    /// AUTOTUNE AUT turned on.
+    /// The song or the key in force changed (a song start, a key clip, a
+    /// jump, out of every song).
+    Position,
+    /// A key's write was read back or refused.
+    Key,
+    /// AUTOTUNE AUT switched.
     Flag,
-    /// A page's tap.
-    Tap,
-    /// A target found after its set's last write.
+    /// A singer switched off by hand or back on.
+    Singer,
+    /// A target found (after a connect too), or its selector's first value
+    /// heard.
     Found,
+    /// Another writer moved a selector.
+    Guard,
+    /// A hold ended.
+    Release,
+    /// A hold started: DRY first, through the last known refs.
+    Hold,
+    /// The set's registration of its DRY writes changed.
+    Safe,
+    /// A layout changed a target.
+    Layout,
 }
 
-impl Why {
-    fn word(self) -> &'static str {
+impl Cause {
+    /// Its word in a log line.
+    pub fn word(self) -> &'static str {
         match self {
-            Why::Transport => "transport",
-            Why::Flag => "flag",
-            Why::Tap => "tap",
-            Why::Found => "found",
+            Cause::Transport => "transport",
+            Cause::Position => "position",
+            Cause::Key => "key",
+            Cause::Flag => "flag",
+            Cause::Singer => "singer",
+            Cause::Found => "found",
+            Cause::Guard => "guard",
+            Cause::Release => "release",
+            Cause::Hold => "hold",
+            Cause::Safe => "safe",
+            Cause::Layout => "layout",
+        }
+    }
+}
+
+/// What the hub did about another writer on a selector (spec §7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WriterAct {
+    /// It moved to the autotune chain while the hub wants DRY: DRY again.
+    DryAgain,
+    /// It moved again within 10 s: the hub stops writing it until the next
+    /// song start.
+    GaveUp,
+    /// It moved to DRY while the hub wants the chain: left so.
+    LeftDry,
+}
+
+impl WriterAct {
+    fn words(self) -> &'static str {
+        match self {
+            WriterAct::DryAgain => "DRY again",
+            WriterAct::GaveUp => "the hub stops writing it until the next song start",
+            WriterAct::LeftDry => "left on DRY",
         }
     }
 }
@@ -216,15 +222,14 @@ impl Why {
 pub enum Step {
     /// A page set AUTOTUNE AUT.
     Flag { on: bool },
-    /// A page tapped AUTOTUNE.
-    Tap { on: bool },
-    /// The macros of a Live set's found targets written (`targets`: their
-    /// labels).
+    /// The selectors of a Live set's targets written in one batch (#140 PR
+    /// 3b): the labels written to their autotune chain (`on`) and to DRY
+    /// (`off`), and what made the hub decide.
     Write {
         instance: String,
-        on: bool,
-        why: Why,
-        targets: Vec<String>,
+        cause: Cause,
+        on: Vec<String>,
+        off: Vec<String>,
     },
     /// A target's write failed.
     Failed {
@@ -286,8 +291,8 @@ pub enum Step {
         target: String,
         problem: String,
     },
-    /// A page's AUTOTUNE AUT on (`what` `aut`) or tap (`tap`) refused, and
-    /// why ([`REFUSED_WHY`]).
+    /// A page's AUTOTUNE tap (`what` `tap`; 1.8.0's, gone since #140 PR
+    /// 3b) refused, and why ([`REFUSED_WHY`]).
     Refused { what: String, why: String },
     /// The key `key` written to a Live set's found key devices (`targets`:
     /// their labels) and, with `bar`, to Live's bar (#140 PR 2b), and why.
@@ -339,11 +344,28 @@ pub enum Step {
         targets: usize,
         problem: Option<String>,
     },
+    /// A target's decision switched (#140 PR 3b): its autotune chain
+    /// selected (`on`) or DRY, why, and what made the hub decide.
+    Select {
+        instance: String,
+        target: String,
+        on: bool,
+        why: SwitchWhy,
+        cause: Cause,
+    },
+    /// Another writer moved a target's selector, and what the hub did.
+    SelectorWriter {
+        instance: String,
+        target: String,
+        act: WriterAct,
+    },
+    /// A page switched a singer off by hand or back on.
+    Singer { id: String, off: bool },
 }
 
-/// Why a page's AUTOTUNE AUT on and tap are refused (#140 PR 2: the keys
-/// first, nothing switches).
-pub const REFUSED_WHY: &str = "keys only until #140 PR 3";
+/// Why a page's AUTOTUNE tap is refused (#140 PR 3b: 1.8.0's tap is gone;
+/// in the new surface, PR 3c, a tap opens the singers' panel).
+pub const REFUSED_WHY: &str = "the AUTOTUNE tap is gone; a tap opens the singers' panel";
 
 /// A key in force in words: its song and key, a keyless song, or no song.
 fn key_words(song: Option<u16>, key: Option<&str>) -> String {
@@ -386,17 +408,16 @@ fn lateness_words(ms: f64) -> String {
 pub fn step_line(step: &Step) -> String {
     match step {
         Step::Flag { on } => format!("AUTOTUNE AUT turned {}", on_off(*on)),
-        Step::Tap { on } => format!("AUTOTUNE tapped: {}", on_off(*on)),
         Step::Write {
             instance,
+            cause,
             on,
-            why,
-            targets,
+            off,
         } => format!(
-            "AUTOTUNE AUT writes {instance} {}: {} tracks ({})",
-            on_off(*on),
-            targets.len(),
-            why.word()
+            "AUTOTUNE writes {instance}'s selectors: {} on, {} to DRY ({})",
+            on.len(),
+            off.len(),
+            cause.word()
         ),
         Step::Failed {
             instance,
@@ -528,13 +549,41 @@ pub fn step_line(step: &Step) -> String {
         } => format!(
             "AUTOTUNE could not give {instance}'s script the DRY writes of {targets} selectors: {problem}"
         ),
+        Step::Select {
+            instance,
+            target,
+            on,
+            why,
+            cause,
+        } => format!(
+            "AUTOTUNE switches {instance} {target} {} ({}, {})",
+            if *on { "on" } else { "to DRY" },
+            why_word(*why),
+            cause.word()
+        ),
+        Step::SelectorWriter {
+            instance,
+            target,
+            act,
+        } => format!(
+            "AUTOTUNE sees another writer on {instance} {target}'s selector: {}",
+            act.words()
+        ),
+        Step::Singer { id, off } => format!(
+            "AUTOTUNE singer {id} {}",
+            if *off {
+                "off by hand"
+            } else {
+                "back on the rule"
+            }
+        ),
     }
 }
 
 /// Whether a step is logged as a warning: a failed write, a missing rack,
-/// a missing key device, a key not confirmed, another writer, a key change
-/// written later than [`LATE_BOUND_MS`], a failed registration of the DRY
-/// writes.
+/// a missing key device, a key not confirmed, another writer (on a key or
+/// a selector), a key change written later than [`LATE_BOUND_MS`], a
+/// failed registration of the DRY writes.
 pub fn step_warn(step: &Step) -> bool {
     match step {
         Step::Failed { .. }
@@ -542,6 +591,7 @@ pub fn step_warn(step: &Step) -> bool {
         | Step::GaveUp { .. }
         | Step::KeyMissing { .. }
         | Step::AnotherWriter { .. }
+        | Step::SelectorWriter { .. }
         | Step::Safe {
             problem: Some(_), ..
         } => true,

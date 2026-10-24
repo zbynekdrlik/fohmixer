@@ -5,17 +5,6 @@ fn sets(names: &[&str]) -> BTreeSet<String> {
     names.iter().map(|s| s.to_string()).collect()
 }
 
-/// The rule following `band`, its transport unheard.
-fn band(on: bool) -> AutotuneAut {
-    let mut rule = AutotuneAut::new(on);
-    assert_eq!(rule.follow(&sets(&["band"]), |_| None), vec![]);
-    rule
-}
-
-fn write(set: &str, on: bool) -> (String, bool) {
-    (set.to_string(), on)
-}
-
 #[test]
 fn a_target_is_on_only_within_half_a_step_of_its_on_value() {
     assert_eq!(SAME_VALUE, 0.5);
@@ -36,168 +25,76 @@ fn a_target_is_on_only_within_half_a_step_of_its_on_value() {
 }
 
 #[test]
-fn it_turns_autotune_on_while_playing_and_off_when_stopped_once_per_change() {
-    let mut rule = band(true);
-    assert!(rule.is_on());
-    assert_eq!(
-        rule.on_playing("band", false),
-        Some(false),
-        "the first value"
-    );
-    assert_eq!(rule.on_playing("band", false), None, "no change, no write");
-    assert_eq!(rule.on_playing("band", true), Some(true));
-    assert_eq!(rule.on_playing("band", true), None);
-    assert_eq!(rule.writes(), 2);
-    assert_eq!(rule.playing("band"), Some(true));
-    assert_eq!(rule.wanted("band"), Some(true));
-    // A set no layout names is not followed.
-    assert_eq!(rule.on_playing("master", true), None);
-    assert_eq!(rule.playing("master"), None);
-    assert_eq!(rule.writes(), 2);
-}
-
-#[test]
-fn with_aut_off_it_never_writes_and_a_tap_still_sets_every_set() {
-    let mut rule = band(false);
+fn the_rule_follows_each_sets_transport_and_the_flag() {
+    let mut rule = AutotuneAut::new(false, Vec::new());
     assert!(!rule.is_on());
-    assert_eq!(rule.on_playing("band", true), None);
-    assert_eq!(rule.on_playing("band", false), None);
-    assert_eq!(rule.wanted("band"), None);
-    assert_eq!(rule.tap(true), vec![write("band", true)]);
-    assert_eq!(rule.wanted("band"), Some(true));
-    assert_eq!(rule.writes(), 0);
-    assert_eq!(rule.taps(), 1);
-    // Every followed set, each tap.
-    let mut two = AutotuneAut::new(false);
-    two.follow(&sets(&["band", "master"]), |_| None);
-    assert_eq!(
-        two.tap(false),
-        vec![write("band", false), write("master", false)]
-    );
-    assert_eq!(two.tap(true).len(), 2);
-    assert_eq!(two.taps(), 2);
-    assert_eq!(two.wanted("master"), Some(true));
-}
-
-#[test]
-fn turning_aut_on_applies_each_sets_transport_at_once() {
-    let mut rule = AutotuneAut::new(false);
-    rule.follow(&sets(&["band", "master"]), |_| None);
-    assert_eq!(rule.on_playing("band", true), None);
-    assert_eq!(rule.set_flag(true), vec![write("band", true)]);
-    assert_eq!(rule.set_flag(true), vec![], "already on");
-    assert_eq!(rule.writes(), 1);
-    // Off writes nothing, and the transport is not followed meanwhile.
-    assert_eq!(rule.set_flag(false), vec![]);
-    assert_eq!(rule.on_playing("band", false), None);
-    assert_eq!(rule.on_playing("band", true), None);
-    // On again: applied at once, even with the value it wrote before.
-    assert_eq!(rule.set_flag(true), vec![write("band", true)]);
-    assert_eq!(rule.writes(), 2);
-    // The unheard set gets its write with its first value.
-    assert_eq!(rule.on_playing("master", false), Some(false));
-}
-
-#[test]
-fn a_tap_overrides_until_the_next_transport_change() {
-    let mut rule = band(true);
-    assert_eq!(rule.on_playing("band", true), Some(true));
-    assert_eq!(rule.tap(false), vec![write("band", false)]);
-    assert_eq!(rule.wanted("band"), Some(false), "a target found now");
-    // The same transport again: the tap holds.
-    assert_eq!(rule.on_playing("band", true), None);
-    // A song's CC36 turned the stream racks on meanwhile: the stop still
-    // writes off (the rule wrote on last, whatever the tap did).
-    assert_eq!(rule.on_playing("band", false), Some(false));
-    assert_eq!(rule.on_playing("band", true), Some(true));
-    assert_eq!(rule.writes(), 3);
-    assert_eq!(rule.taps(), 1);
-    // A tap on while stopped: the start writes on again, harmless.
-    assert_eq!(rule.on_playing("band", false), Some(false));
-    rule.tap(true);
-    assert_eq!(rule.on_playing("band", true), Some(true));
-}
-
-#[test]
-fn a_reconnect_forgets_the_set_and_its_first_value_writes_once() {
-    let mut rule = band(true);
-    assert_eq!(rule.on_playing("band", true), Some(true));
-    rule.on_disconnect("band");
-    assert_eq!(rule.wanted("band"), None, "a target found now gets nothing");
-    assert_eq!(rule.playing("band"), None);
-    assert_eq!(rule.set_flag(true), vec![], "no transport while away");
-    assert_eq!(
-        rule.on_playing("band", true),
-        Some(true),
-        "one write after the reconnect"
-    );
-    assert_eq!(rule.on_playing("band", true), None);
-    assert_eq!(rule.wanted("band"), Some(true));
-    assert_eq!(rule.writes(), 2);
-    // A tap's write is forgotten too.
-    rule.tap(false);
-    rule.on_disconnect("band");
-    assert_eq!(rule.wanted("band"), None);
-    // Another set's disconnect leaves band alone; an unknown one is nothing.
-    assert_eq!(rule.on_playing("band", false), Some(false));
-    rule.on_disconnect("master");
-    assert_eq!(rule.wanted("band"), Some(false));
-}
-
-#[test]
-fn a_lost_transport_forgets_playing_but_not_what_was_written() {
-    let mut rule = band(true);
-    assert_eq!(rule.on_playing("band", true), Some(true));
+    rule.follow(&sets(&["band", "master"]), |s| {
+        (s == "master").then_some(true)
+    });
+    assert_eq!(rule.playing("band"), None, "not heard yet");
+    assert_eq!(rule.playing("master"), Some(true), "as last heard");
+    rule.on_playing("band", true);
+    assert_eq!(rule.playing("band"), Some(true));
+    rule.on_playing("band", false);
+    assert_eq!(rule.playing("band"), Some(false));
+    // A set no layout names is not followed.
+    rule.on_playing("other", true);
+    assert_eq!(rule.playing("other"), None);
+    // A new layout keeps a followed set as it is and drops a gone one.
+    rule.follow(&sets(&["band"]), |_| Some(true));
+    assert_eq!(rule.playing("band"), Some(false), "kept, not read again");
+    assert_eq!(rule.playing("master"), None, "dropped");
+    rule.on_playing("master", true);
+    assert_eq!(rule.playing("master"), None);
+    // A lost listener or a disconnect forgets the transport only.
     rule.transport_lost("band");
     assert_eq!(rule.playing("band"), None);
-    assert_eq!(rule.wanted("band"), Some(true));
-    assert_eq!(
-        rule.on_playing("band", true),
-        None,
-        "as written: no second write"
-    );
-    assert_eq!(rule.on_playing("band", false), Some(false));
+    rule.on_playing("band", true);
+    rule.on_disconnect("band");
+    assert_eq!(rule.playing("band"), None);
+    rule.on_playing("band", true);
+    rule.on_disconnect("master");
     rule.transport_lost("master");
-    assert_eq!(rule.playing("band"), Some(false));
+    assert_eq!(rule.playing("band"), Some(true));
+    // The flag, and the selector batches counted.
+    rule.set_flag(true);
+    assert!(rule.is_on());
+    rule.set_flag(false);
+    assert!(!rule.is_on());
+    assert_eq!(rule.writes(), 0);
+    rule.wrote();
+    rule.wrote();
+    assert_eq!(rule.writes(), 2);
+    assert!(AutotuneAut::new(true, Vec::new()).is_on(), "AUT kept on");
 }
 
 #[test]
-fn a_new_layout_follows_new_sets_with_their_transport_and_drops_gone_ones() {
-    let mut rule = band(true);
-    assert_eq!(rule.on_playing("band", false), Some(false));
-    assert_eq!(
-        rule.follow(&sets(&["band", "master"]), |s| (s == "master")
-            .then_some(true)),
-        vec![write("master", true)]
-    );
-    assert_eq!(rule.playing("master"), Some(true));
-    // Band kept its state: no second write for the same value.
-    assert_eq!(rule.on_playing("band", false), None);
-    assert_eq!(rule.writes(), 2);
-    assert_eq!(rule.follow(&sets(&["band"]), |_| Some(true)), vec![]);
-    assert_eq!(rule.playing("master"), None, "dropped");
-    assert_eq!(rule.wanted("master"), None);
-    assert_eq!(rule.on_playing("master", false), None);
-    assert_eq!(rule.playing("band"), Some(false), "kept, not read again");
-    assert_eq!(rule.wanted("band"), Some(false));
-    // With AUT off a new set writes nothing.
-    let mut off = AutotuneAut::new(false);
-    assert_eq!(off.follow(&sets(&["band"]), |_| Some(true)), vec![]);
-    assert_eq!(off.playing("band"), Some(true));
-    assert_eq!(off.follow(&sets(&[]), |_| None), vec![]);
-    assert_eq!(off.playing("band"), None);
+fn a_singer_off_is_kept_and_saved_sorted() {
+    // #140 PR 3b, spec §2.2: per singer, kept across a restart.
+    let mut rule = AutotuneAut::new(true, vec!["VOX2".into()]);
+    assert!(rule.is_off("VOX2"));
+    assert!(!rule.is_off("VOX1"));
+    assert!(rule.set_singer("VOX1", true), "a change");
+    assert!(!rule.set_singer("VOX1", true), "already off");
+    assert!(rule.set_singer("#Vox 7", true));
+    assert_eq!(rule.singers_off(), ["#Vox 7", "VOX1", "VOX2"]);
+    assert!(rule.set_singer("VOX2", false));
+    assert!(!rule.set_singer("VOX2", false), "already on");
+    assert!(!rule.set_singer("VOX9", false));
+    assert!(!rule.is_off("VOX2"));
+    assert_eq!(rule.singers_off(), ["#Vox 7", "VOX1"]);
+    assert!(rule.is_on(), "the flag stays");
 }
 
 #[test]
 fn every_step_has_its_line_and_only_failures_warn() {
-    let write_step = |why: Why| Step::Write {
+    let write_step = |cause: Cause| Step::Write {
         instance: "band".into(),
-        on: true,
-        why,
-        targets: vec!["#8".into(), "Vox 2".into()],
+        cause,
+        on: vec!["#8".into(), "Vox 2".into()],
+        off: vec!["#9".into()],
     };
     let flag = Step::Flag { on: true };
-    let tap = Step::Tap { on: false };
     let failed = Step::Failed {
         instance: "band".into(),
         target: "live_set tracks 7".into(),
@@ -218,28 +115,18 @@ fn every_step_has_its_line_and_only_failures_warn() {
         step_line(&Step::Flag { on: false }),
         "AUTOTUNE AUT turned off"
     );
-    assert_eq!(step_line(&tap), "AUTOTUNE tapped: off");
-    assert_eq!(step_line(&Step::Tap { on: true }), "AUTOTUNE tapped: on");
     assert_eq!(
-        step_line(&write_step(Why::Transport)),
-        "AUTOTUNE AUT writes band on: 2 tracks (transport)"
-    );
-    assert_eq!(
-        step_line(&write_step(Why::Flag)),
-        "AUTOTUNE AUT writes band on: 2 tracks (flag)"
-    );
-    assert_eq!(
-        step_line(&write_step(Why::Tap)),
-        "AUTOTUNE AUT writes band on: 2 tracks (tap)"
+        step_line(&write_step(Cause::Transport)),
+        "AUTOTUNE writes band's selectors: 2 on, 1 to DRY (transport)"
     );
     assert_eq!(
         step_line(&Step::Write {
             instance: "master".into(),
-            on: false,
-            why: Why::Found,
-            targets: vec!["#8".into()],
+            cause: Cause::Hold,
+            on: Vec::new(),
+            off: vec!["#8".into(), "#9".into(), "#10".into()],
         }),
-        "AUTOTUNE AUT writes master off: 1 tracks (found)"
+        "AUTOTUNE writes master's selectors: 0 on, 3 to DRY (hold)"
     );
     assert_eq!(
         step_line(&failed),
@@ -275,8 +162,8 @@ fn every_step_has_its_line_and_only_failures_warn() {
         serde_json::to_value(&held).unwrap(),
         json!({"step": "held", "instance": "band", "on": true, "why": "offline"})
     );
-    let tap_write = write_step(Why::Tap);
-    for step in [&flag, &tap, &tap_write, &found, &held, &released] {
+    let write = write_step(Cause::Found);
+    for step in [&flag, &write, &found, &held, &released] {
         assert!(!step_warn(step), "{step:?}");
     }
     assert!(step_warn(&failed));
@@ -284,12 +171,13 @@ fn every_step_has_its_line_and_only_failures_warn() {
     assert_eq!(
         serde_json::to_value(Step::Write {
             instance: "band".into(),
-            on: true,
-            why: Why::Transport,
-            targets: vec!["#8".into()],
+            cause: Cause::Transport,
+            on: vec!["#8".into()],
+            off: Vec::new(),
         })
         .unwrap(),
-        json!({"step": "write", "instance": "band", "on": true, "why": "transport", "targets": ["#8"]})
+        json!({"step": "write", "instance": "band", "cause": "transport", "on": ["#8"],
+               "off": []})
     );
     assert_eq!(
         serde_json::to_value(&flag).unwrap(),
@@ -300,10 +188,116 @@ fn every_step_has_its_line_and_only_failures_warn() {
         json!({"step": "missing", "instance": "band", "target": "live_set tracks 8",
                "problem": "no rack named Latencies"})
     );
+}
+
+#[test]
+fn the_switch_steps_are_recorded_and_logged() {
+    // #140 PR 3b: a decision switched, another writer on a selector, a
+    // singer off by hand.
+    let on = Step::Select {
+        instance: "band".into(),
+        target: "live_set tracks 7".into(),
+        on: true,
+        why: SwitchWhy::Play,
+        cause: Cause::Key,
+    };
+    let dry = Step::Select {
+        instance: "band".into(),
+        target: "live_set tracks 7".into(),
+        on: false,
+        why: SwitchWhy::Mismatch,
+        cause: Cause::Key,
+    };
+    let writer = |act| Step::SelectorWriter {
+        instance: "band".into(),
+        target: "live_set tracks 6".into(),
+        act,
+    };
+    let singer = Step::Singer {
+        id: "VOX1".into(),
+        off: true,
+    };
     assert_eq!(
-        serde_json::to_value([Why::Flag, Why::Tap, Why::Found]).unwrap(),
-        json!(["flag", "tap", "found"])
+        step_line(&on),
+        "AUTOTUNE switches band live_set tracks 7 on (play, key)"
     );
+    assert_eq!(
+        step_line(&dry),
+        "AUTOTUNE switches band live_set tracks 7 to DRY (mismatch, key)"
+    );
+    assert_eq!(
+        step_line(&writer(WriterAct::DryAgain)),
+        "AUTOTUNE sees another writer on band live_set tracks 6's selector: DRY again"
+    );
+    assert_eq!(
+        step_line(&writer(WriterAct::GaveUp)),
+        "AUTOTUNE sees another writer on band live_set tracks 6's selector: \
+         the hub stops writing it until the next song start"
+    );
+    assert_eq!(
+        step_line(&writer(WriterAct::LeftDry)),
+        "AUTOTUNE sees another writer on band live_set tracks 6's selector: left on DRY"
+    );
+    assert_eq!(step_line(&singer), "AUTOTUNE singer VOX1 off by hand");
+    assert_eq!(
+        step_line(&Step::Singer {
+            id: "#Vox 7".into(),
+            off: false,
+        }),
+        "AUTOTUNE singer #Vox 7 back on the rule"
+    );
+    for step in [&on, &dry, &singer] {
+        assert!(!step_warn(step), "{step:?}");
+    }
+    for act in [WriterAct::DryAgain, WriterAct::GaveUp, WriterAct::LeftDry] {
+        assert!(step_warn(&writer(act)), "{act:?}");
+    }
+    assert_eq!(
+        serde_json::to_value(&dry).unwrap(),
+        json!({"step": "select", "instance": "band", "target": "live_set tracks 7",
+               "on": false, "why": "mismatch", "cause": "key"})
+    );
+    assert_eq!(
+        serde_json::to_value(writer(WriterAct::GaveUp)).unwrap(),
+        json!({"step": "selector_writer", "instance": "band", "target": "live_set tracks 6",
+               "act": "gave_up"})
+    );
+    assert_eq!(
+        serde_json::to_value([WriterAct::DryAgain, WriterAct::LeftDry]).unwrap(),
+        json!(["dry_again", "left_dry"])
+    );
+    assert_eq!(
+        serde_json::to_value(&singer).unwrap(),
+        json!({"step": "singer", "id": "VOX1", "off": true})
+    );
+    let causes = [
+        Cause::Transport,
+        Cause::Position,
+        Cause::Key,
+        Cause::Flag,
+        Cause::Singer,
+        Cause::Found,
+        Cause::Guard,
+        Cause::Release,
+        Cause::Hold,
+        Cause::Safe,
+        Cause::Layout,
+    ];
+    let words = [
+        "transport",
+        "position",
+        "key",
+        "flag",
+        "singer",
+        "found",
+        "guard",
+        "release",
+        "hold",
+        "safe",
+        "layout",
+    ];
+    assert_eq!(causes.map(Cause::word), words);
+    assert_eq!(serde_json::to_value(causes).unwrap(), json!(words));
 }
 
 #[test]
@@ -338,10 +332,13 @@ fn the_key_steps_are_recorded_and_logged() {
         problem: "chain 0 holds 2 plug-ins, not one".into(),
     };
     let refused = Step::Refused {
-        what: "aut".into(),
+        what: "tap".into(),
         why: REFUSED_WHY.into(),
     };
-    assert_eq!(REFUSED_WHY, "keys only until #140 PR 3");
+    assert_eq!(
+        REFUSED_WHY,
+        "the AUTOTUNE tap is gone; a tap opens the singers' panel"
+    );
     assert_eq!(
         step_line(&song),
         "AUTOTUNE key in force in band: song 31 G (change)"
@@ -383,14 +380,14 @@ fn the_key_steps_are_recorded_and_logged() {
     );
     assert_eq!(
         step_line(&refused),
-        "AUTOTUNE refuses a page's aut: keys only until #140 PR 3"
+        "AUTOTUNE refuses a page's tap: the AUTOTUNE tap is gone; a tap opens the singers' panel"
     );
     assert_eq!(
         step_line(&Step::Refused {
-            what: "tap".into(),
+            what: "aut".into(),
             why: "w".into(),
         }),
-        "AUTOTUNE refuses a page's tap: w"
+        "AUTOTUNE refuses a page's aut: w"
     );
     for step in [&song, &none, &keyless, &device, &refused] {
         assert!(!step_warn(step), "{step:?}");
@@ -421,7 +418,8 @@ fn the_key_steps_are_recorded_and_logged() {
     );
     assert_eq!(
         serde_json::to_value(&refused).unwrap(),
-        json!({"step": "refused", "what": "aut", "why": "keys only until #140 PR 3"})
+        json!({"step": "refused", "what": "tap",
+               "why": "the AUTOTUNE tap is gone; a tap opens the singers' panel"})
     );
 }
 
