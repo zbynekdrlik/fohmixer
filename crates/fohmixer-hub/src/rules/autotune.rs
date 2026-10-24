@@ -17,6 +17,8 @@ use super::stage_rule;
 
 #[path = "autotune/find.rs"]
 pub mod find;
+#[path = "autotune/keys.rs"]
+pub mod keys;
 
 /// A target's value within half a step of its on value is on; any other is
 /// off (today's repro "off" values, 11 to 16 set by hand, read off).
