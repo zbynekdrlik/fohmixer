@@ -569,6 +569,49 @@ class IntegrationTest(unittest.TestCase):
         out = b.call("live_set tracks 0", "add_listener", {"prop": "mute"})
         self.assertIs(out["value"], False)
 
+    def test_a_lost_connection_writes_every_safe_write_once(self):
+        # #140 PR 3a: a hub registers both Latencies racks' first macros with
+        # their DRY values (the repro rack 127, the stream rack 0), then its
+        # connection drops; the script writes each once and logs it once.
+        host = self.host()
+        a = self.client(host)
+        repro = "live_set tracks 6 devices 0"
+        stream = "live_set tracks 7 devices 0 chains 0 devices 0"
+        a.call(f"{stream} parameters 1", "set_prop", {"prop": "value", "value": 127.0})
+        hub = RawClient(host.port)
+        self.addCleanup(hub.close)
+
+        def request(uuid, commands):
+            hub.sock.sendall(request_frame(uuid, commands))
+            deadline = time.monotonic() + 5.0
+            while True:
+                for message in hub.read_messages(1, deadline - time.monotonic()):
+                    if message.get("uuid") == uuid:
+                        return message["data"]
+
+        refs = []
+        for rack in (repro, stream):
+            read = {"target": rack, "name": "get_prop", "args": {"prop": "parameters"}}
+            slot = request(f"read {rack}", [read])[0]
+            refs.append({"$ref": slot["data"][1]["$ref"], "class": "DeviceParameter"})
+        writes = [{"target": refs[0], "value": 127.0}, {"target": refs[1], "value": 0.0}]
+        register = {"target": "live_set", "name": "safe_writes", "args": {"writes": writes}}
+        self.assertEqual(request("safe", [register]), [{"ok": True, "data": {"armed": 2}}])
+        self.assertEqual(self.answer(host, f"sets value {repro} parameters 1"), "SETS 0")
+        hub.close()
+        deadline = time.monotonic() + 2.0
+        while a.call(f"{stream} parameters 1", "get_prop", {"prop": "value"}) != 0.0:
+            self.assertLess(time.monotonic(), deadline, "the stream rack never went to DRY")
+            time.sleep(0.02)
+        self.assertEqual(a.call(f"{repro} parameters 1", "get_prop", {"prop": "value"}), 127.0)
+        self.assertEqual(self.answer(host, f"sets value {repro} parameters 1"), "SETS 1")
+        self.assertEqual(self.answer(host, f"sets value {stream} parameters 1"), "SETS 2")
+        log = host.log_text()
+        self.assertEqual(log.count("hub lost"), 1, log)
+        self.assertIn("hub lost (disconnect): set 2 autotune selectors to DRY", log)
+        # The other client stays: it registered nothing, so it is no hub.
+        self.assertEqual(a.call("live_set", "get_prop", {"prop": "is_playing"}), False)
+
     def test_two_instances_on_two_ports(self):
         port = free_port_pair()
         band = self.host(port=port, instance="band")

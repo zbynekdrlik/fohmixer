@@ -619,6 +619,41 @@ fn the_write_steps_are_recorded_and_logged() {
 }
 
 #[test]
+fn a_registration_of_the_dry_writes_is_recorded_and_warns_when_it_failed() {
+    // #140 PR 3a: the script makes them when the hub is gone.
+    let kept = Step::Safe {
+        instance: "band".into(),
+        targets: 12,
+        problem: None,
+    };
+    let failed = Step::Safe {
+        instance: "band".into(),
+        targets: 2,
+        problem: Some("refused: no such function: safe_writes".into()),
+    };
+    assert_eq!(
+        step_line(&kept),
+        "AUTOTUNE gave band's script the DRY writes of 12 selectors, for when the hub is gone"
+    );
+    assert_eq!(
+        step_line(&failed),
+        "AUTOTUNE could not give band's script the DRY writes of 2 selectors: \
+         refused: no such function: safe_writes"
+    );
+    assert!(!step_warn(&kept));
+    assert!(step_warn(&failed));
+    assert_eq!(
+        serde_json::to_value(&kept).unwrap(),
+        json!({"step": "safe", "instance": "band", "targets": 12, "problem": null})
+    );
+    assert_eq!(
+        serde_json::to_value(&failed).unwrap(),
+        json!({"step": "safe", "instance": "band", "targets": 2,
+               "problem": "refused: no such function: safe_writes"})
+    );
+}
+
+#[test]
 fn a_target_given_up_is_recorded_and_warns() {
     // #140: a walk that failed CONNECT_RETRIES + 1 times in a row.
     let gave_up = Step::GaveUp {

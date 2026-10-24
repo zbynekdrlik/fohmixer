@@ -718,8 +718,9 @@ pub struct KeyInForce {
 }
 
 /// AUTOTUNE in `GET /api/status` (#104, D19): AUTOTUNE AUT, the rule's
-/// writes, the taps, each target, and each Live set's key in force (#140
-/// PR 2; none in an older hub's answer).
+/// writes, the taps, each target, each Live set's key in force (#140 PR 2)
+/// and each Live set's registration of its DRY writes with its script
+/// (#140 PR 3a); none in an older hub's answer.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AutotuneStatus {
     pub aut: bool,
@@ -728,6 +729,31 @@ pub struct AutotuneStatus {
     pub targets: Vec<AutotuneTargetStatus>,
     #[serde(default)]
     pub keys: Vec<KeyInForce>,
+    #[serde(default)]
+    pub safe: Vec<SafeStatus>,
+}
+
+/// Where a Live set's registration of its DRY writes stands (#140 PR 3a,
+/// PR #146 review I2): on its way to the script (`sent`), kept by it
+/// (`kept`: the script makes them when the hub is gone), or failed
+/// (`failed`: what the script holds is not known).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SafeState {
+    Sent,
+    Kept,
+    Failed,
+}
+
+/// One Live set's registration of its DRY writes in `GET /api/status`
+/// (#140 PR 3a): where it stands, how many selectors it names, and why it
+/// failed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SafeStatus {
+    pub instance: String,
+    pub state: SafeState,
+    pub targets: usize,
+    pub problem: Option<String>,
 }
 
 /// One Live set's song map in `GET /api/status` (#140): its counts, which

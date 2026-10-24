@@ -162,10 +162,15 @@ class Connection:
         self._fragment_opcode = None
         self._state = OPEN
         self._close_queued = False
+        # The close frame's code and reason (none: an empty close frame).
+        self._close_with = None
         self._close_sent_at = None
         self._peer_closed = False
         self._last_progress = now
         self._finished = False
+        # When a read last took bytes from the client (``time.monotonic()``;
+        # the handshake counts): a hub silent for long is gone (#140 PR 3a).
+        self.last_heard_s = now
 
     @property
     def socket(self):
@@ -225,10 +230,13 @@ class Connection:
         self._heartbeat = {"event": "heartbeat", "data": data, "ts": now_ms()}
         return True
 
-    def close(self):
-        """Graceful: send what is queued, a close frame, then close."""
+    def close(self, code=None, reason=""):
+        """Graceful: send what is queued, a close frame (with ``code`` and
+        ``reason`` when given), then close."""
         if self._state == OPEN:
             self._state = CLOSING
+            if code is not None:
+                self._close_with = (code, reason)
 
     def abort(self):
         """At once: drop what is queued and reset the connection."""
@@ -236,9 +244,13 @@ class Connection:
 
     # --- the main thread's tick ---
 
-    def receive(self):
+    def receive(self, now=None):
         """Read what has arrived, within ``IO_BUDGET_S``: requests go to the
-        inbox; the end of the stream or a read error resets the connection."""
+        inbox; the end of the stream or a read error resets the connection.
+        Bytes read are the client heard at ``now`` (``time.monotonic()``
+        unless given: the tick's), a frame's or part of one (a ping too)."""
+        if now is None:
+            now = time.monotonic()
         deadline = time.perf_counter() + IO_BUDGET_S
         while self.reading:
             try:
@@ -251,6 +263,7 @@ class Connection:
             if not data:
                 self.abort()
                 return
+            self.last_heard_s = now
             self.take(data)
             if time.perf_counter() >= deadline:
                 return
@@ -359,7 +372,9 @@ class Connection:
             return {"event": "values", "data": list(values.values()), "ts": now_ms()}
         if self._state == CLOSING and not self._close_queued:
             self._close_queued = True
-            return encode_close_frame()
+            if self._close_with is None:
+                return encode_close_frame()
+            return encode_close_frame(*self._close_with)
         return None
 
     def _frame(self, opcode, fin, payload):
@@ -512,7 +527,7 @@ class Server:
                 elif isinstance(owner, _Handshake):
                     self._advance_handshake(owner, now)
                 else:
-                    owner.receive()
+                    owner.receive(now)
             except Exception:  # noqa: BLE001 - one client's failure closes that client only
                 self._fail(owner, "reading")
         self._reap()
@@ -721,7 +736,7 @@ class Server:
             self._log.warning("client connected (connection %s)", conn.id)
             if leftover:
                 conn.take(leftover)
-            conn.receive()
+            conn.receive(now)
         except Exception:  # noqa: BLE001 - one client's failure closes that client only
             self._fail(conn, "reading")
 

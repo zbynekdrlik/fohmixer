@@ -55,7 +55,7 @@ use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::events::EventLog;
-use crate::live::client::{LiveError, LiveEvent, LiveHandle};
+use crate::live::client::{Beat, LiveError, LiveEvent, LiveHandle};
 use crate::live::names::NameCheck;
 use crate::live::subs::{Cached, ClientId, Outgoing, Subs};
 use crate::outbox::Outbox;
@@ -365,6 +365,25 @@ pub enum RouterMsg {
         keys: Vec<String>,
         outcome: Result<Vec<Value>, String>,
     },
+    /// The answer to AUTOTUNE's registration `seq` of `instance`'s DRY
+    /// writes with its script, `targets` of them (#140 PR 3a): the one
+    /// command's slot, or why there is none.
+    AutotuneSafe {
+        instance: String,
+        seq: u64,
+        targets: usize,
+        outcome: Result<Vec<Value>, String>,
+    },
+    /// A beat (PR #146 review I1, every `live::client::ROUTER_BEAT_MS`):
+    /// nothing to do; the loop's turn stamps the router's `Beat`.
+    Beat,
+    /// The retry of `instance`'s failed registration `seq` is due (#140 PR
+    /// 3a, PR #146 review I2); void once the set registered since or went
+    /// offline.
+    AutotuneSafeRetry {
+        instance: String,
+        seq: u64,
+    },
     /// The answer to key write `write` of `instance`'s targets `keys` (#140
     /// PR 2b; their slots in that order, then Live's bar's when it held it)
     /// and its round trip; a newer write of a target makes it void there.
@@ -525,6 +544,32 @@ pub struct Router {
     /// The latest markers waiting for their quiet time, and its number.
     markers_pending: Option<Vec<fohmixer_proto::markers::Found>>,
     markers_generation: u64,
+    /// Stamped at every turn of the loop (PR #146 review I1): the Live
+    /// clients' writers ping only while it is fresh.
+    beat: Beat,
+}
+
+/// The `link` record of a script's close with a reason (PR #146 review
+/// M5): its instance and the close's words (`1001 silent`).
+pub(crate) fn closed_fields(instance: &str, why: &str) -> Value {
+    json!({"instance": instance, "closed": why})
+}
+
+/// The router's beat (PR #146 review I1): a [`RouterMsg::Beat`] every
+/// `period`, so an idle loop still turns and stamps its `Beat`; it ends
+/// with the router's channel.
+pub(crate) async fn beat_ticks(
+    router: mpsc::UnboundedSender<RouterMsg>,
+    period: std::time::Duration,
+) {
+    let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        if router.send(RouterMsg::Beat).is_err() {
+            return;
+        }
+    }
 }
 
 impl Router {
@@ -592,11 +637,19 @@ impl Router {
             layout_store: None,
             markers_pending: None,
             markers_generation: 0,
+            beat: Beat::steady(),
         };
         if autotune_saved {
             router.save_state();
         }
         router
+    }
+
+    /// Stamps `beat` at every turn of its loop (the hub's; the Live
+    /// clients' writers read it).
+    pub fn with_beat(mut self, beat: Beat) -> Self {
+        self.beat = beat;
+        self
     }
 
     /// Serves messages until [`RouterMsg::Stop`], then releases the Stream
@@ -608,6 +661,9 @@ impl Router {
         while let Some(msg) = rx.recv().await {
             let go_on = self.handle(msg);
             self.flush();
+            // The loop turned: the Live clients' writers may ping (PR #146
+            // review I1).
+            self.beat.stamp();
             if !go_on {
                 break;
             }
@@ -940,6 +996,16 @@ impl Router {
                 keys,
                 outcome,
             } => self.autotune_written(&instance, &keys, &outcome),
+            RouterMsg::AutotuneSafe {
+                instance,
+                seq,
+                targets,
+                outcome,
+            } => self.autotune_safe_answered(&instance, seq, targets, &outcome),
+            RouterMsg::AutotuneSafeRetry { instance, seq } => {
+                self.autotune_safe_retry(&instance, seq);
+            }
+            RouterMsg::Beat => {}
             RouterMsg::AutotuneKeysWritten {
                 instance,
                 write,
@@ -991,6 +1057,11 @@ impl Router {
                 // The song map follows the set's lists (#140).
                 self.songmap_connected(instance);
                 self.broadcast_instance(instance);
+            }
+            LiveEvent::Closed { why } => {
+                // The script's reason (PR #146 review M5), before its
+                // disconnect: a silent hub's close tells from a crash.
+                self.io.events.record("link", closed_fields(instance, &why));
             }
             LiveEvent::Disconnected => {
                 if let Some(state) = self.states.get_mut(instance) {
@@ -1482,6 +1553,107 @@ fn subbed(key: &str, cached: Option<&Cached>) -> ServerMsg {
 mod tests {
     use super::*;
     use fohmixer_proto::client::AckItem;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_router_stops_its_writers_pings() {
+        // PR #146 review I1: the pings say the router decides, not only that
+        // the process lives. While its loop turns (a beat comes every 200
+        // ms) its writers ping; once it no longer turns (here it stopped;
+        // a hang or a panic is the same to the beat) the pings stop within
+        // 600 ms, and the script falls back 1.5 s after the last one.
+        use crate::live::client::{BEAT_FRESH_MS, Beat, ROUTER_BEAT_MS, write_requests};
+        use tokio_tungstenite::tungstenite::Message;
+        let dir = tempfile::tempdir().unwrap();
+        let (router, own, _records) = offline_router(dir.path());
+        let tx = router.io.tx.clone();
+        let beat = Beat::router();
+        let start = tokio::time::Instant::now();
+        let pings = Arc::new(std::sync::Mutex::new(Vec::<u128>::new()));
+        let log = Arc::clone(&pings);
+        let sink = Box::pin(futures_util::sink::unfold((), move |(), m: Message| {
+            let log = Arc::clone(&log);
+            async move {
+                if matches!(m, Message::Ping(_)) {
+                    log.lock().unwrap().push(start.elapsed().as_millis());
+                }
+                Ok::<(), std::convert::Infallible>(())
+            }
+        }));
+        let (_texts, texts) = mpsc::unbounded_channel::<String>();
+        let writer = tokio::spawn(write_requests(sink, texts, beat.clone()));
+        let routed = tokio::spawn(router.with_beat(beat.clone()).run(own));
+        let ticks = tokio::spawn(beat_ticks(
+            tx.clone(),
+            std::time::Duration::from_millis(ROUTER_BEAT_MS),
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(2950)).await;
+        assert_eq!(
+            *pings.lock().unwrap(),
+            vec![500, 1000, 1500, 2000, 2500],
+            "pings while the loop turns"
+        );
+        assert!(beat.fresh());
+        tx.send(RouterMsg::Stop).unwrap();
+        routed.await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
+        assert_eq!(
+            *pings.lock().unwrap(),
+            vec![500, 1000, 1500, 2000, 2500, 3000, 3500],
+            "the last stamp at 2950 ms: pings until {} ms after it, none later",
+            BEAT_FRESH_MS
+        );
+        assert!(!beat.fresh());
+        ticks.await.unwrap();
+        writer.abort();
+    }
+
+    #[tokio::test]
+    async fn a_scripts_close_with_a_reason_is_a_link_record() {
+        // PR #146 review M5: a silent hub's close is told from a crash.
+        assert_eq!(
+            closed_fields("band", "1001 silent"),
+            json!({"instance": "band", "closed": "1001 silent"})
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, _own, rx) = offline_router(dir.path());
+        router.handle(RouterMsg::Live {
+            instance: "band".into(),
+            event: LiveEvent::Closed {
+                why: "1001 silent".into(),
+            },
+        });
+        let got: Vec<Value> = records(&rx)
+            .into_iter()
+            .filter(|r| r["ev"] == "link")
+            .map(|mut r| {
+                r.as_object_mut().unwrap().remove("ts");
+                r
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![json!({"ev": "link", "instance": "band", "closed": "1001 silent"})]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_beat_ticks_every_200_ms_until_the_router_is_gone() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let ticks = tokio::spawn(beat_ticks(tx, std::time::Duration::from_millis(200)));
+        let start = tokio::time::Instant::now();
+        let mut at = Vec::new();
+        for _ in 0..3 {
+            let msg = rx.recv().await.unwrap();
+            assert!(matches!(msg, RouterMsg::Beat));
+            at.push(start.elapsed().as_millis());
+        }
+        assert_eq!(at, vec![200, 400, 600]);
+        drop(rx);
+        tokio::time::timeout(std::time::Duration::from_secs(1), ticks)
+            .await
+            .expect("the ticks end with the router's channel")
+            .unwrap();
+    }
 
     fn router(dir: &std::path::Path) -> Router {
         let (tx, _) = mpsc::unbounded_channel();

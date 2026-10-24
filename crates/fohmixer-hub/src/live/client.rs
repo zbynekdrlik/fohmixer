@@ -18,6 +18,16 @@
 //!   ([`LiveHandle::call`]) gets it back directly, anything else (the
 //!   subscription table's requests) goes to the event sink in frame order,
 //!   with the value pushes.
+//! - The writer task also pings the script every [`KEEPALIVE_MS`] (#140 PR
+//!   3a): a script holding the hub's DRY writes counts a hub it heard
+//!   nothing from for 1.5 s as gone and falls back to DRY. It pings only
+//!   while the router's [`Beat`] is fresh (PR #146 review I1): a router that
+//!   hung or panicked stops the pings, and so the fallback. The worst case
+//!   from the router's last turn: its beat stays fresh [`BEAT_FRESH_MS`]
+//!   (600 ms), so the last ping goes at most 600 ms after it, and the
+//!   script falls back 1500 ms after the last ping it heard (plus one Live
+//!   tick): about 0.6 + 1.5 = 2.1 s. A process that ended closes its
+//!   sockets: the fallback is at once.
 //! - Busy: Live's main-thread tick older than 150 ms, or no heartbeat for
 //!   300 ms (checked every 50 ms), reported on change with its reason; a
 //!   heartbeat after an overdue gap is logged with where it was held.
@@ -29,13 +39,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use futures_util::stream::SplitSink;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{Sink, SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use super::{
@@ -50,6 +60,70 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// How often the heartbeat's age is checked for "busy".
 pub const BUSY_CHECK: Duration = Duration::from_millis(50);
+/// How often the writer pings the script with nothing else to send, in ms
+/// (#140 PR 3a): the script counts a hub silent for 1.5 s as gone
+/// (`Config.HUB_SILENCE_MS`), three pings missed.
+pub const KEEPALIVE_MS: u64 = 500;
+/// How often a beat message reaches the router, in ms (PR #146 review I1):
+/// its loop stamps the [`Beat`] at every message it handles.
+pub const ROUTER_BEAT_MS: u64 = 200;
+/// How long a router's [`Beat`] stays fresh after its last stamp, in ms:
+/// three beats missed.
+pub const BEAT_FRESH_MS: u64 = 600;
+
+/// Whether a beat stamped at `last_ms` is fresh at `now_ms` (the same
+/// clock; a stamp after the reading is fresh).
+pub fn beat_fresh(now_ms: u64, last_ms: u64) -> bool {
+    now_ms.saturating_sub(last_ms) < BEAT_FRESH_MS
+}
+
+/// The router's heartbeat (PR #146 review I1): the router stamps it as its
+/// loop turns, and the Live clients' writers ping the scripts only while it
+/// is fresh, so the pings say the router decides, not only that the
+/// process lives. A steady beat (no router drives the client: the tools,
+/// the tests) never ages. Its clock is tokio's (paused in the tests).
+#[derive(Debug, Clone)]
+pub struct Beat {
+    start: tokio::time::Instant,
+    /// The last stamp, in ms since `start`; none: steady.
+    last: Option<Arc<AtomicU64>>,
+}
+
+impl Beat {
+    /// A beat for a router to stamp, fresh from now.
+    pub fn router() -> Self {
+        Self {
+            start: tokio::time::Instant::now(),
+            last: Some(Arc::new(AtomicU64::new(0))),
+        }
+    }
+
+    /// A beat that never ages.
+    pub fn steady() -> Self {
+        Self {
+            start: tokio::time::Instant::now(),
+            last: None,
+        }
+    }
+
+    /// The router's loop turned now.
+    pub fn stamp(&self) {
+        if let Some(last) = &self.last {
+            last.store(self.elapsed_ms(), Ordering::Relaxed);
+        }
+    }
+
+    /// Whether the router turned within [`BEAT_FRESH_MS`].
+    pub fn fresh(&self) -> bool {
+        self.last
+            .as_ref()
+            .is_none_or(|last| beat_fresh(self.elapsed_ms(), last.load(Ordering::Relaxed)))
+    }
+
+    fn elapsed_ms(&self) -> u64 {
+        u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+}
 
 /// What an instance's task reports, in the order the script sent it.
 #[derive(Debug, Clone, PartialEq)]
@@ -71,6 +145,12 @@ pub enum LiveEvent {
         data: Vec<Value>,
     },
     Values(Vec<LiveValue>),
+    /// The script closed the connection with a reason (PR #146 review M5;
+    /// `close_words`: e.g. `1001 silent`, a script 1.13.0+ that heard
+    /// nothing from the hub for 1.5 s), just before [`LiveEvent::Disconnected`].
+    Closed {
+        why: String,
+    },
 }
 
 /// Where the events go: called with the instance name, from its task.
@@ -136,8 +216,15 @@ fn lock(m: &Mutex<Snapshot>) -> std::sync::MutexGuard<'_, Snapshot> {
 
 impl LiveHandle {
     /// Starts the task of `cfg`; its events go to `events`. The task ends
-    /// when every handle is dropped (or the returned task is aborted).
+    /// when every handle is dropped (or the returned task is aborted). Its
+    /// writer pings whatever any router does ([`Beat::steady`]).
     pub fn spawn(cfg: &InstanceCfg, events: Events) -> (Self, JoinHandle<()>) {
+        Self::spawn_with(cfg, events, Beat::steady())
+    }
+
+    /// [`LiveHandle::spawn`] whose writer pings only while `beat` is fresh
+    /// (the hub's: its router's).
+    pub fn spawn_with(cfg: &InstanceCfg, events: Events, beat: Beat) -> (Self, JoinHandle<()>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let snapshot = Arc::new(Mutex::new(Snapshot::default()));
         let handle = Self {
@@ -147,7 +234,7 @@ impl LiveHandle {
             snapshot: Arc::clone(&snapshot),
             requests: Arc::new(AtomicU64::new(0)),
         };
-        let task = tokio::spawn(run(cfg.clone(), rx, events, snapshot));
+        let task = tokio::spawn(run(cfg.clone(), rx, events, snapshot, beat));
         (handle, task)
     }
 
@@ -258,14 +345,36 @@ impl Asked {
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-/// Writes the session's requests to the script, in order, until a write
-/// fails or the session drops its sender.
-async fn write_requests(
-    mut sink: SplitSink<Socket, Message>,
+/// Writes the session's requests to the script, in order, and a ping every
+/// [`KEEPALIVE_MS`] (the first one that long after the start) while the
+/// router's `beat` is fresh, until a write fails or the session drops its
+/// sender. The pings go from here, never from the session's `select!`
+/// loop, which never awaits a write (#9).
+pub(crate) async fn write_requests<S>(
+    mut sink: S,
     mut texts: mpsc::UnboundedReceiver<String>,
-) {
-    while let Some(text) = texts.recv().await {
-        if sink.send(Message::Text(text.into())).await.is_err() {
+    beat: Beat,
+) where
+    S: Sink<Message> + Unpin,
+{
+    let every = Duration::from_millis(KEEPALIVE_MS);
+    let mut keepalive = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        let message = tokio::select! {
+            text = texts.recv() => match text {
+                Some(text) => Message::Text(text.into()),
+                None => return,
+            },
+            _ = keepalive.tick() => {
+                // A router that no longer turns gets no pings sent for it.
+                if !beat.fresh() {
+                    continue;
+                }
+                Message::Ping(Default::default())
+            }
+        };
+        if sink.send(message).await.is_err() {
             return;
         }
     }
@@ -301,6 +410,19 @@ async fn refusing<T>(
     }
 }
 
+/// What a script's close frame says (PR #146 review M5): its code and its
+/// reason (`1001 silent`), its code alone without a reason; none for a
+/// close without a body.
+pub(crate) fn close_words(frame: Option<&CloseFrame>) -> Option<String> {
+    frame.map(|frame| {
+        let code = u16::from(frame.code);
+        match frame.reason.as_str() {
+            "" => code.to_string(),
+            reason => format!("{code} {reason}"),
+        }
+    })
+}
+
 /// Whether a failed attempt is the first of an outage (a warning; the
 /// retries are debug lines).
 pub(crate) fn first_of_outage(failures: u64) -> bool {
@@ -312,6 +434,7 @@ async fn run(
     mut rx: mpsc::UnboundedReceiver<Request>,
     events: Events,
     snapshot: Arc<Mutex<Snapshot>>,
+    beat: Beat,
 ) {
     let url = format!("ws://127.0.0.1:{}", cfg.port);
     let mut backoff = Backoff::default();
@@ -332,6 +455,7 @@ async fn run(
                     port: cfg.port,
                     events: &events,
                     snapshot: &snapshot,
+                    beat: &beat,
                 };
                 match session.run(socket, &mut rx).await {
                     End::Stop => return,
@@ -372,6 +496,7 @@ struct Session<'a> {
     port: u16,
     events: &'a Events,
     snapshot: &'a Mutex<Snapshot>,
+    beat: &'a Beat,
 }
 
 /// The busy state of one connection.
@@ -427,7 +552,7 @@ impl Session<'_> {
         // Requests go out through their own task, so this loop never waits
         // for a write and keeps reading the script's frames.
         let (out, texts) = mpsc::unbounded_channel::<String>();
-        let mut writer = tokio::spawn(write_requests(sink, texts));
+        let mut writer = tokio::spawn(write_requests(sink, texts, self.beat.clone()));
         let mut pending: HashMap<String, Reply> = HashMap::new();
         let mut health = Health {
             connected: false,
@@ -436,6 +561,8 @@ impl Session<'_> {
             last_heartbeat: Instant::now(),
             last_link: Instant::now(),
         };
+        // What the script's close frame said, if it said anything.
+        let mut closed: Option<String> = None;
         let mut tick = tokio::time::interval(BUSY_CHECK);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let end = loop {
@@ -443,7 +570,11 @@ impl Session<'_> {
                 frame = stream.next() => {
                     let text = match frame {
                         Some(Ok(Message::Text(text))) => text,
-                        Some(Ok(Message::Close(_)) | Err(_)) | None => break End::Lost,
+                        Some(Ok(Message::Close(frame))) => {
+                            closed = close_words(frame.as_ref());
+                            break End::Lost;
+                        }
+                        Some(Err(_)) | None => break End::Lost,
                         Some(Ok(_)) => continue,
                     };
                     match parse_frame(text.as_str()) {
@@ -502,8 +633,12 @@ impl Session<'_> {
         *lock(self.snapshot) = Snapshot::default();
         tracing::info!(
             instance = self.name,
+            close = ?closed.as_deref().unwrap_or("-"),
             "disconnected from the FohMixer script"
         );
+        if let Some(why) = closed {
+            self.emit(LiveEvent::Closed { why });
+        }
         self.emit(LiveEvent::Disconnected);
         end
     }
@@ -630,6 +765,186 @@ mod tests {
             Some("connection attempt timed out")
         );
         drop(silent);
+    }
+
+    /// What a writer sent, and when (on tokio's clock, since `start`).
+    type Sent = Arc<Mutex<Vec<(Duration, Message)>>>;
+
+    /// A sink that keeps every message with its time in `sent` (taken by
+    /// value: the sink borrows nothing, so a task can own it).
+    fn recording(
+        start: tokio::time::Instant,
+        sent: Sent,
+    ) -> std::pin::Pin<Box<impl Sink<Message, Error = std::convert::Infallible>>> {
+        Box::pin(futures_util::sink::unfold(
+            (),
+            move |(), message: Message| {
+                let sent = Arc::clone(&sent);
+                async move {
+                    sent.lock().unwrap().push((start.elapsed(), message));
+                    Ok::<(), std::convert::Infallible>(())
+                }
+            },
+        ))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_writer_pings_every_500_ms() {
+        // #140 PR 3a: the script counts a hub silent for 1.5 s as gone.
+        assert_eq!(KEEPALIVE_MS, 500);
+        let start = tokio::time::Instant::now();
+        let sent: Sent = Arc::default();
+        let (out, texts) = mpsc::unbounded_channel::<String>();
+        let writer = tokio::spawn(write_requests(
+            recording(start, Arc::clone(&sent)),
+            texts,
+            Beat::steady(),
+        ));
+        tokio::time::sleep(Duration::from_millis(1250)).await;
+        let pings = |sent: &Sent| -> Vec<Duration> {
+            sent.lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, m)| matches!(m, Message::Ping(_)))
+                .map(|(at, _)| *at)
+                .collect()
+        };
+        assert_eq!(
+            pings(&sent),
+            vec![Duration::from_millis(500), Duration::from_millis(1000)],
+            "a ping at 500 and 1000 ms with no request queued"
+        );
+        // A request goes out as text at once, and the pings go on.
+        out.send("{\"uuid\": \"u1\"}".to_string()).unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let texts: Vec<(Duration, String)> = sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(at, m)| match m {
+                Message::Text(t) => Some((*at, t.as_str().to_string())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            vec![(
+                Duration::from_millis(1250),
+                "{\"uuid\": \"u1\"}".to_string()
+            )]
+        );
+        assert_eq!(
+            pings(&sent),
+            vec![
+                Duration::from_millis(500),
+                Duration::from_millis(1000),
+                Duration::from_millis(1500)
+            ]
+        );
+        // The session's sender gone, the writer ends.
+        drop(out);
+        tokio::time::timeout(Duration::from_secs(1), writer)
+            .await
+            .expect("the writer ends with its sender")
+            .unwrap();
+    }
+
+    #[test]
+    fn a_routers_beat_is_fresh_for_600_ms() {
+        // PR #146 review I1: the router stamps it every 200 ms at least.
+        assert_eq!((ROUTER_BEAT_MS, BEAT_FRESH_MS), (200, 600));
+        assert!(beat_fresh(0, 0));
+        assert!(beat_fresh(599, 0));
+        assert!(!beat_fresh(600, 0), "600 ms old");
+        assert!(!beat_fresh(5000, 1000));
+        assert!(beat_fresh(1000, 1000));
+        assert!(beat_fresh(10, 20), "a stamp after the reading");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_routers_beat_ages_unless_stamped_and_a_steady_one_never() {
+        let beat = Beat::router();
+        assert!(beat.fresh(), "fresh from its start");
+        tokio::time::sleep(Duration::from_millis(599)).await;
+        assert!(beat.fresh());
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        assert!(!beat.fresh(), "600 ms without a stamp");
+        beat.stamp();
+        assert!(beat.fresh());
+        let copy = beat.clone();
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert!(!copy.fresh());
+        copy.stamp();
+        assert!(beat.fresh(), "a copy shares the stamp");
+        let steady = Beat::steady();
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        assert!(steady.fresh(), "a beat no router drives never ages");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_writer_pings_only_while_the_routers_beat_is_fresh() {
+        // PR #146 review I1: a router that hung or panicked stamps no more,
+        // so its writers stop pinging and the script falls back to DRY.
+        let start = tokio::time::Instant::now();
+        let beat = Beat::router();
+        let sent: Sent = Arc::default();
+        let (_out, texts) = mpsc::unbounded_channel::<String>();
+        let writer = tokio::spawn(write_requests(
+            recording(start, Arc::clone(&sent)),
+            texts,
+            beat.clone(),
+        ));
+        let pings = |sent: &Sent| -> Vec<Duration> {
+            sent.lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, m)| matches!(m, Message::Ping(_)))
+                .map(|(at, _)| *at)
+                .collect()
+        };
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert_eq!(
+            pings(&sent),
+            vec![Duration::from_millis(500)],
+            "none at 1000 ms: the beat is 1000 ms old"
+        );
+        beat.stamp();
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        assert_eq!(
+            pings(&sent),
+            vec![Duration::from_millis(500), Duration::from_millis(1500)],
+            "again while fresh, none at 2000 ms"
+        );
+        writer.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_writer_ends_when_a_ping_cannot_be_written() {
+        let failing = Box::pin(futures_util::sink::unfold(
+            (),
+            |(), _message: Message| async move { Err::<(), &str>("the socket is gone") },
+        ));
+        let (_out, texts) = mpsc::unbounded_channel::<String>();
+        let writer = tokio::spawn(write_requests(failing, texts, Beat::steady()));
+        tokio::time::timeout(Duration::from_secs(2), writer)
+            .await
+            .expect("the writer ends at its first failed write")
+            .unwrap();
+    }
+
+    #[test]
+    fn a_close_frame_is_told_by_its_code_and_reason() {
+        use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+        let frame = |code: u16, reason: &str| CloseFrame {
+            code: CloseCode::from(code),
+            reason: reason.to_string().into(),
+        };
+        assert_eq!(
+            close_words(Some(&frame(1001, "silent"))).as_deref(),
+            Some("1001 silent")
+        );
+        assert_eq!(close_words(Some(&frame(1000, ""))).as_deref(), Some("1000"));
+        assert_eq!(close_words(None), None);
     }
 
     #[test]

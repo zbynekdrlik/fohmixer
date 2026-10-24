@@ -1,29 +1,46 @@
 """One command: ``{"target", "name", "args"}`` -> result data (design §3.4).
 
 ``name`` is ``get_prop``, ``set_prop``, ``add_listener``, ``remove_listener``,
-``describe``, or any function of the target, called with positional (list) or
+``describe``, ``safe_writes`` (#140 PR 3a: the hub's DRY writes for its loss,
+``safe.py``), or any function of the target, called with positional (list) or
 keyword (dict) ``args``. Names starting with ``_`` are rejected. A failure
 raises a ``FohError``; an exception raised by Live is wrapped as
 ``OpError("live error")`` that keeps the original type in ``error_type``.
 Runs on Live's main thread only.
 """
 
+import math
+
 from . import codec
 from . import path as lom_path
 from .errors import FohError, OpError
+from .registry import id_of
+
+# A rack's first macro: the chain selector's mapping (LOM parameter 1; 0 is
+# ``Device On``), the one parameter a DRY write may name (#140 PR 3a).
+RACK_MACRO = 1
+# A DRY write's target: a ``$ref`` of this class, never a path.
+SAFE_CLASS = "DeviceParameter"
+SAFE_SHAPE = "a safe write is {target: {$ref, class: DeviceParameter}, value}"
+# The most DRY writes one registration names (PR #146 review M3): the band
+# set has 12; a list resolves and is checked on Live's main thread in one
+# command.
+SAFE_MAX = 64
 
 
 class Context:
-    """What a command may touch: the song, the app, ids, subscriptions, its connection."""
+    """What a command may touch: the song, the app, ids, subscriptions, its
+    connection, and the connections' DRY writes (``safe``, a ``SafeWrites``)."""
 
-    __slots__ = ("app", "connection", "registry", "song", "subscriptions")
+    __slots__ = ("app", "connection", "registry", "safe", "song", "subscriptions")
 
-    def __init__(self, song, app, registry, subscriptions, connection):
+    def __init__(self, song, app, registry, subscriptions, connection, safe=None):
         self.song = song
         self.app = app
         self.registry = registry
         self.subscriptions = subscriptions
         self.connection = connection
+        self.safe = safe
 
 
 def execute(command, ctx):
@@ -131,12 +148,92 @@ def _describe(obj, where, args, ctx):
     return describe(obj)
 
 
+def is_rack_macro(param):
+    """Whether ``param`` is a rack's first macro: its ``canonical_parent`` can
+    have chains (a rack), and that rack's parameter ``RACK_MACRO`` is it (by
+    Live's pointer: each access gives a fresh wrapper)."""
+    try:
+        rack = param.canonical_parent
+        if not rack.can_have_chains:
+            return False
+        macro = rack.parameters[RACK_MACRO]
+    except (AttributeError, IndexError, RuntimeError, TypeError):
+        # A parameter of no rack, or one Live cannot read now: no macro.
+        return False
+    return id_of(macro) == id_of(param)
+
+
+def in_range(param, value):
+    """Whether ``value`` is a number within ``param``'s range."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    if not math.isfinite(value):
+        return False
+    try:
+        return param.min <= value <= param.max
+    except (AttributeError, RuntimeError, TypeError):
+        return False
+
+
+def _is_safe_write(item):
+    """A DRY write's shape: ``{"target": {"$ref", "class"}, "value"}``."""
+    if not isinstance(item, dict) or set(item) != {"target", "value"}:
+        return False
+    target = item["target"]
+    return (
+        isinstance(target, dict)
+        and set(target) == {"$ref", "class"}
+        and isinstance(target["$ref"], str)
+        and target["class"] == SAFE_CLASS
+    )
+
+
+def _safe_writes(obj, where, args, ctx):
+    """Keeps this connection's DRY writes (#140 PR 3a, ``safe.py``): each a
+    rack's first macro by its ``$ref`` and a value in its range, every target
+    resolved now (its object is what a fallback writes). A list longer than
+    ``SAFE_MAX``, or with a target that does not resolve, one named twice
+    (PR #146 review M3: two values for one selector), one that is no rack's
+    first macro, or a value out of its range is refused whole, and the list
+    kept before stays."""
+    _check_keys(args, "safe_writes", ("writes",))
+    writes = args["writes"]
+    if not isinstance(writes, list):
+        raise OpError("bad args", "writes must be a list")
+    if len(writes) > SAFE_MAX:
+        raise OpError("bad args", f"more than {SAFE_MAX} safe writes")
+    if not all(_is_safe_write(item) for item in writes):
+        raise OpError("bad args", SAFE_SHAPE)
+    resolved = []
+    unresolved = 0
+    for item in writes:
+        try:
+            param, _path = lom_path.resolve(item["target"], ctx.song, ctx.app, ctx.registry)
+        except FohError:
+            unresolved += 1
+            continue
+        resolved.append((param, item["value"]))
+    if unresolved:
+        raise OpError("bad args", f"{unresolved} safe write target(s) do not resolve")
+    twice = len(resolved) - len({id_of(param) for param, _value in resolved})
+    if twice:
+        raise OpError("bad args", f"{twice} safe write target(s) named twice")
+    not_macros = sum(1 for param, _value in resolved if not is_rack_macro(param))
+    if not_macros:
+        raise OpError("bad args", f"{not_macros} safe write target(s) are no rack's first macro")
+    out_of_range = sum(1 for param, value in resolved if not in_range(param, value))
+    if out_of_range:
+        raise OpError("bad args", f"{out_of_range} safe write value(s) out of the macro's range")
+    return {"armed": ctx.safe.arm(ctx.connection, resolved)}
+
+
 _HANDLERS = {
     "get_prop": _get_prop,
     "set_prop": _set_prop,
     "add_listener": _add_listener,
     "remove_listener": _remove_listener,
     "describe": _describe,
+    "safe_writes": _safe_writes,
 }
 
 

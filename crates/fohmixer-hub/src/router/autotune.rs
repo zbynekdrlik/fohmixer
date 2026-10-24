@@ -30,6 +30,12 @@
 //! found anew, and after a hold; each write is read back, a mismatch
 //! retried once, another writer shown and never fought. No selector moves.
 //!
+//! **The fall back to DRY (#140 PR 3a, `autotune/safe.rs`):** every
+//! found selector's DRY write (its macro's `$ref` and off value, whatever
+//! AUT is) is registered with the set's script, which makes them when the
+//! hub is gone; a registration goes when the found set changed, never
+//! while the set's writes are held.
+//!
 //! **Nothing is written by a stale index (PR #139 review I1, REVERB's
 //! window):** from a disconnect or a track-list change, and whenever a
 //! write meets the set's markers unsettled (`reverb_settled`: the marker
@@ -65,6 +71,9 @@ mod keys;
 use keys::{Position, key_status};
 #[path = "autotune/key_writes.rs"]
 mod key_writes;
+#[path = "autotune/safe.rs"]
+mod safe;
+use safe::Safe;
 
 /// AUTOTUNE's subscriber of its targets' values (clients count up from 1;
 /// the unfold and marker keepers and REVERB are `MAX`, `MAX − 1`,
@@ -143,6 +152,11 @@ pub(super) struct AutotuneIo {
     pub current_maps: BTreeSet<String>,
     /// The key writes' own counter (#140 PR 2b).
     pub key_writes: u64,
+    /// Each Live set's DRY writes registered with its script since its
+    /// connect (#140 PR 3a); none: the script holds none.
+    pub safe: BTreeMap<String, Safe>,
+    /// The registrations' own counter.
+    pub safe_seq: u64,
 }
 
 impl AutotuneIo {
@@ -164,6 +178,8 @@ impl AutotuneIo {
             positions: BTreeMap::new(),
             current_maps: BTreeSet::new(),
             key_writes: 0,
+            safe: BTreeMap::new(),
+            safe_seq: 0,
         };
         io.told = Some(io.state());
         io
@@ -227,6 +243,7 @@ impl AutotuneIo {
                     }
                 })
                 .collect(),
+            safe: self.safe_status(),
         }
     }
 
@@ -370,6 +387,14 @@ pub(super) fn after_walk(retryable: bool, failures: u32) -> AfterWalk {
     }
 }
 
+/// Whether a target keeps what it found through a failed walk (PR #146
+/// review I3): a found one whose walk Live did not answer (`retryable`:
+/// busy, a timeout, offline) keeps its ref and its DRY registration, since
+/// the script holds the object; a definite refusal drops them.
+pub(super) fn keeps_found(retryable: bool, found: bool) -> bool {
+    retryable && found
+}
+
 /// A target's problem once its walks gave up (PR #145 review M7): Live's
 /// words, and that it gave up after `tries` failed walks, so `/api/status`
 /// tells a stopped retry from a running one.
@@ -495,6 +520,12 @@ impl Router {
         for set in held {
             self.autotune_release(&set, "layout");
         }
+        // The DRY writes follow the found set (#140 PR 3a): a target gone
+        // leaves its set's list, a set without targets left disarms.
+        let names: Vec<String> = self.live.keys().cloned().collect();
+        for name in names {
+            self.autotune_safe(&name);
+        }
         self.autotune_tell();
     }
 
@@ -534,22 +565,27 @@ impl Router {
 
     /// A walk's read failed (#140): void unless it is the target's newest
     /// walk; else the target is missing with Live's words (recorded when
-    /// news) and, when Live did not answer or was offline, walked again
-    /// after [`RETRY_MS`] while retries are left, or one `gave_up` record
-    /// (warn) waits for the next trigger ([`after_walk`]); a definite
-    /// refusal waits for the next trigger.
+    /// news), unless it was found and Live only did not answer (PR #146
+    /// review I3, [`keeps_found`]: its ref and its DRY write stay), and,
+    /// when Live did not answer or was offline, walked again after
+    /// [`RETRY_MS`] while retries are left, or one `gave_up` record (warn)
+    /// waits for the next trigger ([`after_walk`]); a definite refusal waits
+    /// for the next trigger.
     pub(super) fn autotune_walk_failed(&mut self, key: &str, walk: u64, why: String) {
-        if self.autotune.targets.get(key).map(|t| t.walk) != Some(walk) {
+        let Some(target) = self.autotune.targets.get(key).filter(|t| t.walk == walk) else {
             return;
+        };
+        let retryable = transient(&why);
+        if !keeps_found(retryable, target.found.is_some()) {
+            self.autotune_target_missing(key, why.clone());
         }
-        self.autotune_target_missing(key, why.clone());
         let Some(target) = self.autotune.targets.get_mut(key) else {
             return;
         };
         target.walk_failures += 1;
         let failures = target.walk_failures;
         let (instance, track) = (target.instance.clone(), target.track.clone());
-        match after_walk(transient(&why), failures) {
+        match after_walk(retryable, failures) {
             AfterWalk::Retry => self.autotune_walk_retry_later(key, walk),
             AfterWalk::GiveUp => {
                 target.problem = Some(gave_up_problem(&why, failures));
@@ -634,6 +670,7 @@ impl Router {
         ) {
             self.autotune_write_keys(&instance, &[key.to_string()], on, Why::Found);
         }
+        self.autotune_safe(&instance);
     }
 
     /// Follows a found macro's value afresh (a new subscription at the found
@@ -688,13 +725,14 @@ impl Router {
         if news {
             self.autotune_step(
                 Step::Missing {
-                    instance,
+                    instance: instance.clone(),
                     target: track,
                     problem: why,
                 },
                 None,
             );
         }
+        self.autotune_safe(&instance);
     }
 
     /// Ends a target's value subscription (its value with it).
@@ -836,6 +874,10 @@ impl Router {
             self.autotune_key_unsub(key);
             self.autotune_key_forget(key);
         }
+        // The script's DRY writes died with its connection (#140 PR 3a):
+        // an answer still on its way is void, and the connect's walks
+        // register afresh.
+        self.autotune.safe.remove(instance);
         self.autotune_position_offline(instance);
         self.autotune_hold(instance, "offline");
         self.autotune.rule.on_disconnect(instance);
@@ -876,10 +918,16 @@ impl Router {
     }
 
     /// Ends `instance`'s hold once its markers are settled (`why`: how),
-    /// recorded; its targets are walked again, and each answer writes the
-    /// set's decision once where it is owed.
+    /// recorded; its DRY writes are registered as the hold kept its found
+    /// targets (#140 PR 3a), its targets are walked again, and each answer
+    /// writes the set's decision once where it is owed. Settled with no
+    /// hold, a registration a walk's answer left to the markers goes now.
     pub(super) fn autotune_release(&mut self, instance: &str, why: &str) {
-        if !self.reverb_settled(instance) || !self.autotune.held.remove(instance) {
+        if !self.reverb_settled(instance) {
+            return;
+        }
+        if !self.autotune.held.remove(instance) {
+            self.autotune_safe(instance);
             return;
         }
         self.autotune_step(
@@ -890,6 +938,7 @@ impl Router {
             },
             None,
         );
+        self.autotune_safe(instance);
         for key in self.autotune.keys_of(Some(instance), false) {
             self.autotune_walk(&key);
         }

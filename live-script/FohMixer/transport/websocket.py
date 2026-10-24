@@ -63,8 +63,11 @@ def encode_pong_frame(payload_bytes):
     return encode_frame(OPCODE_PONG, payload_bytes)
 
 
-def encode_close_frame():
-    return encode_frame(OPCODE_CLOSE)
+def encode_close_frame(code=None, reason=""):
+    """A close frame: no body, or ``code`` and ``reason`` (RFC 6455 §5.5.1)."""
+    if code is None:
+        return encode_frame(OPCODE_CLOSE)
+    return encode_frame(OPCODE_CLOSE, struct.pack("!H", code) + reason.encode("utf-8"))
 
 
 def read_http_request(conn):

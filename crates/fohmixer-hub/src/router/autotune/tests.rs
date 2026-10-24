@@ -15,8 +15,8 @@ use super::super::tests::{attach, next_of, offline_router, records, status};
 use super::super::{Router, RouterMsg, layout_msg, markers};
 use super::{
     AUTOTUNE_CLIENT, AfterWalk, PARAMETER_CLASS, TOO_DEEP, Target, after_walk, autotune_fields,
-    found_write, gave_up_problem, macro_value, may_write, missing_news, slot_failures, state_of,
-    target_key, walk_again, write_commands,
+    found_write, gave_up_problem, keeps_found, macro_value, may_write, missing_news, slot_failures,
+    state_of, target_key, walk_again, write_commands,
 };
 use crate::live::LiveValue;
 use crate::live::client::LiveEvent;
@@ -1167,6 +1167,53 @@ async fn a_track_list_change_writes_nothing_by_the_old_index_until_the_new_layou
     );
 }
 
+#[tokio::test]
+async fn a_track_list_change_registers_no_dry_write_by_the_old_index() {
+    // #140 PR 3a: the DRY writes go by the macros' refs, each with its
+    // target's off value. While a track-list change holds the band, a walk
+    // by an old index finds another track's rack, whose DRY value is not
+    // that target's: nothing is registered until the new layout.
+    let (mut router, _rx, _dir, mut own) = tagged().await;
+    let registered = |router: &Router| {
+        router
+            .autotune
+            .safe
+            .get("band")
+            .map(|safe| safe.list.clone())
+    };
+    let both = vec![("p0".to_string(), 0), ("p1".to_string(), 127)];
+    // The stream rack (off 0) on track 0 and the repro rack (off 127) on 1.
+    assert_eq!(registered(&router), Some(both.clone()));
+    let seq = router.autotune.safe["band"].seq;
+    router
+        .subs
+        .on_values("band", &[pushed("live_1.tracks", json!([9, 1, 2]))]);
+    router.flush();
+    let (read, _) = next_read(&mut own).await;
+    let walk = walk_of(&router, AT0);
+    router.autotune_found(AT0, walk, Err("no rack named Latencies".into()));
+    // Track 1 holds the stream rack now, and AT1 is still the repro target.
+    found_at(&mut router, AT1, 1, "p0");
+    assert_eq!(router.autotune.safe["band"].seq, seq, "nothing while held");
+    assert_eq!(registered(&router), Some(both.clone()));
+    // The markers' new layout ends the hold: the found set as it stands
+    // (AT1 is the stream target now, off 0).
+    read_answered(
+        &mut router,
+        &mut own,
+        read,
+        3,
+        &[(1, STREAM_TAG), (2, REPRO_TAG)],
+    )
+    .await;
+    settle(&mut router, &mut own).await;
+    assert_eq!(registered(&router), Some(vec![("p0".to_string(), 0)]));
+    // Its walks find both racks again: each with its own off value.
+    found_at(&mut router, AT1, 1, "p0");
+    found_at(&mut router, AT2, 2, "p1");
+    assert_eq!(registered(&router), Some(both));
+}
+
 /// Every message the router's own tasks send within `limit` (on tokio's
 /// virtual clock), handled.
 async fn pump(router: &mut Router, own: &mut UnboundedReceiver<RouterMsg>, limit_ms: u64) {
@@ -1393,6 +1440,15 @@ async fn a_failed_walk_gives_up_after_max_retries_until_the_next_trigger() {
     walk_failed(&mut router, w + 1);
     pump(&mut router, &mut own, RETRY_MS + RETRY_MS / 2).await;
     assert_eq!(walk_of(&router, STREAM), w + 2);
+}
+
+#[test]
+fn only_a_found_target_whose_walk_live_did_not_answer_keeps_its_rack() {
+    // PR #146 review I3.
+    assert!(keeps_found(true, true));
+    assert!(!keeps_found(true, false), "nothing found to keep");
+    assert!(!keeps_found(false, true), "a definite refusal drops it");
+    assert!(!keeps_found(false, false));
 }
 
 #[test]

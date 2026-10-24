@@ -434,6 +434,10 @@ class _DeviceParameterClass(_LiveObject):
     is_enabled = _Prop(readonly=True, observable=False)
     automation_state = _Prop(readonly=True)
     state = _Prop(readonly=True)
+    # The device (or mixer) the parameter belongs to, as Live's LOM names
+    # it (#140 PR 3a: the script's DRY writes take only a rack's macro);
+    # set by its owner (``_own``), none for a parameter of no device.
+    canonical_parent = _Prop(readonly=True, observable=False)
 
     def __init__(self, name, value=0.0, lo=0.0, hi=1.0, display="plain", items=()):
         super().__init__()
@@ -444,6 +448,7 @@ class _DeviceParameterClass(_LiveObject):
         if quantized:
             lo, hi = 0.0, float(len(self._items) - 1)
         self._v.update(
+            canonical_parent=None,
             name=name,
             original_name=name,
             value=float(value),
@@ -489,6 +494,12 @@ def _on_off(name, on=True):
     )
 
 
+def _own(owner, params):
+    """``owner`` is each parameter's ``canonical_parent`` (#140 PR 3a)."""
+    for param in params:
+        param._v["canonical_parent"] = owner
+
+
 # --- mixers ----------------------------------------------------------------------------
 
 
@@ -508,6 +519,7 @@ class _MixerDeviceClass(_LiveObject):
         self._sends = [
             _DeviceParameterClass(name, value, 0.0, 1.0, "volume") for name, value in sends
         ]
+        _own(self, self._sim_children())
 
     @property
     def sends(self):
@@ -533,6 +545,7 @@ class _ChainMixerDeviceClass(_LiveObject):
             panning=_DeviceParameterClass("Chain Pan", panning, -1.0, 1.0, "pan"),
             chain_activator=_on_off("Chain Activator"),
         )
+        _own(self, self._sim_children())
 
     @property
     def sends(self):
@@ -575,6 +588,7 @@ class _DeviceClass(_LiveObject):
             can_have_drum_pads=False,
         )
         self._parameters = [_on_off("Device On"), *parameters]
+        _own(self, self._parameters)
 
     @property
     def parameters(self):

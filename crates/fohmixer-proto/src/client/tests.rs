@@ -698,6 +698,20 @@ fn api_bodies_round_trip() {
                 tempo: Some(95.0),
                 bar: Some("G".into()),
             }],
+            safe: vec![
+                SafeStatus {
+                    instance: "band".into(),
+                    state: SafeState::Kept,
+                    targets: 12,
+                    problem: None,
+                },
+                SafeStatus {
+                    instance: "master".into(),
+                    state: SafeState::Failed,
+                    targets: 1,
+                    problem: Some("no such function: safe_writes".into()),
+                },
+            ],
         },
         songmap: vec![SongMapStatus {
             instance: "band".into(),
@@ -723,7 +737,24 @@ fn api_bodies_round_trip() {
             {"instance": "band", "track": "live_set tracks 8", "label": "#9", "on": 127,
              "state": "missing", "problem": "no rack named Latencies"}],
             "keys": [{"instance": "band", "song": 31, "key": "G", "time": 22897.5,
-                      "playing": true, "tempo": 95.0, "bar": "G"}]})
+                      "playing": true, "tempo": 95.0, "bar": "G"}],
+            "safe": [
+                {"instance": "band", "state": "kept", "targets": 12, "problem": null},
+                {"instance": "master", "state": "failed", "targets": 1,
+                 "problem": "no such function: safe_writes"}]})
+    );
+    assert_eq!(
+        serde_json::to_value([SafeState::Sent, SafeState::Kept, SafeState::Failed]).unwrap(),
+        json!(["sent", "kept", "failed"])
+    );
+    // A hub before the DRY writes (#140 PR 3a) names no registration.
+    let mut before_safe = json["autotune"].clone();
+    before_safe.as_object_mut().unwrap().remove("safe");
+    assert!(
+        serde_json::from_value::<AutotuneStatus>(before_safe)
+            .unwrap()
+            .safe
+            .is_empty()
     );
     // Every key state's name (#140 PR 2b).
     assert_eq!(
@@ -860,7 +891,7 @@ fn api_bodies_round_trip() {
     assert_eq!(before_autotune.autotune, AutotuneStatus::default());
     assert_eq!(
         serde_json::to_value(AutotuneStatus::default()).unwrap(),
-        json!({"aut": false, "writes": 0, "taps": 0, "targets": [], "keys": []})
+        json!({"aut": false, "writes": 0, "taps": 0, "targets": [], "keys": [], "safe": []})
     );
     assert_eq!(
         serde_json::from_value::<HubStatus>(json.clone())

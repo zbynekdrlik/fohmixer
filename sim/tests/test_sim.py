@@ -91,6 +91,22 @@ class SiteTest(unittest.TestCase):
         # Vocal 1 repro# keeps no Latencies rack (params.spec.ts relies on it).
         self.assertEqual([d.name for d in by_name["Vocal 1 repro#"].devices], ["EQ Eight"])
 
+    def test_a_parameters_canonical_parent_is_its_device_or_mixer(self):
+        # #140 PR 3a: the script's DRY writes take only a rack's first macro,
+        # found through the parameter's canonical_parent (Live's LOM).
+        by_name = {t.name: t for t in self.song.tracks}
+        inner = by_name["Vocal 3 repro#"].devices[0].chains[0].devices[0]
+        self.assertIs(inner.parameters[1].canonical_parent, inner)
+        self.assertIs(inner.parameters[0].canonical_parent, inner)
+        eq = by_name["Vocal 1 repro#"].devices[0]
+        self.assertIs(eq.parameters[3].canonical_parent, eq)
+        mixer = by_name["Vocal 1 repro#"].mixer_device
+        self.assertIs(mixer.volume.canonical_parent, mixer)
+        chain = by_name["Mics Stage #"].devices[0].chains[0].mixer_device
+        self.assertIs(chain.panning.canonical_parent, chain)
+        with self.assertRaises(AttributeError):
+            inner.parameters[1].canonical_parent = None
+
     def test_pro_q_4_on_a_track_and_in_a_rack_chain(self):
         # #71: Hand2 # holds a Pro-Q 4, a rack whose first chain holds a renamed
         # one and whose second chain holds another plug-in.
