@@ -731,8 +731,11 @@ pub struct AutotuneStatus {
 }
 
 /// One Live set's song map in `GET /api/status` (#140): its counts, which
-/// Sections track it read, when it was read (hub UTC ms) and whether it is
-/// stale (the set went offline since: the next read replaces it).
+/// Sections track it read, when it was read (hub UTC ms), whether it is
+/// stale (the set went offline since, or its last read failed: the next
+/// read replaces it) and whether the set's reads gave up (PR #145 review
+/// M7: their retries spent, it waits for the next trigger; false in an
+/// older hub's answer).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SongMapStatus {
     pub instance: String,
@@ -743,6 +746,8 @@ pub struct SongMapStatus {
     pub sections: SectionsState,
     pub at_ms: u64,
     pub stale: bool,
+    #[serde(default)]
+    pub gave_up: bool,
 }
 
 /// One problem of a song map in `GET /api/songmap` (#140): what, which

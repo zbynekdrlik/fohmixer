@@ -1,6 +1,7 @@
 use serde_json::json;
 
 use super::*;
+use crate::live::client::LiveError;
 
 fn key(watch: &Watch) -> String {
     let (instance, target, prop) = watch.target();
@@ -438,12 +439,12 @@ fn a_newer_read_voids_an_older_answer() {
 }
 
 #[test]
-fn a_failed_read_is_tried_again_three_times_in_a_row() {
+fn a_failed_read_is_tried_again_connect_retries_times_in_a_row() {
     let mut k = keeper();
     let actions = k.value(&tracks_key("band"), Some(&list(1)));
     let mut seq = apply(&mut k, actions).reads[0].1;
-    let failed: Result<Vec<Value>, String> = Err("timeout".into());
-    for _ in 0..MAX_RETRIES {
+    let failed: Result<Vec<Value>, String> = Err(LiveError::Timeout.to_string());
+    for _ in 0..CONNECT_RETRIES {
         assert_eq!(
             k.read_done("band", seq, Step::Devices, &failed),
             vec![Action::Retry {
@@ -453,7 +454,13 @@ fn a_failed_read_is_tried_again_three_times_in_a_row() {
         let actions = k.retry("band");
         seq = apply(&mut k, actions).reads[0].1;
     }
-    assert_eq!(k.read_done("band", seq, Step::Devices, &failed), vec![]);
+    assert_eq!(
+        k.read_done("band", seq, Step::Devices, &failed),
+        vec![Action::GaveUp {
+            instance: "band".into(),
+            tries: CONNECT_RETRIES + 1
+        }]
+    );
     // A success resets the count.
     let actions = k.retry("band");
     seq = apply(&mut k, actions).reads[0].1;
@@ -514,13 +521,13 @@ fn the_markers_of_an_instance_are_counted_per_track_in_order() {
 }
 
 #[test]
-fn a_second_batch_that_keeps_failing_is_tried_again_three_times_in_a_row() {
+fn a_second_batch_that_keeps_failing_is_tried_again_connect_retries_times_in_a_row() {
     let mut k = keeper();
     let actions = k.value(&tracks_key("band"), Some(&list(1)));
     let mut seq = apply(&mut k, actions).reads[0].1;
     let devices = Ok(vec![ok(json!([device("Device", "Tuner")]))]);
-    let failed: Result<Vec<Value>, String> = Err("timeout".into());
-    for _ in 0..MAX_RETRIES {
+    let failed: Result<Vec<Value>, String> = Err(LiveError::Timeout.to_string());
+    for _ in 0..CONNECT_RETRIES {
         let actions = k.read_done("band", seq, Step::Devices, &devices);
         assert!(matches!(
             actions.as_slice(),
@@ -539,7 +546,13 @@ fn a_second_batch_that_keeps_failing_is_tried_again_three_times_in_a_row() {
         seq = apply(&mut k, actions).reads[0].1;
     }
     k.read_done("band", seq, Step::Devices, &devices);
-    assert_eq!(k.read_done("band", seq, Step::Classes, &failed), vec![]);
+    assert_eq!(
+        k.read_done("band", seq, Step::Classes, &failed),
+        vec![Action::GaveUp {
+            instance: "band".into(),
+            tries: CONNECT_RETRIES + 1
+        }]
+    );
 }
 
 #[test]
@@ -830,13 +843,19 @@ fn a_connect_reads_the_tuners_again_once_the_lists_are_known() {
     let actions = k.value(&tracks_key("band"), Some(&list(1)));
     let mut seq = apply(&mut k, actions).reads[0].1;
     // The retries run out while Live is away…
-    let failed: Result<Vec<Value>, String> = Err("timeout".into());
-    for _ in 0..MAX_RETRIES {
+    let failed: Result<Vec<Value>, String> = Err(LiveError::Timeout.to_string());
+    for _ in 0..CONNECT_RETRIES {
         k.read_done("band", seq, Step::Devices, &failed);
         let actions = k.retry("band");
         seq = apply(&mut k, actions).reads[0].1;
     }
-    assert_eq!(k.read_done("band", seq, Step::Devices, &failed), vec![]);
+    assert_eq!(
+        k.read_done("band", seq, Step::Devices, &failed),
+        vec![Action::GaveUp {
+            instance: "band".into(),
+            tries: CONNECT_RETRIES + 1
+        }]
+    );
     // …a connect reads again, and its failure is tried again.
     let actions = k.connected("band");
     let applied = apply(&mut k, actions);
@@ -852,6 +871,50 @@ fn a_connect_reads_the_tuners_again_once_the_lists_are_known() {
 }
 
 #[test]
+fn a_refused_read_is_not_tried_again() {
+    // PR #145 review M2: only Live's silence (a timeout) or its absence
+    // (offline) is worth a retry; the script refusing the read is not.
+    let mut k = keeper();
+    let actions = k.value(&tracks_key("band"), Some(&list(1)));
+    let seq = apply(&mut k, actions).reads[0].1;
+    let refused: Result<Vec<Value>, String> = Err("refused: unknown command".into());
+    assert_eq!(k.read_done("band", seq, Step::Devices, &refused), vec![]);
+    assert!(!k.settled("band"), "the read failed");
+    // The next trigger reads, and an offline Live's failure is retried.
+    let actions = k.value(&tracks_key("band"), Some(&list(2)));
+    let seq = apply(&mut k, actions).reads[0].1;
+    let offline: Result<Vec<Value>, String> = Err(LiveError::Offline.to_string());
+    assert_eq!(
+        k.read_done("band", seq, Step::Devices, &offline),
+        vec![Action::Retry {
+            instance: "band".into()
+        }]
+    );
+}
+
+#[test]
+fn a_retry_while_the_instance_is_offline_reads_nothing_and_its_connect_reads() {
+    // #140: with the connect-time bound a failed read is tried again for
+    // about two minutes; an offline instance is not read meanwhile.
+    let mut k = keeper();
+    let actions = k.value(&tracks_key("band"), Some(&list(1)));
+    let seq = apply(&mut k, actions).reads[0].1;
+    let failed: Result<Vec<Value>, String> = Err(LiveError::Timeout.to_string());
+    assert_eq!(
+        k.read_done("band", seq, Step::Devices, &failed),
+        vec![Action::Retry {
+            instance: "band".into()
+        }]
+    );
+    k.disconnected("band");
+    assert_eq!(k.retry("band"), vec![], "offline: its connect reads");
+    let actions = k.connected("band");
+    assert_eq!(apply(&mut k, actions).reads.len(), 1, "the connect's read");
+    let actions = k.retry("band");
+    assert_eq!(apply(&mut k, actions).reads.len(), 1, "connected again");
+}
+
+#[test]
 fn the_markers_are_settled_once_a_read_since_a_failure_or_a_disconnect_answers_whole() {
     // #130 review M1, W2: REVERB's track-list window ends only then.
     let mut k = keeper();
@@ -862,7 +925,12 @@ fn the_markers_are_settled_once_a_read_since_a_failure_or_a_disconnect_answers_w
     let (_, seq, _, _) = applied.reads.pop().expect("a read");
     assert!(!k.settled("band"), "a read runs");
     // A failed read: none runs, yet the markers may be old.
-    let actions = k.read_done("band", seq, Step::Devices, &Err("x".to_string()));
+    let actions = k.read_done(
+        "band",
+        seq,
+        Step::Devices,
+        &Err(LiveError::Timeout.to_string()),
+    );
     apply(&mut k, actions);
     assert!(!k.settled("band"), "the read failed");
     // Tried again, it answers whole: settled.

@@ -77,6 +77,7 @@ mod links;
 mod markers;
 #[path = "router/markers_io.rs"]
 mod markers_io;
+mod retries;
 #[path = "router/reverb.rs"]
 mod reverb;
 #[path = "router/songmap.rs"]
@@ -343,6 +344,19 @@ pub enum RouterMsg {
         key: String,
         walk: u64,
         outcome: Result<crate::rules::autotune::find::Found, String>,
+    },
+    /// An AUTOTUNE target's walk `walk` failed (#140): a read Live did not
+    /// answer (offline, a timeout) or refused; worth another walk.
+    AutotuneWalkFailed {
+        key: String,
+        walk: u64,
+        why: String,
+    },
+    /// A failed walk `walk`'s retry is due (#140); void once the target was
+    /// walked since (a trigger, a disconnect).
+    AutotuneWalkRetry {
+        key: String,
+        walk: u64,
     },
     /// The answer to AUTOTUNE's write of `instance`'s targets `keys` (#104;
     /// `Err`: why none was written: offline, a timeout, refused).
@@ -735,10 +749,7 @@ impl Router {
                 }
                 self.autotune_release(&instance, "settled");
             }
-            RouterMsg::MarkersRetry { instance } => {
-                let actions = self.markers.retry(&instance);
-                self.markers_apply(actions);
-            }
+            RouterMsg::MarkersRetry { instance } => self.markers_retried(instance),
             RouterMsg::MarkersSettle { generation } => self.markers_settled(generation),
             RouterMsg::Applied {
                 instance,
@@ -920,6 +931,10 @@ impl Router {
             RouterMsg::AutotuneFound { key, walk, outcome } => {
                 self.autotune_found(&key, walk, outcome);
             }
+            RouterMsg::AutotuneWalkFailed { key, walk, why } => {
+                self.autotune_walk_failed(&key, walk, why);
+            }
+            RouterMsg::AutotuneWalkRetry { key, walk } => self.autotune_walk_retry(&key, walk),
             RouterMsg::AutotuneWritten {
                 instance,
                 keys,
@@ -2530,7 +2545,37 @@ mod tests {
             matches!(retry, RouterMsg::MarkersRetry { ref instance } if instance == "band"),
             "a retry of the band"
         );
-        assert!(started.elapsed() >= std::time::Duration::from_millis(markers::RETRY_MS - 100));
+        assert!(started.elapsed() >= std::time::Duration::from_millis(retries::RETRY_MS - 100));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_markers_retry_due_while_live_is_busy_waits_and_reads_nothing() {
+        // PR #145 review M1: a stalled Live gets no read queued behind the
+        // stall; the retry waits another RETRY_MS and reads once Live is
+        // ready.
+        let dir = tempfile::tempdir().unwrap();
+        let (router, mut rx, _records) = offline_router(dir.path());
+        let store = Arc::new(crate::layout::store_in(
+            dir.path(),
+            std::path::Path::new("layout.json"),
+            vec!["band".into()],
+        ));
+        let mut router = router.with_layout(store);
+        router.states.get_mut("band").unwrap().busy = true;
+        router.handle(RouterMsg::MarkersRetry {
+            instance: "band".into(),
+        });
+        let started = tokio::time::Instant::now();
+        let next = next_of(&mut rx, "a message", |_| true).await;
+        assert!(
+            matches!(next, RouterMsg::MarkersRetry { ref instance } if instance == "band"),
+            "waited again, no read"
+        );
+        assert!(started.elapsed() >= std::time::Duration::from_millis(retries::RETRY_MS));
+        router.states.get_mut("band").unwrap().busy = false;
+        router.handle(next);
+        let read = next_of(&mut rx, "a message", |_| true).await;
+        assert!(matches!(read, RouterMsg::MarkersRead { .. }), "a read");
     }
 
     #[tokio::test]

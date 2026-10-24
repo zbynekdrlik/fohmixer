@@ -9,6 +9,7 @@ use fohmixer_proto::markers::Found;
 use fohmixer_proto::markers::migrate::MigrationStatus;
 use serde_json::Value;
 
+use super::retries::Due;
 use super::{MARKERS_CLIENT, Router, RouterMsg, cached_value, layout_msg, markers, write_failure};
 use crate::layout::LayoutStore;
 use crate::live::subs::Cached;
@@ -71,6 +72,9 @@ impl Router {
                     commands,
                 } => self.markers_read(instance, seq, step, commands),
                 markers::Action::Retry { instance } => self.markers_retry(instance),
+                markers::Action::GaveUp { instance, tries } => {
+                    tracing::warn!(instance = %instance, tries, "the hub gave up reading the Tuner markers until the next list change or connect: REVERB's window and AUTOTUNE's hold stay");
+                }
                 markers::Action::Found(found) => self.markers_found(found),
                 markers::Action::Rename {
                     instance,
@@ -202,11 +206,24 @@ impl Router {
         });
     }
 
+    /// A retry of the keeper's read fell due (or a failed rename asks for a
+    /// read): while Live is busy it waits another `RETRY_MS`, uncounted and
+    /// asking Live nothing (PR #145 review M1); else the keeper reads (none
+    /// while the instance is offline: its connect reads).
+    pub(super) fn markers_retried(&mut self, instance: String) {
+        if self.retry_due(&instance) == Due::Wait {
+            self.markers_retry(instance);
+            return;
+        }
+        let actions = self.markers.retry(&instance);
+        self.markers_apply(actions);
+    }
+
     /// Asks the keeper to read `instance` again after `RETRY_MS`.
     fn markers_retry(&self, instance: String) {
         let tx = self.io.tx.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(markers::RETRY_MS)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(super::retries::RETRY_MS)).await;
             let _ = tx.send(RouterMsg::MarkersRetry { instance });
         });
     }

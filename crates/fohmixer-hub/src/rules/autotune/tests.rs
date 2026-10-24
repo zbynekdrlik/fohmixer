@@ -617,3 +617,25 @@ fn the_write_steps_are_recorded_and_logged() {
                "shows": "F#m"})
     );
 }
+
+#[test]
+fn a_target_given_up_is_recorded_and_warns() {
+    // #140: a walk that failed CONNECT_RETRIES + 1 times in a row.
+    let gave_up = Step::GaveUp {
+        instance: "band".into(),
+        target: "live_set tracks 4".into(),
+        problem: "no result within 3 s".into(),
+        tries: 25,
+    };
+    assert_eq!(
+        step_line(&gave_up),
+        "AUTOTUNE gave up walking band live_set tracks 4 after 25 failed walks, \
+         until the next trigger: no result within 3 s"
+    );
+    assert!(step_warn(&gave_up));
+    assert_eq!(
+        serde_json::to_value(&gave_up).unwrap(),
+        json!({"step": "gave_up", "instance": "band", "target": "live_set tracks 4",
+               "problem": "no result within 3 s", "tries": 25})
+    );
+}

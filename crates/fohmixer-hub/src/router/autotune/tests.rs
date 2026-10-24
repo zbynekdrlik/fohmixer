@@ -10,14 +10,17 @@ use serde_json::{Value, json};
 
 use tokio::sync::mpsc::UnboundedReceiver;
 
+use super::super::retries::{CONNECT_RETRIES, RETRY_MS};
 use super::super::tests::{attach, next_of, offline_router, records, status};
 use super::super::{Router, RouterMsg, layout_msg, markers};
 use super::{
-    AUTOTUNE_CLIENT, PARAMETER_CLASS, TOO_DEEP, Target, autotune_fields, found_write, macro_value,
-    may_write, missing_news, slot_failures, state_of, target_key, write_commands,
+    AUTOTUNE_CLIENT, AfterWalk, PARAMETER_CLASS, TOO_DEEP, Target, after_walk, autotune_fields,
+    found_write, gave_up_problem, macro_value, may_write, missing_news, slot_failures, state_of,
+    target_key, walk_again, write_commands,
 };
 use crate::live::LiveValue;
 use crate::live::client::LiveEvent;
+use crate::live::client::{Asked, Script};
 use crate::outbox::Outbox;
 use crate::rules::autotune::find::Found;
 use crate::rules::autotune::keys::KeyMissing;
@@ -274,6 +277,7 @@ fn a_targets_state_is_missing_waiting_or_its_macro_against_its_on_value() {
         key_write: 0,
         key_wrote: None,
         key_sure: false,
+        walk_failures: 0,
     };
     assert_eq!(
         state_of(&at(None, Some("no rack named Latencies"), None)),
@@ -351,7 +355,12 @@ async fn a_target_of_an_offline_set_waits_for_its_connect() {
     router.handle(layout(1, vec![stream()]));
     let early = tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv()).await;
     assert!(
-        !matches!(early, Ok(Some(RouterMsg::AutotuneFound { .. }))),
+        !matches!(
+            early,
+            Ok(Some(
+                RouterMsg::AutotuneFound { .. } | RouterMsg::AutotuneWalkFailed { .. }
+            ))
+        ),
         "no walk while the band is offline"
     );
     assert_eq!(
@@ -360,20 +369,18 @@ async fn a_target_of_an_offline_set_waits_for_its_connect() {
     );
     online(&mut router);
     router.autotune_connected("band");
+    // The offline instance's task answers no read: since #140 a failed
+    // walk, never a definite answer.
     let walked = next_of(&mut rx, "the connect's walk", |m| {
-        matches!(m, RouterMsg::AutotuneFound { .. })
+        matches!(m, RouterMsg::AutotuneWalkFailed { .. })
     })
     .await;
-    let RouterMsg::AutotuneFound { key, walk, outcome } = walked else {
+    let RouterMsg::AutotuneWalkFailed { key, walk, why } = walked else {
         unreachable!()
     };
     assert_eq!(
-        (key.as_str(), walk, outcome),
-        (
-            STREAM,
-            walk_of(&router, STREAM),
-            Err("instance offline".to_string())
-        )
+        (key.as_str(), walk, why.as_str()),
+        (STREAM, walk_of(&router, STREAM), "instance offline")
     );
 }
 
@@ -1160,6 +1167,43 @@ async fn a_track_list_change_writes_nothing_by_the_old_index_until_the_new_layou
     );
 }
 
+/// Every message the router's own tasks send within `limit` (on tokio's
+/// virtual clock), handled.
+async fn pump(router: &mut Router, own: &mut UnboundedReceiver<RouterMsg>, limit_ms: u64) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(limit_ms);
+    while let Ok(Some(msg)) = tokio::time::timeout_at(deadline, own.recv()).await {
+        router.handle(msg);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_walk_is_walked_again_after_retry_ms() {
+    // #140 (the PC, 24.10.2026): the band Live loading its set answered no
+    // read for a while; every target's first walk failed ("no result
+    // within 3 s") and nothing walked it again until a page's flag. A
+    // failed walk (here Live offline in its task) is walked again every
+    // RETRY_MS while its set is online.
+    let retry_ms = RETRY_MS;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, _records) = offline_router(dir.path());
+    online(&mut router);
+    router.handle(layout(1, vec![stream()]));
+    let first = walk_of(&router, STREAM);
+    pump(&mut router, &mut own, 2 * retry_ms + retry_ms / 2).await;
+    // Exactly twice more: each retry RETRY_MS after its failure (PR #145
+    // review M4: no back-to-back burst).
+    assert_eq!(
+        walk_of(&router, STREAM),
+        first + 2,
+        "walked {} times",
+        walk_of(&router, STREAM) - first + 1
+    );
+    assert_eq!(
+        router.autotune.targets[STREAM].problem.as_deref(),
+        Some("instance offline")
+    );
+}
+
 #[tokio::test]
 async fn a_disconnect_without_autotune_targets_holds_nothing() {
     // The hold is recorded only for a Live set with AUTOTUNE targets.
@@ -1243,4 +1287,253 @@ async fn a_rack_replaced_at_the_same_path_is_followed_afresh_and_written_once() 
     router.flush();
     assert_eq!(router.autotune.targets[STREAM].value, Some(127.0));
     assert_eq!(router.autotune.state().targets[0].state, TargetState::On);
+}
+
+#[test]
+fn a_failed_walk_is_walked_again_up_to_max_retries() {
+    // #140: the song map's bound, about two minutes of a set still loading.
+    assert_eq!((CONNECT_RETRIES, RETRY_MS), (24, 2000));
+    assert!(walk_again(1));
+    assert!(walk_again(CONNECT_RETRIES));
+    assert!(!walk_again(CONNECT_RETRIES + 1));
+}
+
+/// The band's target's walk `walk` failed with Live's words.
+fn walk_failed(router: &mut Router, walk: u64) {
+    router.autotune_walk_failed(STREAM, walk, "no result within 3 s".into());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_walk_is_walked_again_and_a_definite_answer_is_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, rx) = offline_router(dir.path());
+    // The band offline: a walk goes out to nobody, the test answers it.
+    router.handle(layout(1, vec![stream()]));
+    let _ = steps(&rx);
+    let w0 = walk_of(&router, STREAM);
+    walk_failed(&mut router, w0);
+    assert_eq!(
+        steps(&rx),
+        vec![
+            json!({"step": "missing", "instance": "band", "target": "live_set tracks 7",
+                    "problem": "no result within 3 s"})
+        ]
+    );
+    assert_eq!(router.autotune.targets[STREAM].walk_failures, 1);
+    // Not before RETRY_MS (PR #145 review M4), then once.
+    pump(&mut router, &mut own, RETRY_MS - 1).await;
+    assert_eq!(walk_of(&router, STREAM), w0, "not walked before RETRY_MS");
+    pump(&mut router, &mut own, RETRY_MS / 2).await;
+    let w1 = walk_of(&router, STREAM);
+    assert_eq!(w1, w0 + 1, "walked again");
+    // An older walk's failure is void.
+    router.autotune_walk_failed(STREAM, w0, "late".into());
+    assert_eq!(router.autotune.targets[STREAM].walk_failures, 1);
+    assert_eq!(steps(&rx), Vec::<Value>::new());
+    // A definite answer is never walked again, and ends the count.
+    router.autotune_found(STREAM, w1, Err("no rack named Latencies".into()));
+    assert_eq!(router.autotune.targets[STREAM].walk_failures, 0);
+    pump(&mut router, &mut own, 3 * RETRY_MS).await;
+    assert_eq!(walk_of(&router, STREAM), w1, "never walked again");
+    // A failure, its retry, then the rack found: the count over, no more.
+    router.autotune_walk(STREAM);
+    let w2 = walk_of(&router, STREAM);
+    walk_failed(&mut router, w2);
+    pump(&mut router, &mut own, RETRY_MS + RETRY_MS / 2).await;
+    assert_eq!(walk_of(&router, STREAM), w2 + 1);
+    find(&mut router, STREAM, 7);
+    assert_eq!(router.autotune.targets[STREAM].walk_failures, 0);
+    assert!(router.autotune.targets[STREAM].found.is_some());
+    pump(&mut router, &mut own, 3 * RETRY_MS).await;
+    assert_eq!(walk_of(&router, STREAM), w2 + 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_walk_gives_up_after_max_retries_until_the_next_trigger() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, rx) = offline_router(dir.path());
+    router.handle(layout(1, vec![stream()]));
+    let _ = steps(&rx);
+    for n in 1..=CONNECT_RETRIES {
+        let w = walk_of(&router, STREAM);
+        walk_failed(&mut router, w);
+        pump(&mut router, &mut own, RETRY_MS + RETRY_MS / 2).await;
+        assert_eq!(walk_of(&router, STREAM), w + 1, "retry {n}");
+    }
+    let w = walk_of(&router, STREAM);
+    walk_failed(&mut router, w);
+    let gave_up: Vec<Value> = steps(&rx)
+        .into_iter()
+        .filter(|r| r["step"] == "gave_up")
+        .collect();
+    assert_eq!(
+        gave_up,
+        vec![
+            json!({"step": "gave_up", "instance": "band", "target": "live_set tracks 7",
+                    "problem": "no result within 3 s", "tries": CONNECT_RETRIES + 1})
+        ]
+    );
+    // `/api/status` says it gave up, and after how many tries (PR #145
+    // review M7).
+    assert_eq!(
+        status(&mut router).autotune.targets[0].problem.as_deref(),
+        Some("no result within 3 s (gave up after 25 tries, until the next trigger)")
+    );
+    assert_eq!(
+        gave_up_problem("instance offline", 3),
+        "instance offline (gave up after 3 tries, until the next trigger)"
+    );
+    pump(&mut router, &mut own, 3 * RETRY_MS).await;
+    assert_eq!(walk_of(&router, STREAM), w, "no retry after the last");
+    // The next trigger (Live starts: an unfound target is walked) walks it,
+    // its count over, so its failure is tried again.
+    transport(&mut router, true);
+    assert_eq!(walk_of(&router, STREAM), w + 1);
+    assert_eq!(router.autotune.targets[STREAM].walk_failures, 0);
+    walk_failed(&mut router, w + 1);
+    pump(&mut router, &mut own, RETRY_MS + RETRY_MS / 2).await;
+    assert_eq!(walk_of(&router, STREAM), w + 2);
+}
+
+#[test]
+fn only_a_walk_live_did_not_answer_is_walked_again() {
+    // PR #145 review M2: a timeout or an offline Live, while retries are
+    // left; a definite refusal waits for the next trigger.
+    assert_eq!(after_walk(true, 1), AfterWalk::Retry);
+    assert_eq!(after_walk(true, CONNECT_RETRIES), AfterWalk::Retry);
+    assert_eq!(after_walk(true, CONNECT_RETRIES + 1), AfterWalk::GiveUp);
+    assert_eq!(after_walk(false, 1), AfterWalk::Wait);
+    assert_eq!(after_walk(false, CONNECT_RETRIES + 1), AfterWalk::Wait);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refused_walk_is_shown_and_not_walked_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, rx) = offline_router(dir.path());
+    router.handle(layout(1, vec![stream()]));
+    let _ = steps(&rx);
+    let w = walk_of(&router, STREAM);
+    router.autotune_walk_failed(STREAM, w, "live error: busy".into());
+    assert_eq!(
+        steps(&rx),
+        vec![
+            json!({"step": "missing", "instance": "band", "target": "live_set tracks 7",
+                    "problem": "live error: busy"})
+        ]
+    );
+    pump(&mut router, &mut own, 3 * RETRY_MS).await;
+    assert_eq!(walk_of(&router, STREAM), w, "never walked again");
+    assert_eq!(steps(&rx), Vec::<Value>::new(), "no give-up");
+    // The next trigger walks it.
+    transport(&mut router, true);
+    assert_eq!(walk_of(&router, STREAM), w + 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_walk_retry_due_while_live_is_busy_waits_uncounted() {
+    // PR #145 review M1: while the band's Live is busy (a set loading) a
+    // due retry waits another RETRY_MS, walks nothing and counts nothing.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, _rx) = offline_router(dir.path());
+    router.handle(layout(1, vec![stream()]));
+    let w = walk_of(&router, STREAM);
+    walk_failed(&mut router, w);
+    router.states.get_mut("band").unwrap().busy = true;
+    pump(&mut router, &mut own, 3 * RETRY_MS + RETRY_MS / 2).await;
+    assert_eq!(walk_of(&router, STREAM), w, "no walk while busy");
+    assert_eq!(router.autotune.targets[STREAM].walk_failures, 1);
+    router.states.get_mut("band").unwrap().busy = false;
+    pump(&mut router, &mut own, RETRY_MS).await;
+    assert_eq!(walk_of(&router, STREAM), w + 1, "walked once Live is ready");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_disconnect_ends_a_failed_walks_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, _rx) = offline_router(dir.path());
+    router.handle(layout(1, vec![stream()]));
+    let w = walk_of(&router, STREAM);
+    walk_failed(&mut router, w);
+    router.handle(RouterMsg::Live {
+        instance: "band".into(),
+        event: LiveEvent::Disconnected,
+    });
+    let after = walk_of(&router, STREAM);
+    assert!(after > w, "the disconnect voids the walk");
+    pump(&mut router, &mut own, 3 * RETRY_MS).await;
+    assert_eq!(walk_of(&router, STREAM), after, "its retry is void");
+}
+
+/// A router whose band is a scripted Live (`live::client::scripted`).
+fn scripted_router(
+    dir: &std::path::Path,
+) -> (
+    Router,
+    UnboundedReceiver<RouterMsg>,
+    std::sync::mpsc::Receiver<Value>,
+    Script,
+) {
+    let (live, script) = crate::live::client::scripted("band");
+    let (tx, own) = tokio::sync::mpsc::unbounded_channel();
+    let (events, records) = crate::events::EventLog::channel(1024);
+    let router = Router::new(
+        BTreeMap::from([("band".to_string(), live)]),
+        crate::rules::HubState::default(),
+        dir.to_path_buf(),
+        super::super::RouterIo { tx, events },
+    );
+    (router, own, records, script)
+}
+
+/// The next call a task made to the scripted Live.
+async fn next_asked(script: &mut Script) -> Asked {
+    for _ in 0..100 {
+        if let Some(asked) = script.try_call() {
+            return asked;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("no call to Live");
+}
+
+#[tokio::test]
+async fn a_refused_read_fails_the_walk_and_a_definite_answer_ends_it() {
+    // #140: a read Live refused fails the walk (a definite refusal, which
+    // waits for the next trigger: PR #145 review M2); "no rack named
+    // Latencies" is an answer.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, _rx, mut script) = scripted_router(dir.path());
+    online(&mut router);
+    router.handle(layout(1, vec![stream()]));
+    let asked = next_asked(&mut script).await;
+    assert_eq!(
+        asked.commands,
+        vec![
+            json!({"target": "live_set tracks 7", "name": "get_prop", "args": {"prop": "devices"}})
+        ]
+    );
+    asked.answer(vec![
+        json!({"ok": false, "error": "live error: busy", "errorType": "RuntimeError"}),
+    ]);
+    let msg = next_of(&mut own, "the failed walk", |m| {
+        matches!(m, RouterMsg::AutotuneWalkFailed { .. })
+    })
+    .await;
+    assert!(
+        matches!(&msg, RouterMsg::AutotuneWalkFailed { key, why, .. }
+            if key == STREAM && why == "live error: busy")
+    );
+    router.handle(msg);
+    assert_eq!(router.autotune.targets[STREAM].walk_failures, 1);
+    router.autotune_walk(STREAM);
+    let asked = next_asked(&mut script).await;
+    asked.answer(vec![json!({"ok": true, "data": []})]);
+    let msg = next_of(&mut own, "the walk's answer", |m| {
+        matches!(m, RouterMsg::AutotuneFound { .. })
+    })
+    .await;
+    assert!(
+        matches!(&msg, RouterMsg::AutotuneFound { outcome: Err(why), .. }
+            if why == "no rack named Latencies")
+    );
 }

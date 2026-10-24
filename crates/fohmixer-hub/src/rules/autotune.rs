@@ -244,6 +244,16 @@ pub enum Step {
         target: String,
         problem: String,
     },
+    /// A target's walks failed `tries` times in a row (#140: Live did not
+    /// answer or was offline): no more retries until the next trigger.
+    /// `tries` counts the first walk and its retries, the unit of every
+    /// give-up record (PR #145 review M10).
+    GaveUp {
+        instance: String,
+        target: String,
+        problem: String,
+        tries: u32,
+    },
     /// A Live set's writes are held (`on`) while its markers may not be
     /// where Live has them (#104, PR #139 review I1): it went `offline`, its
     /// track list changed (`tracks`), or a write met its markers unsettled
@@ -395,6 +405,14 @@ pub fn step_line(step: &Step) -> String {
             target,
             problem,
         } => format!("AUTOTUNE has no rack for {instance} {target}: {problem}"),
+        Step::GaveUp {
+            instance,
+            target,
+            problem,
+            tries,
+        } => format!(
+            "AUTOTUNE gave up walking {instance} {target} after {tries} failed walks, until the next trigger: {problem}"
+        ),
         Step::Held {
             instance,
             on: true,
@@ -498,6 +516,7 @@ pub fn step_warn(step: &Step) -> bool {
     match step {
         Step::Failed { .. }
         | Step::Missing { .. }
+        | Step::GaveUp { .. }
         | Step::KeyMissing { .. }
         | Step::AnotherWriter { .. } => true,
         Step::Readback { state, .. } => *state != KeyState::Confirmed,

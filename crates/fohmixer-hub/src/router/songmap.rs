@@ -25,7 +25,13 @@
 //! never paired with another one's time) in calls of at most `TIME_CHUNK`
 //! commands, one after another. A failed
 //! call ends the read with its error and keeps the old map, stale, and the
-//! read is tried once more after [`RETRY_MS`]; a disconnect voids the read
+//! read is tried again [`RETRY_MS`] after each failure while the set stays
+//! connected, at most [`CONNECT_RETRIES`] times in a row (#140: a set still
+//! loading answers no read for a while; a later trigger reads afresh and
+//! starts the count over), when Live did not answer or was offline
+//! ([`transient`]; a definite refusal waits for the next trigger, and a
+//! retry due while Live is busy waits, uncounted); a
+//! disconnect voids the read
 //! in flight (its answer's number is no longer the set's; its task is
 //! aborted, so it asks Live for nothing more) and keeps the last map, stale
 //! until the next read.
@@ -39,6 +45,7 @@ use fohmixer_proto::songmap::{
 };
 use serde_json::{Value, json};
 
+use super::retries::{CONNECT_RETRIES, Due, RETRY_MS, transient};
 use super::{Router, RouterMsg};
 use crate::eq::walk::{answered, get, items, refused};
 use crate::live::client::LiveHandle;
@@ -57,9 +64,6 @@ pub const CUE_POINTS: &str = "cue_points";
 pub const CLIPS: &str = "arrangement_clips";
 /// The problem texts a `songmap` record carries at most.
 pub const MAX_TEXTS: usize = 20;
-/// A failed read (no disconnect) is tried once more after this, in ms (the
-/// unfold and marker keepers' `RETRY_MS`; #140 review M3).
-pub const RETRY_MS: u64 = 2000;
 
 /// One read's map.
 #[derive(Debug, Clone, PartialEq)]
@@ -126,7 +130,7 @@ pub(super) enum Trigger {
 pub(super) enum After {
     /// A read now: a trigger came while it ran.
     Read,
-    /// The one retry of a failed read, after [`RETRY_MS`].
+    /// A retry of a failed read, after [`RETRY_MS`].
     Retry,
 }
 
@@ -149,9 +153,13 @@ pub(super) struct SongMapIo {
     /// Each set's retry waiting for [`RETRY_MS`], by the failed read's
     /// number (a read started, a disconnect or a later failure voids it).
     pub retry: BTreeMap<String, u64>,
-    /// The sets whose read in flight is a retry: its failure is not tried
-    /// again.
-    pub retrying: BTreeSet<String>,
+    /// The retries each set's failed reads made since its last read that
+    /// was no retry (a trigger, the connect): at [`CONNECT_RETRIES`] a failure
+    /// waits for the next trigger.
+    pub retries: BTreeMap<String, u32>,
+    /// The sets whose reads gave up (their retries spent) and wait for the
+    /// next trigger: `/api/status` says so (PR #145 review M7).
+    pub gave_up: BTreeSet<String>,
     /// The reads' own counter.
     pub reads: u64,
     /// Each subscription (hub key) and its set.
@@ -171,13 +179,16 @@ impl SongMapIo {
     pub fn status(&self) -> Vec<SongMapStatus> {
         self.maps
             .iter()
-            .map(|(instance, read)| status_of(instance, read, self.stale.contains(instance)))
+            .map(|(instance, read)| {
+                let stale = self.stale.contains(instance);
+                status_of(instance, read, stale, self.gave_up.contains(instance))
+            })
             .collect()
     }
 }
 
 /// A set's map in `/api/status`.
-pub(super) fn status_of(instance: &str, read: &Read, stale: bool) -> SongMapStatus {
+pub(super) fn status_of(instance: &str, read: &Read, stale: bool, gave_up: bool) -> SongMapStatus {
     let n = counts(&read.map);
     SongMapStatus {
         instance: instance.to_string(),
@@ -188,6 +199,7 @@ pub(super) fn status_of(instance: &str, read: &Read, stale: bool) -> SongMapStat
         sections: read.sections,
         at_ms: read.at_ms,
         stale,
+        gave_up,
     }
 }
 
@@ -247,14 +259,31 @@ pub(super) fn same_names(value: Option<&Value>, names: &[String]) -> bool {
 }
 
 /// What follows a read's answer (#140 review M3): a read now when a trigger
-/// came while it ran (`dirty`), else its one retry when it failed and was
-/// no retry itself (`retried`), else nothing.
-pub(super) fn after_read(failed: bool, retried: bool, dirty: bool) -> Option<After> {
-    match (dirty, failed && !retried) {
+/// came while it ran (`dirty`), else a retry when it failed for a reason
+/// worth one (`retryable`: Live did not answer or was offline, PR #145
+/// review M2, [`transient`]) with retries left (`spent`: none left,
+/// [`retries_spent`]), else nothing.
+pub(super) fn after_read(retryable: bool, spent: bool, dirty: bool) -> Option<After> {
+    match (dirty, retryable && !spent) {
         (true, _) => Some(After::Read),
         (false, true) => Some(After::Retry),
         (false, false) => None,
     }
+}
+
+/// Whether a set's failed reads have made all their retries (`retries`
+/// since its last read that was no retry): then a failure waits for the
+/// next trigger (#140).
+pub(super) fn retries_spent(retries: u32) -> bool {
+    retries >= CONNECT_RETRIES
+}
+
+/// Whether a failed read gives up (one `gave_up` record): it was worth a
+/// retry (`retryable`) and nothing follows it (`after`: its retries are
+/// spent). A definite refusal is no give-up: it is recorded with its words
+/// and waits for the next trigger (PR #145 review M2).
+pub(super) fn gives_up(retryable: bool, after: Option<After>) -> bool {
+    retryable && after.is_none()
 }
 
 /// What a trigger does with a read running (`reading`) and one more already
@@ -355,8 +384,8 @@ pub(super) fn second_commands(track: &Object) -> Vec<Value> {
 
 /// The read's error when the second call's track went since the first
 /// call (`StaleRef`: deleted, or another object at its pointer; #140 round
-/// 2 O1): the read fails and is tried again, never read as an unreadable
-/// Sections track.
+/// 2 O1): the read fails (the track list's change reads again), never read
+/// as an unreadable Sections track.
 pub(super) fn track_went(slot: Option<&Value>, path: &str) -> Option<String> {
     let stale = slot
         .and_then(|slot| slot.get("errorType"))
@@ -511,10 +540,15 @@ pub(super) fn songmap_warn(fields: &Value) -> bool {
     crate::events::is_warn(&crate::events::stamp("songmap", 0, fields.clone()))
 }
 
-/// The words of a read's log line: a failed read's, a read whose problems
-/// changed, or a plain one.
+/// The words of a read's log line: a failed read's (given up, refused, or
+/// to be tried again), a read whose problems changed, or a plain one.
 pub(super) fn read_words(fields: &Value) -> &'static str {
-    if fields.get("error").is_some() {
+    let error = fields.get("error").map(|e| e.as_str().unwrap_or_default());
+    if fields.get("gave_up") == Some(&Value::Bool(true)) {
+        "the song map could not be read, retries spent: it waits for the next trigger"
+    } else if error.is_some_and(|e| !transient(e)) {
+        "the song map could not be read, Live refused it: no retry"
+    } else if error.is_some() {
         "the song map could not be read"
     } else if fields.get("problems_changed") == Some(&Value::Bool(true)) {
         "the song map was read, its problems changed"
@@ -529,6 +563,18 @@ pub(super) fn read_words(fields: &Value) -> &'static str {
 pub(super) fn with_sections_error(mut fields: Value, error: Option<&str>) -> Value {
     if let (Some(error), Some(record)) = (error, fields.as_object_mut()) {
         record.insert("sections_error".into(), json!(error));
+    }
+    fields
+}
+
+/// A failed read's record once its retries are spent (#140): `gave_up`, and
+/// how many reads failed in a row (`tries`: the first and its retries, the
+/// unit every give-up record counts in, PR #145 review M10); the set waits
+/// for its next trigger.
+pub(super) fn with_gave_up(mut fields: Value, tries: u32) -> Value {
+    if let Some(record) = fields.as_object_mut() {
+        record.insert("gave_up".into(), json!(true));
+        record.insert("tries".into(), json!(tries));
     }
     fields
 }
@@ -698,8 +744,8 @@ impl Router {
         }
     }
 
-    /// Starts a read of `instance` while it is online (`retry`: the one
-    /// retry of a failed read, whose own failure is not tried again; a
+    /// Starts a read of `instance` while it is online (`retry`: a retry of
+    /// a failed read, counted; any other read starts the count over; a
     /// retry still waiting is void then); its answer comes back as
     /// [`RouterMsg::SongMapRead`].
     fn songmap_read_start(&mut self, instance: &str, retry: bool) {
@@ -709,8 +755,15 @@ impl Router {
         };
         let live = live.clone();
         self.songmap.retry.remove(instance);
+        self.songmap.gave_up.remove(instance);
         if retry {
-            self.songmap.retrying.insert(instance.to_string());
+            *self
+                .songmap
+                .retries
+                .entry(instance.to_string())
+                .or_insert(0) += 1;
+        } else {
+            self.songmap.retries.remove(instance);
         }
         self.songmap.reads += 1;
         let read_no = self.songmap.reads;
@@ -735,8 +788,8 @@ impl Router {
     /// A read's answer: a void one (a disconnect, an older read) does
     /// nothing; a map replaces the set's last one, an error keeps it, stale
     /// (#140 review M3); both are recorded, then a trigger that came
-    /// meanwhile reads again, or a failed read that was no retry is tried
-    /// once more after [`RETRY_MS`].
+    /// meanwhile reads again, or a failed read is tried again after
+    /// [`RETRY_MS`] while retries are left (else one `gave_up` record, warn).
     pub(super) fn songmap_read(
         &mut self,
         instance: &str,
@@ -749,9 +802,10 @@ impl Router {
         }
         self.songmap.reading.remove(instance);
         self.songmap.tasks.remove(instance);
-        let retried = self.songmap.retrying.remove(instance);
+        let retries = self.songmap.retries.get(instance).copied().unwrap_or(0);
         let dirty = self.songmap.dirty.remove(instance);
-        let after = after_read(result.is_err(), retried, dirty);
+        let retryable = result.as_ref().is_err_and(|error| transient(error));
+        let after = after_read(retryable, retries_spent(retries), dirty);
         let fields = match result {
             Ok(listing) => {
                 let read = Read {
@@ -771,6 +825,7 @@ impl Router {
                     .insert(instance.to_string(), read.map.problems.clone());
                 self.songmap.maps.insert(instance.to_string(), read);
                 self.songmap.stale.remove(instance);
+                self.songmap.retries.remove(instance);
                 let names = listing.clips.iter().map(|c| c.name.clone()).collect();
                 self.songmap_follow_clips(instance, listing.track.as_deref(), names);
                 // AUTOTUNE's key in force follows the new map (#140 PR 2).
@@ -784,7 +839,18 @@ impl Router {
                     self.songmap.stale.insert(instance.to_string());
                 }
                 let retry = after == Some(After::Retry);
-                songmap_error_fields(instance, read_no, &error, ms, stale, retry)
+                let fields = songmap_error_fields(instance, read_no, &error, ms, stale, retry);
+                if after.is_none() {
+                    // No retry (spent, or a definite refusal): it waits for
+                    // the next trigger.
+                    self.songmap.retries.remove(instance);
+                }
+                if gives_up(retryable, after) {
+                    self.songmap.gave_up.insert(instance.to_string());
+                    with_gave_up(fields, retries + 1)
+                } else {
+                    fields
+                }
             }
         };
         let words = read_words(&fields);
@@ -801,7 +867,7 @@ impl Router {
         }
     }
 
-    /// Asks for the one retry of `instance`'s failed read `read_no` after
+    /// Asks for a retry of `instance`'s failed read `read_no` after
     /// [`RETRY_MS`] ([`RouterMsg::SongMapRetry`]).
     fn songmap_retry_later(&mut self, instance: &str, read_no: u64) {
         self.songmap.retry.insert(instance.to_string(), read_no);
@@ -814,9 +880,15 @@ impl Router {
     }
 
     /// A failed read's retry is due: it reads, unless it is void (a read
-    /// started since, a disconnect, or another failed read's retry).
+    /// started since, a disconnect, or another failed read's retry); while
+    /// Live is busy it waits another [`RETRY_MS`], uncounted (PR #145 review
+    /// M1).
     pub(super) fn songmap_retry(&mut self, instance: &str, read_no: u64) {
         if self.songmap.retry.get(instance) != Some(&read_no) {
+            return;
+        }
+        if self.retry_due(instance) == Due::Wait {
+            self.songmap_retry_later(instance, read_no);
             return;
         }
         self.songmap.retry.remove(instance);
@@ -833,7 +905,8 @@ impl Router {
         }
         self.songmap.dirty.remove(instance);
         self.songmap.retry.remove(instance);
-        self.songmap.retrying.remove(instance);
+        self.songmap.retries.remove(instance);
+        self.songmap.gave_up.remove(instance);
         // The first read after the next connect is judged as a first one.
         self.songmap.last_problems.remove(instance);
         if let Some((key, _)) = self.songmap.clips.get(instance) {

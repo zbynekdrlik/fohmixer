@@ -3,14 +3,16 @@ use fohmixer_proto::songmap::{ClipName, Counts, Cue, Key, ProblemKind, SectionsS
 use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedReceiver;
 
+use super::super::retries::{CONNECT_RETRIES, RETRY_MS};
 use super::super::tests::{next_of, offline_router, records, status};
 use super::super::{Router, RouterMsg};
 use super::{
-    After, CLIPS, CUE_POINTS, Listed, Listing, MAX_TEXTS, Missing, Object, RETRY_MS, Read,
-    SECTIONS, SONGMAP_CLIENT, Trigger, after_read, by_ref, clip_commands, clips_by_index, clips_of,
-    cues_of, first_commands, listed, map_of, next_read, problems_changed, read_words, report_of,
-    same_names, second_commands, sections_state, songmap_error_fields, songmap_fields,
-    songmap_warn, status_of, time_commands, track_went, transport_reads, with_sections_error,
+    After, CLIPS, CUE_POINTS, Listed, Listing, MAX_TEXTS, Missing, Object, Read, SECTIONS,
+    SONGMAP_CLIENT, Trigger, after_read, by_ref, clip_commands, clips_by_index, clips_of, cues_of,
+    first_commands, gives_up, listed, map_of, next_read, problems_changed, read_words, report_of,
+    retries_spent, same_names, second_commands, sections_state, songmap_error_fields,
+    songmap_fields, songmap_warn, status_of, time_commands, track_went, transport_reads,
+    with_gave_up, with_sections_error,
 };
 use crate::live::client::LiveEvent;
 
@@ -310,7 +312,8 @@ fn a_time_is_read_through_its_objects_ref_and_class() {
                "args": {"prop": "time"}})
     );
     // A locator deleted since the list was read: its ref is stale, the
-    // read fails (and is tried again, never paired with another's time).
+    // read fails (never paired with another's time; the list's change
+    // reads again).
     let stale = json!({"ok": false, "error": "deleted: live_41", "errorType": "StaleRef"});
     assert_eq!(
         cues_of(&[cue], &[stale]),
@@ -576,8 +579,9 @@ fn the_sections_clips_are_read_through_the_tracks_ref() {
                     "args": {"prop": "arrangement_clips"}})
         ]
     );
-    // A track deleted since the first call fails the read (it is tried
-    // again); any other refusal is an unreadable track (review M9).
+    // A track deleted since the first call fails the read (the track
+    // list's change reads again); any other refusal is an unreadable track
+    // (review M9).
     let stale = json!({"ok": false, "error": "deleted: live_77", "errorType": "StaleRef"});
     assert_eq!(
         track_went(Some(&stale), "live_set tracks 3"),
@@ -749,7 +753,7 @@ async fn a_trigger_during_a_read_reads_again_once_after_it() {
     // A failed read keeps the map and also reads once more when asked.
     router.songmap_trigger("band");
     router.songmap_trigger("band");
-    answer(&mut router, 3, Err("Live did not answer".into()));
+    answer(&mut router, 3, Err("no result within 3 s".into()));
     assert_eq!(router.songmap.reads, 4);
     assert_eq!(router.songmap.maps["band"].read_no, 2);
 }
@@ -979,18 +983,18 @@ async fn a_failed_read_keeps_the_map_and_is_recorded_warn() {
     answer(&mut router, 1, Ok(listing()));
     let _ = songmap_records(&events);
     router.songmap_trigger("band");
-    answer(&mut router, 2, Err("Live did not answer".into()));
+    answer(&mut router, 2, Err("no result within 3 s".into()));
     let got = songmap_records(&events);
     assert_eq!(
         got,
         vec![
-            json!({"instance": "band", "read_no": 2, "ms": 7, "error": "Live did not answer",
+            json!({"instance": "band", "read_no": 2, "ms": 7, "error": "no result within 3 s",
                     "stale": true, "retry": true})
         ]
     );
     assert_eq!(report(&mut router, "band").unwrap().read_no, 1);
     assert!(crate::events::is_warn(
-        &json!({"ev": "songmap", "error": "Live did not answer"})
+        &json!({"ev": "songmap", "error": "no result within 3 s"})
     ));
 }
 
@@ -1000,7 +1004,8 @@ fn a_read_is_followed_by_a_read_a_retry_or_nothing() {
     assert_eq!(after_read(false, false, true), Some(After::Read));
     assert_eq!(after_read(true, false, true), Some(After::Read));
     assert_eq!(after_read(true, true, true), Some(After::Read));
-    // A failed read is tried once more; a failed retry is not.
+    // A failed read worth a retry is tried again while retries are left;
+    // with them spent it is not, nor a definite refusal (not retryable).
     assert_eq!(after_read(true, false, false), Some(After::Retry));
     assert_eq!(after_read(true, true, false), None);
     assert_eq!(after_read(false, false, false), None);
@@ -1019,14 +1024,14 @@ async fn a_retry(rx: &mut UnboundedReceiver<RouterMsg>) -> Option<RouterMsg> {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_failed_read_leaves_the_map_stale_and_is_tried_once_more_after_retry_ms() {
+async fn a_failed_read_leaves_the_map_stale_and_is_tried_again_after_retry_ms() {
     // Review M3, on tokio's virtual clock: the real delay, no wait for it.
     let (mut router, mut rx, events, _dir) = online();
     router.songmap_trigger("band");
     answer(&mut router, 1, Ok(listing()));
     router.songmap_trigger("band");
     let failed_at = tokio::time::Instant::now();
-    answer(&mut router, 2, Err("Live did not answer".into()));
+    answer(&mut router, 2, Err("no result within 3 s".into()));
     // The kept map is stale: in the status, the report and the record.
     assert!(status(&mut router).songmap[0].stale);
     assert_eq!(
@@ -1060,29 +1065,24 @@ async fn a_failed_read_leaves_the_map_stale_and_is_tried_once_more_after_retry_m
     );
     router.handle(due);
     assert_eq!(router.songmap.reading.get("band"), Some(&3));
-    assert!(router.songmap.retrying.contains("band"));
     assert!(router.songmap.retry.is_empty());
-    // Its failure is not tried again.
-    answer(&mut router, 3, Err("Live did not answer".into()));
+    // The retry's failure is tried again too (#140: a set still loading
+    // answers no read for a while).
+    answer(&mut router, 3, Err("no result within 3 s".into()));
     let got = songmap_records(&events);
     assert_eq!(
         (&got[0]["stale"], &got[0]["retry"]),
-        (&json!(true), &json!(false))
+        (&json!(true), &json!(true))
     );
-    assert!(router.songmap.retry.is_empty());
-    assert!(router.songmap.retrying.is_empty());
+    assert_eq!(router.songmap.retry.get("band"), Some(&3));
     assert!(
         router.songmap.tasks.is_empty(),
         "an answered read's task is let go"
     );
-    let none = tokio::time::timeout(
-        std::time::Duration::from_millis(3 * RETRY_MS),
-        a_retry(&mut rx),
-    )
-    .await;
-    assert!(none.is_err(), "no second retry");
-    // The next read that answers makes the map current again.
+    // A trigger meanwhile reads at once and takes the retry's place; the
+    // read that answers makes the map current again.
     router.songmap_trigger("band");
+    assert!(router.songmap.retry.is_empty());
     answer(&mut router, 4, Ok(listing()));
     assert!(!status(&mut router).songmap[0].stale);
     assert_eq!(
@@ -1091,11 +1091,44 @@ async fn a_failed_read_leaves_the_map_stale_and_is_tried_once_more_after_retry_m
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_connects_read_is_tried_again_until_live_answers() {
+    // #140 (the PC, 24.10.2026): the hub connected while the band Live was
+    // still loading its set; the connect's read and its one retry both
+    // timed out ("no result within 3 s"), so the map stayed stale and no
+    // key was in force. A failed read is tried again every RETRY_MS while
+    // the set stays connected, with no transport change.
+    let (mut router, mut rx, events, _dir) = online();
+    router.songmap_trigger("band");
+    for read_no in 1..=3 {
+        answer(&mut router, read_no, Err("no result within 3 s".into()));
+        let due = tokio::time::timeout(
+            std::time::Duration::from_millis(2 * RETRY_MS),
+            a_retry(&mut rx),
+        )
+        .await
+        .expect("tried again within twice RETRY_MS")
+        .expect("the router's tasks run");
+        router.handle(due);
+        assert_eq!(router.songmap.reading.get("band"), Some(&(read_no + 1)));
+    }
+    answer(&mut router, 4, Ok(listing()));
+    assert!(!status(&mut router).songmap[0].stale);
+    assert_eq!(report(&mut router, "band").map(|r| r.read_no), Ok(4));
+    let got = songmap_records(&events);
+    assert_eq!(
+        got.iter().filter(|r| r["retry"] == json!(true)).count(),
+        3,
+        "{got:?}"
+    );
+    assert!(router.songmap.retry.is_empty());
+}
+
 #[tokio::test]
 async fn a_retry_is_void_once_a_read_started_or_the_set_went_offline() {
     let (mut router, _rx, events, _dir) = online();
     router.songmap_trigger("band");
-    answer(&mut router, 1, Err("Live did not answer".into()));
+    answer(&mut router, 1, Err("no result within 3 s".into()));
     // A first read that fails has no map to keep: nothing stale.
     let got = songmap_records(&events);
     assert_eq!(
@@ -1112,7 +1145,7 @@ async fn a_retry_is_void_once_a_read_started_or_the_set_went_offline() {
         read_no: 1,
     });
     assert_eq!(router.songmap.reads, 2, "the void retry read nothing");
-    answer(&mut router, 2, Err("Live did not answer".into()));
+    answer(&mut router, 2, Err("no result within 3 s".into()));
     assert_eq!(router.songmap.retry.get("band"), Some(&2));
     // A disconnect drops it: its message after the reconnect reads nothing.
     router.handle(RouterMsg::Live {
@@ -1128,7 +1161,7 @@ async fn a_retry_is_void_once_a_read_started_or_the_set_went_offline() {
     assert_eq!(router.songmap.reads, 2);
     // A retry of another read than the set's waiting one is void too.
     router.songmap_trigger("band");
-    answer(&mut router, 3, Err("Live did not answer".into()));
+    answer(&mut router, 3, Err("no result within 3 s".into()));
     router.handle(RouterMsg::SongMapRetry {
         instance: "band".into(),
         read_no: 2,
@@ -1199,7 +1232,7 @@ fn a_reads_class_is_its_records_as_written() {
     assert!(songmap_warn(&songmap_error_fields(
         "band",
         2,
-        "Live did not answer",
+        "no result within 3 s",
         3,
         false,
         false
@@ -1280,7 +1313,7 @@ async fn a_known_unchanged_problem_stays_bulk_and_a_change_is_warn() {
 #[test]
 fn a_reads_line_says_what_its_record_says() {
     assert_eq!(
-        read_words(&json!({"error": "Live did not answer"})),
+        read_words(&json!({"error": "no result within 3 s"})),
         "the song map could not be read"
     );
     assert_eq!(
@@ -1409,7 +1442,7 @@ fn the_record_and_the_status_sum_a_read_up() {
         json!({"instance": "band", "read_no": 3, "ms": 2, "error": "offline",
                "stale": true, "retry": false})
     );
-    let s = status_of("band", &read, true);
+    let s = status_of("band", &read, true, false);
     assert_eq!(
         (
             s.instance.as_str(),
@@ -1419,7 +1452,8 @@ fn the_record_and_the_status_sum_a_read_up() {
             s.problems,
             s.sections,
             s.at_ms,
-            s.stale
+            s.stale,
+            s.gave_up
         ),
         (
             "band",
@@ -1429,9 +1463,11 @@ fn the_record_and_the_status_sum_a_read_up() {
             25,
             SectionsState::None,
             1_790_000_000_000,
-            true
+            true,
+            false
         )
     );
+    assert!(status_of("band", &read, true, true).gave_up);
     assert_eq!(
         fohmixer_proto::songmap::counts(&read.map),
         Counts {
@@ -1543,4 +1579,242 @@ async fn a_disconnect_ends_the_reads_task_so_it_asks_live_nothing_more() {
         Value::from(ours),
         "the read's task sent nothing after the disconnect"
     );
+}
+
+#[test]
+fn a_failed_reads_retries_are_spent_at_max_retries() {
+    // #140: about two minutes of a set still loading (24 x (3 s + 2 s)).
+    assert_eq!(CONNECT_RETRIES, 24);
+    assert!(!retries_spent(0));
+    assert!(!retries_spent(CONNECT_RETRIES - 1));
+    assert!(retries_spent(CONNECT_RETRIES));
+    assert!(retries_spent(CONNECT_RETRIES + 1));
+    // A failed read with its retries spent is not tried again; a trigger
+    // that came meanwhile still reads.
+    assert_eq!(
+        after_read(true, retries_spent(CONNECT_RETRIES), false),
+        None
+    );
+    assert_eq!(
+        after_read(true, retries_spent(3), false),
+        Some(After::Retry)
+    );
+    assert_eq!(after_read(true, true, true), Some(After::Read));
+}
+
+#[test]
+fn a_read_that_gave_up_says_so() {
+    let fields = with_gave_up(
+        songmap_error_fields("band", 25, "no result within 3 s", 3001, false, false),
+        25,
+    );
+    assert_eq!(
+        fields,
+        json!({"instance": "band", "read_no": 25, "ms": 3001, "error": "no result within 3 s",
+               "stale": false, "retry": false, "gave_up": true, "tries": 25})
+    );
+    assert_eq!(
+        read_words(&fields),
+        "the song map could not be read, retries spent: it waits for the next trigger"
+    );
+    assert!(songmap_warn(&fields));
+    assert_eq!(
+        with_gave_up(json!("not a record"), 1),
+        json!("not a record")
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_read_gives_up_after_max_retries_until_the_next_trigger() {
+    // #140: a set that never answers is not read for good: after
+    // CONNECT_RETRIES retries one warn record, then nothing until a trigger.
+    let (mut router, mut rx, events, _dir) = online();
+    router.songmap_trigger("band");
+    let last = u64::from(CONNECT_RETRIES) + 1;
+    for read_no in 1..last {
+        answer(&mut router, read_no, Err("no result within 3 s".into()));
+        let due = tokio::time::timeout(
+            std::time::Duration::from_millis(2 * RETRY_MS),
+            a_retry(&mut rx),
+        )
+        .await
+        .expect("tried again")
+        .expect("the router's tasks run");
+        router.handle(due);
+    }
+    assert_eq!(router.songmap.retries.get("band"), Some(&CONNECT_RETRIES));
+    let _ = songmap_records(&events);
+    answer(&mut router, last, Err("no result within 3 s".into()));
+    let got = songmap_records(&events);
+    assert_eq!(
+        got,
+        vec![
+            json!({"instance": "band", "read_no": last, "ms": 7, "error": "no result within 3 s",
+                   "stale": false, "retry": false, "gave_up": true,
+                   "tries": CONNECT_RETRIES + 1})
+        ]
+    );
+    assert!(router.songmap.retry.is_empty());
+    assert!(router.songmap.retries.is_empty());
+    assert!(router.songmap.gave_up.contains("band"));
+    let none = tokio::time::timeout(
+        std::time::Duration::from_millis(3 * RETRY_MS),
+        a_retry(&mut rx),
+    )
+    .await;
+    assert!(none.is_err(), "no retry after the last");
+    // A trigger reads afresh, and its failure is tried again (the count
+    // starts over).
+    router.songmap_trigger("band");
+    assert_eq!(router.songmap.reading.get("band"), Some(&(last + 1)));
+    assert!(router.songmap.retries.is_empty());
+    assert!(router.songmap.gave_up.is_empty(), "trying again");
+    answer(&mut router, last + 1, Err("no result within 3 s".into()));
+    assert_eq!(router.songmap.retry.get("band"), Some(&(last + 1)));
+    // A disconnect ends the retries and their count.
+    router.handle(RouterMsg::SongMapRetry {
+        instance: "band".into(),
+        read_no: last + 1,
+    });
+    assert_eq!(router.songmap.retries.get("band"), Some(&1));
+    router.handle(RouterMsg::Live {
+        instance: "band".into(),
+        event: LiveEvent::Disconnected,
+    });
+    assert!(router.songmap.retries.is_empty());
+    assert!(router.songmap.retry.is_empty());
+}
+
+#[test]
+fn only_a_failure_worth_a_retry_gives_up() {
+    // PR #145 review M2: a definite refusal is no give-up, and neither is a
+    // failure a trigger reads after, nor one tried again.
+    assert!(gives_up(true, None));
+    assert!(!gives_up(false, None));
+    assert!(!gives_up(true, Some(After::Read)));
+    assert!(!gives_up(true, Some(After::Retry)));
+    assert_eq!(
+        read_words(&json!({"error": "cue_points: no such property", "retry": false})),
+        "the song map could not be read, Live refused it: no retry"
+    );
+    assert_eq!(
+        read_words(&json!({"error": "instance offline", "retry": true})),
+        "the song map could not be read"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refused_read_is_not_tried_again_and_waits_for_the_next_trigger() {
+    // PR #145 review M2 (the main session's ruling): only a read Live did not
+    // answer, or an offline Live, is tried again; a definite refusal is
+    // recorded with its words, is no give-up, and the next trigger reads.
+    let (mut router, mut rx, events, _dir) = online();
+    router.songmap_trigger("band");
+    answer(&mut router, 1, Ok(listing()));
+    let _ = songmap_records(&events);
+    router.songmap_trigger("band");
+    answer(&mut router, 2, Err("cue_points: no such property".into()));
+    assert_eq!(
+        songmap_records(&events),
+        vec![
+            json!({"instance": "band", "read_no": 2, "ms": 7, "error": "cue_points: no such property",
+                   "stale": true, "retry": false})
+        ]
+    );
+    assert!(router.songmap.retry.is_empty());
+    assert!(router.songmap.retries.is_empty());
+    let none = tokio::time::timeout(
+        std::time::Duration::from_millis(3 * RETRY_MS),
+        a_retry(&mut rx),
+    )
+    .await;
+    assert!(none.is_err(), "no retry");
+    assert_eq!(router.songmap.reads, 2);
+    router.songmap_trigger("band");
+    assert_eq!(router.songmap.reading.get("band"), Some(&3));
+}
+
+/// The band's Live busy (`on`: its heartbeats overdue) or ready again.
+fn busy(on: bool) -> RouterMsg {
+    RouterMsg::Live {
+        instance: "band".into(),
+        event: LiveEvent::Busy {
+            busy: on,
+            changed: true,
+            tick_age_ms: if on { 400.0 } else { 20.0 },
+            reason: on.then(|| "no heartbeat for 301 ms".to_string()),
+        },
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_retry_due_while_live_is_busy_waits_uncounted_and_reads_nothing() {
+    // PR #145 review M1 (the main session's ruling): a stalled Live (its
+    // heartbeats overdue while it loads a set) gets no read queued behind
+    // the stall; the retry reads once Live is ready, and only that counts.
+    let (mut router, mut rx, _events, _dir) = online();
+    router.songmap_trigger("band");
+    answer(&mut router, 1, Err("no result within 3 s".into()));
+    router.handle(busy(true));
+    for n in 1..=3 {
+        let due = tokio::time::timeout(
+            std::time::Duration::from_millis(2 * RETRY_MS),
+            a_retry(&mut rx),
+        )
+        .await
+        .expect("due again")
+        .expect("the router's tasks run");
+        router.handle(due);
+        assert_eq!(router.songmap.reads, 1, "no read while busy ({n})");
+        assert!(router.songmap.retries.is_empty(), "not counted ({n})");
+        assert_eq!(router.songmap.retry.get("band"), Some(&1));
+    }
+    router.handle(busy(false));
+    let due = tokio::time::timeout(
+        std::time::Duration::from_millis(2 * RETRY_MS),
+        a_retry(&mut rx),
+    )
+    .await
+    .expect("due again")
+    .expect("the router's tasks run");
+    router.handle(due);
+    assert_eq!(router.songmap.reading.get("band"), Some(&2));
+    assert_eq!(router.songmap.retries.get("band"), Some(&1));
+}
+
+#[tokio::test]
+async fn the_status_says_when_a_sets_reads_gave_up() {
+    // PR #145 review M7: a stopped retry no longer looks like a running one.
+    let (mut router, _rx, events, _dir) = online();
+    router.songmap_trigger("band");
+    answer(&mut router, 1, Ok(listing()));
+    router.songmap_trigger("band");
+    // Its last retry (the count as the retries left it).
+    router
+        .songmap
+        .retries
+        .insert("band".into(), CONNECT_RETRIES);
+    let _ = songmap_records(&events);
+    answer(&mut router, 2, Err("no result within 3 s".into()));
+    assert_eq!(
+        songmap_records(&events)[0]["tries"],
+        json!(CONNECT_RETRIES + 1)
+    );
+    let now = status(&mut router).songmap;
+    assert_eq!((now[0].stale, now[0].gave_up), (true, true));
+    // A trigger tries again: no longer given up.
+    router.songmap_trigger("band");
+    assert!(!status(&mut router).songmap[0].gave_up);
+    // Given up again, a disconnect forgets it too.
+    router
+        .songmap
+        .retries
+        .insert("band".into(), CONNECT_RETRIES);
+    answer(&mut router, 3, Err("no result within 3 s".into()));
+    assert!(status(&mut router).songmap[0].gave_up);
+    router.handle(RouterMsg::Live {
+        instance: "band".into(),
+        event: LiveEvent::Disconnected,
+    });
+    assert!(!status(&mut router).songmap[0].gave_up);
 }
