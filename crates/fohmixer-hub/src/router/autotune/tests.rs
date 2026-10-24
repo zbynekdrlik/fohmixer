@@ -1160,6 +1160,40 @@ async fn a_track_list_change_writes_nothing_by_the_old_index_until_the_new_layou
     );
 }
 
+/// Every message the router's own tasks send within `limit` (on tokio's
+/// virtual clock), handled.
+async fn pump(router: &mut Router, own: &mut UnboundedReceiver<RouterMsg>, limit_ms: u64) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(limit_ms);
+    while let Ok(Some(msg)) = tokio::time::timeout_at(deadline, own.recv()).await {
+        router.handle(msg);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_walk_is_walked_again_after_retry_ms() {
+    // #140 (the PC, 24.10.2026): the band Live loading its set answered no
+    // read for a while; every target's first walk failed ("no result
+    // within 3 s") and nothing walked it again until a page's flag. A
+    // failed walk (here Live offline in its task) is walked again every
+    // RETRY_MS while its set is online.
+    let retry_ms = super::super::songmap::RETRY_MS;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, _records) = offline_router(dir.path());
+    online(&mut router);
+    router.handle(layout(1, vec![stream()]));
+    let first = walk_of(&router, STREAM);
+    pump(&mut router, &mut own, 2 * retry_ms + retry_ms / 2).await;
+    assert!(
+        walk_of(&router, STREAM) >= first + 2,
+        "walked {} times",
+        walk_of(&router, STREAM) - first + 1
+    );
+    assert_eq!(
+        router.autotune.targets[STREAM].problem.as_deref(),
+        Some("instance offline")
+    );
+}
+
 #[tokio::test]
 async fn a_disconnect_without_autotune_targets_holds_nothing() {
     // The hold is recorded only for a Live set with AUTOTUNE targets.
