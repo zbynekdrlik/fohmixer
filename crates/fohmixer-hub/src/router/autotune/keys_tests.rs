@@ -626,13 +626,71 @@ async fn the_lookahead_is_a_playing_sets_only() {
             key(Some(1), Some("G"), "change")
         ]
     );
-    // The rules' transport listener failed: not known to play.
+    // The rules' transport listener failed: not known to play. As at a
+    // stop (PR 2a review M4), the key in force stays until the playhead
+    // moves; then it is judged at the playhead itself.
     router.transport_failed(TRANSPORT, "not observable");
+    assert_eq!(keys_of(&steps(&rx)), Vec::<Value>::new());
+    assert_eq!(status(&mut router).autotune.keys[0].playing, None);
+    deliver(&mut router, TIME, 49.96);
     assert_eq!(
         keys_of(&steps(&rx)),
         vec![key(Some(1), Some("C"), "change")]
     );
-    assert_eq!(status(&mut router).autotune.keys[0].playing, None);
+}
+
+#[tokio::test]
+async fn a_stop_alone_does_not_judge_the_key_again() {
+    // PR 2a review M4 (the main session's ruling): a stopped set is judged
+    // again only when its playhead moves (a jump, a locate), so a stop one
+    // tick before a key clip writes nothing more.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, _own, rx) = offline_router(dir.path());
+    router.handle(layout(1, vec![stream()]));
+    map_read(&mut router, 1, songs("C"));
+    transport(&mut router, true);
+    deliver(&mut router, TEMPO_KEY, 120.0);
+    deliver(&mut router, TIME, 10.0);
+    deliver(&mut router, TIME, 49.95);
+    assert_eq!(
+        keys_of(&steps(&rx)),
+        vec![
+            key(Some(1), Some("C"), "song"),
+            key(Some(1), Some("G"), "change")
+        ]
+    );
+    // Live stops one tick before the clip: G stays in force, nothing is
+    // recorded and nothing written.
+    transport(&mut router, false);
+    let got = steps(&rx);
+    assert_eq!(keys_of(&got), Vec::<Value>::new());
+    assert!(got.iter().all(|r| r["step"] != "key_write"), "{got:?}");
+    assert_eq!(
+        status(&mut router).autotune.keys[0].key.as_deref(),
+        Some("G")
+    );
+    // The stop's map read (a transport change reads it again), a tempo
+    // heard and the same position delivered again change nothing.
+    map_read(&mut router, 2, songs("C"));
+    deliver(&mut router, TEMPO_KEY, 90.0);
+    deliver(&mut router, TIME, 49.95);
+    let got = steps(&rx);
+    assert_eq!(keys_of(&got), Vec::<Value>::new());
+    assert!(got.iter().all(|r| r["step"] != "key_write"), "{got:?}");
+    // The playhead moves (a locate): judged at the playhead itself.
+    deliver(&mut router, TIME, 49.9);
+    assert_eq!(
+        keys_of(&steps(&rx)),
+        vec![key(Some(1), Some("C"), "change")]
+    );
+    deliver(&mut router, TIME, 49.97);
+    assert_eq!(keys_of(&steps(&rx)), Vec::<Value>::new());
+    // A start judges with the lookahead again (90 bpm: 0.0525 beats).
+    transport(&mut router, true);
+    assert_eq!(
+        keys_of(&steps(&rx)),
+        vec![key(Some(1), Some("G"), "change")]
+    );
 }
 
 #[tokio::test]
