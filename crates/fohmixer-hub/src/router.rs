@@ -351,6 +351,24 @@ pub enum RouterMsg {
         keys: Vec<String>,
         outcome: Result<Vec<Value>, String>,
     },
+    /// The answer to key write `write` of `instance`'s targets `keys` (#140
+    /// PR 2b; their slots in that order, then Live's bar's when it held it)
+    /// and its round trip; a newer write of a target makes it void there.
+    AutotuneKeysWritten {
+        instance: String,
+        write: u64,
+        keys: Vec<String>,
+        outcome: Result<Vec<Value>, String>,
+        rtt_ms: f64,
+    },
+    /// The read-back of key write `write` of `instance`'s targets `keys`
+    /// (#140 PR 2b; as [`RouterMsg::AutotuneKeysWritten`]).
+    AutotuneKeysRead {
+        instance: String,
+        write: u64,
+        keys: Vec<String>,
+        outcome: Result<Vec<Value>, String>,
+    },
     /// A read of `instance`'s song map ended (#140): what it found, or why
     /// not, and how long it took (a newer read or a disconnect makes it
     /// void).
@@ -907,6 +925,19 @@ impl Router {
                 keys,
                 outcome,
             } => self.autotune_written(&instance, &keys, &outcome),
+            RouterMsg::AutotuneKeysWritten {
+                instance,
+                write,
+                keys,
+                outcome,
+                rtt_ms,
+            } => self.autotune_keys_written(&instance, write, &keys, &outcome, rtt_ms),
+            RouterMsg::AutotuneKeysRead {
+                instance,
+                write,
+                keys,
+                outcome,
+            } => self.autotune_keys_read(&instance, write, &keys, &outcome),
             RouterMsg::SongMapRead {
                 instance,
                 read_no,

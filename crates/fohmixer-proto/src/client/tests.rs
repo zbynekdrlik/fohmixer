@@ -674,6 +674,8 @@ fn api_bodies_round_trip() {
                         values: Some([0.5, 1.0 / 28.0]),
                         shows: Some("F#m".into()),
                         problem: None,
+                        want: Some("F#m".into()),
+                        state: Some(KeyState::Confirmed),
                     }),
                 },
                 AutotuneTargetStatus {
@@ -694,6 +696,7 @@ fn api_bodies_round_trip() {
                 time: Some(22897.5),
                 playing: Some(true),
                 tempo: Some(95.0),
+                bar: Some("G".into()),
             }],
         },
         songmap: vec![SongMapStatus {
@@ -714,12 +717,49 @@ fn api_bodies_round_trip() {
             {"instance": "band", "track": "live_set tracks 6", "label": "Vox 2", "on": 0,
              "state": "on", "path": "live_set tracks 6 devices 0 parameters 1",
              "key": {"device": "gridder", "path": "live_set tracks 6 devices 0 chains 0 devices 0",
-                     "values": [0.5, 1.0 / 28.0], "shows": "F#m", "problem": null}},
+                     "values": [0.5, 1.0 / 28.0], "shows": "F#m", "problem": null,
+                     "want": "F#m", "state": "confirmed"}},
             {"instance": "band", "track": "live_set tracks 8", "label": "#9", "on": 127,
              "state": "missing", "problem": "no rack named Latencies"}],
             "keys": [{"instance": "band", "song": 31, "key": "G", "time": 22897.5,
-                      "playing": true, "tempo": 95.0}]})
+                      "playing": true, "tempo": 95.0, "bar": "G"}]})
     );
+    // Every key state's name (#140 PR 2b).
+    assert_eq!(
+        serde_json::to_value([
+            KeyState::NoKey,
+            KeyState::Writing,
+            KeyState::Confirmed,
+            KeyState::Mismatch,
+            KeyState::Refused,
+            KeyState::AnotherWriter
+        ])
+        .unwrap(),
+        json!([
+            "no_key",
+            "writing",
+            "confirmed",
+            "mismatch",
+            "refused",
+            "another_writer"
+        ])
+    );
+    // A hub before the writes (#140 PR 2a) names no want, state or bar.
+    let mut before_writes = json["autotune"].clone();
+    for field in ["want", "state"] {
+        before_writes["targets"][0]["key"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+    }
+    before_writes["keys"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("bar");
+    let before_writes = serde_json::from_value::<AutotuneStatus>(before_writes).unwrap();
+    let key = before_writes.targets[0].key.as_ref().unwrap();
+    assert_eq!((&key.want, key.state), (&None, None));
+    assert_eq!(before_writes.keys[0].bar, None);
     // A hub before the key path (#140 PR 2) names no key device and no
     // key in force.
     let mut before_keys = json["autotune"].clone();

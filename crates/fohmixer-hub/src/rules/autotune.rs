@@ -16,7 +16,7 @@ use fohmixer_proto::client::TargetState;
 use serde::Serialize;
 
 use super::stage_rule;
-use keys::{KeyDevice, KeyWhy};
+use keys::{BarState, KeyDevice, KeyState, KeyWhy, LATE_BOUND_MS, state_word};
 
 #[path = "autotune/find.rs"]
 pub mod find;
@@ -279,6 +279,48 @@ pub enum Step {
     /// A page's AUTOTUNE AUT on (`what` `aut`) or tap (`tap`) refused, and
     /// why ([`REFUSED_WHY`]).
     Refused { what: String, why: String },
+    /// The key `key` written to a Live set's found key devices (`targets`:
+    /// their labels) and, with `bar`, to Live's bar (#140 PR 2b), and why.
+    KeyWrite {
+        instance: String,
+        key: String,
+        why: KeyWhy,
+        targets: Vec<String>,
+        bar: bool,
+    },
+    /// A target's write of `key` and its read-back: where the key stands
+    /// (`state`), the key Live's values show, and Live's words when it
+    /// refused (a Max map holds the parameter).
+    Readback {
+        instance: String,
+        target: String,
+        key: String,
+        state: KeyState,
+        shows: Option<String>,
+        problem: Option<String>,
+    },
+    /// A target's values changed since the hub confirmed its key: shown,
+    /// never written against (spec §5).
+    AnotherWriter {
+        instance: String,
+        target: String,
+        shows: Option<String>,
+    },
+    /// How late song `song`'s key change was written after its clip's
+    /// start, in ms (below 0: before it; spec §6).
+    Late {
+        instance: String,
+        song: u16,
+        ms: f64,
+    },
+    /// Live's bar's read-back after the key `key` was written there: the
+    /// key it shows (it gates nothing).
+    Bar {
+        instance: String,
+        key: String,
+        state: BarState,
+        shows: Option<String>,
+    },
 }
 
 /// Why a page's AUTOTUNE AUT on and tap are refused (#140 PR 2: the keys
@@ -296,6 +338,11 @@ fn key_words(song: Option<u16>, key: Option<&str>) -> String {
 
 fn on_off(on: bool) -> &'static str {
     if on { "on" } else { "off" }
+}
+
+/// A key Live's values show, in words (none: no key).
+fn shown(shows: Option<&str>) -> &str {
+    shows.unwrap_or("no key")
 }
 
 /// A step's log line.
@@ -362,16 +409,74 @@ pub fn step_line(step: &Step) -> String {
             problem,
         } => format!("AUTOTUNE has no key device for {instance} {target}: {problem}"),
         Step::Refused { what, why } => format!("AUTOTUNE refuses a page's {what}: {why}"),
+        Step::KeyWrite {
+            instance,
+            key,
+            why,
+            targets,
+            bar,
+        } => format!(
+            "AUTOTUNE writes {key} to {instance}: {} key devices{} ({})",
+            targets.len(),
+            if *bar { " and Live's bar" } else { "" },
+            why.word()
+        ),
+        Step::Readback {
+            instance,
+            target,
+            key,
+            state,
+            shows,
+            problem,
+        } => format!(
+            "AUTOTUNE read back {instance} {target}: {} for {key}, it shows {}{}",
+            state_word(*state),
+            shown(shows.as_deref()),
+            problem
+                .as_deref()
+                .map(|p| format!(": {p}"))
+                .unwrap_or_default()
+        ),
+        Step::AnotherWriter {
+            instance,
+            target,
+            shows,
+        } => format!(
+            "AUTOTUNE sees another writer on {instance} {target}: it shows {}, not written against",
+            shown(shows.as_deref())
+        ),
+        Step::Late { instance, song, ms } => {
+            format!("AUTOTUNE wrote {instance} song {song}'s key change {ms:.1} ms after its start")
+        }
+        Step::Bar {
+            instance,
+            key,
+            state,
+            shows,
+        } => format!(
+            "AUTOTUNE read back {instance}'s Live bar: {} for {key}, it shows {}",
+            match state {
+                BarState::Confirmed => "confirmed",
+                BarState::Shows => "another key",
+            },
+            shown(shows.as_deref())
+        ),
     }
 }
 
 /// Whether a step is logged as a warning: a failed write, a missing rack,
-/// a missing key device.
+/// a missing key device, a key not confirmed, another writer, a key change
+/// written later than [`LATE_BOUND_MS`].
 pub fn step_warn(step: &Step) -> bool {
-    matches!(
-        step,
-        Step::Failed { .. } | Step::Missing { .. } | Step::KeyMissing { .. }
-    )
+    match step {
+        Step::Failed { .. }
+        | Step::Missing { .. }
+        | Step::KeyMissing { .. }
+        | Step::AnotherWriter { .. } => true,
+        Step::Readback { state, .. } => *state != KeyState::Confirmed,
+        Step::Late { ms, .. } => *ms > LATE_BOUND_MS,
+        _ => false,
+    }
 }
 
 #[cfg(test)]

@@ -20,9 +20,15 @@
 //! device (the find's chain 0) has its Key and Scale values followed, and
 //! each Live set with targets its playhead (`current_song_time`, `tempo`):
 //! the key in force along the set's newest song map, one `key` record per
-//! change. Read only: until #140 PR 3 a page's AUTOTUNE AUT on and tap are
-//! refused (a `refused` record, the state told again to that page) and a
-//! saved AUT on starts off, so nothing writes the macros.
+//! change. Until #140 PR 3 a page's AUTOTUNE AUT on and tap are refused (a
+//! `refused` record, the state told again to that page) and a saved AUT on
+//! starts off, so nothing writes the macros.
+//!
+//! **The key writes (#140 PR 2b, `autotune/key_writes.rs`):** the key in
+//! force is written to every found key device (through its parameters'
+//! `$ref`s) and Live's bar at every song start and key change, to a target
+//! found anew, and after a hold; each write is read back, a mismatch
+//! retried once, another writer shown and never fought. No selector moves.
 //!
 //! **Nothing is written by a stale index (PR #139 review I1, REVERB's
 //! window):** from a disconnect or a track-list change, and whenever a
@@ -50,11 +56,14 @@ use crate::live::client::LiveHandle;
 use crate::live::subs::{Cached, ClientId};
 use crate::outbox::Outbox;
 use crate::rules::autotune::find::{self, Find, Found, KeyFound};
+use crate::rules::autotune::keys::KeyTarget;
 use crate::rules::autotune::{AutotuneAut, Step, Why, step_line, step_warn, target_state};
 
 #[path = "autotune/keys.rs"]
 mod keys;
 use keys::{Position, key_status};
+#[path = "autotune/key_writes.rs"]
+mod key_writes;
 
 /// AUTOTUNE's subscriber of its targets' values (clients count up from 1;
 /// the unfold and marker keepers and REVERB are `MAX`, `MAX − 1`,
@@ -94,6 +103,18 @@ pub(super) struct Target {
     pub scale_sub: Option<String>,
     /// Their values as last heard: Key, Scale.
     pub values: (Option<f64>, Option<f64>),
+    /// Its key writes and their read-backs (#140 PR 2b).
+    pub keyt: KeyTarget,
+    /// The newest key write that holds it: an answer of another is void (0:
+    /// none since a disconnect or another device).
+    pub key_write: u64,
+    /// The Key and Scale `$ref`s the key in force was last written to; none
+    /// since a disconnect, a held write or another device (it is owed).
+    pub key_wrote: Option<(String, String)>,
+    /// Whether its newest walk confirmed its key device: false from a
+    /// track-list change (and a disconnect) until then, when a value
+    /// delivery may be another track's (PR 2a review M3).
+    pub key_sure: bool,
 }
 
 /// The router's AUTOTUNE.
@@ -116,6 +137,8 @@ pub(super) struct AutotuneIo {
     /// only such a map gives a key in force (PR 2a review M1: the map from
     /// before a disconnect may be another set's).
     pub current_maps: BTreeSet<String>,
+    /// The key writes' own counter (#140 PR 2b).
+    pub key_writes: u64,
 }
 
 impl AutotuneIo {
@@ -136,6 +159,7 @@ impl AutotuneIo {
             held: BTreeSet::new(),
             positions: BTreeMap::new(),
             current_maps: BTreeSet::new(),
+            key_writes: 0,
         };
         io.told = Some(io.state());
         io
@@ -180,7 +204,7 @@ impl AutotuneIo {
                     state: state_of(t),
                     path: t.found.as_ref().map(|f| f.path.clone()),
                     problem: t.problem.clone(),
-                    key: t.key.as_ref().map(|k| key_status(k, t.values)),
+                    key: t.key.as_ref().map(|k| key_status(k, t.values, &t.keyt)),
                 })
                 .collect(),
             keys: self
@@ -195,10 +219,20 @@ impl AutotuneIo {
                         time: p.time,
                         playing: p.playing,
                         tempo: p.tempo,
+                        bar: p.bar.clone(),
                     }
                 })
                 .collect(),
         }
+    }
+
+    /// The keys of `set`'s targets in the layout's order (Live's).
+    fn keys_in_order(&self, set: &str) -> Vec<String> {
+        self.order
+            .iter()
+            .filter(|key| self.targets.get(*key).is_some_and(|t| t.instance == set))
+            .cloned()
+            .collect()
     }
 
     /// The keys of `instance`'s targets (all with `None`), the unfound ones
@@ -343,6 +377,10 @@ impl Router {
                 key_sub: None,
                 scale_sub: None,
                 values: (None, None),
+                keyt: KeyTarget::new(),
+                key_write: 0,
+                key_wrote: None,
+                key_sure: false,
             };
             wanted.push((key, target));
         }
@@ -501,6 +539,7 @@ impl Router {
     fn autotune_target_missing(&mut self, key: &str, why: String) {
         self.autotune_unsub(key);
         self.autotune_key_unsub(key);
+        self.autotune_key_forget(key);
         let Some(target) = self.autotune.targets.get_mut(key) else {
             return;
         };
@@ -535,18 +574,7 @@ impl Router {
 
     /// Writes `on` to every found target of `set`.
     fn autotune_write(&mut self, set: &str, on: bool, why: Why) {
-        let keys: Vec<String> = self
-            .autotune
-            .order
-            .iter()
-            .filter(|key| {
-                self.autotune
-                    .targets
-                    .get(*key)
-                    .is_some_and(|t| t.instance == set)
-            })
-            .cloned()
-            .collect();
+        let keys = self.autotune.keys_in_order(set);
         self.autotune_write_keys(set, &keys, on, why);
     }
 
@@ -670,6 +698,7 @@ impl Router {
             }
             self.autotune_unsub(key);
             self.autotune_key_unsub(key);
+            self.autotune_key_forget(key);
         }
         self.autotune_position_offline(instance);
         self.autotune_hold(instance, "offline");
@@ -683,6 +712,11 @@ impl Router {
     pub(super) fn autotune_tracks(&mut self, instance: &str) {
         self.autotune_hold(instance, "tracks");
         for key in self.autotune.keys_of(Some(instance), false) {
+            // Its key device's values may be another track's until its walk
+            // answers (PR 2a review M3).
+            if let Some(target) = self.autotune.targets.get_mut(&key) {
+                target.key_sure = false;
+            }
             self.autotune_walk(&key);
         }
     }

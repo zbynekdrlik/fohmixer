@@ -424,3 +424,174 @@ fn the_key_steps_are_recorded_and_logged() {
         json!({"step": "refused", "what": "aut", "why": "keys only until #140 PR 3"})
     );
 }
+
+#[test]
+fn the_write_steps_are_recorded_and_logged() {
+    // #140 PR 2b: the key written, its read-back, another writer, the
+    // lateness and Live's bar.
+    let write = Step::KeyWrite {
+        instance: "band".into(),
+        key: "F#m".into(),
+        why: keys::KeyWhy::Song,
+        targets: vec!["#1".into(), "Vox 2".into()],
+        bar: true,
+    };
+    let retry = Step::KeyWrite {
+        instance: "band".into(),
+        key: "G".into(),
+        why: keys::KeyWhy::Retry,
+        targets: vec!["#2".into()],
+        bar: false,
+    };
+    let confirmed = Step::Readback {
+        instance: "band".into(),
+        target: "live_set tracks 0".into(),
+        key: "F#m".into(),
+        state: keys::KeyState::Confirmed,
+        shows: Some("F#m".into()),
+        problem: None,
+    };
+    let refused = Step::Readback {
+        instance: "band".into(),
+        target: "live_set tracks 1".into(),
+        key: "F#m".into(),
+        state: keys::KeyState::Refused,
+        shows: None,
+        problem: Some("live error: Value cannot be set, the parameter is disabled".into()),
+    };
+    let mismatch = Step::Readback {
+        instance: "band".into(),
+        target: "live_set tracks 2".into(),
+        key: "F#m".into(),
+        state: keys::KeyState::Mismatch,
+        shows: Some("C".into()),
+        problem: None,
+    };
+    let another = Step::AnotherWriter {
+        instance: "band".into(),
+        target: "live_set tracks 0".into(),
+        shows: Some("A".into()),
+    };
+    let on_time = Step::Late {
+        instance: "band".into(),
+        song: 1,
+        ms: 100.0,
+    };
+    let late = Step::Late {
+        instance: "band".into(),
+        song: 1,
+        ms: 100.5,
+    };
+    let early = Step::Late {
+        instance: "band".into(),
+        song: 31,
+        ms: -23.0,
+    };
+    let bar = Step::Bar {
+        instance: "band".into(),
+        key: "F#m".into(),
+        state: keys::BarState::Confirmed,
+        shows: Some("F#m".into()),
+    };
+    let bar_off = Step::Bar {
+        instance: "band".into(),
+        key: "F#m".into(),
+        state: keys::BarState::Shows,
+        shows: None,
+    };
+    assert_eq!(
+        step_line(&write),
+        "AUTOTUNE writes F#m to band: 2 key devices and Live's bar (song)"
+    );
+    assert_eq!(
+        step_line(&retry),
+        "AUTOTUNE writes G to band: 1 key devices (retry)"
+    );
+    assert_eq!(
+        step_line(&confirmed),
+        "AUTOTUNE read back band live_set tracks 0: confirmed for F#m, it shows F#m"
+    );
+    assert_eq!(
+        step_line(&refused),
+        "AUTOTUNE read back band live_set tracks 1: refused for F#m, it shows no key: \
+         live error: Value cannot be set, the parameter is disabled"
+    );
+    assert_eq!(
+        step_line(&mismatch),
+        "AUTOTUNE read back band live_set tracks 2: mismatch for F#m, it shows C"
+    );
+    assert_eq!(
+        step_line(&another),
+        "AUTOTUNE sees another writer on band live_set tracks 0: it shows A, not written against"
+    );
+    assert_eq!(
+        step_line(&Step::AnotherWriter {
+            instance: "band".into(),
+            target: "t".into(),
+            shows: None,
+        }),
+        "AUTOTUNE sees another writer on band t: it shows no key, not written against"
+    );
+    assert_eq!(
+        step_line(&late),
+        "AUTOTUNE wrote band song 1's key change 100.5 ms after its start"
+    );
+    assert_eq!(
+        step_line(&early),
+        "AUTOTUNE wrote band song 31's key change -23.0 ms after its start"
+    );
+    assert_eq!(
+        step_line(&bar),
+        "AUTOTUNE read back band's Live bar: confirmed for F#m, it shows F#m"
+    );
+    assert_eq!(
+        step_line(&bar_off),
+        "AUTOTUNE read back band's Live bar: another key for F#m, it shows no key"
+    );
+    for step in [&write, &retry, &confirmed, &on_time, &early, &bar, &bar_off] {
+        assert!(!step_warn(step), "{step:?}");
+    }
+    for step in [&refused, &mismatch, &another, &late] {
+        assert!(step_warn(step), "{step:?}");
+    }
+    for state in [
+        keys::KeyState::NoKey,
+        keys::KeyState::Writing,
+        keys::KeyState::AnotherWriter,
+    ] {
+        let step = Step::Readback {
+            instance: "band".into(),
+            target: "t".into(),
+            key: "C".into(),
+            state,
+            shows: None,
+            problem: None,
+        };
+        assert!(step_warn(&step), "{state:?}");
+    }
+    assert_eq!(
+        serde_json::to_value(&write).unwrap(),
+        json!({"step": "key_write", "instance": "band", "key": "F#m", "why": "song",
+               "targets": ["#1", "Vox 2"], "bar": true})
+    );
+    assert_eq!(
+        serde_json::to_value(&refused).unwrap(),
+        json!({"step": "readback", "instance": "band", "target": "live_set tracks 1",
+               "key": "F#m", "state": "refused", "shows": null,
+               "problem": "live error: Value cannot be set, the parameter is disabled"})
+    );
+    assert_eq!(
+        serde_json::to_value(&another).unwrap(),
+        json!({"step": "another_writer", "instance": "band", "target": "live_set tracks 0",
+               "shows": "A"})
+    );
+    assert_eq!(
+        serde_json::to_value(&early).unwrap(),
+        json!({"step": "late", "instance": "band", "song": 31, "ms": -23.0})
+    );
+    assert_eq!(
+        serde_json::to_value(&bar).unwrap(),
+        json!({"step": "bar", "instance": "band", "key": "F#m", "state": "confirmed",
+               "shows": "F#m"})
+    );
+}

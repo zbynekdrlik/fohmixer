@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use fohmixer_proto::client::{
-    AutotuneState, HUB_AUTOTUNE, HUB_AUTOTUNE_AUT, KeyInForce, KeyTargetStatus, ServerMsg,
-    TargetState,
+    AutotuneState, HUB_AUTOTUNE, HUB_AUTOTUNE_AUT, KeyInForce, KeyState, KeyTargetStatus,
+    ServerMsg, TargetState,
 };
 use fohmixer_proto::layout::{Anchor, AutotuneTarget, Binding};
 use fohmixer_proto::songmap::{ClipName, Cue, Key, SectionsState, build};
@@ -21,7 +21,7 @@ use crate::live::client::LiveEvent;
 use crate::outbox::Outbox;
 use crate::rules::HubState;
 use crate::rules::autotune::find::{Found, KeyFound, Param};
-use crate::rules::autotune::keys::{KeyDevice, KeyFollow, KeyMissing, KeyParams};
+use crate::rules::autotune::keys::{KeyDevice, KeyFollow, KeyMissing, KeyParams, KeyTarget};
 use crate::rules::reverb::Saved;
 
 /// The stream target of the band (on 127).
@@ -274,6 +274,10 @@ fn the_key_in_force_at_a_position_needs_a_map_and_a_position() {
         time_sub: None,
         tempo_sub: None,
         follow: KeyFollow::new(),
+        bar: None,
+        bar_writing: None,
+        bar_owed: false,
+        late: None,
     };
     assert_eq!(
         key_now(None, &at(Some(10.0), None, None)),
@@ -317,22 +321,37 @@ fn the_key_in_force_at_a_position_needs_a_map_and_a_position() {
 #[test]
 fn a_key_device_in_the_status_shows_its_values_once_both_came() {
     let found = Ok(gridder(1));
+    let none = KeyTarget::new();
     assert_eq!(
-        key_status(&found, (Some(9.0 / 11.0), Some(1.0 / 28.0))),
+        key_status(&found, (Some(9.0 / 11.0), Some(1.0 / 28.0)), &none),
         KeyTargetStatus {
             device: Some("gridder".into()),
             path: Some(PLUGIN.into()),
             values: Some([9.0 / 11.0, 1.0 / 28.0]),
             shows: Some("Am".into()),
             problem: None,
+            want: None,
+            state: Some(KeyState::NoKey),
         }
     );
-    let one = key_status(&found, (Some(0.5), None));
+    // The key last written there and where it stands (#140 PR 2b).
+    let mut written = KeyTarget::new();
+    written.want(Key {
+        root: 9,
+        minor: true,
+    });
+    written.sent();
+    let now = key_status(&found, (Some(9.0 / 11.0), Some(1.0 / 28.0)), &written);
+    assert_eq!(
+        (now.want.as_deref(), now.state),
+        (Some("Am"), Some(KeyState::Writing))
+    );
+    let one = key_status(&found, (Some(0.5), None), &none);
     assert_eq!((one.values, one.shows), (None, None));
-    let other = key_status(&found, (None, Some(0.0)));
+    let other = key_status(&found, (None, Some(0.0)), &none);
     assert_eq!((other.values, other.shows), (None, None));
     // Chromatic shows no key, its values stay.
-    let chromatic = key_status(&found, (Some(0.0), Some(2.0 / 28.0)));
+    let chromatic = key_status(&found, (Some(0.0), Some(2.0 / 28.0)), &none);
     assert_eq!(
         (chromatic.values, chromatic.shows),
         (Some([0.0, 2.0 / 28.0]), None)
@@ -348,13 +367,14 @@ fn a_key_device_in_the_status_shows_its_values_once_both_came() {
         scale: gridder(2).scale,
     };
     assert_eq!(
-        key_status(&Ok(auto_tune), (Some(0.5), Some(0.0))).device,
+        key_status(&Ok(auto_tune), (Some(0.5), Some(0.0)), &none).device,
         Some("auto_tune".into())
     );
     assert_eq!(
         key_status(
             &Err("chain 0 holds 2 plug-ins, not one".into()),
-            (None, None)
+            (None, None),
+            &written
         ),
         KeyTargetStatus {
             device: None,
@@ -362,6 +382,8 @@ fn a_key_device_in_the_status_shows_its_values_once_both_came() {
             values: None,
             shows: None,
             problem: Some("chain 0 holds 2 plug-ins, not one".into()),
+            want: None,
+            state: None,
         }
     );
 }
@@ -421,6 +443,8 @@ async fn a_found_target_follows_its_key_and_scale() {
             values: None,
             shows: None,
             problem: None,
+            want: None,
+            state: Some(KeyState::NoKey),
         }),
         "no value heard yet"
     );
@@ -574,6 +598,7 @@ async fn the_key_in_force_follows_the_song_time() {
             time: Some(50.1),
             playing: Some(true),
             tempo: Some(120.0),
+            bar: None,
         }]
     );
     // The next song: a start, in its own key.
@@ -882,6 +907,7 @@ async fn a_disconnect_drops_the_position_and_key_values() {
             time: None,
             playing: None,
             tempo: None,
+            bar: None,
         }]
     );
     assert_eq!(now.targets[0].key, None);

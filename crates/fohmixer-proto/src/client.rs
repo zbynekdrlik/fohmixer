@@ -644,11 +644,13 @@ pub enum KeyState {
 /// One AUTOTUNE target's key device in `GET /api/status` (#140 PR 2): which
 /// device holds its Key and Scale (`auto_tune`, `gridder`) and its path,
 /// their values as last heard (both), the key they show (`F#m`; none for a
-/// scale step other than Major or Minor), or why it has none (`problem`).
-/// For `gridder` the values and `shows` are Live's side of AudioGridder's
-/// slots only, never the remote plug-in: the spike read a slot on C while
-/// its remote Auto-Tune was on Bb (spec §5). Every field is absent in an
-/// older hub's answer.
+/// scale step other than Major or Minor), or why it has none (`problem`);
+/// since PR 2b the key the hub last wrote there (`want`) and where it
+/// stands (`state`). For `gridder` the values and `shows` are Live's side
+/// of AudioGridder's slots only, never the remote plug-in: the spike read a
+/// slot on C while its remote Auto-Tune was on Bb (spec §5), so `confirmed`
+/// there means the write went through and Live's slot reads the key back.
+/// Every field is absent in an older hub's answer.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct KeyTargetStatus {
     #[serde(default)]
@@ -661,6 +663,10 @@ pub struct KeyTargetStatus {
     pub shows: Option<String>,
     #[serde(default)]
     pub problem: Option<String>,
+    #[serde(default)]
+    pub want: Option<String>,
+    #[serde(default)]
+    pub state: Option<KeyState>,
 }
 
 /// One AUTOTUNE target in `GET /api/status` (#104): its Live set, track
@@ -685,7 +691,9 @@ pub struct AutotuneTargetStatus {
 /// A Live set's key in force in `GET /api/status` (#140 PR 2): the song
 /// the playhead is in (none outside every song) and its key (`F#m`; none
 /// in a keyless song), and the position it was judged at: the playhead
-/// (beats), the transport and the tempo as last heard.
+/// (beats), the transport and the tempo as last heard; since PR 2b the key
+/// Live's bar showed at its last read-back (`bar`; none before one, or for
+/// a scale other than Major or Minor).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct KeyInForce {
     #[serde(default)]
@@ -700,6 +708,8 @@ pub struct KeyInForce {
     pub playing: Option<bool>,
     #[serde(default)]
     pub tempo: Option<f64>,
+    #[serde(default)]
+    pub bar: Option<String>,
 }
 
 /// AUTOTUNE in `GET /api/status` (#104, D19): AUTOTUNE AUT, the rule's
