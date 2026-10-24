@@ -43,8 +43,8 @@ use crate::eq::walk::{answered, get, refused};
 use crate::rules::autotune::Step;
 use crate::rules::autotune::find::KeyFound;
 use crate::rules::autotune::keys::{
-    KeyState, KeyTarget, KeyWhy, Readback, bar_shows, bar_state, change_time, judge, key_values,
-    late_ms, lookahead_beats, shows,
+    KeyState, KeyTarget, KeyWhy, Readback, bar_shows, bar_state, change_time, crossed, judge,
+    key_values, late_ms, lookahead_beats, shows,
 };
 
 /// Live's bar's key: an index on Live's scale, C = 0 to B = 11 (spec A.5).
@@ -324,18 +324,23 @@ impl Router {
     }
 
     /// What `set`'s key change now is measured from: its song's change in
-    /// force at the playhead (see [`late_note`]).
+    /// force at the playhead (see [`late_note`]), only when the playhead
+    /// crossed it in continuous play (`crossed`: a jump or a locate past
+    /// it has no lateness; PR #144 review M1).
     fn autotune_late_note(&self, set: &str) -> Option<LateNote> {
         let position = self.autotune.positions.get(set)?;
         let song = position.follow.now().0?;
         let map = &self.songmap.maps.get(set)?.map;
-        late_note(
+        let time = position.time?;
+        let note = late_note(
             map,
             song,
-            position.time?,
+            time,
             position.playing == Some(true),
             position.tempo,
-        )
+        )?;
+        let ahead = lookahead_beats(position.tempo);
+        crossed(position.before, time, note.change, ahead).then_some(note)
     }
 
     /// The key Live's bar is being written with by write `write`, if that

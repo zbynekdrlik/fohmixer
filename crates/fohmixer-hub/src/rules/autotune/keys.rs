@@ -51,6 +51,11 @@ pub const SAME_VALUE_EPS: f64 = 1e-6;
 /// A key change's lateness bound after its clip's start, in ms (spec §6):
 /// a `late` record beyond it is a warning.
 pub const LATE_BOUND_MS: f64 = 100.0;
+/// The longest step forward of the playhead between two deliveries that is
+/// still continuous play, in beats: ~30 deliveries a second move it ~0.07
+/// beat at 120 bpm, and a stalled half second still stays under one beat;
+/// a longer step is a jump or a locate (PR #144 review M1).
+pub const CROSSING_BEATS: f64 = 1.0;
 
 /// The device that holds a target's Key and Scale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -456,6 +461,15 @@ pub fn state_word(state: KeyState) -> &'static str {
         KeyState::Refused => "refused",
         KeyState::AnotherWriter => "another_writer",
     }
+}
+
+/// Whether the playhead crossed a key change's start `change` in continuous
+/// play (spec §6; PR #144 review M1, as ruled): the position heard before
+/// (`before`), one lookahead (`ahead`) on, was not yet at it, and the step
+/// to `time` went forward by at most [`CROSSING_BEATS`]. A jump or a locate
+/// past it, playing or not, is no crossing and has no lateness.
+pub fn crossed(before: Option<f64>, time: f64, change: f64, ahead: f64) -> bool {
+    before.is_some_and(|b| b + ahead < change && time > b && time - b <= CROSSING_BEATS)
 }
 
 /// How late a key change was written, in ms after its clip's start (spec

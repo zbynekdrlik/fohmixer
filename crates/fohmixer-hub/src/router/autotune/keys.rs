@@ -37,7 +37,9 @@ pub const VALUE: &str = "value";
 /// transport and the tempo as last heard (none before, and after a
 /// disconnect), its subscriptions, and its key in force with the lookahead
 /// it was judged with (`ahead`, kept while the set is not known to play
-/// until its playhead moves: PR 2a review M4); and Live's bar as the key
+/// until its playhead moves: PR 2a review M4), the playhead heard before
+/// the latest (`before`: a key change's crossing, PR #144 review M1); and
+/// Live's bar as the key
 /// writes keep it (#140 PR 2b): what its last read-back showed, the newest
 /// write that holds it with its key, whether a held write owes it the key,
 /// and the newest key change's lateness to record.
@@ -50,6 +52,7 @@ pub(in crate::router) struct Position {
     pub tempo_sub: Option<String>,
     pub follow: KeyFollow,
     pub ahead: f64,
+    pub before: Option<f64>,
     pub bar: Option<String>,
     pub bar_writing: Option<(u64, Key)>,
     pub bar_owed: bool,
@@ -216,6 +219,7 @@ impl Router {
             tempo_sub,
             follow: KeyFollow::new(),
             ahead: 0.0,
+            before: None,
             bar: None,
             bar_writing: None,
             bar_owed: false,
@@ -292,6 +296,7 @@ impl Router {
                     position.ahead,
                     time != position.time,
                 );
+                position.before = position.time;
                 position.time = time;
             }
             PositionPart::Tempo => position.tempo = heard_number(heard.as_ref(), position.tempo),
@@ -374,6 +379,7 @@ impl Router {
             position.tempo = None;
             position.follow.reset();
             position.ahead = 0.0;
+            position.before = None;
             position.bar = None;
             position.bar_writing = None;
             position.bar_owed = false;

@@ -678,3 +678,20 @@ fn the_bar_shows_its_root_and_scale() {
         serde_json::json!(["confirmed", "shows"])
     );
 }
+
+#[test]
+fn only_continuous_play_crosses_a_key_change() {
+    // PR #144 review M1: the clip at 50, a tick (0.07 beat) ahead at 120 bpm.
+    assert_eq!(CROSSING_BEATS, 1.0);
+    assert!(crossed(Some(49.9), 49.95, 50.0, 0.07), "the tick across it");
+    assert!(!crossed(None, 49.95, 50.0, 0.07), "no position before");
+    assert!(!crossed(Some(10.0), 60.0, 50.0, 0.07), "a jump past it");
+    assert!(!crossed(Some(60.0), 50.5, 50.0, 0.07), "a jump back");
+    // Already at it before (one lookahead on): no crossing now.
+    assert!(!crossed(Some(49.5), 49.75, 50.0, 0.5));
+    assert!(crossed(Some(49.25), 49.75, 50.0, 0.5));
+    // The playhead must go forward, at most one beat.
+    assert!(!crossed(Some(49.5), 49.5, 50.0, 0.25), "standing");
+    assert!(crossed(Some(49.0), 50.0, 50.0, 0.0), "one beat");
+    assert!(!crossed(Some(48.75), 50.0, 50.0, 0.0), "more than one beat");
+}
