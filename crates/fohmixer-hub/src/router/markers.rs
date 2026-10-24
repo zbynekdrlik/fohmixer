@@ -29,13 +29,19 @@
 //!   many markers it holds. A change of the whole set (every instance) is
 //!   handed to the store.
 //! - **A newer read voids an older answer**; a failed read is tried again
-//!   after [`RETRY_MS`], at most [`MAX_RETRIES`] times in a row.
+//!   after `RETRY_MS`, at most [`CONNECT_RETRIES`] times in a row, the song
+//!   map's and the walks' bound (#140, PR #145 review I1: after a set load
+//!   AUTOTUNE's writes and REVERB's window wait for a read that answers, and
+//!   Live answers none while it loads), and never while the instance is
+//!   offline (its connect reads).
 
 use std::collections::BTreeMap;
 
 use fohmixer_proto::markers::migrate::{MigrationRow, Planned};
 use fohmixer_proto::markers::{Found, TUNER_CLASS, TrackKind, is_marker};
 use serde_json::{Value, json};
+
+use super::retries::CONNECT_RETRIES;
 
 /// `live_set`'s list of tracks.
 pub const TRACKS: &str = "tracks";
@@ -49,10 +55,6 @@ pub const NAME: &str = "name";
 pub const CLASS_NAME: &str = "class_name";
 /// The script's class of Live's own devices (a Tuner among them).
 pub const NATIVE: &str = "Device";
-/// The wait before a failed read is tried again.
-pub const RETRY_MS: u64 = 2000;
-/// Failed reads of an instance in a row that are tried again.
-pub const MAX_RETRIES: u32 = 3;
 /// The quiet time after a change of the markers before they are served: a
 /// set load or a burst of edits is one new layout, not several.
 pub const SETTLE_MS: u64 = 300;
@@ -233,6 +235,9 @@ struct Instance {
     /// offline, or a read of it failed, since its last whole read (#130
     /// review M1, W2).
     unsure: bool,
+    /// The instance went offline and has not connected since: a retry reads
+    /// nothing (the connect reads).
+    away: bool,
 }
 
 /// The names of a list value's items (the script encodes a track as an
@@ -457,6 +462,7 @@ impl Keeper {
             return Vec::new();
         };
         state.failures = 0;
+        state.away = false;
         if state.tracks.is_none() {
             return Vec::new();
         }
@@ -472,6 +478,7 @@ impl Keeper {
         if let Some(state) = self.instances.get_mut(instance) {
             state.unsure = true;
             state.pending = None;
+            state.away = true;
         }
     }
 
@@ -485,9 +492,14 @@ impl Keeper {
             .is_none_or(|state| state.pending.is_none() && !state.unsure)
     }
 
-    /// A failed read's second chance (`Action::Retry`).
+    /// A failed read's retry (`Action::Retry`): a read, unless the instance
+    /// went offline since (its connect reads).
     pub fn retry(&mut self, instance: &str) -> Vec<Action> {
-        if self.instances.contains_key(instance) {
+        if self
+            .instances
+            .get(instance)
+            .is_some_and(|state| !state.away)
+        {
             vec![self.read(instance)]
         } else {
             Vec::new()
@@ -496,7 +508,8 @@ impl Keeper {
 
     /// The answer to a batch of read `seq`: the second batch's commands, or
     /// the Tuners found (fresh subscriptions, and the markers when they
-    /// changed). An error is tried again up to `MAX_RETRIES` times in a row.
+    /// changed). An error is tried again up to [`CONNECT_RETRIES`] times in a
+    /// row.
     pub fn read_done(
         &mut self,
         instance: &str,
@@ -514,7 +527,7 @@ impl Keeper {
             state.pending = None;
             state.unsure = true;
             state.failures += 1;
-            return if state.failures <= MAX_RETRIES {
+            return if state.failures <= CONNECT_RETRIES {
                 vec![Action::Retry {
                     instance: instance.to_string(),
                 }]
@@ -544,7 +557,7 @@ impl Keeper {
             return Vec::new();
         };
         // Only a whole read resets the count: a second batch that keeps
-        // failing is tried again `MAX_RETRIES` times too.
+        // failing is tried again `CONNECT_RETRIES` times too.
         state.failures = 0;
         state.unsure = false;
         state.devices = done.devices;

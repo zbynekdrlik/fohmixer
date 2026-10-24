@@ -1,8 +1,10 @@
-//! The connect-time retries (#140; PR #145 review M10, the main session's
-//! rulings): the song map's reads and AUTOTUNE's walks are tried again
-//! after a failure while their Live set stays connected, so a set still
-//! loading (the hub connects while Live loads it, and its reads time out
-//! for a while) is read once Live answers. One bound for all of them.
+//! The connect-time retries (#140; PR #145 review I1 and M10, the main
+//! session's rulings): the song map's reads, AUTOTUNE's walks and the marker
+//! keeper's reads are tried again after a failure while their Live set stays
+//! connected, so a set still loading (the hub connects while Live loads it,
+//! and its reads time out for a while) is read once Live answers. One bound
+//! for all of them: AUTOTUNE's writes and REVERB's window wait for the
+//! marker keeper's read, so its retries must last as long as the others'.
 
 /// The wait after a failed read before its retry, in ms.
 pub(super) const RETRY_MS: u64 = 2000;

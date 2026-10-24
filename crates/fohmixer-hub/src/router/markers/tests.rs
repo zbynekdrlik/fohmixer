@@ -438,12 +438,12 @@ fn a_newer_read_voids_an_older_answer() {
 }
 
 #[test]
-fn a_failed_read_is_tried_again_three_times_in_a_row() {
+fn a_failed_read_is_tried_again_connect_retries_times_in_a_row() {
     let mut k = keeper();
     let actions = k.value(&tracks_key("band"), Some(&list(1)));
     let mut seq = apply(&mut k, actions).reads[0].1;
     let failed: Result<Vec<Value>, String> = Err("timeout".into());
-    for _ in 0..MAX_RETRIES {
+    for _ in 0..CONNECT_RETRIES {
         assert_eq!(
             k.read_done("band", seq, Step::Devices, &failed),
             vec![Action::Retry {
@@ -514,13 +514,13 @@ fn the_markers_of_an_instance_are_counted_per_track_in_order() {
 }
 
 #[test]
-fn a_second_batch_that_keeps_failing_is_tried_again_three_times_in_a_row() {
+fn a_second_batch_that_keeps_failing_is_tried_again_connect_retries_times_in_a_row() {
     let mut k = keeper();
     let actions = k.value(&tracks_key("band"), Some(&list(1)));
     let mut seq = apply(&mut k, actions).reads[0].1;
     let devices = Ok(vec![ok(json!([device("Device", "Tuner")]))]);
     let failed: Result<Vec<Value>, String> = Err("timeout".into());
-    for _ in 0..MAX_RETRIES {
+    for _ in 0..CONNECT_RETRIES {
         let actions = k.read_done("band", seq, Step::Devices, &devices);
         assert!(matches!(
             actions.as_slice(),
@@ -831,7 +831,7 @@ fn a_connect_reads_the_tuners_again_once_the_lists_are_known() {
     let mut seq = apply(&mut k, actions).reads[0].1;
     // The retries run out while Live is away…
     let failed: Result<Vec<Value>, String> = Err("timeout".into());
-    for _ in 0..MAX_RETRIES {
+    for _ in 0..CONNECT_RETRIES {
         k.read_done("band", seq, Step::Devices, &failed);
         let actions = k.retry("band");
         seq = apply(&mut k, actions).reads[0].1;
@@ -849,6 +849,29 @@ fn a_connect_reads_the_tuners_again_once_the_lists_are_known() {
             instance: "band".into()
         }]
     );
+}
+
+#[test]
+fn a_retry_while_the_instance_is_offline_reads_nothing_and_its_connect_reads() {
+    // #140: with the connect-time bound a failed read is tried again for
+    // about two minutes; an offline instance is not read meanwhile.
+    let mut k = keeper();
+    let actions = k.value(&tracks_key("band"), Some(&list(1)));
+    let seq = apply(&mut k, actions).reads[0].1;
+    let failed: Result<Vec<Value>, String> =
+        Err(crate::live::client::LiveError::Timeout.to_string());
+    assert_eq!(
+        k.read_done("band", seq, Step::Devices, &failed),
+        vec![Action::Retry {
+            instance: "band".into()
+        }]
+    );
+    k.disconnected("band");
+    assert_eq!(k.retry("band"), vec![], "offline: its connect reads");
+    let actions = k.connected("band");
+    assert_eq!(apply(&mut k, actions).reads.len(), 1, "the connect's read");
+    let actions = k.retry("band");
+    assert_eq!(apply(&mut k, actions).reads.len(), 1, "connected again");
 }
 
 #[test]

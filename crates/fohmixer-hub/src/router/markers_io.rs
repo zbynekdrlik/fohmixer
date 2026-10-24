@@ -206,7 +206,7 @@ impl Router {
     fn markers_retry(&self, instance: String) {
         let tx = self.io.tx.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(markers::RETRY_MS)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(super::retries::RETRY_MS)).await;
             let _ = tx.send(RouterMsg::MarkersRetry { instance });
         });
     }

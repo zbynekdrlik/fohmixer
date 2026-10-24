@@ -2548,7 +2548,7 @@ mod tests {
             matches!(retry, RouterMsg::MarkersRetry { ref instance } if instance == "band"),
             "a retry of the band"
         );
-        assert!(started.elapsed() >= std::time::Duration::from_millis(markers::RETRY_MS - 100));
+        assert!(started.elapsed() >= std::time::Duration::from_millis(retries::RETRY_MS - 100));
     }
 
     #[tokio::test]
