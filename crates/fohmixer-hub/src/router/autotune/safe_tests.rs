@@ -378,3 +378,33 @@ async fn a_failed_registration_is_sent_again_at_the_next_change() {
     router.autotune_release("band", "settled");
     assert!(next_safe(&mut script).is_none());
 }
+
+#[tokio::test]
+async fn a_found_target_whose_walk_live_did_not_answer_keeps_its_ref_and_its_dry_write() {
+    // PR #146 review I3: the script holds the object, so a walk Live did not
+    // answer (busy, a timeout) leaves the target's ref and its DRY write as
+    // they were; a definite refusal or a definite answer drops them.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, _rx, mut script) = scripted_router(dir.path());
+    let asked = both_found(&mut router, &mut own, &mut script).await;
+    answered(&mut router, &mut own, asked, kept(2)).await;
+    router.autotune_walk(STREAM);
+    let walk = router.autotune.targets[STREAM].walk;
+    router.autotune_walk_failed(STREAM, walk, "no result within 3 s".into());
+    let target = &router.autotune.targets[STREAM];
+    assert_eq!(
+        target.found.as_ref().map(|f| f.id.as_str()),
+        Some("p7"),
+        "the hub keeps its ref"
+    );
+    assert_eq!(target.problem, None);
+    assert_eq!(target.walk_failures, 1, "and walks it again");
+    assert!(next_safe(&mut script).is_none(), "the registration stays");
+    // A walk Live refused is a definite answer: the target leaves the list.
+    router.autotune_walk(STREAM);
+    let walk = router.autotune.targets[STREAM].walk;
+    router.autotune_walk_failed(STREAM, walk, "live error: busy".into());
+    assert!(router.autotune.targets[STREAM].found.is_none());
+    let (shrunk, _) = registration(&mut script);
+    assert_eq!(shrunk, writes(&[("p6", 127.0)]));
+}
