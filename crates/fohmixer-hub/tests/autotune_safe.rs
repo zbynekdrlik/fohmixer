@@ -2,12 +2,12 @@
 //! autotune keys' set (two stream tracks, each a `Latencies` rack inside
 //! `Stream FX`, `+AUTOTUNE`: on 127, off 0; a PA track's rack on top,
 //! `+AUTOTUNE:0`: on 0, off 127, standing on DRY; one song in C; invented
-//! names). AUTOTUNE AUT saved on (#140 PR 3b: kept across a restart), the
-//! hub finds the three targets, registers each selector's DRY write with
-//! the script, writes the keys and, once Live plays in the song, switches
-//! every selector on by the rule; every selector then reads DRY within 2 s
-//! through a raw `get` of the host's script, the script's log saying so
-//! once, when the hub is gone:
+//! names). The hub finds the three targets and registers each selector's
+//! DRY write with the script, AUT off (a page's AUT on is refused until
+//! #140 PR 3c); another writer then moves every selector to its chain
+//! twice within 10 s, so the hub writes it DRY once and then stops (spec
+//! §7); every selector then reads DRY within 2 s through a raw `get` of the
+//! host's script, the script's log saying so once, when the hub is gone:
 //!
 //! - **frozen** (PR #146 review M1): the hub binary stopped by `SIGSTOP`,
 //!   a hung hub whose TCP stays open; its pings stop, and the script's
@@ -71,17 +71,11 @@ fn site(dir: &Path) -> PathBuf {
     path
 }
 
-/// One page whose rail holds the AUTOTUNE button, and AUTOTUNE AUT saved
-/// on.
+/// One page whose rail holds the AUTOTUNE button.
 fn frame(dir: &Path) {
     let frame = json!({"schema": 2, "default_page": "p", "pages": [{"id": "p", "title": "P",
         "rail": [{"kind": "autotune", "label": "AUTOTUNE"}]}]});
     std::fs::write(dir.join("layout.json"), frame.to_string()).unwrap();
-    std::fs::write(
-        dir.join("hub-state.json"),
-        json!({"autotune_aut": true}).to_string(),
-    )
-    .unwrap();
 }
 
 /// The `autotune` records of `records` that are the step `step`.
@@ -118,12 +112,6 @@ impl Script {
             .request(json!({"target": path, "name": "get_prop", "args": {"prop": "value"}}))
             .await;
         slot["data"].as_f64().unwrap()
-    }
-
-    /// Live's transport started (`start_playing`) or stopped.
-    async fn transport(&mut self, verb: &str) {
-        self.request(json!({"target": "live_set", "name": verb, "args": []}))
-            .await;
     }
 
     /// One command's slot, answered `ok`.
@@ -171,19 +159,35 @@ fn registered(records: &[Value]) -> bool {
         .any(|s| s["targets"] == json!(3) && s["problem"].is_null())
 }
 
-/// Live plays in the song: the hub's rule switches every selector on once
-/// its key is confirmed (AUT on, the DRY writes kept).
-async fn all_on(live: &mut Script) {
-    live.transport("start_playing").await;
+/// Reads the macros until they are `want`.
+async fn macros_until(live: &mut Script, want: [f64; 3], what: &str) {
     let deadline = Instant::now() + SECS_10;
     loop {
         let values = live.macros().await;
-        if values == ON {
+        if values == want {
             return;
         }
-        assert!(Instant::now() < deadline, "never on: {values:?}");
+        assert!(Instant::now() < deadline, "{what}: {values:?}");
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+}
+
+/// Another writer moves every selector to its chain twice within 10 s
+/// (AUT off): the hub writes each DRY again once, then stops writing it
+/// (spec §7), so the selectors stay on while the hub lives.
+async fn all_on(host: &mut Host, live: &mut Script) {
+    // The hub hears each selector's first value a tick or two after its
+    // find (its listener's answer); a move before that would only decide.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    for (path, on) in MACROS.into_iter().zip(ON) {
+        assert_eq!(host.param(path, "value", on), on, "{path}");
+    }
+    macros_until(live, DRY, "the hub's DRY again").await;
+    for (path, on) in MACROS.into_iter().zip(ON) {
+        assert_eq!(host.param(path, "value", on), on, "{path}");
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(live.macros().await, ON, "the hub stopped writing them");
 }
 
 /// Reads the macros until each is DRY; how long that took from `since`.
@@ -274,7 +278,7 @@ fn a_frozen_hub_leaves_every_selector_on_dry_within_2_s() {
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
         let mut live = Script::connect(host.port).await;
-        all_on(&mut live).await;
+        all_on(&mut host, &mut live).await;
         // The hub's pings keep it heard: past the script's 1.5 s of
         // silence, nothing has fallen back.
         tokio::time::sleep(Duration::from_millis(1700)).await;
@@ -300,10 +304,11 @@ fn a_frozen_hub_leaves_every_selector_on_dry_within_2_s() {
             "{log}"
         );
         assert_eq!(log.matches("hub lost").count(), 1, "{log}");
-        // Each selector set twice through Live's setter: the hub's on, then
-        // the script's DRY. Nothing else wrote them.
+        // Each selector set four times through Live's setter: the other
+        // writer's on, the hub's DRY, the other writer's on, then the
+        // script's DRY. Nothing else wrote them.
         for path in MACROS {
-            assert_eq!(host.sets("value", path), 2, "{path}");
+            assert_eq!(host.sets("value", path), 4, "{path}");
         }
         hub.signal("CONT");
         drop(hub);
@@ -327,9 +332,9 @@ fn a_stopped_hub_leaves_every_selector_on_dry_within_2_s() {
                 .all(|s| s["instance"] == "band" && s["problem"].is_null()),
             "{records:?}"
         );
-        assert!(hub.status().await.autotune.aut, "AUT kept on");
+        assert!(!hub.status().await.autotune.aut);
         let mut live = Script::connect(host.port).await;
-        all_on(&mut live).await;
+        all_on(&mut host, &mut live).await;
         // Stopped: its tasks end and its sockets close, as a killed
         // process's do.
         let stopped = Instant::now();
@@ -346,10 +351,9 @@ fn a_stopped_hub_leaves_every_selector_on_dry_within_2_s() {
             "{log}"
         );
         assert_eq!(log.matches("hub lost").count(), 1, "{log}");
-        // Each selector set twice through Live's setter: the hub's on, then
-        // the script's DRY. Nothing else wrote them.
+        // Each selector set four times through Live's setter, as above.
         for path in MACROS {
-            assert_eq!(host.sets("value", path), 2, "{path}");
+            assert_eq!(host.sets("value", path), 4, "{path}");
         }
         drop(live);
         host.stop();

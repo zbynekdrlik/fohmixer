@@ -4,18 +4,19 @@
 //! `Stream FX`, its Tuner `+MUTE:<id> +AUTOTUNE`: on 127, off 0) and a PA
 //! track (an Auto-Tune Artist in a `Latencies` rack on the track, its Tuner
 //! `"Vocal …" +ID:<id> +AUTOTUNE:0`: on 0, off 127, standing on DRY at 127),
-//! VOX2's stream slots held as a Max map holds them, and two songs. With
-//! AUTOTUNE AUT on and Live playing in a keyed song every track tunes once
-//! its key is written and read back, a jump out of the song and a stop go
-//! DRY at once, a track whose key Live refuses stays DRY while its singer's
-//! PA tunes, a singer off by hand stays so across a hub restart, and the
-//! pages are told the song, the key and the singers.
+//! VOX2's stream slots held as a Max map holds them, and two songs. A
+//! page's AUTOTUNE AUT on is refused until #140 PR 3c (the PR #147
+//! rulings; the switching itself is the router tests', and the rehearsal's
+//! after PR 3c): the keys follow the songs and no selector moves, a track
+//! whose key Live refuses shows its singer's key problem, a singer off by
+//! hand stays so across a hub restart, and the pages are told the song,
+//! the key and the singers.
 #![cfg(unix)]
 
 mod support;
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use fohmixer_proto::client::{
     ClientMsg, HubStatus, KeyState, SafeState, ServerMsg, SwitchWhy, TrackState,
@@ -32,10 +33,8 @@ const MACROS: [&str; 4] = [
     "live_set tracks 2 devices 0 parameters 1",
     "live_set tracks 3 devices 0 parameters 1",
 ];
-/// Every selector on DRY, and the tuning one: Stream B stays DRY (its key
-/// refused).
+/// Every selector on DRY.
 const DRY: [f64; 4] = [0.0, 0.0, 127.0, 127.0];
-const TUNING: [f64; 4] = [127.0, 0.0, 0.0, 0.0];
 
 /// The test's own set, Live standing at `at`: song 1 in C from 0 to 100,
 /// song 2 in F#m from 120 to 200.
@@ -145,23 +144,6 @@ async fn macros(c: &mut Client) -> [f64; 4] {
     values
 }
 
-/// Reads the macros until they are `want`; how long that took.
-async fn macros_until(c: &mut Client, want: [f64; 4], limit: Duration) -> Duration {
-    let since = Instant::now();
-    loop {
-        let values = macros(c).await;
-        if values == want {
-            return since.elapsed();
-        }
-        assert!(
-            since.elapsed() < limit,
-            "{values:?}, not {want:?}, after {:?}",
-            since.elapsed()
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-}
-
 /// Starts or stops SimLive's transport.
 async fn transport(c: &mut Client, verb: &str) {
     let slots = c
@@ -182,25 +164,10 @@ async fn set_hub(c: &mut Client, key: &str, value: Value) {
     .await;
 }
 
-/// The hub's clock in ms, as the records' `ts`.
-fn now_ts() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64
-}
-
-/// The records written at or after `since`.
-fn since(records: &[Value], since: i64) -> Vec<Value> {
-    records
-        .iter()
-        .filter(|r| r["ts"].as_i64().is_some_and(|ts| ts >= since))
-        .cloned()
-        .collect()
-}
-
 #[test]
-fn a_song_played_with_aut_on_tunes_after_the_keys_and_a_stop_goes_dry() {
+fn a_song_played_writes_the_keys_and_with_aut_refused_no_selector() {
+    // Until #140 PR 3c a page's AUT on is refused (the PR #147 rulings):
+    // the keys follow the songs, every selector stays DRY.
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -209,75 +176,26 @@ fn a_song_played_with_aut_on_tunes_after_the_keys_and_a_stop_goes_dry() {
         let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
         hub.status_until(SECS_10, ready).await;
         let mut a = hub.client().await;
-        // AUT on, Live plays between the songs: nothing tunes (span).
         set_hub(&mut a, "autotune_aut", json!(true)).await;
-        transport(&mut a, "start_playing").await;
-        hub.status_until(SECS_10, |s| {
-            s.autotune.aut && whys(s) == vec![Some(SwitchWhy::Span); 4]
-        })
-        .await;
-        assert_eq!(macros(&mut a).await, DRY);
-        // Into song 2: its key first, then each track whose key reads back
-        // tunes; Stream B's key is refused, so it stays DRY.
-        let start = now_ts();
-        assert_eq!(host.song_time(125.0), 125.0);
-        macros_until(&mut a, TUNING, SECS_10).await;
-        let status = hub.status_until(SECS_10, |s| keyed(s, "F#m")).await;
-        assert_eq!(
-            whys(&status),
-            vec![
-                Some(SwitchWhy::Play),
-                Some(SwitchWhy::Mismatch),
-                Some(SwitchWhy::Play),
-                Some(SwitchWhy::Play)
-            ]
-        );
         let records = hub
-            .events_until(SECS_10, |r| steps_of(&since(r, start), "select").len() >= 3)
+            .events_until(SECS_10, |r| !steps_of(r, "refused").is_empty())
             .await;
-        let records = since(&records, start);
-        for index in [0, 2, 3] {
-            let target = json!(format!("live_set tracks {index}"));
-            let at = |step: &str, matches: &dyn Fn(&Value) -> bool| {
-                records
-                    .iter()
-                    .position(|r| {
-                        r["ev"] == "autotune"
-                            && r["step"] == step
-                            && r["target"] == target
-                            && matches(r)
-                    })
-                    .unwrap_or_else(|| panic!("no {step} of track {index}: {records:?}"))
-            };
-            let confirmed = at("readback", &|r| r["state"] == "confirmed");
-            let on = at("select", &|r| r["on"] == true);
-            assert!(confirmed < on, "track {index}: on only after its key");
-        }
-        assert!(
-            steps_of(&records, "select")
-                .iter()
-                .all(|r| r["target"] != "live_set tracks 1"),
-            "Stream B never switches"
-        );
-        // Out of the song: DRY.
-        assert_eq!(host.song_time(205.0), 205.0);
-        macros_until(&mut a, DRY, SECS_10).await;
-        // Back into song 2: the keys again, then the chains.
+        assert_eq!(steps_of(&records, "refused")[0]["what"], "aut");
+        transport(&mut a, "start_playing").await;
+        // Into song 2: its key written and read back (Stream B's refused).
         assert_eq!(host.song_time(125.0), 125.0);
-        macros_until(&mut a, TUNING, SECS_10).await;
-        // A stop mid-song: DRY at once, no read-back waited for.
-        transport(&mut a, "stop_playing").await;
-        let dry = macros_until(&mut a, DRY, Duration::from_secs(2)).await;
-        println!(
-            "every selector on DRY {} ms after the stop",
-            dry.as_millis()
-        );
-        // Live's setter saw exactly the hub's batches: on, DRY, on, DRY; none
-        // of Stream B's.
+        let status = hub.status_until(SECS_10, |s| keyed(s, "F#m")).await;
+        assert!(!status.autotune.aut);
+        assert_eq!(whys(&status), vec![Some(SwitchWhy::Aut); 4]);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(macros(&mut a).await, DRY);
         let sets: Vec<i64> = MACROS.iter().map(|p| host.sets("value", p)).collect();
-        assert_eq!(sets, [4, 0, 4, 4]);
-        let status = hub.status().await;
-        assert_eq!(status.autotune.writes, 4);
+        assert_eq!(sets, [0, 0, 0, 0], "no selector written");
+        let records = hub.events();
+        assert!(steps_of(&records, "select").is_empty());
+        assert!(steps_of(&records, "write").is_empty());
+        assert_eq!(hub.status().await.autotune.writes, 0);
+        transport(&mut a, "stop_playing").await;
         a.close().await;
         hub.stop().await;
         host.stop();
@@ -285,7 +203,7 @@ fn a_song_played_with_aut_on_tunes_after_the_keys_and_a_stop_goes_dry() {
 }
 
 #[test]
-fn a_held_stream_slot_keeps_that_track_dry_and_the_pa_tunes() {
+fn a_held_stream_slot_shows_its_singers_key_problem() {
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -295,19 +213,9 @@ fn a_held_stream_slot_keeps_that_track_dry_and_the_pa_tunes() {
         hub.status_until(SECS_10, |s| ready(s) && keyed(s, "C"))
             .await;
         let mut a = hub.client().await;
-        set_hub(&mut a, "autotune_aut", json!(true)).await;
-        transport(&mut a, "start_playing").await;
-        macros_until(&mut a, TUNING, SECS_10).await;
-        // The echoes of the one batch reach the hub one by one, in no fixed
-        // order: the state told once all three tune.
         let state = a
             .wait(SECS_10, |m| match m {
-                ServerMsg::Autotune(s)
-                    if s.singers.len() == 2
-                        && s.singers[1].pa == TrackState::Tune
-                        && s.singers[0].stream == TrackState::Tune
-                        && s.singers[0].pa == TrackState::Tune =>
-                {
+                ServerMsg::Autotune(s) if s.singers.len() == 2 && !s.singers[1].key_ok => {
                     Some(s.clone())
                 }
                 _ => None,
@@ -316,16 +224,14 @@ fn a_held_stream_slot_keeps_that_track_dry_and_the_pa_tunes() {
         let vox2 = &state.singers[1];
         assert_eq!(
             (vox2.id.as_str(), vox2.stream, vox2.pa, vox2.key_ok),
-            ("VOX2", TrackState::Dry, TrackState::Tune, false)
+            ("VOX2", TrackState::Dry, TrackState::Dry, false)
         );
         assert_eq!(vox2.why.as_deref(), Some("stream Key refused, wrote C"));
         let vox1 = &state.singers[0];
         assert_eq!(
-            (vox1.stream, vox1.pa, vox1.key_ok),
-            (TrackState::Tune, TrackState::Tune, true)
+            (vox1.stream, vox1.pa, vox1.key_ok, vox1.why.as_deref()),
+            (TrackState::Dry, TrackState::Dry, true, None)
         );
-        transport(&mut a, "stop_playing").await;
-        macros_until(&mut a, DRY, Duration::from_secs(2)).await;
         a.close().await;
         hub.stop().await;
         host.stop();
@@ -343,7 +249,6 @@ fn the_manual_off_survives_a_hub_restart() {
         hub.status_until(SECS_10, |s| ready(s) && keyed(s, "C"))
             .await;
         let mut a = hub.client().await;
-        set_hub(&mut a, "autotune_aut", json!(true)).await;
         set_hub(
             &mut a,
             "autotune_singer",
@@ -356,34 +261,31 @@ fn the_manual_off_survives_a_hub_restart() {
             &std::fs::read_to_string(dir.path().join("hub-state.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(
-            (&saved["autotune_aut"], &saved["autotune_off"]),
-            (&json!(true), &json!(["VOX1"]))
-        );
+        assert_eq!(saved["autotune_off"], json!(["VOX1"]));
         a.close().await;
         hub.stop().await;
-        // A new hub on the same data: AUT and the singer's off kept.
+        // A new hub on the same data: the singer's off kept, told to the
+        // pages.
         let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
         let status = hub
             .status_until(SECS_10, |s| ready(s) && keyed(s, "C"))
             .await;
-        assert!(status.autotune.aut);
         assert_eq!(status.autotune.singers_off, ["VOX1"]);
         let mut a = hub.client().await;
-        transport(&mut a, "start_playing").await;
-        // VOX1's tracks stay DRY; VOX2's PA tunes (its stream's key refused).
-        macros_until(&mut a, [0.0, 0.0, 127.0, 0.0], SECS_10).await;
-        let status = hub.status().await;
+        let state = a
+            .wait(SECS_10, |m| match m {
+                ServerMsg::Autotune(s) if s.singers.len() == 2 => Some(s.clone()),
+                _ => None,
+            })
+            .await;
         assert_eq!(
-            whys(&status),
-            vec![
-                Some(SwitchWhy::SingerOff),
-                Some(SwitchWhy::Mismatch),
-                Some(SwitchWhy::SingerOff),
-                Some(SwitchWhy::Play)
-            ]
+            state
+                .singers
+                .iter()
+                .map(|s| (s.id.as_str(), s.off))
+                .collect::<Vec<_>>(),
+            [("VOX1", true), ("VOX2", false)]
         );
-        transport(&mut a, "stop_playing").await;
         a.close().await;
         hub.stop().await;
         host.stop();

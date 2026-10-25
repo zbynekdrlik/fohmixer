@@ -11,8 +11,8 @@
 //! words and retried once, a released one written, another writer shown
 //! and not fought, a set load written again. With AUTOTUNE AUT off no
 //! selector moves (SimLive's per-object set count: the PA rack stands on
-//! DRY, its macro at 127, the stream racks' at 0); AUT on is taken and a
-//! tap refused (#140 PR 3b).
+//! DRY, its macro at 127, the stream racks' at 0); AUT on is refused until
+//! #140 PR 3c and the tap since PR 3b.
 #![cfg(unix)]
 
 mod support;
@@ -327,10 +327,11 @@ fn the_key_in_force_follows_play_and_jumps_and_no_selector_moves() {
             "between the songs: no key in force"
         );
         let mut a = hub.client().await;
-        // Every rack's macro between its values, so a write of either shows
-        // (PR 2a review M6): the test's own one set of each.
-        for path in MACROS {
-            a.set("band", path, "value", json!(64.0)).await;
+        // The test's own one set of each rack's macro, at its DRY value
+        // (PR 2a review M6; since PR #147 review N4 a value between them is
+        // no DRY, which the hub writes): any write of the hub's counts.
+        for (path, dry) in MACROS.into_iter().zip(DRY) {
+            a.set("band", path, "value", json!(dry)).await;
         }
         // A jump into song 1: its start, in C, written and read back.
         assert_eq!(host.song_time(10.0), 10.0);
@@ -383,10 +384,10 @@ fn the_key_in_force_follows_play_and_jumps_and_no_selector_moves() {
         assert_eq!((now.song, now.key.as_deref()), (Some(2), Some("F#m")));
         assert_eq!(now.tempo, Some(120.0));
         assert_eq!(now.bar.as_deref(), Some("F#m"));
-        // No selector moved: every macro holds the test's 64, Live's setter
+        // No selector moved: every macro holds its DRY value, Live's setter
         // saw the test's own set of each and nothing else, and no macro
         // write was recorded.
-        no_selector_moved(&mut a, &mut host, [64.0; 3], 1).await;
+        no_selector_moved(&mut a, &mut host, DRY, 1).await;
         let records = hub.events();
         assert_eq!(count(&records, "write"), 0);
         assert_eq!(count(&records, "failed"), 0);
@@ -651,7 +652,7 @@ fn a_reconnect_writes_the_key_again() {
 }
 
 #[test]
-fn aut_on_is_taken_and_a_tap_refused_end_to_end() {
+fn aut_on_and_a_tap_are_refused_end_to_end() {
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -661,8 +662,8 @@ fn aut_on_is_taken_and_a_tap_refused_end_to_end() {
         hub.status_until(SECS_5, |s| keyed(s) && s.instances[0].playing.is_some())
             .await;
         let mut a = hub.client().await;
-        // Live plays between the songs: the transport's own `autotune`
-        // message (playing) comes first.
+        // Live plays. The transport's own `autotune` message (playing)
+        // comes first, so every later one is a re-tell (PR 2a review M7).
         transport(&mut a, "start_playing").await;
         a.wait(SECS_5, |m| match m {
             ServerMsg::Autotune(s) if s.playing == Some(true) => Some(()),
@@ -670,6 +671,8 @@ fn aut_on_is_taken_and_a_tap_refused_end_to_end() {
         })
         .await;
         a.clear();
+        // AUT on is refused until #140 PR 3c (the PR #147 rulings), as the
+        // tap is (#140 PR 3b).
         for (key, value) in [("autotune_aut", true), ("autotune", true)] {
             a.send(&ClientMsg::SetHub {
                 key: key.into(),
@@ -677,7 +680,7 @@ fn aut_on_is_taken_and_a_tap_refused_end_to_end() {
             })
             .await;
         }
-        let records = hub.events_until(SECS_5, |r| count(r, "refused") == 1).await;
+        let records = hub.events_until(SECS_5, |r| count(r, "refused") == 2).await;
         let refused: Vec<Value> = records
             .iter()
             .filter(|r| r["ev"] == "autotune" && r["step"] == "refused")
@@ -685,13 +688,19 @@ fn aut_on_is_taken_and_a_tap_refused_end_to_end() {
             .collect();
         assert_eq!(
             refused,
-            vec![json!([
-                "tap",
-                "the AUTOTUNE tap is gone; a tap opens the singers' panel"
-            ])]
+            vec![
+                json!([
+                    "aut",
+                    "AUTOTUNE AUT stays off until the new AUTOTUNE button (#140 PR 3c)"
+                ]),
+                json!([
+                    "tap",
+                    "the AUTOTUNE tap is gone; a tap opens the singers' panel"
+                ])
+            ]
         );
-        assert_eq!(count(&records, "flag"), 1);
-        // The page is told AUT on, then the state again for the refusal.
+        assert_eq!(count(&records, "flag"), 0);
+        // The page is told the state again, once per refusal: AUT off.
         let mut told = Vec::new();
         let deadline = Instant::now() + SECS_5;
         while told.len() < 2 {
@@ -702,10 +711,18 @@ fn aut_on_is_taken_and_a_tap_refused_end_to_end() {
                 None => break,
             }
         }
+        // Nothing more within 300 ms: no third.
+        let quiet = Instant::now() + QUIET;
+        loop {
+            let left = quiet.saturating_duration_since(Instant::now());
+            match a.next_message(left).await {
+                Some(ServerMsg::Autotune(s)) => told.push(s),
+                Some(_) => {}
+                None => break,
+            }
+        }
         assert_eq!(told.len(), 2, "{told:?}");
-        assert!(told.iter().all(|s| s.aut && s.playing == Some(true)));
-        // Out of every song: nothing tunes, no selector moved.
-        tokio::time::sleep(QUIET).await;
+        assert!(told.iter().all(|s| !s.aut && s.playing == Some(true)));
         no_selector_moved(&mut a, &mut host, DRY, 0).await;
         let status = hub.status().await;
         assert_eq!(
@@ -714,7 +731,7 @@ fn aut_on_is_taken_and_a_tap_refused_end_to_end() {
                 status.autotune.writes,
                 status.autotune.taps
             ),
-            (true, 0, 0)
+            (false, 0, 0)
         );
         transport(&mut a, "stop_playing").await;
         a.close().await;

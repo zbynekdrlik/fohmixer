@@ -26,9 +26,9 @@ import {
 // track (each `Latencies` rack's first macro). Since #140 PR 3b the hub
 // switches each track by its rule (a keyed song, the keys read back, the
 // fall back armed): AUT off, it writes DRY to a selector on its chain; the
-// 1 s hold turns AUT on at its lift; the tap is refused (the page is 1.8.0's
-// until #140 PR 3c, mockup v2). SimLive's band set has no song, so nothing
-// tunes here. Vocal 2 repro# (track 6) has a `Latencies` rack on top,
+// tap is refused, and until #140 PR 3c's button (mockup v2) so is the 1 s
+// hold's AUT on (the PR #147 rulings: the old button must not turn the rule
+// on during an event). SimLive's band set has no song, so nothing tunes. Vocal 2 repro# (track 6) has a `Latencies` rack on top,
 // tagged `+AUTOTUNE:0` (on 0, off 127, the repro form); Vocal 3 repro#
 // (track 7) has one inside `Stream FX`, tagged `+AUTOTUNE` (on 127, off 0,
 // the stream form); Keys 1 (track 8) has none. Both macros start at 0:
@@ -38,8 +38,11 @@ const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "
 /** The repro track's macro (on 0) and the stream track's (on 127). */
 const REPRO = "live_set tracks 6 devices 0 parameters 1";
 const STREAM = "live_set tracks 7 devices 0 chains 0 devices 0 parameters 1";
-/** Why the hub refuses a tap since #140 PR 3b. */
-const REFUSED = "the AUTOTUNE tap is gone; a tap opens the singers' panel";
+/** Why the hub refuses a tap since #140 PR 3b, and AUTOTUNE AUT on until #140 PR 3c. */
+const REFUSED = {
+  tap: "the AUTOTUNE tap is gone; a tap opens the singers' panel",
+  aut: "AUTOTUNE AUT stays off until the new AUTOTUNE button (#140 PR 3c)",
+};
 /** Both macros on DRY: the repro track's at 127, the stream track's at 0. */
 const DRY = [127, 0];
 
@@ -88,7 +91,7 @@ async function refusals(since: number, n: number): Promise<string[]> {
     `${n} refusals in the event log`,
     15_000,
   );
-  for (const r of records.filter((x) => x.step === "refused")) expect(r.why).toBe(REFUSED);
+  for (const r of records.filter((x) => x.step === "refused")) expect(r.why).toBe((REFUSED as any)[r.what]);
   return records.filter((x) => x.step === "refused").map((x) => x.what);
 }
 
@@ -241,42 +244,37 @@ test.describe("AUTOTUNE and AUTOTUNE AUT", () => {
     expect((await hubStatus()).autotune.taps).toBe(0);
   });
 
-  test("a 1 s hold turns AUT on at its lift; out of every song a start writes nothing", async ({ page }) => {
+  test("a 1 s hold leaves AUT off until the new button; a start writes nothing", async ({ page }) => {
     const button = await setUp(page);
     const since = Date.now();
     const sincePage = await pageNow(page);
-    // The page offers AUT on and asks at the lift.
+    // The page offers AUT on as before (mockup v2 waits) and asks at the lift.
     const press = await dispatchSnapped(button, [{ type: "pointerdown" }, { wait: 1200 }, { snap: true }]);
     expect(press.snaps[0]).toMatchObject({ holding: "true", full: "true", sub: "pusť — zapne AUT", failed: false });
     await dispatchPointer(button, [{ type: "pointerup" }]);
-    // The hub takes it (#140 PR 3b): AUT on.
-    await until(async () => live.autotune?.aut, (v: boolean) => v === true, "AUTOTUNE AUT on");
+    // The hub refuses it until #140 PR 3c (the PR #147 rulings): AUT stays off.
+    expect(await refusals(since, 1)).toEqual(["aut"]);
     await expect(button).toHaveAttribute("data-full", "false");
-    await expect(button).toHaveAttribute("data-aut", "run");
-    await expect(button.getByTestId("aut-badge")).toHaveCount(1);
-    expect((await hubStatus()).autotune.aut).toBe(true);
-    // Live stands: every track DRY (stop); plays: still DRY (no song).
-    let targets = (await hubStatus()).autotune.targets;
-    expect(targets.map((t: any) => t.decision)).toEqual([
-      { on: false, why: "stop" },
-      { on: false, why: "stop" },
-    ]);
+    await expect(button).toHaveAttribute("data-aut", "off");
+    await expect(button.getByTestId("aut-badge")).toHaveCount(0);
+    expect(live.autotune.aut).toBe(false);
+    expect((await hubStatus()).autotune.aut).toBe(false);
+    // Live plays, then stops: every track DRY (AUT off), nothing written.
     await live.call("band", "live_set", "start_playing");
     await transportHeard(since, true);
-    targets = await until(
-      async () => (await hubStatus()).autotune.targets,
-      (t: any[]) => t.every((x) => x.decision?.why === "span"),
-      "every track out of a song",
-    );
     await live.call("band", "live_set", "stop_playing");
     await transportHeard(since, false);
     await page.waitForTimeout(300);
     expect(await macros(live)).toEqual(DRY);
+    const targets = (await hubStatus()).autotune.targets;
+    expect(targets.map((t: any) => t.decision)).toEqual([
+      { on: false, why: "aut" },
+      { on: false, why: "aut" },
+    ]);
     const steps = (await autotuneRecords(since)).map((r) => r.step);
-    expect(steps).toContain("flag");
+    expect(steps).not.toContain("flag");
     expect(steps).not.toContain("write");
     expect(steps).not.toContain("select");
-    expect(steps).not.toContain("refused");
     expect(await railSteps(sincePage, (s) => s.includes("hold"))).toEqual(["press", "full", "hold"]);
   });
 

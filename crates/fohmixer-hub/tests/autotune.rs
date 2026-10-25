@@ -4,9 +4,9 @@
 //! track itself on a repro track) and says why a track has none or two.
 //! This set has no song, so nothing tunes: AUT off the hub writes DRY once
 //! to the repro rack, which stands on its chain (its macro at 0), AUT on
-//! is taken and kept across a restart, a tap is refused, no transport
-//! change writes, and a host restart (a set load) walks the racks again
-//! and writes DRY once more. The keys are `tests/autotune_keys.rs`', the
+//! is refused until #140 PR 3c and a saved one stays off (kept in the
+//! file), a tap is refused, no transport change writes, and a host restart
+//! (a set load) walks the racks again and writes DRY once more. The keys are `tests/autotune_keys.rs`', the
 //! switching `tests/autotune_switch.rs`'.
 #![cfg(unix)]
 
@@ -163,21 +163,19 @@ fn both_kinds_of_rack_are_found_and_only_dry_is_written() {
             decisions[..2],
             [Some((false, SwitchWhy::Aut)), Some((false, SwitchWhy::Aut))]
         );
-        // The stream rack's macro between its values, so a write would show
-        // (a page's write: no other writer's move to the chain).
-        a.set("band", STREAM_MACRO, "value", json!(64.0)).await;
-        // AUT on is taken (no song: nothing tunes), a tap refused.
+        // AUT on is refused until #140 PR 3c (the PR #147 rulings), a tap
+        // since PR 3b.
         set_hub(&mut a, "autotune_aut", true).await;
         set_hub(&mut a, "autotune", false).await;
         let records = hub
-            .events_until(SECS_5, |r| count(&autotune_since(r, 0), "refused") == 1)
+            .events_until(SECS_5, |r| count(&autotune_since(r, 0), "refused") == 2)
             .await;
         let refused: Vec<Value> = autotune_since(&records, 0)
             .into_iter()
             .filter(|r| r["step"] == "refused")
             .map(|r| r["what"].clone())
             .collect();
-        assert_eq!(refused, vec![json!("tap")]);
+        assert_eq!(refused, vec![json!("aut"), json!("tap")]);
         // Live plays, then stops: out of every song, nothing is written.
         transport(&mut a, "start_playing").await;
         hub.status_until(SECS_5, |s| s.instances[0].playing == Some(true))
@@ -186,7 +184,7 @@ fn both_kinds_of_rack_are_found_and_only_dry_is_written() {
         hub.status_until(SECS_5, |s| s.instances[0].playing == Some(false))
             .await;
         tokio::time::sleep(Duration::from_millis(300)).await;
-        assert_eq!(macros(&mut a).await, (64.0, 127.0), "only the DRY moved");
+        assert_eq!(macros(&mut a).await, (0.0, 127.0), "only the DRY moved");
         let status = hub.status().await;
         assert_eq!(
             (
@@ -194,14 +192,14 @@ fn both_kinds_of_rack_are_found_and_only_dry_is_written() {
                 status.autotune.writes,
                 status.autotune.taps
             ),
-            (true, 1, 0)
+            (false, 1, 0)
         );
         let steps = autotune_since(&hub.events(), 0);
         assert_eq!(count(&steps, "found"), 2);
         assert_eq!(count(&steps, "missing"), 2);
         assert_eq!(count(&steps, "write"), 1);
         assert_eq!(count(&steps, "select"), 0, "never on");
-        assert_eq!(count(&steps, "flag"), 1);
+        assert_eq!(count(&steps, "flag"), 0);
         assert_eq!(count(&steps, "tap"), 0);
         a.close().await;
         hub.stop().await;
@@ -210,14 +208,15 @@ fn both_kinds_of_rack_are_found_and_only_dry_is_written() {
 }
 
 #[test]
-fn a_saved_aut_on_is_kept() {
+fn a_saved_aut_on_is_kept_in_the_file_and_stays_off() {
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
         let host = Host::start_site("band", &site(dir.path()), 0, 0.0);
         frame(dir.path());
-        // AUTOTUNE AUT and a singer's off by hand saved on (#140 PR 3b:
-        // kept across a restart).
+        // AUTOTUNE AUT and a singer's off by hand saved on: the singer's off
+        // is kept across a restart (#140 PR 3b), AUT stays in the file and
+        // off until #140 PR 3c (the PR #147 rulings).
         let state = json!({"stage_aut": false, "autotune_aut": true, "autotune_off": ["VOX1"]});
         std::fs::write(dir.path().join("hub-state.json"), state.to_string()).unwrap();
         let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
@@ -228,7 +227,7 @@ fn a_saved_aut_on_is_kept() {
                 _ => None,
             })
             .await;
-        assert!(first.aut, "told on at attach");
+        assert!(!first.aut, "told off at attach");
         let saved: Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("hub-state.json")).unwrap(),
         )
@@ -244,7 +243,7 @@ fn a_saved_aut_on_is_kept() {
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(macros(&mut a).await, (0.0, 127.0));
         let status = hub.status().await;
-        assert_eq!((status.autotune.aut, status.autotune.writes), (true, 1));
+        assert_eq!((status.autotune.aut, status.autotune.writes), (false, 1));
         transport(&mut a, "stop_playing").await;
         a.close().await;
         hub.stop().await;
