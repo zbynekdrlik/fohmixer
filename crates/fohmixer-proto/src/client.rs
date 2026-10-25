@@ -685,6 +685,11 @@ pub struct SingerState {
     pub key_ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+    /// Every one of its tracks with a key device holds the key in force,
+    /// written and read back (PR #150 review M4: the panel's `✓` means
+    /// that, never a key still on its way).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub confirmed: bool,
 }
 
 /// Why a target's selector is where the hub's rule put it (#140 PR 3b,

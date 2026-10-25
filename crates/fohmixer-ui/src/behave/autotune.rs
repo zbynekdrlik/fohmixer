@@ -316,6 +316,7 @@ mod tests {
             off: false,
             key_ok: true,
             why: None,
+            confirmed: true,
         }
     }
 
@@ -488,6 +489,54 @@ mod tests {
             ],
         );
         assert_eq!(line(&both), "tuning · F · 2 !");
+    }
+
+    #[test]
+    fn every_track_dry_for_the_hubs_own_reason_reads_waiting_not_tuning() {
+        // PR #150 review I2: the fall back not kept, a hold, a rack not
+        // found again: no track tunes and a singer is not right.
+        let held = bad(
+            singer("VOX1", Dry, Dry),
+            "PA: its fall back to DRY is not kept yet",
+        );
+        let s = state(true, Some(true), Some("F"), vec![held.clone()]);
+        assert_eq!(line(&s), "waiting · F");
+        assert!(has_problem(Some(&s)), "the corner");
+        let look = autotune_look(Some(&s), Fill::None);
+        assert_eq!((look.lit, look.mixed), (false, false));
+        // A track that tunes beside it: tuning, the `!` counted.
+        let two = state(
+            true,
+            Some(true),
+            Some("F"),
+            vec![held, singer("VOX2", Tune, Tune)],
+        );
+        assert_eq!(line(&two), "tuning · F · 1 !");
+        // Every singer off by hand: the singers' own choice, not waiting.
+        let off_all = state(
+            true,
+            Some(true),
+            Some("F"),
+            vec![off(singer("VOX1", Dry, Dry))],
+        );
+        assert_eq!(line(&off_all), "tuning · F · 1 off");
+    }
+
+    #[test]
+    fn a_key_is_ticked_only_once_written_and_read_back() {
+        // PR #150 review M4: a key on its way shows the pending mark.
+        let mut pending = singer("VOX1", Dry, Dry);
+        pending.confirmed = false;
+        let s = state(
+            true,
+            Some(false),
+            Some("F"),
+            vec![pending, singer("VOX2", Dry, Dry)],
+        );
+        let rows = panel_rows(&s);
+        assert_eq!(rows[0].key, "F …");
+        assert!(rows[0].ok);
+        assert_eq!(rows[1].key, "F ✓");
     }
 
     #[test]

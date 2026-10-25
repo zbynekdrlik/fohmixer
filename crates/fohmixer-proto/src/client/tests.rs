@@ -1534,6 +1534,7 @@ fn an_autotune_message_round_trips_and_an_older_page_reads_it_as_unknown() {
                 off: false,
                 key_ok: false,
                 why: Some("PA Key reads G, wrote F".into()),
+                confirmed: false,
             },
             SingerState {
                 id: "#Vox 7".into(),
@@ -1543,6 +1544,7 @@ fn an_autotune_message_round_trips_and_an_older_page_reads_it_as_unknown() {
                 off: true,
                 key_ok: true,
                 why: None,
+                confirmed: true,
             },
         ],
         map_problems: 1,
@@ -1557,7 +1559,7 @@ fn an_autotune_message_round_trips_and_an_older_page_reads_it_as_unknown() {
                    {"id": "VOX1", "label": "Vox 1", "stream": "tune", "pa": "dry",
                     "off": false, "key_ok": false, "why": "PA Key reads G, wrote F"},
                    {"id": "#Vox 7", "label": "Vox 7", "stream": "none", "pa": "dry",
-                    "off": true, "key_ok": true}],
+                    "off": true, "key_ok": true, "confirmed": true}],
                "map_problems": 1, "map_changes": 8, "map_keyed": 165, "bar": "F"}),
     );
     assert!(is_zero(&0));

@@ -253,6 +253,8 @@ impl AutotuneIo {
                     key_ok: why.is_none(),
                     why,
                     id: id.unwrap_or_default(),
+                    // PR #150 review M4: not judged yet.
+                    confirmed: false,
                 }
             })
             .collect()

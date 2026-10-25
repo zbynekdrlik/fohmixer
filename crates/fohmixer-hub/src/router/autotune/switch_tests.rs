@@ -1523,6 +1523,97 @@ async fn no_write_when_live_already_shows_the_decision() {
     assert_eq!(status(&mut router).autotune.writes, 1, "tuning's one batch");
 }
 
+/// AUTOTUNE AUT saved on, Live playing at 10 in song 1 (D), both racks
+/// found with their values heard and on DRY, the first registration Live
+/// never answers (so nothing is kept), then the song map read and the keys
+/// written and read back: every track stays DRY, `unarmed`.
+async fn unarmed_in_a_song(dir: &std::path::Path) -> (Router, Live) {
+    let state = HubState {
+        stage_aut: false,
+        reverb: crate::rules::reverb::Saved::default(),
+        fader_links: Vec::new(),
+        autotune_aut: true,
+        autotune_off: Vec::new(),
+    };
+    let (mut router, mut live, _rx) = scripted_router(dir, state);
+    assert!(router.autotune.state().aut, "a saved AUT on is honoured");
+    router.handle(layout(1, vec![pa(), stream()]));
+    find(&mut router, PA, rack(6));
+    find(&mut router, STREAM, rack(7));
+    heard(&mut router, PA, (0.75, 0.0));
+    heard(&mut router, STREAM, (0.5, 1.0 / 28.0));
+    by_hand(&mut router, &mut live, "p6", 127.0);
+    by_hand(&mut router, &mut live, "p7", 0.0);
+    transport(&mut router, true);
+    deliver(&mut router, TEMPO_KEY, 120.0);
+    deliver(&mut router, TIME, 10.0);
+    let first = live.next("the registration", |c| {
+        c.len() == 1 && c[0]["name"] == SAFE_WRITES
+    });
+    drop(first);
+    live.settle(&mut router).await;
+    assert_ne!(router.autotune.safe["band"].state, SafeState::Kept);
+    assert_eq!(
+        live.written(),
+        Vec::<Vec<(String, f64)>>::new(),
+        "no map yet: nothing on"
+    );
+    map_read(&mut router, 1, songs());
+    live.settle(&mut router).await;
+    assert_eq!(
+        live.written(),
+        Vec::<Vec<(String, f64)>>::new(),
+        "not kept: nothing on"
+    );
+    assert_eq!(
+        decisions(&mut router),
+        [off(SwitchWhy::Unarmed), off(SwitchWhy::Unarmed)]
+    );
+    (router, live)
+}
+
+#[tokio::test]
+async fn a_singer_kept_dry_by_its_sets_fall_back_not_kept_says_why() {
+    // PR #150 review I2: the pages never read `tuning` with every track DRY
+    // for a reason of the hub's own; the singer shows it.
+    let dir = tempfile::tempdir().unwrap();
+    let (router, _live) = unarmed_in_a_song(dir.path()).await;
+    let state = router.autotune.state();
+    let vox = &state.singers[0];
+    assert!(!vox.key_ok, "{vox:?}");
+    let why = vox.why.as_deref().unwrap_or("");
+    assert!(why.contains("fall back to DRY is not kept"), "{why}");
+}
+
+#[tokio::test]
+async fn a_singers_key_is_confirmed_only_once_written_and_read_back() {
+    // PR #150 review M4: the panel's ✓ is a read-back, never a key on its
+    // way.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, _rx) = scripted_router(dir.path(), HubState::default());
+    router.handle(layout(1, vec![pa(), stream()]));
+    find(&mut router, PA, rack(6));
+    find(&mut router, STREAM, rack(7));
+    heard(&mut router, PA, (0.75, 0.0));
+    heard(&mut router, STREAM, (0.5, 1.0 / 28.0));
+    transport(&mut router, false);
+    map_read(&mut router, 1, songs());
+    deliver(&mut router, TEMPO_KEY, 120.0);
+    deliver(&mut router, TIME, 10.0);
+    // The keys written, not yet read back: no singer is confirmed.
+    let state = router.autotune.state();
+    assert!(
+        state.singers.iter().all(|s| s.key_ok && !s.confirmed),
+        "{state:?}"
+    );
+    live.settle(&mut router).await;
+    let state = router.autotune.state();
+    assert!(state.singers[0].confirmed, "{state:?}");
+    // Out of every song: no key in force, nothing confirmed.
+    deliver(&mut router, TIME, 110.0);
+    assert!(!router.autotune.state().singers[0].confirmed);
+}
+
 #[tokio::test]
 async fn the_pages_are_told_the_singers_and_the_key() {
     let dir = tempfile::tempdir().unwrap();
@@ -1549,6 +1640,7 @@ async fn the_pages_are_told_the_singers_and_the_key() {
                 off: false,
                 key_ok: true,
                 why: None,
+                confirmed: true,
             },
             SingerState {
                 id: "#Vox 7".into(),
@@ -1558,6 +1650,7 @@ async fn the_pages_are_told_the_singers_and_the_key() {
                 off: false,
                 key_ok: true,
                 why: None,
+                confirmed: false,
             },
         ]
     );

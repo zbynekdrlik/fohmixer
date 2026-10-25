@@ -487,6 +487,84 @@ test.describe("AUTOTUNE and its singers' panel", () => {
     expect((await hubStatus()).autotune.taps).toBe(0);
   });
 
+  test("a tap outside the open panel only closes it: the mute under it is not touched (I1)", async ({ page }) => {
+    const button = await setUp(page);
+    // A strip on the screen's left half, away from the panel: its mute (the
+    // name button) acts on its down.
+    const mute = page.getByTestId("strip").first().getByTestId("mute");
+    const key: string = JSON.parse((await mute.getAttribute("data-keys"))!)[0];
+    const [instance, target] = key.split("|");
+    const before = await live.get(instance, target, "mute");
+    const since = Date.now();
+    const sincePage = await pageNow(page);
+    try {
+      await button.click();
+      const panel = page.getByTestId("autotune-panel");
+      await expect(panel).toBeVisible();
+      const box = (await panel.boundingBox())!;
+      const at = (await mute.boundingBox())!;
+      expect(at.x + at.width, "the mute is left of the panel").toBeLessThan(box.x);
+      await mute.click();
+      await expect(panel).toHaveCount(0);
+      await page.waitForTimeout(500);
+      expect(await live.get(instance, target, "mute"), "the mute as it was").toBe(before);
+      const sets = (await hubEvents()).filter((r: any) => r.ev === "set" && r.ts >= since && r.key === key);
+      expect(sets, "no write of the mute").toEqual([]);
+      expect(await railSteps(sincePage, (st) => st.includes("close"))).toEqual(["press", "tap", "close"]);
+    } finally {
+      await live.set(instance, target, "mute", before);
+    }
+  });
+
+  test("a singer's switch acts on a tap, never on its down or a slide (M1)", async ({ page }) => {
+    const button = await setUp(page);
+    await button.click();
+    const panel = page.getByTestId("autotune-panel");
+    const sw = panel.getByTestId("autotune-singer-switch");
+    await expect(sw).toHaveText("OFF");
+    const since = Date.now();
+    // A down, then a slide of 30 px (a scroll), then the lift: nothing.
+    await dispatchPointer(sw, [{ type: "pointerdown" }, { type: "pointermove", dy: 0 }, { type: "pointermove", dy: 30 }, { type: "pointerup", dy: 30 }]);
+    await page.waitForTimeout(500);
+    expect((await hubStatus()).autotune.singers_off ?? []).toEqual([]);
+    expect((await autotuneRecords(since)).filter((r) => r.step === "singer")).toEqual([]);
+    await expect(sw).toHaveText("OFF");
+    // A down alone switches nothing; its lift does.
+    await dispatchPointer(sw, [{ type: "pointerdown" }, { wait: 300 }]);
+    await page.waitForTimeout(300);
+    expect((await hubStatus()).autotune.singers_off ?? []).toEqual([]);
+    await dispatchPointer(sw, [{ type: "pointerup" }]);
+    await until(async () => (await hubStatus()).autotune.singers_off ?? [], (v: string[]) => v.length === 1, "the singer off at the lift");
+    await expect(sw).toHaveText("ON");
+    // A real tap puts it back on.
+    await sw.click();
+    await until(async () => (await hubStatus()).autotune.singers_off ?? [], (v: string[]) => v.length === 0, "the singer on again");
+    expect((await autotuneRecords(since)).filter((r) => r.step === "singer").map((r) => r.off)).toEqual([true, false]);
+  });
+
+  test("a hold on a red AUTOTUNE does nothing: no fill, AUT stays off (M2)", async ({ page }) => {
+    await live.call("band", "live_set", "stop_playing");
+    layouts = watchLayouts(page);
+    await openSurface(page);
+    await harness("/hub/layout", { layout: withAutotuneButton() });
+    await selectPage(page, "foh");
+    const button = page.getByTestId("autotune");
+    // No tagged track (I5): red.
+    await expect(button).toHaveAttribute("data-binding", "unresolved", { timeout: 10_000 });
+    const since = Date.now();
+    const press = await dispatchSnapped(button, [{ type: "pointerdown" }, { wait: 400 }, { snap: true }, { wait: 800 }, { snap: true }]);
+    await dispatchPointer(button, [{ type: "pointerup" }]);
+    expect(press.snaps[0]).toMatchObject({ holding: "false", full: "false" });
+    expect(press.snaps[1]).toMatchObject({ holding: "false", full: "false" });
+    await page.waitForTimeout(500);
+    expect(live.autotune?.aut ?? false).toBe(false);
+    expect((await hubStatus()).autotune.aut).toBe(false);
+    expect((await autotuneRecords(since)).filter((r) => r.step === "flag")).toEqual([]);
+    // A tap on it opens nothing either.
+    await button.click();
+    await expect(page.getByTestId("autotune-panel")).toHaveCount(0);
+  });
+
   test("a mismatch shows the yellow corner and its why in the panel", async ({ page }) => {
     const button = await setUp(page);
     // The stream's Key and Scale held as a Max map holds them: its key write
