@@ -173,6 +173,9 @@ struct Live {
     held: BTreeSet<String>,
     /// The refs whose object was deleted (answered stale).
     gone: BTreeSet<String>,
+    /// A script before 1.13.0: every registration refused (`no such
+    /// function: safe_writes`), so nothing is ever kept.
+    old_script: bool,
 }
 
 impl Live {
@@ -207,7 +210,10 @@ impl Live {
                 .iter()
                 .filter(|w| self.gone.contains(w["target"]["$ref"].as_str().unwrap()))
                 .count();
-            let slot = if gone > 0 {
+            let slot = if self.old_script {
+                json!({"ok": false, "error": "no such function: safe_writes",
+                       "errorType": "OpError"})
+            } else if gone > 0 {
                 json!({"ok": false, "error": format!("bad args: {gone} safe write target(s) do not resolve"),
                        "errorType": "OpError"})
             } else {
@@ -453,6 +459,7 @@ fn scripted_router(
         batches: Vec::new(),
         held: BTreeSet::new(),
         gone: BTreeSet::new(),
+        old_script: false,
     };
     (router, live, records)
 }
@@ -1524,9 +1531,10 @@ async fn no_write_when_live_already_shows_the_decision() {
 }
 
 /// AUTOTUNE AUT saved on, Live playing at 10 in song 1 (D), both racks
-/// found with their values heard and on DRY, the first registration Live
-/// never answers (so nothing is kept), then the song map read and the keys
-/// written and read back: every track stays DRY, `unarmed`.
+/// found with their values heard and on DRY, a script that refuses every
+/// registration (one before 1.13.0: nothing is ever kept), then the song
+/// map read and the keys written and read back: every track stays DRY,
+/// `unarmed`.
 async fn unarmed_in_a_song(dir: &std::path::Path) -> (Router, Live) {
     let state = HubState {
         stage_aut: false,
@@ -1536,6 +1544,7 @@ async fn unarmed_in_a_song(dir: &std::path::Path) -> (Router, Live) {
         autotune_off: Vec::new(),
     };
     let (mut router, mut live, _rx) = scripted_router(dir, state);
+    live.old_script = true;
     assert!(router.autotune.state().aut, "a saved AUT on is honoured");
     router.handle(layout(1, vec![pa(), stream()]));
     find(&mut router, PA, rack(6));
@@ -1547,12 +1556,8 @@ async fn unarmed_in_a_song(dir: &std::path::Path) -> (Router, Live) {
     transport(&mut router, true);
     deliver(&mut router, TEMPO_KEY, 120.0);
     deliver(&mut router, TIME, 10.0);
-    let first = live.next("the registration", |c| {
-        c.len() == 1 && c[0]["name"] == SAFE_WRITES
-    });
-    drop(first);
     live.settle(&mut router).await;
-    assert_ne!(router.autotune.safe["band"].state, SafeState::Kept);
+    assert_eq!(router.autotune.safe["band"].state, SafeState::Failed);
     assert_eq!(
         live.written(),
         Vec::<Vec<(String, f64)>>::new(),
@@ -1615,8 +1620,10 @@ async fn a_singer_kept_dry_by_its_sets_fall_back_not_kept_says_why() {
     let state = router.autotune.state();
     let vox = &state.singers[0];
     assert!(!vox.key_ok, "{vox:?}");
-    let why = vox.why.as_deref().unwrap_or("");
-    assert!(why.contains("fall back to DRY is not kept"), "{why}");
+    assert_eq!(
+        vox.why.as_deref(),
+        Some("PA: its fall back to DRY is not kept (no such function: safe_writes)")
+    );
 }
 
 #[tokio::test]

@@ -418,12 +418,13 @@ fn a_hub_started_with_aut_saved_on_while_live_plays_in_a_song_tunes_only_after_i
         .unwrap();
         let start = now_ts();
         let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        hub.status_until(SECS_10, ready).await;
         let mut a = hub.client().await;
         macros_until(&mut a, TUNING, SECS_10).await;
         let status = hub.status().await;
         assert!(status.autotune.aut, "the saved AUT on honoured");
         let records = since(&hub.events(), start);
-        let first = |matches: &dyn Fn(&Value) -> bool| records.iter().position(|r| matches(r));
+        let first = |matches: &dyn Fn(&Value) -> bool| records.iter().position(matches);
         let map =
             first(&|r| r["ev"] == "songmap" && r["error"].is_null()).expect("a song map read");
         let kept =
