@@ -185,6 +185,11 @@ pub fn settling(changed_at: Option<f64>, now: f64) -> bool {
     changed_at.is_some_and(|at| now - at < SETTLE_MS)
 }
 
+/// The pill's word, shared by every rail button with an automatic mode and
+/// by the texts that name it (#140 PR 3c: AUTOTUNE's panel; #141 renames it
+/// in its own PR).
+pub const AUT_BADGE: &str = "AUT";
+
 /// The `AUT` pill: none, white (the rule runs) or outlined (a tap
 /// overrides it until the next stop or start).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -290,6 +295,11 @@ fn stage_sub((playing, muted): (bool, bool)) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_pill_says_aut() {
+        assert_eq!(AUT_BADGE, "AUT");
+    }
 
     #[test]
     fn the_rail_holds_for_one_second() {

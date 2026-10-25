@@ -1,107 +1,150 @@
-//! AUTOTUNE on the surface (#104, D19; the approved mockup
-//! `docs/mockups/autotune-v1.html`): the rail button's look. Pure.
+//! AUTOTUNE on the surface (#140 PR 3c; the approved mockup
+//! `docs/mockups/autotune-v2.html`, the owner's approval of 2026-10-23):
+//! the rail button's look and the singers' panel's model. Pure.
 //!
-//! A tap switches autotune on or off on every `+AUTOTUNE` track at once
-//! (the hub writes each `Latencies` rack's first macro), a 1 s hold turns
-//! AUTOTUNE AUT on or off at its lift (the press is `behave::rail`'s, as
-//! the merged STAGE button's). The button is lit in the former toggle's
-//! orange while every found track is on, dark while every one is off, and
-//! mixed (dark, an orange ring, half its light, the count on the second
-//! line) while some are on and some off; a tap on mixed turns every one
-//! off (the linked mute's rule: a partial state goes dark). With AUTOTUNE
-//! AUT on it wears the `AUT` pill, outlined while Live's autotune is not
-//! the transport's (a tap's override until the next stop or start, or a
-//! song's own switch), and the second line says what the rule does now. A
-//! track the hub found no rack for shows the yellow `!` corner while the
-//! others work; with none found the button is red. Everything here reads
-//! the hub's `AutotuneState`.
+//! Two states only (spec §2.2): AUT on, the hub's rule switches each
+//! singer's tracks; AUT off, every singer is on DRY. A 1 s hold switches
+//! AUT at its lift (the press is `behave::rail`'s, as the merged STAGE
+//! button's); a tap opens the singers' panel and sends nothing. The button
+//! is lit in the former toggle's orange while every singer tunes, dark
+//! while none does, and mixed (dark, an orange ring, half its light) while
+//! some do and some do not (off by hand, a mismatch). With AUT on it wears
+//! the `AUT` pill, and its second line says the state and the key:
+//! `off · F`, `stopped · F`, `tuning · F`, `no song`, `no key`,
+//! `checking · F`, `tuning · F · 1 off`, `tuning · F · 1 !`. A singer whose
+//! key does not read back, or a problem in the song map, shows the yellow
+//! `!` corner; with no target found the button is red. The panel lists
+//! each singer's stream and PA chip, its key and its manual switch, its
+//! head the song and the key, its foot the song map's counts and Live's
+//! bar. Everything here reads the hub's `AutotuneState`.
 
-use fohmixer_proto::client::{AutotuneState, TargetState};
+use fohmixer_proto::client::{AutotuneState, SingerState, TargetState, TrackState};
 
-use super::rail::{Aut, Fill, RailLook, full_text, hold_text};
+use super::rail::{AUT_BADGE, Aut, Fill, RailLook, full_text, hold_text};
 
-/// What the button shows of the targets the hub found with a value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Shown {
-    /// Every one on: lit.
-    On,
-    /// Every one off: dark.
-    Off,
-    /// `on` of `of` on: mixed.
-    Mixed { on: usize, of: usize },
+/// The key in force as the button and the panel name it: `F`, `F#m`, or
+/// `—` outside a song or in a keyless one (spec §9).
+fn key_text(state: &AutotuneState) -> &str {
+    state.key.as_deref().unwrap_or("—")
 }
 
-impl Shown {
-    /// Autotune on (`true`) or off on every target.
-    fn of(on: bool) -> Self {
-        if on { Self::On } else { Self::Off }
+/// Whether a singer's track tunes (its selector on the autotune chain).
+fn tunes(track: TrackState) -> bool {
+    track == TrackState::Tune
+}
+
+/// Whether every track a singer has tunes, and it has one.
+fn singer_tunes(singer: &SingerState) -> bool {
+    let tracks: Vec<TrackState> = [singer.stream, singer.pa]
+        .into_iter()
+        .filter(|t| *t != TrackState::None)
+        .collect();
+    !tracks.is_empty() && tracks.into_iter().all(tunes)
+}
+
+/// What the singers' tracks show: every singer tuning (lit), some track
+/// tuning but not every singer (mixed), or none tuning (dark).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shown {
+    On,
+    Mixed,
+    Off,
+}
+
+/// What the singers' tracks show (Live's selectors, as the hub tells).
+pub fn shown(state: &AutotuneState) -> Shown {
+    let any = state.singers.iter().any(|s| tunes(s.stream) || tunes(s.pa));
+    let every = !state.singers.is_empty() && state.singers.iter().all(singer_tunes);
+    match (every, any) {
+        (true, _) => Shown::On,
+        (false, true) => Shown::Mixed,
+        (false, false) => Shown::Off,
     }
 }
 
-/// What the found targets with a value show (`Waiting` and `Missing` ones
-/// left out); none while none has one.
-pub fn shown(state: &AutotuneState) -> Option<Shown> {
-    let count = |want: TargetState| state.targets.iter().filter(|t| t.state == want).count();
-    match (count(TargetState::On), count(TargetState::Off)) {
-        (0, 0) => None,
-        (_, 0) => Some(Shown::On),
-        (0, _) => Some(Shown::Off),
-        (on, off) => Some(Shown::Mixed { on, of: on + off }),
+/// Whether the button is ready: none before the hub's state, and while
+/// every target still waits (its walk, its value, its Live set offline);
+/// `Some(false)` without a found target: no `+AUTOTUNE` track, or none
+/// with its rack (red, I5).
+pub fn autotune_ready(state: Option<&AutotuneState>) -> Option<bool> {
+    let s = state?;
+    let found = s
+        .targets
+        .iter()
+        .any(|t| matches!(t.state, TargetState::On | TargetState::Off));
+    let waits = s.targets.iter().any(|t| t.state == TargetState::Waiting);
+    match (found, waits) {
+        (true, _) => Some(true),
+        (false, true) => None,
+        (false, false) => Some(false),
     }
 }
 
 /// The button's `data-state`: `on`, `off`, `mixed`, or `waiting` before
-/// the hub's state and while no found target has a value.
+/// the hub's state and while it is not ready either way.
 pub fn state_name(state: Option<&AutotuneState>) -> &'static str {
-    match state.and_then(shown) {
+    match state.filter(|s| autotune_ready(Some(*s)).is_some()) {
         None => "waiting",
-        Some(Shown::On) => "on",
-        Some(Shown::Off) => "off",
-        Some(Shown::Mixed { .. }) => "mixed",
+        Some(s) => match shown(s) {
+            Shown::On => "on",
+            Shown::Mixed => "mixed",
+            Shown::Off => "off",
+        },
     }
 }
 
-/// Whether the button takes a tap: none before the hub's state, and while
-/// nothing is shown but a target still waits (its walk, its value, its
-/// Live set offline); `Some(false)` without a found target: no `+AUTOTUNE`
-/// track, or none with its rack (red, I5).
-pub fn autotune_ready(state: Option<&AutotuneState>) -> Option<bool> {
-    let s = state?;
-    let waits = s.targets.iter().any(|t| t.state == TargetState::Waiting);
-    match (shown(s), waits) {
-        (Some(_), _) => Some(true),
-        (None, true) => None,
-        (None, false) => Some(false),
-    }
-}
-
-/// What a tap asks the hub for (`autotune`): every target off while the
-/// button is lit or mixed (the linked mute's rule: a partial state goes
-/// dark), on while dark, as it shows the state the hub told this connection
-/// (`fresh`), only while the page is connected; none: the tap is refused.
-pub fn tap_value(fresh: Option<&AutotuneState>, connected: bool) -> Option<bool> {
-    fresh
-        .and_then(shown)
-        .filter(|_| connected)
-        .map(|s| s == Shown::Off)
-}
-
-/// Whether a target has no rack to switch while others work: the yellow
-/// `!` corner (with none found the button is red instead).
+/// The yellow `!` corner: a singer whose key or target is not right (the
+/// hub's `key_ok`), or a problem in the song map.
 pub fn has_problem(state: Option<&AutotuneState>) -> bool {
-    state.is_some_and(|s| {
-        shown(s).is_some() && s.targets.iter().any(|t| t.state == TargetState::Missing)
-    })
+    state.is_some_and(|s| s.map_problems > 0 || s.singers.iter().any(|x| !x.key_ok))
 }
 
-/// The AUTOTUNE button (D19; the mockup's screen 1): lit while every found
-/// target is on, mixed while some are, dark else; with AUT on the pill
-/// runs, outlined while what Live shows is not the transport's once the
-/// transport has settled (`settling`: the hub's write is on its way, as
-/// STAGE's mics), and the second line says what the rule does; the mixed
-/// count shows with AUT off too; a press's fill (`behave::rail::fill_of`)
-/// shows its own line.
-pub fn autotune_look(state: Option<&AutotuneState>, fill: Fill, settling: bool) -> RailLook {
+/// The singers off by hand.
+fn off_count(state: &AutotuneState) -> usize {
+    state.singers.iter().filter(|s| s.off).count()
+}
+
+/// The singers with a mismatch or a target problem (`!`).
+fn bad_count(state: &AutotuneState) -> usize {
+    state.singers.iter().filter(|s| !s.key_ok).count()
+}
+
+/// The second line with AUT on while Live plays: the state, the key and
+/// what keeps a singer from tuning. A mismatch (`1 !`) is named before a
+/// singer off by hand (`1 off`): one of them fits the 98 px.
+fn playing_line(state: &AutotuneState) -> String {
+    let key = key_text(state);
+    match (state.song, state.key.as_deref()) {
+        (None, _) => return "no song".to_string(),
+        (Some(_), None) => return "no key".to_string(),
+        (Some(_), Some(_)) => {}
+    }
+    if state.checking {
+        return format!("checking · {key}");
+    }
+    match (bad_count(state), off_count(state)) {
+        (0, 0) => format!("tuning · {key}"),
+        (0, off) => format!("tuning · {key} · {off} off"),
+        (bad, _) => format!("tuning · {key} · {bad} !"),
+    }
+}
+
+/// The second line: AUT off `off · F`; AUT on, Live stopped (or its
+/// transport not heard yet) `stopped · F`, else the playing line.
+pub fn second_line(state: &AutotuneState) -> String {
+    let key = key_text(state);
+    match (state.aut, state.playing) {
+        (false, _) => format!("off · {key}"),
+        (true, Some(true)) => playing_line(state),
+        (true, _) => format!("stopped · {key}"),
+    }
+}
+
+/// The AUTOTUNE button (mockup v2, screen 1): lit while every singer tunes,
+/// mixed while some do, dark else; the pill runs while AUT is on; the
+/// second line is [`second_line`], or a press's fill
+/// (`behave::rail::fill_of`) shows its own line.
+pub fn autotune_look(state: Option<&AutotuneState>, fill: Fill) -> RailLook {
     let Some(s) = state else {
         return RailLook {
             lit: false,
@@ -111,89 +154,201 @@ pub fn autotune_look(state: Option<&AutotuneState>, fill: Fill, settling: bool) 
             mixed: false,
         };
     };
-    let live = shown(s);
-    // The transport the rule follows (AUT on, heard), and what the button
-    // reads against it: Live's autotune, or the rule's own while the
-    // transport settles.
-    let rule = s.playing.filter(|_| s.aut);
-    let seen = match (rule, settling) {
-        (Some(playing), true) => Some(Shown::of(playing)),
-        _ => live,
-    };
-    let aut = match (s.aut, rule, seen) {
-        (false, _, _) => Aut::Off,
-        (true, Some(playing), Some(seen)) if seen != Shown::of(playing) => Aut::Held,
-        (true, _, _) => Aut::Run,
-    };
+    let shows = shown(s);
     let sub = match fill {
-        Fill::Filling => Some(hold_text(s.aut).to_string()),
-        Fill::Full => Some(full_text(s.aut).to_string()),
-        Fill::None => autotune_sub(s.aut, rule, seen),
+        Fill::Filling => hold_text(s.aut).to_string(),
+        Fill::Full => full_text(s.aut).to_string(),
+        Fill::None => second_line(s),
     };
     RailLook {
-        lit: live == Some(Shown::On),
-        aut,
-        sub,
+        lit: shows == Shown::On,
+        aut: if s.aut { Aut::Run } else { Aut::Off },
+        sub: Some(sub),
         low: false,
-        mixed: matches!(live, Some(Shown::Mixed { .. })),
+        mixed: shows == Shown::Mixed,
     }
 }
 
-/// What AUTOTUNE does now, in plain words: with AUT on and the transport
-/// heard, the rule's line; else the mixed count; none while it says
-/// nothing (on or off by hand, the transport not yet heard).
-fn autotune_sub(aut: bool, rule: Option<bool>, seen: Option<Shown>) -> Option<String> {
-    match (rule, seen) {
-        (Some(playing), Some(seen)) => Some(rule_sub(playing, seen)),
-        (None, Some(Shown::Mixed { on, of })) => Some(count_text(aut, on, of)),
-        _ => None,
+/// Whether a tap opens the singers' panel: only on the state the hub told
+/// this connection (`fresh`) and while the page is connected (Review Focus
+/// 5: after a reconnect it shows no stale singer); else it is refused. A
+/// tap sends nothing either way.
+pub fn tap_opens_panel(fresh: Option<&AutotuneState>, connected: bool) -> bool {
+    fresh.is_some() && connected
+}
+
+/// A chip of a singer's track: its text and whether it is lit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Chip {
+    pub text: &'static str,
+    pub on: bool,
+}
+
+/// The chip of a track (`stream TUNE`, `PA DRY`, `stream —`).
+fn chip(track: TrackState, stream: bool) -> Chip {
+    let text = match (stream, track) {
+        (true, TrackState::Tune) => "stream TUNE",
+        (true, TrackState::Dry) => "stream DRY",
+        (true, TrackState::None) => "stream —",
+        (false, TrackState::Tune) => "PA TUNE",
+        (false, TrackState::Dry) => "PA DRY",
+        (false, TrackState::None) => "PA —",
+    };
+    Chip {
+        text,
+        on: tunes(track),
     }
 }
 
-/// The rule's line: Live plays and autotune is on, or stands and it is
-/// off; a tap the other way holds until the next stop or start.
-fn rule_sub(playing: bool, seen: Shown) -> String {
-    match (playing, seen) {
-        (_, Shown::Mixed { on, of }) => count_text(true, on, of),
-        (true, Shown::On) => "hrá · zapnutý".to_string(),
-        (false, Shown::Off) => "stojí · vypnutý".to_string(),
-        (true, Shown::Off) => "ručne vyp. · do zast.".to_string(),
-        (false, Shown::On) => "ručne zap. · do štartu".to_string(),
+/// One singer in the panel (mockup v2, screen 2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PanelRow {
+    /// The singer's id (`set_hub` `autotune_singer`); empty for a target
+    /// that names no singer.
+    pub id: String,
+    pub label: String,
+    pub stream: Chip,
+    pub pa: Chip,
+    /// `F ✓`, `—` without a key in force, or `!` when not right.
+    pub key: String,
+    pub ok: bool,
+    /// Off by hand (the row dimmed).
+    pub off: bool,
+    /// What a tap on its switch does: `OFF` while on, `ON` while off by
+    /// hand; none for a singer with no id (no manual off, PR #147 N6).
+    pub switch: Option<&'static str>,
+    /// The line under a row that is not right.
+    pub why: Option<String>,
+}
+
+/// The panel's rows, one per singer in Live's order.
+pub fn panel_rows(state: &AutotuneState) -> Vec<PanelRow> {
+    state
+        .singers
+        .iter()
+        .map(|s| {
+            let key = match (s.key_ok, state.key.as_deref()) {
+                (false, _) => "!".to_string(),
+                (true, Some(key)) => format!("{key} ✓"),
+                (true, None) => "—".to_string(),
+            };
+            let why = (!s.key_ok).then(|| {
+                let why = s.why.as_deref().unwrap_or("key not confirmed");
+                format!("{}: {why} · on DRY, rewrite at the next change", s.label)
+            });
+            PanelRow {
+                id: s.id.clone(),
+                label: s.label.clone(),
+                stream: chip(s.stream, true),
+                pa: chip(s.pa, false),
+                key,
+                ok: s.key_ok,
+                off: s.off,
+                switch: (!s.id.is_empty()).then_some(if s.off { "ON" } else { "OFF" }),
+                why,
+            }
+        })
+        .collect()
+}
+
+/// The `set_hub` `autotune_singer` value a row's switch sends: its singer
+/// off by hand, or back on.
+pub fn switch_value(row: &PanelRow) -> (String, bool) {
+    (row.id.clone(), !row.off)
+}
+
+/// The panel's head after its title: the song and the key in force
+/// (`song 031 · F`), `no song` outside every song.
+pub fn panel_head(state: &AutotuneState) -> String {
+    match state.song {
+        Some(song) => format!("song {song:03} · {}", key_text(state)),
+        None => "no song".to_string(),
     }
 }
 
-/// The mixed count (`2/10 zap.`), `zmiešané` first with AUT on.
-fn count_text(aut: bool, on: usize, of: usize) -> String {
-    if aut {
-        format!("zmiešané · {on}/{of} zap.")
+/// `n` and the word for one or more.
+fn counted(n: usize, one: &str, more: &str) -> String {
+    if n == 1 {
+        format!("{n} {one}")
     } else {
-        format!("{on}/{of} zap.")
+        format!("{n} {more}")
     }
+}
+
+/// The panel's foot: the song map's counts, then Live's bar and the hold's
+/// help (the pill's word is the shared badge's, #141 renames it).
+pub fn panel_foot(state: &AutotuneState) -> [String; 2] {
+    let map = format!(
+        "Song map: {}, {}, {}.",
+        counted(state.map_keyed, "song with a key", "songs with a key"),
+        counted(state.map_changes, "key change", "key changes"),
+        counted(state.map_problems, "problem", "problems"),
+    );
+    let bar = state.bar.as_deref().unwrap_or("—");
+    let live = format!("Live: {bar}. Hold AUTOTUNE 1 s: {AUT_BADGE} on/off.");
+    [map, live]
+}
+
+/// The gap between the panel and the column, and the screen's edges (px).
+pub const PANEL_GAP: f64 = 8.0;
+
+/// Where the panel opens (its left and top on the screen): beside the
+/// column (`column_right`, its right edge), its top at the button's
+/// (`button_top`) but inside the screen (`view_h`) for its `height`.
+pub fn panel_place(column_right: f64, button_top: f64, view_h: f64, height: f64) -> (f64, f64) {
+    let left = column_right + PANEL_GAP;
+    let top = button_top.min(view_h - height - PANEL_GAP).max(PANEL_GAP);
+    (left, top)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use fohmixer_proto::client::AutotuneTargetState;
-    use fohmixer_proto::client::TargetState::{Missing, Off, On, Waiting};
+    use fohmixer_proto::client::TrackState::{Dry, None as NoTrack, Tune};
 
-    /// A state of targets `#1`, `#2`, … in these states.
-    fn state(aut: bool, playing: Option<bool>, states: &[TargetState]) -> AutotuneState {
+    fn singer(id: &str, stream: TrackState, pa: TrackState) -> SingerState {
+        SingerState {
+            id: id.to_string(),
+            label: format!("Vox {}", id.trim_start_matches("VOX")),
+            stream,
+            pa,
+            off: false,
+            key_ok: true,
+            why: None,
+        }
+    }
+
+    fn off(mut s: SingerState) -> SingerState {
+        s.off = true;
+        s
+    }
+
+    fn bad(mut s: SingerState, why: &str) -> SingerState {
+        s.key_ok = false;
+        s.why = Some(why.to_string());
+        s
+    }
+
+    /// A state with one found target, AUT, the transport, song 31 in `key`
+    /// and these singers.
+    fn state(
+        aut: bool,
+        playing: Option<bool>,
+        key: Option<&str>,
+        singers: Vec<SingerState>,
+    ) -> AutotuneState {
         AutotuneState {
             aut,
             playing,
-            targets: states
-                .iter()
-                .enumerate()
-                .map(|(i, state)| AutotuneTargetState {
-                    label: format!("#{}", i + 1),
-                    state: *state,
-                })
-                .collect(),
-            song: None,
-            key: None,
+            targets: vec![AutotuneTargetState {
+                label: "Vox 1".into(),
+                state: TargetState::Off,
+            }],
+            song: Some(31),
+            key: key.map(str::to_string),
             checking: false,
-            singers: Vec::new(),
+            singers,
             map_problems: 0,
             map_changes: 0,
             map_keyed: 0,
@@ -201,111 +356,215 @@ mod tests {
         }
     }
 
-    fn look(s: &AutotuneState) -> RailLook {
-        autotune_look(Some(s), Fill::None, false)
+    fn two_tuning() -> Vec<SingerState> {
+        vec![singer("VOX1", Tune, Tune), singer("VOX2", Tune, Tune)]
+    }
+
+    fn line(s: &AutotuneState) -> String {
+        autotune_look(Some(s), Fill::None).sub.unwrap()
     }
 
     #[test]
-    fn it_is_lit_only_when_every_found_target_is_on() {
-        assert_eq!(shown(&state(false, None, &[On, On])), Some(Shown::On));
-        assert_eq!(shown(&state(false, None, &[Off, Off])), Some(Shown::Off));
+    fn aut_off_reads_off_and_the_key() {
+        let s = state(false, Some(true), Some("F"), vec![singer("VOX1", Dry, Dry)]);
+        assert_eq!(line(&s), "off · F");
+        let look = autotune_look(Some(&s), Fill::None);
+        assert_eq!((look.lit, look.mixed, look.aut), (false, false, Aut::Off));
+        let mut none = s.clone();
+        none.key = None;
+        assert_eq!(line(&none), "off · —");
+        // AUT off whatever the transport.
+        for playing in [None, Some(false)] {
+            let mut st = s.clone();
+            st.playing = playing;
+            assert_eq!(line(&st), "off · F");
+        }
+    }
+
+    #[test]
+    fn aut_on_and_stopped_reads_stopped_and_the_key() {
+        let s = state(true, Some(false), Some("F"), vec![singer("VOX1", Dry, Dry)]);
+        assert_eq!(line(&s), "stopped · F");
+        let look = autotune_look(Some(&s), Fill::None);
+        assert_eq!((look.aut, look.lit), (Aut::Run, false));
+        // The transport not heard yet: as stopped (the hub decides `stop`).
+        let mut unheard = s.clone();
+        unheard.playing = None;
+        assert_eq!(line(&unheard), "stopped · F");
+        let mut keyless = s;
+        keyless.key = None;
+        assert_eq!(line(&keyless), "stopped · —");
+    }
+
+    #[test]
+    fn aut_on_and_playing_in_a_keyed_song_reads_tuning_and_is_lit() {
+        let s = state(true, Some(true), Some("F"), two_tuning());
+        assert_eq!(line(&s), "tuning · F");
+        let look = autotune_look(Some(&s), Fill::None);
         assert_eq!(
-            shown(&state(false, None, &[On, Off, On])),
-            Some(Shown::Mixed { on: 2, of: 3 })
+            look,
+            RailLook {
+                lit: true,
+                aut: Aut::Run,
+                sub: Some("tuning · F".into()),
+                low: false,
+                mixed: false,
+            }
         );
-        // Waiting and missing targets are left out of the count.
+        let g = state(true, Some(true), Some("G"), two_tuning());
+        assert_eq!(line(&g), "tuning · G");
+    }
+
+    #[test]
+    fn out_of_every_song_reads_no_song_and_a_keyless_one_no_key() {
+        let mut s = state(true, Some(true), None, vec![singer("VOX1", Dry, Dry)]);
+        s.song = None;
+        assert_eq!(line(&s), "no song");
+        s.song = Some(88);
+        assert_eq!(line(&s), "no key");
+        // A song with a key out of song? None: the song decides first.
+        s.song = None;
+        s.key = Some("F".into());
+        assert_eq!(line(&s), "no song");
+    }
+
+    #[test]
+    fn a_key_being_checked_reads_checking() {
+        let mut s = state(true, Some(true), Some("F"), vec![singer("VOX1", Dry, Dry)]);
+        s.checking = true;
+        assert_eq!(line(&s), "checking · F");
+        // Checking only while playing in a keyed song.
+        s.playing = Some(false);
+        assert_eq!(line(&s), "stopped · F");
+    }
+
+    #[test]
+    fn a_singer_off_by_hand_is_counted_and_the_button_mixed() {
+        let s = state(
+            true,
+            Some(true),
+            Some("F"),
+            vec![singer("VOX1", Tune, Tune), off(singer("VOX2", Dry, Dry))],
+        );
+        assert_eq!(line(&s), "tuning · F · 1 off");
+        let look = autotune_look(Some(&s), Fill::None);
+        assert_eq!((look.lit, look.mixed), (false, true));
+        let two = state(
+            true,
+            Some(true),
+            Some("F"),
+            vec![
+                singer("VOX1", Tune, Tune),
+                off(singer("VOX2", Dry, Dry)),
+                off(singer("VOX3", Dry, Dry)),
+            ],
+        );
+        assert_eq!(line(&two), "tuning · F · 2 off");
+    }
+
+    #[test]
+    fn a_mismatch_is_counted_before_a_singer_off_and_shows_the_corner() {
+        let s = state(
+            true,
+            Some(true),
+            Some("F"),
+            vec![
+                singer("VOX1", Tune, Tune),
+                bad(singer("VOX5", Dry, Tune), "stream Key reads G, wrote F"),
+            ],
+        );
+        assert_eq!(line(&s), "tuning · F · 1 !");
+        assert!(has_problem(Some(&s)));
+        let look = autotune_look(Some(&s), Fill::None);
+        assert_eq!((look.lit, look.mixed), (false, true));
+        let both = state(
+            true,
+            Some(true),
+            Some("F"),
+            vec![
+                bad(singer("VOX5", Dry, Tune), "w"),
+                off(singer("VOX3", Dry, Dry)),
+                bad(singer("VOX6", Dry, Dry), "w"),
+            ],
+        );
+        assert_eq!(line(&both), "tuning · F · 2 !");
+    }
+
+    #[test]
+    fn lit_mixed_and_dark_follow_the_singers_tracks() {
+        let on = |singers| shown(&state(true, Some(true), Some("F"), singers));
+        assert_eq!(on(two_tuning()), Shown::On);
+        // A singer without a stream track tunes on its PA alone.
         assert_eq!(
-            shown(&state(false, None, &[On, Waiting, Missing])),
-            Some(Shown::On)
+            on(vec![
+                singer("VOX1", NoTrack, Tune),
+                singer("VOX2", Tune, Tune)
+            ]),
+            Shown::On
         );
         assert_eq!(
-            shown(&state(false, None, &[Waiting, Off, Missing])),
-            Some(Shown::Off)
+            on(vec![singer("VOX1", Tune, Dry), singer("VOX2", Tune, Tune)]),
+            Shown::Mixed
         );
         assert_eq!(
-            shown(&state(false, None, &[On, Waiting, Off, Missing])),
-            Some(Shown::Mixed { on: 1, of: 2 })
+            on(vec![singer("VOX1", Dry, Tune), singer("VOX2", Dry, Dry)]),
+            Shown::Mixed
         );
-        assert_eq!(shown(&state(false, None, &[Waiting, Missing])), None);
-        assert_eq!(shown(&state(false, None, &[])), None);
-        // Lit only when every one is on; mixed is neither lit nor dark.
-        let on = look(&state(false, None, &[On, On]));
-        assert_eq!((on.lit, on.mixed), (true, false));
-        let off = look(&state(false, None, &[Off, Off]));
-        assert_eq!((off.lit, off.mixed), (false, false));
-        let mixed = look(&state(false, None, &[On, Off, On]));
-        assert_eq!((mixed.lit, mixed.mixed), (false, true));
-        // Its `data-state`.
+        assert_eq!(
+            on(vec![singer("VOX1", Dry, Dry), singer("VOX2", NoTrack, Dry)]),
+            Shown::Off
+        );
+        // A singer with no track never counts as tuning.
+        assert_eq!(on(vec![singer("VOX1", NoTrack, NoTrack)]), Shown::Off);
+        assert_eq!(
+            on(vec![
+                singer("VOX1", NoTrack, NoTrack),
+                singer("VOX2", Tune, Tune)
+            ]),
+            Shown::Mixed
+        );
+        assert_eq!(on(Vec::new()), Shown::Off);
+        // `data-state`.
+        let names = |singers| state_name(Some(&state(true, Some(true), Some("F"), singers)));
+        assert_eq!(names(two_tuning()), "on");
+        assert_eq!(
+            names(vec![singer("VOX1", Tune, Dry), singer("VOX2", Tune, Tune)]),
+            "mixed"
+        );
+        assert_eq!(names(vec![singer("VOX1", Dry, Dry)]), "off");
         assert_eq!(state_name(None), "waiting");
-        assert_eq!(state_name(Some(&state(false, None, &[Waiting]))), "waiting");
-        assert_eq!(state_name(Some(&state(false, None, &[On]))), "on");
-        assert_eq!(state_name(Some(&state(false, None, &[Off]))), "off");
-        assert_eq!(state_name(Some(&state(false, None, &[On, Off]))), "mixed");
-    }
-
-    #[test]
-    fn mixed_counts_the_targets_on() {
-        let s = state(false, None, &[On, Off, On, Off, Off]);
-        assert_eq!(shown(&s), Some(Shown::Mixed { on: 2, of: 5 }));
-        assert_eq!(look(&s).sub.as_deref(), Some("2/5 zap."));
-        let lone = state(false, None, &[Off, Off, On]);
-        assert_eq!(look(&lone).sub.as_deref(), Some("1/3 zap."));
-        // With AUT on, `zmiešané` first.
-        let aut = state(true, None, &[On, Off, On, Off, Off]);
-        assert_eq!(look(&aut).sub.as_deref(), Some("zmiešané · 2/5 zap."));
-    }
-
-    #[test]
-    fn a_tap_turns_every_target_off_when_on_or_mixed_and_on_when_off() {
-        let on = state(false, None, &[On, On]);
-        let off = state(false, None, &[Off, Off]);
-        let mixed = state(false, None, &[On, Off]);
-        assert_eq!(tap_value(Some(&on), true), Some(false));
-        assert_eq!(tap_value(Some(&mixed), true), Some(false));
-        assert_eq!(tap_value(Some(&off), true), Some(true));
-        // Waiting and missing targets do not count.
-        let hand = state(true, Some(true), &[Off, Missing, Waiting]);
-        assert_eq!(tap_value(Some(&hand), true), Some(true));
-    }
-
-    #[test]
-    fn a_tap_is_refused_before_the_hubs_state_of_this_connection_or_offline() {
-        let on = state(false, None, &[On]);
-        assert_eq!(tap_value(Some(&on), false), None, "not connected");
-        assert_eq!(tap_value(None, true), None, "no state on this connection");
-        assert_eq!(tap_value(None, false), None);
-        let none = state(false, None, &[Waiting, Missing]);
-        assert_eq!(tap_value(Some(&none), true), None, "nothing shown");
-        assert_eq!(tap_value(Some(&state(false, None, &[])), true), None);
     }
 
     #[test]
     fn it_is_waiting_before_the_state_and_red_without_a_found_target() {
+        let with = |states: &[TargetState]| {
+            let mut s = state(false, None, None, Vec::new());
+            s.targets = states
+                .iter()
+                .map(|t| AutotuneTargetState {
+                    label: "x".into(),
+                    state: *t,
+                })
+                .collect();
+            s
+        };
+        use TargetState::{Missing, Off, On, Waiting};
         assert_eq!(autotune_ready(None), None);
-        assert_eq!(autotune_ready(Some(&state(false, None, &[]))), Some(false));
+        assert_eq!(autotune_ready(Some(&with(&[]))), Some(false));
         assert_eq!(
-            autotune_ready(Some(&state(false, None, &[Missing, Missing]))),
-            Some(false),
-            "no rack found"
+            autotune_ready(Some(&with(&[Missing, Missing]))),
+            Some(false)
         );
-        assert_eq!(
-            autotune_ready(Some(&state(false, None, &[Waiting, Missing]))),
-            None,
-            "a target still waits"
-        );
-        assert_eq!(autotune_ready(Some(&state(false, None, &[Waiting]))), None);
-        assert_eq!(autotune_ready(Some(&state(false, None, &[On]))), Some(true));
-        assert_eq!(
-            autotune_ready(Some(&state(false, None, &[Off, Missing]))),
-            Some(true)
-        );
-        assert_eq!(
-            autotune_ready(Some(&state(false, None, &[Waiting, On]))),
-            Some(true)
-        );
+        assert_eq!(autotune_ready(Some(&with(&[Waiting, Missing]))), None);
+        assert_eq!(autotune_ready(Some(&with(&[Waiting]))), None);
+        assert_eq!(autotune_ready(Some(&with(&[On]))), Some(true));
+        assert_eq!(autotune_ready(Some(&with(&[Off, Missing]))), Some(true));
+        assert_eq!(autotune_ready(Some(&with(&[Waiting, Off]))), Some(true));
+        assert_eq!(state_name(Some(&with(&[Waiting]))), "waiting");
+        assert_eq!(state_name(Some(&with(&[Missing]))), "off", "red: dark");
         // Before the hub's state: dark, nothing.
         assert_eq!(
-            autotune_look(None, Fill::None, false),
+            autotune_look(None, Fill::None),
             RailLook {
                 lit: false,
                 aut: Aut::Off,
@@ -314,195 +573,184 @@ mod tests {
                 mixed: false,
             }
         );
-        assert_eq!(autotune_look(None, Fill::Full, false).sub, None);
+        assert_eq!(autotune_look(None, Fill::Full).sub, None);
     }
 
     #[test]
-    fn a_missing_target_shows_the_problem_corner() {
-        assert!(has_problem(Some(&state(false, None, &[On, Missing]))));
-        assert!(has_problem(Some(&state(
-            true,
-            Some(true),
-            &[Missing, Off, On]
-        ))));
-        assert!(!has_problem(Some(&state(false, None, &[On, Off]))));
-        assert!(!has_problem(Some(&state(false, None, &[On, Waiting]))));
-        // No found target: red, no corner.
-        assert!(!has_problem(Some(&state(false, None, &[Missing]))));
-        assert!(!has_problem(Some(&state(false, None, &[Missing, Waiting]))));
+    fn the_corner_shows_a_bad_key_or_a_map_problem() {
+        let mut s = state(true, Some(true), Some("F"), two_tuning());
+        assert!(!has_problem(Some(&s)));
+        s.map_problems = 1;
+        assert!(has_problem(Some(&s)), "a song map problem");
+        // Lit with the corner (the mockup's cell 12).
+        let look = autotune_look(Some(&s), Fill::None);
+        assert!(look.lit);
+        s.map_problems = 0;
+        s.singers[1].key_ok = false;
+        assert!(has_problem(Some(&s)));
         assert!(!has_problem(None));
     }
 
     #[test]
-    fn the_second_lines_say_what_the_rule_does() {
-        let line = |playing, states: &[TargetState]| look(&state(true, Some(playing), states));
-        assert_eq!(
-            line(true, &[On, On]),
-            RailLook {
-                lit: true,
-                aut: Aut::Run,
-                sub: Some("hrá · zapnutý".into()),
-                low: false,
-                mixed: false,
-            }
-        );
-        assert_eq!(
-            line(false, &[Off, Off]),
-            RailLook {
-                lit: false,
-                aut: Aut::Run,
-                sub: Some("stojí · vypnutý".into()),
-                low: false,
-                mixed: false,
-            }
-        );
-        // A tap the other way: outlined until the next stop or start.
-        assert_eq!(
-            line(true, &[Off, Off]),
-            RailLook {
-                lit: false,
-                aut: Aut::Held,
-                sub: Some("ručne vyp. · do zast.".into()),
-                low: false,
-                mixed: false,
-            }
-        );
-        assert_eq!(
-            line(false, &[On, On]),
-            RailLook {
-                lit: true,
-                aut: Aut::Held,
-                sub: Some("ručne zap. · do štartu".into()),
-                low: false,
-                mixed: false,
-            }
-        );
-        // Mixed is no transport's state: outlined, the count.
-        assert_eq!(
-            line(true, &[On, Off]),
-            RailLook {
-                lit: false,
-                aut: Aut::Held,
-                sub: Some("zmiešané · 1/2 zap.".into()),
-                low: false,
-                mixed: true,
-            }
-        );
-        assert_eq!(
-            line(false, &[Off, On, On]),
-            RailLook {
-                lit: false,
-                aut: Aut::Held,
-                sub: Some("zmiešané · 2/3 zap.".into()),
-                low: false,
-                mixed: true,
-            }
-        );
-        // AUT off: no pill, and no line but the mixed count.
-        for playing in [Some(true), Some(false), None] {
-            let on = look(&state(false, playing, &[On, On]));
-            assert_eq!((on.aut, on.sub), (Aut::Off, None));
-            let off = look(&state(false, playing, &[Off]));
-            assert_eq!((off.aut, off.sub), (Aut::Off, None));
-            let mixed = look(&state(false, playing, &[On, Off]));
-            assert_eq!(
-                (mixed.aut, mixed.sub.as_deref()),
-                (Aut::Off, Some("1/2 zap."))
-            );
-        }
-        // AUT on, the transport not heard yet: the pill runs, no line but
-        // the mixed count.
-        let unheard = look(&state(true, None, &[On, On]));
-        assert_eq!((unheard.aut, unheard.sub), (Aut::Run, None));
-        let unheard_mixed = look(&state(true, None, &[Off, On]));
-        assert_eq!(
-            (unheard_mixed.aut, unheard_mixed.sub.as_deref()),
-            (Aut::Run, Some("zmiešané · 1/2 zap."))
-        );
-        // AUT on, nothing shown yet: the pill runs, no line.
-        let waiting = look(&state(true, Some(true), &[Waiting]));
-        assert_eq!((waiting.aut, waiting.sub), (Aut::Run, None));
+    fn a_press_shows_the_shared_hold_and_full_lines() {
+        let on = state(true, Some(true), Some("F"), two_tuning());
+        let off_state = state(false, Some(true), Some("F"), two_tuning());
+        let sub = |s: &AutotuneState, fill| autotune_look(Some(s), fill).sub.unwrap();
+        assert_eq!(sub(&on, Fill::Filling), hold_text(true));
+        assert_eq!(sub(&off_state, Fill::Filling), hold_text(false));
+        assert_eq!(sub(&on, Fill::Full), full_text(true));
+        assert_eq!(sub(&off_state, Fill::Full), full_text(false));
+        // The light and the pill stay.
+        let held = autotune_look(Some(&on), Fill::Full);
+        assert_eq!((held.lit, held.aut), (true, Aut::Run));
     }
 
     #[test]
-    fn the_pill_is_outlined_while_live_disagrees_with_the_transport_after_settling() {
-        // The transport just changed: Live reads as the rule sets it (its
-        // write is on its way), the light as it is.
-        let settling = |playing, states: &[TargetState]| {
-            autotune_look(Some(&state(true, Some(playing), states)), Fill::None, true)
-        };
+    fn a_tap_opens_the_panel_only_on_this_connections_state_while_online() {
+        let s = state(true, Some(true), Some("F"), two_tuning());
+        assert!(tap_opens_panel(Some(&s), true));
+        assert!(!tap_opens_panel(Some(&s), false), "not connected");
+        assert!(!tap_opens_panel(None, true), "no state on this connection");
+        assert!(!tap_opens_panel(None, false));
+    }
+
+    #[test]
+    fn panel_rows_carry_every_chip_the_key_and_the_switch() {
+        let s = state(
+            true,
+            Some(true),
+            Some("F"),
+            vec![
+                singer("VOX1", Tune, Tune),
+                off(singer("VOX3", Dry, Dry)),
+                singer("VOX4", NoTrack, Tune),
+                bad(singer("VOX5", Dry, Tune), "stream Key reads G, wrote F"),
+                singer("VOX7", Tune, NoTrack),
+            ],
+        );
+        let rows = panel_rows(&s);
+        let chips: Vec<(&str, bool, &str, bool)> = rows
+            .iter()
+            .map(|r| (r.stream.text, r.stream.on, r.pa.text, r.pa.on))
+            .collect();
         assert_eq!(
-            settling(true, &[Off, Off]),
-            RailLook {
-                lit: false,
-                aut: Aut::Run,
-                sub: Some("hrá · zapnutý".into()),
-                low: false,
-                mixed: false,
+            chips,
+            vec![
+                ("stream TUNE", true, "PA TUNE", true),
+                ("stream DRY", false, "PA DRY", false),
+                ("stream —", false, "PA TUNE", true),
+                ("stream DRY", false, "PA TUNE", true),
+                ("stream TUNE", true, "PA —", false),
+            ]
+        );
+        assert_eq!(
+            rows[0],
+            PanelRow {
+                id: "VOX1".into(),
+                label: "Vox 1".into(),
+                stream: Chip {
+                    text: "stream TUNE",
+                    on: true
+                },
+                pa: Chip {
+                    text: "PA TUNE",
+                    on: true
+                },
+                key: "F ✓".into(),
+                ok: true,
+                off: false,
+                switch: Some("OFF"),
+                why: None,
             }
         );
+        assert_eq!((rows[1].off, rows[1].switch), (true, Some("ON")));
+        assert_eq!(rows[3].key, "!");
+        assert!(!rows[3].ok);
         assert_eq!(
-            settling(false, &[On, On]),
-            RailLook {
-                lit: true,
-                aut: Aut::Run,
-                sub: Some("stojí · vypnutý".into()),
-                low: false,
-                mixed: false,
-            }
+            rows[3].why.as_deref(),
+            Some("Vox 5: stream Key reads G, wrote F · on DRY, rewrite at the next change")
         );
-        let mixed = settling(true, &[On, Off]);
+        assert_eq!(rows[4].why, None);
+        // The switch's value: off by hand, or back on.
+        assert_eq!(switch_value(&rows[0]), ("VOX1".to_string(), true));
+        assert_eq!(switch_value(&rows[1]), ("VOX3".to_string(), false));
+        // Without a key in force, and a bad row with no words of the hub's.
+        let mut keyless = state(true, Some(true), None, vec![singer("VOX1", Dry, Dry)]);
+        let mut wordless = bad(singer("VOX2", Dry, Dry), "x");
+        wordless.why = None;
+        keyless.singers.push(wordless);
+        let rows = panel_rows(&keyless);
+        assert_eq!(rows[0].key, "—");
         assert_eq!(
-            (mixed.aut, mixed.sub.as_deref(), mixed.mixed),
-            (Aut::Run, Some("hrá · zapnutý"), true)
+            rows[1].why.as_deref(),
+            Some("Vox 2: key not confirmed · on DRY, rewrite at the next change")
         );
-        // A match reads the same settled or not.
-        for (playing, states) in [(true, [On, On]), (false, [Off, Off])] {
-            assert_eq!(
-                settling(playing, &states),
-                look(&state(true, Some(playing), &states))
-            );
-        }
-        // Without AUT or with the transport unknown: as before.
+        // A target that names no singer has no manual off.
+        let lone = state(true, Some(true), Some("F"), vec![singer("", Dry, Dry)]);
+        assert_eq!(panel_rows(&lone)[0].switch, None);
+    }
+
+    #[test]
+    fn the_panel_head_names_the_song_and_the_key() {
+        let s = state(true, Some(true), Some("F"), Vec::new());
+        assert_eq!(panel_head(&s), "song 031 · F");
+        let mut other = state(true, Some(true), Some("F#m"), Vec::new());
+        other.song = Some(7);
+        assert_eq!(panel_head(&other), "song 007 · F#m");
+        other.song = Some(165);
+        other.key = None;
+        assert_eq!(panel_head(&other), "song 165 · —");
+        other.song = None;
+        assert_eq!(panel_head(&other), "no song");
+    }
+
+    #[test]
+    fn the_panel_foot_counts_the_song_map_and_names_the_bar() {
+        let mut s = state(true, Some(true), Some("F"), Vec::new());
+        s.map_keyed = 165;
+        s.map_changes = 8;
+        s.map_problems = 1;
+        s.bar = Some("F Major".into());
         assert_eq!(
-            autotune_look(Some(&state(false, Some(true), &[Off])), Fill::None, true),
-            look(&state(false, Some(true), &[Off]))
+            panel_foot(&s),
+            [
+                "Song map: 165 songs with a key, 8 key changes, 1 problem.".to_string(),
+                "Live: F Major. Hold AUTOTUNE 1 s: AUT on/off.".to_string(),
+            ]
         );
+        s.map_keyed = 1;
+        s.map_changes = 1;
+        s.map_problems = 0;
+        s.bar = None;
         assert_eq!(
-            autotune_look(Some(&state(true, None, &[On, Off])), Fill::None, true),
-            look(&state(true, None, &[On, Off]))
+            panel_foot(&s),
+            [
+                "Song map: 1 song with a key, 1 key change, 0 problems.".to_string(),
+                "Live: —. Hold AUTOTUNE 1 s: AUT on/off.".to_string(),
+            ]
+        );
+        s.map_keyed = 0;
+        s.map_changes = 2;
+        s.map_problems = 3;
+        assert_eq!(
+            panel_foot(&s)[0],
+            "Song map: 0 songs with a key, 2 key changes, 3 problems."
         );
     }
 
     #[test]
-    fn a_press_shows_its_hold_and_full_lines_and_keeps_the_rest() {
-        let playing = state(true, Some(true), &[On]);
-        let off = state(false, None, &[On, Off]);
-        let line = |s: &AutotuneState, fill| autotune_look(Some(s), fill, false).sub;
-        assert_eq!(
-            line(&playing, Fill::Filling).as_deref(),
-            Some("drž… vypína AUT")
-        );
-        assert_eq!(
-            line(&off, Fill::Filling).as_deref(),
-            Some("drž… zapína AUT")
-        );
-        assert_eq!(
-            line(&playing, Fill::Full).as_deref(),
-            Some("pusť — vypne AUT")
-        );
-        assert_eq!(line(&off, Fill::Full).as_deref(), Some("pusť — zapne AUT"));
-        // The light, the pill and the ring stay what they were.
-        let held = autotune_look(
-            Some(&state(true, Some(true), &[On, Off])),
-            Fill::Full,
-            false,
-        );
-        assert_eq!((held.lit, held.aut, held.mixed), (false, Aut::Held, true));
-        let filling = autotune_look(Some(&playing), Fill::Filling, false);
-        assert_eq!(
-            (filling.lit, filling.aut, filling.mixed),
-            (true, Aut::Run, false)
-        );
+    fn the_panel_opens_beside_the_column_inside_the_screen() {
+        assert_eq!(PANEL_GAP, 8.0);
+        // Room below the button: its top at the button's.
+        assert_eq!(panel_place(663.0, 300.0, 834.0, 400.0), (671.0, 300.0));
+        // A button low on the screen: the panel up to fit, 8 px above the
+        // foot (834 - 400 - 8 = 426).
+        assert_eq!(panel_place(663.0, 500.0, 834.0, 400.0), (671.0, 426.0));
+        assert_eq!(panel_place(663.0, 426.0, 834.0, 400.0), (671.0, 426.0));
+        // Taller than the screen: 8 px from its top.
+        assert_eq!(panel_place(497.0, 120.0, 390.0, 600.0), (505.0, 8.0));
+        // A button near the top: never above 8 px.
+        assert_eq!(panel_place(663.0, 2.0, 834.0, 400.0), (671.0, 8.0));
+        assert_eq!(panel_place(663.0, 8.0, 834.0, 400.0), (671.0, 8.0));
     }
 }
