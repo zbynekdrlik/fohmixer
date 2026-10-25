@@ -212,7 +212,10 @@ pub fn still_flying(flying: &[Flying], now: Option<bool>) -> Vec<Flying> {
 
 /// The writes on their way once write `write`'s answer came (`ok`: it
 /// went): a failed one never lands; one that went is answered (its echo,
-/// if any, is the next value).
+/// if any, is the next value), and so is every earlier one, failed or not
+/// (PR #147 re-review R9: Live runs one connection's calls in order, so
+/// the answer proves they ran; an echo of theirs coalesced away leaves
+/// none of them on its way for good).
 pub fn answered_flying(flying: &[Flying], write: u64, ok: bool) -> Vec<Flying> {
     flying
         .iter()
@@ -220,7 +223,7 @@ pub fn answered_flying(flying: &[Flying], write: u64, ok: bool) -> Vec<Flying> {
         .map(|f| Flying {
             write: f.write,
             on: f.on,
-            answered: f.answered || f.write == write,
+            answered: f.answered || f.write <= write,
         })
         .collect()
 }

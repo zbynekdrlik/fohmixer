@@ -710,8 +710,27 @@ async fn a_write_live_did_not_answer_stays_on_its_way_and_a_ref_gone_walks_again
     assert_eq!(router.autotune.targets[STREAM].writing_now(), Some(false));
     assert!(router.autotune.targets[STREAM].sure);
     assert_eq!(writes(&steps(&records_rx)), Vec::<Value>::new());
-    // A ref gone: off its way, unconfirmed until the walk that follows.
+    // A timeout is the same (PR #147 re-review R11): Live may run it late.
     let write = router.autotune.targets[STREAM].writing[0].write;
+    router.autotune_written(
+        "band",
+        write,
+        &[(STREAM.to_string(), "p7".to_string(), false)],
+        &Err("no result within 3 s".to_string()),
+    );
+    assert_eq!(walk_of(&router, STREAM), before, "not walked");
+    assert_eq!(router.autotune.targets[STREAM].writing_now(), Some(false));
+    assert!(router.autotune.targets[STREAM].sure);
+    let got = steps(&records_rx);
+    assert_eq!(
+        got,
+        vec![
+            json!({"step": "failed", "instance": "band", "target": "live_set tracks 7",
+                    "problem": "no result within 3 s"})
+        ]
+    );
+    assert_eq!(writes(&got), Vec::<Value>::new());
+    // A ref gone: off its way, unconfirmed until the walk that follows.
     let stale = json!({"ok": false, "error": "stale ref", "errorType": "StaleRef"});
     router.autotune_written(
         "band",

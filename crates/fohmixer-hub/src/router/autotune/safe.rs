@@ -39,8 +39,10 @@
 //!   registration that only adds a target takes no selector DRY, and one
 //!   that drops a selector's write does: every change decides the set.
 //! - **It waits** while a DRY write of a target let go is on its way (PR
-//!   #147 review I3) and while a kept target whose values changed waits for
-//!   its walk (I4): the script keeps the list it holds until then.
+//!   #147 review I3) and while any target, found or not, waits for its
+//!   walk unconfirmed (I4, re-review R1): the script keeps the list it
+//!   holds until then. An unconfirmed target whose walk gave up is left
+//!   out of the list (re-review R8).
 //!
 //! Nothing here writes a selector.
 
@@ -215,14 +217,17 @@ impl AutotuneIo {
             .collect()
     }
 
-    /// `set`'s DRY writes: each found target's macro `$ref` with its off
-    /// value, in the layout's order (Live's), whatever AUT is.
+    /// `set`'s DRY writes: each found and confirmed target's macro `$ref`
+    /// with its off value, in the layout's order (Live's), whatever AUT is.
     pub(super) fn safe_list(&self, set: &str) -> Vec<(String, u8)> {
         self.keys_in_order(set)
             .iter()
             .filter_map(|key| {
                 let target = self.targets.get(key)?;
-                let found = target.found.as_ref()?;
+                // An unconfirmed one is left out (PR #147 re-review R8):
+                // its ref may be of a track an older layout named there,
+                // also once its walk gave up; it is DRY and written nothing.
+                let found = target.found.as_ref().filter(|_| target.sure)?;
                 Some((found.id.clone(), target.spec.off))
             })
             .collect()
@@ -242,8 +247,9 @@ impl Router {
 
     /// [`Router::autotune_safe`] with `failures` already counted (a retry).
     /// It also waits while a DRY write of a target let go is on its way
-    /// (PR #147 review I3) or a target whose values changed waits for its
-    /// walk (I4): the script keeps the list it holds meanwhile.
+    /// (PR #147 review I3) or any target waits for its walk unconfirmed
+    /// (`Target::awaits_walk`, I4, re-review R1): the script keeps the list
+    /// it holds meanwhile.
     fn autotune_safe_now(&mut self, instance: &str, failures: u32) {
         let holding = self.autotune.held.contains(instance);
         if !may_write(holding, self.reverb_settled(instance))

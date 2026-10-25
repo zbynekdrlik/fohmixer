@@ -2224,3 +2224,80 @@ async fn a_list_sent_over_one_still_on_its_way_narrows_what_the_script_may_hold(
     assert_eq!(decisions(&mut router)[1], off(SwitchWhy::Unarmed));
     drop(without);
 }
+
+#[tokio::test]
+async fn a_walk_that_gives_up_unconfirmed_leaves_its_target_out_of_the_registered_list() {
+    // PR #147 re-review R8: two track-list changes in one hold; the PA's
+    // walk after the second gives up, keeping the ref the first change's
+    // walk found, which an older layout named at its index.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, _rx) = tuning(dir.path()).await;
+    let seq = router.autotune.safe["band"].seq;
+    router.autotune_tracks("band");
+    live.settle(&mut router).await;
+    find(
+        &mut router,
+        PA,
+        Found {
+            id: "p8".into(),
+            ..rack(6)
+        },
+    );
+    find(&mut router, STREAM, rack(7));
+    router.autotune_tracks("band");
+    find(&mut router, STREAM, rack(7));
+    let walk = router.autotune.targets[PA].walk;
+    for _ in 0..=super::super::super::retries::CONNECT_RETRIES {
+        router.autotune_walk_failed(PA, walk, "no result within 3 s".into());
+    }
+    let pa = &router.autotune.targets[PA];
+    assert!(pa.problem.as_deref().is_some_and(|p| p.contains("gave up")));
+    assert_eq!(pa.found.as_ref().map(|f| f.id.as_str()), Some("p8"));
+    assert!(!pa.sure);
+    // The layout ends the hold: the stream registers, never the PA by
+    // `p8`.
+    router.handle(layout(
+        2,
+        vec![target(6, "Vox 5", (0, 127), Some("VOX1")), stream()],
+    ));
+    let safe = &router.autotune.safe["band"];
+    assert!(safe.seq > seq, "registered");
+    assert_eq!(safe.list, vec![("p7".to_string(), 0)]);
+    live.settle(&mut router).await;
+    assert!(live.written().iter().flatten().all(|(id, _)| id != "p8"));
+}
+
+#[tokio::test]
+async fn a_stop_after_a_lost_write_and_an_answered_one_writes_dry_at_once() {
+    // PR #147 re-review R9: the stop's DRY goes unanswered, the start's
+    // chain is answered, and its value comes while the markers are
+    // unsettled (no decision then); the next stop writes DRY.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, _rx) = tuning(dir.path()).await;
+    transport(&mut router, false);
+    let lost = live.next("the stop's DRY", is_selector_write);
+    drop(lost);
+    written_handled(&mut router, &mut live).await;
+    assert_eq!(router.autotune.targets[PA].writing_now(), Some(false));
+    transport(&mut router, true);
+    let chain = live.next("the start's chain", is_selector_write);
+    assert_eq!(
+        chain.commands,
+        selector_commands(&[("p6", 0.0), ("p7", 127.0)])
+    );
+    let echoes = live.answer_quiet(chain);
+    written_handled(&mut router, &mut live).await;
+    router.markers_pending = Some(Vec::new());
+    for (id, value) in &echoes {
+        deliver_macro(&mut router, id, *value);
+    }
+    assert!(router.autotune.targets[PA].writing.is_empty());
+    assert!(router.autotune.targets[STREAM].writing.is_empty());
+    router.markers_pending = None;
+    transport(&mut router, false);
+    let dry = live.next("the second stop's DRY", is_selector_write);
+    assert_eq!(
+        dry.commands,
+        selector_commands(&[("p6", 127.0), ("p7", 0.0)])
+    );
+}
