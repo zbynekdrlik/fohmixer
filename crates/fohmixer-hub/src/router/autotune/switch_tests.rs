@@ -1351,11 +1351,14 @@ async fn a_write_that_meets_the_markers_unsettled_holds_the_set_dry_first() {
         decisions(&mut router),
         [off(SwitchWhy::Held), off(SwitchWhy::Held)]
     );
-    // The walks answer: both tune again.
+    // The walks answer: each tunes again once its own walk confirmed it.
     find(&mut router, PA, rack(6));
     find(&mut router, STREAM, rack(7));
     live.settle(&mut router).await;
-    assert_eq!(live.written(), vec![batch(&[("p6", 0.0), ("p7", 127.0)])]);
+    assert_eq!(
+        live.written(),
+        vec![batch(&[("p6", 0.0)]), batch(&[("p7", 127.0)])]
+    );
     assert_eq!(decisions(&mut router), [on(), on()]);
 }
 
@@ -1865,10 +1868,16 @@ async fn a_selector_write_live_refuses_gets_one_retry_then_the_hub_stops() {
         router.autotune.state().singers[0].why.as_deref(),
         Some(format!("stream: Live refuses its selector: {DISABLED}").as_str())
     );
-    // A key change, a value heard: still nothing more to it.
+    // A key change is a new decision (DRY while its key is written, then
+    // the chain again): the chain asked once more and its retry, then the
+    // hub stops again.
     deliver(&mut router, TIME, 55.0);
     live.settle(&mut router).await;
-    assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new());
+    assert_eq!(
+        live.written(),
+        vec![batch(&[("p7", 127.0)]), batch(&[("p7", 127.0)])]
+    );
+    assert_eq!(decisions(&mut router), [on(), off(SwitchWhy::Problem)]);
     // A stop is a new decision: the refusal ends (Live shows DRY there).
     transport(&mut router, false);
     live.settle(&mut router).await;
