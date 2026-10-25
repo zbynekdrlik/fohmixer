@@ -341,13 +341,19 @@ fn fly(write: u64, on: bool, answered: bool) -> Flying {
 
 #[test]
 fn a_value_at_a_write_on_its_way_lands_it_and_every_one_before() {
-    // PR #147 review I1: Live takes the hub's writes in order.
+    // PR #147 review I1: Live takes the hub's writes in order. A value at
+    // the chain lands the first write at it (PR #147 re-review R5): the
+    // DRY and the chain after it stay on their way, so their echoes are
+    // still the hub's own.
     let flying = [
         fly(1, true, false),
         fly(2, false, false),
         fly(3, true, false),
     ];
-    assert_eq!(still_flying(&flying, Some(true)), vec![]);
+    assert_eq!(
+        still_flying(&flying, Some(true)),
+        vec![fly(2, false, false), fly(3, true, false)]
+    );
     assert_eq!(
         still_flying(&flying, Some(false)),
         vec![fly(3, true, false)]
