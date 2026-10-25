@@ -373,8 +373,7 @@ fn transport(router: &mut Router, playing: bool) {
     router.on_transport(TRANSPORT, &json!(playing));
 }
 
-/// AUTOTUNE AUT on from inside (the PR #147 rulings: a page's AUT on is
-/// refused until #140 PR 3c), as page 1's.
+/// AUTOTUNE AUT on, as page 1's hold sets it (#140 PR 3c).
 fn aut_on(router: &mut Router) {
     router.autotune_flag(1, true);
 }
@@ -1073,9 +1072,8 @@ async fn a_singer_off_is_kept_across_a_restart() {
         autotune_off: vec!["VOX1".into()],
     };
     let (mut router, mut live, _rx) = ready(dir.path(), state).await;
-    // A saved AUT on stays off until #140 PR 3c (the PR #147 rulings).
-    assert!(!router.autotune.state().aut);
-    aut_on(&mut router);
+    // A saved AUT on is honoured at the start (#140 PR 3c).
+    assert!(router.autotune.state().aut);
     transport(&mut router, true);
     live.settle(&mut router).await;
     assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new());

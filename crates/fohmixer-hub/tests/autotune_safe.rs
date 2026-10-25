@@ -3,8 +3,8 @@
 //! `Stream FX`, `+AUTOTUNE`: on 127, off 0; a PA track's rack on top,
 //! `+AUTOTUNE:0`: on 0, off 127, standing on DRY; one song in C; invented
 //! names). The hub finds the three targets and registers each selector's
-//! DRY write with the script, AUT off (a page's AUT on is refused until
-//! #140 PR 3c); another writer then moves every selector to its chain
+//! DRY write with the script, AUT off (the rule's own switch-on is
+//! `tests/autotune_switch.rs`'); another writer then moves every selector to its chain
 //! twice within 10 s, so the hub writes it DRY once and then stops (spec
 //! §7); every selector then reads DRY within 2 s through a raw `get` of the
 //! host's script, the script's log saying so once, when the hub is gone:

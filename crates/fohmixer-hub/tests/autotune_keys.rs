@@ -11,8 +11,8 @@
 //! words and retried once, a released one written, another writer shown
 //! and not fought, a set load written again. With AUTOTUNE AUT off no
 //! selector moves (SimLive's per-object set count: the PA rack stands on
-//! DRY, its macro at 127, the stream racks' at 0); AUT on is refused until
-//! #140 PR 3c and the tap since PR 3b.
+//! DRY, its macro at 127, the stream racks' at 0); AUT on is taken (#140
+//! PR 3c lifted 3b's refusal) and the tap refused (since PR 3b).
 #![cfg(unix)]
 
 mod support;
@@ -652,7 +652,7 @@ fn a_reconnect_writes_the_key_again() {
 }
 
 #[test]
-fn aut_on_and_a_tap_are_refused_end_to_end() {
+fn aut_on_is_taken_and_a_tap_refused_end_to_end() {
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -662,8 +662,9 @@ fn aut_on_and_a_tap_are_refused_end_to_end() {
         hub.status_until(SECS_5, |s| keyed(s) && s.instances[0].playing.is_some())
             .await;
         let mut a = hub.client().await;
-        // Live plays. The transport's own `autotune` message (playing)
-        // comes first, so every later one is a re-tell (PR 2a review M7).
+        // Live plays between the songs. The transport's own `autotune`
+        // message (playing) comes first, so every later one is a re-tell
+        // (PR 2a review M7).
         transport(&mut a, "start_playing").await;
         a.wait(SECS_5, |m| match m {
             ServerMsg::Autotune(s) if s.playing == Some(true) => Some(()),
@@ -671,8 +672,7 @@ fn aut_on_and_a_tap_are_refused_end_to_end() {
         })
         .await;
         a.clear();
-        // AUT on is refused until #140 PR 3c (the PR #147 rulings), as the
-        // tap is (#140 PR 3b).
+        // AUT on is taken (#140 PR 3c), the tap refused (#140 PR 3b).
         for (key, value) in [("autotune_aut", true), ("autotune", true)] {
             a.send(&ClientMsg::SetHub {
                 key: key.into(),
@@ -680,7 +680,11 @@ fn aut_on_and_a_tap_are_refused_end_to_end() {
             })
             .await;
         }
-        let records = hub.events_until(SECS_5, |r| count(r, "refused") == 2).await;
+        let records = hub
+            .events_until(SECS_5, |r| {
+                count(r, "refused") == 1 && count(r, "flag") == 1
+            })
+            .await;
         let refused: Vec<Value> = records
             .iter()
             .filter(|r| r["ev"] == "autotune" && r["step"] == "refused")
@@ -688,19 +692,13 @@ fn aut_on_and_a_tap_are_refused_end_to_end() {
             .collect();
         assert_eq!(
             refused,
-            vec![
-                json!([
-                    "aut",
-                    "AUTOTUNE AUT stays off until the new AUTOTUNE button (#140 PR 3c)"
-                ]),
-                json!([
-                    "tap",
-                    "the AUTOTUNE tap is gone; a tap opens the singers' panel"
-                ])
-            ]
+            vec![json!([
+                "tap",
+                "the AUTOTUNE tap is gone; a tap opens the singers' panel"
+            ])]
         );
-        assert_eq!(count(&records, "flag"), 0);
-        // The page is told the state again, once per refusal: AUT off.
+        assert_eq!(count(&records, "flag"), 1);
+        // The page is told AUT on, then the state again for the refusal.
         let mut told = Vec::new();
         let deadline = Instant::now() + SECS_5;
         while told.len() < 2 {
@@ -722,7 +720,8 @@ fn aut_on_and_a_tap_are_refused_end_to_end() {
             }
         }
         assert_eq!(told.len(), 2, "{told:?}");
-        assert!(told.iter().all(|s| !s.aut && s.playing == Some(true)));
+        assert!(told.iter().all(|s| s.aut && s.playing == Some(true)));
+        // Out of every song: nothing tunes, no selector moved.
         no_selector_moved(&mut a, &mut host, DRY, 0).await;
         let status = hub.status().await;
         assert_eq!(
@@ -731,7 +730,7 @@ fn aut_on_and_a_tap_are_refused_end_to_end() {
                 status.autotune.writes,
                 status.autotune.taps
             ),
-            (false, 0, 0)
+            (true, 0, 0)
         );
         transport(&mut a, "stop_playing").await;
         a.close().await;

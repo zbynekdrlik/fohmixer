@@ -521,10 +521,10 @@ impl Router {
     }
 
     /// A page's AUTOTUNE tap (`what` `tap`), refused since #140 PR 3b (the
-    /// tap is gone; in PR 3c's surface a tap opens the singers' panel), or
-    /// its AUTOTUNE AUT on (`aut`, until PR 3c: the PR #147 rulings), and
-    /// why: recorded, and that page told the state again (its button shows
-    /// what the hub holds); nothing is written and nothing saved.
+    /// tap is gone; in PR 3c's surface a tap opens the singers' panel and
+    /// sends nothing), and why: recorded, and that page told the state
+    /// again (its button shows what the hub holds); nothing is written and
+    /// nothing saved.
     pub(super) fn autotune_refused(&self, client: ClientId, what: &str, why: &str) {
         self.autotune_step(
             Step::Refused {
