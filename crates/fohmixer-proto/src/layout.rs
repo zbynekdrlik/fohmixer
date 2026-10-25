@@ -232,12 +232,15 @@ pub struct AutotuneTarget {
 
 /// A target's singer (#140 PR 3b, spec §7): its singer's id (`+ID`, the
 /// paired `+MUTE`), or `#<label>` for a singer of its own (an id never
-/// starts with `#`: [`crate::markers::valid_group_name`]).
-pub fn singer_of(target: &AutotuneTarget) -> String {
+/// starts with `#`: [`crate::markers::valid_group_name`]). None for a
+/// target with neither an id nor a label of its own: a placeholder label
+/// (`#<index + 1>`) names a track index, never a singer (PR #147 review
+/// N6), so such a target has no manual off.
+pub fn singer_of(target: &AutotuneTarget) -> Option<String> {
     target
         .singer
         .clone()
-        .unwrap_or_else(|| format!("#{}", target.label))
+        .or_else(|| (!target.label.starts_with('#')).then(|| format!("#{}", target.label)))
 }
 
 /// A strip: its binding, its kind, and how it is drawn and guarded.

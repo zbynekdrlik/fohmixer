@@ -1918,7 +1918,10 @@ fn a_pa_tuner_names_its_singer_by_its_id() {
     assert_eq!(targets.len(), 1);
     assert_eq!(targets[0].singer.as_deref(), Some("VOX1"));
     assert!(!targets[0].two_singers);
-    assert_eq!(crate::layout::singer_of(&targets[0]), "VOX1");
+    assert_eq!(
+        crate::layout::singer_of(&targets[0]).as_deref(),
+        Some("VOX1")
+    );
     // Its own `+ID` comes first, also beside two `+MUTE` ids.
     let m = parse(r#""Vox 1" +G:VOCALS +ID:VOX1 +MUTE:A +MUTE:B +AUTOTUNE:0"#);
     assert_eq!(singer(&m), Some("VOX1".to_string()));
@@ -1985,11 +1988,14 @@ fn a_tagged_track_without_ids_is_a_singer_of_its_own() {
     let (targets, _) = autotune_of(&[(6, r#""Vox 7" +G:VOCALS +AUTOTUNE"#)]);
     assert_eq!(targets[0].singer, None);
     assert!(!targets[0].two_singers);
-    assert_eq!(crate::layout::singer_of(&targets[0]), "#Vox 7");
+    assert_eq!(
+        crate::layout::singer_of(&targets[0]).as_deref(),
+        Some("#Vox 7")
+    );
     assert_eq!(singer(&parse("+AUTOTUNE")), None);
     let mut named = targets[0].clone();
     named.singer = Some("VOX7".into());
-    assert_eq!(crate::layout::singer_of(&named), "VOX7");
+    assert_eq!(crate::layout::singer_of(&named).as_deref(), Some("VOX7"));
     assert_eq!(
         serde_json::to_value(&named).unwrap()["singer"],
         json!("VOX7")
@@ -2000,6 +2006,20 @@ fn a_tagged_track_without_ids_is_a_singer_of_its_own() {
         "label": "Vox 7", "on": 127, "off": 0}))
     .unwrap();
     assert_eq!(older, targets[0]);
+}
+
+#[test]
+fn a_placeholder_label_names_no_singer() {
+    // PR #147 review N6: `#<index + 1>` follows the track's index, never a
+    // singer, so a Tuner with no id and no label of its own names none.
+    let (targets, _) = autotune_of(&[(6, "+AUTOTUNE")]);
+    assert_eq!(targets[0].label, "#7");
+    assert_eq!(targets[0].singer, None);
+    assert_eq!(crate::layout::singer_of(&targets[0]), None);
+    // An id still names one, a placeholder label or not.
+    let mut paired = targets[0].clone();
+    paired.singer = Some("VOX1".into());
+    assert_eq!(crate::layout::singer_of(&paired).as_deref(), Some("VOX1"));
 }
 
 #[test]

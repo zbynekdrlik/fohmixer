@@ -671,9 +671,10 @@ pub enum TrackState {
 }
 
 /// One singer in [`AutotuneState`] (#140 PR 3b, spec §2.2, §9): its id
-/// (`layout::singer_of`), its label, its stream and PA tracks, whether it
-/// is off by hand, whether its tracks' keys and targets are fine, and why
-/// not (`stream Key reads G, wrote F`).
+/// (`layout::singer_of`; empty for a target that names no singer, which
+/// has no manual off: PR #147 review N6), its label, its stream and PA
+/// tracks, whether it is off by hand, whether its tracks' keys and targets
+/// are fine, and why not (`stream Key reads G, wrote F`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SingerState {
     pub id: String,
