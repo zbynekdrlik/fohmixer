@@ -11,8 +11,9 @@
 }
 
 /* Over the strips, beside the column, while open: placed on the screen at
-   the tap (`--tp-left`, `--tp-top`: behave::autotune::panel_place), kept
-   inside it; it scrolls when the screen is lower than it. Inside the
+   the tap and again at a resize (`--tp-left`, `--tp-top`, `--tp-max`:
+   behave::autotune::panel_place), kept inside it; it scrolls when the
+   screen is lower than it. Inside the
    column (the page's top layer), which sets no transform, so `fixed` is
    the screen's. */
 .tpanel {
@@ -21,7 +22,9 @@
     top: var(--tp-top, 8px);
     z-index: 20;
     width: min(520px, calc(100vw - var(--tp-left, 8px) - 8px));
-    max-height: calc(100vh - var(--tp-top, 8px) - 8px);
+    /* The most it may be high where it opens (panel_place: never over the
+       button on a phone held upright); it scrolls past that. */
+    max-height: var(--tp-max, calc(100vh - 16px));
     overflow-x: hidden;
     overflow-y: auto;
     padding: 10px;
@@ -177,8 +180,9 @@
 }
 
 /* A phone held upright (mockup v2, cell 16): the panel at the screen's
-   full width; on its side (cell 17) beside the column, its chips on two
-   lines when the room is short. */
+   full width, below or above the AUTOTUNE button (never over it); on its
+   side (cell 17) beside the column, its chips on two lines when the room
+   is short. */
 @media (max-width: 520px) {
     .tpanel {
         left: 8px;

@@ -42,12 +42,12 @@ use super::{
     slot_of, trace_rail,
 };
 use crate::behave::autotune::{
-    autotune_look, autotune_ready, has_problem, state_name, tap_opens_panel,
+    Anchor, autotune_look, autotune_ready, dismisses, has_problem, state_name, tap_opens_panel,
 };
 use crate::behave::hold::{Hold, Lift};
 use crate::behave::rail::{
     AUT_BADGE, Aut, Fill, RAIL_HOLD_MS, RailLook, Rule, SETTLE_MS, cancels, fill_of, full_step,
-    hold_step, hold_value, rail_press, restarted, settling, stage_look, stale_press,
+    hold_step, hold_value, rail_press, ready_hold, restarted, settling, stage_look, stale_press,
     transport_changed,
 };
 use crate::behave::reverb::{reverb_look, reverb_ready, tap_step, tap_value};
@@ -130,9 +130,9 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
     let transport_before = StoredValue::new(None::<bool>);
     let settle_check = StoredValue::new(None::<TimeoutHandle>);
     let any_down = StoredValue::new_local(None::<DownListener>);
-    // AUTOTUNE's panel: open with where it opens (the column's right edge
-    // and the button's top on the screen), or closed.
-    let open = RwSignal::new(None::<(f64, f64)>);
+    // AUTOTUNE's panel: open with where it opens from (the column's right
+    // edge, the button's top and bottom on the screen), or closed.
+    let open = RwSignal::new(None::<Anchor>);
     // The timers and the page's listener go with the button (the cleanup
     // writes no signal of its own).
     on_cleanup(move || {
@@ -201,12 +201,33 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
             .flatten(),
     };
     let connected = move || store.connected.try_get().unwrap_or(false);
+    // STAGE: its mics' readiness; REVERB and AUTOTUNE: waiting before the
+    // hub's state, red (I5) without a reverb fader or a found target.
+    let state = Memo::new(move |_| {
+        let ready = match (rule, slot) {
+            (_, Some(slot)) => return readiness(&[slot]),
+            (Rule::Autotune, None) => store
+                .autotune
+                .try_with(|a| autotune_ready(a.shown()))
+                .flatten(),
+            (_, None) => store.reverb.try_with(|r| reverb_ready(r.shown())).flatten(),
+        };
+        match ready {
+            None => Readiness::Waiting,
+            Some(false) => Readiness::Unresolved,
+            Some(true) => Readiness::Ready,
+        }
+    });
+    // REVERB and AUTOTUNE hold only while ready: a red or waiting button's
+    // hold does nothing (PR #150 review M2, the mockup's cell 13); STAGE's
+    // flag needs no mics.
+    let ready = move |state: Option<Readiness>| is_stage || state == Some(Readiness::Ready);
     // The fill and the hold's lines: only for a press that can act.
     let fill = Memo::new(move |_| {
         fill_of(
             holding.try_get().unwrap_or(false),
             full.try_get().unwrap_or(false),
-            fresh_aut(),
+            ready_hold(fresh_aut(), ready(state.try_get())),
             connected(),
         )
     });
@@ -231,23 +252,6 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
                 .unwrap_or_else(|| reverb_look(None, fill)),
         }
     });
-    // STAGE: its mics' readiness; REVERB and AUTOTUNE: waiting before the
-    // hub's state, red (I5) without a reverb fader or a found target.
-    let state = Memo::new(move |_| {
-        let ready = match (rule, slot) {
-            (_, Some(slot)) => return readiness(&[slot]),
-            (Rule::Autotune, None) => store
-                .autotune
-                .try_with(|a| autotune_ready(a.shown()))
-                .flatten(),
-            (_, None) => store.reverb.try_with(|r| reverb_ready(r.shown())).flatten(),
-        };
-        match ready {
-            None => Readiness::Waiting,
-            Some(false) => Readiness::Unresolved,
-            Some(true) => Readiness::Ready,
-        }
-    });
     // The flight recorder hears each step with the keys the button writes
     // (none for REVERB and AUTOTUNE: the hub writes).
     let step = move |what: &str, pointer: i32| {
@@ -260,7 +264,32 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
     // connection, else refused. AUTOTUNE: the singers' panel closed when
     // open, else opened beside the column on the same condition (sends
     // nothing).
+    // Where the panel opens from now: the column's right edge and the
+    // button's top and bottom on the screen (at the tap, and again at every
+    // resize: PR #150 review N3).
+    let anchor_now = move || {
+        root.try_get_untracked().flatten().map(|el| {
+            let button = el.get_bounding_client_rect();
+            let column = el
+                .closest(".column")
+                .ok()
+                .flatten()
+                .map_or(button.right(), |c| c.get_bounding_client_rect().right());
+            Anchor {
+                column_right: column,
+                button_top: button.top(),
+                button_bottom: button.bottom(),
+            }
+        })
+    };
     let tap = move |pointer: i32| {
+        // An open panel closes at a tap on AUTOTUNE in every state of the
+        // button (PR #150 review N1).
+        if rule == Rule::Autotune && open.try_get_untracked().flatten().is_some() {
+            step("tap", pointer);
+            let _ = open.try_set(None);
+            return;
+        }
         if let Some(slot) = slot {
             step("tap", pointer);
             if readiness_now(&[slot]) != Readiness::Ready {
@@ -279,11 +308,6 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
         }
         let online = store.connected.try_get_untracked().unwrap_or(false);
         if rule == Rule::Autotune {
-            if open.try_get_untracked().flatten().is_some() {
-                step("tap", pointer);
-                let _ = open.try_set(None);
-                return;
-            }
             let opens = store
                 .autotune
                 .try_with_untracked(|a| tap_opens_panel(a.fresh(), online))
@@ -294,15 +318,7 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
                 return;
             }
             step("tap", pointer);
-            let anchor = root.try_get_untracked().flatten().map(|el| {
-                let button = el.get_bounding_client_rect();
-                let column = el
-                    .closest(".column")
-                    .ok()
-                    .flatten()
-                    .map_or(button.right(), |c| c.get_bounding_client_rect().right());
-                (column, button.top())
-            });
+            let anchor = anchor_now();
             let _ = open.try_set(anchor);
             return;
         }
@@ -326,6 +342,8 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
                 .unwrap_or(false);
             if !fresh && open.try_get_untracked().flatten().is_some() {
                 let _ = open.try_set(None);
+                // Recorded as the outside tap's close (PR #150 review N4).
+                step("close", 0);
             }
         });
     }
@@ -347,7 +365,7 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
                 .flatten(),
         };
         let connected = store.connected.try_get_untracked().unwrap_or(false);
-        hold_value(aut, connected)
+        hold_value(ready_hold(aut, ready(state.try_get_untracked())), connected)
     };
     // The lift of a full press: the automatic mode the other way when it
     // can act, else refused.
@@ -373,9 +391,10 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
     // A press whose end never came ends at the next primary down anywhere
     // on the page, before any control's handler sees it (#124, review I1).
     let listener = Closure::wrap(Box::new(move |ev: web_sys::PointerEvent| {
-        // A down outside AUTOTUNE and its panel closes the panel (the down
-        // goes on to what it touched).
-        if open.try_get_untracked().flatten().is_some() {
+        // A down outside AUTOTUNE and its panel closes the panel, and is
+        // taken for that alone.
+        let is_open = open.try_get_untracked().flatten().is_some();
+        if is_open {
             let target = ev
                 .target()
                 .and_then(|t| t.dyn_into::<web_sys::Element>().ok());
@@ -391,7 +410,11 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
                 .as_ref()
                 .and_then(|t| t.closest(".tpanel").ok().flatten())
                 .is_some();
-            if !on_button && !on_panel {
+            // It closes the panel and reaches nothing under it (PR #150
+            // review I1: a strip's mute acts on its down).
+            if dismisses(is_open, on_button, on_panel) {
+                ev.prevent_default();
+                ev.stop_propagation();
                 let _ = open.try_set(None);
                 step("close", ev.pointer_id());
             }
@@ -423,6 +446,14 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
         }
     });
     on_cleanup(move || hidden.remove());
+    // A turned or resized screen places the open panel again (PR #150
+    // review N3).
+    let resized = window_event_listener_untyped("resize", move |_| {
+        if open.try_get_untracked().flatten().is_some() {
+            let _ = open.try_set(anchor_now());
+        }
+    });
+    on_cleanup(move || resized.remove());
     let on_down = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
         let id = ev.pointer_id();

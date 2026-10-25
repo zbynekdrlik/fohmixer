@@ -20,17 +20,30 @@ use serde_json::json;
 
 use super::{fail_flash, owns_touches, trace_rail};
 use crate::behave::autotune::{
-    PanelRow, panel_foot, panel_head, panel_place, panel_rows, switch_value, tap_opens_panel,
+    Anchor, PanelRow, panel_foot, panel_head, panel_place, panel_rows, switch_acts, switch_press,
+    switch_value, tap_opens_panel,
 };
+use crate::behave::hold::Lift;
 use crate::behave::rail::AUT_BADGE;
+use crate::dom;
 use crate::store::LiveStore;
 
-/// The panel: `anchor` the column's right edge and the button's top on the
-/// screen at the tap that opened it. The button's page listener tells a tap
-/// outside it by its class (`.tpanel`). Its root takes no touch of its own
-/// (it holds the switches, which own theirs).
+/// A singer's row's key in the panel's keyed list (its id and label; a
+/// target that names no singer has no id).
+type RowKey = (String, String);
+
+/// A row's key.
+fn row_key(row: &PanelRow) -> RowKey {
+    (row.id.clone(), row.label.clone())
+}
+
+/// The panel: `anchor` where it opens from (the column's right edge, the
+/// button's top and bottom on the screen; the button places it again at a
+/// resize). The button's page listener tells a tap outside it by its class
+/// (`.tpanel`). Its root takes no touch of its own (it holds the
+/// switches, which own theirs).
 #[component]
-pub fn AutotunePanel(anchor: (f64, f64)) -> impl IntoView {
+pub fn AutotunePanel(anchor: Anchor) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let panel = NodeRef::<html::Div>::new();
     // The panel's height once in the page, to keep it inside the screen.
@@ -39,12 +52,23 @@ pub fn AutotunePanel(anchor: (f64, f64)) -> impl IntoView {
         let _ = height.try_set(f64::from(el.offset_height()));
     });
     let place = move || {
-        let view_h = web_sys::window()
-            .and_then(|w| w.inner_height().ok())
-            .and_then(|h| h.as_f64())
-            .unwrap_or(0.0);
-        let (left, top) = panel_place(anchor.0, anchor.1, view_h, height.try_get().unwrap_or(0.0));
-        format!("--tp-left:{left}px;--tp-top:{top}px;")
+        let size =
+            |get: fn(&web_sys::Window) -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>| {
+                web_sys::window()
+                    .and_then(|w| get(&w).ok())
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0)
+            };
+        let place = panel_place(
+            anchor,
+            size(web_sys::Window::inner_width),
+            size(web_sys::Window::inner_height),
+            height.try_get().unwrap_or(0.0),
+        );
+        format!(
+            "--tp-left:{}px;--tp-top:{}px;--tp-max:{}px;",
+            place.left, place.top, place.max_h
+        )
     };
     let head = Memo::new(move |_| {
         store
@@ -82,13 +106,13 @@ pub fn AutotunePanel(anchor: (f64, f64)) -> impl IntoView {
             }
         })
     };
-    let lines = move || {
-        rows.try_get()
+    // Keyed by singer (PR #150 review N2): a state change keeps each row,
+    // its refused flash included; a row reads itself from the list.
+    let keys = move || {
+        rows.try_with(|r| r.iter().map(row_key).collect::<Vec<_>>())
             .unwrap_or_default()
-            .into_iter()
-            .map(|row| view! { <SingerRow row=row /> })
-            .collect_view()
     };
+    let row = move |k: RowKey| view! { <SingerRow at=k rows=rows /> };
     let map_line = move || foot.try_with(|f| f[0].clone()).unwrap_or_default();
     let live_line = move || foot.try_with(|f| f[1].clone()).unwrap_or_default();
     let song = move || head.try_get().unwrap_or_default();
@@ -107,7 +131,7 @@ pub fn AutotunePanel(anchor: (f64, f64)) -> impl IntoView {
                         {song}
                     </span>
                 </div>
-                {lines}
+                <For each=keys key=|k: &RowKey| k.clone() children=row />
                 <div class="tp-foot">
                     <span data-testid="autotune-panel-map">{map_line}</span>
                     <span class="small" data-testid="autotune-panel-live">
@@ -119,71 +143,132 @@ pub fn AutotunePanel(anchor: (f64, f64)) -> impl IntoView {
     }
 }
 
-/// One singer's row, and its why line when its key does not read back.
+/// One singer's row (`at` its key in `rows`), and its why line when it is
+/// not right. Its switch acts at a tap's lift (PR #150 review M1: a slide
+/// past 10 px, a cancel or a lost capture ends it with nothing done).
 #[component]
-fn SingerRow(row: PanelRow) -> impl IntoView {
+fn SingerRow(at: RowKey, rows: Memo<Vec<PanelRow>>) -> impl IntoView {
     let store = expect_context::<LiveStore>();
+    let has_id = !at.0.is_empty();
+    let id_attr = at.0.clone();
+    let row_id = at.0.clone();
+    let label = at.1.clone();
+    let me = Memo::new(move |_| {
+        rows.try_with(|r| r.iter().find(|x| x.id == at.0 && x.label == at.1).cloned())
+            .flatten()
+    });
+    let read = move |f: fn(&PanelRow) -> String| {
+        me.try_with(|r| r.as_ref().map(f))
+            .flatten()
+            .unwrap_or_default()
+    };
+    let flag =
+        move |f: fn(&PanelRow) -> bool| me.try_with(|r| r.as_ref().is_some_and(f)).unwrap_or(false);
     let failed = RwSignal::new(false);
-    let (id, off) = switch_value(&row);
-    let id_attr = row.id.clone();
-    // The switch is lit while the singer is on (its tap turns it off).
-    let switch_on = !row.off;
-    let switch = row.switch.map(|text| {
-        let on_down = move |ev: web_sys::PointerEvent| {
-            ev.prevent_default();
-            let connected = store.connected.try_get_untracked().unwrap_or(false);
-            let acts = store
-                .autotune
-                .try_with_untracked(|a| tap_opens_panel(a.fresh(), connected))
-                .unwrap_or(false);
-            if acts {
-                trace_rail("singer", "autotune", &[], ev.pointer_id());
+    let press = StoredValue::new(switch_press());
+    // The lift of a tap: the singer off by hand or back on, as the row
+    // shows it now, on this connection's state while connected.
+    let act = move |pointer: i32| {
+        let connected = store.connected.try_get_untracked().unwrap_or(false);
+        let acts = store
+            .autotune
+            .try_with_untracked(|a| tap_opens_panel(a.fresh(), connected))
+            .unwrap_or(false);
+        let value = me.try_get_untracked().flatten().map(|r| switch_value(&r));
+        match value.filter(|_| acts) {
+            Some((id, off)) => {
+                trace_rail("singer", "autotune", &[], pointer);
                 store.set_hub(HUB_AUTOTUNE_SINGER, json!({"id": id, "off": off}));
-            } else {
-                trace_rail("refused", "autotune", &[], ev.pointer_id());
+            }
+            None => {
+                trace_rail("refused", "autotune", &[], pointer);
                 fail_flash(failed)("refused".to_string());
             }
-        };
+        }
+    };
+    let on_down = move |ev: web_sys::PointerEvent| {
+        ev.prevent_default();
+        let id = ev.pointer_id();
+        let pressed = press
+            .try_update_value(|h| h.down(id, ev.is_primary(), dom::now()))
+            .unwrap_or(false);
+        if pressed && let Some(el) = dom::current_element(&ev) {
+            let _ = el.set_pointer_capture(id);
+        }
+    };
+    let on_move = move |ev: web_sys::PointerEvent| {
+        let (x, y) = (f64::from(ev.client_x()), f64::from(ev.client_y()));
+        let _ = press.try_update_value(|h| h.moved(ev.pointer_id(), x, y));
+    };
+    let on_up = move |ev: web_sys::PointerEvent| {
+        let id = ev.pointer_id();
+        let lift = press
+            .try_update_value(|h| h.up(id, dom::now()))
+            .unwrap_or(Lift::Nothing);
+        if switch_acts(lift) {
+            act(id);
+        }
+    };
+    let on_cancel = move |ev: web_sys::PointerEvent| {
+        let _ = press.try_update_value(|h| h.cancel(ev.pointer_id()));
+    };
+    let switch = has_id.then(|| {
         let none: Vec<String> = Vec::new();
+        let text = move || {
+            me.try_with(|r| r.as_ref().and_then(|r| r.switch))
+                .flatten()
+                .unwrap_or("")
+        };
         view! {
             <span
                 class="tp-sw"
-                class:on=switch_on
+                class:on=move || !flag(|r| r.off)
                 class:failed=move || failed.try_get().unwrap_or(false)
                 use:owns_touches=none
                 data-testid="autotune-singer-switch"
                 data-id=id_attr
                 on:pointerdown=on_down
+                on:pointermove=on_move
+                on:pointerup=on_up
+                on:pointercancel=on_cancel
+                on:lostpointercapture=on_cancel
             >
                 {text}
             </span>
         }
     });
-    let why = row.why.clone().map(|why| {
-        view! {
-            <div class="tp-why" data-testid="autotune-singer-why">
-                {why}
-            </div>
+    let why = move || {
+        me.try_with(|r| r.as_ref().and_then(|r| r.why.clone()))
+            .flatten()
+            .map(|why| {
+                view! {
+                    <div class="tp-why" data-testid="autotune-singer-why">
+                        {why}
+                    </div>
+                }
+            })
+    };
+    let key_class = move || {
+        if flag(|r| r.ok) {
+            "tp-key ok"
+        } else {
+            "tp-key bad"
         }
-    });
-    let key_class = if row.ok { "tp-key ok" } else { "tp-key bad" };
-    let stream_class = if row.stream.on { "chip on" } else { "chip" };
-    let pa_class = if row.pa.on { "chip on" } else { "chip" };
-    let row_off = row.off;
-    let row_id = row.id.clone();
-    let off_attr = row.off.to_string();
-    let ok_attr = row.ok.to_string();
-    let label = row.label.clone();
-    let key = row.key.clone();
-    let (stream_text, pa_text) = (row.stream.text, row.pa.text);
+    };
+    let chip_class = |on: bool| if on { "chip on" } else { "chip" };
+    let stream_class = move || chip_class(flag(|r| r.stream.on));
+    let pa_class = move || chip_class(flag(|r| r.pa.on));
+    let stream_text = move || read(|r| r.stream.text.to_string());
+    let pa_text = move || read(|r| r.pa.text.to_string());
+    let key = move || read(|r| r.key.clone());
     view! {
         <div
             class="tp-row"
-            class:off=row_off
+            class:off=move || flag(|r| r.off)
             data-testid="autotune-singer"
             data-id=row_id
-            data-off=off_attr
-            data-ok=ok_attr
+            data-off=move || flag(|r| r.off).to_string()
+            data-ok=move || flag(|r| r.ok).to_string()
         >
             <span class="tp-name">{label}</span>
             <span class="tp-chips">

@@ -20,7 +20,8 @@
 
 use fohmixer_proto::client::{AutotuneState, SingerState, TargetState, TrackState};
 
-use super::rail::{AUT_BADGE, Aut, Fill, RailLook, full_text, hold_text};
+use super::hold::{Hold, Lift};
+use super::rail::{AUT_BADGE, Aut, Fill, RAIL_HOLD_MS, RailLook, full_text, hold_text};
 
 /// The key in force as the button and the panel name it: `F`, `F#m`, or
 /// `—` outside a song or in a keyless one (spec §9).
@@ -111,7 +112,9 @@ fn bad_count(state: &AutotuneState) -> usize {
 
 /// The second line with AUT on while Live plays: the state, the key and
 /// what keeps a singer from tuning. A mismatch (`1 !`) is named before a
-/// singer off by hand (`1 off`): one of them fits the 98 px.
+/// singer off by hand (`1 off`): one of them fits the 98 px. With no track
+/// tuning while a singer is not right (the hub keeps it DRY for a reason of
+/// its own or a key's: PR #150 review I2), `waiting · F`, never `tuning`.
 fn playing_line(state: &AutotuneState) -> String {
     let key = key_text(state);
     match (state.song, state.key.as_deref()) {
@@ -122,7 +125,9 @@ fn playing_line(state: &AutotuneState) -> String {
     if state.checking {
         return format!("checking · {key}");
     }
+    let none_tunes = shown(state) == Shown::Off;
     match (bad_count(state), off_count(state)) {
+        (bad, _) if bad > 0 && none_tunes => format!("waiting · {key}"),
         (0, 0) => format!("tuning · {key}"),
         (0, off) => format!("tuning · {key} · {off} off"),
         (bad, _) => format!("tuning · {key} · {bad} !"),
@@ -227,10 +232,13 @@ pub fn panel_rows(state: &AutotuneState) -> Vec<PanelRow> {
         .singers
         .iter()
         .map(|s| {
-            let key = match (s.key_ok, state.key.as_deref()) {
-                (false, _) => "!".to_string(),
-                (true, Some(key)) => format!("{key} ✓"),
-                (true, None) => "—".to_string(),
+            // The ✓ only for a key written and read back (PR #150 review
+            // M4); one on its way shows the pending mark.
+            let key = match (s.key_ok, state.key.as_deref(), s.confirmed) {
+                (false, _, _) => "!".to_string(),
+                (true, Some(key), true) => format!("{key} ✓"),
+                (true, Some(key), false) => format!("{key} …"),
+                (true, None, _) => "—".to_string(),
             };
             let why = (!s.key_ok).then(|| {
                 let why = s.why.as_deref().unwrap_or("key not confirmed");
@@ -292,13 +300,79 @@ pub fn panel_foot(state: &AutotuneState) -> [String; 2] {
 /// The gap between the panel and the column, and the screen's edges (px).
 pub const PANEL_GAP: f64 = 8.0;
 
-/// Where the panel opens (its left and top on the screen): beside the
-/// column (`column_right`, its right edge), its top at the button's
-/// (`button_top`) but inside the screen (`view_h`) for its `height`.
-pub fn panel_place(column_right: f64, button_top: f64, view_h: f64, height: f64) -> (f64, f64) {
-    let left = column_right + PANEL_GAP;
-    let top = button_top.min(view_h - height - PANEL_GAP).max(PANEL_GAP);
-    (left, top)
+/// The widest screen that is a phone held upright (page.css's
+/// `(max-width: 520px)`): the panel at its full width there.
+pub const UPRIGHT_MAX: f64 = 520.0;
+
+/// Where the panel opens from, on the screen: the column's right edge and
+/// the AUTOTUNE button's top and bottom.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Anchor {
+    pub column_right: f64,
+    pub button_top: f64,
+    pub button_bottom: f64,
+}
+
+/// Where the panel goes: its left, its top and the most it may be high
+/// (it scrolls past that).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Place {
+    pub left: f64,
+    pub top: f64,
+    pub max_h: f64,
+}
+
+/// Where the panel opens for its `height` on a screen `view_w` × `view_h`
+/// (PR #150 review N3: placed again at every resize). Beside the column,
+/// its top at the button's but inside the screen. On a phone held upright
+/// it is the screen's width (the stylesheet) and never covers the button:
+/// below it when it fits there or that side is the larger, else above it.
+pub fn panel_place(anchor: Anchor, view_w: f64, view_h: f64, height: f64) -> Place {
+    if view_w <= UPRIGHT_MAX {
+        let below = view_h - anchor.button_bottom - 2.0 * PANEL_GAP;
+        let above = anchor.button_top - 2.0 * PANEL_GAP;
+        if height <= below || below >= above {
+            return Place {
+                left: PANEL_GAP,
+                top: anchor.button_bottom + PANEL_GAP,
+                max_h: below,
+            };
+        }
+        let high = height.min(above);
+        return Place {
+            left: PANEL_GAP,
+            top: anchor.button_top - PANEL_GAP - high,
+            max_h: above,
+        };
+    }
+    let top = anchor
+        .button_top
+        .min(view_h - height - PANEL_GAP)
+        .max(PANEL_GAP);
+    Place {
+        left: anchor.column_right + PANEL_GAP,
+        top,
+        max_h: view_h - top - PANEL_GAP,
+    }
+}
+
+/// Whether a down closes the open panel and is taken for that alone (PR
+/// #150 review I1): one outside the panel and the AUTOTUNE button, while it
+/// is open. It reaches nothing under it (a strip's mute acts on its down).
+pub fn dismisses(open: bool, on_button: bool, on_panel: bool) -> bool {
+    open && !on_button && !on_panel
+}
+
+/// A singer's switch's press (PR #150 review M1): it acts at the lift of a
+/// tap (a slide past 10 px, a cancel or a lost capture ends it with nothing
+/// done), never at its down; a long press acts at its lift too.
+pub fn switch_press() -> Hold {
+    Hold::lifted(RAIL_HOLD_MS)
+}
+
+/// Whether a switch's lift acts.
+pub fn switch_acts(lift: Lift) -> bool {
+    matches!(lift, Lift::Tap | Lift::Open)
 }
 
 #[cfg(test)]
@@ -789,17 +863,130 @@ mod tests {
 
     #[test]
     fn the_panel_opens_beside_the_column_inside_the_screen() {
-        assert_eq!(PANEL_GAP, 8.0);
+        assert_eq!((PANEL_GAP, UPRIGHT_MAX), (8.0, 520.0));
+        let at = |button_top: f64| Anchor {
+            column_right: 663.0,
+            button_top,
+            button_bottom: button_top + 44.0,
+        };
+        let place = |left, top, max_h| Place { left, top, max_h };
         // Room below the button: its top at the button's.
-        assert_eq!(panel_place(663.0, 300.0, 834.0, 400.0), (671.0, 300.0));
+        assert_eq!(
+            panel_place(at(300.0), 1194.0, 834.0, 400.0),
+            place(671.0, 300.0, 526.0)
+        );
         // A button low on the screen: the panel up to fit, 8 px above the
         // foot (834 - 400 - 8 = 426).
-        assert_eq!(panel_place(663.0, 500.0, 834.0, 400.0), (671.0, 426.0));
-        assert_eq!(panel_place(663.0, 426.0, 834.0, 400.0), (671.0, 426.0));
-        // Taller than the screen: 8 px from its top.
-        assert_eq!(panel_place(497.0, 120.0, 390.0, 600.0), (505.0, 8.0));
+        assert_eq!(
+            panel_place(at(500.0), 1194.0, 834.0, 400.0),
+            place(671.0, 426.0, 400.0)
+        );
+        assert_eq!(
+            panel_place(at(426.0), 1194.0, 834.0, 400.0),
+            place(671.0, 426.0, 400.0)
+        );
+        // Taller than the screen: 8 px from its top, scrolling.
+        let side = Anchor {
+            column_right: 497.0,
+            button_top: 120.0,
+            button_bottom: 146.0,
+        };
+        assert_eq!(
+            panel_place(side, 844.0, 390.0, 600.0),
+            place(505.0, 8.0, 374.0)
+        );
         // A button near the top: never above 8 px.
-        assert_eq!(panel_place(663.0, 2.0, 834.0, 400.0), (671.0, 8.0));
-        assert_eq!(panel_place(663.0, 8.0, 834.0, 400.0), (671.0, 8.0));
+        assert_eq!(
+            panel_place(at(2.0), 1194.0, 834.0, 400.0),
+            place(671.0, 8.0, 818.0)
+        );
+        assert_eq!(
+            panel_place(at(8.0), 1194.0, 834.0, 400.0),
+            place(671.0, 8.0, 818.0)
+        );
+    }
+
+    #[test]
+    fn on_a_phone_upright_the_panel_never_covers_the_button() {
+        // PR #150 review N3: the screen's width, below the button when it
+        // fits there or that side is the larger, else above it.
+        let at = |button_top: f64| Anchor {
+            column_right: 270.0,
+            button_top,
+            button_bottom: button_top + 32.0,
+        };
+        let place = |top, max_h| Place {
+            left: 8.0,
+            top,
+            max_h,
+        };
+        // 844 high, the button at 200..232: 596 below, 184 above.
+        assert_eq!(
+            panel_place(at(200.0), 390.0, 844.0, 300.0),
+            place(240.0, 596.0)
+        );
+        // The button low (600..632): 196 below, 584 above; 300 fits above.
+        assert_eq!(
+            panel_place(at(600.0), 390.0, 844.0, 300.0),
+            place(292.0, 584.0)
+        );
+        // Fits below exactly: below.
+        assert_eq!(
+            panel_place(at(600.0), 390.0, 844.0, 196.0),
+            place(640.0, 196.0)
+        );
+        // Fits nowhere: the larger side, scrolling.
+        assert_eq!(
+            panel_place(at(600.0), 390.0, 844.0, 900.0),
+            place(8.0, 584.0)
+        );
+        assert_eq!(
+            panel_place(at(200.0), 390.0, 844.0, 900.0),
+            place(240.0, 596.0)
+        );
+        // Equal sides: below.
+        assert_eq!(
+            panel_place(at(406.0), 390.0, 844.0, 900.0),
+            place(446.0, 390.0)
+        );
+        // 520 px wide is upright, 521 beside the column.
+        assert_eq!(panel_place(at(200.0), 520.0, 844.0, 300.0).left, 8.0);
+        assert_eq!(panel_place(at(200.0), 521.0, 844.0, 300.0).left, 278.0);
+    }
+
+    #[test]
+    fn a_down_outside_the_open_panel_and_the_button_only_closes_it() {
+        // PR #150 review I1.
+        assert!(dismisses(true, false, false));
+        assert!(
+            !dismisses(true, true, false),
+            "on the button: its tap closes"
+        );
+        assert!(!dismisses(true, false, true), "on the panel");
+        assert!(!dismisses(false, false, false), "closed: nothing to take");
+    }
+
+    #[test]
+    fn a_singers_switch_acts_at_a_taps_lift_never_at_its_down_or_after_a_slide() {
+        // PR #150 review M1.
+        let mut tap = switch_press();
+        assert!(tap.down(5, true, 0.0));
+        assert_eq!(tap.up(5, 100.0), Lift::Tap);
+        assert!(switch_acts(Lift::Tap));
+        let mut slid = switch_press();
+        assert!(slid.down(5, true, 0.0));
+        assert!(!slid.moved(5, 0.0, 0.0), "the first move anchors");
+        assert!(slid.moved(5, 0.0, 30.0), "a slide past 10 px ends it");
+        assert_eq!(slid.up(5, 200.0), Lift::Nothing);
+        assert!(!switch_acts(Lift::Nothing));
+        let mut long = switch_press();
+        assert!(long.down(5, true, 0.0));
+        assert_eq!(long.up(5, 1500.0), Lift::Open, "a long press");
+        assert!(switch_acts(Lift::Open));
+        let mut cancelled = switch_press();
+        assert!(cancelled.down(5, true, 0.0));
+        cancelled.cancel(5);
+        assert_eq!(cancelled.up(5, 100.0), Lift::Nothing);
+        assert_eq!(switch_press(), Hold::lifted(RAIL_HOLD_MS));
     }
 }
