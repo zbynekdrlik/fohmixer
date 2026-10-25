@@ -679,7 +679,7 @@ async fn a_walk_answer_after_a_disconnect_is_void() {
 }
 
 #[tokio::test]
-async fn a_failed_write_is_recorded_per_target_and_walks_it_again() {
+async fn a_write_live_did_not_answer_stays_on_its_way_and_a_ref_gone_walks_again() {
     let dir = tempfile::tempdir().unwrap();
     let (mut router, mut rx, records_rx) = offline_router(dir.path());
     online(&mut router);
@@ -703,16 +703,32 @@ async fn a_failed_write_is_recorded_per_target_and_walks_it_again() {
                     "problem": "instance offline"})
         ]
     );
+    // Live did not answer: it may still take the write (PR #147 re-review
+    // R3), so it stays on its way, unwalked and confirmed, and the
+    // decision after the answer writes it nothing again.
+    assert_eq!(walk_of(&router, STREAM), before, "not walked");
+    assert_eq!(router.autotune.targets[STREAM].writing_now(), Some(false));
+    assert!(router.autotune.targets[STREAM].sure);
+    assert_eq!(writes(&steps(&records_rx)), Vec::<Value>::new());
+    // A ref gone: off its way, unconfirmed until the walk that follows.
+    let write = router.autotune.targets[STREAM].writing[0].write;
+    let stale = json!({"ok": false, "error": "stale ref", "errorType": "StaleRef"});
+    router.autotune_written(
+        "band",
+        write,
+        &[(STREAM.to_string(), "p7".to_string(), false)],
+        &Ok(vec![stale]),
+    );
+    assert!(router.autotune.targets[STREAM].writing.is_empty());
+    assert!(!router.autotune.targets[STREAM].sure);
     assert!(walk_of(&router, STREAM) > before, "walked again");
     assert_eq!(
-        router.autotune.targets[STREAM].writing,
-        Vec::new(),
-        "no write on its way"
+        steps(&records_rx),
+        vec![
+            json!({"step": "failed", "instance": "band", "target": "live_set tracks 7",
+                    "problem": "stale ref"})
+        ]
     );
-    // Its ref in doubt until the walk answers: the decision after the
-    // answer writes it nothing (no write loop while Live does not answer).
-    assert!(!router.autotune.targets[STREAM].sure);
-    assert_eq!(writes(&steps(&records_rx)), Vec::<Value>::new());
     // An answer for a target the layout dropped meanwhile is still recorded.
     router.autotune_written(
         "band",
