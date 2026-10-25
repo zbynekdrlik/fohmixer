@@ -418,6 +418,9 @@ impl Router {
         if let Some(key) = again {
             self.autotune_key_write(instance, &retry, key, KeyWhy::Retry);
         }
+        // A refusal changes a singer's key with no value of Live's to tell
+        // it (#140 PR 3c): the pages are told now.
+        self.autotune_tell();
     }
 
     /// Reads back write `write`'s targets `devices` (and, with `bar`, Live's
@@ -508,6 +511,9 @@ impl Router {
         if let Some(key) = again {
             self.autotune_key_write(instance, &retry, key, KeyWhy::Retry);
         }
+        // The keys read back and Live's bar change what the pages show
+        // with no delivery to tell it (#140 PR 3c): they are told now.
+        self.autotune_tell();
     }
 
     /// A target's write came to `outcome`: recorded (`readback`); the key
