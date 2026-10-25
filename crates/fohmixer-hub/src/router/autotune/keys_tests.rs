@@ -34,6 +34,7 @@ const TRANSPORT: &str = "band|live_set|is_playing|false";
 const PLUGIN: &str = "live_set tracks 7 devices 0 chains 0 devices 0";
 const MACRO: &str = "live_set tracks 7 devices 0 parameters 1";
 const REFUSED: &str = "the AUTOTUNE tap is gone; a tap opens the singers' panel";
+const AUT_REFUSED_WHY: &str = "AUTOTUNE AUT stays off until the new AUTOTUNE button (#140 PR 3c)";
 
 fn stream() -> AutotuneTarget {
     AutotuneTarget {
@@ -879,9 +880,9 @@ async fn a_set_without_targets_lets_its_position_go() {
 }
 
 #[tokio::test]
-async fn aut_on_is_taken_and_saved() {
-    // #140 PR 3b: AUT on switches; a selector is on only with its key
-    // confirmed (here none: no key device), so nothing goes on.
+async fn aut_on_is_refused_until_pr_3c_and_writes_nothing() {
+    // The PR #147 rulings: until #140 PR 3c's button, a page's AUT on is
+    // refused, so 1.8.0's 1 s hold cannot turn the rule on during an event.
     let dir = tempfile::tempdir().unwrap();
     let (mut router, mut own, rx) = offline_router(dir.path());
     let page = attach(&mut router, 1);
@@ -893,25 +894,26 @@ async fn aut_on_is_taken_and_saved() {
     set_hub(&mut router, HUB_AUTOTUNE_AUT, json!(true));
     assert_eq!(
         steps(&rx),
-        vec![json!({"step": "flag", "on": true, "client": 1, "peer": "10.0.0.1"})]
+        vec![
+            json!({"step": "refused", "what": "aut", "why": AUT_REFUSED_WHY,
+                    "client": 1, "peer": "10.0.0.1"})
+        ]
     );
-    assert!(router.autotune.state().aut);
-    assert!(told(&page).last().is_some_and(|s| s.aut), "told on");
+    assert!(!router.autotune.state().aut);
+    // The page is told the state again (unchanged: AUT off).
+    let again = told(&page);
+    assert_eq!(again, vec![router.autotune.state()]);
+    assert!(!again[0].aut);
     assert!(!wrote(&mut own).await, "nothing goes to Live");
-    let saved: Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.path().join("hub-state.json")).unwrap())
-            .unwrap();
-    assert_eq!(saved["autotune_aut"], json!(true));
-    // AUT off: its record, saved off.
+    assert!(!dir.path().join("hub-state.json").exists(), "nothing saved");
+    assert_eq!(status(&mut router).autotune.writes, 0);
+    // AUT off is taken: its record, nothing saved (as the file has it).
     set_hub(&mut router, HUB_AUTOTUNE_AUT, json!(false));
     assert_eq!(
         steps(&rx),
         vec![json!({"step": "flag", "on": false, "client": 1, "peer": "10.0.0.1"})]
     );
-    let saved: Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.path().join("hub-state.json")).unwrap())
-            .unwrap();
-    assert_eq!(saved, json!({"stage_aut": false}));
+    assert!(!dir.path().join("hub-state.json").exists());
     assert!(!wrote(&mut own).await);
 }
 
@@ -947,8 +949,10 @@ async fn a_tap_is_refused_and_writes_nothing() {
 }
 
 #[tokio::test]
-async fn aut_is_kept_across_a_restart() {
-    // #140 PR 3b: a saved AUT on starts on; nothing is saved at the start.
+async fn a_saved_aut_on_is_kept_in_the_file_and_stays_off() {
+    // The PR #147 rulings: `hub-state.json` keeps it, the rule treats it as
+    // off until #140 PR 3c (a warn line says so); the singers off by hand
+    // are kept (#140 PR 3b).
     let dir = tempfile::tempdir().unwrap();
     let (mut router, _own, _rx) = offline_router_with(
         dir.path(),
@@ -960,15 +964,16 @@ async fn aut_is_kept_across_a_restart() {
             autotune_off: vec!["VOX1".into()],
         },
     );
-    assert!(router.autotune.state().aut);
+    assert!(!router.autotune.state().aut);
     let now = status(&mut router).autotune;
-    assert!(now.aut);
+    assert!(!now.aut);
     assert_eq!(now.singers_off, ["VOX1"]);
+    assert!(router.state.autotune_aut, "kept as saved");
     assert!(!dir.path().join("hub-state.json").exists(), "nothing saved");
     let page = attach(&mut router, 1);
-    assert!(told(&page)[0].aut, "told on at attach");
+    assert!(!told(&page)[0].aut, "told off at attach");
     assert!(
-        crate::router::autotune::AutotuneIo::new(true, Vec::new())
+        !crate::router::autotune::AutotuneIo::new(true, Vec::new())
             .rule
             .is_on()
     );

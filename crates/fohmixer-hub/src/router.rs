@@ -358,11 +358,14 @@ pub enum RouterMsg {
         key: String,
         walk: u64,
     },
-    /// The answer to AUTOTUNE's write of `instance`'s targets `keys` (#104;
-    /// `Err`: why none was written: offline, a timeout, refused).
+    /// The answer to AUTOTUNE's selector write `write` of `instance` (#104,
+    /// #140 PR 3b): each target's key, the `$ref` written and the value's
+    /// side (`true`: the autotune chain), in the slots' order (`Err`: why
+    /// none was written: offline, a timeout, refused).
     AutotuneWritten {
         instance: String,
-        keys: Vec<String>,
+        write: u64,
+        selectors: Vec<(String, String, bool)>,
         outcome: Result<Vec<Value>, String>,
     },
     /// The answer to AUTOTUNE's registration `seq` of `instance`'s DRY
@@ -382,6 +385,13 @@ pub enum RouterMsg {
         seq: u64,
         ids: Vec<String>,
         outcome: Result<Vec<Value>, String>,
+    },
+    /// The retry of the probe of `instance`'s refused registration `seq` is
+    /// due (PR #147 review N1: a probe Live did not answer); void once the
+    /// set registered since or went offline.
+    AutotuneSafeProbeRetry {
+        instance: String,
+        seq: u64,
     },
     /// A beat (PR #146 review I1, every `live::client::ROUTER_BEAT_MS`):
     /// nothing to do; the loop's turn stamps the router's `Beat`.
@@ -584,7 +594,8 @@ pub(crate) async fn beat_ticks(
 impl Router {
     /// A router over these instances, with the persisted hub values
     /// (`hub-state.json`: STAGE AUT, REVERB, the fader links' switches,
-    /// AUTOTUNE AUT and the singers off by hand, #140 PR 3b).
+    /// the AUTOTUNE singers off by hand, #140 PR 3b; a saved AUTOTUNE AUT on
+    /// stays in the file and is treated as off until #140 PR 3c).
     pub fn new(
         live: BTreeMap<String, LiveHandle>,
         state: HubState,
@@ -996,9 +1007,10 @@ impl Router {
             RouterMsg::AutotuneWalkRetry { key, walk } => self.autotune_walk_retry(&key, walk),
             RouterMsg::AutotuneWritten {
                 instance,
-                keys,
+                write,
+                selectors,
                 outcome,
-            } => self.autotune_written(&instance, &keys, &outcome),
+            } => self.autotune_written(&instance, write, &selectors, &outcome),
             RouterMsg::AutotuneSafe {
                 instance,
                 seq,
@@ -1014,6 +1026,9 @@ impl Router {
                 ids,
                 outcome,
             } => self.autotune_safe_probed(&instance, seq, &ids, &outcome),
+            RouterMsg::AutotuneSafeProbeRetry { instance, seq } => {
+                self.autotune_safe_probe_retry(&instance, seq);
+            }
             RouterMsg::Beat => {}
             RouterMsg::AutotuneKeysWritten {
                 instance,

@@ -16,8 +16,8 @@ use super::super::{Router, RouterMsg, layout_msg, markers};
 use super::{
     AUTOTUNE_CLIENT, AfterWalk, MOVED_TRACK, PARAMETER_CLASS, TOO_DEEP, Target, TrackCheck,
     after_walk, autotune_fields, gave_up_problem, item_ref, keeps_found, macro_value, may_write,
-    missing_news, same_track, slot_failures, state_of, target_key, track_check, walk_again,
-    walk_retryable, write_commands,
+    missing_news, refused_for_good, same_track, slot_failures, state_of, target_key, track_check,
+    walk_again, walk_retryable, write_commands,
 };
 use crate::live::LiveValue;
 use crate::live::client::LiveEvent;
@@ -186,7 +186,9 @@ fn write_commands_set_each_parameter_through_its_ref_in_one_batch() {
 fn slot_failures_name_each_target_that_did_not_answer_ok() {
     let keys = [REPRO.to_string(), STREAM.to_string()];
     let ok = json!({"ok": true, "data": null});
-    let failure = |key: &str, why: &str| (key.to_string(), why.to_string());
+    let failure =
+        |key: &str, why: &str, for_good: bool| (key.to_string(), why.to_string(), for_good);
+    // A ref gone, a slot missing, no answer: walked again, not for good.
     assert_eq!(
         slot_failures(
             &Ok(vec![
@@ -195,7 +197,17 @@ fn slot_failures_name_each_target_that_did_not_answer_ok() {
             ]),
             &keys
         ),
-        vec![failure(STREAM, "stale ref")]
+        vec![failure(STREAM, "stale ref", false)]
+    );
+    assert_eq!(
+        slot_failures(
+            &Ok(vec![
+                json!({"ok": false, "error": "unknown ref", "errorType": "UnknownRef"}),
+                ok.clone()
+            ]),
+            &keys
+        ),
+        vec![failure(REPRO, "unknown ref", false)]
     );
     assert_eq!(
         slot_failures(&Ok(vec![ok.clone(), ok.clone()]), &keys),
@@ -203,19 +215,40 @@ fn slot_failures_name_each_target_that_did_not_answer_ok() {
     );
     assert_eq!(
         slot_failures(&Ok(vec![ok.clone()]), &keys),
-        vec![failure(STREAM, "no result")]
-    );
-    assert_eq!(
-        slot_failures(&Ok(vec![json!({"ok": false}), ok]), &keys),
-        vec![failure(REPRO, "no answer")]
+        vec![failure(STREAM, "no result", false)]
     );
     assert_eq!(
         slot_failures(&Err("instance offline".into()), &keys),
         vec![
-            failure(REPRO, "instance offline"),
-            failure(STREAM, "instance offline")
+            failure(REPRO, "instance offline", false),
+            failure(STREAM, "instance offline", false)
         ]
     );
+    // Live refused the value or the script the call (PR #147 review I5):
+    // for good.
+    let held = "live error: Value cannot be set, the parameter is disabled";
+    assert_eq!(
+        slot_failures(
+            &Ok(vec![
+                json!({"ok": false, "error": held, "errorType": "RuntimeError"}),
+                ok.clone()
+            ]),
+            &keys
+        ),
+        vec![failure(REPRO, held, true)]
+    );
+    assert_eq!(
+        slot_failures(&Ok(vec![json!({"ok": false}), ok]), &keys),
+        vec![failure(REPRO, "no answer", true)]
+    );
+    assert_eq!(
+        slot_failures(&Err("bad args: no such target".into()), &keys),
+        vec![
+            failure(REPRO, "bad args: no such target", true),
+            failure(STREAM, "bad args: no such target", true)
+        ]
+    );
+    assert!(!refused_for_good(None));
 }
 
 #[test]
@@ -267,7 +300,9 @@ fn a_targets_state_is_missing_waiting_or_its_macro_against_its_on_value() {
         value,
         decision: None,
         guard: SelectorGuard::new(),
-        writing: None,
+        writing: Vec::new(),
+        sure: true,
+        refusal: None,
         key: None,
         key_sub: None,
         scale_sub: None,
@@ -296,6 +331,94 @@ fn a_targets_state_is_missing_waiting_or_its_macro_against_its_on_value() {
         state_of(&at(Some(found(7)), None, Some(0.0))),
         TargetState::Off
     );
+}
+
+/// The stream target found on band track 7, as a walk left it.
+fn found_stream() -> Target {
+    Target {
+        spec: stream(),
+        instance: "band".into(),
+        track: "live_set tracks 7".into(),
+        walk: 1,
+        found: Some(found(7)),
+        problem: None,
+        sub: None,
+        value: None,
+        decision: None,
+        guard: SelectorGuard::new(),
+        writing: Vec::new(),
+        sure: true,
+        refusal: None,
+        key: None,
+        key_sub: None,
+        scale_sub: None,
+        values: (None, None),
+        keyt: crate::rules::autotune::keys::KeyTarget::new(),
+        key_write: 0,
+        key_wrote: None,
+        key_sure: false,
+        walk_failures: 0,
+    }
+}
+
+#[test]
+fn a_target_let_go_may_leave_its_selector_on_and_one_flipped_waits_for_its_walk() {
+    use crate::rules::autotune::switch::Flying;
+    let fly = |on: bool| Flying {
+        write: 1,
+        on,
+        answered: false,
+    };
+    // PR #147 review I3: nothing heard, nothing on its way, decided DRY:
+    // nothing to write DRY.
+    let mut t = found_stream();
+    assert!(!t.may_be_on());
+    t.decision = Some(Decision {
+        on: false,
+        why: SwitchWhy::Aut,
+    });
+    assert!(!t.may_be_on());
+    // Heard on its chain, or between: it may be on.
+    t.value = Some(127.0);
+    assert!(t.may_be_on());
+    t.value = Some(64.0);
+    assert!(t.may_be_on());
+    // Heard at DRY: not.
+    t.value = Some(0.0);
+    assert!(!t.may_be_on());
+    // A write of its chain on its way, or its decision on: it may be on.
+    let mut writing = found_stream();
+    writing.writing = vec![fly(true)];
+    assert!(writing.may_be_on());
+    assert_eq!(writing.writing_now(), Some(true));
+    let mut on = found_stream();
+    on.decision = Some(Decision {
+        on: true,
+        why: SwitchWhy::Play,
+    });
+    assert!(on.may_be_on());
+    // A DRY write on its way already: nothing more.
+    let mut going_dry = found_stream();
+    going_dry.value = Some(127.0);
+    going_dry.writing = vec![fly(true), fly(false)];
+    assert!(!going_dry.may_be_on());
+    assert_eq!(going_dry.writing_now(), Some(false));
+    // PR #147 review I4: only an unconfirmed target with no answer yet
+    // holds its set's registration back.
+    let mut flipped = found_stream();
+    flipped.found = None;
+    flipped.sure = false;
+    assert!(flipped.awaits_walk());
+    let mut new = flipped.clone();
+    new.sure = true;
+    assert!(!new.awaits_walk(), "a new target registers nothing stale");
+    let mut held = found_stream();
+    held.sure = false;
+    assert!(!held.awaits_walk(), "its ref and values are its own spec's");
+    let mut missing = flipped.clone();
+    missing.problem = Some("no rack named Latencies".into());
+    assert!(!missing.awaits_walk(), "a give-up registers without it");
+    assert_eq!(found_stream().shows(), None);
 }
 
 #[test]
@@ -412,6 +535,14 @@ async fn a_found_target_is_followed_and_told_to_every_page() {
         states(&first[0]),
         vec![("#8".to_string(), TargetState::Waiting)]
     );
+    // A placeholder label and no id: a singer with no id and no manual
+    // off, its problem shown from the start (PR #147 review N6).
+    assert_eq!(first[0].singers[0].id, "");
+    assert_eq!(
+        first[0].singers[0].why,
+        Some(format!("stream: {}", super::switch::NO_SINGER))
+    );
+    assert!(!first[0].singers[0].key_ok);
     find(&mut router, STREAM, 7);
     assert_eq!(
         steps(&rx),
@@ -422,18 +553,9 @@ async fn a_found_target_is_followed_and_told_to_every_page() {
                     "problem": "the Latencies rack has no chain"}),
         ]
     );
-    // The pages are told its singer's key device problem; the target
-    // still waits for its value.
-    let found = told(&page);
-    assert_eq!(found.len(), 1);
-    assert_eq!(
-        states(&found[0]),
-        vec![("#8".to_string(), TargetState::Waiting)]
-    );
-    assert_eq!(
-        found[0].singers[0].why.as_deref(),
-        Some("stream: the Latencies rack has no chain")
-    );
+    // Its first problem stays the one shown; the target still waits for
+    // its value: nothing new to tell.
+    assert_eq!(told(&page), vec![], "still waiting for its value");
     // Live answers the listeners: the macro at 127, the transport stopped.
     // AUT off: the hub wants DRY, so its first value is written DRY (#140
     // PR 3b).
@@ -581,13 +703,23 @@ async fn a_failed_write_is_recorded_per_target_and_walks_it_again() {
     );
     assert!(walk_of(&router, STREAM) > before, "walked again");
     assert_eq!(
-        router.autotune.targets[STREAM].writing, None,
+        router.autotune.targets[STREAM].writing,
+        Vec::new(),
         "no write on its way"
     );
+    // Its ref in doubt until the walk answers: the decision after the
+    // answer writes it nothing (no write loop while Live does not answer).
+    assert!(!router.autotune.targets[STREAM].sure);
+    assert_eq!(writes(&steps(&records_rx)), Vec::<Value>::new());
     // An answer for a target the layout dropped meanwhile is still recorded.
     router.autotune_written(
         "band",
-        &["band|live_set tracks 30".to_string()],
+        99,
+        &[(
+            "band|live_set tracks 30".to_string(),
+            "p30".to_string(),
+            false,
+        )],
         &Err("instance offline".into()),
     );
     assert_eq!(
@@ -1042,7 +1174,7 @@ async fn a_set_load_writes_nothing_by_the_old_layout_until_the_markers_settle_th
     assert_eq!(writes(&steps(&rx)), vec![dry_of("found", &["#3"])]);
     assert_eq!(router.autotune.targets[AT1].spec.on, 127);
     assert_eq!(router.autotune.targets[AT2].spec.on, 0);
-    assert_eq!(router.autotune.targets[AT2].writing, Some(false));
+    assert_eq!(router.autotune.targets[AT2].writing_now(), Some(false));
     // Found again: nothing more.
     found_at(&mut router, AT1, 1, "q0");
     found_at(&mut router, AT2, 2, "q1");
@@ -1144,7 +1276,12 @@ async fn a_track_list_change_registers_no_dry_write_by_the_old_index() {
     )
     .await;
     settle(&mut router, &mut own).await;
-    assert_eq!(registered(&router), Some(vec![("p0".to_string(), 0)]));
+    // AT1's on and off values changed (the stream target now): nothing is
+    // registered for it, and nothing at all, before its walk answers (PR
+    // #147 review I4); the script keeps the list it holds.
+    assert_eq!(router.autotune.safe["band"].seq, seq);
+    assert_eq!(registered(&router), Some(both.clone()));
+    assert!(router.autotune.targets[AT1].found.is_none());
     // Its walks find both racks again: each with its own off value.
     found_at(&mut router, AT1, 1, "p0");
     found_at(&mut router, AT2, 2, "p1");
@@ -1238,7 +1375,7 @@ async fn a_rack_replaced_at_the_same_path_is_followed_afresh_and_written_once() 
     // The new rack is decided afresh: nothing is written before its value
     // is heard.
     assert_eq!(writes(&steps(&rx)), Vec::<Value>::new());
-    assert_eq!(router.autotune.targets[STREAM].writing, None);
+    assert_eq!(router.autotune.targets[STREAM].writing_now(), None);
     assert_eq!(
         router.autotune.targets[STREAM]
             .found
@@ -1272,7 +1409,7 @@ async fn a_rack_replaced_at_the_same_path_is_followed_afresh_and_written_once() 
     assert_eq!(router.autotune.state().targets[0].state, TargetState::On);
     // Its first value on its chain: DRY once, through its own ref.
     assert_eq!(writes(&steps(&rx)), vec![dry_of("found", &["#8"])]);
-    assert_eq!(router.autotune.targets[STREAM].writing, Some(false));
+    assert_eq!(router.autotune.targets[STREAM].writing_now(), Some(false));
 }
 
 #[test]

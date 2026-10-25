@@ -25,7 +25,7 @@ use crate::rules::autotune::find::KeyFound;
 use crate::rules::autotune::keys::{
     InForce, KeyFollow, KeyTarget, KeyWhy, in_force, kept_ahead, shows,
 };
-use crate::rules::autotune::{Cause, REFUSED_WHY, Step};
+use crate::rules::autotune::{Cause, Step};
 
 /// A Live set's playhead in beats.
 pub const CURRENT_SONG_TIME: &str = "current_song_time";
@@ -325,8 +325,9 @@ impl Router {
     /// force writes it to every target of the set (#140 PR 2b; a keyless
     /// song or out of every song writes nothing: the keys stay). Each
     /// change decides the set's selectors (#140 PR 3b), after the key's
-    /// write went out; a song start first ends every selector guard's give
-    /// up (spec §7: until the next song start).
+    /// write went out; a song start, keyed or keyless (PR #147 review N5),
+    /// first ends every selector guard's give up and every refusal of a
+    /// selector's write (spec §7: until the next song start; I5).
     pub(super) fn autotune_position(&mut self, instance: &str) {
         let current = self.autotune.current_maps.contains(instance);
         let map = self
@@ -358,10 +359,11 @@ impl Router {
             None,
         );
         let keys = self.autotune.keys_in_order(instance);
-        if why == KeyWhy::Song {
+        if why.song_start() {
             for k in &keys {
                 if let Some(target) = self.autotune.targets.get_mut(k) {
                     target.guard.reset();
+                    target.refusal = None;
                 }
             }
         }
@@ -518,15 +520,16 @@ impl Router {
         self.autotune_key_owed(key);
     }
 
-    /// A page's AUTOTUNE tap (`what`), refused since #140 PR 3b (the tap is
-    /// gone; in PR 3c's surface a tap opens the singers' panel): recorded,
-    /// and that page told the state again (its button shows what the hub
-    /// holds); nothing is written and nothing saved.
-    pub(super) fn autotune_refused(&self, client: ClientId, what: &str) {
+    /// A page's AUTOTUNE tap (`what` `tap`), refused since #140 PR 3b (the
+    /// tap is gone; in PR 3c's surface a tap opens the singers' panel), or
+    /// its AUTOTUNE AUT on (`aut`, until PR 3c: the PR #147 rulings), and
+    /// why: recorded, and that page told the state again (its button shows
+    /// what the hub holds); nothing is written and nothing saved.
+    pub(super) fn autotune_refused(&self, client: ClientId, what: &str, why: &str) {
         self.autotune_step(
             Step::Refused {
                 what: what.to_string(),
-                why: REFUSED_WHY.to_string(),
+                why: why.to_string(),
             },
             Some(client),
         );

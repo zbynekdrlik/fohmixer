@@ -30,10 +30,17 @@
 //!   its ref). The hub then asks the script for each listed ref's value:
 //!   the targets whose ref it answers stale or unknown are dropped (and
 //!   walked again), and the rest are registered again; one stale ref
-//!   never leaves the whole set unregistered.
-//! - **The decision:** a registration sent or failed is no armed fall back,
-//!   kept is (PR #146 review I2): every change of it decides the set (a
-//!   selector on goes DRY at once while its registration is not kept).
+//!   never leaves the whole set unregistered. A probe Live did not answer
+//!   is asked again (`retries::transient`, up to `CONNECT_RETRIES`; PR
+//!   #147 review N1).
+//! - **The decision (PR #146 review I2, refined by the PR #147 ruling on
+//!   I2):** a selector is armed while both the list the script last kept
+//!   (`Safe.kept`) and the newest one sent hold its DRY write, so a
+//!   registration that only adds a target takes no selector DRY, and one
+//!   that drops a selector's write does: every change decides the set.
+//! - **It waits** while a DRY write of a target let go is on its way (PR
+//!   #147 review I3) and while a kept target whose values changed waits for
+//!   its walk (I4): the script keeps the list it holds until then.
 //!
 //! Nothing here writes a selector.
 
@@ -70,6 +77,12 @@ pub(in crate::router) struct Safe {
     pub problem: Option<String>,
     /// Its failures in a row Live did not answer (the retries' count).
     pub failures: u32,
+    /// The list the script last kept (its OK) since the connect, through
+    /// the registrations sent or failed since (PR #147 ruling on I2).
+    pub kept: Option<Vec<(String, u8)>>,
+    /// Its refs-gone probes Live did not answer in a row (PR #147 review
+    /// N1: the retries' count).
+    pub probes: u32,
 }
 
 /// The script's `safe_writes` of `writes` (each macro's `$ref` and DRY
@@ -148,6 +161,12 @@ pub(super) fn gone_refs(ids: &[String], outcome: &Result<Vec<Value>, String>) ->
         .collect()
 }
 
+/// Whether `safe` is still the failed registration `seq` (a retry or a
+/// probe's answer of another, or of one kept since, is void).
+pub(super) fn failed_current(safe: Option<&Safe>, seq: u64) -> bool {
+    safe.is_some_and(|safe| safe.seq == seq && safe.state == SafeState::Failed)
+}
+
 /// What `/api/status` says of a failed registration: Live's words, and
 /// once its retries are spent (`after`), that it gave up after `tries`.
 pub(super) fn failed_problem(why: &str, after: AfterWalk, tries: u32) -> String {
@@ -197,9 +216,19 @@ impl Router {
     }
 
     /// [`Router::autotune_safe`] with `failures` already counted (a retry).
+    /// It also waits while a DRY write of a target let go is on its way
+    /// (PR #147 review I3) or a target whose values changed waits for its
+    /// walk (I4): the script keeps the list it holds meanwhile.
     fn autotune_safe_now(&mut self, instance: &str, failures: u32) {
         let holding = self.autotune.held.contains(instance);
-        if !may_write(holding, self.reverb_settled(instance)) {
+        if !may_write(holding, self.reverb_settled(instance))
+            || self.autotune.retiring.contains_key(instance)
+            || self
+                .autotune
+                .keys_in_order(instance)
+                .iter()
+                .any(|key| self.autotune.targets[key].awaits_walk())
+        {
             return;
         }
         let list = self.autotune.safe_list(instance);
@@ -214,6 +243,11 @@ impl Router {
         let pairs: Vec<(&str, u8)> = list.iter().map(|(id, off)| (id.as_str(), *off)).collect();
         let result = live.call(safe_commands(&pairs));
         let targets = list.len();
+        let kept = self
+            .autotune
+            .safe
+            .get(instance)
+            .and_then(|safe| safe.kept.clone());
         self.autotune.safe.insert(
             instance.to_string(),
             Safe {
@@ -222,6 +256,8 @@ impl Router {
                 state: SafeState::Sent,
                 problem: None,
                 failures,
+                kept,
+                probes: 0,
             },
         );
         let tx = self.io.tx.clone();
@@ -235,7 +271,8 @@ impl Router {
                 outcome,
             });
         });
-        // Not kept until the script says so: a selector on goes DRY.
+        // Not kept until the script says so: a selector the new list drops
+        // goes DRY.
         self.autotune_decide(instance, Cause::Safe);
     }
 
@@ -266,6 +303,7 @@ impl Router {
                 safe.state = SafeState::Kept;
                 safe.problem = None;
                 safe.failures = 0;
+                safe.kept = Some(safe.list.clone());
                 false
             }
             Some(why) => {
@@ -322,7 +360,9 @@ impl Router {
     /// The probe's answer (void unless `instance`'s newest registration is
     /// still the refused `seq`): every target whose ref is gone is dropped
     /// (missing, walked again: a rack replaced is found anew), and the rest
-    /// is registered again.
+    /// is registered again. A probe Live did not answer is asked again after
+    /// [`RETRY_MS`] while retries are left (PR #147 review N1, the walks'
+    /// rule), then the status says it gave up.
     pub(in crate::router) fn autotune_safe_probed(
         &mut self,
         instance: &str,
@@ -330,12 +370,25 @@ impl Router {
         ids: &[String],
         outcome: &Result<Vec<Value>, String>,
     ) {
-        let current = self
+        let Some(safe) = self
             .autotune
             .safe
-            .get(instance)
-            .is_some_and(|safe| safe.seq == seq && safe.state == SafeState::Failed);
-        if !current {
+            .get_mut(instance)
+            .filter(|safe| failed_current(Some(&**safe), seq))
+        else {
+            return;
+        };
+        if let Err(why) = outcome {
+            if !transient(why) {
+                return;
+            }
+            safe.probes += 1;
+            let probes = safe.probes;
+            if after_walk(true, probes) == AfterWalk::Retry {
+                self.autotune_safe_probe_later(instance, seq);
+            } else {
+                safe.problem = Some(gave_up_problem(why, probes));
+            }
             return;
         }
         let gone = gone_refs(ids, outcome);
@@ -360,6 +413,30 @@ impl Router {
         self.autotune_safe(instance);
     }
 
+    /// Asks for the probe of `instance`'s refused registration `seq` again
+    /// after [`RETRY_MS`] ([`RouterMsg::AutotuneSafeProbeRetry`]).
+    fn autotune_safe_probe_later(&self, instance: &str, seq: u64) {
+        let (instance, tx) = (instance.to_string(), self.io.tx.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(RETRY_MS)).await;
+            let _ = tx.send(RouterMsg::AutotuneSafeProbeRetry { instance, seq });
+        });
+    }
+
+    /// A probe's retry is due: asked again, unless the set's newest
+    /// registration is no longer the refused `seq` (void); while Live is
+    /// busy it waits another [`RETRY_MS`], uncounted.
+    pub(in crate::router) fn autotune_safe_probe_retry(&mut self, instance: &str, seq: u64) {
+        if !failed_current(self.autotune.safe.get(instance), seq) {
+            return;
+        }
+        if self.retry_due(instance) == Due::Wait {
+            self.autotune_safe_probe_later(instance, seq);
+            return;
+        }
+        self.autotune_safe_probe(instance, seq);
+    }
+
     /// Asks for a retry of `instance`'s failed registration `seq` after
     /// [`RETRY_MS`] ([`RouterMsg::AutotuneSafeRetry`]).
     fn autotune_safe_retry_later(&self, instance: &str, seq: u64) {
@@ -379,7 +456,7 @@ impl Router {
             .autotune
             .safe
             .get(instance)
-            .filter(|safe| safe.seq == seq && safe.state == SafeState::Failed)
+            .filter(|safe| failed_current(Some(*safe), seq))
             .map(|safe| safe.failures)
         else {
             return;

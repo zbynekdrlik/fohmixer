@@ -230,6 +230,8 @@ fn a_list_is_news_unless_the_script_holds_it() {
         state,
         problem: None,
         failures: 0,
+        kept: None,
+        probes: 0,
     };
     let both = list(&[("p6", 127), ("p7", 0)]);
     // Since its connect the script holds nothing: only a list with writes
@@ -783,4 +785,39 @@ async fn a_probe_that_finds_nothing_gone_drops_nothing() {
     assert_eq!(router.autotune.safe["band"].state, SafeState::Failed);
     let _ = next_probe(&mut script);
     assert!(next_safe(&mut script).is_none(), "nothing registered again");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_probe_live_did_not_answer_is_asked_again_then_gives_up() {
+    // PR #147 review N1: Live is often busy right after a deletion; the
+    // probe is retried as the walks are, up to the connect-time bound.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, _rx, mut script) = scripted_router(dir.path());
+    let asked = both_found(&mut router, &mut own, &mut script).await;
+    let refused = json!({"ok": false,
+        "error": "bad args: 1 safe write target(s) do not resolve", "errorType": "OpError"});
+    answered(&mut router, &mut own, asked, Some(refused)).await;
+    for _ in 0..=CONNECT_RETRIES {
+        // Live does not answer it (the call dropped: offline).
+        drop(next_probe(&mut script));
+        pump(&mut router, &mut own, RETRY_MS + RETRY_MS / 2).await;
+    }
+    // The last one gave up: no probe more, the status says so.
+    while let Some(asked) = script.try_call() {
+        let probe = asked
+            .commands
+            .iter()
+            .all(|c| c["name"] == "get_prop" && c["target"]["$ref"].is_string());
+        assert!(!probe, "a probe after the give-up: {:?}", asked.commands);
+    }
+    let safe = &router.autotune.safe["band"];
+    assert_eq!(safe.state, SafeState::Failed);
+    assert_eq!(safe.probes, CONNECT_RETRIES + 1);
+    assert_eq!(
+        safe.problem.as_deref(),
+        Some("instance offline (gave up after 25 tries, until the next trigger)")
+    );
+    // Both targets kept: nothing is known gone.
+    assert!(router.autotune.targets[STREAM].found.is_some());
+    assert!(router.autotune.targets[REPRO].found.is_some());
 }

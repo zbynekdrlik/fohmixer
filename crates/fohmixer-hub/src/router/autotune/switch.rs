@@ -7,7 +7,15 @@
 //! path) with each target's own on or off value.
 //!
 //! - **One write per change:** a selector Live already shows as decided,
-//!   or whose write is on its way, is not written again (`needs_write`).
+//!   or whose write is on its way, is not written again (`needs_write`);
+//!   judged against where Live will be once the writes on their way land,
+//!   so a stop right after a switch-on writes DRY at once, and every write's
+//!   answer decides the set again (PR #147 review I1). A DRY decision reads
+//!   the off value (N4: DRY wins), never the pages' on-window.
+//! - **Unconfirmed targets** (PR #147 review I4: since a hold, until their
+//!   walk answers) are DRY and written nothing.
+//! - **A write Live refuses** gets one retry, then that value to that
+//!   `$ref` stops and the target shows the problem until a change (I5).
 //! - **Keys first at a switch-on:** a track turns on only with its key
 //!   confirmed for the key in force, so the read-back decides it (`key`).
 //!   A track the rule already selected stays on through a key change until
@@ -25,7 +33,7 @@
 //!   on) with its why and cause, one `write` per batch; `/api/status`
 //!   shows every target's last decision.
 
-use fohmixer_proto::client::{SafeState, SingerState, TargetState, TrackState};
+use fohmixer_proto::client::{SingerState, TargetState, TrackState};
 use fohmixer_proto::layout::singer_of;
 use fohmixer_proto::songmap::Key;
 use serde_json::Value;
@@ -34,11 +42,11 @@ use super::super::{Router, RouterMsg};
 use super::keys::Position;
 use super::safe::Safe;
 use super::{AutotuneIo, Target, may_write, state_of, write_commands};
-use crate::rules::autotune::keys::{KeyState, shows};
+use crate::rules::autotune::keys::{KeyState, shows as key_shows};
 use crate::rules::autotune::switch::{
-    GuardAct, KeyCheck, TrackInput, another_move, decide, key_check, needs_write,
+    GuardAct, KeyCheck, TrackInput, another_move, decide, key_check, needs_write, refused_decision,
 };
-use crate::rules::autotune::{Cause, Step, WriterAct, target_state};
+use crate::rules::autotune::{Cause, Step, WriterAct, shows};
 
 /// What a selector write sends: the target's key, its macro's `$ref` and
 /// label, the decision written and its value.
@@ -51,16 +59,24 @@ pub(super) struct Going {
     pub value: u8,
 }
 
-/// Whether a set's registration of its DRY writes (`safe`) is kept by the
-/// script with this selector (`id`) and its off value: the fall back is
-/// armed for it (PR #146 review I2).
+/// Whether `list` holds the DRY write of `id` with `off`.
+fn covers(list: &[(String, u8)], id: &str, off: u8) -> bool {
+    list.iter()
+        .any(|(listed, value)| listed == id && *value == off)
+}
+
+/// Whether the fall back is armed for this selector (`id`) and its off
+/// value (PR #146 review I2, refined by the PR #147 ruling on I2): both
+/// the list the script last kept and the newest one sent hold it, so
+/// whichever the script holds now (it swaps lists whole, only on its OK)
+/// has its DRY write. A registration that only adds a target takes no
+/// selector DRY; one that drops a selector's write does.
 pub(super) fn armed(safe: Option<&Safe>, id: &str, off: u8) -> bool {
     safe.is_some_and(|safe| {
-        safe.state == SafeState::Kept
-            && safe
-                .list
-                .iter()
-                .any(|(listed, value)| listed == id && *value == off)
+        safe.kept
+            .as_deref()
+            .is_some_and(|kept| covers(kept, id, off))
+            && covers(&safe.list, id, off)
     })
 }
 
@@ -120,9 +136,30 @@ pub(super) fn key_why(part: &str, state: KeyState, want: Option<Key>, seen: Opti
     }
 }
 
-/// A target problem's words for the surface: its rack's or walk's, its
-/// Tuner naming two singers, its key device's, another writer on its
-/// selector.
+/// Why a target names no singer (PR #147 review N6): it has no manual
+/// off, so no autotune for it.
+pub const NO_SINGER: &str = "its Tuner names no singer: no +ID, no +MUTE, no label of its own";
+
+/// Whether a target names no singer: no `+ID`, no `+MUTE` and a placeholder
+/// label (two `+MUTE`s are their own problem).
+fn names_no_singer(target: &Target) -> bool {
+    !target.spec.two_singers && singer_of(&target.spec).is_none()
+}
+
+/// The words of Live's refusal of a selector's write once the hub stopped
+/// writing it (PR #147 review I5).
+fn refusal_words(target: &Target) -> Option<String> {
+    let refusal = target.refusal.as_ref()?;
+    let id = &target.found.as_ref()?.id;
+    refusal
+        .stops(id, refusal.on)
+        .then(|| format!("Live refuses its selector: {}", refusal.why))
+}
+
+/// A target problem's words for the surface: its rack's or walk's (a
+/// missing rack too: PR #147 review N3), its Tuner naming two singers or
+/// none, its key device's, Live refusing its selector, another writer on
+/// it.
 pub(super) fn trouble(target: &Target) -> Option<String> {
     if let Some(problem) = &target.problem {
         return Some(problem.clone());
@@ -130,8 +167,14 @@ pub(super) fn trouble(target: &Target) -> Option<String> {
     if target.spec.two_singers {
         return Some("its Tuner names two singers".to_string());
     }
+    if names_no_singer(target) {
+        return Some(NO_SINGER.to_string());
+    }
     if let Some(Err(missing)) = &target.key {
         return Some(missing.clone());
+    }
+    if let Some(words) = refusal_words(target) {
+        return Some(words);
     }
     target
         .guard
@@ -140,9 +183,20 @@ pub(super) fn trouble(target: &Target) -> Option<String> {
 }
 
 /// Whether a target has a problem its decision reads (spec §7): its walks
-/// given up, its Tuner naming two singers, no key device.
+/// given up, its Tuner naming two singers or none (PR #147 review N6), no
+/// key device.
 pub(super) fn has_problem(target: &Target) -> bool {
-    target.problem.is_some() || target.spec.two_singers || matches!(target.key, Some(Err(_)))
+    target.problem.is_some()
+        || target.spec.two_singers
+        || names_no_singer(target)
+        || matches!(target.key, Some(Err(_)))
+}
+
+/// Whether a target counts for the pages' `checking` (PR #147 review N3):
+/// found, with a key device, and no problem; a missing one is a problem,
+/// never a key being checked.
+pub(super) fn checked(target: &Target) -> bool {
+    target.found.is_some() && matches!(target.key, Some(Ok(_))) && !has_problem(target)
 }
 
 impl AutotuneIo {
@@ -161,23 +215,26 @@ impl AutotuneIo {
     }
 
     /// Every singer in Live's order of their first track: its tracks, its
-    /// off by hand, and whether its tracks' keys and targets are fine.
+    /// off by hand, and whether its tracks' keys and targets are fine. A
+    /// target that names no singer is one of its own, with no id (PR #147
+    /// review N6: no manual off).
     pub(super) fn singers(&self) -> Vec<SingerState> {
-        let targets = self.ordered();
-        let mut ids: Vec<String> = Vec::new();
-        for target in &targets {
+        let mut groups: Vec<(Option<String>, Vec<&Target>)> = Vec::new();
+        for target in self.ordered() {
             let id = singer_of(&target.spec);
-            if !ids.contains(&id) {
-                ids.push(id);
+            let at = id.as_ref().and_then(|id| {
+                groups
+                    .iter()
+                    .position(|(seen, _)| seen.as_ref() == Some(id))
+            });
+            match at {
+                Some(at) => groups[at].1.push(target),
+                None => groups.push((id, vec![target])),
             }
         }
-        ids.into_iter()
-            .map(|id| {
-                let mine: Vec<&Target> = targets
-                    .iter()
-                    .copied()
-                    .filter(|t| singer_of(&t.spec) == id)
-                    .collect();
+        groups
+            .into_iter()
+            .map(|(id, mine)| {
                 let labels: Vec<&str> = mine.iter().map(|t| t.spec.label.as_str()).collect();
                 let of = |pa: bool| {
                     track_state(
@@ -191,24 +248,25 @@ impl AutotuneIo {
                     label: singer_label(&labels),
                     stream: of(false),
                     pa: of(true),
-                    off: self.rule.is_off(&id),
+                    off: id.as_deref().is_some_and(|id| self.rule.is_off(id)),
                     key_ok: why.is_none(),
                     why,
-                    id,
+                    id: id.unwrap_or_default(),
                 }
             })
             .collect()
     }
 
-    /// Why a found target is not fine: its problem, else its key's.
+    /// Why a target is not fine: its problem (a missing rack too: PR #147
+    /// review N3), else a found one's key's.
     fn why_of(&self, target: &Target) -> Option<String> {
-        target.found.as_ref()?;
         let part = part(target.spec.on);
         if let Some(trouble) = trouble(target) {
             return Some(format!("{part}: {trouble}"));
         }
+        target.found.as_ref()?;
         let seen = match target.values {
-            (Some(key), Some(scale)) => shows(key, scale),
+            (Some(key), Some(scale)) => key_shows(key, scale),
             _ => None,
         };
         (self.check_of(target) == KeyCheck::Bad)
@@ -216,7 +274,8 @@ impl AutotuneIo {
     }
 
     /// A found target's input to its decision (`held`: its set's writes
-    /// held, or its markers not settled).
+    /// held, or its markers not settled; an unconfirmed target judges as
+    /// held: PR #147 review I4).
     fn input(&self, target: &Target, held: bool) -> Option<TrackInput> {
         let found = target.found.as_ref()?;
         let in_force = self
@@ -225,10 +284,10 @@ impl AutotuneIo {
             .map_or((None, None), |p: &Position| p.follow.now());
         Some(TrackInput {
             aut: self.rule.is_on(),
-            held,
+            held: held || !target.sure,
             playing: self.rule.playing(&target.instance),
             in_force,
-            singer_off: self.rule.is_off(&singer_of(&target.spec)),
+            singer_off: singer_of(&target.spec).is_some_and(|id| self.rule.is_off(&id)),
             problem: has_problem(target),
             another_writer: target.guard.another(),
             armed: armed(self.safe.get(&target.instance), &found.id, target.spec.off),
@@ -254,12 +313,15 @@ impl Router {
             self.autotune_hold(set, "markers");
             return;
         }
-        self.autotune_select(set, cause, going);
+        self.autotune_select(set, cause, going, false);
     }
 
     /// Each found target of `set`'s decision (`held`: as while its writes
     /// are held), kept; one `select` record per switch; the selectors to
-    /// write.
+    /// write (none for a target not confirmed since a hold: PR #147 review
+    /// I4). A refusal Live gave its selector ends with a new decision or
+    /// `$ref`; while it stops the write, a refused chain is DRY with a
+    /// problem and a refused DRY is not written again (PR #147 review I5).
     pub(super) fn autotune_judge(&mut self, set: &str, cause: Cause, held: bool) -> Vec<Going> {
         let mut going = Vec::new();
         for key in self.autotune.keys_in_order(set) {
@@ -271,20 +333,38 @@ impl Router {
             else {
                 continue;
             };
-            let decision = decide(&input);
+            let rule = decide(&input);
             let Some(target) = self.autotune.targets.get_mut(&key) else {
                 continue;
             };
+            let Some(id) = target.found.as_ref().map(|f| f.id.clone()) else {
+                continue;
+            };
+            if target
+                .refusal
+                .as_ref()
+                .is_some_and(|refusal| !refusal.holds(&id, rule.on))
+            {
+                target.refusal = None;
+            }
+            let decision = refused_decision(rule, target.refusal.as_ref(), &id);
             let was = target.decision.replace(decision);
-            let on_now = target_state(target.value, target.spec.on) == TargetState::On;
-            let write = needs_write(decision.on, on_now, target.writing, target.guard.given_up());
+            let stopped = target.guard.given_up()
+                || target
+                    .refusal
+                    .as_ref()
+                    .is_some_and(|refusal| refusal.stops(&id, decision.on));
+            // Never before its first value is heard (that value decides),
+            // nor while it is not confirmed since a hold.
+            let write = target.sure
+                && target.value.is_some()
+                && needs_write(decision.on, target.shows(), target.writing_now(), stopped);
             let switched = was.is_some_and(|w| w.on) != decision.on;
             let (instance, track, label) = (
                 target.instance.clone(),
                 target.track.clone(),
                 target.spec.label.clone(),
             );
-            let id = target.found.as_ref().map(|f| f.id.clone());
             let value = super::macro_value(&target.spec, decision.on);
             if switched {
                 self.autotune_step(
@@ -298,7 +378,7 @@ impl Router {
                     None,
                 );
             }
-            if let (true, Some(id)) = (write, id) {
+            if write {
                 going.push(Going {
                     key,
                     id,
@@ -312,20 +392,42 @@ impl Router {
     }
 
     /// Writes `going`'s selectors of `set` in one batch through their
-    /// `$ref`s, recorded first (`write`); each write is on its way until
-    /// Live's next value of it; the answer comes back as
-    /// [`RouterMsg::AutotuneWritten`]. Nothing to write: no record, no call.
-    pub(super) fn autotune_select(&mut self, set: &str, cause: Cause, going: Vec<Going>) {
+    /// `$ref`s, recorded first (`write`); each write (numbered, its own
+    /// counter) is on its way until Live shows it or its answer says it
+    /// failed; the answer comes back as [`RouterMsg::AutotuneWritten`].
+    /// `retire`: the DRY writes of targets let go, whose set's registration
+    /// waits for this answer (PR #147 review I3). Nothing to write: no
+    /// record, no call.
+    pub(super) fn autotune_select(
+        &mut self,
+        set: &str,
+        cause: Cause,
+        going: Vec<Going>,
+        retire: bool,
+    ) {
         if going.is_empty() {
             return;
         }
         let Some(live) = self.live.get(set).cloned() else {
             return;
         };
+        self.autotune.selects += 1;
+        let write = self.autotune.selects;
         for g in &going {
             if let Some(target) = self.autotune.targets.get_mut(&g.key) {
-                target.writing = Some(g.on);
+                target.writing.push(Flying {
+                    write,
+                    on: g.on,
+                    answered: false,
+                });
             }
+        }
+        if retire {
+            self.autotune
+                .retiring
+                .entry(set.to_string())
+                .or_default()
+                .insert(write);
         }
         let labels = |on: bool| -> Vec<String> {
             going
@@ -346,44 +448,48 @@ impl Router {
         self.autotune.rule.wrote();
         let pairs: Vec<(&str, u8)> = going.iter().map(|g| (g.id.as_str(), g.value)).collect();
         let result = live.call(write_commands(&pairs));
-        let keys: Vec<String> = going.iter().map(|g| g.key.clone()).collect();
+        let selectors: Vec<(String, String, bool)> = going
+            .iter()
+            .map(|g| (g.key.clone(), g.id.clone(), g.on))
+            .collect();
         let (instance, tx) = (set.to_string(), self.io.tx.clone());
         tokio::spawn(async move {
             let outcome = result.await.map_err(|e| e.to_string());
             let _ = tx.send(RouterMsg::AutotuneWritten {
                 instance,
-                keys,
+                write,
+                selectors,
                 outcome,
             });
         });
     }
 
-    /// A target's selector value heard (`was` the one before, `writing` the
-    /// hub's write that was on its way): its first value decides its set;
-    /// a move another writer made goes to the guard. Nothing while the set
-    /// is held or unsettled: its values may be another track's by the index
-    /// path (the release decides again).
-    pub(super) fn autotune_heard(&mut self, key: &str, was: Option<f64>, writing: Option<bool>) {
+    /// A target's selector value heard (`was` the one before, `flying` the
+    /// values of the hub's writes that were on its way): its first value
+    /// decides its set; a move another writer made goes to the guard.
+    /// Nothing while the set is held or unsettled, or the target is not
+    /// confirmed since a hold: its values may be another track's by the
+    /// index path (the release, or its walk, decides again).
+    pub(super) fn autotune_heard(&mut self, key: &str, was: Option<f64>, flying: &[bool]) {
         let Some(target) = self.autotune.targets.get(key) else {
             return;
         };
         let instance = target.instance.clone();
         let holding = self.autotune.held.contains(&instance);
-        if !may_write(holding, self.reverb_settled(&instance)) {
+        if !may_write(holding, self.reverb_settled(&instance)) || !target.sure {
             return;
         }
         let Some(decision) = target.decision else {
             return;
         };
-        let on = |value: Option<f64>| target_state(value, target.spec.on) == TargetState::On;
-        let now = on(target.value);
-        let Some(before) = was.map(|v| on(Some(v))) else {
+        let Some(was) = was else {
             // Its first value: decided with what Live shows.
             self.autotune_decide(&instance, Cause::Found);
             return;
         };
+        let before = shows(Some(was), target.spec.on, target.spec.off);
         let track = target.track.clone();
-        match another_move(before, now, decision.on, writing) {
+        match another_move(before, target.shows(), decision.on, flying) {
             Some(true) => self.autotune_moved_on(key),
             Some(false) => {
                 if let Some(target) = self.autotune.targets.get_mut(key) {
@@ -399,13 +505,16 @@ impl Router {
                 );
                 self.autotune_decide(&instance, Cause::Guard);
             }
-            None => {}
+            // No other writer's move: the set is decided again with what
+            // Live shows now, so a selector a write's value left off its
+            // decision is written (DRY wins, PR #147 review I1).
+            None => self.autotune_decide(&instance, Cause::Found),
         }
     }
 
-    /// Another writer moved a target's selector to the autotune chain while
-    /// the hub wants DRY: DRY again once, or, a second time within 10 s,
-    /// the hub stops writing it (its decision `another_writer`).
+    /// Another writer moved a target's selector off DRY while the hub wants
+    /// DRY: DRY again once, or, a second time within 10 s, the hub stops
+    /// writing it (its decision `another_writer`).
     fn autotune_moved_on(&mut self, key: &str) {
         let now_ms = self.now_ms();
         let Some(target) = self.autotune.targets.get_mut(key) else {
@@ -432,7 +541,7 @@ impl Router {
             },
             None,
         );
-        self.autotune_select(&instance, Cause::Guard, going);
+        self.autotune_select(&instance, Cause::Guard, going, false);
         self.autotune_decide(&instance, Cause::Guard);
     }
 }
