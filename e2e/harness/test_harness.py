@@ -489,6 +489,7 @@ class HarnessTest(unittest.TestCase):
         self.assertEqual(harness.expected_answer("song time 10"), "SONG")
         self.assertEqual(harness.expected_answer("param live_set x value 1"), "PARAM")
         self.assertEqual(harness.expected_answer("sets value live_set x"), "SETS")
+        self.assertEqual(harness.expected_answer("clip add 8 50 51 Key {G}"), "CLIP")
         self.assertIsNone(harness.expected_answer("stall 400"))
         self.assertIsNone(harness.expected_answer(""))
 

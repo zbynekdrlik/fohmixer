@@ -248,6 +248,9 @@ pub(super) struct AutotuneIo {
     pub safe_seq: u64,
     /// Each Live set's song map counts, as last read (the pages' state).
     pub counts: BTreeMap<String, Counts>,
+    /// Each Live set's song map problems in words, as last read (the pages'
+    /// state, PR #150 review K2: the first `MAP_TEXTS`).
+    pub map_texts: BTreeMap<String, Vec<String>>,
     /// The selector writes' own counter (PR #147 review I1).
     pub selects: u64,
     /// Each Live set's DRY writes of targets let go, on their way: its
@@ -274,6 +277,7 @@ impl AutotuneIo {
             safe: BTreeMap::new(),
             safe_seq: 0,
             counts: BTreeMap::new(),
+            map_texts: BTreeMap::new(),
             selects: 0,
             retiring: BTreeMap::new(),
         };
@@ -329,6 +333,11 @@ impl AutotuneIo {
             map_changes: counts.changes,
             map_keyed: counts.keyed,
             bar: position.and_then(|p| p.bar.clone()),
+            change: position.and_then(|p| p.change.clone()),
+            map_texts: first
+                .and_then(|set| self.map_texts.get(set))
+                .cloned()
+                .unwrap_or_default(),
         }
     }
 

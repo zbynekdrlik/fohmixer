@@ -652,6 +652,25 @@ pub struct AutotuneState {
     /// The key Live's bar showed at its last read-back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bar: Option<String>,
+    /// The song in force's next key change after the playhead, with its key
+    /// clip's name (#140 PR 3c, PR #150 review K1: the panel's head reads
+    /// `F → G at Key {G}`); none outside a song or after its last change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change: Option<ComingChange>,
+    /// The song map's first problems in words (at most
+    /// [`MAP_TEXTS`], PR #150 review K2, M3: the panel's foot names them).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub map_texts: Vec<String>,
+}
+
+/// How many of the song map's problems the pages are told in words.
+pub const MAP_TEXTS: usize = 3;
+
+/// A song's coming key change (#140 PR 3c): the key and its clip's name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComingChange {
+    pub key: String,
+    pub clip: String,
 }
 
 /// Whether a count is 0 (left out of a message).

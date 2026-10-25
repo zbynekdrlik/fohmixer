@@ -220,7 +220,7 @@ test.describe("AUTOTUNE and its singers' panel", () => {
     await until(async () => (await hubStatus()).autotune.singers_off ?? [], (v: string[]) => v.length === 0, "no singer off");
     await live.call("band", "live_set", "stop_playing");
     for (const path of [STREAM_KEY, STREAM_SCALE]) expect(await hostLine("band", `param ${path} enabled 1`)).toBe("PARAM 1");
-    for (const index of [1, 0]) await hostLine("band", `cue remove ${index}`);
+    for (const index of [2, 1, 0]) await hostLine("band", `cue remove ${index}`);
     expect(await hostLine("band", "song time 0")).toBe("SONG 0.0");
     for (const track of [6, 7, 8]) await hostLine("band", `tuner track ${track} remove`);
     await harness("/hub/layout/reset");
@@ -563,6 +563,40 @@ test.describe("AUTOTUNE and its singers' panel", () => {
     // A tap on it opens nothing either.
     await button.click();
     await expect(page.getByTestId("autotune-panel")).toHaveCount(0);
+  });
+
+  test("the panel's head names the coming key change and its clip, its foot the song map's problems (K1, K2)", async ({ page }) => {
+    const button = await setUp(page);
+    try {
+      // A Sections track (the first `Keys 1`, track 8) with a key clip to G
+      // at 50, then song 1 in C and a song 2 that never ends (a problem).
+      expect(await hostLine("band", 'rename "Keys 1" "Sections"')).toBe("RENAMED 2");
+      expect(await hostLine("band", "clip add 8 50 51 Key {G}")).toBe("CLIP 1");
+      expect(await hostLine("band", SONG[0])).toBe("CUE 1");
+      expect(await hostLine("band", SONG[1])).toBe("CUE 2");
+      expect(await hostLine("band", "cue add 120 002 Test Two {C}")).toBe("CUE 3");
+      await until(
+        async () => (await hubStatus()).songmap.find((m: any) => m.instance === "band"),
+        (m: any) => m?.keyed === 1 && m?.changes === 1 && m?.problems === 1,
+        "the song map with its change and its problem",
+        10_000,
+      );
+      await keysStand("C", ["confirmed", "confirmed"]);
+      await button.click();
+      const panel = page.getByTestId("autotune-panel");
+      await expect(panel.getByTestId("autotune-panel-song")).toHaveText("song 001 · C → G at Key {G}");
+      expect(await clipped(panel.getByTestId("autotune-panel-song"))).toEqual([]);
+      await expect(panel.getByTestId("autotune-panel-map")).toHaveText(
+        /^Song map: 1 song with a key, 1 key change, 1 problem \(song 002: not ended by SONG END, STOP or AUTOSTOP.*\)\.$/,
+      );
+      expect(live.autotune.map_texts).toHaveLength(1);
+      // Past the clip: G in force, no change to come.
+      expect(await hostLine("band", "song time 60")).toBe("SONG 60.0");
+      await expect(panel.getByTestId("autotune-panel-song")).toHaveText("song 001 · G");
+    } finally {
+      await hostLine("band", "clip remove 8 0");
+      await hostLine("band", 'rename "Sections" "Keys 1"');
+    }
   });
 
   test("a mismatch shows the yellow corner and its why in the panel", async ({ page }) => {

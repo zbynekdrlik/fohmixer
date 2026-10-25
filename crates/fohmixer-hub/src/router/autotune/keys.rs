@@ -14,8 +14,8 @@
 
 use std::collections::BTreeSet;
 
-use fohmixer_proto::client::{KeyTargetStatus, ServerMsg};
-use fohmixer_proto::songmap::{Key, SongMap, counts};
+use fohmixer_proto::client::{ComingChange, KeyTargetStatus, MAP_TEXTS, ServerMsg};
+use fohmixer_proto::songmap::{Key, Problem, SongMap, counts, next_change};
 use serde_json::Value;
 
 use super::super::{Router, transport_heard};
@@ -23,7 +23,7 @@ use super::{AUTOTUNE_CLIENT, AutotuneIo, missing_news};
 use crate::live::subs::{Cached, ClientId};
 use crate::rules::autotune::find::KeyFound;
 use crate::rules::autotune::keys::{
-    InForce, KeyFollow, KeyTarget, KeyWhy, in_force, kept_ahead, shows,
+    InForce, KeyFollow, KeyTarget, KeyWhy, in_force, kept_ahead, lookahead_beats, shows,
 };
 use crate::rules::autotune::{Cause, Step};
 
@@ -58,6 +58,9 @@ pub(in crate::router) struct Position {
     pub bar_writing: Option<(u64, Key)>,
     pub bar_owed: bool,
     pub late: Option<LateNote>,
+    /// The song in force's coming key change (#140 PR 3c, PR #150 review
+    /// K1: the panel's head), judged where the key in force is.
+    pub change: Option<ComingChange>,
 }
 
 /// Where a key change's lateness is measured from (spec §6): its song, the
@@ -149,6 +152,34 @@ pub(super) fn key_now(map: Option<&SongMap>, position: &Position) -> InForce {
     }
 }
 
+/// The coming key change at a set's position (#140 PR 3c, PR #150 review
+/// K1): the song in force's next change after the point the key in force
+/// is judged at (`key_now`'s: one tick ahead while known to play, else the
+/// lookahead kept), its key and its clip's name; none without a map or a
+/// position heard, out of every song or after its last change.
+pub(super) fn coming_now(map: Option<&SongMap>, position: &Position) -> Option<ComingChange> {
+    let (map, time) = (map?, position.time?);
+    let at = if position.playing == Some(true) {
+        time + lookahead_beats(position.tempo)
+    } else {
+        time + position.ahead
+    };
+    next_change(map, at).map(|(key, clip)| ComingChange {
+        key: key.name(),
+        clip: clip.to_string(),
+    })
+}
+
+/// The song map's first problems in words for the pages (PR #150 review
+/// K2, M3: the panel's foot), at most `MAP_TEXTS`.
+pub(super) fn map_texts(map: &SongMap) -> Vec<String> {
+    map.problems
+        .iter()
+        .take(MAP_TEXTS)
+        .map(Problem::text)
+        .collect()
+}
+
 /// A target's key device in `/api/status`: the device, its path, its two
 /// values once both were heard and the key they show, the key last written
 /// there and where it stands (#140 PR 2b); or why there is none.
@@ -225,6 +256,7 @@ impl Router {
             bar_writing: None,
             bar_owed: false,
             late: None,
+            change: None,
         };
         self.autotune
             .positions
@@ -346,6 +378,7 @@ impl Router {
             false,
         );
         let (song, key) = key_now(map, position);
+        position.change = coming_now(map, position);
         let Some(why) = position.follow.on_position((song, key)) else {
             return;
         };
@@ -382,6 +415,9 @@ impl Router {
             self.autotune
                 .counts
                 .insert(instance.to_string(), counts(&read.map));
+            self.autotune
+                .map_texts
+                .insert(instance.to_string(), map_texts(&read.map));
         }
         self.autotune_position(instance);
         self.autotune_tell();
@@ -405,6 +441,7 @@ impl Router {
             position.bar_writing = None;
             position.bar_owed = false;
             position.late = None;
+            position.change = None;
         }
     }
 

@@ -266,11 +266,17 @@ pub fn switch_value(row: &PanelRow) -> (String, bool) {
 }
 
 /// The panel's head after its title: the song and the key in force
-/// (`song 031 · F`), `no song` outside every song.
+/// (`song 031 · F`) and, while the song has a key change to come, that key
+/// and its clip (`song 031 · F → G at Key {G}`, mockup v2; PR #150 review
+/// K1); `no song` outside every song.
 pub fn panel_head(state: &AutotuneState) -> String {
-    match state.song {
-        Some(song) => format!("song {song:03} · {}", key_text(state)),
-        None => "no song".to_string(),
+    let Some(song) = state.song else {
+        return "no song".to_string();
+    };
+    let now = format!("song {song:03} · {}", key_text(state));
+    match &state.change {
+        Some(change) => format!("{now} → {} at {}", change.key, change.clip),
+        None => now,
     }
 }
 
@@ -292,6 +298,20 @@ pub fn panel_foot(state: &AutotuneState) -> [String; 2] {
         counted(state.map_changes, "key change", "key changes"),
         counted(state.map_problems, "problem", "problems"),
     );
+    // The first problems in the hub's words (PR #150 review K2, M3: the
+    // mockup's `1 problem (088: no key)`), more of them marked.
+    let map = match state.map_texts.as_slice() {
+        [] => map,
+        texts => {
+            let more = if state.map_problems > texts.len() {
+                "; …"
+            } else {
+                ""
+            };
+            let listed = texts.join("; ");
+            format!("{} ({listed}{more}).", map.trim_end_matches('.'))
+        }
+    };
     let bar = state.bar.as_deref().unwrap_or("—");
     let live = format!("Live: {bar}. Hold AUTOTUNE 1 s: {AUT_BADGE} on/off.");
     [map, live]
@@ -428,6 +448,8 @@ mod tests {
             map_changes: 0,
             map_keyed: 0,
             bar: None,
+            change: None,
+            map_texts: Vec::new(),
         }
     }
 
@@ -811,6 +833,46 @@ mod tests {
         // A target that names no singer has no manual off.
         let lone = state(true, Some(true), Some("F"), vec![singer("", Dry, Dry)]);
         assert_eq!(panel_rows(&lone)[0].switch, None);
+    }
+
+    #[test]
+    fn the_panel_head_names_the_coming_change_and_its_clip() {
+        // PR #150 review K1, mockup v2's head.
+        let mut s = state(true, Some(true), Some("F"), Vec::new());
+        s.change = Some(fohmixer_proto::client::ComingChange {
+            key: "G".into(),
+            clip: "Key {G}".into(),
+        });
+        assert_eq!(panel_head(&s), "song 031 · F → G at Key {G}");
+        s.song = None;
+        assert_eq!(panel_head(&s), "no song");
+    }
+
+    #[test]
+    fn the_panel_foot_names_the_first_problems() {
+        // PR #150 review K2, M3.
+        let mut s = state(true, Some(true), Some("F"), Vec::new());
+        s.map_keyed = 165;
+        s.map_changes = 8;
+        s.map_problems = 1;
+        s.map_texts = vec!["song 088: not ended by SONG END, STOP or AUTOSTOP".into()];
+        assert_eq!(
+            panel_foot(&s)[0],
+            "Song map: 165 songs with a key, 8 key changes, 1 problem (song 088: not ended by SONG END, STOP or AUTOSTOP)."
+        );
+        // More problems than told: marked.
+        s.map_problems = 5;
+        s.map_texts = vec!["a".into(), "b".into(), "c".into()];
+        assert_eq!(
+            panel_foot(&s)[0],
+            "Song map: 165 songs with a key, 8 key changes, 5 problems (a; b; c; …)."
+        );
+        // Exactly as many as told: no mark.
+        s.map_problems = 3;
+        assert_eq!(
+            panel_foot(&s)[0],
+            "Song map: 165 songs with a key, 8 key changes, 3 problems (a; b; c)."
+        );
     }
 
     #[test]

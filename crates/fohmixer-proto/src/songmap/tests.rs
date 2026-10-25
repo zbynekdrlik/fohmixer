@@ -428,6 +428,42 @@ fn a_cue_without_a_time_is_left_out() {
 }
 
 #[test]
+fn the_coming_change_is_the_next_clip_after_the_playhead_with_its_name() {
+    let m = build(
+        &[
+            cue("031 T {F 95 4/4}", 0.0),
+            cue("SONG END", 100.0),
+            cue("032 U {C}", 120.0),
+            cue("SONG END", 200.0),
+        ],
+        &[
+            clip("Key {A}", 70.0),
+            clip("  Key {G} ", 50.0),
+            clip("Verse", 60.0),
+        ],
+    );
+    assert_eq!(
+        m.spans[0].clips,
+        vec!["Key {G}".to_string(), "Key {A}".to_string()]
+    );
+    assert_eq!(next_change(&m, 10.0), Some((major(7), "Key {G}")));
+    assert_eq!(next_change(&m, 49.9), Some((major(7), "Key {G}")));
+    // At a change's own start it is in force: the next one comes.
+    assert_eq!(next_change(&m, 50.0), Some((major(9), "Key {A}")));
+    assert_eq!(next_change(&m, 69.9), Some((major(9), "Key {A}")));
+    assert_eq!(next_change(&m, 70.0), None, "after the last change");
+    assert_eq!(next_change(&m, 130.0), None, "a song without a change");
+    assert_eq!(next_change(&m, 110.0), None, "between the songs");
+    // Two clips at one time: the later in clip order wins, its name with it.
+    let twice = build(
+        &[cue("031 T {F}", 0.0), cue("SONG END", 100.0)],
+        &[clip("Key {G}", 50.0), clip("Key {D}", 50.0)],
+    );
+    assert_eq!(twice.spans[0].clips, vec!["Key {D}".to_string()]);
+    assert_eq!(next_change(&twice, 0.0), Some((major(2), "Key {D}")));
+}
+
+#[test]
 fn key_clips_change_the_key_from_their_start() {
     let m = build(
         &[cue("031 T {F 95 4/4}", 22766.0), cue("SONG END", 23501.0)],

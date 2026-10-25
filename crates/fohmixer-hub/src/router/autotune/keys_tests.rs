@@ -14,8 +14,8 @@ use super::super::super::tests::{attach, offline_router, offline_router_with, re
 use super::super::super::{Router, RouterMsg};
 use super::super::same_macro;
 use super::{
-    CURRENT_SONG_TIME, KeyPart, Position, PositionPart, Route, TEMPO, VALUE, heard_number, key_now,
-    key_status,
+    CURRENT_SONG_TIME, KeyPart, Position, PositionPart, Route, TEMPO, VALUE, coming_now,
+    heard_number, key_now, key_status, map_texts,
 };
 use crate::live::client::LiveEvent;
 use crate::outbox::Outbox;
@@ -282,6 +282,7 @@ fn the_key_in_force_at_a_position_needs_a_map_and_a_position() {
         bar_writing: None,
         bar_owed: false,
         late: None,
+        change: None,
     };
     assert_eq!(
         key_now(None, &at(Some(10.0), None, None)),
@@ -323,6 +324,97 @@ fn the_key_in_force_at_a_position_needs_a_map_and_a_position() {
 }
 
 #[test]
+fn the_coming_change_is_judged_where_the_key_in_force_is() {
+    // PR #150 review K1: the panel's head names the song's next key clip.
+    let listing = songs("C");
+    let map = build(&listing.cues, &listing.clips);
+    let at = |time: Option<f64>, playing: Option<bool>, ahead: f64| Position {
+        time,
+        playing,
+        tempo: Some(120.0),
+        time_sub: None,
+        tempo_sub: None,
+        follow: KeyFollow::new(),
+        ahead,
+        before: None,
+        bar: None,
+        bar_writing: None,
+        bar_owed: false,
+        late: None,
+        change: None,
+    };
+    let g = Some(fohmixer_proto::client::ComingChange {
+        key: "G".into(),
+        clip: "Key {G}".into(),
+    });
+    assert_eq!(coming_now(Some(&map), &at(Some(10.0), Some(false), 0.0)), g);
+    assert_eq!(
+        coming_now(None, &at(Some(10.0), Some(false), 0.0)),
+        None,
+        "no map"
+    );
+    assert_eq!(
+        coming_now(Some(&map), &at(None, Some(false), 0.0)),
+        None,
+        "no position"
+    );
+    // Stopped just before the clip: still coming; one tick ahead while
+    // playing (35 ms at 120 bpm, 0.07 beat) it is in force, none after it.
+    assert_eq!(
+        coming_now(Some(&map), &at(Some(49.95), Some(false), 0.0)),
+        g
+    );
+    assert_eq!(
+        coming_now(Some(&map), &at(Some(49.95), Some(true), 0.0)),
+        None
+    );
+    assert_eq!(
+        coming_now(Some(&map), &at(Some(49.95), None, 0.07)),
+        None,
+        "the lookahead kept"
+    );
+    assert_eq!(
+        coming_now(Some(&map), &at(Some(50.0), Some(false), 0.0)),
+        None
+    );
+    // Song 2 has no key clip; out of every song none.
+    assert_eq!(
+        coming_now(Some(&map), &at(Some(130.0), Some(false), 0.0)),
+        None
+    );
+    assert_eq!(
+        coming_now(Some(&map), &at(Some(110.0), Some(false), 0.0)),
+        None
+    );
+}
+
+#[test]
+fn the_pages_get_the_first_problems_in_words() {
+    // PR #150 review K2, M3: at most `MAP_TEXTS`, in the map's order.
+    let cue = |name: &str, time: f64| Cue {
+        name: name.to_string(),
+        time: Some(time),
+    };
+    let ok = build(&songs("C").cues, &[]);
+    assert_eq!(map_texts(&ok), Vec::<String>::new());
+    let cues: Vec<Cue> = (1..=5)
+        .map(|n| cue(&format!("00{n} Song {{C}}"), f64::from(n) * 10.0))
+        .collect();
+    let bad = build(&cues, &[]);
+    let texts = map_texts(&bad);
+    assert_eq!(texts.len(), 3);
+    assert_eq!(
+        texts,
+        bad.problems
+            .iter()
+            .take(3)
+            .map(|p| p.text())
+            .collect::<Vec<_>>()
+    );
+    assert!(texts[0].starts_with("song 001: "), "{texts:?}");
+}
+
+#[test]
 fn a_stopped_set_is_judged_with_the_lookahead_it_kept() {
     // PR 2a review M4: the lookahead a stop kept, until the playhead moves.
     let listing = songs("C");
@@ -340,6 +432,7 @@ fn a_stopped_set_is_judged_with_the_lookahead_it_kept() {
         bar_writing: None,
         bar_owed: false,
         late: None,
+        change: None,
     };
     let (c, g) = (Some(major(0)), Some(major(7)));
     assert_eq!(key_now(Some(&map), &at(Some(false), 0.07)), (Some(1), g));

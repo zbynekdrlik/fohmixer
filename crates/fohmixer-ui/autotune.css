@@ -65,10 +65,10 @@
     margin-left: auto;
     overflow: hidden;
     color: var(--tune-hi);
-    /* 16 px: the face's content area at 12.5 px (CI's Chromium measured
-       its text 16 px high in a 15 px line), so the ellipsis clip never
-       cuts a glyph. */
-    font: 600 12.5px/16px var(--ui);
+    /* 18 px: the face's content area at 12.5 px is 16 px (CI's Chromium
+       measured it in a 15 px line), and the head's → comes from a fallback
+       face: 2 px of room, so the ellipsis clip never cuts a glyph. */
+    font: 600 12.5px/18px var(--ui);
     text-overflow: ellipsis;
     white-space: nowrap;
 }

@@ -171,6 +171,8 @@ ANSWERS = {
     "song": "SONG",
     "param": "PARAM",
     "sets": "SETS",
+    # PR #150 review K1: a Sections key clip.
+    "clip": "CLIP",
 }
 
 

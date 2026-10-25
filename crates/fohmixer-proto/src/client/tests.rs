@@ -1491,6 +1491,8 @@ fn an_autotune_message_round_trips_and_an_older_page_reads_it_as_unknown() {
         map_changes: 0,
         map_keyed: 0,
         bar: None,
+        change: None,
+        map_texts: Vec::new(),
     };
     let wire = json!({"type": "autotune", "aut": true, "playing": false, "targets": [
         {"label": "Vox 2", "state": "on"}, {"label": "#8", "state": "missing"}]});
@@ -1511,6 +1513,8 @@ fn an_autotune_message_round_trips_and_an_older_page_reads_it_as_unknown() {
         map_changes: 0,
         map_keyed: 0,
         bar: None,
+        change: None,
+        map_texts: Vec::new(),
     };
     round_trip_server(
         ServerMsg::Autotune(unheard),
@@ -1551,6 +1555,11 @@ fn an_autotune_message_round_trips_and_an_older_page_reads_it_as_unknown() {
         map_changes: 8,
         map_keyed: 165,
         bar: Some("F".into()),
+        change: Some(ComingChange {
+            key: "G".into(),
+            clip: "Key {G}".into(),
+        }),
+        map_texts: vec!["song 088: not ended by SONG END, STOP or AUTOSTOP".into()],
     };
     round_trip_server(
         ServerMsg::Autotune(told),
@@ -1560,8 +1569,11 @@ fn an_autotune_message_round_trips_and_an_older_page_reads_it_as_unknown() {
                     "off": false, "key_ok": false, "why": "PA Key reads G, wrote F"},
                    {"id": "#Vox 7", "label": "Vox 7", "stream": "none", "pa": "dry",
                     "off": true, "key_ok": true, "confirmed": true}],
-               "map_problems": 1, "map_changes": 8, "map_keyed": 165, "bar": "F"}),
+               "map_problems": 1, "map_changes": 8, "map_keyed": 165, "bar": "F",
+               "change": {"key": "G", "clip": "Key {G}"},
+               "map_texts": ["song 088: not ended by SONG END, STOP or AUTOSTOP"]}),
     );
+    assert_eq!(MAP_TEXTS, 3);
     assert!(is_zero(&0));
     assert!(!is_zero(&1));
     assert_eq!(HUB_AUTOTUNE_SINGER, "autotune_singer");
@@ -1594,6 +1606,7 @@ fn a_song_map_reports_keys_with_their_names() {
                 minor: false,
             },
         }],
+        clips: vec!["Key {Eb}".into()],
     };
     let report = SpanReport::from(&span);
     assert_eq!(
@@ -1608,6 +1621,7 @@ fn a_song_map_reports_keys_with_their_names() {
         end: None,
         key: None,
         changes: Vec::new(),
+        clips: Vec::new(),
     };
     assert_eq!(
         serde_json::to_value(SpanReport::from(&keyless)).unwrap(),
