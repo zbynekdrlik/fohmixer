@@ -412,6 +412,14 @@ fn autotunes_state_stays_through_an_outage_stale_until_the_hub_tells_it_again() 
             label: "#7".into(),
             state,
         }],
+        song: None,
+        key: None,
+        checking: false,
+        singers: Vec::new(),
+        map_problems: 0,
+        map_changes: 0,
+        map_keyed: 0,
+        bar: None,
     };
     let mut autotune = HubAutotune::default();
     assert_eq!((autotune.shown(), autotune.fresh()), (None, None));

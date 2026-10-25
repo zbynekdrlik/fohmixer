@@ -323,6 +323,23 @@ fn every_why_has_its_word() {
 }
 
 #[test]
+fn a_song_start_is_another_song_or_a_keyless_one_from_out_of_every_song() {
+    // PR #147 review N5: a keyless song starts a song too.
+    let starts: Vec<bool> = [
+        KeyWhy::Song,
+        KeyWhy::NoKey,
+        KeyWhy::Change,
+        KeyWhy::Span,
+        KeyWhy::Found,
+        KeyWhy::Retry,
+    ]
+    .into_iter()
+    .map(KeyWhy::song_start)
+    .collect();
+    assert_eq!(starts, [true, true, false, false, false, false]);
+}
+
+#[test]
 fn the_follower_starts_a_song_once_then_follows_its_changes() {
     let (f, g) = (major(5), major(7));
     let mut k = KeyFollow::new();

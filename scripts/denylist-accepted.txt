@@ -16,3 +16,5 @@ e92744288bc0430c555f7ebef42d28c1f82a3c17 docs/superpowers/specs/2026-09-28-ui-re
 1d4fcb238fe3ff057f29e64f96983189f41ef704 docs/mockups/redesign-stage-v1.html
 # Published before the real-list check; gone from the tree.
 c0320b3d01d269e4da1b012c914e41de88dd6bf3 scripts/test_denylist_scan.py
+# A docs commit pushed with [skip ci] from another session; its message is published history.
+2d91eb63b085e5990d854747e50910153bd28b94 commit metadata

@@ -634,8 +634,14 @@ _export(Chain, _ChainClass, "Chain")
 class _RackDeviceClass(_DeviceClass):
     _listened = ("chains", "return_chains")
 
-    def __init__(self, name, class_name, chains=(), parameters=()):
-        macros = [_DeviceParameterClass(f"Macro {i}", 0.0, 0.0, 127.0, "int") for i in range(1, 9)]
+    def __init__(self, name, class_name, chains=(), parameters=(), macros=()):
+        # A fixture's ``macros`` start Macro 1, 2, ... at their values (#140
+        # PR 3b: a PA rack stands on DRY at 127); every other macro at 0.
+        starts = list(macros) + [0.0] * (8 - len(macros))
+        macros = [
+            _DeviceParameterClass(f"Macro {i}", starts[i - 1], 0.0, 127.0, "int")
+            for i in range(1, 9)
+        ]
         selector = _DeviceParameterClass("Chain Selector", 0.0, 0.0, 127.0, "int")
         super().__init__(name, class_name, [*macros, selector, *parameters])
         self._v["can_have_chains"] = True

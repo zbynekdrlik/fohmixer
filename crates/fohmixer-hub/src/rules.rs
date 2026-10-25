@@ -106,9 +106,14 @@ pub struct HubState {
     /// The fader links' switches a page set (#130, D18).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fader_links: Vec<links::SavedLink>,
-    /// AUTOTUNE AUT (#104, D19); written only while on.
+    /// AUTOTUNE AUT (#104, D19); written only while on, kept across a
+    /// restart since #140 PR 3b.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub autotune_aut: bool,
+    /// The singers off by hand (#140 PR 3b, spec §2.2), sorted; written
+    /// only while one is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub autotune_off: Vec<String>,
 }
 
 impl HubState {
@@ -116,8 +121,8 @@ impl HubState {
     /// parse is logged and read as the defaults (the rules off) — never a
     /// reason to leave the mixer down — and is not overwritten until a hub
     /// value changes (STAGE AUT, a fader link's switch, REVERB AUT or what
-    /// REVERB holds lowered, AUTOTUNE AUT; a layout alone saves nothing;
-    /// #130, #104).
+    /// REVERB holds lowered, AUTOTUNE AUT, a singer's manual off; a layout
+    /// alone saves nothing; #130, #104, #140).
     pub fn load(data_dir: &Path) -> Self {
         let path = data_dir.join(HUB_STATE_FILE);
         match std::fs::read_to_string(&path) {
@@ -261,20 +266,30 @@ mod tests {
                 on: false,
             }],
             autotune_aut: true,
+            autotune_off: vec!["#Vox 7".into(), "VOX1".into()],
         };
         state.save(dir.path()).unwrap();
         assert_eq!(HubState::load(dir.path()), state);
+        // AUT and the singers off by hand are kept across a restart (#140
+        // PR 3b).
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(state_path(dir.path())).unwrap())
+                .unwrap();
+        assert_eq!(saved["autotune_aut"], serde_json::json!(true));
+        assert_eq!(saved["autotune_off"], serde_json::json!(["#Vox 7", "VOX1"]));
         // An older file (STAGE AUT only) reads with REVERB's defaults, and
         // the defaults write no key of REVERB's.
         std::fs::write(state_path(dir.path()), r#"{"stage_aut": true}"#).unwrap();
         assert_eq!(HubState::load(dir.path()).reverb, reverb::Saved::default());
         assert_eq!(HubState::load(dir.path()).fader_links, vec![]);
         assert!(!HubState::load(dir.path()).autotune_aut, "AUTOTUNE AUT off");
+        assert!(HubState::load(dir.path()).autotune_off.is_empty());
         HubState {
             stage_aut: false,
             reverb: reverb::Saved::default(),
             fader_links: Vec::new(),
             autotune_aut: false,
+            autotune_off: Vec::new(),
         }
         .save(dir.path())
         .unwrap();
@@ -291,6 +306,7 @@ mod tests {
             reverb: reverb::Saved::default(),
             fader_links: Vec::new(),
             autotune_aut: true,
+            autotune_off: Vec::new(),
         }
         .save(dir.path())
         .unwrap();
@@ -307,6 +323,7 @@ mod tests {
             reverb: reverb::Saved::default(),
             fader_links: Vec::new(),
             autotune_aut: false,
+            autotune_off: Vec::new(),
         }
         .save(dir.path())
         .unwrap();
@@ -328,6 +345,7 @@ mod tests {
                 reverb: reverb::Saved::default(),
                 fader_links: Vec::new(),
                 autotune_aut: false,
+                autotune_off: Vec::new(),
             }
             .save(dir.path())
             .is_err()

@@ -1092,6 +1092,8 @@ fn an_autotune_control_subscribes_nothing() {
         label: format!("#{}", index + 1),
         on: 127,
         off: 0,
+        singer: None,
+        two_singers: false,
     };
     let autotune = Control::Autotune {
         label: Some("AUTOTUNE".into()),

@@ -49,9 +49,13 @@ pub const HUB_REVERB_LOW: &str = "reverb_low";
 /// The hub value of AUTOTUNE AUT (#104, D19; the hub's rule, kept in
 /// `hub-state.json`): a bool.
 pub const HUB_AUTOTUNE_AUT: &str = "autotune_aut";
-/// The hub value an AUTOTUNE tap asks for (#104): every target on (`true`)
-/// or off, as the button shows it, so two pages' taps agree.
+/// The hub value an AUTOTUNE tap asked for (#104). Since #140 PR 3b the hub
+/// refuses it (a tap opens the singers' panel, PR 3c): an older page's tap
+/// gets a refusal.
 pub const HUB_AUTOTUNE: &str = "autotune";
+/// The hub value of one singer's manual off (#140 PR 3b, spec §2.2):
+/// `{"id": "<singer>", "off": bool}`, kept in `hub-state.json`.
+pub const HUB_AUTOTUNE_SINGER: &str = "autotune_singer";
 /// The hub value of a fader link's switch (#130, D18): this prefix, the
 /// leader's Live set, `|`, its id (`fader_link|band|REV`; a bool).
 pub const FADER_LINK_PREFIX: &str = "fader_link|";
@@ -612,7 +616,10 @@ pub struct AutotuneTargetState {
 }
 
 /// AUTOTUNE's state, told to every page (#104, D19,
-/// [`ServerMsg::Autotune`]).
+/// [`ServerMsg::Autotune`]); since #140 PR 3b (spec §9) the first target's
+/// Live set's song and key in force, whether a key is still being checked,
+/// the singers, the song map's counts and Live's bar. Every new field is
+/// absent at its default (an older hub's message reads as before).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AutotuneState {
     /// AUTOTUNE AUT is on.
@@ -622,6 +629,96 @@ pub struct AutotuneState {
     pub playing: Option<bool>,
     /// The targets, in Live's order.
     pub targets: Vec<AutotuneTargetState>,
+    /// The song the playhead is in (none: out of every song).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub song: Option<u16>,
+    /// The key in force (`F#m`; none outside a song or in a keyless one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// AUT on, Live playing in a keyed song, and some target's key not
+    /// confirmed yet (the surface says `checking`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub checking: bool,
+    /// Each singer, in Live's order of their first track.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub singers: Vec<SingerState>,
+    /// The song map's problems, key changes and keyed songs.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub map_problems: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub map_changes: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub map_keyed: usize,
+    /// The key Live's bar showed at its last read-back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bar: Option<String>,
+}
+
+/// Whether a count is 0 (left out of a message).
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// One of a singer's tracks on the surface (#140 PR 3b): its selector on
+/// the autotune chain (`tune`) or DRY (`dry`), or the singer has no such
+/// track (`none`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackState {
+    Tune,
+    Dry,
+    None,
+}
+
+/// One singer in [`AutotuneState`] (#140 PR 3b, spec §2.2, §9): its id
+/// (`layout::singer_of`; empty for a target that names no singer, which
+/// has no manual off: PR #147 review N6), its label, its stream and PA
+/// tracks, whether it is off by hand, whether its tracks' keys and targets
+/// are fine, and why not (`stream Key reads G, wrote F`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SingerState {
+    pub id: String,
+    pub label: String,
+    pub stream: TrackState,
+    pub pa: TrackState,
+    pub off: bool,
+    pub key_ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+}
+
+/// Why a target's selector is where the hub's rule put it (#140 PR 3b,
+/// spec §7's names): AUT off (`aut`), its set held while its markers
+/// settle (`held`), its rack not confirmed by a walk since a hold or a
+/// track-list change while its set is not held (`unconfirmed`, PR #147
+/// re-review R6), Live stopped (`stop`), out of every song (`span`), a
+/// keyless song (`no_key`), its singer off by hand (`singer_off`), a
+/// target problem (`problem`), another writer moved it (`another_writer`),
+/// the script's fall back to DRY not armed (`unarmed`), its key not
+/// confirmed for the key in force (`mismatch`), or on (`play`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SwitchWhy {
+    Aut,
+    Held,
+    Unconfirmed,
+    Stop,
+    Span,
+    NoKey,
+    SingerOff,
+    Problem,
+    AnotherWriter,
+    Unarmed,
+    Mismatch,
+    Play,
+}
+
+/// A target's decision (#140 PR 3b): its autotune chain selected (`on`) or
+/// DRY, and why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Decision {
+    pub on: bool,
+    pub why: SwitchWhy,
 }
 
 /// Where a target's key stands (#140 PR 2b; spec §5): nothing written yet
@@ -691,6 +788,10 @@ pub struct AutotuneTargetStatus {
     pub problem: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<KeyTargetStatus>,
+    /// The hub's last decision for its selector (#140 PR 3b; none before
+    /// its rack is found).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<Decision>,
 }
 
 /// A Live set's key in force in `GET /api/status` (#140 PR 2): the song
@@ -720,17 +821,23 @@ pub struct KeyInForce {
 /// AUTOTUNE in `GET /api/status` (#104, D19): AUTOTUNE AUT, the rule's
 /// writes, the taps, each target, each Live set's key in force (#140 PR 2)
 /// and each Live set's registration of its DRY writes with its script
-/// (#140 PR 3a); none in an older hub's answer.
+/// (#140 PR 3a); none in an older hub's answer. Since #140 PR 3b `writes`
+/// counts the selector batches the rule sent, `taps` is always 0 (a tap is
+/// refused; kept for an older reader) and `singers_off` names the singers
+/// off by hand, sorted.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AutotuneStatus {
     pub aut: bool,
     pub writes: u64,
+    #[serde(default)]
     pub taps: u64,
     pub targets: Vec<AutotuneTargetStatus>,
     #[serde(default)]
     pub keys: Vec<KeyInForce>,
     #[serde(default)]
     pub safe: Vec<SafeStatus>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub singers_off: Vec<String>,
 }
 
 /// Where a Live set's registration of its DRY writes stands (#140 PR 3a,

@@ -262,6 +262,13 @@ impl KeyWhy {
             KeyWhy::Retry => "retry",
         }
     }
+
+    /// Whether it is a song start (spec §7's "the next song start", which
+    /// ends a selector guard's give up and a refused write): another song,
+    /// or a keyless song from out of every song (PR #147 review N5).
+    pub fn song_start(self) -> bool {
+        matches!(self, KeyWhy::Song | KeyWhy::NoKey)
+    }
 }
 
 /// Why the position went from `before` to `now`, if anything changed:

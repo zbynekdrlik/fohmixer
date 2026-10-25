@@ -677,6 +677,10 @@ fn api_bodies_round_trip() {
                         want: Some("F#m".into()),
                         state: Some(KeyState::Confirmed),
                     }),
+                    decision: Some(Decision {
+                        on: true,
+                        why: SwitchWhy::Play,
+                    }),
                 },
                 AutotuneTargetStatus {
                     instance: "band".into(),
@@ -687,6 +691,7 @@ fn api_bodies_round_trip() {
                     path: None,
                     problem: Some("no rack named Latencies".into()),
                     key: None,
+                    decision: None,
                 },
             ],
             keys: vec![KeyInForce {
@@ -712,6 +717,7 @@ fn api_bodies_round_trip() {
                     problem: Some("no such function: safe_writes".into()),
                 },
             ],
+            singers_off: vec!["VOX2".into()],
         },
         songmap: vec![SongMapStatus {
             instance: "band".into(),
@@ -733,7 +739,8 @@ fn api_bodies_round_trip() {
              "state": "on", "path": "live_set tracks 6 devices 0 parameters 1",
              "key": {"device": "gridder", "path": "live_set tracks 6 devices 0 chains 0 devices 0",
                      "values": [0.5, 1.0 / 28.0], "shows": "F#m", "problem": null,
-                     "want": "F#m", "state": "confirmed"}},
+                     "want": "F#m", "state": "confirmed"},
+             "decision": {"on": true, "why": "play"}},
             {"instance": "band", "track": "live_set tracks 8", "label": "#9", "on": 127,
              "state": "missing", "problem": "no rack named Latencies"}],
             "keys": [{"instance": "band", "song": 31, "key": "G", "time": 22897.5,
@@ -741,7 +748,53 @@ fn api_bodies_round_trip() {
             "safe": [
                 {"instance": "band", "state": "kept", "targets": 12, "problem": null},
                 {"instance": "master", "state": "failed", "targets": 1,
-                 "problem": "no such function: safe_writes"}]})
+                 "problem": "no such function: safe_writes"}],
+            "singers_off": ["VOX2"]})
+    );
+    // A hub before the rule (#140 PR 3b) names no decision, no singer off
+    // and no taps.
+    let mut before_rule = json["autotune"].clone();
+    before_rule.as_object_mut().unwrap().remove("singers_off");
+    before_rule.as_object_mut().unwrap().remove("taps");
+    before_rule["targets"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("decision");
+    let before_rule = serde_json::from_value::<AutotuneStatus>(before_rule).unwrap();
+    assert!(before_rule.singers_off.is_empty());
+    assert_eq!(before_rule.taps, 0);
+    assert_eq!(before_rule.targets[0].decision, None);
+    // Every why's name.
+    assert_eq!(
+        serde_json::to_value([
+            SwitchWhy::Aut,
+            SwitchWhy::Held,
+            SwitchWhy::Unconfirmed,
+            SwitchWhy::Stop,
+            SwitchWhy::Span,
+            SwitchWhy::NoKey,
+            SwitchWhy::SingerOff,
+            SwitchWhy::Problem,
+            SwitchWhy::AnotherWriter,
+            SwitchWhy::Unarmed,
+            SwitchWhy::Mismatch,
+            SwitchWhy::Play,
+        ])
+        .unwrap(),
+        json!([
+            "aut",
+            "held",
+            "unconfirmed",
+            "stop",
+            "span",
+            "no_key",
+            "singer_off",
+            "problem",
+            "another_writer",
+            "unarmed",
+            "mismatch",
+            "play"
+        ])
     );
     assert_eq!(
         serde_json::to_value([SafeState::Sent, SafeState::Kept, SafeState::Failed]).unwrap(),
@@ -1430,6 +1483,14 @@ fn an_autotune_message_round_trips_and_an_older_page_reads_it_as_unknown() {
                 state: TargetState::Missing,
             },
         ],
+        song: None,
+        key: None,
+        checking: false,
+        singers: Vec::new(),
+        map_problems: 0,
+        map_changes: 0,
+        map_keyed: 0,
+        bar: None,
     };
     let wire = json!({"type": "autotune", "aut": true, "playing": false, "targets": [
         {"label": "Vox 2", "state": "on"}, {"label": "#8", "state": "missing"}]});
@@ -1442,11 +1503,66 @@ fn an_autotune_message_round_trips_and_an_older_page_reads_it_as_unknown() {
             label: "#8".into(),
             state: TargetState::Waiting,
         }],
+        song: None,
+        key: None,
+        checking: false,
+        singers: Vec::new(),
+        map_problems: 0,
+        map_changes: 0,
+        map_keyed: 0,
+        bar: None,
     };
     round_trip_server(
         ServerMsg::Autotune(unheard),
         json!({"type": "autotune", "aut": false, "targets": [{"label": "#8", "state": "waiting"}]}),
     );
+    // #140 PR 3b (spec §9): the song and key in force, the check, the
+    // singers, the song map's counts and Live's bar.
+    let told = AutotuneState {
+        aut: true,
+        playing: Some(true),
+        targets: Vec::new(),
+        song: Some(31),
+        key: Some("F".into()),
+        checking: true,
+        singers: vec![
+            SingerState {
+                id: "VOX1".into(),
+                label: "Vox 1".into(),
+                stream: TrackState::Tune,
+                pa: TrackState::Dry,
+                off: false,
+                key_ok: false,
+                why: Some("PA Key reads G, wrote F".into()),
+            },
+            SingerState {
+                id: "#Vox 7".into(),
+                label: "Vox 7".into(),
+                stream: TrackState::None,
+                pa: TrackState::Dry,
+                off: true,
+                key_ok: true,
+                why: None,
+            },
+        ],
+        map_problems: 1,
+        map_changes: 8,
+        map_keyed: 165,
+        bar: Some("F".into()),
+    };
+    round_trip_server(
+        ServerMsg::Autotune(told),
+        json!({"type": "autotune", "aut": true, "playing": true, "targets": [],
+               "song": 31, "key": "F", "checking": true, "singers": [
+                   {"id": "VOX1", "label": "Vox 1", "stream": "tune", "pa": "dry",
+                    "off": false, "key_ok": false, "why": "PA Key reads G, wrote F"},
+                   {"id": "#Vox 7", "label": "Vox 7", "stream": "none", "pa": "dry",
+                    "off": true, "key_ok": true}],
+               "map_problems": 1, "map_changes": 8, "map_keyed": 165, "bar": "F"}),
+    );
+    assert!(is_zero(&0));
+    assert!(!is_zero(&1));
+    assert_eq!(HUB_AUTOTUNE_SINGER, "autotune_singer");
     assert_eq!(
         serde_json::to_value(TargetState::Off).unwrap(),
         json!("off")
