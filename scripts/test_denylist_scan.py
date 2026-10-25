@@ -1053,12 +1053,15 @@ class CompressedTests(ScanCase):
 class RepoFilesTests(unittest.TestCase):
     """The committed boundary and identity files parse (their commits are checked in the secrets job)."""
 
-    def test_the_accepted_list_names_the_four_published_findings(self) -> None:
+    def test_the_accepted_list_names_the_five_published_findings(self) -> None:
+        # The fifth: a published docs commit's message (`None`: commit
+        # metadata), accepted by the main session (#140).
         self.assertEqual({(entry.sha, entry.path) for entry in ds.load_accepted(SCRIPTS / "denylist-accepted.txt")}, {
             ("e92744288bc0430c555f7ebef42d28c1f82a3c17", "docs/superpowers/specs/2026-09-28-ui-redesign-design.md"),
             ("61085ee2c40653f6984f8b08c7509e8a9019357d", "docs/superpowers/specs/2026-09-28-ui-redesign-design.md"),
             ("1d4fcb238fe3ff057f29e64f96983189f41ef704", "docs/mockups/redesign-stage-v1.html"),
-            ("c0320b3d01d269e4da1b012c914e41de88dd6bf3", "scripts/test_denylist_scan.py")})
+            ("c0320b3d01d269e4da1b012c914e41de88dd6bf3", "scripts/test_denylist_scan.py"),
+            ("2d91eb63b085e5990d854747e50910153bd28b94", None)})
 
     def test_the_boundary_lists_the_two_legacy_tips(self) -> None:
         self.assertEqual(ds.load_boundary(SCRIPTS / "denylist-boundary.txt"), [
