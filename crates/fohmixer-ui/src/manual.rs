@@ -66,5 +66,8 @@ mod tests {
         assert!(main.ends_with("</main>"), "{main}");
         assert!(main.contains("+G:VOCALS:2"), "the syntax");
         assert!(main.contains("KONFLIKT"), "the problems");
+        // Spec §9's "postup" (PR #150 review K3): one singer off.
+        assert!(main.contains("Postup: vypnúť jedného speváka"), "the procedure");
+        assert!(main.contains("<code>OFF</code>") && main.contains("<code>ON</code>"));
     }
 }

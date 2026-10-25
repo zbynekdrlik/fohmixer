@@ -17,6 +17,7 @@
 }
 .znacky h1 { margin: 0 0 8px; font-size: 22px; letter-spacing: 0.04em; }
 .znacky h2 { margin: 18px 0 6px; font-size: 16px; letter-spacing: 0.04em; color: #9a9ab4; }
+.znacky h3 { margin: 10px 0 4px; font-size: 14px; color: #eaeaf0; }
 .znacky p { margin: 6px 0; }
 .znacky code {
     padding: 1px 5px;
@@ -68,10 +69,18 @@ html, body { margin: 0; background: #0b0b12; }
 <p><b>Podklady All</b> nemá vlastný track: jeho stopy sú tracky, ktorých Tuner má <code>+FADER:PODKLADY</code>. Je spojený vždy.</p>
 
 <h2>AUTOTUNE</h2>
-<p>Tlačidlo <b>AUTOTUNE</b> zapína a vypína autotune spevákov naraz. Tuner každého tracku s autotunom dostane <code>+AUTOTUNE</code> (zapnutý, keď je prvé makro racku na 127) alebo <code>+AUTOTUNE:0</code> (zapnutý na 0). Fohmixer v tracku nájde rack s menom <b>Latencies</b>, aj vo vnútri iného racku (najviac tri racky hlboko), a prepína jeho prvé makro. V tracku musí byť práve jeden taký rack. Tuner, ktorý má iba <code>+MUTE</code>, <code>+FADER</code> a <code>+AUTOTUNE</code> (bez mena v úvodzovkách), nerobí žiadny pás, takže stream track môže mať <code>+MUTE:VOX1 +AUTOTUNE</code>. Značky platia, len keď má layout tlačidlo AUTOTUNE.</p>
+<p>Tlačidlo <b>AUTOTUNE</b> ukazuje a riadi autotune spevákov. Tuner každého tracku s autotunom dostane <code>+AUTOTUNE</code> (zapnutý, keď je prvé makro racku na 127) alebo <code>+AUTOTUNE:0</code> (zapnutý na 0). Fohmixer v tracku nájde rack s menom <b>Latencies</b>, aj vo vnútri iného racku (najviac tri racky hlboko), a prepína jeho prvé makro. V tracku musí byť práve jeden taký rack. Tuner, ktorý má iba <code>+MUTE</code>, <code>+FADER</code> a <code>+AUTOTUNE</code> (bez mena v úvodzovkách), nerobí žiadny pás, takže stream track môže mať <code>+MUTE:VOX1 +AUTOTUNE</code>. Značky platia, len keď má layout tlačidlo AUTOTUNE.</p>
 <p>Príklad: Tuner speváka <code>"Vox 1" +G:STAGE +ID:VOX1 +AUTOTUNE:0</code>, Tuner jeho stream tracku <code>+MUTE:VOX1 +AUTOTUNE</code>.</p>
-<p>Ťuk prepne autotune všetkých takých trackov. <b>AUTOTUNE AUT</b> (podrž tlačidlo 1 s a pusť): kým je zapnutý, fohmixer zapne autotune, keď Live hrá, a vypne ho, keď Live stojí. Ťuk platí do najbližšieho štartu alebo zastavenia.</p>
-<p>Tlačidlo svieti oranžovo, keď je autotune zapnutý na každom nájdenom tracku, a je tmavé, keď je vypnutý na každom. Keď je zapnutý len na niektorých (napríklad ho prepla pieseň), je tmavé s oranžovým okrajom a dole ukáže počet, napríklad <code>2/10 zap.</code>; ťuk vtedy vypne všetky. Track je zapnutý, len keď je makro presne na hodnote zapnutia; každá iná hodnota je vypnutá.</p>
+<p>Každý spevák je dvojica trackov: jeho PA track (Tuner s <code>+ID:</code>) a jeho stream track (Tuner s <code>+MUTE:</code> s tým istým názvom). Tónina sa zapisuje vždy podľa lokátora piesne a klipov <code>Key {G}</code> na tracku <b>Sections</b>.</p>
+<p><b>AUT</b> (podrž AUTOTUNE 1 s a pusť; rovnako sa vypína): kým je zapnutý, každý spevák ladí, keď Live hrá v piesni s tóninou a jeho tónina je zapísaná a spätne prečítaná; inak je na svojom DRY chaine. Keď je AUT vypnutý, sú všetci na DRY. Druhý riadok tlačidla ukazuje stav a tóninu: <code>off · F</code>, <code>stopped · F</code>, <code>no song</code>, <code>no key</code>, <code>checking · F</code>, <code>tuning · F</code>, <code>waiting · F</code> (neladí nikto a dôvod je v paneli), <code>tuning · F · 1 off</code>, <code>tuning · F · 1 !</code>.</p>
+<p>Tlačidlo svieti oranžovo, keď ladí každý spevák, je tmavé, keď neladí nikto, a s oranžovým okrajom, keď ladí len časť. Žltý <b>!</b> vľavo hore znamená speváka, ktorého tónina alebo track nesedí, alebo chybu v lokátoroch piesní.</p>
+<p><b>Panel spevákov</b>: ťuk na AUTOTUNE ho otvorí vedľa stredného pásu; zavrie ho ťuk mimo panelu (ten ťuk nič iné neurobí) alebo znova na AUTOTUNE. V riadku speváka je jeho stream a PA (<code>TUNE</code>, <code>DRY</code>, <code>—</code> bez tracku), tónina (<code>F ✓</code> zapísaná a spätne prečítaná, <code>F …</code> ešte sa overuje, <b>!</b> nesedí, dôvod pod riadkom) a jeho prepínač <code>OFF</code>/<code>ON</code>. Hore je pieseň a tónina, aj najbližšia zmena tóniny s jej klipom; dole počty z lokátorov a ich chyby.</p>
+<h3>Postup: vypnúť jedného speváka</h3>
+<ol>
+<li>Ťukni na <b>AUTOTUNE</b>: otvorí sa panel spevákov.</li>
+<li>Pri spevákovi ťukni na <code>OFF</code>: jeho stream aj PA idú hneď na DRY a ostanú tak aj cez ďalšie piesne a reštart hubu.</li>
+<li>Späť ho zapne ťuk na <code>ON</code>; ladiť začne podľa pravidiel.</li>
+</ol>
 
 <h2>POHĽADY</h2>
 <p>Skupinu, ktorú hlavný pohľad nemá, ukáže tlačidlo v strednom páse (POHĽADY): jej fadre a všetky pripnuté. Ďalší ťuk ťa vráti späť.</p>
