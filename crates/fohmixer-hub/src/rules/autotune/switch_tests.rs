@@ -419,22 +419,24 @@ fn a_write_answered_is_taken_and_a_failed_one_never_lands() {
         answered_flying(&flying, 1, false),
         vec![fly(2, false, false)]
     );
-    assert_eq!(
-        answered_flying(&flying, 2, false),
-        vec![fly(1, true, false)]
-    );
+    // An answer also answers every earlier write (PR #147 re-review R9:
+    // Live runs one connection's calls in order), failed or not.
+    assert_eq!(answered_flying(&flying, 2, false), vec![fly(1, true, true)]);
     // Went: answered, its echo (if any) the next value.
     assert_eq!(
         answered_flying(&flying, 2, true),
-        vec![fly(1, true, false), fly(2, false, true)]
+        vec![fly(1, true, true), fly(2, false, true)]
     );
     assert_eq!(
         answered_flying(&flying, 1, true),
         vec![fly(1, true, true), fly(2, false, false)]
     );
-    // An answer of a write no longer on its way changes nothing.
-    assert_eq!(answered_flying(&flying, 7, false), flying.to_vec());
-    assert_eq!(answered_flying(&flying, 7, true), flying.to_vec());
+    // An answer of a later write no longer on its way: Live ran every one
+    // before it; of an earlier one, nothing changes.
+    let ran = vec![fly(1, true, true), fly(2, false, true)];
+    assert_eq!(answered_flying(&flying, 7, false), ran);
+    assert_eq!(answered_flying(&flying, 7, true), ran);
+    assert_eq!(answered_flying(&flying, 0, true), flying.to_vec());
     let both = [fly(1, true, true), fly(2, false, false)];
     assert_eq!(
         answered_flying(&both, 2, true),
