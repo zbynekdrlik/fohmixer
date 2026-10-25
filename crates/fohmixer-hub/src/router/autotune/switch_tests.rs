@@ -542,6 +542,7 @@ fn the_glues_small_decisions() {
         failures: 0,
         kept: kept.map(<[(String, u8)]>::to_vec),
         probes: 0,
+        lost: false,
     };
     let kept = safe(both.as_slice(), Some(both.as_slice()), SafeState::Kept);
     assert!(armed(Some(&kept), "p6", 127));
@@ -1354,9 +1355,10 @@ async fn a_write_that_meets_the_markers_unsettled_holds_the_set_dry_first() {
     transport(&mut router, true);
     live.settle(&mut router).await;
     assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new());
+    // Its own reason, the set no longer held (PR #147 re-review R6).
     assert_eq!(
         decisions(&mut router),
-        [off(SwitchWhy::Held), off(SwitchWhy::Held)]
+        [off(SwitchWhy::Unconfirmed), off(SwitchWhy::Unconfirmed)]
     );
     // The walks answer: each tunes again once its own walk confirmed it.
     find(&mut router, PA, rack(6));
@@ -1875,15 +1877,11 @@ async fn a_selector_write_live_refuses_gets_one_retry_then_the_hub_stops() {
         router.autotune.state().singers[0].why.as_deref(),
         Some(format!("stream: Live refuses its selector: {DISABLED}").as_str())
     );
-    // A key change is a new decision (DRY while its key is written, then
-    // the chain again): the chain asked once more and its retry, then the
-    // hub stops again.
+    // A key change's brief `mismatch` while its key is written is no new
+    // decision (PR #147 re-review R7): the refused chain is not asked again.
     deliver(&mut router, TIME, 55.0);
     live.settle(&mut router).await;
-    assert_eq!(
-        live.written(),
-        vec![batch(&[("p7", 127.0)]), batch(&[("p7", 127.0)])]
-    );
+    assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new());
     assert_eq!(decisions(&mut router), [on(), off(SwitchWhy::Problem)]);
     // A stop is a new decision: the refusal ends (Live shows DRY there).
     transport(&mut router, false);
@@ -2086,4 +2084,143 @@ async fn a_target_naming_no_singer_has_no_manual_off_and_never_tunes() {
             .iter()
             .any(|m| matches!(m, ServerMsg::Error { .. }))
     );
+}
+
+#[tokio::test]
+async fn a_second_track_list_change_within_a_hold_unconfirms_a_walks_answer_again() {
+    // PR #147 re-review R1: a walk answered between two track-list changes
+    // in one hold found the rack the first change put at its index; the
+    // markers' layout then keeps that index's polarity.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, _rx) = tuning(dir.path()).await;
+    let seq = router.autotune.safe["band"].seq;
+    router.autotune_tracks("band");
+    live.settle(&mut router).await;
+    assert_eq!(live.written(), vec![batch(&[("p6", 127.0), ("p7", 0.0)])]);
+    find(
+        &mut router,
+        PA,
+        Found {
+            id: "p8".into(),
+            ..rack(6)
+        },
+    );
+    find(&mut router, STREAM, rack(7));
+    assert!(router.autotune.targets[PA].sure);
+    // The second change, within the same hold.
+    router.autotune_tracks("band");
+    assert!(!router.autotune.targets[PA].sure);
+    assert!(!router.autotune.targets[STREAM].sure);
+    // The layout ends the hold: nothing by the walk's ref, nothing
+    // registered with it, before the newest walks answer.
+    router.handle(layout(
+        2,
+        vec![target(6, "Vox 5", (0, 127), Some("VOX1")), stream()],
+    ));
+    live.settle(&mut router).await;
+    assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new());
+    assert_eq!(router.autotune.safe["band"].seq, seq, "nothing registered");
+    assert_eq!(
+        decisions(&mut router),
+        [off(SwitchWhy::Unconfirmed), off(SwitchWhy::Unconfirmed)]
+    );
+    // The newest walks answer: registered with their refs.
+    find(
+        &mut router,
+        PA,
+        Found {
+            id: "p9".into(),
+            ..rack(6)
+        },
+    );
+    find(&mut router, STREAM, rack(7));
+    live.settle(&mut router).await;
+    assert_eq!(
+        router.autotune.safe["band"].list,
+        vec![("p9".to_string(), 127), ("p7".to_string(), 0)]
+    );
+    assert!(live.written().iter().flatten().all(|(id, _)| id != "p8"));
+}
+
+#[tokio::test]
+async fn a_target_let_go_while_the_markers_are_unsettled_is_held_dry_first() {
+    // PR #147 re-review R2: no hold open yet, a composition waiting.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, rx) = tuning(dir.path()).await;
+    let seq = router.autotune.safe["band"].seq;
+    router.markers_pending = Some(Vec::new());
+    router.handle(layout(2, vec![pa()]));
+    let dry = live.next("the hold's DRY", is_selector_write);
+    assert_eq!(
+        dry.commands,
+        selector_commands(&[("p6", 127.0), ("p7", 0.0)])
+    );
+    let got = steps(&rx);
+    assert_eq!(
+        of(&got, "held"),
+        vec![json!({"step": "held", "instance": "band", "on": true, "why": "markers"})]
+    );
+    assert_eq!(of(&got, "write")[0]["cause"], "hold");
+    assert!(!router.autotune.targets.contains_key(STREAM));
+    live.answer(&mut router, dry);
+    live.settle(&mut router).await;
+    assert_eq!(router.autotune.safe["band"].seq, seq, "held: nothing yet");
+    // Settled: once the PA's walk confirmed it, registered without the
+    // stream's selector.
+    router.markers_pending = None;
+    router.autotune_release("band", "settled");
+    find(&mut router, PA, rack(6));
+    live.settle(&mut router).await;
+    assert_eq!(
+        router.autotune.safe["band"].list,
+        vec![("p6".to_string(), 127)]
+    );
+}
+
+#[tokio::test]
+async fn a_stop_after_a_switch_on_live_did_not_answer_writes_dry_at_once() {
+    // PR #147 re-review R3: Live may still take the switch-on.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, rx) = ready(dir.path(), HubState::default()).await;
+    aut_on(&mut router);
+    transport(&mut router, true);
+    let switch_on = live.next("the switch-on", is_selector_write);
+    let walk = router.autotune.targets[STREAM].walk;
+    drop(switch_on);
+    written_handled(&mut router, &mut live).await;
+    let target = &router.autotune.targets[STREAM];
+    assert_eq!(target.writing_now(), Some(true), "still on its way");
+    assert!(target.sure);
+    assert_eq!(target.walk, walk, "not walked");
+    transport(&mut router, false);
+    let dry = live.next("the stop's DRY", is_selector_write);
+    assert_eq!(
+        dry.commands,
+        selector_commands(&[("p6", 127.0), ("p7", 0.0)])
+    );
+    assert_eq!(of(&steps(&rx), "failed").len(), 2);
+}
+
+#[tokio::test]
+async fn a_list_sent_over_one_still_on_its_way_narrows_what_the_script_may_hold() {
+    // PR #147 re-review R4: the script may take either list.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, _rx) = ready(dir.path(), HubState::default()).await;
+    // The stream's rack gone for good (DRY: nothing to write first): a list
+    // without it goes, unanswered yet.
+    let walk = router.autotune.targets[STREAM].walk;
+    router.autotune_found(STREAM, walk, Err("no rack named Latencies".into()));
+    let without = live.next("the list without it", |c| {
+        c.len() == 1 && c[0]["name"] == SAFE_WRITES
+    });
+    // Found again with the same ref: the list with it goes after.
+    find(&mut router, STREAM, rack(7));
+    assert_eq!(
+        router.autotune.safe["band"].kept.as_deref(),
+        Some(&[("p6".to_string(), 127)][..])
+    );
+    aut_on(&mut router);
+    transport(&mut router, true);
+    assert_eq!(decisions(&mut router)[1], off(SwitchWhy::Unarmed));
+    drop(without);
 }

@@ -144,12 +144,12 @@ pub(super) struct Target {
     /// two may be).
     pub writing: Vec<Flying>,
     /// Whether its rack was confirmed by a walk since its set's last hold
-    /// (PR #147 review I4): false from a hold until its walk's answer (its
-    /// ref and values may be of the track the index named before), for a
-    /// kept target whose on and off values changed until its walk, and
-    /// after a selector write that failed but for a refusal (a stale ref, no
-    /// answer) until the walk that follows answers. Unconfirmed it is DRY
-    /// and written nothing.
+    /// or track-list change (PR #147 review I4, re-review R1): false from
+    /// each until its walk's answer (its ref and values may be of the track
+    /// the index named before), for a kept target whose on and off values
+    /// changed until its walk, and after a selector write whose ref is gone
+    /// until the walk that follows answers. Unconfirmed it is DRY
+    /// (`unconfirmed`), written nothing, and its set's registration waits.
     pub sure: bool,
     /// Live's refusal of its selector's write (PR #147 review I5): one
     /// retry, then no more of that value to that `$ref` until a change.
@@ -202,11 +202,12 @@ impl Target {
         heard_or_on && needs_write(false, self.shows(), self.writing_now(), false)
     }
 
-    /// Whether its set's registration waits for its walk: a kept target
-    /// whose on and off values changed, unconfirmed, with no answer yet
-    /// (PR #147 review I4: nothing is registered for it before its walk).
+    /// Whether its set's registration waits for its walk: unconfirmed,
+    /// found or not, with no give-up (PR #147 re-review R1: the script then
+    /// keeps the list it last accepted, whose pairs stay true, until every
+    /// newest walk answered).
     pub fn awaits_walk(&self) -> bool {
-        !self.sure && self.found.is_none() && self.problem.is_none()
+        !self.sure && self.problem.is_none()
     }
 }
 
@@ -445,6 +446,12 @@ pub(super) fn slot_failures(
             })
             .collect(),
     }
+}
+
+/// Whether a selector write's call went unanswered (a timeout, offline:
+/// [`transient`]): Live may still take it (PR #147 re-review R3).
+pub(super) fn unanswered(outcome: &Result<Vec<Value>, String>) -> bool {
+    matches!(outcome, Err(why) if transient(why))
 }
 
 /// Whether a refused slot is Live's refusal of the value (a held
@@ -756,6 +763,19 @@ impl Router {
     /// (a hold already wrote them DRY). Each set's registration waits for
     /// that write's answer, so the script keeps their DRY writes until then.
     fn autotune_retire(&mut self, keys: &[String], cause: Cause) {
+        // The markers unsettled with no hold open (PR #147 re-review R2):
+        // the hold opens first, so its DRY goes through the targets' last
+        // refs while they are still here.
+        let unsettled: BTreeSet<String> = keys
+            .iter()
+            .filter_map(|key| self.autotune.targets.get(key))
+            .filter(|t| t.found.is_some())
+            .map(|t| t.instance.clone())
+            .filter(|set| !self.autotune.held.contains(set) && !self.reverb_settled(set))
+            .collect();
+        for set in unsettled {
+            self.autotune_hold(&set, "markers");
+        }
         let mut sets: BTreeMap<String, Vec<switch::Going>> = BTreeMap::new();
         for key in keys {
             let Some(target) = self.autotune.targets.get(key) else {
@@ -1084,12 +1104,18 @@ impl Router {
     ) {
         let keys: Vec<String> = selectors.iter().map(|(key, _, _)| key.clone()).collect();
         let failures = slot_failures(outcome, &keys);
+        // Live did not answer the call (a timeout, offline): it may still
+        // take it, so every write of it stays on its way (PR #147
+        // re-review R3).
+        let lost = unanswered(outcome);
         for (key, id, on) in selectors {
             let failed = failures.iter().find(|(k, _, _)| k == key);
             let Some(target) = self.autotune.targets.get_mut(key) else {
                 continue;
             };
-            target.writing = answered_flying(&target.writing, write, failed.is_none());
+            if !lost {
+                target.writing = answered_flying(&target.writing, write, failed.is_none());
+            }
             let same_ref = target.found.as_ref().is_some_and(|found| found.id == *id);
             if let (Some((_, why, true)), true) = (failed, same_ref) {
                 target.refusal = Some(Refusal::after(target.refusal.as_ref(), id, *on, why));
@@ -1109,8 +1135,8 @@ impl Router {
                 },
                 None,
             );
-            if !for_good {
-                // Its ref or rack is in doubt until the walk answers: no
+            if !for_good && !lost {
+                // Its ref is gone: in doubt until the walk answers, no
                 // write meanwhile (the decision after this answer would
                 // write it again at once otherwise).
                 if let Some(target) = self.autotune.targets.get_mut(&key) {
@@ -1189,9 +1215,14 @@ impl Router {
         self.autotune_hold(instance, "tracks");
         for key in self.autotune.keys_of(Some(instance), false) {
             // Its key device's values may be another track's until its walk
-            // answers (PR 2a review M3).
+            // answers (PR 2a review M3), and so may its rack: every change
+            // unconfirms it, a second one within the hold too (PR #147
+            // re-review R1).
             if let Some(target) = self.autotune.targets.get_mut(&key) {
                 target.key_sure = false;
+                if target.found.is_some() {
+                    target.sure = false;
+                }
             }
             self.autotune_walk(&key);
         }

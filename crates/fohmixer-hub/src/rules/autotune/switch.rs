@@ -3,7 +3,7 @@
 //! the guard against another writer on a selector ([`SelectorGuard`]).
 //!
 //! ```text
-//! selected(track) = aut ∧ ¬held ∧ playing ∧ song ∧ key in force
+//! selected(track) = aut ∧ ¬held ∧ ¬unconfirmed ∧ playing ∧ song ∧ key in force
 //!                 ∧ ¬singer_off ∧ ¬problem ∧ ¬another_writer ∧ armed
 //!                 ∧ key not bad ∧ (already selected ∨ key confirmed)
 //! ```
@@ -67,6 +67,9 @@ pub struct TrackInput {
     pub aut: bool,
     /// Its set's writes are held while its markers settle (§7).
     pub held: bool,
+    /// Its rack is not confirmed by a walk since a hold or a track-list
+    /// change, its set not held (PR #147 re-review R6: its own reason).
+    pub unconfirmed: bool,
     /// Its set's transport (none: not heard).
     pub playing: Option<bool>,
     /// The song and the key in force at its set's playhead.
@@ -96,6 +99,9 @@ pub fn decide(input: &TrackInput) -> Decision {
     }
     if input.held {
         return off(SwitchWhy::Held);
+    }
+    if input.unconfirmed {
+        return off(SwitchWhy::Unconfirmed);
     }
     if input.playing != Some(true) {
         return off(SwitchWhy::Stop);
@@ -133,6 +139,7 @@ pub fn why_word(why: SwitchWhy) -> &'static str {
     match why {
         SwitchWhy::Aut => "aut",
         SwitchWhy::Held => "held",
+        SwitchWhy::Unconfirmed => "unconfirmed",
         SwitchWhy::Stop => "stop",
         SwitchWhy::Span => "span",
         SwitchWhy::NoKey => "no_key",
@@ -191,11 +198,13 @@ pub struct Flying {
 /// an answered one is taken, since a value the hub hears after a write's
 /// answer is Live after it (the script sends a tick's answers before its
 /// values, and every earlier value reached the hub before that answer); of
-/// the others, a value at one of them lands it and every one before it
-/// (Live takes them in order), a value at none of them lands none.
+/// the others, a value at one of them lands the first one at it and every
+/// one before it (Live takes them in order; PR #147 re-review R5: the
+/// writes after it stay, so each later echo is still the hub's own), a
+/// value at none of them lands none.
 pub fn still_flying(flying: &[Flying], now: Option<bool>) -> Vec<Flying> {
     let open: Vec<Flying> = flying.iter().filter(|f| !f.answered).copied().collect();
-    match now.and_then(|now| open.iter().rposition(|f| f.on == now)) {
+    match now.and_then(|now| open.iter().position(|f| f.on == now)) {
         Some(at) => open[at + 1..].to_vec(),
         None => open,
     }
@@ -225,7 +234,9 @@ pub const SELECTOR_RETRIES: u32 = 1;
 /// written (`on`: the autotune chain), how often in a row, and Live's
 /// words. Like 1.8.0's `found_write`, the hub never writes the same value
 /// to the same `$ref` again after its one retry, until a change: a new
-/// `$ref`, a new decision or the next song start.
+/// `$ref`, a new decision that is no `mismatch`, `held` or `unconfirmed`
+/// (PR #147 re-review R7: a key change's or a hold's brief DRY is none),
+/// or the next song start.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
     pub id: String,
@@ -259,6 +270,18 @@ impl Refusal {
     /// too.
     pub fn stops(&self, id: &str, on: bool) -> bool {
         self.holds(id, on) && self.tries > SELECTOR_RETRIES
+    }
+
+    /// Whether the rule's decision `rule` for the selector `id` ends it: a
+    /// new `$ref`, or another side for a reason that is no key being
+    /// written (`mismatch`), no hold (`held`) and no walk awaited
+    /// (`unconfirmed`).
+    pub fn ends(&self, id: &str, rule: Decision) -> bool {
+        let passing = matches!(
+            rule.why,
+            SwitchWhy::Mismatch | SwitchWhy::Held | SwitchWhy::Unconfirmed
+        );
+        self.id != id || (self.on != rule.on && !passing)
     }
 }
 

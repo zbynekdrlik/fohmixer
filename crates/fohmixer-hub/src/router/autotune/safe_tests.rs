@@ -11,8 +11,8 @@ use super::super::super::tests::{next_of, records, status};
 use super::super::super::{Router, RouterIo, RouterMsg};
 use super::super::AfterWalk;
 use super::{
-    REF_GONE, SAFE_WRITES, Safe, does_not_resolve, failed_problem, gone_refs, probe_commands,
-    safe_commands, safe_news, safe_problem,
+    REF_GONE, SAFE_WRITES, Safe, does_not_resolve, failed_problem, gone_refs, kept_after,
+    probe_commands, safe_commands, safe_news, safe_problem,
 };
 use crate::live::client::{Asked, LiveEvent, Script, scripted};
 use crate::rules::HubState;
@@ -232,6 +232,7 @@ fn a_list_is_news_unless_the_script_holds_it() {
         failures: 0,
         kept: None,
         probes: 0,
+        lost: false,
     };
     let both = list(&[("p6", 127), ("p7", 0)]);
     // Since its connect the script holds nothing: only a list with writes
@@ -260,6 +261,80 @@ fn a_list_is_news_unless_the_script_holds_it() {
         &both
     ));
     assert!(safe_news(Some(&held(Vec::new(), SafeState::Failed)), &[]));
+}
+
+#[test]
+fn a_list_on_its_way_or_unanswered_narrows_the_kept_one() {
+    // PR #147 re-review R4.
+    let list = |pairs: &[(&str, u8)]| -> Vec<(String, u8)> {
+        pairs.iter().map(|(id, v)| (id.to_string(), *v)).collect()
+    };
+    let safe = |list: Vec<(String, u8)>, state, kept, lost| Safe {
+        list,
+        seq: 1,
+        state,
+        problem: None,
+        failures: 0,
+        kept,
+        probes: 0,
+        lost,
+    };
+    let both = list(&[("p6", 127), ("p7", 0)]);
+    let one = list(&[("p6", 127)]);
+    assert_eq!(kept_after(None), None);
+    assert_eq!(
+        kept_after(Some(&safe(one.clone(), SafeState::Sent, None, false))),
+        None
+    );
+    // On its way, or Live did not answer it: the shared pairs only.
+    assert_eq!(
+        kept_after(Some(&safe(
+            one.clone(),
+            SafeState::Sent,
+            Some(both.clone()),
+            false
+        ))),
+        Some(one.clone())
+    );
+    assert_eq!(
+        kept_after(Some(&safe(
+            one.clone(),
+            SafeState::Failed,
+            Some(both.clone()),
+            true
+        ))),
+        Some(one.clone())
+    );
+    // Refused, or kept: the kept list as it is.
+    assert_eq!(
+        kept_after(Some(&safe(
+            one.clone(),
+            SafeState::Failed,
+            Some(both.clone()),
+            false
+        ))),
+        Some(both.clone())
+    );
+    assert_eq!(
+        kept_after(Some(&safe(
+            both.clone(),
+            SafeState::Kept,
+            Some(both.clone()),
+            false
+        ))),
+        Some(both.clone())
+    );
+    // One that adds a pair keeps every kept pair.
+    let more = list(&[("p6", 127), ("p7", 0), ("p8", 0)]);
+    assert_eq!(
+        kept_after(Some(&safe(
+            more,
+            SafeState::Sent,
+            Some(both.clone()),
+            false
+        ))),
+        Some(both)
+    );
 }
 
 #[test]

@@ -83,6 +83,31 @@ pub(in crate::router) struct Safe {
     /// Its refs-gone probes Live did not answer in a row (PR #147 review
     /// N1: the retries' count).
     pub probes: u32,
+    /// Whether it failed because Live did not answer (a timeout, offline):
+    /// the script may still take it (PR #147 re-review R4).
+    pub lost: bool,
+}
+
+/// The list the script last kept, as far as the hub may rely on it once a
+/// new list goes after `previous` (PR #147 re-review R4): a registration
+/// still on its way, or one Live did not answer, may still become the
+/// script's list without the hub hearing of it, so only the pairs it
+/// shares with the kept list stay; after a kept or refused one, the kept
+/// list as it is.
+pub(super) fn kept_after(previous: Option<&Safe>) -> Option<Vec<(String, u8)>> {
+    let previous = previous?;
+    let kept = previous.kept.as_ref()?;
+    let open =
+        previous.state == SafeState::Sent || (previous.state == SafeState::Failed && previous.lost);
+    if !open {
+        return Some(kept.clone());
+    }
+    Some(
+        kept.iter()
+            .filter(|pair| previous.list.contains(pair))
+            .cloned()
+            .collect(),
+    )
 }
 
 /// The script's `safe_writes` of `writes` (each macro's `$ref` and DRY
@@ -243,11 +268,7 @@ impl Router {
         let pairs: Vec<(&str, u8)> = list.iter().map(|(id, off)| (id.as_str(), *off)).collect();
         let result = live.call(safe_commands(&pairs));
         let targets = list.len();
-        let kept = self
-            .autotune
-            .safe
-            .get(instance)
-            .and_then(|safe| safe.kept.clone());
+        let kept = kept_after(self.autotune.safe.get(instance));
         self.autotune.safe.insert(
             instance.to_string(),
             Safe {
@@ -258,6 +279,7 @@ impl Router {
                 failures,
                 kept,
                 probes: 0,
+                lost: false,
             },
         );
         let tx = self.io.tx.clone();
@@ -304,10 +326,12 @@ impl Router {
                 safe.problem = None;
                 safe.failures = 0;
                 safe.kept = Some(safe.list.clone());
+                safe.lost = false;
                 false
             }
             Some(why) => {
                 let retryable = transient(why);
+                safe.lost = retryable;
                 if retryable {
                     safe.failures += 1;
                 }

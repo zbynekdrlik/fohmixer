@@ -15,6 +15,7 @@ fn tuning(key: KeyCheck, selected: bool) -> TrackInput {
     TrackInput {
         aut: true,
         held: false,
+        unconfirmed: false,
         playing: Some(true),
         in_force: (Some(31), Some(F)),
         singer_off: false,
@@ -59,6 +60,7 @@ fn aut_off_is_dry_always() {
     let all_off = TrackInput {
         aut: false,
         held: true,
+        unconfirmed: true,
         playing: None,
         in_force: (None, None),
         singer_off: true,
@@ -79,6 +81,28 @@ fn a_held_set_is_dry() {
             ..tuning(key, selected)
         };
         assert_eq!(decide(&input), off(SwitchWhy::Held), "{input:?}");
+        // Held comes before unconfirmed.
+        let both = TrackInput {
+            held: true,
+            unconfirmed: true,
+            ..tuning(key, selected)
+        };
+        assert_eq!(decide(&both), off(SwitchWhy::Held), "{both:?}");
+    }
+}
+
+#[test]
+fn an_unconfirmed_target_is_dry_with_its_own_reason() {
+    // PR #147 re-review R6: its set not held, its walk awaited.
+    for (key, selected) in every_key() {
+        for playing in [None, Some(false), Some(true)] {
+            let input = TrackInput {
+                unconfirmed: true,
+                playing,
+                ..tuning(key, selected)
+            };
+            assert_eq!(decide(&input), off(SwitchWhy::Unconfirmed), "{input:?}");
+        }
     }
 }
 
@@ -250,6 +274,7 @@ fn every_why_has_its_word() {
     let words: Vec<&str> = [
         SwitchWhy::Aut,
         SwitchWhy::Held,
+        SwitchWhy::Unconfirmed,
         SwitchWhy::Stop,
         SwitchWhy::Span,
         SwitchWhy::NoKey,
@@ -268,6 +293,7 @@ fn every_why_has_its_word() {
         [
             "aut",
             "held",
+            "unconfirmed",
             "stop",
             "span",
             "no_key",
@@ -466,6 +492,31 @@ fn a_refused_selector_write_gets_one_retry_then_the_hub_stops() {
         refused_decision(off(SwitchWhy::Stop), Some(&second), "p7"),
         off(SwitchWhy::Stop)
     );
+}
+
+#[test]
+fn a_refusal_ends_only_with_a_new_ref_or_a_real_new_decision() {
+    // PR #147 re-review R7: a key being written, a hold or a walk awaited
+    // is no new decision.
+    let chain = Refusal::after(None, "p7", true, "held");
+    for why in [SwitchWhy::Mismatch, SwitchWhy::Held, SwitchWhy::Unconfirmed] {
+        assert!(!chain.ends("p7", off(why)), "{why:?}");
+    }
+    for why in [
+        SwitchWhy::Stop,
+        SwitchWhy::Aut,
+        SwitchWhy::Span,
+        SwitchWhy::Problem,
+    ] {
+        assert!(chain.ends("p7", off(why)), "{why:?}");
+    }
+    assert!(!chain.ends("p7", ON), "the same side");
+    assert!(chain.ends("p8", ON), "a new ref");
+    assert!(chain.ends("p8", off(SwitchWhy::Mismatch)), "a new ref");
+    let dry = Refusal::after(None, "p7", false, "held");
+    assert!(dry.ends("p7", ON));
+    assert!(!dry.ends("p7", off(SwitchWhy::Stop)), "the same side");
+    assert!(!dry.ends("p7", off(SwitchWhy::Mismatch)));
 }
 
 #[test]

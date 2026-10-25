@@ -275,8 +275,8 @@ impl AutotuneIo {
     }
 
     /// A found target's input to its decision (`held`: its set's writes
-    /// held, or its markers not settled; an unconfirmed target judges as
-    /// held: PR #147 review I4).
+    /// held, or its markers not settled; an unconfirmed target is DRY with
+    /// its own reason, `unconfirmed`: PR #147 review I4, re-review R6).
     fn input(&self, target: &Target, held: bool) -> Option<TrackInput> {
         let found = target.found.as_ref()?;
         let in_force = self
@@ -285,7 +285,8 @@ impl AutotuneIo {
             .map_or((None, None), |p: &Position| p.follow.now());
         Some(TrackInput {
             aut: self.rule.is_on(),
-            held: held || !target.sure,
+            held,
+            unconfirmed: !target.sure,
             playing: self.rule.playing(&target.instance),
             in_force,
             singer_off: singer_of(&target.spec).is_some_and(|id| self.rule.is_off(&id)),
@@ -320,8 +321,9 @@ impl Router {
     /// Each found target of `set`'s decision (`held`: as while its writes
     /// are held), kept; one `select` record per switch; the selectors to
     /// write (none for a target not confirmed since a hold: PR #147 review
-    /// I4). A refusal Live gave its selector ends with a new decision or
-    /// `$ref`; while it stops the write, a refused chain is DRY with a
+    /// I4). A refusal Live gave its selector ends with a new `$ref` or a new
+    /// decision that is no `mismatch`, `held` or `unconfirmed` (re-review
+    /// R7, `Refusal::ends`); while it stops the write, a refused chain is DRY with a
     /// problem and a refused DRY is not written again (PR #147 review I5).
     pub(super) fn autotune_judge(&mut self, set: &str, cause: Cause, held: bool) -> Vec<Going> {
         let mut going = Vec::new();
@@ -344,7 +346,7 @@ impl Router {
             if target
                 .refusal
                 .as_ref()
-                .is_some_and(|refusal| !refusal.holds(&id, rule.on))
+                .is_some_and(|refusal| refusal.ends(&id, rule))
             {
                 target.refusal = None;
             }
