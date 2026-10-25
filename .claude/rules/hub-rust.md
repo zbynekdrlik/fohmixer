@@ -12,7 +12,7 @@ paths:
 - **Join a helper thread bounded** (#71: `plugwin::Encoder::stop` polls `is_finished()` `STOP_POLLS` × `STOP_POLL`, then leaves it behind with a warn). A plain `join()` in a stop or a `Drop` turns a mutant that keeps the thread waiting (a condvar predicate → `true`) into a hang at every test's end: TIMEOUT, then the recheck, and the shard runs out of its 20 minutes.
 - **A branch that only logs survives mutation.** Put the decision in a small pure function with a unit test and log through `if let Some(..) = decision(..)` (`first_of_outage`, `write_failure`, `read_problem`, `pin_warning`, `failure_note`).
 - **One counter per kind of id.** A run id and request uuids taken from one counter make the run counter's `+=`→`*=` mutant equivalent (`live/names.rs`: `next_run`, `next_uuid`).
-- **Nothing compiles locally, so mind trait bounds in tests:** `Result::unwrap_err` / `expect_err` need `T: Debug` — for a type that must not derive it (it holds a key, e.g. `acme::StoredAccount`) take the error with `.err().expect(..)` (#17 lost a CI cycle to E0277).
+- **Mind trait bounds in tests:** `Result::unwrap_err` / `expect_err` need `T: Debug` — for a type that must not derive it (it holds a key, e.g. `acme::StoredAccount`) take the error with `.err().expect(..)` (#17 lost a CI cycle to E0277).
 - **No struct-update base (`..X::default()`) in a literal the diff adds:** cargo-mutants 27's "delete field … from struct X expression" mutants ignore the recheck's `--re` and fail it with "tested a mutant it did not select". Spell every field out.
 
 ## Test harness (`crates/fohmixer-hub/tests/`)
