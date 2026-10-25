@@ -412,9 +412,11 @@ fn a_target_let_go_may_leave_its_selector_on_and_one_flipped_waits_for_its_walk(
     let mut new = flipped.clone();
     new.sure = true;
     assert!(!new.awaits_walk(), "a new target registers nothing stale");
+    // Unconfirmed since a hold or a track-list change, found or not: its
+    // set's registration waits for its walk (PR #147 re-review R1).
     let mut held = found_stream();
     held.sure = false;
-    assert!(!held.awaits_walk(), "its ref and values are its own spec's");
+    assert!(held.awaits_walk());
     let mut missing = flipped.clone();
     missing.problem = Some("no rack named Latencies".into());
     assert!(!missing.awaits_walk(), "a give-up registers without it");
