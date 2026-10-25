@@ -11,9 +11,10 @@
 //! The first condition that fails is the decision's why. A track the rule
 //! already selected stays on while its new key's write is on its way
 //! (§7: no DRY-and-back flick at a key clip) and goes DRY once that write
-//! reads back wrong. It is selected only while its set's registration of
-//! the DRY writes is kept by the script (`armed`: PR #146 review I2), so a
-//! hub that goes away always leaves it DRY.
+//! reads back wrong. It is selected only while the script holds its DRY
+//! write whichever list it holds (`armed`: PR #146 review I2, the PR #147
+//! ruling: the list it last kept and the newest one sent), so a hub that
+//! goes away always leaves it DRY.
 //!
 //! The router's glue is `router/autotune/switch.rs`.
 
@@ -78,7 +79,8 @@ pub struct TrackInput {
     /// Another writer moved its selector and the guard stopped the hub
     /// (or it was left DRY), until the next song start.
     pub another_writer: bool,
-    /// Its set's DRY writes are kept by the script with this selector.
+    /// The script holds this selector's DRY write whichever list it holds
+    /// (the one it last kept and the newest one sent both have it).
     pub armed: bool,
     /// Its key against the key in force.
     pub key: KeyCheck,
@@ -144,23 +146,133 @@ pub fn why_word(why: SwitchWhy) -> &'static str {
 }
 
 /// Whether a selector is written for `decision` (one write per change):
-/// Live shows otherwise (`on_now`), no write of it is on its way
-/// (`writing`), and the guard has not stopped the hub.
-pub fn needs_write(decision: bool, on_now: bool, writing: Option<bool>, given_up: bool) -> bool {
-    !given_up && decision != on_now && writing != Some(decision)
+/// judged against where Live will be once the hub's writes on their way
+/// land (`writing`: the last one; PR #147 review I1: a stop right after a
+/// switch-on writes DRY at once), else against what Live shows (`shows`:
+/// near its on value, its off value, or neither, `rules::autotune::shows`);
+/// never once the hub stopped writing it (`stopped`: the guard, or Live
+/// refused that write for good).
+pub fn needs_write(
+    decision: bool,
+    shows: Option<bool>,
+    writing: Option<bool>,
+    stopped: bool,
+) -> bool {
+    !stopped && writing.map_or(shows != Some(decision), |last| last != decision)
 }
 
-/// Whether a selector's move from `before` to `now` (each: it shows the
-/// autotune chain) is another writer's (spec §7): it moved, away from the
-/// decision, and it is not the echo of the hub's own write on its way
-/// (`writing`). `Some(now)`: where it went.
+/// Whether a selector's move from `before` to `now` (each where it shows:
+/// near its on value, its off value, or neither) is another writer's (spec
+/// §7): it moved, it is not at the decision, and it is not the echo of a
+/// hub write still on its way (`flying`: their values; PR #147 review I1:
+/// two may be). `Some(true)`: off DRY while the hub wants DRY;
+/// `Some(false)`: off the chain while the hub wants the chain.
 pub fn another_move(
-    before: bool,
-    now: bool,
+    before: Option<bool>,
+    now: Option<bool>,
     decision: bool,
-    writing: Option<bool>,
+    flying: &[bool],
 ) -> Option<bool> {
-    (before != now && now != decision && writing != Some(now)).then_some(now)
+    let echo = now.is_some_and(|now| flying.contains(&now));
+    (before != now && now != Some(decision) && !echo).then_some(!decision)
+}
+
+/// One selector write of the hub's on its way (PR #147 review I1): its
+/// number, its value (`on`: the autotune chain), and whether its answer
+/// came (Live has taken it then).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Flying {
+    pub write: u64,
+    pub on: bool,
+    pub answered: bool,
+}
+
+/// The writes still on their way once Live shows `now` (PR #147 review I1):
+/// an answered one is taken, since a value the hub hears after a write's
+/// answer is Live after it (the script sends a tick's answers before its
+/// values, and every earlier value reached the hub before that answer); of
+/// the others, a value at one of them lands it and every one before it
+/// (Live takes them in order), a value at none of them lands none.
+pub fn still_flying(flying: &[Flying], now: Option<bool>) -> Vec<Flying> {
+    let open: Vec<Flying> = flying.iter().filter(|f| !f.answered).copied().collect();
+    match now.and_then(|now| open.iter().rposition(|f| f.on == now)) {
+        Some(at) => open[at + 1..].to_vec(),
+        None => open,
+    }
+}
+
+/// The writes on their way once write `write`'s answer came (`ok`: it
+/// went): a failed one never lands; one that went is answered (its echo,
+/// if any, is the next value).
+pub fn answered_flying(flying: &[Flying], write: u64, ok: bool) -> Vec<Flying> {
+    flying
+        .iter()
+        .filter(|f| ok || f.write != write)
+        .map(|f| Flying {
+            write: f.write,
+            on: f.on,
+            answered: f.answered || f.write == write,
+        })
+        .collect()
+}
+
+/// How many of one selector's writes Live may refuse in a row before the
+/// hub stops writing it (PR #147 review I5, ruled: one retry).
+pub const SELECTOR_RETRIES: u32 = 1;
+
+/// A selector write Live refused (not a ref gone, not a call Live did not
+/// answer: a held parameter, a refused batch): its `$ref`, the side
+/// written (`on`: the autotune chain), how often in a row, and Live's
+/// words. Like 1.8.0's `found_write`, the hub never writes the same value
+/// to the same `$ref` again after its one retry, until a change: a new
+/// `$ref`, a new decision or the next song start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refusal {
+    pub id: String,
+    pub on: bool,
+    pub tries: u32,
+    pub why: String,
+}
+
+impl Refusal {
+    /// Another refusal of writing `id` to `on` after `prev`: the count goes
+    /// on only for the same `$ref` and side.
+    pub fn after(prev: Option<&Refusal>, id: &str, on: bool, why: &str) -> Self {
+        let tries = prev
+            .filter(|r| r.id == id && r.on == on)
+            .map_or(1, |r| r.tries + 1);
+        Self {
+            id: id.to_string(),
+            on,
+            tries,
+            why: why.to_string(),
+        }
+    }
+
+    /// Whether it still holds for `id` and the rule's decision `on` (a new
+    /// `$ref` or a new decision ends it).
+    pub fn holds(&self, id: &str, on: bool) -> bool {
+        self.id == id && self.on == on
+    }
+
+    /// Whether the hub stops writing `id` to `on`: the retry was refused
+    /// too.
+    pub fn stops(&self, id: &str, on: bool) -> bool {
+        self.holds(id, on) && self.tries > SELECTOR_RETRIES
+    }
+}
+
+/// The decision once a refusal is judged: the rule's own (`rule`), or, when
+/// Live refused its chain for good, DRY with a problem (spec §7: a problem
+/// is DRY; the pages show Live's words).
+pub fn refused_decision(rule: Decision, refusal: Option<&Refusal>, id: &str) -> Decision {
+    if rule.on && refusal.is_some_and(|r| r.stops(id, true)) {
+        return Decision {
+            on: false,
+            why: SwitchWhy::Problem,
+        };
+    }
+    rule
 }
 
 /// What the guard does with another writer's move to the autotune chain

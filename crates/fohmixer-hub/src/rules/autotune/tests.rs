@@ -25,6 +25,43 @@ fn a_target_is_on_only_within_half_a_step_of_its_on_value() {
 }
 
 #[test]
+fn a_selector_shows_its_on_or_off_value_or_neither() {
+    // PR #147 review N4, ruled: a DRY decision reads the off value, so a
+    // stream selector anywhere in its chain's zone (58 to 126) is no DRY.
+    for (value, shown) in [
+        (127.0, Some(true)),
+        (126.6, Some(true)),
+        (127.4, Some(true)),
+        (126.5, None),
+        (64.0, None),
+        (58.0, None),
+        (0.5, None),
+        (0.4, Some(false)),
+        (0.0, Some(false)),
+    ] {
+        assert_eq!(shows(Some(value), 127, 0), shown, "stream at {value}");
+    }
+    // A PA selector: on 0, off 127; today's repro "off" by hand is neither.
+    assert_eq!(shows(Some(0.0), 0, 127), Some(true));
+    assert_eq!(shows(Some(127.0), 0, 127), Some(false));
+    assert_eq!(shows(Some(126.6), 0, 127), Some(false));
+    assert_eq!(shows(Some(11.0), 0, 127), None);
+    assert_eq!(shows(None, 127, 0), None, "not heard");
+}
+
+#[test]
+fn a_saved_aut_on_is_logged_and_stays_off() {
+    // The PR #147 rulings: kept in the file, off until #140 PR 3c.
+    assert_eq!(saved_aut_line(true), Some(SAVED_AUT_LINE));
+    assert_eq!(saved_aut_line(false), None);
+    assert!(SAVED_AUT_LINE.contains("stays off"));
+    assert_eq!(
+        AUT_REFUSED_WHY,
+        "AUTOTUNE AUT stays off until the new AUTOTUNE button (#140 PR 3c)"
+    );
+}
+
+#[test]
 fn the_rule_follows_each_sets_transport_and_the_flag() {
     let mut rule = AutotuneAut::new(false, Vec::new());
     assert!(!rule.is_on());
@@ -282,6 +319,7 @@ fn the_switch_steps_are_recorded_and_logged() {
         Cause::Hold,
         Cause::Safe,
         Cause::Layout,
+        Cause::Written,
     ];
     let words = [
         "transport",
@@ -295,6 +333,7 @@ fn the_switch_steps_are_recorded_and_logged() {
         "hold",
         "safe",
         "layout",
+        "written",
     ];
     assert_eq!(causes.map(Cause::word), words);
     assert_eq!(serde_json::to_value(causes).unwrap(), json!(words));

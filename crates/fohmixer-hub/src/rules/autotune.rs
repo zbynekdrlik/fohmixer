@@ -30,14 +30,44 @@ pub mod switch;
 /// off (today's repro "off" values, 11 to 16 set by hand, read off).
 pub const SAME_VALUE: f64 = 0.5;
 
-/// Where a target stands: `value` its macro's (none: not heard yet), `on`
-/// its on value.
+/// Where a target stands for the pages: `value` its macro's (none: not
+/// heard yet), `on` its on value. The decision never reads it (PR #147
+/// review N4: a stream selector anywhere in its chain's zone, 58 to 126,
+/// reads off here): it reads [`shows`].
 pub fn target_state(value: Option<f64>, on: u8) -> TargetState {
     match value {
         None => TargetState::Waiting,
         Some(v) if (v - f64::from(on)).abs() < SAME_VALUE => TargetState::On,
         Some(_) => TargetState::Off,
     }
+}
+
+/// Where a selector's value is against its target's values (#140 PR 3b,
+/// PR #147 review N4, ruled: DRY wins): within [`SAME_VALUE`] of its on
+/// value (`Some(true)`), of its off value (`Some(false)`), or neither
+/// (between them, or not heard: `None`). A DRY decision is written
+/// whenever the selector is not at its off value.
+pub fn shows(value: Option<f64>, on: u8, off: u8) -> Option<bool> {
+    let near = |v: f64, at: u8| (v - f64::from(at)).abs() < SAME_VALUE;
+    let v = value?;
+    if near(v, on) {
+        Some(true)
+    } else if near(v, off) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// What a hub start logs when `hub-state.json` holds AUTOTUNE AUT on: the
+/// file keeps it, and the rule treats it as off until #140 PR 3c's button
+/// (the PR #147 rulings).
+pub const SAVED_AUT_LINE: &str =
+    "AUTOTUNE AUT is saved on but stays off until the new AUTOTUNE button (#140 PR 3c)";
+
+/// The line a hub start logs for a saved AUTOTUNE AUT (`saved`), if any.
+pub fn saved_aut_line(saved: bool) -> Option<&'static str> {
+    saved.then_some(SAVED_AUT_LINE)
 }
 
 /// The rule's state between events.
@@ -172,6 +202,9 @@ pub enum Cause {
     Safe,
     /// A layout changed a target.
     Layout,
+    /// A selector write was answered (PR #147 review I1: the hub decides
+    /// again after every answer).
+    Written,
 }
 
 impl Cause {
@@ -189,6 +222,7 @@ impl Cause {
             Cause::Hold => "hold",
             Cause::Safe => "safe",
             Cause::Layout => "layout",
+            Cause::Written => "written",
         }
     }
 }
@@ -292,7 +326,8 @@ pub enum Step {
         problem: String,
     },
     /// A page's AUTOTUNE tap (`what` `tap`; 1.8.0's, gone since #140 PR
-    /// 3b) refused, and why ([`REFUSED_WHY`]).
+    /// 3b) or AUTOTUNE AUT on (`aut`, until PR 3c) refused, and why
+    /// ([`REFUSED_WHY`], [`AUT_REFUSED_WHY`]).
     Refused { what: String, why: String },
     /// The key `key` written to a Live set's found key devices (`targets`:
     /// their labels) and, with `bar`, to Live's bar (#140 PR 2b), and why.
@@ -366,6 +401,11 @@ pub enum Step {
 /// Why a page's AUTOTUNE tap is refused (#140 PR 3b: 1.8.0's tap is gone;
 /// in the new surface, PR 3c, a tap opens the singers' panel).
 pub const REFUSED_WHY: &str = "the AUTOTUNE tap is gone; a tap opens the singers' panel";
+/// Why a page's AUTOTUNE AUT on is refused (the PR #147 rulings: until #140
+/// PR 3c's button, the rehearsal and the latency measurement, so 1.8.0's
+/// 1 s hold cannot turn the rule on during an event).
+pub const AUT_REFUSED_WHY: &str =
+    "AUTOTUNE AUT stays off until the new AUTOTUNE button (#140 PR 3c)";
 
 /// A key in force in words: its song and key, a keyless song, or no song.
 fn key_words(song: Option<u16>, key: Option<&str>) -> String {

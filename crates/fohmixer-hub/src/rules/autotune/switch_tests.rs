@@ -283,38 +283,183 @@ fn every_why_has_its_word() {
 
 #[test]
 fn a_selector_is_written_once_per_change() {
-    // Live shows otherwise: written.
-    assert!(needs_write(true, false, None, false));
-    assert!(needs_write(false, true, None, false));
+    let (on, off, between) = (Some(true), Some(false), None);
+    // Nothing on its way: Live shows otherwise, written.
+    assert!(needs_write(true, off, None, false));
+    assert!(needs_write(false, on, None, false));
+    // Between the values (PR #147 review N4: a stream selector in its
+    // chain's zone): neither decision is shown, both are written.
+    assert!(needs_write(true, between, None, false));
+    assert!(needs_write(false, between, None, false));
     // Live shows it: nothing.
-    assert!(!needs_write(true, true, None, false));
-    assert!(!needs_write(false, false, None, false));
-    // Its write on its way: nothing again; another write on its way: this.
-    assert!(!needs_write(true, false, Some(true), false));
-    assert!(!needs_write(false, true, Some(false), false));
-    assert!(needs_write(true, false, Some(false), false));
-    assert!(needs_write(false, true, Some(true), false));
-    // The guard stopped the hub: never.
-    assert!(!needs_write(false, true, None, true));
-    assert!(!needs_write(true, false, None, true));
+    assert!(!needs_write(true, on, None, false));
+    assert!(!needs_write(false, off, None, false));
+    // Its write on its way: nothing again, whatever Live shows yet.
+    assert!(!needs_write(true, off, Some(true), false));
+    assert!(!needs_write(false, on, Some(false), false));
+    // Another write on its way (PR #147 review I1): this one, also when
+    // Live still shows the decision (a stop right after a switch-on, a
+    // start right after a stop).
+    assert!(needs_write(true, off, Some(false), false));
+    assert!(needs_write(false, on, Some(true), false));
+    assert!(needs_write(false, off, Some(true), false));
+    assert!(needs_write(true, on, Some(false), false));
+    // The hub stopped writing it: never.
+    assert!(!needs_write(false, on, None, true));
+    assert!(!needs_write(true, off, None, true));
+    assert!(!needs_write(false, on, Some(true), true));
 }
 
 #[test]
 fn another_writers_move_is_one_away_from_the_decision_that_is_no_echo() {
-    // To the chain while the hub wants DRY.
-    assert_eq!(another_move(false, true, false, None), Some(true));
-    assert_eq!(another_move(false, true, false, Some(false)), Some(true));
-    // To DRY while the hub wants the chain.
-    assert_eq!(another_move(true, false, true, None), Some(false));
-    assert_eq!(another_move(true, false, true, Some(true)), Some(false));
-    // The echo of the hub's own write.
-    assert_eq!(another_move(false, true, false, Some(true)), None);
-    assert_eq!(another_move(true, false, true, Some(false)), None);
-    // Toward the decision, or no move.
-    assert_eq!(another_move(false, true, true, None), None);
-    assert_eq!(another_move(true, false, false, None), None);
-    assert_eq!(another_move(true, true, false, None), None);
-    assert_eq!(another_move(false, false, true, None), None);
+    let (on, off, between) = (Some(true), Some(false), None);
+    // Off DRY while the hub wants DRY: to the chain, or between (N4).
+    assert_eq!(another_move(off, on, false, &[]), Some(true));
+    assert_eq!(another_move(off, between, false, &[]), Some(true));
+    assert_eq!(another_move(between, on, false, &[false]), Some(true));
+    // Off the chain while the hub wants the chain.
+    assert_eq!(another_move(on, off, true, &[]), Some(false));
+    assert_eq!(another_move(on, between, true, &[true]), Some(false));
+    // The echo of a hub write on its way: of either of two (I1).
+    assert_eq!(another_move(off, on, false, &[true]), None);
+    assert_eq!(another_move(off, on, false, &[true, false]), None);
+    assert_eq!(another_move(on, off, true, &[false, true]), None);
+    // To the decision, or no move.
+    assert_eq!(another_move(off, on, true, &[]), None);
+    assert_eq!(another_move(on, off, false, &[]), None);
+    assert_eq!(another_move(on, on, false, &[]), None);
+    assert_eq!(another_move(between, between, false, &[]), None);
+}
+
+fn fly(write: u64, on: bool, answered: bool) -> Flying {
+    Flying {
+        write,
+        on,
+        answered,
+    }
+}
+
+#[test]
+fn a_value_at_a_write_on_its_way_lands_it_and_every_one_before() {
+    // PR #147 review I1: Live takes the hub's writes in order.
+    let flying = [
+        fly(1, true, false),
+        fly(2, false, false),
+        fly(3, true, false),
+    ];
+    assert_eq!(still_flying(&flying, Some(true)), vec![]);
+    assert_eq!(
+        still_flying(&flying, Some(false)),
+        vec![fly(3, true, false)]
+    );
+    assert_eq!(
+        still_flying(&flying[..2], Some(true)),
+        vec![fly(2, false, false)]
+    );
+    assert_eq!(still_flying(&flying[..2], Some(false)), vec![]);
+    // A value at none of them (between, or none on its way) lands none.
+    assert_eq!(still_flying(&flying, None), flying.to_vec());
+    assert_eq!(
+        still_flying(&[fly(4, true, false)], Some(false)),
+        vec![fly(4, true, false)]
+    );
+    assert_eq!(still_flying(&[], Some(true)), vec![]);
+    // An answered write is taken by any value heard after its answer (its
+    // echo or not); the unanswered ones after it stay.
+    let answered = [fly(1, true, true), fly(2, false, false)];
+    assert_eq!(
+        still_flying(&answered, Some(true)),
+        vec![fly(2, false, false)]
+    );
+    assert_eq!(still_flying(&answered, None), vec![fly(2, false, false)]);
+    assert_eq!(still_flying(&answered, Some(false)), vec![]);
+    assert_eq!(
+        still_flying(&[fly(1, true, true), fly(2, false, true)], Some(true)),
+        vec![]
+    );
+}
+
+#[test]
+fn a_write_answered_is_taken_and_a_failed_one_never_lands() {
+    let flying = [fly(1, true, false), fly(2, false, false)];
+    // Failed: it never lands; the others stay as they were.
+    assert_eq!(
+        answered_flying(&flying, 1, false),
+        vec![fly(2, false, false)]
+    );
+    assert_eq!(
+        answered_flying(&flying, 2, false),
+        vec![fly(1, true, false)]
+    );
+    // Went: answered, its echo (if any) the next value.
+    assert_eq!(
+        answered_flying(&flying, 2, true),
+        vec![fly(1, true, false), fly(2, false, true)]
+    );
+    assert_eq!(
+        answered_flying(&flying, 1, true),
+        vec![fly(1, true, true), fly(2, false, false)]
+    );
+    // An answer of a write no longer on its way changes nothing.
+    assert_eq!(answered_flying(&flying, 7, false), flying.to_vec());
+    assert_eq!(answered_flying(&flying, 7, true), flying.to_vec());
+    let both = [fly(1, true, true), fly(2, false, false)];
+    assert_eq!(
+        answered_flying(&both, 2, true),
+        vec![fly(1, true, true), fly(2, false, true)]
+    );
+}
+
+#[test]
+fn a_refused_selector_write_gets_one_retry_then_the_hub_stops() {
+    // PR #147 review I5, ruled.
+    assert_eq!(SELECTOR_RETRIES, 1);
+    let first = Refusal::after(None, "p7", true, "held");
+    assert_eq!(
+        first,
+        Refusal {
+            id: "p7".into(),
+            on: true,
+            tries: 1,
+            why: "held".into(),
+        }
+    );
+    assert!(first.holds("p7", true));
+    assert!(!first.stops("p7", true), "its one retry goes");
+    let second = Refusal::after(Some(&first), "p7", true, "held again");
+    assert_eq!((second.tries, second.why.as_str()), (2, "held again"));
+    assert!(second.stops("p7", true));
+    // Another `$ref` or the other side starts over, and the refusal does
+    // not hold for them.
+    assert_eq!(Refusal::after(Some(&second), "p8", true, "x").tries, 1);
+    assert_eq!(Refusal::after(Some(&second), "p7", false, "x").tries, 1);
+    assert!(!second.holds("p8", true) && !second.stops("p8", true));
+    assert!(!second.holds("p7", false) && !second.stops("p7", false));
+    // Live refused the chain for good: DRY with a problem; DRY refused
+    // stays DRY (its write stops).
+    let play = Decision {
+        on: true,
+        why: SwitchWhy::Play,
+    };
+    assert_eq!(
+        refused_decision(play, Some(&second), "p7"),
+        off(SwitchWhy::Problem)
+    );
+    assert_eq!(refused_decision(play, Some(&first), "p7"), play);
+    assert_eq!(refused_decision(play, Some(&second), "p8"), play);
+    assert_eq!(refused_decision(play, None, "p7"), play);
+    let dry = Refusal::after(
+        Some(&Refusal::after(None, "p7", false, "x")),
+        "p7",
+        false,
+        "x",
+    );
+    assert!(dry.stops("p7", false));
+    assert_eq!(refused_decision(play, Some(&dry), "p7"), play);
+    assert_eq!(
+        refused_decision(off(SwitchWhy::Stop), Some(&second), "p7"),
+        off(SwitchWhy::Stop)
+    );
 }
 
 #[test]
