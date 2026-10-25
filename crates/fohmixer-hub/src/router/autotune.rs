@@ -209,6 +209,14 @@ impl Target {
     pub fn awaits_walk(&self) -> bool {
         !self.sure && self.problem.is_none()
     }
+
+    /// Whether its found macro may go into its set's registration of DRY
+    /// writes: only once a walk confirmed it (`sure`; PR #147 re-review
+    /// R8, R14: an unconfirmed ref may be of a track an older layout named
+    /// at its index, also once its walk gave up).
+    pub fn registrable(&self) -> bool {
+        self.sure
+    }
 }
 
 /// The router's AUTOTUNE.

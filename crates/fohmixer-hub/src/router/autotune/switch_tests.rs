@@ -2224,6 +2224,60 @@ async fn a_list_sent_over_one_still_on_its_way_narrows_what_the_script_may_hold(
 }
 
 #[tokio::test]
+async fn a_list_live_did_not_answer_narrows_what_the_script_may_hold() {
+    // PR #147 re-review R15: a registration Live did not answer
+    // (`Safe.lost`) may still become the script's list, so the list after
+    // it keeps only the pairs both share; one the script refused keeps the
+    // kept list whole.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, _rx) = ready(dir.path(), HubState::default()).await;
+    let both = [("p6".to_string(), 127), ("p7".to_string(), 0)];
+    let without_stream = |router: &mut Router| {
+        // The stream's rack gone for good (DRY: nothing to write first).
+        let walk = router.autotune.targets[STREAM].walk;
+        router.autotune_found(STREAM, walk, Err("no rack named Latencies".into()));
+    };
+    let is_list = |c: &[Value]| c.len() == 1 && c[0]["name"] == SAFE_WRITES;
+    // Refused: the list without the stream goes and the script refuses it.
+    without_stream(&mut router);
+    let refused = live.next("the list without it", is_list);
+    refused.answer(vec![json!({"ok": false,
+        "error": "no such function: safe_writes", "errorType": "OpError"})]);
+    live.settle(&mut router).await;
+    let safe = &router.autotune.safe["band"];
+    assert_eq!(safe.state, SafeState::Failed);
+    assert!(!safe.lost, "refused: the script did not take it");
+    // Found again: the list with it goes after, the kept list whole.
+    find(&mut router, STREAM, rack(7));
+    assert_eq!(
+        router.autotune.safe["band"].kept.as_deref(),
+        Some(&both[..]),
+        "kept whole after a refusal"
+    );
+    live.settle(&mut router).await;
+    assert_eq!(router.autotune.safe["band"].state, SafeState::Kept);
+    // Not answered: the list without the stream goes, Live never answers.
+    without_stream(&mut router);
+    let lost = live.next("the list without it, again", is_list);
+    drop(lost);
+    live.settle(&mut router).await;
+    let safe = &router.autotune.safe["band"];
+    assert_eq!(safe.state, SafeState::Failed);
+    assert!(safe.lost, "Live did not answer it");
+    assert_eq!(safe.kept.as_deref(), Some(&both[..]));
+    // Found again: the script may hold the list without it, so only the
+    // pair both share stays kept and the stream is not armed.
+    find(&mut router, STREAM, rack(7));
+    assert_eq!(
+        router.autotune.safe["band"].kept.as_deref(),
+        Some(&both[..1])
+    );
+    aut_on(&mut router);
+    transport(&mut router, true);
+    assert_eq!(decisions(&mut router)[1], off(SwitchWhy::Unarmed));
+}
+
+#[tokio::test]
 async fn a_walk_that_gives_up_unconfirmed_leaves_its_target_out_of_the_registered_list() {
     // PR #147 re-review R8: two track-list changes in one hold; the PA's
     // walk after the second gives up, keeping the ref the first change's
