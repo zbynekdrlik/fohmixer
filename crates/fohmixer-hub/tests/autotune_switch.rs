@@ -392,6 +392,81 @@ fn the_manual_off_survives_a_hub_restart() {
 }
 
 #[test]
+fn a_hub_started_with_aut_saved_on_while_live_plays_in_a_song_tunes_only_after_its_map_its_fall_back_and_its_keys()
+ {
+    // PR #150 review N6, the deploy's restart: AUT saved on, Live already
+    // playing inside song 1. No selector goes on before the hub's song map
+    // read, its DRY fall back kept by the script and each track's key
+    // written and read back; then the tracks tune.
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let host = Host::start_site("band", &site(dir.path(), 10.0), 0, 0.0);
+        frame(dir.path());
+        // Live plays (a first hub's client starts it), then that hub goes.
+        let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        hub.status_until(SECS_10, |s| s.instances[0].playing.is_some())
+            .await;
+        let mut a = hub.client().await;
+        transport(&mut a, "start_playing").await;
+        a.close().await;
+        hub.stop().await;
+        std::fs::write(
+            dir.path().join("hub-state.json"),
+            json!({"autotune_aut": true}).to_string(),
+        )
+        .unwrap();
+        let start = now_ts();
+        let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        let mut a = hub.client().await;
+        macros_until(&mut a, TUNING, SECS_10).await;
+        let status = hub.status().await;
+        assert!(status.autotune.aut, "the saved AUT on honoured");
+        let records = since(&hub.events(), start);
+        let first = |matches: &dyn Fn(&Value) -> bool| records.iter().position(|r| matches(r));
+        let map =
+            first(&|r| r["ev"] == "songmap" && r["error"].is_null()).expect("a song map read");
+        let kept =
+            first(&|r| r["ev"] == "autotune" && r["step"] == "safe" && r["problem"].is_null())
+                .expect("the fall back kept");
+        for index in [0, 2, 3] {
+            let target = json!(format!("live_set tracks {index}"));
+            let on = first(&|r| {
+                r["ev"] == "autotune"
+                    && r["step"] == "select"
+                    && r["target"] == target
+                    && r["on"] == true
+            })
+            .unwrap_or_else(|| panic!("track {index} never on: {records:?}"));
+            let confirmed = first(&|r| {
+                r["ev"] == "autotune"
+                    && r["step"] == "readback"
+                    && r["target"] == target
+                    && r["state"] == "confirmed"
+            })
+            .unwrap_or_else(|| panic!("track {index}'s key never confirmed"));
+            assert!(map < on, "track {index}: on only after the map");
+            assert!(
+                kept < on,
+                "track {index}: on only once the fall back is kept"
+            );
+            assert!(confirmed < on, "track {index}: on only after its key");
+        }
+        assert!(
+            steps_of(&records, "select")
+                .iter()
+                .all(|r| r["target"] != "live_set tracks 1"),
+            "Stream B (its key refused) never switches"
+        );
+        transport(&mut a, "stop_playing").await;
+        macros_until(&mut a, DRY, Duration::from_secs(2)).await;
+        a.close().await;
+        hub.stop().await;
+        host.stop();
+    });
+}
+
+#[test]
 fn the_pages_are_told_the_singers_and_the_key() {
     let _serial = serial();
     runtime().block_on(async {

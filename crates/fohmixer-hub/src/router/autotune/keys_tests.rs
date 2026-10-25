@@ -975,7 +975,7 @@ async fn a_set_without_targets_lets_its_position_go() {
 async fn aut_on_from_a_page_is_taken_recorded_and_saved() {
     // #140 PR 3c lifted 3b's refusal: the new button's hold sets AUT.
     let dir = tempfile::tempdir().unwrap();
-    let (mut router, _own, rx) = offline_router(dir.path());
+    let (mut router, mut own, rx) = offline_router(dir.path());
     let page = attach(&mut router, 1);
     router.handle(layout(1, vec![stream()]));
     find(&mut router, found_with(Err(KeyMissing::NoChain)));
@@ -983,6 +983,10 @@ async fn aut_on_from_a_page_is_taken_recorded_and_saved() {
     let _ = steps(&rx);
     let _ = told(&page);
     set_hub(&mut router, HUB_AUTOTUNE_AUT, json!(true));
+    // No song and a target with a problem: AUT on alone sends Live nothing
+    // (PR #150 review M5).
+    assert!(!wrote(&mut own).await, "nothing goes to Live");
+    assert_eq!(status(&mut router).autotune.writes, 0);
     let on = steps(&rx);
     assert_eq!(
         on[0],
@@ -1008,6 +1012,8 @@ async fn aut_on_from_a_page_is_taken_recorded_and_saved() {
         json!({"step": "flag", "on": false, "client": 1, "peer": "10.0.0.1"})
     );
     assert!(!router.autotune.state().aut);
+    assert!(!wrote(&mut own).await, "nothing goes to Live");
+    assert_eq!(status(&mut router).autotune.writes, 0);
     assert!(!HubState::load(dir.path()).autotune_aut);
     let text = std::fs::read_to_string(dir.path().join("hub-state.json")).unwrap();
     assert!(!text.contains("autotune_aut"), "{text}");
