@@ -88,7 +88,9 @@
 .tp-name {
     min-width: 0;
     overflow: hidden;
-    font: 700 14px/1.2 var(--ui);
+    /* 18 px: the face's content area at 14 px is 17 px (CI's Chromium),
+       above the mockup's 1.2 line, and the clip must cut no glyph. */
+    font: 700 14px/18px var(--ui);
     text-overflow: ellipsis;
     white-space: nowrap;
 }
@@ -115,7 +117,9 @@
 }
 
 .tp-key {
-    font: 600 12px/1.2 var(--mono);
+    /* A px line above the mono face's content area (16 px with its ✓,
+       measured in both engines). */
+    font: 600 12px/18px var(--mono);
     text-align: center;
     white-space: nowrap;
 }
