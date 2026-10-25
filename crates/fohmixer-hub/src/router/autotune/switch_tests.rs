@@ -15,7 +15,7 @@ use super::super::super::{Router, RouterIo, RouterMsg};
 use super::super::safe::{SAFE_WRITES, Safe};
 use super::{
     NO_SINGER, armed, checked, checking, has_problem, key_why, part, singer_label, singer_value,
-    track_state, trouble,
+    track_state, trouble, waiting_words,
 };
 use crate::live::client::{Asked, LiveEvent, Script, scripted};
 use crate::rules::HubState;
@@ -1570,6 +1570,40 @@ async fn unarmed_in_a_song(dir: &std::path::Path) -> (Router, Live) {
         [off(SwitchWhy::Unarmed), off(SwitchWhy::Unarmed)]
     );
     (router, live)
+}
+
+#[test]
+fn a_decision_of_the_hubs_own_has_its_words_and_every_other_none() {
+    // PR #150 review I2.
+    assert_eq!(
+        waiting_words(SwitchWhy::Unarmed, Some("no such function: safe_writes")).as_deref(),
+        Some("its fall back to DRY is not kept (no such function: safe_writes)")
+    );
+    assert_eq!(
+        waiting_words(SwitchWhy::Unarmed, None).as_deref(),
+        Some("its fall back to DRY is not kept yet")
+    );
+    assert_eq!(
+        waiting_words(SwitchWhy::Held, None).as_deref(),
+        Some("waits for Live's track list")
+    );
+    assert_eq!(
+        waiting_words(SwitchWhy::Unconfirmed, None).as_deref(),
+        Some("waits for its rack to be found again")
+    );
+    for why in [
+        SwitchWhy::Aut,
+        SwitchWhy::Stop,
+        SwitchWhy::Span,
+        SwitchWhy::NoKey,
+        SwitchWhy::SingerOff,
+        SwitchWhy::Problem,
+        SwitchWhy::AnotherWriter,
+        SwitchWhy::Mismatch,
+        SwitchWhy::Play,
+    ] {
+        assert_eq!(waiting_words(why, Some("x")), None, "{why:?}");
+    }
 }
 
 #[tokio::test]
