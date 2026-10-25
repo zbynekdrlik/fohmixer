@@ -1,19 +1,20 @@
 use std::collections::BTreeMap;
 
-use fohmixer_proto::client::KeyState;
+use fohmixer_proto::client::{AutotuneState, KeyState, ServerMsg};
 use fohmixer_proto::layout::{Anchor, AutotuneTarget, Binding};
 use fohmixer_proto::songmap::{ClipName, Cue, Key, SectionsState, build};
 use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use super::super::super::songmap::Listing;
-use super::super::super::tests::{next_of, records, status};
+use super::super::super::tests::{attach, next_of, records, status};
 use super::super::super::{Router, RouterIo, RouterMsg};
 use super::{
     BAR_ROOT, BAR_SCALE, bar_read, elapsed_ms, found_key_write, judged_for_another,
     key_read_commands, key_write_commands, late_note, read_values, write_problem,
 };
 use crate::live::client::{Asked, LiveEvent, Script, scripted};
+use crate::outbox::Outbox;
 use crate::rules::HubState;
 use crate::rules::autotune::find::{Found, KeyFound, Param};
 use crate::rules::autotune::keys::{KeyDevice, KeyParams};
@@ -861,6 +862,76 @@ async fn a_refused_write_is_a_mismatch_retried_once() {
         2
     );
     assert_eq!(states(&mut router)[0], Some(KeyState::Refused));
+}
+
+/// The `autotune` messages waiting in `outbox`.
+fn told(outbox: &Outbox) -> Vec<AutotuneState> {
+    outbox
+        .take()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|m| match m {
+            ServerMsg::Autotune(s) => Some(s),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn the_pages_are_told_a_read_back_and_a_refusal_at_once() {
+    // A key write's outcome changes what the pages show (Live's bar, a
+    // singer's key) while no value of Live's comes to tell it: a refused
+    // write moves no parameter, and the bar is not followed. #140 PR 3c's
+    // E2E saw a held slot's corner and the bar wait for the next delivery.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, _rx, mut script) = scripted_router(dir.path());
+    router.handle(layout(1, vec![pa(), stream()]));
+    find(&mut router, PA, rack(6, ""));
+    find(&mut router, STREAM, rack(7, ""));
+    heard(&mut router, PA, (0.75, 2.0 / 28.0));
+    heard(&mut router, STREAM, (0.5, 0.0));
+    map_read(&mut router, 1, songs());
+    deliver(&mut router, TIME, 10.0);
+    let page = attach(&mut router, 1);
+    let _ = told(&page);
+    // The PA refused, the stream and the bar written.
+    let write = call(&mut script);
+    let null = ok(Value::Null);
+    let slots = vec![
+        disabled(),
+        disabled(),
+        null.clone(),
+        null.clone(),
+        null.clone(),
+        null,
+    ];
+    written(&mut router, &mut own, write, slots).await;
+    // The read-back: the stream and Live's bar on D. The page is told the
+    // bar with no delivery of Live's.
+    let read = call(&mut script);
+    let answer = vec![
+        ok(json!(2.0 / 11.0)),
+        ok(json!(0.0)),
+        ok(json!(2)),
+        ok(json!("Major")),
+    ];
+    read_back(&mut router, &mut own, read, answer).await;
+    let after_read = told(&page);
+    assert_eq!(
+        after_read.last().and_then(|s| s.bar.as_deref()),
+        Some("D"),
+        "{after_read:?}"
+    );
+    // The PA's retry refused again: the page is told its singer's key is
+    // not right, again with no delivery.
+    let retry = call(&mut script);
+    written(&mut router, &mut own, retry, vec![disabled(), disabled()]).await;
+    let after_retry = told(&page);
+    let vox = after_retry
+        .last()
+        .and_then(|s| s.singers.iter().find(|x| x.label == "Vox 2"))
+        .cloned();
+    assert_eq!(vox.map(|x| x.key_ok), Some(false), "{after_retry:?}");
 }
 
 #[tokio::test]
