@@ -20,22 +20,13 @@ use serde_json::json;
 
 use super::{fail_flash, owns_touches, trace_rail};
 use crate::behave::autotune::{
-    Anchor, PanelRow, panel_foot, panel_head, panel_place, panel_rows, switch_acts, switch_press,
-    switch_value, tap_opens_panel,
+    Anchor, PanelRow, RowKey, panel_foot, panel_head, panel_place, panel_rows, switch_acts,
+    switch_press, switch_value, tap_opens_panel,
 };
 use crate::behave::hold::Lift;
 use crate::behave::rail::AUT_BADGE;
 use crate::dom;
 use crate::store::LiveStore;
-
-/// A singer's row's key in the panel's keyed list (its id and label; a
-/// target that names no singer has no id).
-type RowKey = (String, String);
-
-/// A row's key.
-fn row_key(row: &PanelRow) -> RowKey {
-    (row.id.clone(), row.label.clone())
-}
 
 /// The panel: `anchor` where it opens from (the column's right edge, the
 /// button's top and bottom on the screen; the button places it again at a
@@ -109,7 +100,7 @@ pub fn AutotunePanel(anchor: Anchor) -> impl IntoView {
     // Keyed by singer (PR #150 review N2): a state change keeps each row,
     // its refused flash included; a row reads itself from the list.
     let keys = move || {
-        rows.try_with(|r| r.iter().map(row_key).collect::<Vec<_>>())
+        rows.try_with(|r| r.iter().map(PanelRow::key).collect::<Vec<_>>())
             .unwrap_or_default()
     };
     let row = move |k: RowKey| view! { <SingerRow at=k rows=rows /> };

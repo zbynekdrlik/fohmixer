@@ -226,6 +226,18 @@ pub struct PanelRow {
     pub why: Option<String>,
 }
 
+/// A row's key in the panel's keyed list (PR #150 review N2): its id and
+/// label (a target that names no singer has no id, so the label tells
+/// such rows apart).
+pub type RowKey = (String, String);
+
+impl PanelRow {
+    /// Its key in the panel's keyed list.
+    pub fn key(&self) -> RowKey {
+        (self.id.clone(), self.label.clone())
+    }
+}
+
 /// The panel's rows, one per singer in Live's order.
 pub fn panel_rows(state: &AutotuneState) -> Vec<PanelRow> {
     state
@@ -816,6 +828,8 @@ mod tests {
             Some("Vox 5: stream Key reads G, wrote F · on DRY, rewrite at the next change")
         );
         assert_eq!(rows[4].why, None);
+        // Each row's key: its id and label.
+        assert_eq!(rows[1].key(), ("VOX3".to_string(), "Vox 3".to_string()));
         // The switch's value: off by hand, or back on.
         assert_eq!(switch_value(&rows[0]), ("VOX1".to_string(), true));
         assert_eq!(switch_value(&rows[1]), ("VOX3".to_string(), false));
