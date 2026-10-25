@@ -1309,14 +1309,21 @@ async fn a_hold_writes_dry_first_through_the_last_ref() {
     })
     .await;
     router.handle(msg);
-    // While held, a stop, a start and another writer write nothing.
+    // While held, a stop, a start and another writer write nothing, also
+    // on a target its walk confirmed meanwhile (the set is still held).
     transport(&mut router, false);
     transport(&mut router, true);
     by_hand(&mut router, &mut live, "p6", 0.0);
+    find(&mut router, PA, rack(6));
+    assert!(router.autotune.targets[PA].sure);
+    by_hand(&mut router, &mut live, "p6", 127.0);
+    by_hand(&mut router, &mut live, "p6", 0.0);
     live.settle(&mut router).await;
     assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new());
+    let got = steps(&rx);
+    assert_eq!(of(&got, "selector_writer"), Vec::<Value>::new());
     assert_eq!(
-        of(&steps(&rx), "failed"),
+        of(&got, "failed"),
         vec![
             json!({"step": "failed", "instance": "band", "target": "live_set tracks 7",
                     "problem": "stale ref"})
