@@ -769,6 +769,7 @@ fn api_bodies_round_trip() {
         serde_json::to_value([
             SwitchWhy::Aut,
             SwitchWhy::Held,
+            SwitchWhy::Unconfirmed,
             SwitchWhy::Stop,
             SwitchWhy::Span,
             SwitchWhy::NoKey,
@@ -783,6 +784,7 @@ fn api_bodies_round_trip() {
         json!([
             "aut",
             "held",
+            "unconfirmed",
             "stop",
             "span",
             "no_key",

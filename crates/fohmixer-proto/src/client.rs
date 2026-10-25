@@ -689,7 +689,9 @@ pub struct SingerState {
 
 /// Why a target's selector is where the hub's rule put it (#140 PR 3b,
 /// spec §7's names): AUT off (`aut`), its set held while its markers
-/// settle (`held`), Live stopped (`stop`), out of every song (`span`), a
+/// settle (`held`), its rack not confirmed by a walk since a hold or a
+/// track-list change while its set is not held (`unconfirmed`, PR #147
+/// re-review R6), Live stopped (`stop`), out of every song (`span`), a
 /// keyless song (`no_key`), its singer off by hand (`singer_off`), a
 /// target problem (`problem`), another writer moved it (`another_writer`),
 /// the script's fall back to DRY not armed (`unarmed`), its key not
@@ -699,6 +701,7 @@ pub struct SingerState {
 pub enum SwitchWhy {
     Aut,
     Held,
+    Unconfirmed,
     Stop,
     Span,
     NoKey,
