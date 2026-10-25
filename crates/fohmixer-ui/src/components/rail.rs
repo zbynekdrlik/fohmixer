@@ -1,12 +1,12 @@
 //! The rail buttons with an automatic mode (#104, #130, D18, D19; the
 //! approved mockups `docs/mockups/reverb-link-v1.html`, screen 2,
 //! `docs/mockups/reverb-link-v2.html`, screen 3, and
-//! `docs/mockups/autotune-v1.html`; the owner's rulings on #104 of
-//! 2026-10-17): the merged STAGE button, REVERB and AUTOTUNE. A lift before
-//! `RAIL_HOLD_MS` (1 s, not the mockup's 3 s) is the tap (STAGE: the stage
-//! mics by hand; REVERB: the reverb faders 10 dB down or back, asked of the
-//! hub; AUTOTUNE: every `+AUTOTUNE` track's autotune on or off, asked of
-//! the hub); at 1 s the press is full (the fill stays full, the line says
+//! `docs/mockups/autotune-v2.html` (#140 PR 3c); the owner's rulings on
+//! #104 of 2026-10-17): the merged STAGE button, REVERB and AUTOTUNE. A
+//! lift before `RAIL_HOLD_MS` (1 s, not the mockup's 3 s) is the tap
+//! (STAGE: the stage mics by hand; REVERB: the reverb faders 10 dB down or
+//! back, asked of the hub; AUTOTUNE: the singers' panel opened or closed,
+//! nothing sent, `components::autotune_panel`); at 1 s the press is full (the fill stays full, the line says
 //! `pusť — zapne AUT` / `pusť — vypne AUT`, nothing is sent) and the lift
 //! then turns the automatic mode on or off. The press is
 //! `behave::hold::Hold::lifted`: a slide past 10 px, a cancel, a lost
@@ -18,14 +18,16 @@
 //! hub's flag not known on this connection) shows no fill, and at its full
 //! mark it flashes refused and is dead (its lift does nothing); a full
 //! press's lift that cannot act is refused the same way, and so is a REVERB
-//! or AUTOTUNE tap (the hub's state of the rule not known on this
-//! connection, or the page not connected). The decisions are
+//! tap or an AUTOTUNE tap that would open the panel (the hub's state of the
+//! rule not known on this connection, or the page not connected). The
+//! panel closes at a tap on AUTOTUNE again or a down anywhere outside it
+//! (the button's page listener). The decisions are
 //! `behave::rail`'s, `behave::reverb`'s and `behave::autotune`'s; each step
 //! goes to the flight recorder.
 
 use std::time::Duration;
 
-use fohmixer_proto::client::{HUB_AUTOTUNE, HUB_REVERB_LOW, HUB_STAGE_AUT};
+use fohmixer_proto::client::{HUB_REVERB_LOW, HUB_STAGE_AUT};
 use fohmixer_proto::layout::Binding;
 use leptos::html;
 use leptos::prelude::*;
@@ -33,18 +35,20 @@ use serde_json::json;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
+use super::autotune_panel::AutotunePanel;
 use super::buttons::toggle_flag;
 use super::{
     BtnText, down_of, fail_flash, intent_look, key_of, owns_touches, readiness, readiness_now,
     slot_of, trace_rail,
 };
 use crate::behave::autotune::{
-    autotune_look, autotune_ready, has_problem, state_name, tap_value as autotune_tap,
+    autotune_look, autotune_ready, has_problem, state_name, tap_opens_panel,
 };
 use crate::behave::hold::{Hold, Lift};
 use crate::behave::rail::{
-    Aut, Fill, RAIL_HOLD_MS, RailLook, Rule, SETTLE_MS, cancels, fill_of, full_step, hold_step,
-    hold_value, rail_press, restarted, settling, stage_look, stale_press, transport_changed,
+    AUT_BADGE, Aut, Fill, RAIL_HOLD_MS, RailLook, Rule, SETTLE_MS, cancels, fill_of, full_step,
+    hold_step, hold_value, rail_press, restarted, settling, stage_look, stale_press,
+    transport_changed,
 };
 use crate::behave::reverb::{reverb_look, reverb_ready, tap_step, tap_value};
 use crate::binding::{mute_sub, transport_sub};
@@ -60,8 +64,8 @@ pub enum RuleKind {
     /// REVERB (#130): the reverb faders lowered or back, and REVERB AUT;
     /// the hub moves the faders, the button writes no key of its own.
     Reverb,
-    /// AUTOTUNE (#104, D19): every `+AUTOTUNE` track's autotune on or off,
-    /// and AUTOTUNE AUT; the hub writes the racks, the button no key.
+    /// AUTOTUNE (#104, D19; #140 PR 3c): AUTOTUNE AUT and the singers'
+    /// panel; the hub writes the racks, the button no key.
     Autotune,
 }
 
@@ -74,10 +78,10 @@ type DownListener = Closure<dyn FnMut(web_sys::PointerEvent)>;
 /// and the hub's STAGE AUT flag with what the rule does now (its Live's
 /// transport, `binding::transport_sub`); REVERB (#130) shows the hub's
 /// REVERB state (lit at the song level, dark while lowered) and what
-/// REVERB AUT does now (`behave::reverb::reverb_look`); AUTOTUNE (#104,
-/// D19) shows the hub's AUTOTUNE state (lit while every target is on,
-/// mixed, dark) and what AUTOTUNE AUT does now
-/// (`behave::autotune::autotune_look`).
+/// REVERB AUT does now (`behave::reverb::reverb_look`); AUTOTUNE (#140 PR
+/// 3c, mockup v2) shows the hub's AUTOTUNE state (lit while every singer
+/// tunes, mixed, dark), AUT, the state and the key
+/// (`behave::autotune::autotune_look`), and opens the singers' panel.
 #[component]
 pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
     let store = expect_context::<LiveStore>();
@@ -120,13 +124,15 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
     // The press's state as shown: filling (before its hold), full (past it).
     let holding = RwSignal::new(false);
     let full = RwSignal::new(false);
-    // STAGE and AUTOTUNE: the transport's last change not yet settled (the
-    // page clock), its value before, and the one look check after it
-    // (review M3).
+    // STAGE: the transport's last change not yet settled (the page clock),
+    // its value before, and the one look check after it (review M3).
     let changed_at = RwSignal::new(None::<f64>);
     let transport_before = StoredValue::new(None::<bool>);
     let settle_check = StoredValue::new(None::<TimeoutHandle>);
     let any_down = StoredValue::new_local(None::<DownListener>);
+    // AUTOTUNE's panel: open with where it opens (the column's right edge
+    // and the button's top on the screen), or closed.
+    let open = RwSignal::new(None::<(f64, f64)>);
     // The timers and the page's listener go with the button (the cleanup
     // writes no signal of its own).
     on_cleanup(move || {
@@ -145,19 +151,15 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
             );
         }
     });
-    // The transport the button reads: STAGE its Live's, AUTOTUNE the hub's
-    // (its first target's Live set); REVERB none (its state says it).
+    // The transport STAGE reads (its Live's); REVERB and AUTOTUNE none
+    // (their states say it).
     let transport = move || match (rule, playing) {
         (Rule::Stage, Some(playing)) => playing.try_with(Slot::flag).flatten(),
-        (Rule::Autotune, _) => store
-            .autotune
-            .try_with(|a| a.shown().and_then(|s| s.playing))
-            .flatten(),
         _ => None,
     };
     // Each change of that transport: when it came, and one look check once
     // it has settled.
-    if rule != Rule::Reverb {
+    if rule == Rule::Stage {
         Effect::new(move |_| {
             let now_playing = transport();
             let before = transport_before
@@ -221,8 +223,8 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
             ),
             (Rule::Autotune, _, _) => store
                 .autotune
-                .try_with(|a| autotune_look(a.shown(), fill, unsettled))
-                .unwrap_or_else(|| autotune_look(None, fill, unsettled)),
+                .try_with(|a| autotune_look(a.shown(), fill))
+                .unwrap_or_else(|| autotune_look(None, fill)),
             _ => store
                 .reverb
                 .try_with(|r| reverb_look(r.shown(), fill))
@@ -254,9 +256,10 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
     let refuse = move || fail_flash(failed)(rule.refusal().to_string());
     // The tap. STAGE: the stage mics by hand, as STAGE did (I8: Live's
     // value here). REVERB: the faders down or back as the button shows them
-    // (`reverb_low`); AUTOTUNE: every target off, or on from dark
-    // (`autotune`); only while connected with the hub's state of this
-    // connection, else refused.
+    // (`reverb_low`), only while connected with the hub's state of this
+    // connection, else refused. AUTOTUNE: the singers' panel closed when
+    // open, else opened beside the column on the same condition (sends
+    // nothing).
     let tap = move |pointer: i32| {
         if let Some(slot) = slot {
             step("tap", pointer);
@@ -275,28 +278,57 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
             return;
         }
         let online = store.connected.try_get_untracked().unwrap_or(false);
-        let (key, value) = match rule {
-            Rule::Autotune => (
-                HUB_AUTOTUNE,
-                store
-                    .autotune
-                    .try_with_untracked(|a| autotune_tap(a.fresh(), online))
-                    .flatten(),
-            ),
-            _ => (
-                HUB_REVERB_LOW,
-                store
-                    .reverb
-                    .try_with_untracked(|r| tap_value(r.fresh(), online))
-                    .flatten(),
-            ),
-        };
+        if rule == Rule::Autotune {
+            if open.try_get_untracked().flatten().is_some() {
+                step("tap", pointer);
+                let _ = open.try_set(None);
+                return;
+            }
+            let opens = store
+                .autotune
+                .try_with_untracked(|a| tap_opens_panel(a.fresh(), online))
+                .unwrap_or(false);
+            if !opens {
+                step("refused", pointer);
+                refuse();
+                return;
+            }
+            step("tap", pointer);
+            let anchor = root.try_get_untracked().flatten().map(|el| {
+                let button = el.get_bounding_client_rect();
+                let column = el
+                    .closest(".column")
+                    .ok()
+                    .flatten()
+                    .map_or(button.right(), |c| c.get_bounding_client_rect().right());
+                (column, button.top())
+            });
+            let _ = open.try_set(anchor);
+            return;
+        }
+        let value = store
+            .reverb
+            .try_with_untracked(|r| tap_value(r.fresh(), online))
+            .flatten();
         step(tap_step(value), pointer);
         match value {
-            Some(value) => store.set_hub(key, json!(value)),
+            Some(value) => store.set_hub(HUB_REVERB_LOW, json!(value)),
             None => refuse(),
         }
     };
+    // The panel closes when this connection no longer has the hub's state
+    // (a lost socket: it shows no stale singer, Review Focus 5).
+    if rule == Rule::Autotune {
+        Effect::new(move |_| {
+            let fresh = store
+                .autotune
+                .try_with(|a| a.fresh().is_some())
+                .unwrap_or(false);
+            if !fresh && open.try_get_untracked().flatten().is_some() {
+                let _ = open.try_set(None);
+            }
+        });
+    }
     // What a hold may send now: the automatic mode the other way, or none
     // (refused).
     let can_send = move || {
@@ -341,6 +373,29 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
     // A press whose end never came ends at the next primary down anywhere
     // on the page, before any control's handler sees it (#124, review I1).
     let listener = Closure::wrap(Box::new(move |ev: web_sys::PointerEvent| {
+        // A down outside AUTOTUNE and its panel closes the panel (the down
+        // goes on to what it touched).
+        if open.try_get_untracked().flatten().is_some() {
+            let target = ev
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::Element>().ok());
+            let on_button = root
+                .try_get_untracked()
+                .flatten()
+                .zip(target.as_ref())
+                .is_some_and(|(el, t)| {
+                    let node: &web_sys::Node = t;
+                    el.contains(Some(node))
+                });
+            let on_panel = target
+                .as_ref()
+                .and_then(|t| t.closest(".tpanel").ok().flatten())
+                .is_some();
+            if !on_button && !on_panel {
+                let _ = open.try_set(None);
+                step("close", ev.pointer_id());
+            }
+        }
         let pressing = hold.try_with_value(Hold::pressing).flatten();
         let kind = press_kind.try_get_value().flatten();
         if let Some(old) = stale_press(pressing, kind, down_of(&ev)) {
@@ -461,7 +516,7 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
         pill_on.try_get().unwrap_or(false).then(|| {
             view! {
                 <span class="aut-badge" data-testid="aut-badge">
-                    "AUT"
+                    {AUT_BADGE}
                 </span>
             }
         })
@@ -503,6 +558,22 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
             }
         })
     };
+    let open_attr = move || is_autotune.then(|| open.try_get().flatten().is_some().to_string());
+    // The panel, beside the column while open, only on this connection's
+    // state.
+    let shown_at = Memo::new(move |_| {
+        let fresh = store
+            .autotune
+            .try_with(|a| a.fresh().is_some())
+            .unwrap_or(false);
+        open.try_get().flatten().filter(|_| fresh)
+    });
+    let panel = move || {
+        shown_at
+            .try_get()
+            .flatten()
+            .map(|anchor| view! { <AutotunePanel anchor=anchor /> })
+    };
     let filling = move || fill.try_get().is_some_and(Fill::holding).to_string();
     let is_full = move || fill.try_get().is_some_and(Fill::full).to_string();
     // The fill's time is the hold's (rule.css reads it).
@@ -523,6 +594,7 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
             data-state=tune_state
             data-mixed=mixed
             data-problem=problem_attr
+            data-open=open_attr
             data-aut=pill
             data-holding=filling
             data-full=is_full
@@ -544,5 +616,6 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
             <span class="hold" aria-hidden="true"></span>
             {flag}
         </div>
+        {panel}
     }
 }

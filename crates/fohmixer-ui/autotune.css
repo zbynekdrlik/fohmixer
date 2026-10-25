@@ -1,0 +1,193 @@
+/* fohmixer: AUTOTUNE's singers' panel (#140 PR 3c; the approved mockup
+   docs/mockups/autotune-v2.html, screen 2: its `.tpanel`, `.tp-*` and
+   `.chip` rules) and the button's ring while it is open
+   (components/autotune_panel.rs AutotunePanel, components/rail.rs
+   RuleButton). Linked after rule.css. */
+
+/* The panel is open: a white ring on the button. */
+.autotune-btn[data-open="true"] {
+    outline: 2px solid var(--text);
+    outline-offset: 1px;
+}
+
+/* Over the strips, beside the column, while open: placed on the screen at
+   the tap (`--tp-left`, `--tp-top`: behave::autotune::panel_place), kept
+   inside it; it scrolls when the screen is lower than it. Inside the
+   column (the page's top layer), which sets no transform, so `fixed` is
+   the screen's. */
+.tpanel {
+    position: fixed;
+    left: var(--tp-left, 8px);
+    top: var(--tp-top, 8px);
+    z-index: 20;
+    width: min(520px, calc(100vw - var(--tp-left, 8px) - 8px));
+    max-height: calc(100vh - var(--tp-top, 8px) - 8px);
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--panel);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+    color: var(--text);
+    text-align: left;
+}
+
+.tpanel-in {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.tp-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--line-soft);
+}
+
+.tp-title {
+    font: 700 17px/1 var(--display);
+    letter-spacing: 0.03em;
+}
+
+.tp-head .aut-badge {
+    margin-left: 0;
+}
+
+.tp-song {
+    min-width: 0;
+    margin-left: auto;
+    overflow: hidden;
+    color: var(--tune-hi);
+    font: 600 12.5px/1.2 var(--ui);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tp-row {
+    display: grid;
+    grid-template-columns: 80px minmax(0, 1fr) 44px 64px;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 6px;
+    border-radius: 8px;
+    background: var(--section);
+}
+
+.tp-row.off {
+    opacity: 0.75;
+}
+
+.tp-name {
+    min-width: 0;
+    overflow: hidden;
+    font: 700 14px/1.2 var(--ui);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tp-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 6px;
+    min-width: 0;
+}
+
+.chip {
+    padding: 3px 7px;
+    border-radius: 6px;
+    background: #0e0e18;
+    color: var(--muted);
+    font: 700 11px/1.2 var(--ui);
+    white-space: nowrap;
+}
+
+.chip.on {
+    background: color-mix(in srgb, var(--tune) 25%, var(--panel));
+    color: var(--text);
+}
+
+.tp-key {
+    font: 600 12px/1.2 var(--mono);
+    text-align: center;
+    white-space: nowrap;
+}
+
+.tp-key.ok {
+    color: #9be7a8;
+}
+
+.tp-key.bad {
+    width: 18px;
+    height: 18px;
+    margin: 0 auto;
+    border-radius: 4px;
+    background: var(--warn);
+    color: #0b0b12;
+    font: 800 13px/18px var(--ui);
+}
+
+/* A singer's switch: what a tap does (OFF while on, ON while off by hand);
+   a tap target of its own, 36 px high. */
+.tp-sw {
+    display: grid;
+    place-items: center;
+    height: 36px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--muted);
+    font: 700 12px/1 var(--ui);
+    text-transform: uppercase;
+    touch-action: none;
+}
+
+.tp-sw.on {
+    color: var(--text);
+}
+
+.tp-why {
+    margin: -2px 0 2px 6px;
+    color: var(--warn);
+    font: 600 11.5px/1.3 var(--ui);
+}
+
+.tp-foot {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding-top: 4px;
+    border-top: 1px solid var(--line-soft);
+    color: var(--text);
+    font: 600 12px/1.35 var(--ui);
+}
+
+.tp-foot .small {
+    color: var(--muted);
+}
+
+/* A phone held upright (mockup v2, cell 16): the panel at the screen's
+   full width; on its side (cell 17) beside the column, its chips on two
+   lines when the room is short. */
+@media (max-width: 520px) {
+    .tpanel {
+        left: 8px;
+        right: 8px;
+        width: auto;
+    }
+
+    .tp-row {
+        grid-template-columns: 64px minmax(0, 1fr) 36px 56px;
+        gap: 6px;
+    }
+}
+
+@media (max-height: 520px) {
+    .tp-row {
+        grid-template-columns: 64px minmax(0, 1fr) 36px 56px;
+        gap: 6px;
+    }
+}
