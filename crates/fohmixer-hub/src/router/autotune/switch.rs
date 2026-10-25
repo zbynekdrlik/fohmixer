@@ -44,7 +44,8 @@ use super::safe::Safe;
 use super::{AutotuneIo, Target, may_write, state_of, write_commands};
 use crate::rules::autotune::keys::{KeyState, shows as key_shows};
 use crate::rules::autotune::switch::{
-    GuardAct, KeyCheck, TrackInput, another_move, decide, key_check, needs_write, refused_decision,
+    Flying, GuardAct, KeyCheck, TrackInput, another_move, decide, key_check, needs_write,
+    refused_decision,
 };
 use crate::rules::autotune::{Cause, Step, WriterAct, shows};
 
