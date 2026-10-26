@@ -5,10 +5,10 @@
 //! a tap asks the hub for the reverb faders 10 dB down or back, a 1 s hold
 //! turns REVERB AUT on or off at its lift (the press is `behave::rail`'s,
 //! as the merged STAGE button's). It is lit at the song level and dark
-//! while lowered; with REVERB AUT on it wears the `AUT` pill, outlined
+//! while lowered; with REVERB AUT on it wears the `AUTO` pill, outlined
 //! while a tap overrides the rule until the next stop or start, and a
 //! second line says in plain words what the rule does now. A reverb fader
-//! the rule holds low shows where it returns and `AUT −n` (the live
+//! the rule holds low shows where it returns and `AUTO −n` (the live
 //! difference); one the engineer took shows `MAN` (screen 1, states 3
 //! and 4). Everything here reads the hub's `ReverbState`.
 
@@ -45,7 +45,7 @@ pub fn tap_step(value: Option<bool>) -> &'static str {
 }
 
 /// The REVERB button (D18; mockup screen 3): lit at the song level, dark
-/// while lowered; the `AUT` pill outlined while a tap overrides the rule; a
+/// while lowered; the `AUTO` pill outlined while a tap overrides the rule; a
 /// press's fill (`behave::rail::fill_of`) shows its own line.
 pub fn reverb_look(state: Option<&ReverbState>, fill: Fill) -> RailLook {
     let Some(s) = state else {
@@ -98,7 +98,7 @@ fn all_in_hand(faders: &[ReverbFader]) -> bool {
 /// What REVERB does now, in plain words; none while it says nothing (AUT
 /// off at the song level, or the transport not yet heard). It names no
 /// fader in the hand (the owner's ruling on #130 of 2026-10-21): the faders
-/// show that themselves (`MAN`, `AUT −10`). With every fader in the hand
+/// show that themselves (`MAN`, `AUTO −10`). With every fader in the hand
 /// while Live stands, nothing is held and no tap overrides the rule: its
 /// own `STOP · normal` (PR #139 review I3), never the tap's line.
 fn reverb_sub(s: &ReverbState, lowered: bool) -> Option<String> {
@@ -383,7 +383,7 @@ mod tests {
     #[test]
     fn the_button_names_no_fader_in_the_hand() {
         // The owner's ruling on #130 of 2026-10-21: the faders show the
-        // hand (MAN) and the lowering (AUT −10) themselves, so the line is
+        // hand (MAN) and the lowering (AUTO −10) themselves, so the line is
         // REVERB's own: Rev ST held lowered, Rev PA taken by hand.
         let mut s = with(true, Some(Low::Stop), Some(false), false);
         s.faders[1].back = None;

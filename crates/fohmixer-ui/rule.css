@@ -178,7 +178,7 @@
 
 /* A low screen: page.css's size of a rail button's words again (this file
    comes after it), 3 px short of the text width so a long label ends left
-   of its AUT dot (#104: at 844 x 390 the column's button is 67 px, its dot
+   of its AUTO dot (#104: at 844 x 390 the column's button is 67 px, its dot
    starts 44 px after the label's start, a pixel inside `--tw`, and
    AUTOTUNE's glyphs ran 0.8 px into it at the full width; STAGE and REVERB
    keep their 9.5 px). */

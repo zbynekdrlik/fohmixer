@@ -410,7 +410,7 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
 pub fn ColumnHead() -> impl IntoView {
     let nav = expect_context::<Nav>();
     let Head { layout, page, sub } = expect_context::<Head>();
-    // A view (#68) is no page tab: the column's POHĽADY shows it.
+    // A view (#68) is no page tab: the column's VIEWS shows it.
     let tabs: Vec<(usize, String, String)> = layout
         .pages
         .iter()

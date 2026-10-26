@@ -2,7 +2,7 @@
 //! mockup `docs/mockups/reverb-link-v1.html`, screen 2): a tap on the
 //! finger's lift does what the button did by hand, a 1 s hold turns the
 //! automatic mode on or off at its lift (the owner's ruling on #104: 1 s,
-//! not the mockup's 3 s). While it is on, the button wears an `AUT`
+//! not the mockup's 3 s). While it is on, the button wears an `AUTO`
 //! pill, outlined while a tap overrides the rule until the next stop or
 //! start, and a second line says in plain words what the rule does now.
 //!
@@ -198,7 +198,7 @@ pub fn settling(changed_at: Option<f64>, now: f64) -> bool {
 /// console word, AUTO).
 pub const AUT_BADGE: &str = "AUTO";
 
-/// The `AUT` pill: none, white (the rule runs) or outlined (a tap
+/// The `AUTO` pill: none, white (the rule runs) or outlined (a tap
 /// overrides it until the next stop or start).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Aut {

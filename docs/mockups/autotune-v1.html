@@ -720,13 +720,13 @@ function railBtn(b) {
 const TUNE = { cls: "autotune-btn", label: "AUTOTUNE" };
 const OFF = { ...TUNE, state: "off" };
 const ON = { ...TUNE, state: "on", on: true };
-const MIXED = { ...TUNE, state: "mixed", sub: "2/10 zap." };
+const MIXED = { ...TUNE, state: "mixed", sub: "2/10 on" };
 
 // The rail while Live plays, all three rules on.
 const RAIL = [
     { cls: "stage-mics", label: "STAGE", aut: "run", sub: "PLAY · muted" },
     { cls: "reverb-btn", label: "REVERB", on: true, aut: "run", sub: "PLAY · normal" },
-    { ...ON, aut: "run", sub: "hrá · zapnutý" },
+    { ...ON, aut: "run", sub: "PLAY · on" },
 ];
 
 const CELLS = {
@@ -740,19 +740,19 @@ const CELLS = {
     aut: [
         { n: "5", t: "Podržanie", b: { ...OFF, hold: 60, sub: "hold… AUTO on" }, p: "Výplň sa plní zľava 1 s. Pustíš skôr: nič sa neprepne." },
         { n: "6", t: "Plné · pusť", b: { ...OFF, hold: 100, sub: "release — AUTO on" }, p: "Po 1 s je výplň plná; AUT sa zapne až pri pustení." },
-        { n: "7", t: "AUT · stojí", b: { ...OFF, aut: "run", sub: "stojí · vypnutý" }, p: "Live stojí: pravidlo vyplo autotune na všetkých stopách, na reč a modlitbu." },
-        { n: "8", t: "AUT · hrá", b: { ...ON, aut: "run", sub: "hrá · zapnutý" }, p: "Live hrá: pravidlo zaplo autotune na všetkých stopách, raz pri štarte." },
-        { n: "9", t: "AUT · ručne vyp.", b: { ...OFF, aut: "held", sub: "ručne vyp. · do zast." }, p: "Ťuk počas piesne: vypnutý ručne do najbližšieho zastavenia. Prázdne AUT, automatika ostáva." },
-        { n: "10", t: "AUT · ručne zap.", b: { ...ON, aut: "held", sub: "ručne zap. · do štartu" }, p: "Ťuk, keď Live stojí: zapnutý ručne do najbližšieho štartu Live." },
+        { n: "7", t: "AUT · stojí", b: { ...OFF, aut: "run", sub: "STOP · off" }, p: "Live stojí: pravidlo vyplo autotune na všetkých stopách, na reč a modlitbu." },
+        { n: "8", t: "AUT · hrá", b: { ...ON, aut: "run", sub: "PLAY · on" }, p: "Live hrá: pravidlo zaplo autotune na všetkých stopách, raz pri štarte." },
+        { n: "9", t: "AUT · ručne vyp.", b: { ...OFF, aut: "held", sub: "MAN off · until STOP" }, p: "Ťuk počas piesne: vypnutý ručne do najbližšieho zastavenia. Prázdne AUT, automatika ostáva." },
+        { n: "10", t: "AUT · ručne zap.", b: { ...ON, aut: "held", sub: "MAN on · until PLAY" }, p: "Ťuk, keď Live stojí: zapnutý ručne do najbližšieho štartu Live." },
     ],
     aut2: [
-        { n: "11", t: "AUT · zmiešané", b: { ...MIXED, aut: "held", sub: "zmiešané · 2/10 zap." }, p: "Live hrá, no autotune majú len 2 z 10 stôp (napr. ho pieseň vypla): obtiahnuté AUT. Ťuk vypne všetky." },
+        { n: "11", t: "AUT · zmiešané", b: { ...MIXED, aut: "held", sub: "mixed · 2/10 on" }, p: "Live hrá, no autotune majú len 2 z 10 stôp (napr. ho pieseň vypla): obtiahnuté AUT. Ťuk vypne všetky." },
         { n: "12", t: "Vypnúť AUT", b: { ...ON, aut: "run", hold: 100, sub: "release — AUTO off" }, p: "S AUT zapnutým: „hold… AUTO off“, plná výplň „release — AUTO off“. Autotune ostane, ako je." },
     ],
     trouble: [
         { n: "13", t: "Žiadna stopa", b: { ...TUNE, binding: "unresolved" }, p: "Žiadny Tuner nemá +AUTOTUNE, alebo hub nenašiel ani jeden rack Latencies: červené, ťuk nič neurobí." },
         { n: "14", t: "Problém stopy", b: { ...ON, flag: true }, p: "Jedna stopa nemá rack Latencies (alebo má dva): žltý roh. Ostatné stopy tlačidlo prepína ďalej." },
-        { n: "15", t: "Problém · AUT", b: { ...ON, aut: "run", sub: "hrá · zapnutý", flag: true }, p: "Roh sa zmestí aj s AUT a druhým riadkom. Ktorá stopa a prečo, povie stav hubu a log." },
+        { n: "15", t: "Problém · AUT", b: { ...ON, aut: "run", sub: "PLAY · on", flag: true }, p: "Roh sa zmestí aj s AUT a druhým riadkom. Ktorá stopa a prečo, povie stav hubu a log." },
         { n: "16", t: "Čaká na hub", b: { ...TUNE, binding: "waiting" }, p: "Po pripojení, kým hub nepovie stav: sivé, ťuk ani podržanie nič nepošlú." },
         { n: "17", t: "Telefón nastojato", rail: RAIL, cut: "up", p: "Otvorený stĺpec: bez druhého riadku, AUT je bodka v rohu tlačidla." },
         { n: "18", t: "Telefón naležato", rail: RAIL, cut: "side", p: "Dva stĺpce tlačidiel; bodka AUT vpravo od nápisu, v tlačidle." },

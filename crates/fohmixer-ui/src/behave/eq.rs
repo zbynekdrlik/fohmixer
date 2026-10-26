@@ -1187,8 +1187,8 @@ pub fn undo_note_shown(at: Option<f64>, now: f64) -> bool {
 
 /// The note over the picture for an undo's answer (`result`, the hub's
 /// `eq_undo`): done, nothing to undo, and the three refusals the owner can
-/// act on, each its own sentence; any other reason after "Vrátiť sa
-/// nepodarilo:" in Slovak through [`reason_text`], the hub's own words only
+/// act on, each its own sentence; any other reason after "Undo
+/// failed:" in the page's words through [`reason_text`], the hub's own words only
 /// for an unexpected one (a grab's or a tap's error).
 pub fn undo_text(result: &str) -> String {
     match result {

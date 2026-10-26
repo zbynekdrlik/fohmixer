@@ -6,8 +6,8 @@
 //!   detail opens, after every reconnect, whenever the strip's instance
 //!   comes back online, and once the screen closed), one
 //!   card each: its last picture (fetched with the token into a blob URL;
-//!   a plain field before a first open), where it sits, and `OTVORIŤ EQ NA
-//!   CELÚ OBRAZOVKU`, or `LOCKED` while another page holds an editor (one
+//!   a plain field before a first open), where it sits, and `OPEN EQ FULL
+//!   SCREEN`, or `LOCKED` while another page holds an editor (one
 //!   Pro-Q 4 on the PC's screen at a time): this one's holder since when,
 //!   or that another engineer uses Pro-Q 4 since when.
 //! - **The screen** ([`EqScreen`], over the whole surface, mounted while

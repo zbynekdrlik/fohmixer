@@ -49,7 +49,7 @@ pub struct LayoutResponse {
 
 /// A top-level page (a tab in the control column, #63): its rail and its
 /// rows. A view (#68) is a page the markers made for a tag group the frame
-/// does not show: a button in the column's POHĽADY, never a page tab.
+/// does not show: a button in the column's VIEWS, never a page tab.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Page {
