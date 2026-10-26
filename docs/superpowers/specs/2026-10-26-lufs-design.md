@@ -1,6 +1,6 @@
 # Loudness (LUFS) on the mics and on the PA output (#151)
 
-Status: draft for the owner's approval, 2026-10-26. The rules in §2 are the owner's, recorded on #151 on 2026-10-26 (brainstorm answers and two DECIDED comments). The main session's calls are marked *(call)*. Nothing is built before the owner approves this note and mockup `docs/mockups/lufs-v1.html` (one of its two variants).
+Status: draft for the owner's approval, 2026-10-26. The rules in §2 are the owner's, recorded on #151 on 2026-10-26 (brainstorm answers and two DECIDED comments). The main session's calls are marked *(call)*. Nothing is built before the owner approves this note and mockup `docs/mockups/lufs-v2.html`. Mockup v1 (`lufs-v1.html`, two variants of a pill beside today's meter) was rejected by the owner on 2026-10-26 (#151, "OWNER FEEDBACK on mockup v1"): the strip is redrawn the Waves LV1 way, a stereo meter inside the fader's track and the scale on its right (§6.2, §6.3).
 
 ## 0. Zhrnutie pre vlastníka
 
@@ -10,7 +10,9 @@ Status: draft for the owner's approval, 2026-10-26. The rules in §2 are the own
 - Farba podľa cieľa −25 LUFS: zelená do ±3 LU (−28 až −22), žltá do ±6 LU, červená za tým (pod −31 alebo nad −19).
 - Keď spevák nespieva, číslo zmizne a ukáže sa sivá pomlčka `—`. Ticho a pauzy nikdy nerozsvietia žltú ani červenú.
 - Na výstupe do reprákov (master return): len živé short-term číslo, bez farby a bez priemeru za pieseň.
-- Fadre ostávajú presne také vysoké ako dnes. Nad fadre nepribudne nič.
+- Pás ako vo Waves LV1: v dráhe fadra pod gombíkom dva tenké stĺpiky L a R (stereo, panoráma a nevyvážený obraz sú vidno), stupnica dB vpravo od dráhy, dnešný tyrkysový pás vo fadri a tmavý meter vľavo zmiznú.
+- Vľavo od gombíka stĺpik čísel: LUFS (na pásoch so značkou) a PEAK (špička za 1,5 s, pri clipe CLIP).
+- Fadre ostávajú presne také vysoké ako dnes (322 px na iPade, zmerané v mockupe). Nad fadre nepribudne nič.
 
 **Odkiaľ to číslo príde**
 
@@ -50,7 +52,8 @@ Status: draft for the owner's approval, 2026-10-26. The rules in §2 are the own
 - a yellow or red light while nobody sings;
 - a number that disagrees with trueLevel on the same signal by more than 0.5 LU;
 - a set that Live marks as changed, or an Undo history filled, by the meter alone;
-- any element above the faders, or a change in the faders' travel.
+- any element above the faders, or a fader travel shorter than today's (322 px on the iPad's FOH page);
+- an output meter that does not follow the fader on a track Live meters at its input (§3.4).
 
 ## 2. Rules (the owner's, binding)
 
@@ -97,6 +100,16 @@ Every 100 ms (EBU Tech 3341's 10 Hz minimum), on the stereo input (L and R, each
 5. **Parameters written** only when the value rounded to 0.1 changed (fewer LOM events): `Short-term` and `Voice`, each a float −70.0…0.0 LUFS.
 
 The master strip shows `S`, a mic strip shows `V` *(call)*: the output's number is the standard short-term the owner asked for, silence there between songs reads low (−50) or `—`, which is the truth for the room.
+
+### 3.4 The stereo output meter in the fader track (mockup v2)
+
+The v2 strip draws a track's output as two bars, L and R, inside its fader's track (§6.3). Where the two levels come from:
+
+- **Already in the code:** the layout's `meter_source: lr` subscribes Live's `output_meter_left` / `output_meter_right` (`binding::meter_props`; `MeterView` draws one bar per level slot, one clip light for all). The site runs `level` (one bar, the max of L/R) since #5 K2 (2026-09-29): with `lr`, Live's CPU did not rise, but the master Live's script of then (0.1.0-dev.9) fell behind on its sends. The script's send path was rebuilt since (#9). **A PC re-test of `lr` with the current script and Live playing is the main session's job and gates the surface PR.**
+- **Armed tracks (#151, latest comments):** the PA singers' mic tracks stay armed for recording (the owner: they stay armed), and Live meters an armed track's INPUT, not its post-fader output; that is why today's strip meter does not follow the fader on those strips. For them the L/R levels come from a device the project ships, placed LAST in the track's device chain (the same Max for Live build as `FohMixer LUFS`, §4.2, or a sibling device `FohMixer Meter` *(call at build time)*), which writes its L and R peak levels as parameters, followed like the LUFS readings (§5.2).
+- **A device at the chain's end is still before Live's mixer** (the track's volume and pan come after every device). The hub turns its levels into the post-fader output: `out_L = dev_L + fader_dB + panL_dB`, `out_R = dev_R + fader_dB + panR_dB`, with the fader's dB from the volume value it already follows (`fohmixer_proto::volume::value2db`) and the pan's gains from Live's pan law (UNVERIFIED for Live 12: the law, constant power or linear, is measured on the PC before the hub uses it; the strip then subscribes the track's panning, which today only the channel detail does). A muted track's output reads −∞. The result is sent to the pages as a meter level, so the surface does not know which source a strip uses.
+- **Non-armed tracks** (the band's instruments, returns, the master Live's tracks, the PA output) keep Live's own `output_meter_left` / `output_meter_right`.
+- Which strips use the device: a strip whose track carries the device (found by the same walk as `FohMixer LUFS`, §5.2); a missing device on an armed `+LUFS` track is the problem `no meter device` *(call: the hub could also read `arm` and flag every armed strip without one)*.
 
 ## 4. The data source
 
@@ -201,19 +214,28 @@ The value shown is the integer `round(v)` (half away from zero). The colour is j
 
 A strip in `none` because the device is missing also shows the existing problem `!` in its corner, with `no LUFS meter` in the problem list.
 
-### 6.2 Where on the strip (mockup v1, two variants for the owner)
+### 6.2 Where on the strip (mockup v2)
 
-Both keep the faders' travel exactly as today: neither adds a row, both use space the strip already has. The mockup measures the fader track of a strip with LUFS and one without and prints both numbers.
+v1's two variants (a pill in the readout line, or over the top of today's meter) are gone with the owner's rejection of v1. In v2 the readings sit in the information column the new fader zone frees (§6.3): the LUFS in a pill of its state's colour at the column's top, under a small `LUFS` caption, on `+LUFS` strips only; the row stays empty on every other strip, so the eye finds each number at the same place. Live's dB stays in the readout line under the name, as today (held: accent, as today).
 
-- **Variant A — in the readout line.** On a `+LUFS` strip the readout under the name button shows the loudness instead of Live's dB, in a pill of the state's colour. While a finger (or a glide) holds the fader, the readout shows Live's dB in accent as it does today. Live's dB stays in the channel detail.
-- **Variant B — a pill at the top of the meter.** Live's dB stays in the readout. The loudness is a pill over the top of the scale and meter columns, under the clip light, left of the fader's groove. It takes no touch (the fader and the clip light work through and around it). It covers the meter's top 16 px and the scale's `+6` mark.
+On a narrow strip (under 78 px: the phones) the column is 13–24 px wide: the LUFS stands upright, digit under digit (`writing-mode: vertical-rl; text-orientation: upright`), and the captions and PEAK leave. Which layout a strip takes is decided from the strip width the arrangement already computes (`arrange.rs`), never by measuring text (#21). The mockup checks every reading inside its box on all screens and in a sweep of one strip from 64 to 120 px.
 
-On the phones (strips down to 64 px) both variants keep their place. Its font comes from the strip width, as the readout's does, and nothing is measured at runtime (#21). In A the number has three characters, not dB's five, so it stays 12 px from a 64 px strip up. In B it is 12 px on the iPad and 10 px at 64 px. The mockup checks that every reading fits its box on all six screens.
+### 6.3 The strip's fader zone (mockup v2, the LV1 way)
 
-### 6.3 Texts (English, #141)
+The owner's reference is Waves LV1's new generation: a thin stereo meter pair inside the fader's own track, under the cap, and the dB scale on the track's right. The zone keeps today's height (the head, 30 + 2 + 22 px, and the zone's padding, 8 px top and 10 px bottom, unchanged): **322 px of travel on the iPad's FOH page (1194 × 834, two lines), 292 px on a phone on its side and 327 px upright**, measured in the mockup, the same with and without LUFS. Right to left, in the zone:
 
-- On the strip: the number only (`−25`, `−18`), `—` when silent or missing. No unit on the strip (no room at 64 px); the legend says LUFS.
-- In the problem list: `no LUFS meter`, `two LUFS meters`, `bad LUFS tag`.
+- **The scale** (17 px, the strip's right edge): today's labels (+6 … −60), left-aligned beside the track. The cap (32 px on the iPad) overhangs the labels' first ~8 px as it passes (the price of a usable information column; the label under the cap is read from the cap's own position).
+- **The track** (12 px, 2 px from the scale): two bars, L and R, 4 px each, 2 px apart, on the fader's dB scale (today's zones: green, yellow from −12 dB, red from −3 dB; the TouchOSC-calibrated position, as today), each with its peak line (held 1.5 s). The 0 dB mark is 4 px either side of the track. **One clip light per bar** over the track (today: one for the meter), a tap resets both.
+- **The cap**, centred on the track, opaque, with a 1 px dark ring (no blur): the bars run under it, its white line stays readable over them. Today's turquoise fill in the groove is gone.
+- **The information column**, from the zone's left edge to 3 px left of the cap's widest reach (29 px on an 83 px iPad strip, 37 px on a wide one): LUFS (§6.2), then `PEAK` and the held peak in whole dB on the fader's scale (the level the peak line points at, max of L and R; `CLIP` in red while the clip light is lit), then the group's name (#127, bottom to top; it moves here from the scale column).
+- Considered and left out of the column: the pan position (it would need the pan subscribed on every strip; the L/R bars show its effect, and it is in the channel detail), gain reduction (not in the LOM), automation state (shown by the REVERB/AUTO marks).
+
+The whole zone stays the fader's touch target (TouchOSC's 1:1); the column, the scale and the bars take no touch. The meter moves as today: a cover's `scaleY` and a peak layer's `translateY` per bar, no layout per frame (#21).
+
+### 6.4 Texts (English, #141)
+
+- On the strip: the number only (`−25`, `−18`), `—` when silent or missing; on a strip of 78 px or more the small captions `LUFS` and `PEAK` over the numbers, `CLIP` for a lit clip light. No unit beside the number.
+- In the problem list: `no LUFS meter`, `two LUFS meters`, `bad LUFS tag`, `no meter device` (§3.4).
 - The tag manual (`znacky.html`): `+LUFS:<target>` and `+LUFS`, with the states table.
 
 ## 7. Protocol and data additions (summary)
@@ -223,6 +245,7 @@ On the phones (strips down to 64 px) both variants keep their place. Its font co
 - `fohmixer_proto::lufs`: `judge(value_tenths, target) -> LufsState` and the display integer; the constants `FINE_LU` 3, `FAR_LU` 6, `SILENT` −70.
 - `StripMark` (or the problem list): `NoLufsMeter`, `TwoLufsMeters`.
 - `ServerMsg::Lufs`, paced as meters.
+- The output meter of an armed track (§3.4): the meter device's L/R parameters followed by the hub, combined with the fader's dB and the pan law, sent as the strip's meter levels; the strip's pan subscribed for it. `meter_source: lr` on the site once the PC re-test passes.
 - No change to the Live script or its protocol (§4.1 (a)); in the fallback (§4.4) a hub UDP listener on localhost.
 
 ## 8. Logging
@@ -236,7 +259,8 @@ On the phones (strips down to 64 px) both variants keep their place. Its font co
 - **The device against the reference (PC, an L check):** the test signals rendered as WAVs, played through the device in Live; its parameters agree with the reference within 0.1 LU. The `.genexpr` text and the Rust module share one written-out coefficient table, kept equal by a CI check *(call)*.
 - **proto:** the tag (`+LUFS`, `+LUFS:-25`, `+LUFS:-5` bad, `+LUFS:x` bad, two tags), the composition into `Strip.lufs`, `judge` on every boundary (−22 fine, −21 warn, −19 warn, −18 far, −28 fine, −29 warn, −31 warn, −32 far, −70 silent, rounding of −21.5 and −22.4), the frame file's `lufs` field.
 - **hub (SimLive):** SimLive gains a Max device with `Short-term`/`Voice` parameters it can drive. A walk finds it two racks deep; a device inserted before it re-walks and follows the new ref; a missing and a doubled device give their problems; a disconnect clears; pacing and an idle page; `/api/status`. The mutation gate covers `judge`, the walk's matching and the pacing.
-- **E2E (Playwright, Chromium and WebKit iPad, the phone sizes):** a SimLive `Voice` of −25, −21, −33, −70 shows `−25` green, `−21` yellow, `−33` red, `—`; the output shows its plain number; (variant A) holding the fader shows dB and lifting shows LUFS again; the fader track's height on a `+LUFS` strip equals a plain strip's; zero console errors.
+- **E2E (Playwright, Chromium and WebKit iPad, the phone sizes):** a SimLive `Voice` of −25, −21, −33, −70 shows `−25` green, `−21` yellow, `−33` red, `—`; the output shows its plain number; two bars in the fader track with SimLive's different L and R levels at different heights; a clip on one channel lights its own light and `CLIP`; the fader travel on the FOH fixture at 1194 × 834 is at least 322 px and a `+LUFS` strip's equals a plain strip's; every reading inside its box in the 64–120 px sweep; zero console errors.
+- **hub (armed tracks, §3.4):** SimLive's meter device's L/R plus the fader's dB and the pan law give the strip's output level; a muted track reads −∞; a non-armed track keeps Live's meters.
 
 ## 10. Rollout on the PC
 
@@ -245,11 +269,11 @@ On the phones (strips down to 64 px) both variants keep their place. Its font co
 3. **The device:** the patch built and frozen on the PC; `.amxd` installed into both Live users' User Libraries by `Install-Fohmixer.ps1` (the installer already checks Live's User Library for the script).
 4. **The set work (ours, memory "restart Live and do set work yourself", "save the Live set yourself"):** in the band set, a new chain `LUFS` in each PA singer's `CORE Effects` beside trueLevel, the device in it; `+LUFS:-25` on each PA singer's Tuner. In the master set, the device on the speakers' return, `+LUFS` on its Tuner (or the frame strip's `lufs`). Each set saved with Ctrl+S. Not during an owner-declared event.
 5. **Check:** each rack's `latency_in_samples` unchanged; `/api/status` lists every strip's device; a played song: our `V` vs trueLevel's short-term on two singers, within 0.5 LU (recorded on #151); Live's CPU meter before and after (all devices together).
-6. **PR 2: the surface**, the variant the owner approved; deployed and verified on the iPad on real Wi-Fi (memory "real-device acceptance").
+6. **PR 2: the surface**, the v2 strip the owner approved (after the `lr` re-test and the meter device on the armed tracks, §3.4); deployed and verified on the iPad on real Wi-Fi (memory "real-device acceptance").
 7. **Acceptance with the owner:** a song with a mic at the right trim (green), a trim moved 5 dB (yellow) and 8 dB (red), the singer silent (`—`), the output's number while a song plays.
 
 ## 11. Open questions for the owner
 
 - **Q1. Bleed on the vocal mics.** With the band playing and the singer silent, how loud is the stage in a vocal mic after its trim? If it can reach −40 LUFS, the gate (−40) should go lower than the bleed would read as a voice, e.g. −36. A one-song check during P1 answers it; the owner only confirms which level counts as "not singing".
-- **Q2. The variant:** A (the number replaces Live's dB in the readout; dB while the fader is held) or B (a pill over the meter's top; dB stays).
+- **Q2. PEAK in the column:** keep the held peak number (and `CLIP`) under the LUFS on every strip, or only LUFS for a calmer column? (Mockup v2 shows it; the note's proposal is to keep it.)
 - **Q3. Which tracks:** only the PA singers and the speakers' return, or also the master Live's hand mics (speech) with the same −25 target?
