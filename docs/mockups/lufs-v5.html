@@ -5,8 +5,14 @@
      (A) approved, B dropped; the LUFS is quiet text, small dim numerals, no
      fill, box, border or glow; out of range only the text is tinted (muted
      amber beyond +-3 LU, muted red beyond +-6 LU); nothing at all while the
-     singer is silent. Hierarchy: the cap, MUTE and the bars loudest, the
-     LUFS quieter than Live's dB. v4 is v3
+     singer is silent. And the name button calms down (the owner, #151,
+     26.10: the full track-colour fill was garish and looked random, mute is
+     rare, the NAME must read): light large text on the dark ground, the
+     track colour only as a 4 px bar on its left edge; loud only while muted,
+     one look on every strip (a dark red fill, the name struck through,
+     MUTED in its corner). Hierarchy: the cap and the bars first, the name
+     readable, MUTE quiet until muted, then Live's dB, the LUFS quietest.
+     v4 is v3
      (lufs-v3.html, the owner: "better") with the channel detail's button
      moved from the readout line under the name (the ☰, a mis-tap risk right
      under MUTE) to the bottom left of the strip, a 36 x 36 px key on the
@@ -1170,6 +1176,49 @@ table.legend th {
     opacity: 0.6;
 }
 
+/* --- NEW in v5: the calm name button (the owner, #151, 26.10). The
+   button keeps its size and its tap (MUTE, as today); unmuted it is the
+   strip's dark ground with the name in light, large text and the track's
+   colour only as a 4 px bar on its left edge (the group's colour stays on
+   the strip's top edge). Muted, one look on every strip whatever the
+   track's colour: a dark red fill, the name struck through, MUTED in the
+   corner; the strip steps back as today. */
+.strip-head > .mute.calm {
+    background: #15151f;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--text);
+}
+
+.strip-head > .mute.calm::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 4px;
+    border-radius: 7px 0 0 7px;
+    background: var(--tc);
+}
+
+.strip-head > .mute.calm.muted {
+    background: #5a1a22;
+    box-shadow: inset 0 0 0 1px #8c2b36;
+    color: #f3d6d9;
+}
+
+.strip-head > .mute.calm.muted .strip-label {
+    text-decoration: line-through;
+    text-decoration-thickness: 2px;
+}
+
+.strip-head > .mute.calm.muted .mmark {
+    color: #ffc2c8;
+}
+
+.strip.muted .mute.calm {
+    opacity: 1;
+}
+
 .anat {
     display: flex;
     gap: 26px;
@@ -1242,7 +1291,8 @@ table.mtable td {
     <div class="overline">fohmixer #151 · hlasitosť (LUFS) a stereo meter v dráhe fadra · návrh v5 na schválenie</div>
     <h1>Pás ako vo Waves LV1: stereo meter v dráhe fadra, stupnica vpravo, vľavo čísla</h1>
     <p><b>Čo je nové vo v5:</b> kláves <b>SEL</b> (variant A) si schválil, variant B (ikona) je preč. <b>LUFS je teraz tichý text:</b> malé tlmené sivé číslice, bez farebného rámčeka, bez okraja, bez žiary. V cieli (−28 až −22) je len sivé číslo; mimo cieľa sa zafarbí iba samotný text, tlmene: jantárovo za ±3 LU, tlmene červeno za ±6 LU, nikdy nie tvar. Keď spevák nespieva, <b>nie je tam nič</b> (ani pomlčka, ani rámček). Vo v4 bol farebný rámček najkrikľavejšia vec na páse a svietiaci štvorček pri tichu bol zlý.</p>
-    <p><b>Pravidlo poradia (čo bije do očí):</b> najvýraznejšie sú gombík fadra, MUTE (meno) a stĺpiky metra; potom dB z Live; LUFS je jasne tichší než dB (menšie, tenšie, tlmenejšie písmo; stránka to nižšie overuje).</p>
+    <p><b>Meno pásu je pokojné (v5):</b> tlačidlo s menom (je to MUTE) už nie je celé zaliate farbou stopy z Live: bolo krikľavé a farby pôsobili náhodne, a MUTE sa používa zriedka. Teraz je to svetlé, veľké meno na tmavom podklade; farba stopy ostala len ako tenký pásik (4 px) na ľavom okraji tlačidla, aby sa pásy dali rozlíšiť. Hlasné je tlačidlo <b>iba keď je stlmené</b>, a to rovnako na každom páse: tmavočervená výplň, meno prečiarknuté a v rohu <b>MUTED</b>. Ťuk aj veľkosť tlačidla sú ako dnes. Ukážka: Click a Talk na iPade, Click na telefónoch.</p>
+    <p><b>Pravidlo poradia (čo bije do očí):</b> najprv gombík fadra a stĺpiky metra; meno pásu dobre čitateľné; MUTE ticho, kým nie je stlmené (vtedy jednoznačne červené); potom dB z Live; LUFS najtichší (menšie, tenšie, tlmenejšie písmo než dB; stránka to nižšie overuje).</p>
     <p><b>Vo v4 (v3 si označil „lepšie“):</b> tlačidlo detailu kanála <b>☰</b> zmizlo z riadku pod menom. Sedelo hneď pod MUTE, takže hrozil omylový ťuk, a ikona „hamburger“ na mixážny pás nepatrí. Detail kanála sa teraz otvára <b>klávesom vľavo dole na páse</b> (spodok ľavého stĺpika, pod LUFS a menom skupiny), na iPade s plochou na dotyk <b>36 × 36 px</b>, ktorá sa nikdy nestretne s gombíkom fadra (ani pri −∞). Otvára sa ako dnes ☰: podržaním 0,5 s, krátky ťuk len ukáže nápovedu. Kláves je <b>SEL</b> ako na pultoch Yamaha / LV1 (výber kanála otvorí jeho detail). Riadok pod menom nesie už len svetielko a dB z Live. Fader je stále presne taký dlhý ako dnes.</p>
     <p><b>Vo v3 (podľa tvojej spätnej väzby na v2):</b> z pásov zmizlo číslo <b>PEAK</b> aj <b>všetky svetielka clipu</b> (dve nad dráhou, červené CLIP, stav clipu). Dôvod: Live mieša v 32-bitovom floate, stopa vo vnútri Live nemôže clipnúť, takže clip na páse by klamal. Stĺpik vľavo nesie už len LUFS a meno skupiny. Stĺpiky L a R ostávajú so zónami zelená / žltá / červená a s bielou čiarkou špičky (ukazuje len, kde bola úroveň za posledných 1,5 s; nie je to clip). Ostatné je ako vo v2:</p>
     <ul>
@@ -1259,7 +1309,7 @@ table.mtable td {
         <div>
             <p><b>Zhora nadol (v5, pás „Vox 2“):</b></p>
             <ol>
-                <li><b>Meno</b> = tlačidlo MUTE (bez zmeny).</li>
+                <li><b>Meno</b> = tlačidlo MUTE (ťuk a veľkosť ako dnes): svetlé veľké meno na tmavom podklade, farba stopy ako 4 px pásik vľavo; stlmené = tmavočervená výplň, prečiarknuté meno, MUTED.</li>
                 <li><b>Riadok pod menom:</b> svetielko spojenia a dB fadra z Live (pri držaní fadra tyrkysový ako dnes). ☰ tu už nie je.</li>
                 <li><b>Vľavo stĺpik:</b> <code>LUFS</code> a malé tlmené číslo (−21, text tlmene jantárový: 4 LU nad cieľom), pod ním meno skupiny zdola nahor, <b>dole kláves SEL</b> (detail kanála), 36 × 36 px na dotyk, podržanie 0,5 s otvorí detail.</li>
                 <li><b>V strede dráha fadra</b> so stereo metrom L | R; gombík ide ponad stĺpiky, je nepriehľadný s tmavým okrajom, jeho biela čiara je vždy čitateľná. Značka 0 dB po oboch stranách dráhy.</li>
@@ -1408,13 +1458,14 @@ const T = {
     out: { name: "PA Out", tc: "#C4C4C4", gc: MASTER, db: 0, L: -8, R: -9, pk: -4, lufs: -17.8, target: null, ret: true, wide: true },
 };
 
-function muteButton(m) {
-    const b = el("div", m.muted ? "mute" : "mute lit", { style: `--tc:${m.tc};--tt:${textOn(m.tc)};` });
+function muteButton(m, today) {
+    const cls = today ? (m.muted ? "mute" : "mute lit") : (m.muted ? "mute calm muted" : "mute calm");
+    const b = el("div", cls, { style: `--tc:${m.tc};--tt:${textOn(m.tc)};` });
     b.append(el("span", "strip-label", { text: m.name, style: `--n:${[...m.name].length};` }));
     const corner = el("span", "strip-corner");
     if (m.flag) corner.append(el("span", "strip-flag", { text: "!" }));
     if (m.ret) corner.append(el("span", "strip-ret", { text: "RET" }));
-    if (m.muted) corner.append(el("span", "mmark", { text: "MUTE" }));
+    if (m.muted) corner.append(el("span", "mmark", { text: today ? "MUTE" : "MUTED" }));
     b.append(corner);
     return b;
 }
@@ -1430,7 +1481,7 @@ function stripHead(m, today) {
         menu.append(el("span", "", { text: "☰" }));
         info.append(menu);
     }
-    h.append(muteButton(m), info);
+    h.append(muteButton(m, today), info);
     return h;
 }
 
@@ -1554,7 +1605,7 @@ function phoneSide() {
     body.append(
         side("left", 1, [T.v1, T.v2, T.v3, T.v4, T.keys], w),
         thin(),
-        side("right", 1, [T.gtr, T.drums, T.band, T.rev, T.out], w),
+        side("right", 1, [T.gtr, T.drums, T.click, T.rev, T.out], w),
     );
     d.append(body);
 }
@@ -1569,7 +1620,7 @@ function phoneUp() {
         side("left", 1, [T.v1, T.v2], w),
         thin(),
         side("right", 1, [T.v3, T.v4], w),
-        side("left", 2, [T.keys, T.drums], w),
+        side("left", 2, [T.keys, T.click], w),
         side("right", 2, [T.gtr, T.out], w),
     );
     d.append(body);
