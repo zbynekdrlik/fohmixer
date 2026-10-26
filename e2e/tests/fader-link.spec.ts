@@ -14,6 +14,7 @@ import {
   openDetail,
   openSurface,
   ready,
+  seen,
   selectPage,
   until,
   value2db,
@@ -236,23 +237,32 @@ test.describe("A fader link", () => {
     await expect(mark).toHaveAttribute("data-role", "lead");
     await expect(strip(page, "Rev ST").getByTestId("fader-link-mark")).toHaveAttribute("data-role", "follow");
 
-    // Beside a crowded mute chain the mark is the chain alone (the app's
-    // `flink_compact` over the chain's own count): Rev ST also mutes with
-    // Rev PA (`+MUTE:REV`, the mockup's Vox 1 and Vox 1 S); muted by hand in
-    // Live the chain reads 1/2 and the mark is compact, unmuted it is whole.
+    // On the marks line (#151, behave::marks::marks_look): beside the mute
+    // chain alone the mark keeps its dB, also with a mixed 1/2; with the
+    // strip muted (three marks: the chain, the mark, MUTED) it is the chain
+    // alone, and the mute chain drops its count. Rev ST also mutes with
+    // Rev PA (`+MUTE:REV`, the mockup's Vox 1 and Vox 1 S), muted by hand.
     await live.set("band", ST_TRACK, "mute", false);
     await live.set("band", PA_TRACK, "mute", false);
     expect(await hostLine("band", `tuner track 2 set '"Rev ST" +G:REVERBS +FADER:REV +MUTE:REV'`)).toBe("TUNER 1");
     const chain = strip(page, "Rev PA").getByTestId("mute-link");
     await expect(chain).toHaveText("2", { timeout: 10_000 });
     await expect(mark).toHaveAttribute("data-role", "lead");
-    await expect(mark).not.toHaveClass(/\bcompact\b/);
+    await expect(mark).not.toHaveClass(/\bbare\b/);
+    await expect(strip(page, "Rev PA").getByTestId("strip-marks")).toContainText("dB");
     await live.set("band", ST_TRACK, "mute", true);
     await expect(chain).toHaveText("1/2");
-    await expect(mark).toHaveClass(/\bcompact\b/);
+    await expect(mark).not.toHaveClass(/\bbare\b/);
+    await live.set("band", PA_TRACK, "mute", true);
+    await expect(chain).toHaveAttribute("data-state", "muted");
+    await expect(mark).toHaveClass(/\bbare\b/);
+    await expect(chain).toHaveClass(/\bbare\b/);
+    await expect(mark.locator(".link-n")).toBeHidden();
+    expect(await seen(mark)).toBe(true);
     await live.set("band", ST_TRACK, "mute", false);
+    await live.set("band", PA_TRACK, "mute", false);
     await expect(chain).toHaveText("2");
-    await expect(mark).not.toHaveClass(/\bcompact\b/);
+    await expect(mark).not.toHaveClass(/\bbare\b/);
   });
 
   test("the leader moves its partner by the same dB in one batch, on a drag and a double tap; the partner alone moves alone; one at −∞ stays", async ({ page }) => {

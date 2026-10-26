@@ -294,6 +294,13 @@ exclude_re = [
   # touch-guard.spec.ts drives them on every tap target of the surface.
   "fohmixer-ui/src/components/mod\\.rs.*(replace|in) (owns_touches|owns_surface)( |$)",
   "fohmixer-ui/src/components/buttons\\.rs.*(replace|in) toggle_flag( |$)",
+  # components/meter.rs (#151): animate_bars (the meters' frame loop:
+  # raf::animate, dom child lookups and style/attribute writes; its
+  # decisions are the tested behave::meter MeterBar, level_to_pos and
+  # bar_sources and behave::peak::Peak) and bar_view (a bar's markup).
+  # strip.spec.ts reads every strip bar's data-level against SimLive's
+  # level (level and lr), resilience.spec.ts and idle.spec.ts the meter's.
+  "fohmixer-ui/src/components/meter\\.rs.*(replace|in) (animate_bars|bar_view)( |$)",
   # components/fader_link.rs (#130): link_parts, the fader link's glue:
   # signals over the hub values and the store; its decisions are
   # behave::fader_link (tested), driven end to end by fader-link.spec.ts

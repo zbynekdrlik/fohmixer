@@ -211,12 +211,12 @@ test.describe("The page is its rows of sections around the control column", () =
           await expect(group.getByTestId("group-title"), `${section.id}: no empty title`).toHaveCount(0);
         }
         if (section.color) {
-          // Each strip of the group wears its colour on its top edge.
+          // #151 (mockup v8): one colour per strip, its track's own; a strip
+          // draws no group-coloured top edge.
           const edges = await page
             .locator(`.slot[data-group="${section.id}"] [data-testid="strip"]`)
-            .evaluateAll((els) => els.map((e) => getComputedStyle(e, "::before").borderTopColor));
-          expect(edges.length, `strips of ${section.id}`).toBeGreaterThan(0);
-          for (const edge of edges) expect(edge, `${section.id}'s strip edge`).toBe(rgb(section.color));
+            .evaluateAll((els) => els.map((e) => getComputedStyle(e, "::before").borderTopWidth));
+          for (const edge of edges) expect(edge, `${section.id}'s strip: no top edge`).toBe("0px");
         }
       }
     }

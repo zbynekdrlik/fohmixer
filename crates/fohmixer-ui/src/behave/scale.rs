@@ -41,27 +41,6 @@ pub fn zone_style(law: VolumeLaw) -> String {
     )
 }
 
-/// The levels between whose labels a group's name runs on its side in the
-/// scale column of its run's first strip (#127): from the top label, +6 dB,
-/// to −6 dB. On both laws only the 0 dB label lies between them, and it is
-/// right-aligned and narrow (5 px of the column's 17), so the 11 px name
-/// along the column's left edge passes beside it.
-pub const SIDE_FROM_DB: f64 = 6.0;
-pub const SIDE_TO_DB: f64 = -6.0;
-
-/// Where a group's name runs on law `law`, as CSS variables (percent of the
-/// scale's height from its top, as a label's `top`): `--side-from` the
-/// +6 dB label's level and `--side-to` the −6 dB label's. `group.css`'s
-/// `.group-side` keeps 2 px clear of each label's box (8.5 px high, centred
-/// on its level).
-pub fn side_style(law: VolumeLaw) -> String {
-    format!(
-        "--side-from:{:.3}%;--side-to:{:.3}%;",
-        (1.0 - tick_pos(law, SIDE_FROM_DB)) * 100.0,
-        (1.0 - tick_pos(law, SIDE_TO_DB)) * 100.0
-    )
-}
-
 /// A label's text: a sign on the positive ones, a real minus.
 pub fn tick_label(db: f64) -> String {
     if db > 0.0 {
@@ -141,43 +120,6 @@ mod tests {
         let style = zone_style(VolumeLaw::Live);
         assert!(style.starts_with("--yellow:55.0"), "{style}");
         assert!(style.contains(";--red:77.5"), "{style}");
-    }
-
-    /// The two numbers of a `side_style`.
-    fn side_of(style: &str) -> (f64, f64) {
-        let number = |name: &str| -> f64 {
-            let rest = &style[style.find(name).expect(name) + name.len()..];
-            rest[..rest.find('%').expect("a percent")]
-                .parse()
-                .expect("a number")
-        };
-        (number("--side-from:"), number("--side-to:"))
-    }
-
-    #[test]
-    fn a_groups_name_runs_from_the_plus_6_to_the_minus_6_db_label() {
-        // Live's law: +6 dB at the top, −6 dB at 30 % (the approved
-        // mockup's); TouchOSC's: −6 dB in the middle.
-        let style = side_style(VolumeLaw::Live);
-        assert!(style.starts_with("--side-from:"), "{style}");
-        assert!(style.ends_with("%;"), "{style}");
-        let (from, to) = side_of(&style);
-        close(from, 0.0, 0.2);
-        close(to, 30.0, 0.2);
-        let (from, to) = side_of(&side_style(VolumeLaw::TouchOsc));
-        close(from, 0.0, 0.2);
-        close(to, 50.0, 0.3);
-        // Both are labels of each law, and only 0 dB lies between them.
-        for law in LAWS {
-            assert!(ticks(law).contains(&SIDE_FROM_DB), "{law:?}");
-            assert!(ticks(law).contains(&SIDE_TO_DB), "{law:?}");
-            let between: Vec<f64> = ticks(law)
-                .iter()
-                .copied()
-                .filter(|db| (SIDE_TO_DB + 0.1..SIDE_FROM_DB - 0.1).contains(db))
-                .collect();
-            assert_eq!(between, vec![0.0], "{law:?}");
-        }
     }
 
     #[test]

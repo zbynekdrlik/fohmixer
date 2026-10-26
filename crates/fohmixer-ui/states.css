@@ -35,7 +35,7 @@
 }
 
 /* Sized from the strip width (#9: nothing measures text): TAG? beside
-   the status light and ☰ (#71), in the condensed face (the #71 mockup's),
+   the status light (#71; `--menu-w` is 0 since ☰ left the line, #151), in the condensed face (the #71 mockup's),
    fits from the narrowest strip up (swept 64–120 px in both engines). A
    conflict hides the light (the mockup), so its word has more room. */
 .strip-mark {
@@ -68,9 +68,10 @@
     color: var(--danger);
 }
 
+/* SEL's rule names the zone too, so it wins over a muted strip's 0.6. */
 .strip[data-mark="conflict"] .mute,
 .strip[data-mark="conflict"] .fader,
-.strip[data-mark="conflict"] .strip-menu {
+.strip[data-mark="conflict"] .strip-zone > .strip-sel {
     opacity: 0.35;
 }
 
@@ -84,8 +85,8 @@
     color: var(--warn);
 }
 
-/* The corner's first mark (strip.css `.strip-corner`): the chain and RET
-   follow it. */
+/* The marks line's first mark (strip.css `.strip-marks`, #151): the
+   chain, the fader link and MUTED follow it. */
 .strip-flag {
     flex: none;
     margin-top: 1.5px;

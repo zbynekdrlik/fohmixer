@@ -4,9 +4,9 @@
    `+ID` with `+MUTE`: the chain and how many mutes are linked, in a small
    dark pill so every state reads on every track colour, grey while all
    play, red while all are muted, amber "m/N" while m of them are muted by
-   hand in Live. It costs no height: a strip shows it in its name button's
-   top-left corner (strip.css `.strip-corner`), the channel detail on its
-   MUTE. */
+   hand in Live. It costs no height: a strip shows it on its name button's
+   marks line under the name (strip.css `.strip-marks`, #151), the channel
+   detail on its MUTE. */
 
 .link-mark {
     /* The mockup's chain, drawn as a mask in the text's colour. */
@@ -48,22 +48,40 @@
     white-space: nowrap;
 }
 
-/* A count of four characters or more (a mixed count of a two-digit total,
-   "1/10" to "31/32": LinkMark's `compact`, behave::mute::chain_compact) is
-   drawn compact on a strip's corner line, so a problem's `!` and the chain
-   fit its 48 px at 64 px (#127 re-review N1; swept over 64-120 px in both
-   engines, strip-head.spec.ts): the chain and the count at 7.5 px, no
-   letter spacing, a tighter pill. Every shorter count looks as before. */
-.strip-corner > .link-mark.compact:not(.flink) {
+/* On a strip's marks line (#151, v8): a 10 px line. */
+.strip-marks > .link-mark {
+    height: 10px;
+    line-height: 10px;
+}
+
+/* The compact forms: on a narrow strip (under 78 px, `arrange::narrow`)
+   every mark, and on any strip a count of four characters or more (a
+   mixed count of a two-digit total, "1/10" to "31/32": LinkMark's
+   `compact`, behave::mute::chain_compact; #127 re-review N1): the chain
+   and the count at 7.5 px, no letter spacing, a tighter pill (swept over
+   64-120 px in both engines, strip-head.spec.ts). */
+.strip-marks > .link-mark.compact:not(.flink),
+:is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .strip-marks > .link-mark {
     gap: 0.5px;
     padding: 0 2px 0 1.5px;
     font-size: 7.5px;
     letter-spacing: 0;
 }
 
-.strip-corner > .link-mark.compact:not(.flink)::before {
+.strip-marks > .link-mark.compact:not(.flink)::before,
+:is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .strip-marks > .link-mark::before {
     width: 7.5px;
     height: 7.5px;
+}
+
+/* A bare mark (`behave::marks::marks_look`): a muted strip's chain, or
+   the fader link's beside two other marks, without its text. */
+.strip-marks > .link-mark.bare .link-n {
+    display: none;
+}
+
+.strip-marks > .link-mark.bare {
+    padding: 0 2px;
 }
 
 /* The channel detail's mute carries its chain on the button. */
@@ -75,14 +93,11 @@
 
 /* The fader link (#130, D18; the approved mockup reverb-link-v2): the
    chain with "dB" in the accent, after a problem's `!` and the mute chain,
-   before RET and MUTE: in the accent on a leader whose link is on; on a
-   partner a leader moves (`.follow`) grey inside an accent ring (on any
-   track colour the dark pill keeps it readable); the chain alone, at its
-   whole size, beside a crowded mute chain (`behave::fader_link::
-   flink_compact`: with a problem's `!`, or a count of two characters or
-   more; it never yields to RET or MUTE, but beside both `!` and a mute
-   chain a strip under 88 px may have no room for it); the leader's cap
-   line in the accent. No height. */
+   before MUTED: in the accent on a leader whose link is on; on a partner a
+   leader moves (`.follow`) grey inside an accent ring; the chain alone
+   beside two other marks (`.bare`) and on a narrow strip; with all four
+   marks on a narrow strip it yields (`.yield`, #151: `!`, the chain and
+   MUTED never do); the leader's cap line in the accent. No height. */
 .link-mark.flink {
     color: var(--accent);
     text-transform: none;
@@ -93,11 +108,15 @@
     box-shadow: inset 0 0 0 1px var(--accent);
 }
 
-.strip-corner > .link-mark.flink.compact {
+.strip-marks > .link-mark.flink.bare {
     padding: 0 2px;
 }
 
-.strip-corner > .link-mark.flink.compact .link-n {
+:is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .strip-marks > .link-mark.flink .link-n {
+    display: none;
+}
+
+:is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .strip-marks > .link-mark.flink.yield {
     display: none;
 }
 

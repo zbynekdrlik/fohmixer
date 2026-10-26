@@ -292,3 +292,21 @@
     padding: 0 10px;
     border-radius: 8px;
 }
+
+/* On a strip's v8 fader (#151): the track is 12 px and holds the meter
+   (z-index 1, strip.css), so the lowered part spans the track over the
+   bars, and a mark on its side stands right of the track, over the
+   scale's labels as the cap does when it passes. */
+.strip-zone .aut-span {
+    z-index: 1;
+    width: 14px;
+    margin-left: -7px;
+}
+
+.strip-zone .aut-ret {
+    z-index: 1;
+}
+
+.strip-zone .fz-mark {
+    left: calc(var(--x) + 7px);
+}

@@ -27,7 +27,7 @@ use serde_json::json;
 use crate::app::version_text;
 use crate::arrange::{
     Arrangement, Cell, GroupLabel, Item, LineKey, METRICS, PageModel, Shift, Side, Sides,
-    arrange_in, items, px_value, rooms, thin_line,
+    arrange_in, items, narrow, px_value, rooms, thin_line,
 };
 use crate::behave::ableset::tab_dot;
 use crate::behave::solo::soloed;
@@ -88,7 +88,7 @@ struct Nav {
     /// opens it). Here, not in a layout's shell: a Tuner edit in Live is a
     /// new layout, and it must not close the manual explaining it.
     manual: RwSignal<bool>,
-    /// The channel detail's strip, as held (#71: a hold on a strip's ☰
+    /// The channel detail's strip, as held (#71: a hold on a strip's SEL
     /// opens it). Here, not in a layout's shell: a new layout keeps it open
     /// while its strip is in it (`binding::detail_strip`).
     detail: RwSignal<Option<Strip>>,
@@ -198,7 +198,7 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
         column_open: RwSignal::new(false),
     };
     provide_context(nav);
-    // A strip's ☰ opens the channel detail, its exit closes it (#71).
+    // A strip's SEL opens the channel detail, its exit closes it (#71).
     provide_context(DetailStrip {
         strip: nav.detail,
         opened_at: nav.detail_opened,
@@ -821,6 +821,18 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
             })
             .unwrap_or_default()
     };
+    // The narrow strips (#151, `arrange::narrow`): their marks' compact
+    // forms and a taller SEL, by the same floored width as `--strip-w`.
+    let narrow_flags = move || {
+        arranged
+            .try_with(|a| {
+                a.as_ref()
+                    .map(|a| narrow((a.width * 100.0).floor() / 100.0, &METRICS))
+            })
+            .flatten()
+    };
+    let narrow_attr = move || narrow_flags().is_some_and(|n| n.normal).to_string();
+    let narrow_wide_attr = move || narrow_flags().is_some_and(|n| n.wide).to_string();
     let rail = page
         .rail
         .into_iter()
@@ -865,6 +877,8 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
             data-column-open=move || open().to_string()
             node_ref=body_ref
             style=body_style
+            data-narrow=narrow_attr
+            data-narrow-wide=narrow_wide_attr
         >
             <For each=move || 0..count.try_get().unwrap_or(0) key=|line| *line children=line_view />
             <ThinStrip arranged=arranged offsets=offsets node=thin_ref />
@@ -1079,7 +1093,8 @@ fn ItemView(list: Memo<Vec<Item>>, model: Arc<PageModel>, item: Item) -> impl In
         Item::Cell { cell, .. } => {
             let group = cell.group().and_then(|g| model.groups.get(g));
             let id = group.and_then(|g| g.id.clone());
-            // The group's colour on the strip's top edge (`.strip::before`).
+            // The group's colour on a block's top edge (`group.css` `.block::before`;
+            // a strip shows none since #151).
             let look = group
                 .and_then(|g| g.color.as_ref())
                 .map(|c| format!("--gc:{c};"))

@@ -4,8 +4,10 @@
 //! gives way when the line fills is decided from what the strip carries,
 //! never measured: a muted chain drops its count (it is red, and `MUTED`
 //! says it); with three marks or more the fader link drops its "dB"; with
-//! all four the gaps narrow and, on a narrow strip only (the stylesheet),
-//! the fader link's mark yields. `!`, the chain and `MUTED` never yield.
+//! all four the gaps narrow; beside both `!` and a chain the fader link's
+//! mark yields on a narrow strip only (the stylesheet: the mockup's case of
+//! all four, and `!` with a mixed two-digit count such as `10/12`, which
+//! leaves it no room at 64 px). `!`, the chain and `MUTED` never yield.
 
 /// How the marks line draws its marks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -16,7 +18,8 @@ pub struct MarksLook {
     pub flink_bare: bool,
     /// All four marks: the narrower gaps.
     pub crowd: bool,
-    /// The fader link's mark yields (applied on a narrow strip only).
+    /// The fader link's mark yields (applied on a narrow strip only): beside
+    /// both `!` and a chain.
     pub flink_yield: bool,
 }
 
@@ -31,7 +34,7 @@ pub fn marks_look(flag: bool, chain: bool, flink: bool, muted: bool) -> MarksLoo
         chain_bare: chain && muted,
         flink_bare: flink && n >= 3,
         crowd: n >= 4,
-        flink_yield: flink && n >= 4,
+        flink_yield: flink && flag && chain,
     }
 }
 
@@ -50,10 +53,12 @@ mod tests {
 
     #[test]
     fn three_marks_bare_the_fader_link() {
+        // Beside `!` and a chain it also yields on a narrow strip.
         assert_eq!(
             marks_look(true, true, true, false),
             MarksLook {
                 flink_bare: true,
+                flink_yield: true,
                 ..MarksLook::default()
             }
         );

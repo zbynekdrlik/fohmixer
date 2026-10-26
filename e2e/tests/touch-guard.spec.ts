@@ -100,11 +100,12 @@ function controls(page: Page): [string, Locator][] {
   return [
     ["fader", hand2.getByTestId("fader")],
     ["fader cap", hand2.getByTestId("fader").locator(".fader-cap")],
-    ["strip menu", hand2.getByTestId("strip-menu")],
-    ["strip menu icon", hand2.locator(".strip-menu-icon")],
+    // #151: SEL (it was ☰), the mute's marks line; no clip light.
+    ["SEL", hand2.getByTestId("detail-key")],
+    ["SEL's word", hand2.locator(".strip-sel-word")],
     ["mute", hand2.getByTestId("mute")],
     ["mute label", hand2.getByTestId("strip-label")],
-    ["meter clip", hand2.getByTestId("clip")],
+    ["mute's marks line", hand2.getByTestId("strip-marks")],
     ["solo", page.getByTestId("solo").first()],
     ["stage mics (with STAGE AUT, #104)", page.getByTestId("stage-mics").first()],
     ["stage mics' label", page.getByTestId("stage-mics").first().locator(".btn-text")],
@@ -134,6 +135,7 @@ test("every control owns its touches: its touchstart is prevented, nothing on it
   // fader's, which lies over them.
   const free: [string, Locator][] = [
     ["dB scale", strip(page, "Hand2 #").getByTestId("scale")],
+    ["info column (#151)", strip(page, "Hand2 #").getByTestId("strip-col")],
     ["group's side label", page.getByTestId("group-side").first()],
     ["rail", page.getByTestId("rail")],
     ["column", page.getByTestId("column")],
@@ -153,7 +155,6 @@ test("every control owns its touches: its touchstart is prevented, nothing on it
     ["detail's mute label", detail.getByTestId("strip-label")],
     ["detail's fader", detail.getByTestId("fader")],
     ["detail's fader cap", detail.getByTestId("fader").locator(".fader-cap")],
-    ["detail's meter clip", detail.getByTestId("clip")],
     ["pan", detail.getByTestId("pan")],
     ["pan dot", detail.getByTestId("pan").locator(".pan-dot")],
     ["CENTER", detail.getByTestId("detail-centre")],

@@ -44,7 +44,7 @@
 
 /* The control column, bottom to top of the screen: what the thumbs of two
    hands holding the tablet do not reach. The page's top layer (z-index 10,
-   above a strip's own layers, the clip light's 2 the highest): a line's
+   above a strip's own layers, SEL's 2 the highest, #151): a line's
    strips that overflow a side (pins that do not fit) pass under it and
    never take its touches; TechAlert's wash, inside it, stays on top. */
 .column {

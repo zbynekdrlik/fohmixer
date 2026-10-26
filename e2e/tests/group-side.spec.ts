@@ -79,19 +79,19 @@ async function travel(s: Locator): Promise<number> {
   return (await s.getByTestId("fader").boundingBox())!.height;
 }
 
-/** The side label of `s` and the parts of its scale column, as page boxes. */
+/** The side label of `s` and the parts of its info column (#151), as page boxes. */
 async function sideGeometry(s: Locator) {
   return s.evaluate((el) => {
     const box = (e: Element) => {
       const r = e.getBoundingClientRect();
       return { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
     };
-    const scale = el.querySelector('[data-testid="scale"]')!;
-    const label = scale.querySelector('[data-testid="group-side"]') as HTMLElement;
+    const col = el.querySelector('[data-testid="strip-col"]')!;
+    const label = col.querySelector('[data-testid="group-side"]') as HTMLElement;
     return {
       label: box(label),
-      scale: box(scale),
-      ticks: [...scale.querySelectorAll(".tick")].map((t) => ({ db: t.getAttribute("data-db"), ...box(t) })),
+      col: box(col),
+      lufs: box(col.querySelector('[data-testid="lufs"]')!),
       overflow: [label.scrollWidth - label.clientWidth, label.scrollHeight - label.clientHeight],
     };
   });
@@ -227,7 +227,9 @@ test.describe("A group's name on its side (#127)", () => {
     }
   });
 
-  test("each run's first strip names its group in the colour of the Live set its strips share", async ({ page }) => {
+  test("each run's first strip names its group in grey, in its info column", async ({ page }) => {
+    // #151 (mockup v8): one colour per strip, the track's own, so the
+    // group's name is calm grey whatever Live set its strips share.
     const groups = fohRows().flat().filter(startsWithStrip);
     const named = groups.filter((g) => groupName(g) !== null);
     // The premise: titled band, master and mixed groups, and untitled band
@@ -235,12 +237,8 @@ test.describe("A group's name on its side (#127)", () => {
     expect(named.filter((g) => g.title).map(sharedInstance).sort()).toEqual(["band", "master", null].sort());
     expect(named.filter((g) => !g.title).map(sharedInstance).sort()).toEqual(["band", "master"]);
     await openSurface(page);
-    const colours: Record<string, string> = {
-      band: await token(page, "--band"),
-      master: await token(page, "--master"),
-      mixed: await token(page, "--muted"),
-    };
-    expect(new Set(Object.values(colours)).size, "three colours").toBe(3);
+    const grey = await token(page, "--faint");
+    expect(grey).toBe("rgb(92, 92, 120)");
     await expect(page.getByTestId("group-side")).toHaveCount(named.length);
     for (const group of named) {
       const first = group.controls[0];
@@ -251,26 +249,20 @@ test.describe("A group's name on its side (#127)", () => {
       const shared = sharedInstance(group);
       if (shared) await expect(label).toHaveAttribute("data-instance", shared);
       else await expect(label).not.toHaveAttribute("data-instance");
-      await expect(label).toHaveCSS("color", colours[shared ?? "mixed"]);
+      await expect(label).toHaveCSS("color", grey);
       await expect(label).toHaveCSS("pointer-events", "none");
       // Its strips' own instance tags: only where the strips differ.
       const strips = group.controls.filter((c: any) => c.kind === "strip").length;
       await expect(page.locator(`.slot[data-group="${group.id}"]`).getByTestId("strip-instance")).toHaveCount(shared ? 0 : strips);
-      // Inside the scale column, between the +6 and −6 dB labels, over no
-      // tick label, the whole name shown.
+      // In the info column: 40 px under its top, 96 px long, under the
+      // LUFS row, the whole name shown.
       const geo = await sideGeometry(s);
-      const { label: box, scale } = geo;
-      expect(box.left, `${group.id}: in the scale`).toBeGreaterThanOrEqual(scale.left - 0.5);
-      expect(box.right).toBeLessThanOrEqual(scale.right + 0.5);
-      expect(box.top).toBeGreaterThanOrEqual(scale.top - 0.5);
-      expect(box.bottom).toBeLessThanOrEqual(scale.bottom + 0.5);
-      const plus6 = geo.ticks.find((t) => t.db === "6")!;
-      const minus6 = geo.ticks.find((t) => t.db === "-6")!;
-      expect(box.top, `${group.id}: under +6`).toBeGreaterThanOrEqual(plus6.bottom);
-      expect(box.bottom, `${group.id}: over −6`).toBeLessThanOrEqual(minus6.top);
-      expect(box.bottom - box.top, "a real band").toBeGreaterThan(40);
-      const over = geo.ticks.filter((t) => box.left < t.right && t.left < box.right && box.top < t.bottom && t.top < box.bottom);
-      expect(over.map((t) => t.db), `${group.id}: over a tick label`).toEqual([]);
+      const { label: box, col } = geo;
+      expect(box.left, `${group.id}: in the column`).toBeGreaterThanOrEqual(col.left - 0.5);
+      expect(box.right).toBeLessThanOrEqual(col.right + 0.5);
+      expect(Math.abs(box.top - col.top - 40), `${group.id}: 40 px under the column's top`).toBeLessThan(0.5);
+      expect(Math.abs(box.bottom - box.top - 96), `${group.id}: 96 px long`).toBeLessThan(0.5);
+      expect(box.top, `${group.id}: under the LUFS row`).toBeGreaterThanOrEqual(geo.lufs.bottom - 0.5);
       expect(geo.overflow, `${group.id}: the whole name`).toEqual([0, 0]);
     }
   });

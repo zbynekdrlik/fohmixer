@@ -40,6 +40,7 @@ use leptos::html;
 use leptos::prelude::*;
 use serde_json::json;
 
+use super::meter::TrackMeter;
 use super::{
     down_of, fail_flash, owns_touches, readiness, readiness_now, trace_move, trace_start,
     trace_touch,
@@ -249,7 +250,9 @@ pub fn ReverbMarks(volume_key: String, state: RwSignal<Slot>, law: VolumeLaw) ->
 /// tap glides every target to 0 dB. A fader link's leader (#130, D18:
 /// `partners`, while `link_on`) writes its partners with its own by the
 /// same dB, in one `sets`. A reverb fader (`reverb`, #130) shows REVERB's
-/// marks (`ReverbMarks`; never the backing-tracks fader).
+/// marks (`ReverbMarks`; never the backing-tracks fader). A strip's fader
+/// (#151, mockup v8: `meters`, its level slots) draws the stereo pair in
+/// its track (`TrackMeter`) instead of the groove and the fill.
 #[component]
 pub fn FaderView(
     targets: Vec<Target>,
@@ -266,6 +269,9 @@ pub fn FaderView(
     /// A reverb fader (#130, D18: its strip's `+REVERB`): REVERB's marks.
     #[prop(optional)]
     reverb: bool,
+    /// A strip's level slots (#151): the meter in the fader's track.
+    #[prop(optional)]
+    meters: Vec<RwSignal<Slot>>,
 ) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let (slot, law) = targets.first().map_or_else(
@@ -676,6 +682,17 @@ pub fn FaderView(
         .map(|(volume_key, volume_law)| {
             view! { <ReverbMarks volume_key=volume_key state=slot law=volume_law /> }
         });
+    // A strip's fader (#151): the meter in its track, no groove or fill.
+    let meter_law = law.volume_law().unwrap_or_default();
+    let track = if meters.is_empty() {
+        view! {
+            <div class="fader-groove"></div>
+            <div class="fader-fill"></div>
+        }
+        .into_any()
+    } else {
+        view! { <TrackMeter levels=meters law=meter_law /> }.into_any()
+    };
     view! {
         <div
             class="fader"
@@ -691,8 +708,7 @@ pub fn FaderView(
             on:pointercancel=on_cancel
             on:lostpointercapture=on_cancel
         >
-            <div class="fader-groove"></div>
-            <div class="fader-fill"></div>
+            {track}
             <div class="fader-ghost"></div>
             {marks}
             <div class="fader-rail">

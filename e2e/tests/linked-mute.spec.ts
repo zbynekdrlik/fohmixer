@@ -19,7 +19,8 @@ import {
 // The linked mute (#127, the approved mockup docs/mockups/paired-mute-v3.html,
 // variant A): a strip whose Tuner carries `+ID:<id>` mutes its own track and
 // every track (or return) whose Tuner carries `+MUTE:<id>`, in one batch. Its
-// name button shows a chain and the count in its top-left corner: grey while
+// name button shows a chain and the count on its marks line under the name
+// (#151, mockup v8; a muted strip's chain without its count): grey while
 // all play, red while all are muted, amber "m/N" while m of them are muted by
 // hand in Live. A tap mutes all, or unmutes all when all are muted.
 
@@ -112,21 +113,21 @@ test.describe("A linked mute", () => {
       await expect(chain).toHaveCSS("color", GREY);
       await expect(mute).toHaveAttribute("data-muted", "false");
       await expect(mute).toHaveClass(/\blit\b/);
-      // No height: the name button stays 30 px and the fader's travel is
-      // the same strip's before the link.
-      expect((await mute.boundingBox())!.height).toBeCloseTo(30, 1);
+      // No height: the name button stays 37 px (#151) and the fader's
+      // travel is the same strip's before the link.
+      expect((await mute.boundingBox())!.height).toBeCloseTo(37, 1);
       await ready(linked.getByTestId("fader"));
       const travel = (await linked.getByTestId("fader").boundingBox())!.height;
       test.info().annotations.push({ type: "travel-px", description: `${travel} (unlinked ${today})` });
       expect(Math.abs(travel - today), `the linked strip's travel ${travel} against ${today}`).toBeLessThan(0.5);
       expect(travel).toBeGreaterThan(200);
-      // The chain sits in the button's top-left corner, above the name.
+      // The chain sits at the left of the marks line, under the name (#151).
       const corner = (await chain.boundingBox())!;
       const button = (await mute.boundingBox())!;
       const name = (await linked.getByTestId("strip-label").boundingBox())!;
-      expect(corner.x - button.x).toBeLessThan(6);
-      expect(corner.y - button.y).toBeLessThan(3);
-      expect(corner.y + corner.height).toBeLessThan(name.y + name.height / 2);
+      expect(corner.x - button.x).toBeLessThan(10);
+      expect(corner.y).toBeGreaterThanOrEqual(name.y + name.height - 0.5);
+      expect(corner.y + corner.height).toBeLessThanOrEqual(button.y + button.height + 0.5);
 
       // A tap mutes all three in Live, in one batch.
       const since = Date.now();
@@ -322,7 +323,7 @@ test.describe("A linked mute", () => {
     await expect(strips).toHaveCount(0, { timeout: 10_000 });
   });
 
-  test("an all-muted linked return with a problem keeps `!` and the chain at 64 px, its RET and MUTE mark yielding, and shows them all at 120 px", async ({ page }) => {
+  test("an all-muted linked return with a problem keeps `!`, the bare chain and MUTED whole at 64 and 120 px, no RET", async ({ page }) => {
     for (const t of LINKED) await live.set("band", t, "mute", false);
     await openSurface(page);
     const strips = page.locator('.slot[data-group="markers"] [data-testid="strip"]');
@@ -337,34 +338,42 @@ test.describe("A linked mute", () => {
       expect(await hostLine("band", "tuner track 2 set '+MUTE:HALL'")).toBe("TUNER 1");
       const mute = hall.getByTestId("mute");
       const chain = hall.getByTestId("mute-link");
+      const count = hall.getByTestId("mute-link-n");
       const flag = hall.locator(".strip-flag");
-      const ret = hall.getByTestId("strip-ret");
-      const mark = hall.locator(".mute-mark");
+      const mark = hall.getByTestId("mute-mark");
       await expect(chain).toHaveText("3", { timeout: 10_000 });
       await expect(hall).toHaveAttribute("data-mark", "problem");
       await expect(hall).toHaveAttribute("data-kind", "return");
-      await expect(ret).toHaveText("RET");
+      await expect(hall.locator(".strip-ret")).toHaveCount(0);
+      expect(await hall.textContent()).not.toMatch(/\bRET\b/i);
       await ready(mute);
       await mute.click();
       for (const t of LINKED) await until(() => live.get("band", t, "mute"), (v) => v === true, `${t} muted by the return's tap`);
       await expect(mute).toHaveAttribute("data-muted", "true");
       await expect(chain).toHaveAttribute("data-state", "muted");
-      /** The strip at `px` wide: what can be seen of its corner. */
+      // A muted chain drops its count (MUTED says it).
+      await expect(chain).toHaveClass(/\bbare\b/);
+      await expect(count).toBeHidden();
+      /** The strip at `px` wide, the narrow flags as the page sets them: what can be seen of its marks. */
       const at = async (px: number) => {
-        await hall.evaluate((el, w) => (el as HTMLElement).style.setProperty("--strip-w", `${w}px`), px);
+        await hall.evaluate((el, w) => {
+          const wrap = (el.closest(".slot") ?? el.parentElement) as HTMLElement;
+          wrap.style.setProperty("--strip-w", `${w}px`);
+          wrap.setAttribute("data-narrow", String(w < 78));
+          wrap.setAttribute("data-narrow-wide", String(w * 1.1 < 78));
+        }, px);
         await expect.poll(async () => Math.round((await hall.boundingBox())!.width)).toBe(px);
-        return { flag: await seen(flag), chain: await seen(chain), ret: await seen(ret), mute: await seen(mark) };
+        return { flag: await seen(flag), chain: await seen(chain), mute: await seen(mark) };
       };
-      // 64 px: `!` and the red chain stay; RET and the MUTE mark yield.
-      expect(await at(64)).toEqual({ flag: true, chain: true, ret: false, mute: false });
-      // 120 px: every mark, the MUTE mark at the right of the corner.
-      expect(await at(120)).toEqual({ flag: true, chain: true, ret: true, mute: true });
-      const corner = (await ret.boundingBox())!;
-      const muted = (await mark.boundingBox())!;
-      const button = (await mute.boundingBox())!;
-      expect(corner.x + corner.width + 3, "RET left of the MUTE mark").toBeLessThanOrEqual(muted.x + 0.5);
-      expect(muted.x + muted.width, "the MUTE mark inside the button").toBeLessThanOrEqual(button.x + button.width - 2.5);
-      expect((await flag.boundingBox())!.x - button.x, "`!` in the top-left corner").toBeLessThan(4);
+      for (const px of [64, 120]) {
+        expect(await at(px), `${px} px`).toEqual({ flag: true, chain: true, mute: true });
+        const line = (await hall.getByTestId("strip-marks").boundingBox())!;
+        const muted = (await mark.boundingBox())!;
+        const c = (await chain.boundingBox())!;
+        expect(c.x + c.width, `${px} px: the chain left of MUTED`).toBeLessThanOrEqual(muted.x + 0.5);
+        expect(Math.abs(muted.x + muted.width - (line.x + line.width)), `${px} px: MUTED at the line's right end`).toBeLessThan(0.5);
+        expect((await flag.boundingBox())!.x - (await mute.boundingBox())!.x, `${px} px: \`!\` first`).toBeLessThan(10);
+      }
     } finally {
       await cleanUp(["tuner return 0 remove", "tuner track 1 remove", "tuner track 2 remove"]);
     }

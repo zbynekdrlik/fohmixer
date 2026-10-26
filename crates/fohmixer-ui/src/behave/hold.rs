@@ -1,4 +1,4 @@
-//! The hold on a strip's ☰ (spec F27, D17; #71): a press that lasts
+//! The hold on a strip's SEL (spec F27, D17; #71): a press that lasts
 //! `HOLD_MS` opens the channel detail, once; a shorter one is a tap, which
 //! only shows the hint. One press at a time: a second finger's down is not
 //! one, a primary pointer's down starts over (an end the browser never
@@ -6,10 +6,10 @@
 //! from where its first move put it (the iPad's first move comes late and
 //! 6–15 px away, so it only anchors the press, as a fader's does, #43 PR F);
 //! further, the press ends with neither a tap nor an open (a fader grab
-//! that lands on ☰ never opens the detail). Else only
+//! that lands on SEL never opens the detail). Else only
 //! its release ends the press, and a cancel or a lost capture ends it
 //! without a tap. Right after a hold opens the detail, its parts take no
-//! touch for `OPEN_GUARD_MS` (a second tap at ☰'s spot would land on its
+//! touch for `OPEN_GUARD_MS` (a second tap at SEL's spot would land on its
 //! MUTE; `guard_left`: a new layout's remount does not guard again).
 //!
 //! A rail button with an automatic mode (#104, #130, D18) presses the same
@@ -21,7 +21,7 @@
 //! page (`Hold::leave`), so a lost end never acts. A lift before the hold
 //! is the button's tap.
 
-/// How long a press on ☰ lasts before it opens the channel detail.
+/// How long a press on SEL lasts before it opens the channel detail.
 pub const HOLD_MS: f64 = 500.0;
 /// How long a tap's hint shows.
 pub const HINT_MS: f64 = 1200.0;
@@ -30,7 +30,7 @@ pub const SLIDE_PX: f64 = 10.0;
 /// How long the detail's parts take no touch after it opens.
 pub const OPEN_GUARD_MS: f64 = 400.0;
 
-/// Whether a press that started at `start` has lasted ☰'s hold at `now`.
+/// Whether a press that started at `start` has lasted SEL's hold at `now`.
 pub fn held_long(start: f64, now: f64) -> bool {
     lasted(start, HOLD_MS, now)
 }
@@ -55,7 +55,7 @@ pub fn guard_left(opened_at: f64, now: f64) -> f64 {
 }
 
 /// One press: its pointer, when it went down, where its first move
-/// anchored it (none before that move), whether it passed its check (☰'s
+/// anchored it (none before that move), whether it passed its check (SEL's
 /// opened the detail; a rail press is full) and whether that full mark was
 /// refused (a rail press that could not act: its lift does nothing).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -67,7 +67,7 @@ struct Press {
     refused: bool,
 }
 
-/// When a held press acts: ☰'s at its check (opening the detail is
+/// When a held press acts: SEL's at its check (opening the detail is
 /// harmless), a rail button's at its lift once full (#104: a lost end never
 /// acts).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,7 +89,7 @@ pub enum Lift {
     Nothing,
 }
 
-/// A press that lasts its hold: the ☰ button's ([`HOLD_MS`], the default)
+/// A press that lasts its hold: the SEL key's ([`HOLD_MS`], the default)
 /// and a rail button's with an automatic mode (#104, #130, D18:
 /// `behave::rail::RAIL_HOLD_MS`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -107,7 +107,7 @@ impl Default for Hold {
 }
 
 impl Hold {
-    /// A press that holds after `ms` and acts at its check (☰'s).
+    /// A press that holds after `ms` and acts at its check (SEL's).
     pub fn with(ms: f64) -> Self {
         Self {
             press: None,
@@ -270,7 +270,7 @@ mod tests {
         assert!(h.down(4, true, 1000.0));
         assert!(!h.due(2000.0_f64.next_down()));
         assert!(h.due(2000.0));
-        // ☰'s stays 500 ms.
+        // SEL's stays 500 ms.
         let mut menu = Hold::default();
         assert!(menu.down(5, true, 0.0));
         assert!(!menu.open(500.0_f64.next_down()));
@@ -353,7 +353,7 @@ mod tests {
         let mut h = full();
         assert_eq!(h.leave(), Some(1));
         assert_eq!(h.up(1, 1500.0), Lift::Nothing);
-        // ☰'s opened press keeps sliding nothing off.
+        // SEL's opened press keeps sliding nothing off.
         let mut menu = Hold::default();
         assert!(menu.down(1, true, 0.0));
         assert!(menu.open(500.0));
@@ -446,7 +446,7 @@ mod tests {
         assert!(!h.moved(3, 50.0, 40.0));
         assert!(!h.moved(3, 57.0, 47.0));
         assert!(h.open(1500.0));
-        // A fader grab that lands on ☰ and pulls down: no detail, no hint.
+        // A fader grab that lands on SEL and pulls down: no detail, no hint.
         let mut grab = Hold::default();
         assert!(grab.down(4, true, 0.0));
         assert!(!grab.moved(4, 60.0, 60.0), "the anchor");
