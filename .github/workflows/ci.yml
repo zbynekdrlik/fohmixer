@@ -1025,17 +1025,18 @@ jobs:
           fi
           packages=(--package fohmixer-proto --package fohmixer-hub --package fohmixer-ui --package fohmixer-tray)
           # --timeout: with --baseline=skip cargo-mutants has no measured test
-          # time and would allow 300 s per mutant. 210 s is 2x the slowest
+          # time and would allow 300 s per mutant. 220 s is 2x the slowest
           # measured unmutated hub suite (78.8, 80.3 and 78.6 s in
           # mutation-warmup, then 88.0 s with REVERB AUT's host tests, #130:
           # 2 x 88.0 s = 176 s, past 170 s; then 90.2 s with AUTOTUNE AUT's,
           # #104: 2 x 90.2 s = 180.4 s, past 180 s; then 95.5 s with the
           # autotune keys' writes, #140 PR 2b: 2 x 95.5 s = 191 s, past 190
           # s; then 100.4 s with the autotune rule's, #140 PR 3b: 2 x 100.4 s
-          # = 200.8 s, past 200 s): under it a survivor reads as TIMEOUT, not
-          # MISSED (.claude/rules/ci.md).
+          # = 200.8 s, past 200 s; then 107.0 s with the AUTOTUNE button's,
+          # #140 PR 3c: 2 x 107.0 s = 214 s, past 210 s): under it a survivor
+          # reads as TIMEOUT, not MISSED (.claude/rules/ci.md).
           status=0
-          cargo mutants --in-diff "$RUNNER_TEMP/pr.diff" --baseline=skip --timeout 210 --jobs 2 --copy-target=true \
+          cargo mutants --in-diff "$RUNNER_TEMP/pr.diff" --baseline=skip --timeout 220 --jobs 2 --copy-target=true \
             --shard "${SHARD}/${SHARDS}" "${packages[@]}" --all-features -- --all-targets || status=$?
           case "$status" in
             0|2|3) ;;
@@ -1050,6 +1051,6 @@ jobs:
           # test); a survivor fails the gate (exit 2).
           recheck=0
           python3 scripts/mutants_recheck.py --out mutants.out -- \
-            --baseline=skip --timeout 210 --jobs 1 --copy-target=true "${packages[@]}" --all-features -- --all-targets || recheck=$?
+            --baseline=skip --timeout 220 --jobs 1 --copy-target=true "${packages[@]}" --all-features -- --all-targets || recheck=$?
           if [ "$status" -ne 0 ]; then exit "$status"; fi
           exit "$recheck"
