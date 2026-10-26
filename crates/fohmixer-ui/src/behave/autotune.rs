@@ -216,6 +216,8 @@ pub struct PanelRow {
     pub pa: Chip,
     /// `F ✓`, `—` without a key in force, or `!` when not right.
     pub key: String,
+    /// The key column's look: false only for a key's or a target's trouble
+    /// (the hub's own wait shows the key as it stands, PR #150 re-review m1).
     pub ok: bool,
     /// Off by hand (the row dimmed).
     pub off: bool,
@@ -245,16 +247,25 @@ pub fn panel_rows(state: &AutotuneState) -> Vec<PanelRow> {
         .iter()
         .map(|s| {
             // The ✓ only for a key written and read back (PR #150 review
-            // M4); one on its way shows the pending mark.
-            let key = match (s.key_ok, state.key.as_deref(), s.confirmed) {
+            // M4); one on its way shows the pending mark. A track the hub
+            // keeps DRY for a reason of its own shows its key as it stands
+            // (PR #150 re-review m1): its `!` would read as a wrong key.
+            let shown_ok = s.key_ok || s.waiting;
+            let key = match (shown_ok, state.key.as_deref(), s.confirmed) {
                 (false, _, _) => "!".to_string(),
                 (true, Some(key), true) => format!("{key} ✓"),
                 (true, Some(key), false) => format!("{key} …"),
                 (true, None, _) => "—".to_string(),
             };
+            // Only a key's or a target's trouble is rewritten at the next
+            // change; the hub's own wait says only its reason.
             let why = (!s.key_ok).then(|| {
                 let why = s.why.as_deref().unwrap_or("key not confirmed");
-                format!("{}: {why} · on DRY, rewrite at the next change", s.label)
+                if s.waiting {
+                    format!("{}: {why}", s.label)
+                } else {
+                    format!("{}: {why} · on DRY, rewrite at the next change", s.label)
+                }
             });
             PanelRow {
                 id: s.id.clone(),
@@ -262,7 +273,7 @@ pub fn panel_rows(state: &AutotuneState) -> Vec<PanelRow> {
                 stream: chip(s.stream, true),
                 pa: chip(s.pa, false),
                 key,
-                ok: s.key_ok,
+                ok: shown_ok,
                 off: s.off,
                 switch: (!s.id.is_empty()).then_some(if s.off { "ON" } else { "OFF" }),
                 why,
@@ -370,11 +381,13 @@ pub fn panel_place(anchor: Anchor, view_w: f64, view_h: f64, height: f64) -> Pla
                 max_h: below,
             };
         }
+        // Held to the height it opens with (PR #150 re-review m3): a panel
+        // that grows scrolls, never down over the button.
         let high = height.min(above);
         return Place {
             left: PANEL_GAP,
             top: anchor.button_top - PANEL_GAP - high,
-            max_h: above,
+            max_h: high,
         };
     }
     let top = anchor
@@ -388,11 +401,26 @@ pub fn panel_place(anchor: Anchor, view_w: f64, view_h: f64, height: f64) -> Pla
     }
 }
 
+/// The panel's natural height (PR #150 re-review m3): its content's whole
+/// height (`scrollHeight`, the padding in it) and its borders (`offsetHeight`
+/// less `clientHeight`), never the box its max height caps, so a placement
+/// can move it up or above the button.
+pub fn natural_height(scroll: f64, offset: f64, client: f64) -> f64 {
+    scroll + (offset - client)
+}
+
 /// Whether a down closes the open panel and is taken for that alone (PR
 /// #150 review I1): one outside the panel and the AUTOTUNE button, while it
 /// is open. It reaches nothing under it (a strip's mute acts on its down).
 pub fn dismisses(open: bool, on_button: bool, on_panel: bool) -> bool {
     open && !on_button && !on_panel
+}
+
+/// Whether a pointer's up (or cancel) is taken by the page's listener
+/// (PR #150 re-review n2): the up of the down that closed the panel, so a
+/// control that acts on its up alone never acts on that tap.
+pub fn swallows_up(dismissed: Option<i32>, pointer: i32) -> bool {
+    dismissed == Some(pointer)
 }
 
 /// A singer's switch's press (PR #150 review M1): it acts at the lift of a
@@ -1063,6 +1091,22 @@ mod tests {
         // 520 px wide is upright, 521 beside the column.
         assert_eq!(panel_place(at(200.0), 520.0, 844.0, 300.0).left, 8.0);
         assert_eq!(panel_place(at(200.0), 521.0, 844.0, 300.0).left, 278.0);
+    }
+
+    #[test]
+    fn only_the_up_of_the_down_that_closed_the_panel_is_taken() {
+        // PR #150 re-review n2.
+        assert!(swallows_up(Some(7), 7));
+        assert!(!swallows_up(Some(7), 8), "another finger's up");
+        assert!(!swallows_up(None, 7), "no down closed it");
+    }
+
+    #[test]
+    fn the_panels_natural_height_is_its_content_and_its_borders() {
+        // PR #150 re-review m3: 300 px of content (its padding in it) in a
+        // box its max height caps at 150 px, 1 px borders.
+        assert_eq!(natural_height(300.0, 152.0, 150.0), 302.0);
+        assert_eq!(natural_height(120.0, 122.0, 120.0), 122.0);
     }
 
     #[test]

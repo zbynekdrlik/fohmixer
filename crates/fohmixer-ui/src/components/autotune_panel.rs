@@ -9,24 +9,33 @@
 //! sends `set_hub` `autotune_singer` `{id, off}`; it acts only on the state
 //! the hub told this connection, while connected, else it flashes refused.
 //! It shows the hub's state as told to this connection only (it is not in
-//! the page without one). Its height is measured once it is in the page,
-//! so it stays inside the screen (`behave::autotune::panel_place`). The
-//! decisions are `behave::autotune`'s.
+//! the page without one). Its natural height is measured once it is in the
+//! page and again whenever its content changes size (a `ResizeObserver` on
+//! `.tpanel-in`; PR #150 re-review m3: never the box its max height caps),
+//! so it stays inside the screen and never over the button
+//! (`behave::autotune::panel_place`). The decisions are
+//! `behave::autotune`'s.
 
 use fohmixer_proto::client::HUB_AUTOTUNE_SINGER;
 use leptos::html;
 use leptos::prelude::*;
 use serde_json::json;
+use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 
 use super::{fail_flash, owns_touches, trace_rail};
 use crate::behave::autotune::{
-    Anchor, PanelRow, RowKey, panel_foot, panel_head, panel_place, panel_rows, switch_acts,
-    switch_press, switch_value, tap_opens_panel,
+    Anchor, PanelRow, RowKey, natural_height, panel_foot, panel_head, panel_place, panel_rows,
+    switch_acts, switch_press, switch_value, tap_opens_panel,
 };
 use crate::behave::hold::Lift;
 use crate::behave::rail::AUT_BADGE;
 use crate::dom;
 use crate::store::LiveStore;
+
+/// The panel content's size watcher: a `ResizeObserver` and its callback,
+/// kept until the panel goes.
+type PanelObserver = (web_sys::ResizeObserver, Closure<dyn FnMut()>);
 
 /// The panel: `anchor` where it opens from (the column's right edge, the
 /// button's top and bottom on the screen; the button places it again at a
@@ -37,10 +46,39 @@ use crate::store::LiveStore;
 pub fn AutotunePanel(anchor: Anchor) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let panel = NodeRef::<html::Div>::new();
-    // The panel's height once in the page, to keep it inside the screen.
+    // The panel's natural height, to keep it inside the screen and off the
+    // button: measured once in the page and again at every size change of
+    // its content (a why line, a singer added), which its max height never
+    // caps. The observer goes with the panel.
     let height = RwSignal::new(0.0_f64);
+    let watcher = StoredValue::new_local(None::<PanelObserver>);
     panel.on_load(move |el: web_sys::HtmlDivElement| {
-        let _ = height.try_set(f64::from(el.offset_height()));
+        let measure = {
+            let el = el.clone();
+            move || {
+                natural_height(
+                    f64::from(el.scroll_height()),
+                    f64::from(el.offset_height()),
+                    f64::from(el.client_height()),
+                )
+            }
+        };
+        let _ = height.try_set(measure());
+        let Some(inner) = el.first_element_child() else {
+            return;
+        };
+        let callback = Closure::wrap(Box::new(move || {
+            let _ = height.try_set(measure());
+        }) as Box<dyn FnMut()>);
+        if let Ok(observer) = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()) {
+            observer.observe(&inner);
+            let _ = watcher.try_set_value(Some((observer, callback)));
+        }
+    });
+    on_cleanup(move || {
+        if let Some(Some((observer, _callback))) = watcher.try_update_value(Option::take) {
+            observer.disconnect();
+        }
     });
     let place = move || {
         let size =

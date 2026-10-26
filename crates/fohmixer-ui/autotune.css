@@ -172,7 +172,17 @@
     padding-top: 4px;
     border-top: 1px solid var(--line-soft);
     color: var(--text);
-    font: 600 12px/1.35 var(--ui);
+    /* A px line above Barlow 12 px's content area (about 15.4 px), so a
+       wrapped line's text stays inside its box. */
+    font: 600 12px/17px var(--ui);
+}
+
+/* The song map's problems in the hub's words are long: each line wraps,
+   a word longer than the panel too, never past its edge (PR #150
+   re-review n3). */
+.tp-foot span {
+    min-width: 0;
+    overflow-wrap: anywhere;
 }
 
 .tp-foot .small {

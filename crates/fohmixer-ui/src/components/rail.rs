@@ -42,7 +42,8 @@ use super::{
     slot_of, trace_rail,
 };
 use crate::behave::autotune::{
-    Anchor, autotune_look, autotune_ready, dismisses, has_problem, state_name, tap_opens_panel,
+    Anchor, autotune_look, autotune_ready, dismisses, has_problem, state_name, swallows_up,
+    tap_opens_panel,
 };
 use crate::behave::hold::{Hold, Lift};
 use crate::behave::rail::{
@@ -69,9 +70,14 @@ pub enum RuleKind {
     Autotune,
 }
 
-/// A page-wide `pointerdown` listener of a rail button (capture phase),
-/// kept to remove it in the cleanup.
+/// A page-wide pointer listener of a rail button (capture phase: its
+/// `pointerdown`, and AUTOTUNE's `pointerup` / `pointercancel`), kept to
+/// remove it in the cleanup.
 type DownListener = Closure<dyn FnMut(web_sys::PointerEvent)>;
+
+/// The window events whose capture-phase listener takes the up of a down
+/// that closed AUTOTUNE's panel (PR #150 re-review n2).
+const UP_EVENTS: [&str; 2] = ["pointerup", "pointercancel"];
 
 /// A rail button with an automatic mode: the merged STAGE button (#104)
 /// shows the stage mics' mute (lit while they are live, as `StageMicsView`)
@@ -130,6 +136,10 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
     let transport_before = StoredValue::new(None::<bool>);
     let settle_check = StoredValue::new(None::<TimeoutHandle>);
     let any_down = StoredValue::new_local(None::<DownListener>);
+    let any_up = StoredValue::new_local(None::<DownListener>);
+    // The pointer whose down closed AUTOTUNE's panel: its up is taken too
+    // (PR #150 re-review n2: AbleSet's sign-in acts on its up alone).
+    let dismissed = StoredValue::new(None::<i32>);
     // AUTOTUNE's panel: open with where it opens from (the column's right
     // edge, the button's top and bottom on the screen), or closed.
     let open = RwSignal::new(None::<Anchor>);
@@ -149,6 +159,17 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
                 listener.as_ref().unchecked_ref(),
                 true,
             );
+        }
+        if let (Some(Some(listener)), Some(window)) =
+            (any_up.try_update_value(Option::take), web_sys::window())
+        {
+            for name in UP_EVENTS {
+                let _ = window.remove_event_listener_with_callback_and_bool(
+                    name,
+                    listener.as_ref().unchecked_ref(),
+                    true,
+                );
+            }
         }
     });
     // The transport STAGE reads (its Live's); REVERB and AUTOTUNE none
@@ -392,7 +413,11 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
     // on the page, before any control's handler sees it (#124, review I1).
     let listener = Closure::wrap(Box::new(move |ev: web_sys::PointerEvent| {
         // A down outside AUTOTUNE and its panel closes the panel, and is
-        // taken for that alone.
+        // taken for that alone. A new down of the pointer whose up was to
+        // be taken ends that wait (its up never came).
+        if swallows_up(dismissed.try_get_value().flatten(), ev.pointer_id()) {
+            let _ = dismissed.try_set_value(None);
+        }
         let is_open = open.try_get_untracked().flatten().is_some();
         if is_open {
             let target = ev
@@ -415,6 +440,7 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
             if dismisses(is_open, on_button, on_panel) {
                 ev.prevent_default();
                 ev.stop_propagation();
+                let _ = dismissed.try_set_value(Some(ev.pointer_id()));
                 let _ = open.try_set(None);
                 step("close", ev.pointer_id());
             }
@@ -435,6 +461,29 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
         );
     }
     let _ = any_down.try_set_value(Some(listener));
+    // The up (or cancel) of the down that closed the panel reaches nothing
+    // either: a control that acts on its up alone (AbleSet's sign-in and
+    // direct address) never acts on a tap that closed the panel (PR #150
+    // re-review n2). Only AUTOTUNE has a panel.
+    if rule == Rule::Autotune {
+        let listener = Closure::wrap(Box::new(move |ev: web_sys::PointerEvent| {
+            if swallows_up(dismissed.try_get_value().flatten(), ev.pointer_id()) {
+                ev.prevent_default();
+                ev.stop_propagation();
+                let _ = dismissed.try_set_value(None);
+            }
+        }) as Box<dyn FnMut(web_sys::PointerEvent)>);
+        if let Some(window) = web_sys::window() {
+            for name in UP_EVENTS {
+                let _ = window.add_event_listener_with_callback_and_bool(
+                    name,
+                    listener.as_ref().unchecked_ref(),
+                    true,
+                );
+            }
+        }
+        let _ = any_up.try_set_value(Some(listener));
+    }
     // A hidden page ends a press with nothing done. `visibilitychange`
     // bubbles from the document to the window.
     let hidden = window_event_listener_untyped("visibilitychange", move |_| {

@@ -220,7 +220,7 @@ test.describe("AUTOTUNE and its singers' panel", () => {
     await until(async () => (await hubStatus()).autotune.singers_off ?? [], (v: string[]) => v.length === 0, "no singer off");
     await live.call("band", "live_set", "stop_playing");
     for (const path of [STREAM_KEY, STREAM_SCALE]) expect(await hostLine("band", `param ${path} enabled 1`)).toBe("PARAM 1");
-    for (const index of [2, 1, 0]) await hostLine("band", `cue remove ${index}`);
+    for (const index of [4, 3, 2, 1, 0]) await hostLine("band", `cue remove ${index}`);
     expect(await hostLine("band", "song time 0")).toBe("SONG 0.0");
     for (const track of [6, 7, 8]) await hostLine("band", `tuner track ${track} remove`);
     await harness("/hub/layout/reset");
@@ -504,8 +504,16 @@ test.describe("AUTOTUNE and its singers' panel", () => {
       const box = (await panel.boundingBox())!;
       const at = (await mute.boundingBox())!;
       expect(at.x + at.width, "the mute is left of the panel").toBeLessThan(box.x);
+      // Neither its down nor its up reaches the mute (PR #150 re-review n2:
+      // a control that acts on its up alone never acts on that tap).
+      await mute.evaluate((el) => {
+        const reached: string[] = [];
+        (window as any).reachedMute = reached;
+        for (const type of ["pointerdown", "pointerup"]) el.addEventListener(type, () => reached.push(type));
+      });
       await mute.click();
       await expect(panel).toHaveCount(0);
+      expect(await page.evaluate(() => (window as any).reachedMute), "nothing of the tap reached the mute").toEqual([]);
       await page.waitForTimeout(500);
       expect(await live.get(instance, target, "mute"), "the mute as it was").toBe(before);
       const sets = (await hubEvents()).filter((r: any) => r.ev === "set" && r.ts >= since && r.key === key);
@@ -575,9 +583,13 @@ test.describe("AUTOTUNE and its singers' panel", () => {
       expect(await hostLine("band", SONG[0])).toBe("CUE 1");
       expect(await hostLine("band", SONG[1])).toBe("CUE 2");
       expect(await hostLine("band", "cue add 120 002 Test Two {C}")).toBe("CUE 3");
+      // Two more that never end: three long problem texts in the foot
+      // (PR #150 re-review n3).
+      expect(await hostLine("band", "cue add 130 003 Test Three {C}")).toBe("CUE 4");
+      expect(await hostLine("band", "cue add 140 004 Test Four {C}")).toBe("CUE 5");
       await until(
         async () => (await hubStatus()).songmap.find((m: any) => m.instance === "band"),
-        (m: any) => m?.keyed === 1 && m?.changes === 1 && m?.problems === 1,
+        (m: any) => m?.keyed === 1 && m?.changes === 1 && m?.problems === 3,
         "the song map with its change and its problem",
         10_000,
       );
@@ -586,10 +598,18 @@ test.describe("AUTOTUNE and its singers' panel", () => {
       const panel = page.getByTestId("autotune-panel");
       await expect(panel.getByTestId("autotune-panel-song")).toHaveText("song 001 · C → G at Key {G}");
       expect(await clipped(panel.getByTestId("autotune-panel-song"))).toEqual([]);
-      await expect(panel.getByTestId("autotune-panel-map")).toHaveText(
-        /^Song map: 1 song with a key, 1 key change, 1 problem \(song 002: not ended by SONG END, STOP or AUTOSTOP.*\)\.$/,
-      );
-      expect(live.autotune.map_texts).toHaveLength(1);
+      const map = panel.getByTestId("autotune-panel-map");
+      await expect(map).toHaveText(/^Song map: 1 song with a key, 1 key change, 3 problems \(.+\)\.$/);
+      for (const song of ["002", "003", "004"]) {
+        await expect(map).toContainText(`song ${song}: not ended by SONG END, STOP or AUTOSTOP`);
+      }
+      expect(live.autotune.map_texts).toHaveLength(3);
+      // The long foot wraps inside the panel, never clipped (n3).
+      for (const line of [map, panel.getByTestId("autotune-panel-live")]) {
+        expect(await clipped(line), `${await line.textContent()}`).toEqual([]);
+      }
+      expect((await map.boundingBox())!.height, "the problems on more than one line").toBeGreaterThan(20);
+      expect(await panel.evaluate((el) => el.scrollWidth - el.clientWidth), "nothing wider than the panel").toBeLessThanOrEqual(0);
       // Past the clip: G in force, no change to come.
       expect(await hostLine("band", "song time 60")).toBe("SONG 60.0");
       await expect(panel.getByTestId("autotune-panel-song")).toHaveText("song 001 · G");
@@ -723,6 +743,13 @@ test.describe("AUTOTUNE and its singers' panel", () => {
           expect(box.x, "beside the column").toBeGreaterThanOrEqual(column.x + column.width);
         } else {
           expect(box.width, "the screen's width less its 8 px edges").toBeCloseTo(width - 16, 0);
+          // Measured at its natural height, placed below or above the
+          // button and never over it (PR #150 re-review m3).
+          const at = (await button.boundingBox())!;
+          expect(
+            box.y >= at.y + at.height - 0.5 || box.y + box.height <= at.y + 0.5,
+            `the panel ${box.y}..${box.y + box.height} off the button ${at.y}..${at.y + at.height}`,
+          ).toBe(true);
         }
         const wide = await panel.evaluate((el) => {
           const out: string[] = [];
