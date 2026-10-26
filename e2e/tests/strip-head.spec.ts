@@ -14,7 +14,8 @@ import { openSurface } from "./support/live";
 // count such as `10/12`, which leaves it no room at 64 px). `!`, the chain
 // and MUTED never yield. No RET anywhere. Under the button the readout
 // line (20 px: the head is 59 px, as before), then the fader zone with SEL
-// at its bottom left, clear of the cap at −∞.
+// at its bottom left, 3 px clear of the cap at −∞ (the main session's
+// ruling on #151).
 //
 // A static render of the strip as StripView, MuteView, InfoColumn,
 // FaderView/TrackMeter and DetailKey draw it, in the surface's own
@@ -276,21 +277,40 @@ async function sweep(list: Case[]): Promise<Result> {
     // the cap at −∞ (the static fader's `--p: 0`).
     const zone = s.querySelector(".strip-zone")!.getBoundingClientRect();
     const capW = Math.min(32, c.w - 38);
-    const want = Math.min(36, zone.width - 21 - capW / 2);
+    // The main session's ruling on #151: 3 px short of the cap's widest reach.
+    const want = Math.min(36, zone.width - 24 - capW / 2);
     const sel = s.querySelector(".strip-sel")!.getBoundingClientRect();
     const cap = s.querySelector(".fader-cap")!.getBoundingClientRect();
     if (Math.abs(sel.width - want) > 0.5) fail(`SEL is ${at(sel.width)} px wide, not ${at(want)}`);
     if (Math.abs(sel.height - (narrow ? 44 : 36)) > 0.5) fail(`SEL is ${at(sel.height)} px high`);
     if (Math.abs(sel.left - strip.left - 1) > 0.5) fail(`SEL starts ${at(sel.left - strip.left)} px from the strip's edge`);
-    if (sel.right > cap.left + 0.5) fail(`SEL's right ${at(sel.right - strip.left)} passes the cap's left ${at(cap.left - strip.left)}`);
+    if (sel.right > cap.left - 3 + 0.01) fail(`SEL's right ${at(sel.right - strip.left)} is not 3 px left of the cap's ${at(cap.left - strip.left)}`);
+    // Its foot at the strip's (inside its 4 px padding and 1 px border).
+    if (Math.abs(strip.bottom - 5 - sel.bottom) > 0.5) fail(`SEL's foot ${at(strip.bottom - sel.bottom)} px above the strip's`);
     if (clips(s.querySelector(".strip-sel-word")!)) fail("SEL is clipped");
     // The info column clear of the cap's widest reach.
     const col = s.querySelector(".strip-col")!.getBoundingClientRect();
     if (col.right > cap.left - 2.99) fail(`the info column ends ${at(cap.left - col.right)} px from the cap`);
-    // Nothing passes the strip's right edge.
+    // Nothing passes the strip's right or bottom edge (the fader's rail is
+    // a transparent layer as tall as the track, moved by --p; a bar's moving
+    // layers are clipped by the bar).
     for (const el of s.querySelectorAll("*")) {
       const r = el.getBoundingClientRect();
       if ((r.width > 0 || r.height > 0) && r.right > strip.right + 0.5) fail(`.${(el as HTMLElement).className} ends at ${at(r.right - strip.left)}, past the strip's ${at(strip.width)}`);
+      const clippedLayer = el.classList.contains("fader-rail") || (!!el.closest(".meter-bar") && !el.classList.contains("meter-bar"));
+      if ((r.width > 0 || r.height > 0) && r.bottom > strip.bottom + 0.5 && !clippedLayer) fail(`.${(el as HTMLElement).className} ends ${at(r.bottom - strip.bottom)} px under the strip`);
+    }
+    // The armed guard's and an open write's outline stay inside the button
+    // (it is the strip's top edge: an outline outside it would be cut).
+    const mute = s.querySelector(".strip-head > .mute") as HTMLElement;
+    for (const look of [["armed", null], [null, "unconfirmed"], [null, "not_sent"]] as const) {
+      if (look[0]) mute.classList.add(look[0]);
+      if (look[1]) mute.setAttribute("data-intent", look[1]);
+      const cs = getComputedStyle(mute);
+      const reach = parseFloat(cs.outlineOffset) + parseFloat(cs.outlineWidth);
+      if (cs.outlineStyle === "none" || reach > 0.01) fail(`the ${look[0] ?? look[1]} outline reaches ${at(reach)} px out of the button`);
+      if (look[0]) mute.classList.remove(look[0]);
+      if (look[1]) mute.removeAttribute("data-intent");
     }
   });
   host.remove();
@@ -318,7 +338,8 @@ test.describe("The v8 strip head and SEL", () => {
     // The narrow boundary: 77.99 px is narrow (a 44 px SEL), 78 px is not.
     expect(result.measures["77.99"].key).toMatch(/x44\.00$/);
     expect(result.measures["78"].key).toMatch(/x36\.00$/);
-    // 36 x 36 from 83 px up.
-    expect(result.measures["83.16"].key).toBe("36.00x36.00");
+    // The iPad's 83 px strip: 36 px high, 3 px short of the cap.
+    expect(result.measures["83.16"].key).toMatch(/^33\.\d\dx36\.00$/);
+    expect(result.measures["88"].key).toBe("36.00x36.00");
   });
 });

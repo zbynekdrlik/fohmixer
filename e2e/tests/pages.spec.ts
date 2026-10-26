@@ -294,15 +294,18 @@ test.describe("Nothing moves under a finger", () => {
       const one = (await page.locator(`.slot[data-group="${section.id}"]`).first().boundingBox())!;
       expect(Math.abs(title.width - one.width)).toBeLessThan(1);
       expect(Math.abs(title.x - one.x)).toBeLessThan(1);
-      // The side label stays in its scale column and ends in an ellipsis;
-      // its strip keeps its width.
+      // The side label stays in its info column (#151), clear of the cap,
+      // and ends in an ellipsis; its strip keeps its width.
       await expect(side).toHaveText(named.title);
-      const scale = (await page.locator(`.slot[data-group="${named.id}"]`).getByTestId("scale").boundingBox())!;
+      const slot = page.locator(`.slot[data-group="${named.id}"]`);
+      const col = (await slot.getByTestId("strip-col").boundingBox())!;
+      const cap = (await slot.getByTestId("fader-cap").boundingBox())!;
       const label = (await side.boundingBox())!;
-      expect(label.x).toBeGreaterThanOrEqual(scale.x - 0.5);
-      expect(label.x + label.width).toBeLessThanOrEqual(scale.x + scale.width + 0.5);
-      expect(label.y).toBeGreaterThanOrEqual(scale.y - 0.5);
-      expect(label.y + label.height).toBeLessThanOrEqual(scale.y + scale.height + 0.5);
+      expect(label.x).toBeGreaterThanOrEqual(col.x - 0.5);
+      expect(label.x + label.width).toBeLessThanOrEqual(col.x + col.width + 0.5);
+      expect(label.x + label.width, "the label left of the cap").toBeLessThanOrEqual(cap.x);
+      expect(label.y).toBeGreaterThanOrEqual(col.y - 0.5);
+      expect(label.y + label.height).toBeLessThanOrEqual(col.y + col.height + 0.5);
       expect(await side.evaluate((e) => e.scrollHeight > e.clientHeight), "the title is cut").toBe(true);
       await expect(side).toHaveCSS("text-overflow", "ellipsis");
       const widthAfter = (await page.locator(`.slot[data-group="${named.id}"]`).boundingBox())!.width;

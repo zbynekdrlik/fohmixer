@@ -9,6 +9,7 @@ import {
   doubleTap,
   frames,
   hostLine,
+  hubEvents,
   harness,
   openDetail,
   openSurface,
@@ -39,6 +40,21 @@ test.afterEach(async () => {
 });
 
 const HAND2 = track("Hand2 #");
+/**
+ * Each meter bar as drawn (#151: no per-bar attribute is written each
+ * frame): its level, 1 − its cover's `scaleY`, and its peak line's `--pk`.
+ */
+async function drawn(bars: import("@playwright/test").Locator): Promise<{ level: number; peak: number }[]> {
+  return bars.evaluateAll((all) =>
+    all.map((b) => {
+      const cover = b.querySelector(".meter-cover") as HTMLElement;
+      const scale = /scaleY\(([-\d.]+)\)/.exec(cover.style.transform);
+      const peak = (b.querySelector(".meter-peak") as HTMLElement).style.getPropertyValue("--pk");
+      return { level: scale ? 1 - Number(scale[1]) : 0, peak: Number(peak || 0) };
+    }),
+  );
+}
+
 /** A strip's calm name button (#151, mockup v8: `#15151f`). */
 const CALM = "rgb(21, 21, 31)";
 
@@ -292,6 +308,14 @@ test.describe("A strip", () => {
     await ready(mute);
     await mute.click();
     await expect(mute).toHaveClass(/\barmed\b/);
+    // #151 (PR #153's review M5): the armed outline is drawn inside the name
+    // button, the strip's top edge, so no line's top can cut it.
+    const reach = await mute.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { style: cs.outlineStyle, reach: parseFloat(cs.outlineOffset) + parseFloat(cs.outlineWidth) };
+    });
+    expect(reach.style).not.toBe("none");
+    expect(reach.reach, "the armed outline inside the button").toBeLessThanOrEqual(0.01);
     await page.waitForTimeout(700);
     expect(await live.get("master", hand1, "mute")).toBe(false);
     await expect(mute).not.toHaveClass(/\barmed\b/);
@@ -427,12 +451,10 @@ test.describe("A strip", () => {
     const cap = (await s.getByTestId("fader-cap").boundingBox())!;
     const zero = (await ticks.nth(1).boundingBox())!;
     expect(Math.abs(cap.y + cap.height / 2 - (zero.y + zero.height / 2))).toBeLessThan(2);
-    // The unity mark (the fader's ::after) at the 0 label's centre.
-    const unity = await fader.evaluate((el) => {
-      const r = el.getBoundingClientRect();
-      const a = getComputedStyle(el, "::after");
-      return r.top + parseFloat(a.top) + parseFloat(a.height) / 2;
-    });
+    // The unity mark (the fader's ::after, 1 px high, its top at the 0 dB
+    // position) under the 0 label's centre, which translateY(-50%) puts at
+    // that same position: compare the mark's top edge.
+    const unity = await fader.evaluate((el) => el.getBoundingClientRect().top + parseFloat(getComputedStyle(el, "::after").top));
     expect(Math.abs(unity - (zero.y + zero.height / 2)), "the 0 label on the unity mark").toBeLessThan(0.5);
     // +6 dB is the top of the travel.
     const travel = (await fader.boundingBox())!;
@@ -456,7 +478,7 @@ test.describe("A strip", () => {
     await expect(bars).toHaveCount(2);
     try {
       expect(await hostLine("band", 'meter "Hand2 #" 0.6')).toBe("METER 1");
-      const pair = () => bars.evaluateAll((all) => all.map((b) => Number(b.getAttribute("data-level"))));
+      const pair = async () => (await drawn(bars)).map((b) => b.level);
       const both = await until(pair, (v) => v[0] > 0.3 && Math.abs(v[0] - v[1]) < 1e-4, "both bars at the held level");
       expect(both[1]).toBeCloseTo(both[0], 4);
       const fader = s.getByTestId("fader");
@@ -478,7 +500,7 @@ test.describe("A strip", () => {
       // The peak line holds a while after the level falls (each bar's own).
       expect(await hostLine("band", 'meter "Hand2 #" 0.3')).toBe("METER 1");
       await until(pair, (v) => v[0] < 0.5 && v[1] < 0.5, "the bars down");
-      const peaks = await bars.evaluateAll((all) => all.map((b) => Number(b.getAttribute("data-peak"))));
+      const peaks = (await drawn(bars)).map((b) => b.peak);
       for (const p of peaks) expect(p, "the peak held").toBeGreaterThan(0.9);
       await expect(page.getByTestId("clip")).toHaveCount(0);
       expect(await s.textContent()).not.toMatch(/CLIP|PEAK/);
@@ -530,7 +552,7 @@ test.describe("A strip", () => {
     const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
     await openSurface(page);
     const bars = () => strip(page, "Hand2 #").getByTestId("meter").getByTestId("meter-bar");
-    const pair = async () => bars().evaluateAll((all) => all.map((b) => Number(b.getAttribute("data-level"))));
+    const pair = async () => (await drawn(bars())).map((b) => b.level);
     await expect(bars()).toHaveCount(2);
     const lr = JSON.parse(readFileSync(LAYOUT, "utf-8"));
     lr.config.meter_source = "lr";
@@ -599,6 +621,79 @@ test.describe("A strip", () => {
     await expect(master.getByTestId("db")).toHaveText(dbForm(await live.display("master", volume(track("Hand1 #")), 0.6)));
   });
 });
+
+// SEL never takes the fader's touch (#151, Review Focus 3, the main
+// session's ruling on #151): with the cap at −∞ the key's touch box ends
+// 3 px left of the cap, a finger down on SEL and dragged writes no volume,
+// and a finger down on the cap's centre grabs the fader. On the iPad and on
+// both phones (a narrow strip's key is 44 px high).
+for (const size of [
+  { width: 1194, height: 834, key: 36 },
+  { width: 844, height: 390, key: 44 },
+  { width: 390, height: 844, key: 44 },
+]) {
+  test.describe(`SEL and the cap at −∞, ${size.width} × ${size.height}`, () => {
+    test.use({ viewport: { width: size.width, height: size.height } });
+
+    test("SEL ends 3 px left of the cap; a drag from SEL writes no volume, a drag from the cap moves the fader", async ({ page }) => {
+      await openSurface(page);
+      await expect(page.getByTestId("strip").first()).toBeVisible();
+      await frames(page);
+      // A bound, unmarked track strip whole on the screen.
+      const pick = await page.getByTestId("strip").evaluateAll((all) => {
+        for (const s of all) {
+          const r = s.getBoundingClientRect();
+          const fader = s.querySelector('[data-testid="fader"]');
+          const on = r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight;
+          if (on && fader && fader.getAttribute("aria-disabled") === "false" && !s.hasAttribute("data-mark") && s.getAttribute("data-kind") === "standard") {
+            return { track: s.getAttribute("data-track")!, instance: s.getAttribute("data-instance")!, keys: fader.getAttribute("data-keys")! };
+          }
+        }
+        return null;
+      });
+      expect(pick, "a strip whole on the screen").not.toBeNull();
+      const key: string = JSON.parse(pick!.keys)[0];
+      const [instance, target, prop] = key.split("|");
+      const s = strip(page, pick!.track, pick!.instance);
+      const fader = s.getByTestId("fader");
+      const before = await live.get(instance, target, prop);
+      try {
+        await live.set(instance, target, prop, 0);
+        await until(() => shown(fader), (v) => v === 0, "the fader at −∞");
+        await frames(page);
+        const sel = (await s.getByTestId("detail-key").boundingBox())!;
+        const cap = (await s.getByTestId("fader-cap").boundingBox())!;
+        expect(Math.abs(sel.height - size.key), `SEL ${sel.width} × ${sel.height}`).toBeLessThan(0.5);
+        expect(sel.width).toBeGreaterThanOrEqual(15);
+        expect(cap.x - (sel.x + sel.width), "SEL 3 px left of the cap at −∞").toBeGreaterThanOrEqual(3 - 0.01);
+        // A finger down on SEL, dragged up over the fader, then lifted:
+        // no volume write, Live still at −∞.
+        const since = Date.now();
+        const k = { x: sel.x + sel.width / 2, y: sel.y + sel.height / 2 };
+        await page.mouse.move(k.x, k.y);
+        await page.mouse.down();
+        for (let i = 1; i <= 8; i++) await page.mouse.move(k.x, k.y - 10 * i);
+        await page.mouse.up();
+        await page.waitForTimeout(500);
+        expect(await live.get(instance, target, prop), "Live untouched by SEL").toBe(0);
+        const sets = (await hubEvents()).filter((r: any) => r.ev === "set" && r.ts >= since && r.key === key);
+        expect(sets, "no volume write from SEL").toEqual([]);
+        await expect(page.getByTestId("detail")).toHaveCount(0);
+        // A finger down on the cap's centre grabs the fader.
+        const c = { x: cap.x + cap.width / 2, y: cap.y + cap.height / 2 };
+        const hit = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.getAttribute("data-testid"), [c.x, c.y]);
+        expect(hit, "the cap's centre is the cap's").toBe("fader-cap");
+        await page.mouse.move(c.x, c.y);
+        await page.mouse.down();
+        for (let i = 1; i <= 10; i++) await page.mouse.move(c.x, c.y - 8 * i);
+        await page.mouse.up();
+        await until(() => live.get(instance, target, prop), (v) => v > 0.05, "the volume to rise from the cap");
+      } finally {
+        await live.set(instance, target, prop, before);
+      }
+    });
+  });
+}
 
 test.describe("Controls wait for Live's value (I8)", () => {
   test("right after load the controls are disabled until their first value and take no input", async ({ page }) => {
