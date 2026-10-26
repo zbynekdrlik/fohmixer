@@ -1,7 +1,8 @@
 //! The fall back to DRY when the hub is gone (#140 PR 3a, spec §8): the
 //! router gives each Live set's FohMixer script the DRY write of every
-//! found selector (its macro's `$ref` and its target's off value, whatever
-//! AUT is), and the script makes them when its connection to the hub ends
+//! found and confirmed selector (its macro's `$ref` and its target's off
+//! value, whatever AUT is; PR #147 re-review R8, R13), and the script makes
+//! them when its connection to the hub ends
 //! or the hub said nothing on it for 1.5 s (`live-script/FohMixer/safe.py`;
 //! the hub pings every 500 ms, `live::client::KEEPALIVE_MS`).
 //!
@@ -41,8 +42,9 @@
 //! - **It waits** while a DRY write of a target let go is on its way (PR
 //!   #147 review I3) and while any target, found or not, waits for its
 //!   walk unconfirmed (I4, re-review R1): the script keeps the list it
-//!   holds until then. An unconfirmed target whose walk gave up is left
-//!   out of the list (re-review R8).
+//!   holds until then. Every unconfirmed target is left out of the list
+//!   (re-review R8: once nothing waits, only one whose walk gave up can
+//!   still be unconfirmed; [`super::Target::registrable`]).
 //!
 //! Nothing here writes a selector.
 
@@ -227,7 +229,7 @@ impl AutotuneIo {
                 // An unconfirmed one is left out (PR #147 re-review R8):
                 // its ref may be of a track an older layout named there,
                 // also once its walk gave up; it is DRY and written nothing.
-                let found = target.found.as_ref().filter(|_| target.sure)?;
+                let found = target.found.as_ref().filter(|_| target.registrable())?;
                 Some((found.id.clone(), target.spec.off))
             })
             .collect()

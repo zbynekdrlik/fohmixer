@@ -50,18 +50,6 @@ fn a_selector_shows_its_on_or_off_value_or_neither() {
 }
 
 #[test]
-fn a_saved_aut_on_is_logged_and_stays_off() {
-    // The PR #147 rulings: kept in the file, off until #140 PR 3c.
-    assert_eq!(saved_aut_line(true), Some(SAVED_AUT_LINE));
-    assert_eq!(saved_aut_line(false), None);
-    assert!(SAVED_AUT_LINE.contains("stays off"));
-    assert_eq!(
-        AUT_REFUSED_WHY,
-        "AUTOTUNE AUT stays off until the new AUTOTUNE button (#140 PR 3c)"
-    );
-}
-
-#[test]
 fn the_rule_follows_each_sets_transport_and_the_flag() {
     let mut rule = AutotuneAut::new(false, Vec::new());
     assert!(!rule.is_on());

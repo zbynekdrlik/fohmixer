@@ -14,8 +14,8 @@ use super::super::super::tests::{attach, offline_router, offline_router_with, re
 use super::super::super::{Router, RouterMsg};
 use super::super::same_macro;
 use super::{
-    CURRENT_SONG_TIME, KeyPart, Position, PositionPart, Route, TEMPO, VALUE, heard_number, key_now,
-    key_status,
+    CURRENT_SONG_TIME, KeyPart, Position, PositionPart, Route, TEMPO, VALUE, coming_now,
+    heard_number, key_now, key_status, map_texts,
 };
 use crate::live::client::LiveEvent;
 use crate::outbox::Outbox;
@@ -34,7 +34,6 @@ const TRANSPORT: &str = "band|live_set|is_playing|false";
 const PLUGIN: &str = "live_set tracks 7 devices 0 chains 0 devices 0";
 const MACRO: &str = "live_set tracks 7 devices 0 parameters 1";
 const REFUSED: &str = "the AUTOTUNE tap is gone; a tap opens the singers' panel";
-const AUT_REFUSED_WHY: &str = "AUTOTUNE AUT stays off until the new AUTOTUNE button (#140 PR 3c)";
 
 fn stream() -> AutotuneTarget {
     AutotuneTarget {
@@ -283,6 +282,7 @@ fn the_key_in_force_at_a_position_needs_a_map_and_a_position() {
         bar_writing: None,
         bar_owed: false,
         late: None,
+        change: None,
     };
     assert_eq!(
         key_now(None, &at(Some(10.0), None, None)),
@@ -324,6 +324,97 @@ fn the_key_in_force_at_a_position_needs_a_map_and_a_position() {
 }
 
 #[test]
+fn the_coming_change_is_judged_where_the_key_in_force_is() {
+    // PR #150 review K1: the panel's head names the song's next key clip.
+    let listing = songs("C");
+    let map = build(&listing.cues, &listing.clips);
+    let at = |time: Option<f64>, playing: Option<bool>, ahead: f64| Position {
+        time,
+        playing,
+        tempo: Some(120.0),
+        time_sub: None,
+        tempo_sub: None,
+        follow: KeyFollow::new(),
+        ahead,
+        before: None,
+        bar: None,
+        bar_writing: None,
+        bar_owed: false,
+        late: None,
+        change: None,
+    };
+    let g = Some(fohmixer_proto::client::ComingChange {
+        key: "G".into(),
+        clip: "Key {G}".into(),
+    });
+    assert_eq!(coming_now(Some(&map), &at(Some(10.0), Some(false), 0.0)), g);
+    assert_eq!(
+        coming_now(None, &at(Some(10.0), Some(false), 0.0)),
+        None,
+        "no map"
+    );
+    assert_eq!(
+        coming_now(Some(&map), &at(None, Some(false), 0.0)),
+        None,
+        "no position"
+    );
+    // Stopped just before the clip: still coming; one tick ahead while
+    // playing (35 ms at 120 bpm, 0.07 beat) it is in force, none after it.
+    assert_eq!(
+        coming_now(Some(&map), &at(Some(49.95), Some(false), 0.0)),
+        g
+    );
+    assert_eq!(
+        coming_now(Some(&map), &at(Some(49.95), Some(true), 0.0)),
+        None
+    );
+    assert_eq!(
+        coming_now(Some(&map), &at(Some(49.95), None, 0.07)),
+        None,
+        "the lookahead kept"
+    );
+    assert_eq!(
+        coming_now(Some(&map), &at(Some(50.0), Some(false), 0.0)),
+        None
+    );
+    // Song 2 has no key clip; out of every song none.
+    assert_eq!(
+        coming_now(Some(&map), &at(Some(130.0), Some(false), 0.0)),
+        None
+    );
+    assert_eq!(
+        coming_now(Some(&map), &at(Some(110.0), Some(false), 0.0)),
+        None
+    );
+}
+
+#[test]
+fn the_pages_get_the_first_problems_in_words() {
+    // PR #150 review K2, M3: at most `MAP_TEXTS`, in the map's order.
+    let cue = |name: &str, time: f64| Cue {
+        name: name.to_string(),
+        time: Some(time),
+    };
+    let ok = build(&songs("C").cues, &[]);
+    assert_eq!(map_texts(&ok), Vec::<String>::new());
+    let cues: Vec<Cue> = (1..=5)
+        .map(|n| cue(&format!("00{n} Song {{C}}"), f64::from(n) * 10.0))
+        .collect();
+    let bad = build(&cues, &[]);
+    let texts = map_texts(&bad);
+    assert_eq!(texts.len(), 3);
+    assert_eq!(
+        texts,
+        bad.problems
+            .iter()
+            .take(3)
+            .map(|p| p.text())
+            .collect::<Vec<_>>()
+    );
+    assert!(texts[0].starts_with("song 001: "), "{texts:?}");
+}
+
+#[test]
 fn a_stopped_set_is_judged_with_the_lookahead_it_kept() {
     // PR 2a review M4: the lookahead a stop kept, until the playhead moves.
     let listing = songs("C");
@@ -341,6 +432,7 @@ fn a_stopped_set_is_judged_with_the_lookahead_it_kept() {
         bar_writing: None,
         bar_owed: false,
         late: None,
+        change: None,
     };
     let (c, g) = (Some(major(0)), Some(major(7)));
     assert_eq!(key_now(Some(&map), &at(Some(false), 0.07)), (Some(1), g));
@@ -650,6 +742,48 @@ async fn the_key_in_force_follows_the_song_time() {
 }
 
 #[tokio::test]
+async fn a_jump_that_keeps_the_key_tells_the_pages_its_coming_change() {
+    // PR #150 re-review m2: a jump from before a key clip to past the clip
+    // back to the song's key keeps the key in force; the pages' head never
+    // names a change that will not come.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, _own, _rx) = offline_router(dir.path());
+    let page = attach(&mut router, 1);
+    router.handle(layout(1, vec![stream()]));
+    let mut listing = songs("F");
+    listing.clips.push(ClipName {
+        name: "Key {F}".into(),
+        start: Some(70.0),
+    });
+    map_read(&mut router, 1, listing);
+    transport(&mut router, true);
+    deliver(&mut router, TEMPO_KEY, 120.0);
+    deliver(&mut router, TIME, 10.0);
+    let state = router.autotune.state();
+    assert_eq!((state.song, state.key.as_deref()), (Some(1), Some("F")));
+    assert_eq!(
+        state.change,
+        Some(fohmixer_proto::client::ComingChange {
+            key: "G".into(),
+            clip: "Key {G}".into(),
+        })
+    );
+    let _ = told(&page);
+    deliver(&mut router, TIME, 80.0);
+    let state = router.autotune.state();
+    assert_eq!(
+        (state.song, state.key.as_deref(), state.change),
+        (Some(1), Some("F"), None)
+    );
+    let after = told(&page);
+    assert_eq!(
+        after.last().map(|s| s.change.clone()),
+        Some(None),
+        "{after:?}"
+    );
+}
+
+#[tokio::test]
 async fn the_lookahead_is_a_playing_sets_only() {
     let dir = tempfile::tempdir().unwrap();
     let (mut router, _own, rx) = offline_router(dir.path());
@@ -880,9 +1014,8 @@ async fn a_set_without_targets_lets_its_position_go() {
 }
 
 #[tokio::test]
-async fn aut_on_is_refused_until_pr_3c_and_writes_nothing() {
-    // The PR #147 rulings: until #140 PR 3c's button, a page's AUT on is
-    // refused, so 1.8.0's 1 s hold cannot turn the rule on during an event.
+async fn aut_on_from_a_page_is_taken_recorded_and_saved() {
+    // #140 PR 3c lifted 3b's refusal: the new button's hold sets AUT.
     let dir = tempfile::tempdir().unwrap();
     let (mut router, mut own, rx) = offline_router(dir.path());
     let page = attach(&mut router, 1);
@@ -892,29 +1025,44 @@ async fn aut_on_is_refused_until_pr_3c_and_writes_nothing() {
     let _ = steps(&rx);
     let _ = told(&page);
     set_hub(&mut router, HUB_AUTOTUNE_AUT, json!(true));
-    assert_eq!(
-        steps(&rx),
-        vec![
-            json!({"step": "refused", "what": "aut", "why": AUT_REFUSED_WHY,
-                    "client": 1, "peer": "10.0.0.1"})
-        ]
-    );
-    assert!(!router.autotune.state().aut);
-    // The page is told the state again (unchanged: AUT off).
-    let again = told(&page);
-    assert_eq!(again, vec![router.autotune.state()]);
-    assert!(!again[0].aut);
+    // No song and a target with a problem: AUT on alone sends Live nothing
+    // (PR #150 review M5).
     assert!(!wrote(&mut own).await, "nothing goes to Live");
-    assert!(!dir.path().join("hub-state.json").exists(), "nothing saved");
     assert_eq!(status(&mut router).autotune.writes, 0);
-    // AUT off is taken: its record, nothing saved (as the file has it).
+    let on = steps(&rx);
+    assert_eq!(
+        on[0],
+        json!({"step": "flag", "on": true, "client": 1, "peer": "10.0.0.1"})
+    );
+    assert!(
+        on.iter().all(|r| r["step"] != "refused"),
+        "nothing refused: {on:?}"
+    );
+    assert!(router.autotune.state().aut);
+    assert!(status(&mut router).autotune.aut);
+    // The page is told AUT on.
+    let told_on = told(&page);
+    assert!(told_on.last().is_some_and(|s| s.aut), "{told_on:?}");
+    // Saved as `hub-state.json` `autotune_aut`.
+    let saved = HubState::load(dir.path());
+    assert!(saved.autotune_aut);
+    assert!(router.state.autotune_aut);
+    // AUT off again: its record, saved off (left out of the file).
     set_hub(&mut router, HUB_AUTOTUNE_AUT, json!(false));
     assert_eq!(
-        steps(&rx),
-        vec![json!({"step": "flag", "on": false, "client": 1, "peer": "10.0.0.1"})]
+        steps(&rx)[0],
+        json!({"step": "flag", "on": false, "client": 1, "peer": "10.0.0.1"})
     );
-    assert!(!dir.path().join("hub-state.json").exists());
-    assert!(!wrote(&mut own).await);
+    assert!(!router.autotune.state().aut);
+    assert!(!wrote(&mut own).await, "nothing goes to Live");
+    assert_eq!(status(&mut router).autotune.writes, 0);
+    assert!(!HubState::load(dir.path()).autotune_aut);
+    let text = std::fs::read_to_string(dir.path().join("hub-state.json")).unwrap();
+    assert!(!text.contains("autotune_aut"), "{text}");
+    // A value that is no bool falls through to the error reply: nothing.
+    set_hub(&mut router, HUB_AUTOTUNE_AUT, json!("on"));
+    assert!(steps(&rx).iter().all(|r| r["step"] != "flag"));
+    assert!(!router.autotune.state().aut);
 }
 
 #[tokio::test]
@@ -949,31 +1097,37 @@ async fn a_tap_is_refused_and_writes_nothing() {
 }
 
 #[tokio::test]
-async fn a_saved_aut_on_is_kept_in_the_file_and_stays_off() {
-    // The PR #147 rulings: `hub-state.json` keeps it, the rule treats it as
-    // off until #140 PR 3c (a warn line says so); the singers off by hand
-    // are kept (#140 PR 3b).
+async fn aut_is_kept_across_a_restart() {
+    // #140 PR 3b kept it in `hub-state.json`; since PR 3c a saved on is
+    // honoured at the start; the singers off by hand are kept too.
     let dir = tempfile::tempdir().unwrap();
-    let (mut router, _own, _rx) = offline_router_with(
-        dir.path(),
-        HubState {
-            stage_aut: false,
-            reverb: Saved::default(),
-            fader_links: Vec::new(),
-            autotune_aut: true,
-            autotune_off: vec!["VOX1".into()],
-        },
-    );
-    assert!(!router.autotune.state().aut);
+    let state = HubState {
+        stage_aut: false,
+        reverb: Saved::default(),
+        fader_links: Vec::new(),
+        autotune_aut: true,
+        autotune_off: vec!["VOX1".into()],
+    };
+    // The file's round trip keeps it.
+    let text = serde_json::to_string(&state).unwrap();
+    let back: HubState = serde_json::from_str(&text).unwrap();
+    assert_eq!(back, state);
+    let (mut router, _own, _rx) = offline_router_with(dir.path(), state);
+    assert!(router.autotune.state().aut);
     let now = status(&mut router).autotune;
-    assert!(!now.aut);
+    assert!(now.aut);
     assert_eq!(now.singers_off, ["VOX1"]);
     assert!(router.state.autotune_aut, "kept as saved");
     assert!(!dir.path().join("hub-state.json").exists(), "nothing saved");
     let page = attach(&mut router, 1);
-    assert!(!told(&page)[0].aut, "told off at attach");
+    assert!(told(&page)[0].aut, "told on at attach");
     assert!(
-        !crate::router::autotune::AutotuneIo::new(true, Vec::new())
+        crate::router::autotune::AutotuneIo::new(true, Vec::new())
+            .rule
+            .is_on()
+    );
+    assert!(
+        !crate::router::autotune::AutotuneIo::new(false, Vec::new())
             .rule
             .is_on()
     );

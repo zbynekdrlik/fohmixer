@@ -652,6 +652,25 @@ pub struct AutotuneState {
     /// The key Live's bar showed at its last read-back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bar: Option<String>,
+    /// The song in force's next key change after the playhead, with its key
+    /// clip's name (#140 PR 3c, PR #150 review K1: the panel's head reads
+    /// `F → G at Key {G}`); none outside a song or after its last change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change: Option<ComingChange>,
+    /// The song map's first problems in words (at most
+    /// [`MAP_TEXTS`], PR #150 review K2, M3: the panel's foot names them).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub map_texts: Vec<String>,
+}
+
+/// How many of the song map's problems the pages are told in words.
+pub const MAP_TEXTS: usize = 3;
+
+/// A song's coming key change (#140 PR 3c): the key and its clip's name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComingChange {
+    pub key: String,
+    pub clip: String,
 }
 
 /// Whether a count is 0 (left out of a message).
@@ -685,6 +704,17 @@ pub struct SingerState {
     pub key_ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+    /// Every one of its tracks with a key device holds the key in force,
+    /// written and read back (PR #150 review M4: the panel's `✓` means
+    /// that, never a key still on its way).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub confirmed: bool,
+    /// Its `why` is the hub's own wait (its set's fall back to DRY not
+    /// kept, Live's track list, a rack not found again: PR #150 re-review
+    /// m1), never its key's or its target's: the panel shows its key as it
+    /// stands and no "rewrite at the next change".
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub waiting: bool,
 }
 
 /// Why a target's selector is where the hub's rule put it (#140 PR 3b,

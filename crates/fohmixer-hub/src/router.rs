@@ -594,8 +594,8 @@ pub(crate) async fn beat_ticks(
 impl Router {
     /// A router over these instances, with the persisted hub values
     /// (`hub-state.json`: STAGE AUT, REVERB, the fader links' switches,
-    /// the AUTOTUNE singers off by hand, #140 PR 3b; a saved AUTOTUNE AUT on
-    /// stays in the file and is treated as off until #140 PR 3c).
+    /// AUTOTUNE AUT and the singers off by hand, #140 PR 3b; a saved
+    /// AUTOTUNE AUT on is honoured since #140 PR 3c).
     pub fn new(
         live: BTreeMap<String, LiveHandle>,
         state: HubState,

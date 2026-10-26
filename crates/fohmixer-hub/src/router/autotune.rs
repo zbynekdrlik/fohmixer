@@ -58,10 +58,11 @@
 //! target whose on and off values changed (a PA track where a stream track
 //! was) is walked afresh before anything is written or registered for it.
 //!
-//! **AUTOTUNE AUT stays off until #140 PR 3c (the PR #147 rulings):** a
-//! page's AUT on is refused (1.8.0's 1 s hold must not turn the rule on
-//! during an event), a saved one is kept in `hub-state.json` and treated
-//! as off; the router tests turn the rule on from inside.
+//! **AUTOTUNE AUT (#140 PR 3c lifted 3b's refusal):** a page's AUT on or
+//! off is taken (the new AUTOTUNE button's 1 s hold), recorded (`flag`) and
+//! saved as `hub-state.json` `autotune_aut`; a saved on is honoured at the
+//! hub's start. Only the tap (`autotune`) is refused: a tap opens the
+//! singers' panel and sends nothing.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -87,8 +88,7 @@ use crate::rules::autotune::switch::{
     Decision, Flying, Refusal, SelectorGuard, answered_flying, needs_write, still_flying,
 };
 use crate::rules::autotune::{
-    AUT_REFUSED_WHY, AutotuneAut, Cause, REFUSED_WHY, Step, saved_aut_line, shows, step_line,
-    step_warn, target_state,
+    AutotuneAut, Cause, REFUSED_WHY, Step, shows, step_line, step_warn, target_state,
 };
 
 #[path = "autotune/keys.rs"]
@@ -209,6 +209,14 @@ impl Target {
     pub fn awaits_walk(&self) -> bool {
         !self.sure && self.problem.is_none()
     }
+
+    /// Whether its found macro may go into its set's registration of DRY
+    /// writes: only once a walk confirmed it (`sure`; PR #147 re-review
+    /// R8, R14: an unconfirmed ref may be of a track an older layout named
+    /// at its index, also once its walk gave up).
+    pub fn registrable(&self) -> bool {
+        self.sure
+    }
 }
 
 /// The router's AUTOTUNE.
@@ -240,6 +248,9 @@ pub(super) struct AutotuneIo {
     pub safe_seq: u64,
     /// Each Live set's song map counts, as last read (the pages' state).
     pub counts: BTreeMap<String, Counts>,
+    /// Each Live set's song map problems in words, as last read (the pages'
+    /// state, PR #150 review K2: the first `MAP_TEXTS`).
+    pub map_texts: BTreeMap<String, Vec<String>>,
     /// The selector writes' own counter (PR #147 review I1).
     pub selects: u64,
     /// Each Live set's DRY writes of targets let go, on their way: its
@@ -248,18 +259,13 @@ pub(super) struct AutotuneIo {
 }
 
 impl AutotuneIo {
-    /// AUTOTUNE with the singers off by hand as persisted (#140 PR 3b:
-    /// kept across a restart) and AUT off: a saved AUT on stays in
-    /// `hub-state.json` and is treated as off until #140 PR 3c's button (the
-    /// PR #147 rulings), a warn line says so. Its state as every page gets
-    /// it at attach is the one told (a layout without targets tells nothing
-    /// new).
+    /// AUTOTUNE with AUT and the singers off by hand as persisted (#140 PR
+    /// 3b: kept across a restart; a saved AUT on honoured since PR 3c). Its
+    /// state as every page gets it at attach is the one told (a layout
+    /// without targets tells nothing new).
     pub fn new(saved: bool, off: Vec<String>) -> Self {
-        if let Some(line) = saved_aut_line(saved) {
-            tracing::warn!("{line}");
-        }
         let mut io = Self {
-            rule: AutotuneAut::new(false, off),
+            rule: AutotuneAut::new(saved, off),
             targets: BTreeMap::new(),
             order: Vec::new(),
             walks: 0,
@@ -271,6 +277,7 @@ impl AutotuneIo {
             safe: BTreeMap::new(),
             safe_seq: 0,
             counts: BTreeMap::new(),
+            map_texts: BTreeMap::new(),
             selects: 0,
             retiring: BTreeMap::new(),
         };
@@ -326,6 +333,11 @@ impl AutotuneIo {
             map_changes: counts.changes,
             map_keyed: counts.keyed,
             bar: position.and_then(|p| p.bar.clone()),
+            change: position.and_then(|p| p.change.clone()),
+            map_texts: first
+                .and_then(|set| self.map_texts.get(set))
+                .cloned()
+                .unwrap_or_default(),
         }
     }
 
@@ -1368,14 +1380,13 @@ impl Router {
 
     /// A page's `set_hub` of an AUTOTUNE key: whether it was one (another,
     /// or a value it does not take, falls through to the error reply).
-    /// `autotune_aut` takes a bool (on refused until #140 PR 3c: the PR #147
-    /// rulings), `autotune_singer` a singer's `{id, off}` (#140 PR 3b), and
-    /// the tap `autotune` is refused.
+    /// `autotune_aut` takes a bool (#140 PR 3c: on and off), `autotune_singer`
+    /// a singer's `{id, off}` (#140 PR 3b), and the tap `autotune` is
+    /// refused.
     pub(super) fn autotune_set_hub(&mut self, client: ClientId, key: &str, value: &Value) -> bool {
         match key {
             HUB_AUTOTUNE_AUT => match value.as_bool() {
-                Some(true) => self.autotune_refused(client, "aut", AUT_REFUSED_WHY),
-                Some(false) => self.autotune_flag(client, false),
+                Some(on) => self.autotune_flag(client, on),
                 None => return false,
             },
             HUB_AUTOTUNE => self.autotune_refused(client, "tap", REFUSED_WHY),
@@ -1393,8 +1404,8 @@ impl Router {
         true
     }
 
-    /// AUTOTUNE AUT set (a page's off; on only from inside until #140 PR
-    /// 3c): recorded; saved when it differs from `hub-state.json`; every set
+    /// AUTOTUNE AUT set (a page's hold, #140 PR 3c): recorded; saved when
+    /// it differs from `hub-state.json`; every set
     /// decided at once (on: what the rule allows, a selected track only
     /// once its key is confirmed; off: every target DRY).
     pub(super) fn autotune_flag(&mut self, client: ClientId, on: bool) {

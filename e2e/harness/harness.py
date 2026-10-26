@@ -165,6 +165,14 @@ ANSWERS = {
     "meter": "METER",
     "tuner": "TUNER",
     "delete-track": "DELETED",
+    # #140 PR 3c (autotune.spec.ts): a locator, the playhead, another
+    # writer's parameter (or a Max map's hold), Live's setter count.
+    "cue": "CUE",
+    "song": "SONG",
+    "param": "PARAM",
+    "sets": "SETS",
+    # PR #150 review K1: a Sections key clip.
+    "clip": "CLIP",
 }
 
 

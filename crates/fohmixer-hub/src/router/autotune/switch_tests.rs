@@ -15,7 +15,7 @@ use super::super::super::{Router, RouterIo, RouterMsg};
 use super::super::safe::{SAFE_WRITES, Safe};
 use super::{
     NO_SINGER, armed, checked, checking, has_problem, key_why, part, singer_label, singer_value,
-    track_state, trouble,
+    track_state, trouble, waiting_words,
 };
 use crate::live::client::{Asked, LiveEvent, Script, scripted};
 use crate::rules::HubState;
@@ -173,6 +173,9 @@ struct Live {
     held: BTreeSet<String>,
     /// The refs whose object was deleted (answered stale).
     gone: BTreeSet<String>,
+    /// A script before 1.13.0: every registration refused (`no such
+    /// function: safe_writes`), so nothing is ever kept.
+    old_script: bool,
 }
 
 impl Live {
@@ -207,7 +210,10 @@ impl Live {
                 .iter()
                 .filter(|w| self.gone.contains(w["target"]["$ref"].as_str().unwrap()))
                 .count();
-            let slot = if gone > 0 {
+            let slot = if self.old_script {
+                json!({"ok": false, "error": "no such function: safe_writes",
+                       "errorType": "OpError"})
+            } else if gone > 0 {
                 json!({"ok": false, "error": format!("bad args: {gone} safe write target(s) do not resolve"),
                        "errorType": "OpError"})
             } else {
@@ -373,8 +379,7 @@ fn transport(router: &mut Router, playing: bool) {
     router.on_transport(TRANSPORT, &json!(playing));
 }
 
-/// AUTOTUNE AUT on from inside (the PR #147 rulings: a page's AUT on is
-/// refused until #140 PR 3c), as page 1's.
+/// AUTOTUNE AUT on, as page 1's hold sets it (#140 PR 3c).
 fn aut_on(router: &mut Router) {
     router.autotune_flag(1, true);
 }
@@ -454,6 +459,7 @@ fn scripted_router(
         batches: Vec::new(),
         held: BTreeSet::new(),
         gone: BTreeSet::new(),
+        old_script: false,
     };
     (router, live, records)
 }
@@ -1073,9 +1079,8 @@ async fn a_singer_off_is_kept_across_a_restart() {
         autotune_off: vec!["VOX1".into()],
     };
     let (mut router, mut live, _rx) = ready(dir.path(), state).await;
-    // A saved AUT on stays off until #140 PR 3c (the PR #147 rulings).
-    assert!(!router.autotune.state().aut);
-    aut_on(&mut router);
+    // A saved AUT on is honoured at the start (#140 PR 3c).
+    assert!(router.autotune.state().aut);
     transport(&mut router, true);
     live.settle(&mut router).await;
     assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new());
@@ -1115,6 +1120,7 @@ async fn a_key_change_keeps_tuning_and_a_bad_read_back_drops_only_that_track() {
         (TrackState::Dry, TrackState::Tune, false)
     );
     assert_eq!(singer.why.as_deref(), Some("stream Key refused, wrote G"));
+    assert!(!singer.waiting, "a key's why");
 }
 
 impl Live {
@@ -1214,6 +1220,7 @@ async fn another_writer_is_shown_and_dry_wins() {
         singer.why.as_deref(),
         Some("stream: another writer moves its selector")
     );
+    assert!(!singer.waiting, "a target's why");
     // The PA tunes meanwhile; the stream's selector left as it is.
     assert_eq!(live.written(), vec![batch(&[("p6", 0.0)])]);
     // The next song start resets the guard: DRY again, then on once its
@@ -1525,6 +1532,133 @@ async fn no_write_when_live_already_shows_the_decision() {
     assert_eq!(status(&mut router).autotune.writes, 1, "tuning's one batch");
 }
 
+/// AUTOTUNE AUT saved on, Live playing at 10 in song 1 (D), both racks
+/// found with their values heard and on DRY, a script that refuses every
+/// registration (one before 1.13.0: nothing is ever kept), then the song
+/// map read and the keys written and read back: every track stays DRY,
+/// `unarmed`.
+async fn unarmed_in_a_song(dir: &std::path::Path) -> (Router, Live) {
+    let state = HubState {
+        stage_aut: false,
+        reverb: crate::rules::reverb::Saved::default(),
+        fader_links: Vec::new(),
+        autotune_aut: true,
+        autotune_off: Vec::new(),
+    };
+    let (mut router, mut live, _rx) = scripted_router(dir, state);
+    live.old_script = true;
+    assert!(router.autotune.state().aut, "a saved AUT on is honoured");
+    router.handle(layout(1, vec![pa(), stream()]));
+    find(&mut router, PA, rack(6));
+    find(&mut router, STREAM, rack(7));
+    heard(&mut router, PA, (0.75, 0.0));
+    heard(&mut router, STREAM, (0.5, 1.0 / 28.0));
+    by_hand(&mut router, &mut live, "p6", 127.0);
+    by_hand(&mut router, &mut live, "p7", 0.0);
+    transport(&mut router, true);
+    deliver(&mut router, TEMPO_KEY, 120.0);
+    deliver(&mut router, TIME, 10.0);
+    live.settle(&mut router).await;
+    assert_eq!(router.autotune.safe["band"].state, SafeState::Failed);
+    assert_eq!(
+        live.written(),
+        Vec::<Vec<(String, f64)>>::new(),
+        "no map yet: nothing on"
+    );
+    map_read(&mut router, 1, songs());
+    live.settle(&mut router).await;
+    assert_eq!(
+        live.written(),
+        Vec::<Vec<(String, f64)>>::new(),
+        "not kept: nothing on"
+    );
+    assert_eq!(
+        decisions(&mut router),
+        [off(SwitchWhy::Unarmed), off(SwitchWhy::Unarmed)]
+    );
+    (router, live)
+}
+
+#[test]
+fn a_decision_of_the_hubs_own_has_its_words_and_every_other_none() {
+    // PR #150 review I2.
+    assert_eq!(
+        waiting_words(SwitchWhy::Unarmed, Some("no such function: safe_writes")).as_deref(),
+        Some("its fall back to DRY is not kept (no such function: safe_writes)")
+    );
+    assert_eq!(
+        waiting_words(SwitchWhy::Unarmed, None).as_deref(),
+        Some("its fall back to DRY is not kept yet")
+    );
+    assert_eq!(
+        waiting_words(SwitchWhy::Held, None).as_deref(),
+        Some("waits for Live's track list")
+    );
+    assert_eq!(
+        waiting_words(SwitchWhy::Unconfirmed, None).as_deref(),
+        Some("waits for its rack to be found again")
+    );
+    for why in [
+        SwitchWhy::Aut,
+        SwitchWhy::Stop,
+        SwitchWhy::Span,
+        SwitchWhy::NoKey,
+        SwitchWhy::SingerOff,
+        SwitchWhy::Problem,
+        SwitchWhy::AnotherWriter,
+        SwitchWhy::Mismatch,
+        SwitchWhy::Play,
+    ] {
+        assert_eq!(waiting_words(why, Some("x")), None, "{why:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_singer_kept_dry_by_its_sets_fall_back_not_kept_says_why() {
+    // PR #150 review I2: the pages never read `tuning` with every track DRY
+    // for a reason of the hub's own; the singer shows it.
+    let dir = tempfile::tempdir().unwrap();
+    let (router, _live) = unarmed_in_a_song(dir.path()).await;
+    let state = router.autotune.state();
+    let vox = &state.singers[0];
+    assert!(!vox.key_ok, "{vox:?}");
+    assert_eq!(
+        vox.why.as_deref(),
+        Some("PA: its fall back to DRY is not kept (no such function: safe_writes)")
+    );
+    // PR #150 re-review m1: the hub's own wait, never its key's.
+    assert!(vox.waiting, "{vox:?}");
+}
+
+#[tokio::test]
+async fn a_singers_key_is_confirmed_only_once_written_and_read_back() {
+    // PR #150 review M4: the panel's ✓ is a read-back, never a key on its
+    // way.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, _rx) = scripted_router(dir.path(), HubState::default());
+    router.handle(layout(1, vec![pa(), stream()]));
+    find(&mut router, PA, rack(6));
+    find(&mut router, STREAM, rack(7));
+    heard(&mut router, PA, (0.75, 0.0));
+    heard(&mut router, STREAM, (0.5, 1.0 / 28.0));
+    transport(&mut router, false);
+    map_read(&mut router, 1, songs());
+    deliver(&mut router, TEMPO_KEY, 120.0);
+    deliver(&mut router, TIME, 10.0);
+    // The keys written, not yet read back: no singer is confirmed.
+    let state = router.autotune.state();
+    assert!(
+        state.singers.iter().all(|s| s.key_ok && !s.confirmed),
+        "{state:?}"
+    );
+    live.settle(&mut router).await;
+    let state = router.autotune.state();
+    assert!(state.singers[0].confirmed, "{state:?}");
+    // Out of every song: no key in force, nothing confirmed.
+    deliver(&mut router, TIME, 110.0);
+    assert!(!router.autotune.state().singers[0].confirmed);
+}
+
 #[tokio::test]
 async fn the_pages_are_told_the_singers_and_the_key() {
     let dir = tempfile::tempdir().unwrap();
@@ -1551,6 +1685,8 @@ async fn the_pages_are_told_the_singers_and_the_key() {
                 off: false,
                 key_ok: true,
                 why: None,
+                confirmed: true,
+                waiting: false,
             },
             SingerState {
                 id: "#Vox 7".into(),
@@ -1560,6 +1696,8 @@ async fn the_pages_are_told_the_singers_and_the_key() {
                 off: false,
                 key_ok: true,
                 why: None,
+                confirmed: false,
+                waiting: false,
             },
         ]
     );
@@ -1935,6 +2073,7 @@ async fn a_missing_target_is_a_problem_never_a_key_being_checked() {
     let vox1 = &state.singers[0];
     assert!(!vox1.key_ok);
     assert_eq!(vox1.why.as_deref(), Some("stream: no rack named Latencies"));
+    assert!(!vox1.waiting, "a target's trouble");
     assert_eq!(vox1.stream, TrackState::Dry);
     // A key device missing: a problem too, never checking.
     let mut keyless = rack(7);
@@ -2223,6 +2362,60 @@ async fn a_list_sent_over_one_still_on_its_way_narrows_what_the_script_may_hold(
     transport(&mut router, true);
     assert_eq!(decisions(&mut router)[1], off(SwitchWhy::Unarmed));
     drop(without);
+}
+
+#[tokio::test]
+async fn a_list_live_did_not_answer_narrows_what_the_script_may_hold() {
+    // PR #147 re-review R15: a registration Live did not answer
+    // (`Safe.lost`) may still become the script's list, so the list after
+    // it keeps only the pairs both share; one the script refused keeps the
+    // kept list whole.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, _rx) = ready(dir.path(), HubState::default()).await;
+    let both = [("p6".to_string(), 127), ("p7".to_string(), 0)];
+    let without_stream = |router: &mut Router| {
+        // The stream's rack gone for good (DRY: nothing to write first).
+        let walk = router.autotune.targets[STREAM].walk;
+        router.autotune_found(STREAM, walk, Err("no rack named Latencies".into()));
+    };
+    let is_list = |c: &[Value]| c.len() == 1 && c[0]["name"] == SAFE_WRITES;
+    // Refused: the list without the stream goes and the script refuses it.
+    without_stream(&mut router);
+    let refused = live.next("the list without it", is_list);
+    refused.answer(vec![json!({"ok": false,
+        "error": "no such function: safe_writes", "errorType": "OpError"})]);
+    live.settle(&mut router).await;
+    let safe = &router.autotune.safe["band"];
+    assert_eq!(safe.state, SafeState::Failed);
+    assert!(!safe.lost, "refused: the script did not take it");
+    // Found again: the list with it goes after, the kept list whole.
+    find(&mut router, STREAM, rack(7));
+    assert_eq!(
+        router.autotune.safe["band"].kept.as_deref(),
+        Some(&both[..]),
+        "kept whole after a refusal"
+    );
+    live.settle(&mut router).await;
+    assert_eq!(router.autotune.safe["band"].state, SafeState::Kept);
+    // Not answered: the list without the stream goes, Live never answers.
+    without_stream(&mut router);
+    let lost = live.next("the list without it, again", is_list);
+    drop(lost);
+    live.settle(&mut router).await;
+    let safe = &router.autotune.safe["band"];
+    assert_eq!(safe.state, SafeState::Failed);
+    assert!(safe.lost, "Live did not answer it");
+    assert_eq!(safe.kept.as_deref(), Some(&both[..]));
+    // Found again: the script may hold the list without it, so only the
+    // pair both share stays kept and the stream is not armed.
+    find(&mut router, STREAM, rack(7));
+    assert_eq!(
+        router.autotune.safe["band"].kept.as_deref(),
+        Some(&both[..1])
+    );
+    aut_on(&mut router);
+    transport(&mut router, true);
+    assert_eq!(decisions(&mut router)[1], off(SwitchWhy::Unarmed));
 }
 
 #[tokio::test]

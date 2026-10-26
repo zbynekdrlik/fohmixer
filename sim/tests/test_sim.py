@@ -87,7 +87,20 @@ class SiteTest(unittest.TestCase):
         inner = outer.chains[0].devices[0]
         self.assertEqual((type(inner).__name__, inner.name), ("RackDevice", "Latencies"))
         self.assertEqual(inner.parameters[1].name, "Macro 1")
-        self.assertEqual([c.name for c in inner.chains], ["Dry", "Auto"])
+        self.assertEqual([c.name for c in inner.chains], ["Auto", "Dry"])
+        # #140 PR 3c: each rack's chain 0 holds its key device, the repro
+        # track's an Auto-Tune Artist, the stream track's an AudioGridder
+        # (the hub's find reads chain 0's one plug-in; autotune.spec.ts).
+        artist = on_top.chains[0].devices[0]
+        self.assertEqual(
+            (type(artist).__name__, [p.name for p in artist.parameters]),
+            ("PluginDevice", ["Device On", "Key", "Scale"]),
+        )
+        gridder = inner.chains[0].devices[0]
+        self.assertEqual(
+            [p.name for p in gridder.parameters][1:],
+            ["0:(unused):(unassigned)", "1:(unused):(unassigned)", "2:(unused):(unassigned)"],
+        )
         # Vocal 1 repro# keeps no Latencies rack (params.spec.ts relies on it).
         self.assertEqual([d.name for d in by_name["Vocal 1 repro#"].devices], ["EQ Eight"])
 

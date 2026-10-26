@@ -527,6 +527,8 @@ async fn a_found_target_is_followed_and_told_to_every_page() {
             map_changes: 0,
             map_keyed: 0,
             bar: None,
+            change: None,
+            map_texts: Vec::new(),
         }],
         "at attach"
     );

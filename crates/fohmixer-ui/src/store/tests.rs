@@ -420,6 +420,8 @@ fn autotunes_state_stays_through_an_outage_stale_until_the_hub_tells_it_again() 
         map_changes: 0,
         map_keyed: 0,
         bar: None,
+        change: None,
+        map_texts: Vec::new(),
     };
     let mut autotune = HubAutotune::default();
     assert_eq!((autotune.shown(), autotune.fresh()), (None, None));

@@ -130,6 +130,14 @@ pub fn hold_value(aut: Option<bool>, connected: bool) -> Option<bool> {
     aut.filter(|_| connected).map(|on| !on)
 }
 
+/// The automatic mode a hold may act on: the hub's (`aut`) only while the
+/// button is ready (PR #150 review M2: a red or waiting REVERB or AUTOTUNE
+/// takes no hold, the mockup's cell 13); none: the press shows no fill and
+/// is refused.
+pub fn ready_hold(aut: Option<bool>, ready: bool) -> Option<bool> {
+    aut.filter(|_| ready)
+}
+
 /// What a rail press shows: nothing, the fill growing, or the fill full.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fill {
@@ -184,6 +192,11 @@ pub fn transport_changed(before: Option<bool>, now: Option<bool>) -> bool {
 pub fn settling(changed_at: Option<f64>, now: f64) -> bool {
     changed_at.is_some_and(|at| now - at < SETTLE_MS)
 }
+
+/// The pill's word, shared by every rail button with an automatic mode and
+/// by the texts that name it (#140 PR 3c: AUTOTUNE's panel; #141 renames it
+/// in its own PR).
+pub const AUT_BADGE: &str = "AUT";
 
 /// The `AUT` pill: none, white (the rule runs) or outlined (a tap
 /// overrides it until the next stop or start).
@@ -290,6 +303,25 @@ fn stage_sub((playing, muted): (bool, bool)) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hold_acts_only_on_a_ready_button() {
+        assert_eq!(ready_hold(Some(true), true), Some(true));
+        assert_eq!(ready_hold(Some(false), true), Some(false));
+        assert_eq!(ready_hold(Some(true), false), None);
+        assert_eq!(ready_hold(None, true), None);
+        // Not ready: no fill, the full mark refused.
+        assert_eq!(
+            fill_of(true, false, ready_hold(Some(false), false), true),
+            Fill::None
+        );
+        assert_eq!(hold_value(ready_hold(Some(false), false), true), None);
+    }
+
+    #[test]
+    fn the_pill_says_aut() {
+        assert_eq!(AUT_BADGE, "AUT");
+    }
 
     #[test]
     fn the_rail_holds_for_one_second() {

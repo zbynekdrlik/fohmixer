@@ -325,7 +325,7 @@ impl HubValues {
 /// and Live's stale values, L2), and stale from a socket's close until the
 /// next connection's message (the hub tells it at each attach). Only a
 /// fresh one may be acted on: a tap or a hold of its rail button
-/// (`behave::reverb::tap_value`, `behave::autotune::tap_value`,
+/// (`behave::reverb::tap_value`, `behave::autotune::tap_opens_panel`,
 /// `behave::rail::hold_value`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HubTold<T> {

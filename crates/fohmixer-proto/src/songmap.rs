@@ -108,6 +108,10 @@ pub struct Span {
     pub end: Option<f64>,
     pub key: Option<Key>,
     pub changes: Vec<KeyChange>,
+    /// Each change's key clip's name (trimmed), in the changes' order
+    /// (#140 PR 3c: the panel names the coming one); not serialized.
+    #[serde(skip)]
+    pub clips: Vec<String>,
 }
 
 /// What is wrong.
@@ -520,6 +524,7 @@ fn spans(placed: &[Placed], problems: &mut Vec<Problem>) -> Vec<Building> {
                 end,
                 key,
                 changes: Vec::new(),
+                clips: Vec::new(),
             },
             keyless,
         });
@@ -606,25 +611,32 @@ fn key_clips(clips: &[ClipName], spans: &mut [Span], problems: &mut Vec<Problem>
             (Ok(_), Some(i)) if spans[i].key.is_none() => {
                 problems.push(problem(ProblemKind::ClipInKeylessSong, song));
             }
-            (Ok(key), Some(i)) => spans[i].changes.push(KeyChange { time: start, key }),
+            (Ok(key), Some(i)) => {
+                spans[i].changes.push(KeyChange { time: start, key });
+                spans[i].clips.push(clip.name.trim().to_string());
+            }
         }
     }
     for span in spans.iter_mut() {
-        span.changes.sort_by(|a, b| a.time.total_cmp(&b.time));
-        let mut kept: Vec<KeyChange> = Vec::new();
-        for change in std::mem::take(&mut span.changes) {
-            if kept.last().is_some_and(|last| last.time == change.time) {
+        let mut pairs: Vec<(KeyChange, String)> = std::mem::take(&mut span.changes)
+            .into_iter()
+            .zip(std::mem::take(&mut span.clips))
+            .collect();
+        pairs.sort_by(|a, b| a.0.time.total_cmp(&b.0.time));
+        let mut kept: Vec<(KeyChange, String)> = Vec::new();
+        for pair in pairs {
+            if kept.last().is_some_and(|last| last.0.time == pair.0.time) {
                 kept.pop();
                 problems.push(Problem {
                     kind: ProblemKind::SameTime,
                     song: Some(span.number),
-                    time: Some(change.time),
+                    time: Some(pair.0.time),
                     clip: None,
                 });
             }
-            kept.push(change);
+            kept.push(pair);
         }
-        span.changes = kept;
+        (span.changes, span.clips) = kept.into_iter().unzip();
     }
 }
 
@@ -646,6 +658,16 @@ pub fn key_at(map: &SongMap, time: f64) -> Option<(u16, Key)> {
         .find(|c| c.time <= time)
         .map_or(key, |c| c.key);
     Some((span.number, now))
+}
+
+/// The coming key change of the song whose span holds `time`: its first
+/// change after `time` (later than it), its key and its clip's name (#140
+/// PR 3c: the panel's head); none outside every song or after its last
+/// change (a keyless song has none: its clips are problems).
+pub fn next_change(map: &SongMap, time: f64) -> Option<(Key, &str)> {
+    let span = &map.spans[span_at(&map.spans, time)?];
+    let at = span.changes.iter().position(|c| c.time > time)?;
+    Some((span.changes[at].key, span.clips.get(at)?.as_str()))
 }
 
 /// The map summed up: songs, those with a key, the key changes, the

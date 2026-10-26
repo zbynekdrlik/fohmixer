@@ -33,7 +33,7 @@
 //!   on) with its why and cause, one `write` per batch; `/api/status`
 //!   shows every target's last decision.
 
-use fohmixer_proto::client::{SingerState, TargetState, TrackState};
+use fohmixer_proto::client::{SingerState, SwitchWhy, TargetState, TrackState};
 use fohmixer_proto::layout::singer_of;
 use fohmixer_proto::songmap::Key;
 use serde_json::Value;
@@ -183,6 +183,25 @@ pub(super) fn trouble(target: &Target) -> Option<String> {
         .then(|| "another writer moves its selector".to_string())
 }
 
+/// The words for a decision that keeps a track DRY for a reason of the
+/// hub's own, neither a key's nor the rule's (PR #150 review I2): its set's
+/// fall back to DRY not kept by the script (with the registration's
+/// problem when it failed), its set held for Live's track list, its rack
+/// not yet confirmed by a walk. Every other decision has none: AUT, the
+/// transport, the song, the singer's own off say themselves, and a key's
+/// or a target's trouble has its own words.
+pub(super) fn waiting_words(why: SwitchWhy, safe_problem: Option<&str>) -> Option<String> {
+    match why {
+        SwitchWhy::Unarmed => Some(match safe_problem {
+            Some(problem) => format!("its fall back to DRY is not kept ({problem})"),
+            None => "its fall back to DRY is not kept yet".to_string(),
+        }),
+        SwitchWhy::Held => Some("waits for Live's track list".to_string()),
+        SwitchWhy::Unconfirmed => Some("waits for its rack to be found again".to_string()),
+        _ => None,
+    }
+}
+
 /// Whether a target has a problem its decision reads (spec §7): its walks
 /// given up, its Tuner naming two singers or none (PR #147 review N6), no
 /// key device.
@@ -245,6 +264,13 @@ impl AutotuneIo {
                     )
                 };
                 let why = mine.iter().find_map(|t| self.why_of(t));
+                let waiting = why.as_ref().is_some_and(|(_, waiting)| *waiting);
+                let why = why.map(|(words, _)| words);
+                let keyed: Vec<&&Target> = mine.iter().filter(|t| checked(t)).collect();
+                let confirmed = !keyed.is_empty()
+                    && keyed
+                        .iter()
+                        .all(|t| self.check_of(t) == KeyCheck::Confirmed);
                 SingerState {
                     label: singer_label(&labels),
                     stream: of(false),
@@ -253,25 +279,38 @@ impl AutotuneIo {
                     key_ok: why.is_none(),
                     why,
                     id: id.unwrap_or_default(),
+                    confirmed,
+                    waiting,
                 }
             })
             .collect()
     }
 
     /// Why a target is not fine: its problem (a missing rack too: PR #147
-    /// review N3), else a found one's key's.
-    fn why_of(&self, target: &Target) -> Option<String> {
+    /// review N3), else a found one's key's, else what keeps it DRY on the
+    /// hub's side (PR #150 review I2: `waiting_words`), with whether it is
+    /// that wait (PR #150 re-review m1: the panel then shows the key as it
+    /// stands, nothing rewritten at the next change).
+    fn why_of(&self, target: &Target) -> Option<(String, bool)> {
         let part = part(target.spec.on);
         if let Some(trouble) = trouble(target) {
-            return Some(format!("{part}: {trouble}"));
+            return Some((format!("{part}: {trouble}"), false));
         }
         target.found.as_ref()?;
         let seen = match target.values {
             (Some(key), Some(scale)) => key_shows(key, scale),
             _ => None,
         };
-        (self.check_of(target) == KeyCheck::Bad)
-            .then(|| key_why(part, target.keyt.state(), target.keyt.wanted(), seen))
+        if self.check_of(target) == KeyCheck::Bad {
+            let why = key_why(part, target.keyt.state(), target.keyt.wanted(), seen);
+            return Some((why, false));
+        }
+        let decision = target.decision?;
+        let problem = self
+            .safe
+            .get(&target.instance)
+            .and_then(|safe| safe.problem.as_deref());
+        waiting_words(decision.why, problem).map(|words| (format!("{part}: {words}"), true))
     }
 
     /// A found target's input to its decision (`held`: its set's writes
@@ -305,6 +344,14 @@ impl Router {
     /// writes are held nothing goes (the release decides again); a write
     /// that meets its markers unsettled holds the set, DRY first.
     pub(in crate::router) fn autotune_decide(&mut self, set: &str, cause: Cause) {
+        self.autotune_decide_now(set, cause);
+        // A decision changes what the pages show (a singer's why, PR #150
+        // review I2): they are told now, when it changed.
+        self.autotune_tell();
+    }
+
+    /// [`Router::autotune_decide`]'s work.
+    fn autotune_decide_now(&mut self, set: &str, cause: Cause) {
         let holding = self.autotune.held.contains(set);
         let settled = self.reverb_settled(set);
         let going = self.autotune_judge(set, cause, !may_write(holding, settled));

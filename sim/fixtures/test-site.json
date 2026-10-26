@@ -39,7 +39,24 @@
           "name": "Vocal 2 repro#",
           "panning": -0.25,
           "devices": [
-            {"template": "rack", "name": "Latencies", "chains": [{"name": "Auto"}, {"name": "Dry"}]}
+            {
+              "template": "rack",
+              "name": "Latencies",
+              "chains": [
+                {
+                  "name": "Auto",
+                  "devices": [
+                    {
+                      "template": "plugin",
+                      "name": "Auto-Tune Artist",
+                      "product": "Auto-Tune Artist",
+                      "parameters": [{"name": "Key", "value": 0.0}, {"name": "Scale", "value": 0.0}]
+                    }
+                  ]
+                },
+                {"name": "Dry"}
+              ]
+            }
           ]
         },
         {
@@ -56,7 +73,24 @@
                     {
                       "template": "rack",
                       "name": "Latencies",
-                      "chains": [{"name": "Dry"}, {"name": "Auto"}]
+                      "chains": [
+                        {
+                          "name": "Auto",
+                          "devices": [
+                            {
+                              "template": "plugin",
+                              "name": "AudioGridder",
+                              "product": "AudioGridder",
+                              "parameters": [
+                                {"name": "0:(unused):(unassigned)", "value": 0.0},
+                                {"name": "1:(unused):(unassigned)", "value": 0.0},
+                                {"name": "2:(unused):(unassigned)", "value": 0.0}
+                              ]
+                            }
+                          ]
+                        },
+                        {"name": "Dry"}
+                      ]
                     }
                   ]
                 }
