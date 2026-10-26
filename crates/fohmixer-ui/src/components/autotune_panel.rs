@@ -31,7 +31,7 @@ use wasm_bindgen::closure::Closure;
 use super::{fail_flash, owns_touches, trace_rail};
 use crate::behave::autotune::{
     Anchor, PanelRow, RowKey, natural_height, panel_foot, panel_head, panel_place, panel_rows,
-    switch_acts, switch_press, switch_value, tap_opens_panel,
+    panel_style, switch_acts, switch_press, switch_value, tap_opens_panel,
 };
 use crate::behave::hold::Lift;
 use crate::behave::rail::AUT_BADGE;
@@ -103,15 +103,7 @@ pub fn AutotunePanel(anchor: Anchor) -> impl IntoView {
             size(web_sys::Window::inner_height),
             measured.unwrap_or(0.0),
         );
-        let hidden = if measured.is_some() {
-            ""
-        } else {
-            "visibility:hidden;"
-        };
-        format!(
-            "--tp-left:{}px;--tp-top:{}px;--tp-max:{}px;{hidden}",
-            place.left, place.top, place.max_h
-        )
+        panel_style(place, measured)
     };
     let head = Memo::new(move |_| {
         store
