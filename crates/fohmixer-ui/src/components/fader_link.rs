@@ -105,7 +105,7 @@ pub fn link_parts(store: LiveStore, strip: &Strip, subs: &StripSubs, law: Volume
     }
 }
 
-/// A leader's switch in its channel detail (#130, D18): `SPOJENÝ S <the
+/// A leader's switch in its channel detail (#130, D18): `LINKED TO <the
 /// partners' labels>`, lit while on. A tap asks the hub for the other value
 /// once its value is fresh on this connection and the page is connected
 /// (the rail's rule, `behave::rail::hold_value`), else it flashes refused.
@@ -155,7 +155,7 @@ pub fn FaderLinkView(link_key: String, labels: Vec<String>, keys: Vec<String>) -
 }
 
 /// A partner's note in its channel detail (#130): each leader that moves
-/// it (`IDE S <leader>`) and whether it does now; no switch, no touch.
+/// it (`FOLLOWS <leader>`) and whether it does now; no switch, no touch.
 #[component]
 pub fn FaderFollowView(follows: Vec<Follow>) -> impl IntoView {
     let store = expect_context::<LiveStore>();

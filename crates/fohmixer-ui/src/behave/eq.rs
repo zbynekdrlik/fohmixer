@@ -24,7 +24,7 @@
 //! ([`place_text`]), a card's note and the cards' list note in Slovak
 //! ([`failure_text`], [`list_text`]), which frames the screen shows
 //! ([`shows_frame`]), a card's picture URL ([`picture_url`]) and the bar's
-//! ↶ VRÁTIŤ (#71 PR P2b: when it takes a press, [`undo_ready`], its flash
+//! ↶ UNDO (#71 PR P2b: when it takes a press, [`undo_ready`], its flash
 //! and the note of its answer, [`undo_text`]).
 
 use fohmixer_proto::eq::{EqLock, PRODUCT, Touch, UNDO_APART_MS, UNDO_DONE, UNDO_NOTHING, reason};
@@ -72,7 +72,7 @@ pub fn on_picture(at: (f64, f64), size: (u32, u32)) -> bool {
 pub const MAX_ZOOM: f64 = 4.0;
 
 /// The zoom from which the screen counts as zoomed (its bar's zoom group
-/// shows, the factor reads `1,1×` or more); a pinch that ends under it goes
+/// shows, the factor reads `1.1×` or more); a pinch that ends under it goes
 /// back to the whole picture.
 pub const ZOOMED_FROM: f64 = 1.05;
 
@@ -150,7 +150,7 @@ pub fn stale_note(at: Option<f64>, now: f64) -> bool {
 }
 
 /// The note's words.
-pub const STALE_TEXT: &str = "Obraz ešte dobieha, polož prst znova";
+pub const STALE_TEXT: &str = "Image still catching up, touch again";
 
 /// Where a first finger lands `on` the picture or off it, the view at
 /// `zoom`.
@@ -176,7 +176,7 @@ pub struct View {
 }
 
 impl View {
-    /// The whole picture, fitted: each open starts here, and `CELÝ EQ`
+    /// The whole picture, fitted: each open starts here, and `FULL EQ`
     /// comes back to it.
     pub const WHOLE: Self = Self {
         zoom: 1.0,
@@ -300,7 +300,7 @@ impl Viewer {
         }
     }
 
-    /// Back to the whole picture (`CELÝ EQ`): fingers still pinching start
+    /// Back to the whole picture (`FULL EQ`): fingers still pinching start
     /// a new pinch from there.
     pub fn whole(&mut self) {
         *self = Self::START;
@@ -340,8 +340,8 @@ pub fn zoomed(zoom: f64) -> bool {
     zoom >= ZOOMED_FROM
 }
 
-/// The zoom as the bar's factor reads it: one decimal, a decimal comma
-/// (`2,4×`). Under [`EDIT_ZOOM_MIN`] it never reads `2,0×` (the PR I review:
+/// The zoom as the bar's factor reads it: one decimal, a decimal point
+/// (`2.4×`). Under [`EDIT_ZOOM_MIN`] it never reads `2.0×` (the PR I review:
 /// a pinch to 1.97× read as editing while one finger did not edit).
 pub fn zoom_text(zoom: f64) -> String {
     let shown = if edits(zoom) {
@@ -349,7 +349,7 @@ pub fn zoom_text(zoom: f64) -> String {
     } else {
         zoom.min(EDIT_ZOOM_MIN - 0.1)
     };
-    format!("{shown:.1}×").replace('.', ",")
+    format!("{shown:.1}×")
 }
 
 /// How the screen draws a view (#71 PR F).
@@ -841,7 +841,7 @@ impl Finger {
     }
 
     /// The fingers lose the editor under them: the view goes back to the
-    /// whole picture (`CELÝ EQ`, the PR I review: its moves would map
+    /// whole picture (`FULL EQ`, the PR I review: its moves would map
     /// through another view), or the link drops out mid-drag (PR J review:
     /// the moves queued in a stalled socket would come in a burst). A finger
     /// on the editor ends with its cancel where it was, and one still
@@ -985,7 +985,7 @@ pub fn card_lock(locks: &[EqLock], instance: &str, path: &str) -> CardLock {
     }
 }
 
-/// Whether another page's editor locks the card (ZAMKNUTÉ): its own, or
+/// Whether another page's editor locks the card (LOCKED): its own, or
 /// any other.
 pub fn locked(lock: CardLock) -> bool {
     matches!(lock, CardLock::Other(_) | CardLock::InUse(_))
@@ -993,9 +993,9 @@ pub fn locked(lock: CardLock) -> bool {
 
 /// Whether a card's down opens its editor (`can_send`: the page's socket
 /// takes a message now): not while another page holds an editor
-/// (ZAMKNUTÉ), and only while the socket can take the open, as a Stream
+/// (LOCKED), and only while the socket can take the open, as a Stream
 /// Deck press (`behave::deck::can_press`): an open the socket drops would
-/// leave the screen waiting on "Otváram Pro-Q 4…" for nothing.
+/// leave the screen waiting on "Opening Pro-Q 4…" for nothing.
 pub fn can_open(lock: CardLock, can_send: bool) -> bool {
     can_send && !locked(lock)
 }
@@ -1023,7 +1023,7 @@ pub fn lists_now(before: Option<ListLink>, now: ListLink) -> bool {
 }
 
 /// What names an editor on its card and on its screen: the product, where
-/// it sits (`na tracku`, or its racks and chains), and the device's name
+/// it sits (`on track`, or its racks and chains), and the device's name
 /// when it was renamed (`Pro-Q 4 · Vocal FX › Main · De-ess`).
 pub fn place_text(place: &str, name: &str) -> String {
     if name == PRODUCT {
@@ -1040,13 +1040,13 @@ pub fn hh_mm(hours: u32, minutes: u32) -> String {
 
 /// A locked card's line: who holds it and since when (`HH:MM`).
 pub fn locked_text(since: &str) -> String {
-    format!("Upravuje ho iný zvukár (od {since})")
+    format!("Another engineer is editing it (since {since})")
 }
 
 /// The line of a card locked by another page's editor elsewhere, since
 /// when (`HH:MM`).
 pub fn in_use_text(since: &str) -> String {
-    format!("Pro-Q 4 práve používa iný zvukár (od {since})")
+    format!("Pro-Q 4 is in use by another engineer (since {since})")
 }
 
 /// Whether the hub refused an open for a lock (`locked`, `in use`): the
@@ -1086,7 +1086,7 @@ pub fn picture_url(instance: &str, path: &str) -> String {
 /// What the screen's place in the detail says when the PC's hub has it off
 /// (`[eq] backend = "off"`, the default on Windows until the PC's check
 /// passed): a plain note, never an error.
-pub const OFF_TEXT: &str = "EQ je na PC vypnuté.";
+pub const OFF_TEXT: &str = "EQ is switched off on the PC.";
 
 /// The cards' note when the hub gave no list (`error`, its reason): the
 /// screen off, or why the track's devices could not be read, in Slovak
@@ -1097,7 +1097,7 @@ pub fn list_text(error: &str) -> String {
         return OFF_TEXT.to_string();
     }
     format!(
-        "Pro-Q 4 sa nedá prečítať: {}",
+        "Can't read Pro-Q 4: {}",
         reason_text(error).unwrap_or(error)
     )
 }
@@ -1107,29 +1107,29 @@ pub fn list_text(error: &str) -> String {
 fn reason_text(why: &str) -> Option<&'static str> {
     let text = match why {
         reason::OFF => OFF_TEXT,
-        reason::CLOSING => "ešte sa zatvára, skús znova",
-        reason::UNKNOWN => "zoznam je starý, otvor kanál znova",
-        reason::MOVED => "Pro-Q 4 sa presunul, otvor kanál znova",
-        reason::OPEN_ON_PC => "Pro-Q 4 je otvorený priamo na PC, zatvor ho tam",
-        reason::UNREAD => "Pro-Q 4 sa nedá prečítať, skús znova",
-        reason::NO_WINDOW => "okno Pro-Q 4 sa neotvorilo",
-        reason::GONE => "okno Pro-Q 4 sa zavrelo",
-        reason::OFFLINE => "Live je nedostupný, skús znova",
-        reason::NO_ANSWER => "Live neodpovedá, skús znova",
-        reason::UNKNOWN_INSTANCE => "neznámy Live",
-        reason::SEVERAL => "otvorilo sa viac okien, skús znova",
-        reason::NO_PICTURE => "okno nie je Pro-Q 4",
-        reason::NOT_ON_TOP => "okno Pro-Q 4 sa nedostalo navrch, skús znova",
-        reason::STOPPED => "hub sa zastavuje",
-        reason::LEFT_OPEN => "Pro-Q 4 sa nepodarilo bezpečne zavrieť, ostáva otvorený na PC",
-        reason::TOO_DEEP => "zariadenia sú vnorené príliš hlboko",
-        reason::HOLD_ON => "na PC sa nedá vypnúť podržanie prsta, Pro-Q 4 sa preto neotvorí",
+        reason::CLOSING => "still closing, try again",
+        reason::UNKNOWN => "the list is out of date, reopen the channel",
+        reason::MOVED => "Pro-Q 4 moved, reopen the channel",
+        reason::OPEN_ON_PC => "Pro-Q 4 is open on the PC itself, close it there",
+        reason::UNREAD => "can't read Pro-Q 4, try again",
+        reason::NO_WINDOW => "the Pro-Q 4 window did not open",
+        reason::GONE => "the Pro-Q 4 window closed",
+        reason::OFFLINE => "Live is unavailable, try again",
+        reason::NO_ANSWER => "Live is not answering, try again",
+        reason::UNKNOWN_INSTANCE => "unknown Live",
+        reason::SEVERAL => "several windows opened, try again",
+        reason::NO_PICTURE => "the window is not Pro-Q 4",
+        reason::NOT_ON_TOP => "the Pro-Q 4 window did not come to the front, try again",
+        reason::STOPPED => "the hub is stopping",
+        reason::LEFT_OPEN => "could not close Pro-Q 4 safely, it stays open on the PC",
+        reason::TOO_DEEP => "devices are nested too deep",
+        reason::HOLD_ON => "press-and-hold can't be turned off on the PC, so Pro-Q 4 won't open",
         // An undo's refusals (#71 PR P2a); the bar's note says the last
         // three its own way (`undo_text`).
-        reason::NO_EDITOR => "Pro-Q 4 už nie je otvorený",
-        reason::UNDO_BUSY => "Pro-Q 4 je práve zaneprázdnený, skús znova",
-        reason::UNDO_SOON => "príliš rýchlo po poslednom vrátení, skús znova",
-        reason::UNDO_MISSING => "šípka späť sa v Pro-Q 4 nenašla",
+        reason::NO_EDITOR => "Pro-Q 4 is no longer open",
+        reason::UNDO_BUSY => "Pro-Q 4 is busy, try again",
+        reason::UNDO_SOON => "too soon after the last undo, try again",
+        reason::UNDO_MISSING => "the undo arrow was not found in Pro-Q 4",
         _ => return None,
     };
     Some(text)
@@ -1138,7 +1138,7 @@ fn reason_text(why: &str) -> Option<&'static str> {
 /// The line under a card after its editor did not open or closed (`why`,
 /// the hub's reason), in Slovak: none for a close the page or the hub made
 /// on purpose (`exit`, `switch`, `detach`, the page's own `socket`) and for
-/// a lock, `locked` or `in use` (the card already reads ZAMKNUTÉ with its
+/// a lock, `locked` or `in use` (the card already reads LOCKED with its
 /// line); each reason the protocol
 /// names (`fohmixer_proto::eq::reason`) has its sentence ([`reason_text`]);
 /// only an unexpected failure shows the hub's own words.
@@ -1151,19 +1151,19 @@ pub fn failure_text(why: &str) -> Option<String> {
         | reason::LOCKED
         | reason::IN_USE => None,
         other => Some(
-            reason_text(other).map_or_else(|| format!("Neotvoril sa: {other}"), str::to_string),
+            reason_text(other).map_or_else(|| format!("Did not open: {other}"), str::to_string),
         ),
     }
 }
 
-/// How long the bar's ↶ VRÁTIŤ flashes when a press goes (ms, #71 PR P2b,
+/// How long the bar's ↶ UNDO flashes when a press goes (ms, #71 PR P2b,
 /// the approved mockup `docs/mockups/proq-undo-v1.html`).
 pub const UNDO_FLASH_MS: f64 = 180.0;
 
 /// How long the note of an undo's answer shows over the picture (ms).
 pub const UNDO_NOTE_MS: f64 = 1600.0;
 
-/// Whether the bar's ↶ VRÁTIŤ takes a press at `now` (page ms; #71 PR P2b):
+/// Whether the bar's ↶ UNDO takes a press at `now` (page ms; #71 PR P2b):
 /// not while the fingers keep a contact on the PC (`busy`, [`Finger::busy`]:
 /// the hub would refuse it, `UNDO_BUSY`), nor within
 /// [`UNDO_APART_MS`] of the last press it took (`pressed`; none yet): two
@@ -1173,7 +1173,7 @@ pub fn undo_ready(busy: bool, pressed: Option<f64>, now: f64) -> bool {
     !busy && pressed.is_none_or(|at| now - at >= UNDO_APART_MS)
 }
 
-/// Whether the ↶ VRÁTIŤ pressed at `pressed` (page ms) still flashes at
+/// Whether the ↶ UNDO pressed at `pressed` (page ms) still flashes at
 /// `now`.
 pub fn undo_flash(pressed: Option<f64>, now: f64) -> bool {
     pressed.is_some_and(|at| now - at < UNDO_FLASH_MS)
@@ -1192,15 +1192,12 @@ pub fn undo_note_shown(at: Option<f64>, now: f64) -> bool {
 /// for an unexpected one (a grab's or a tap's error).
 pub fn undo_text(result: &str) -> String {
     match result {
-        UNDO_DONE => "Vrátené: posledná zmena v Pro-Q".to_string(),
-        UNDO_NOTHING => "Nie je čo vrátiť".to_string(),
-        reason::UNDO_MISSING => "Späť sa v Pro-Q nenašlo — nič sa nestlačilo".to_string(),
-        reason::UNDO_BUSY => "Prst je na obraze — vráť po zdvihnutí prsta".to_string(),
-        reason::UNDO_SOON => "Príliš rýchlo za sebou — stlač znova".to_string(),
-        other => format!(
-            "Vrátiť sa nepodarilo: {}",
-            reason_text(other).unwrap_or(other)
-        ),
+        UNDO_DONE => "Undone: last change in Pro-Q".to_string(),
+        UNDO_NOTHING => "Nothing to undo".to_string(),
+        reason::UNDO_MISSING => "Pro-Q's undo was not found — nothing was pressed".to_string(),
+        reason::UNDO_BUSY => "Finger is on the image — undo after you lift it".to_string(),
+        reason::UNDO_SOON => "Too fast in a row — press again".to_string(),
+        other => format!("Undo failed: {}", reason_text(other).unwrap_or(other)),
     }
 }
 
@@ -1863,8 +1860,8 @@ mod tests {
     #[test]
     fn a_lost_finger_keeps_the_undo_off_until_a_primary_down_of_its_type_ends_it() {
         // #124 review I1: a finger whose end never came keeps the PC's
-        // contact, so ↶ VRÁTIŤ takes no press (`busy`, `undo_ready`). A
-        // primary touch on the bar (↶ VRÁTIŤ, CELÝ EQ) ends it first, as on
+        // contact, so ↶ UNDO takes no press (`busy`, `undo_ready`). A
+        // primary touch on the bar (↶ UNDO, FULL EQ) ends it first, as on
         // the picture: its cancel goes before the undo, and the undo is
         // taken. A second finger's press leaves a finger that is really
         // down alone.
@@ -1883,7 +1880,7 @@ mod tests {
         );
         assert!(!finger.busy());
         assert!(undo_ready(finger.busy(), None, 1_000.0), "the undo goes");
-        // CELÝ EQ after a lost finger: the same, and the whole picture then
+        // FULL EQ after a lost finger: the same, and the whole picture then
         // finds nothing on the editor (no second cancel).
         touching(&mut finger, 4, p(30.0, 30.0));
         assert_eq!(
@@ -1932,10 +1929,13 @@ mod tests {
         assert!(!locked(CardLock::Mine));
         assert_eq!(hh_mm(9, 5), "09:05");
         assert_eq!(hh_mm(12, 41), "12:41");
-        assert_eq!(locked_text("12:41"), "Upravuje ho iný zvukár (od 12:41)");
+        assert_eq!(
+            locked_text("12:41"),
+            "Another engineer is editing it (since 12:41)"
+        );
         assert_eq!(
             in_use_text("12:41"),
-            "Pro-Q 4 práve používa iný zvukár (od 12:41)"
+            "Pro-Q 4 is in use by another engineer (since 12:41)"
         );
     }
 
@@ -1963,7 +1963,7 @@ mod tests {
     #[test]
     fn only_a_failed_open_says_why_under_its_card() {
         // A close the page or the hub made on purpose, and a lock the card
-        // already shows (ZAMKNUTÉ), say nothing.
+        // already shows (LOCKED), say nothing.
         for quiet in ["exit", "switch", "detach", "socket", "locked", "in use"] {
             assert_eq!(failure_text(quiet), None, "{quiet}");
         }
@@ -1975,23 +1975,26 @@ mod tests {
         assert!(!lock_refusal("moved"));
         assert_eq!(
             failure_text("off"),
-            Some("EQ je na PC vypnuté.".to_string())
+            Some("EQ is switched off on the PC.".to_string())
         );
     }
 
     #[test]
     fn the_hubs_known_reasons_read_in_slovak_under_the_card() {
         let said = |why: &str| failure_text(why).unwrap_or_default();
-        assert_eq!(said("closing"), "ešte sa zatvára, skús znova");
-        assert_eq!(said("unknown"), "zoznam je starý, otvor kanál znova");
-        assert_eq!(said("moved"), "Pro-Q 4 sa presunul, otvor kanál znova");
+        assert_eq!(said("closing"), "still closing, try again");
+        assert_eq!(
+            said("unknown"),
+            "the list is out of date, reopen the channel"
+        );
+        assert_eq!(said("moved"), "Pro-Q 4 moved, reopen the channel");
         assert_eq!(
             said("open on the PC"),
-            "Pro-Q 4 je otvorený priamo na PC, zatvor ho tam"
+            "Pro-Q 4 is open on the PC itself, close it there"
         );
-        assert_eq!(said("no window"), "okno Pro-Q 4 sa neotvorilo");
-        assert_eq!(said("window closed"), "okno Pro-Q 4 sa zavrelo");
-        assert_eq!(said("unread"), "Pro-Q 4 sa nedá prečítať, skús znova");
+        assert_eq!(said("no window"), "the Pro-Q 4 window did not open");
+        assert_eq!(said("window closed"), "the Pro-Q 4 window closed");
+        assert_eq!(said("unread"), "can't read Pro-Q 4, try again");
         // The protocol's names for them.
         assert_eq!(said(reason::CLOSING), said("closing"));
         assert_eq!(said(reason::UNKNOWN), said("unknown"));
@@ -2003,54 +2006,51 @@ mod tests {
         // Anything else keeps the hub's own words.
         assert_eq!(
             failure_text("EnumWindows: access denied"),
-            Some("Neotvoril sa: EnumWindows: access denied".to_string())
+            Some("Did not open: EnumWindows: access denied".to_string())
         );
         assert_eq!(
             failure_text("the guard's tap failed"),
-            Some("Neotvoril sa: the guard's tap failed".to_string())
+            Some("Did not open: the guard's tap failed".to_string())
         );
     }
 
     #[test]
     fn every_reason_the_hub_sends_a_page_reads_in_slovak() {
         let said = |why: &str| failure_text(why).unwrap_or_default();
-        assert_eq!(said("instance offline"), "Live je nedostupný, skús znova");
-        assert_eq!(said("Live did not answer"), "Live neodpovedá, skús znova");
-        assert_eq!(said("unknown instance"), "neznámy Live");
+        assert_eq!(said("instance offline"), "Live is unavailable, try again");
         assert_eq!(
-            said("several windows"),
-            "otvorilo sa viac okien, skús znova"
+            said("Live did not answer"),
+            "Live is not answering, try again"
         );
+        assert_eq!(said("unknown instance"), "unknown Live");
+        assert_eq!(said("several windows"), "several windows opened, try again");
         assert_eq!(
             said("the window has no Pro-Q picture (FF_UIWindow)"),
-            "okno nie je Pro-Q 4"
+            "the window is not Pro-Q 4"
         );
-        assert_eq!(said("the window worker stopped"), "hub sa zastavuje");
+        assert_eq!(said("the window worker stopped"), "the hub is stopping");
         assert_eq!(
             said("the window did not come on top"),
-            "okno Pro-Q 4 sa nedostalo navrch, skús znova"
+            "the Pro-Q 4 window did not come to the front, try again"
         );
         assert_eq!(
             said("left open in Live"),
-            "Pro-Q 4 sa nepodarilo bezpečne zavrieť, ostáva otvorený na PC"
+            "could not close Pro-Q 4 safely, it stays open on the PC"
         );
         assert_eq!(
             said("press-and-hold could not be turned off"),
-            "na PC sa nedá vypnúť podržanie prsta, Pro-Q 4 sa preto neotvorí"
+            "press-and-hold can't be turned off on the PC, so Pro-Q 4 won't open"
         );
         // An undo's refusals (#71 PR P2a).
-        assert_eq!(said("no such editor"), "Pro-Q 4 už nie je otvorený");
-        assert_eq!(
-            said("the editor is busy"),
-            "Pro-Q 4 je práve zaneprázdnený, skús znova"
-        );
+        assert_eq!(said("no such editor"), "Pro-Q 4 is no longer open");
+        assert_eq!(said("the editor is busy"), "Pro-Q 4 is busy, try again");
         assert_eq!(
             said("too soon after the last undo"),
-            "príliš rýchlo po poslednom vrátení, skús znova"
+            "too soon after the last undo, try again"
         );
         assert_eq!(
             said("Pro-Q's undo is not where it was measured"),
-            "šípka späť sa v Pro-Q 4 nenašla"
+            "the undo arrow was not found in Pro-Q 4"
         );
         // The protocol's names for them.
         for (named, word) in [
@@ -2075,7 +2075,7 @@ mod tests {
             ),
         ] {
             assert_eq!(said(named), said(word), "{word}");
-            assert!(!said(named).starts_with("Neotvoril sa"), "{word}");
+            assert!(!said(named).starts_with("Did not open"), "{word}");
         }
     }
 
@@ -2136,19 +2136,19 @@ mod tests {
     #[test]
     fn each_answer_to_an_undo_has_its_note() {
         // The approved mockup's notes, and the refusals the owner can act on.
-        assert_eq!(undo_text("done"), "Vrátené: posledná zmena v Pro-Q");
-        assert_eq!(undo_text("nothing"), "Nie je čo vrátiť");
+        assert_eq!(undo_text("done"), "Undone: last change in Pro-Q");
+        assert_eq!(undo_text("nothing"), "Nothing to undo");
         assert_eq!(
             undo_text("Pro-Q's undo is not where it was measured"),
-            "Späť sa v Pro-Q nenašlo — nič sa nestlačilo"
+            "Pro-Q's undo was not found — nothing was pressed"
         );
         assert_eq!(
             undo_text("the editor is busy"),
-            "Prst je na obraze — vráť po zdvihnutí prsta"
+            "Finger is on the image — undo after you lift it"
         );
         assert_eq!(
             undo_text("too soon after the last undo"),
-            "Príliš rýchlo za sebou — stlač znova"
+            "Too fast in a row — press again"
         );
         // The protocol's names for them.
         for (named, word) in [
@@ -2166,17 +2166,14 @@ mod tests {
         // Any other reason the protocol names, in Slovak.
         assert_eq!(
             undo_text(reason::NO_EDITOR),
-            "Vrátiť sa nepodarilo: Pro-Q 4 už nie je otvorený"
+            "Undo failed: Pro-Q 4 is no longer open"
         );
         assert_eq!(
             undo_text(reason::OFF),
-            "Vrátiť sa nepodarilo: EQ je na PC vypnuté."
+            "Undo failed: EQ is switched off on the PC."
         );
         // An unexpected one (a grab's or a tap's error): the hub's words.
-        assert_eq!(
-            undo_text("BitBlt failed"),
-            "Vrátiť sa nepodarilo: BitBlt failed"
-        );
+        assert_eq!(undo_text("BitBlt failed"), "Undo failed: BitBlt failed");
     }
 
     #[test]
@@ -2241,7 +2238,7 @@ mod tests {
         assert!(stale_note(Some(100.0), 100.0));
         assert!(stale_note(Some(100.0), 1600.0_f64.next_down()));
         assert!(!stale_note(Some(100.0), 1600.0));
-        assert_eq!(STALE_TEXT, "Obraz ešte dobieha, polož prst znova");
+        assert_eq!(STALE_TEXT, "Image still catching up, touch again");
     }
 
     #[test]
@@ -2389,7 +2386,7 @@ mod tests {
 
     #[test]
     fn the_whole_picture_ends_a_finger_on_the_editor_and_keeps_a_pinch() {
-        // The PR I review: CELÝ EQ during a drag went on with the drag at
+        // The PR I review: FULL EQ during a drag went on with the drag at
         // 1×, its points remapped.
         let mut finger = Finger::default();
         assert_eq!(finger.off_editor(), vec![], "no finger");
@@ -2657,7 +2654,7 @@ mod tests {
             PICTURE,
         );
         assert_eq!(viewer.view(), view(4.0, -1400.0, -700.0));
-        // CELÝ EQ: the whole picture, and fingers still there start anew.
+        // FULL EQ: the whole picture, and fingers still there start anew.
         viewer.whole();
         assert_eq!(viewer, Viewer::START);
         viewer.follow(
@@ -2709,19 +2706,19 @@ mod tests {
 
     #[test]
     fn the_factor_reads_with_a_decimal_comma() {
-        assert_eq!(zoom_text(1.0), "1,0×");
-        assert_eq!(zoom_text(2.5), "2,5×");
-        assert_eq!(zoom_text(2.44), "2,4×");
-        assert_eq!(zoom_text(3.96), "4,0×");
-        assert_eq!(zoom_text(4.0), "4,0×");
-        // Under 2× (one finger does not edit) it never reads 2,0× (the PR I
+        assert_eq!(zoom_text(1.0), "1.0×");
+        assert_eq!(zoom_text(2.5), "2.5×");
+        assert_eq!(zoom_text(2.44), "2.4×");
+        assert_eq!(zoom_text(3.96), "4.0×");
+        assert_eq!(zoom_text(4.0), "4.0×");
+        // Under 2× (one finger does not edit) it never reads 2.0× (the PR I
         // review).
-        assert_eq!(zoom_text(1.97), "1,9×");
-        assert_eq!(zoom_text(2.0_f64.next_down()), "1,9×");
-        assert_eq!(zoom_text(1.86), "1,9×");
-        assert_eq!(zoom_text(1.84), "1,8×");
-        assert_eq!(zoom_text(2.0), "2,0×");
-        assert_eq!(zoom_text(2.04), "2,0×");
+        assert_eq!(zoom_text(1.97), "1.9×");
+        assert_eq!(zoom_text(2.0_f64.next_down()), "1.9×");
+        assert_eq!(zoom_text(1.86), "1.9×");
+        assert_eq!(zoom_text(1.84), "1.8×");
+        assert_eq!(zoom_text(2.0), "2.0×");
+        assert_eq!(zoom_text(2.04), "2.0×");
     }
 
     #[test]
@@ -2733,7 +2730,7 @@ mod tests {
                 transform: "translate(0px, 0px) scale(1)".into(),
                 zoomed: false,
                 edits: false,
-                factor: "1,0×".into(),
+                factor: "1.0×".into(),
                 seen: (0.0, 0.0, 1.0, 1.0),
             })
         );
@@ -2746,7 +2743,7 @@ mod tests {
                 transform: "translate(-500px, -300px) scale(2)".into(),
                 zoomed: true,
                 edits: true,
-                factor: "2,0×".into(),
+                factor: "2.0×".into(),
                 seen: (0.25, 0.2, 0.5, 0.6),
             })
         );
@@ -2757,7 +2754,7 @@ mod tests {
                 transform: "translate(-112.5px, -37.5px) scale(1.125)".into(),
                 zoomed: true,
                 edits: false,
-                factor: "1,1×".into(),
+                factor: "1.1×".into(),
                 seen: (0.1, 0.0, 1000.0 / 0.5625 / 2000.0, 1.0),
             })
         );
@@ -2775,7 +2772,7 @@ mod tests {
                 transform: "translate(-500px, -100px) scale(2)".into(),
                 zoomed: true,
                 edits: true,
-                factor: "2,0×".into(),
+                factor: "2.0×".into(),
                 seen: (0.0, 0.2, 1.0, 0.5),
             })
         );
@@ -2844,7 +2841,7 @@ mod tests {
 
     #[test]
     fn a_card_and_its_screen_name_the_editor_alike() {
-        assert_eq!(place_text("na tracku", "Pro-Q 4"), "Pro-Q 4 · na tracku");
+        assert_eq!(place_text("on track", "Pro-Q 4"), "Pro-Q 4 · on track");
         assert_eq!(
             place_text("Vocal FX › Main", "Pro-Q 4"),
             "Pro-Q 4 · Vocal FX › Main"
@@ -2855,34 +2852,34 @@ mod tests {
             "Pro-Q 4 · Vocal FX › Main · De-ess"
         );
         assert_eq!(
-            place_text("na tracku", "Air EQ"),
-            "Pro-Q 4 · na tracku · Air EQ"
+            place_text("on track", "Air EQ"),
+            "Pro-Q 4 · on track · Air EQ"
         );
     }
 
     #[test]
     fn a_list_the_hub_did_not_give_says_why_and_the_screen_off_plainly() {
-        assert_eq!(list_text("off"), "EQ je na PC vypnuté.");
+        assert_eq!(list_text("off"), "EQ is switched off on the PC.");
         assert_eq!(
             list_text("unknown instance"),
-            "Pro-Q 4 sa nedá prečítať: neznámy Live"
+            "Can't read Pro-Q 4: unknown Live"
         );
-        assert_eq!(list_text(""), "Pro-Q 4 sa nedá prečítať: ");
+        assert_eq!(list_text(""), "Can't read Pro-Q 4: ");
     }
 
     #[test]
     fn a_lists_reason_reads_in_slovak_as_a_cards_note_does() {
         assert_eq!(
             list_text("instance offline"),
-            "Pro-Q 4 sa nedá prečítať: Live je nedostupný, skús znova"
+            "Can't read Pro-Q 4: Live is unavailable, try again"
         );
         assert_eq!(
             list_text("Live did not answer"),
-            "Pro-Q 4 sa nedá prečítať: Live neodpovedá, skús znova"
+            "Can't read Pro-Q 4: Live is not answering, try again"
         );
         assert_eq!(
             list_text("the devices nest too deep"),
-            "Pro-Q 4 sa nedá prečítať: zariadenia sú vnorené príliš hlboko"
+            "Can't read Pro-Q 4: devices are nested too deep"
         );
         // The protocol's names, through the same table as a card's note.
         for why in [
@@ -2892,12 +2889,12 @@ mod tests {
             reason::MOVED,
         ] {
             let note = failure_text(why).unwrap_or_default();
-            assert_eq!(list_text(why), format!("Pro-Q 4 sa nedá prečítať: {note}"));
+            assert_eq!(list_text(why), format!("Can't read Pro-Q 4: {note}"));
         }
         // Only an unexpected reason (the script's own words) stays raw.
         assert_eq!(
             list_text("not found: tracks[name=Nobody #]"),
-            "Pro-Q 4 sa nedá prečítať: not found: tracks[name=Nobody #]"
+            "Can't read Pro-Q 4: not found: tracks[name=Nobody #]"
         );
     }
 

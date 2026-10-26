@@ -75,7 +75,7 @@ use serde::{Deserialize, Serialize};
 /// `class_display_name` is this (it holds when the device is renamed).
 pub const PRODUCT: &str = "Pro-Q 4";
 /// Where a Pro-Q sits when it is in the track's own device chain.
-pub const ON_TRACK: &str = "na tracku";
+pub const ON_TRACK: &str = "on track";
 /// Between a rack's and its chain's names in a place.
 pub const PLACE_SEP: &str = " › ";
 /// The bytes before a frame's JPEG: its [`FrameHead`].
@@ -442,7 +442,7 @@ mod tests {
 
     #[test]
     fn a_place_names_the_racks_and_chains_from_the_track_down() {
-        assert_eq!(place(&[]), "na tracku");
+        assert_eq!(place(&[]), "on track");
         assert_eq!(
             place(&[("Vocal FX".into(), "Main".into())]),
             "Vocal FX › Main"
@@ -477,12 +477,12 @@ mod tests {
             name: "Pro-Q 4".into(),
             picture: false,
         };
-        let wire = json!({"path": "live_set tracks 1 devices 0", "place": "na tracku",
+        let wire = json!({"path": "live_set tracks 1 devices 0", "place": "on track",
                           "name": "Pro-Q 4", "picture": false});
         assert_eq!(serde_json::to_value(&item).unwrap(), wire);
         assert_eq!(serde_json::from_value::<EqItem>(wire).unwrap(), item);
         // An older hub's item without `picture`: none kept.
-        let bare = json!({"path": "p", "place": "na tracku", "name": "n"});
+        let bare = json!({"path": "p", "place": "on track", "name": "n"});
         assert!(!serde_json::from_value::<EqItem>(bare).unwrap().picture);
         let lock = EqLock {
             instance: "band".into(),

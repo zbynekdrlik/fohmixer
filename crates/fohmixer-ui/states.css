@@ -27,14 +27,14 @@
 
 /* A marker problem (#68, the approved mockup surface-views-v4): a
    conflict (the label is on another Tuner too) disables the strip: red
-   hatching, its controls take no touch, KONFLIKT instead of Live's dB. Any
+   hatching, its controls take no touch, CONFLICT instead of Live's dB. Any
    other problem leaves it working: a yellow corner on the name button,
-   ZNAČKA? instead of the dB. */
+   TAG? instead of the dB. */
 .strip[data-mark] .db {
     display: none;
 }
 
-/* Sized from the strip width (#9: nothing measures text): ZNAČKA? beside
+/* Sized from the strip width (#9: nothing measures text): TAG? beside
    the status light and ☰ (#71), in the condensed face (the #71 mockup's),
    fits from the narrowest strip up (swept 64–120 px in both engines). A
    conflict hides the light (the mockup), so its word has more room. */

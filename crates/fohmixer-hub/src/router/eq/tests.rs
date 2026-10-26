@@ -477,7 +477,7 @@ async fn a_listed_editor_is_known_and_says_whether_a_picture_is_kept() {
         client: 1,
         binding: hand2(),
         outcome: Ok(vec![
-            found_at(PATH, "na tracku", REF),
+            found_at(PATH, "on track", REF),
             found_at(inner, "Vocal FX › Main", "live_2"),
         ]),
     };
@@ -490,7 +490,7 @@ async fn a_listed_editor_is_known_and_says_whether_a_picture_is_kept() {
     let list = |inner_picture: bool| ServerMsg::EqList {
         binding: hand2(),
         items: vec![
-            item(PATH, "na tracku", false),
+            item(PATH, "on track", false),
             item(inner, "Vocal FX › Main", inner_picture),
         ],
         error: None,
@@ -546,7 +546,7 @@ async fn an_open_after_its_instance_connected_again_is_refused_until_listed() {
     router.handle(RouterMsg::EqListed {
         client: 1,
         binding: hand2(),
-        outcome: Ok(vec![found_at(PATH, "na tracku", REF)]),
+        outcome: Ok(vec![found_at(PATH, "on track", REF)]),
     });
     // The instance connects again: another set may be loaded, so the path
     // listed before may name another device.
@@ -584,13 +584,13 @@ async fn a_new_list_and_a_connect_drop_the_pictures_whose_path_names_another_dev
     rig.router.handle(list(
         hand2(),
         vec![
-            found_at(PATH, "na tracku", REF),
+            found_at(PATH, "on track", REF),
             found_at(&inner.path, "Vocal FX › Main", "live_2"),
         ],
     ));
     rig.router.handle(list(
         drums_strip,
-        vec![found_at(PATH, "na tracku", "live_9")],
+        vec![found_at(PATH, "on track", "live_9")],
     ));
     for (k, id) in [
         (key(), REF),
@@ -606,7 +606,7 @@ async fn a_new_list_and_a_connect_drop_the_pictures_whose_path_names_another_dev
     // The track lists again without the chain's Pro-Q 4: its card's
     // picture goes; the other stays.
     rig.router
-        .handle(list(hand2(), vec![found_at(PATH, "na tracku", REF)]));
+        .handle(list(hand2(), vec![found_at(PATH, "on track", REF)]));
     assert_eq!(
         [&key(), &inner, &drums].map(|k| pictures.has(k)),
         [true, false, true]
@@ -614,7 +614,7 @@ async fn a_new_list_and_a_connect_drop_the_pictures_whose_path_names_another_dev
     // Another Pro-Q 4 of the same name at the path now (two default-named
     // ones changed places): the device before's picture goes.
     rig.router
-        .handle(list(hand2(), vec![found_at(PATH, "na tracku", "live_3")]));
+        .handle(list(hand2(), vec![found_at(PATH, "on track", "live_3")]));
     assert!(!pictures.has(&key()), "another device's picture");
     pictures.put(&key(), "live_3", Bytes::from_static(b"jpeg"));
     assert!(pictures.has(&key()));
@@ -757,7 +757,7 @@ async fn an_editors_frames_keep_no_picture_once_its_path_names_another_device() 
     rig.router.handle(RouterMsg::EqListed {
         client: 1,
         binding: hand2(),
-        outcome: Ok(vec![found_at(PATH, "na tracku", "live_3")]),
+        outcome: Ok(vec![found_at(PATH, "on track", "live_3")]),
     });
     assert!(!pictures.has(&key()));
     // The page acks each frame it gets (#71 PR I: the next one goes then).

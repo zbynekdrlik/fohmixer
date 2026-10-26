@@ -19,7 +19,7 @@
 //! Points are rounded to 0.1 px, the zoom to 0.01. Pure, tested natively;
 //! `components/eq.rs` records them through `diag::record`.
 //!
-//! The bar's ↶ VRÁTIŤ (#71 PR P2b) is recorded too: each press the hub
+//! The bar's ↶ UNDO (#71 PR P2b) is recorded too: each press the hub
 //! answered, as [`eq_undo`] (its input number, the answer and the ms from
 //! the press to it), kept by [`EqUndos`] until the answer comes.
 
@@ -68,7 +68,7 @@ pub fn eq_view(t: f64, part: Option<Part>) -> Value {
     json!({"ev": "eq_view", "t": t, "part": part})
 }
 
-/// The bar's ↶ VRÁTIŤ pressed at page time `t` (#71 PR P2b): the undo's
+/// The bar's ↶ UNDO pressed at page time `t` (#71 PR P2b): the undo's
 /// input number `n`, the hub's answer (`result`: `done`, `nothing` or why
 /// not) and the ms from the press to the answer. Essential: the timeline
 /// shows it beside the hub's `undo` record.

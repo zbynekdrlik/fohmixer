@@ -26,9 +26,9 @@ import {
 // The channel detail (#71 PR D; spec F27, D17; the approved mockup
 // docs/mockups/channel-detail-v2.html): a hold of 500 ms on a strip's ☰ (at
 // the end of its readout line) opens that channel over the whole screen: its
-// name, group and instance, ← SPÄŤ NA MIX, the mute, Live's dB and a tall
+// name, group and instance, ← BACK TO MIX, the mute, Live's dB and a tall
 // fader on the left, the pan (which left the strip) with Live's display
-// string and STRED on the right. A shorter touch only shows the hint. It
+// string and CENTER on the right. A shorter touch only shows the hint. It
 // stays open through a new layout while its strip is in it, and TechAlert
 // flashes over it.
 
@@ -55,7 +55,7 @@ function texts(detail: Locator): [string, Locator][] {
     ["mute", detail.getByTestId("strip-label")],
     ["dB", detail.getByTestId("db")],
     ["pan display", detail.getByTestId("pan-display")],
-    ["STRED", detail.getByTestId("detail-centre")],
+    ["CENTER", detail.getByTestId("detail-centre")],
   ];
 }
 
@@ -94,7 +94,7 @@ test.describe("The channel detail", () => {
     await openSurface(page);
     const s = strip(page, "Hand2 #");
     const menu = s.getByTestId("strip-menu");
-    await expect(menu).toHaveAttribute("aria-label", "Detail kanála (podrž)");
+    await expect(menu).toHaveAttribute("aria-label", "Channel detail (hold)");
     await expect(menu).toHaveText("☰");
     // ☰ ends the readout line: under the name button, after Live's dB.
     await expect(s.getByTestId("db")).not.toHaveText("");
@@ -133,14 +133,14 @@ test.describe("The channel detail", () => {
     expect(reads.down.hint).toBe("false");
     expect(reads.up.holding).toBe("false");
     expect(reads.up.hint, "the hint after the tap").toBe("true");
-    expect(reads.up.after).toContain("na detail");
+    expect(reads.up.after).toContain("for detail");
     // Nothing opens, not after the hold's time either, and the hint goes.
     await page.waitForTimeout(700);
     await expect(page.getByTestId("detail")).toHaveCount(0);
     await expect(menu).toHaveAttribute("data-hint", "false", { timeout: 2000 });
   });
 
-  test("a hold fills ☰ and opens that channel's detail with its name, group and instance; ← SPÄŤ NA MIX returns to the page", async ({ page }) => {
+  test("a hold fills ☰ and opens that channel's detail with its name, group and instance; ← BACK TO MIX returns to the page", async ({ page }) => {
     await openSurface(page);
     const s = strip(page, "Hand2 #", "master");
     const menu = s.getByTestId("strip-menu");
@@ -173,7 +173,7 @@ test.describe("The channel detail", () => {
       column.y + column.height / 2,
     ]);
     expect(hit, "the detail over the column").toBe(true);
-    // Its parts: the mute, Live's dB, the fader, the pan, STRED, all bound.
+    // Its parts: the mute, Live's dB, the fader, the pan, CENTER, all bound.
     for (const id of ["mute", "fader", "pan", "detail-centre"]) {
       await ready(detail.getByTestId(id));
     }
@@ -248,7 +248,7 @@ test.describe("The channel detail", () => {
     }
   });
 
-  test("its pan drag and STRED reach the track's panning; it shows Live's display string", async ({ page }) => {
+  test("its pan drag and CENTER reach the track's panning; it shows Live's display string", async ({ page }) => {
     const PAN = panning(HAND2);
     const before = await live.get("band", PAN, "value");
     await live.set("band", PAN, "value", 0);
@@ -278,7 +278,7 @@ test.describe("The channel detail", () => {
       expect(right).toBeGreaterThan(0.05);
       await expect(display).toHaveText(/^\d+R$/);
       await expect(pan.locator(".pan-dot")).toHaveCSS("background-color", "rgb(52, 193, 220)");
-      // STRED: a tap centres it.
+      // CENTER: a tap centres it.
       const centreButton = detail.getByTestId("detail-centre");
       await ready(centreButton);
       await centreButton.click();
@@ -542,12 +542,12 @@ test.describe("A marker strip's detail", () => {
       const pan = detail.getByTestId("pan");
       await ready(pan);
       await expect(pan).toHaveAttribute("data-binding", "ready");
-      // Its pan reads Hand3 #'s panning at the new index, and STRED drives it.
+      // Its pan reads Hand3 #'s panning at the new index, and CENTER drives it.
       await live.set("band", PAN, "value", 0.5);
       await until(() => shown(pan), (v) => Math.abs(v - 0.5) < 1e-3, "the pan at Hand3's panning");
       await expect(detail.getByTestId("pan-display")).toHaveText("25R");
       await detail.getByTestId("detail-centre").click();
-      await until(() => live.get("band", PAN, "value"), (v) => v === 0, "Hand3 centred by STRED");
+      await until(() => live.get("band", PAN, "value"), (v) => v === 0, "Hand3 centred by CENTER");
     } finally {
       // The test site whole again: the band host restarted from its
       // fixture (the deleted track back, no Tuner), the layout reset.

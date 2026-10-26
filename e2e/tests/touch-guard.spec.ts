@@ -156,7 +156,7 @@ test("every control owns its touches: its touchstart is prevented, nothing on it
     ["detail's meter clip", detail.getByTestId("clip")],
     ["pan", detail.getByTestId("pan")],
     ["pan dot", detail.getByTestId("pan").locator(".pan-dot")],
-    ["STRED", detail.getByTestId("detail-centre")],
+    ["CENTER", detail.getByTestId("detail-centre")],
   ];
   for (const [name, el] of own) {
     expect(await prevented(el, "touchstart"), `a touchstart on the ${name}`).toBe(true);

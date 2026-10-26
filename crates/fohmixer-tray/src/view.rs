@@ -69,19 +69,19 @@ pub fn clip(text: &str, max: usize) -> String {
 /// named when the hub runs another one (a tray left from before an update).
 pub fn tooltip(state: &HubState, tray_version: &str) -> String {
     let text = match state {
-        HubState::Unknown => "fohmixer: asking the hub".to_string(),
+        HubState::Unknown => "fohmixer: checking the hub".to_string(),
         HubState::Up(info) if info.version == tray_version => {
             format!(
-                "fohmixer v{} ({}): the hub runs",
+                "fohmixer v{} ({}): hub running",
                 info.version, info.git_hash
             )
         }
         HubState::Up(info) => format!(
-            "fohmixer v{} ({}): the hub runs (this tray is v{tray_version})",
+            "fohmixer v{} ({}): hub running (this tray is v{tray_version})",
             info.version, info.git_hash
         ),
         HubState::Down { reason, .. } => {
-            format!("fohmixer: the hub does not answer ({reason})")
+            format!("fohmixer: hub not answering ({reason})")
         }
     };
     clip(&text, TOOLTIP_MAX)
@@ -90,7 +90,7 @@ pub fn tooltip(state: &HubState, tray_version: &str) -> String {
 /// The menu's disabled version line.
 pub fn version_line(state: &HubState) -> String {
     match state {
-        HubState::Unknown => "Hub: asking".to_string(),
+        HubState::Unknown => "Hub: checking".to_string(),
         HubState::Up(info) => format!("Hub v{} ({})", info.version, info.git_hash),
         HubState::Down { .. } => "Hub: not answering".to_string(),
     }
@@ -101,7 +101,7 @@ pub fn version_line(state: &HubState) -> String {
 pub fn copy_item(public: Option<&str>) -> (String, bool) {
     match public {
         Some(url) => (format!("Copy URL ({url})"), true),
-        None => ("Copy URL (no public name set up)".to_string(), false),
+        None => ("Copy URL (no public address set up)".to_string(), false),
     }
 }
 
@@ -161,7 +161,7 @@ mod tests {
     fn the_tooltip_of_a_running_hub_names_its_version() {
         assert_eq!(
             tooltip(&up("0.1.0-dev.25", "abc1234"), "0.1.0-dev.25"),
-            "fohmixer v0.1.0-dev.25 (abc1234): the hub runs"
+            "fohmixer v0.1.0-dev.25 (abc1234): hub running"
         );
     }
 
@@ -169,7 +169,7 @@ mod tests {
     fn the_tooltip_names_a_tray_of_another_version() {
         assert_eq!(
             tooltip(&up("0.1.0-dev.26", "def5678"), "0.1.0-dev.25"),
-            "fohmixer v0.1.0-dev.26 (def5678): the hub runs (this tray is v0.1.0-dev.25)"
+            "fohmixer v0.1.0-dev.26 (def5678): hub running (this tray is v0.1.0-dev.25)"
         );
     }
 
@@ -177,11 +177,11 @@ mod tests {
     fn the_tooltip_of_a_hub_that_does_not_answer_gives_the_reason() {
         assert_eq!(
             tooltip(&down("no answer", "connection refused"), "0.1.0"),
-            "fohmixer: the hub does not answer (no answer)"
+            "fohmixer: hub not answering (no answer)"
         );
         assert_eq!(
             tooltip(&down("HTTP 503", "x"), "0.1.0"),
-            "fohmixer: the hub does not answer (HTTP 503)"
+            "fohmixer: hub not answering (HTTP 503)"
         );
     }
 
@@ -189,7 +189,7 @@ mod tests {
     fn the_tooltip_before_the_first_answer() {
         assert_eq!(
             tooltip(&HubState::Unknown, "0.1.0"),
-            "fohmixer: asking the hub"
+            "fohmixer: checking the hub"
         );
     }
 
@@ -198,10 +198,7 @@ mod tests {
         let long = down(&"r".repeat(300), "");
         let tip = tooltip(&long, "0.1.0");
         assert_eq!(tip.encode_utf16().count(), 127);
-        assert!(
-            tip.starts_with("fohmixer: the hub does not answer (rrr"),
-            "{tip}"
-        );
+        assert!(tip.starts_with("fohmixer: hub not answering (rrr"), "{tip}");
     }
 
     #[test]
@@ -223,7 +220,7 @@ mod tests {
 
     #[test]
     fn the_version_line_follows_the_hub() {
-        assert_eq!(version_line(&HubState::Unknown), "Hub: asking");
+        assert_eq!(version_line(&HubState::Unknown), "Hub: checking");
         assert_eq!(
             version_line(&up("0.1.0-dev.25", "abc1234")),
             "Hub v0.1.0-dev.25 (abc1234)"
@@ -239,7 +236,7 @@ mod tests {
         );
         assert_eq!(
             copy_item(None),
-            ("Copy URL (no public name set up)".to_string(), false)
+            ("Copy URL (no public address set up)".to_string(), false)
         );
     }
 

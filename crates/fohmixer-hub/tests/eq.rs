@@ -254,7 +254,7 @@ fn a_strips_pro_q_opens_sends_frames_takes_a_finger_and_closes_through_the_guard
             listed(&mut a).await,
             (
                 vec![
-                    item(ON_TRACK, "na tracku", "Pro-Q 4", false),
+                    item(ON_TRACK, "on track", "Pro-Q 4", false),
                     item(IN_CHAIN, "Vocal FX › Main", "De-ess", false),
                 ],
                 None

@@ -120,7 +120,7 @@ test("an equal label disables both strips; a tag problem marks a strip that stil
     expect(await hostLine("band", `tuner track 2 set '"Same" +G:MARKERS'`)).toBe("TUNER 1");
     const conflict = page.locator('.slot[data-group="markers"] [data-testid="strip"][data-mark="conflict"]');
     await expect(conflict).toHaveCount(2, { timeout: 10_000 });
-    await expect(conflict.first().getByTestId("strip-mark")).toHaveText("KONFLIKT");
+    await expect(conflict.first().getByTestId("strip-mark")).toHaveText("CONFLICT");
     expect(await clipped(conflict.first().getByTestId("strip-mark"))).toEqual([]);
     await expect(conflict.first().getByTestId("db")).toBeHidden();
     // The first is track 1 (Live's order, `#2` by index): its fader is
@@ -142,7 +142,7 @@ test("an equal label disables both strips; a tag problem marks a strip that stil
     expect(await hostLine("band", `tuner track 1 set '"Other" +G:MARKERS +GX'`)).toBe("TUNER 1");
     const problem = group.and(page.locator('[data-label="Other"]'));
     await expect(problem).toHaveAttribute("data-mark", "problem", { timeout: 10_000 });
-    await expect(problem.getByTestId("strip-mark")).toHaveText("ZNAČKA?");
+    await expect(problem.getByTestId("strip-mark")).toHaveText("TAG?");
     // Beside the status light: the tighter fit of the two words.
     expect(await clipped(problem.getByTestId("strip-mark"))).toEqual([]);
     const same = group.and(page.locator('[data-label="Same"]'));
@@ -198,17 +198,17 @@ test("a tags group's own controls follow its marker strips", async ({ page }) =>
   await expect(own).toHaveCount(0, { timeout: 10_000 });
 });
 
-test("the ZNAČKY chip opens the tag manual over the screen and closes it", async ({ page }) => {
+test("the TAGS chip opens the tag manual over the screen and closes it", async ({ page }) => {
   await openSurface(page);
   // The same page the tray opens.
   const served = await page.request.get("/znacky.html");
   expect(served.status()).toBe(200);
-  expect(await served.text()).toContain("ZNAČKY V TUNERI");
+  expect(await served.text()).toContain("TAGS IN THE TUNER");
   await page.getByTestId("manual-open").click();
   const manual = page.getByTestId("manual");
   await expect(manual).toBeVisible();
   const text = manual.getByTestId("znacky");
-  await expect(text).toContainText("ZNAČKY V TUNERI", { timeout: 10_000 });
+  await expect(text).toContainText("TAGS IN THE TUNER", { timeout: 10_000 });
   await expect(text).toContainText("+G:VOCALS:2");
   // Over the whole screen, the column too.
   expect(Number(await manual.evaluate((e) => getComputedStyle(e).zIndex))).toBeGreaterThan(10);
@@ -226,7 +226,7 @@ test("the tag manual stays open through a new layout (a Tuner edited in Live)", 
   try {
     await page.getByTestId("manual-open").click();
     const manual = page.getByTestId("manual");
-    await expect(manual.getByTestId("znacky")).toContainText("ZNAČKY V TUNERI", { timeout: 10_000 });
+    await expect(manual.getByTestId("znacky")).toContainText("TAGS IN THE TUNER", { timeout: 10_000 });
     await manual.evaluate((e) => e.setAttribute("data-e2e-kept", "1"));
     // A new layout (the markers' compositions come the same way): the
     // page under the manual is rebuilt, the manual is the same element.
@@ -235,7 +235,7 @@ test("the tag manual stays open through a new layout (a Tuner edited in Live)", 
     await harness("/hub/layout", { layout: frame });
     await expect(tab).toHaveText("FOH 2", { timeout: 10_000 });
     await expect(manual).toHaveAttribute("data-e2e-kept", "1");
-    await expect(manual.getByTestId("znacky")).toContainText("ZNAČKY V TUNERI");
+    await expect(manual.getByTestId("znacky")).toContainText("TAGS IN THE TUNER");
     await page.getByTestId("manual-close").click();
     await expect(manual).toHaveCount(0);
   } finally {

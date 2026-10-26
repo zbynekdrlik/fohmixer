@@ -557,7 +557,7 @@ pub struct ReverbFader {
     /// The level it returns to, while the rule holds it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub back: Option<f64>,
-    /// The engineer moved it while the rule held it: let go (`RUKA`) until
+    /// The engineer moved it while the rule held it: let go (`MAN`) until
     /// the next stop.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hand: bool,

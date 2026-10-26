@@ -342,7 +342,7 @@ mod tests {
             Step::Done(vec![
                 Found {
                     path: "live_set tracks 1 devices 0".into(),
-                    place: "na tracku".into(),
+                    place: "on track".into(),
                     name: "Pro-Q 4".into(),
                     id: "r".into(),
                 },

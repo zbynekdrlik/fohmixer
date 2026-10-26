@@ -198,7 +198,7 @@ test.describe("A linked mute", () => {
       for (const label of ["Vox 1", "Vox 2"]) {
         const s = strips.and(page.locator(`[data-label="${label}"]`));
         await expect(s).toHaveAttribute("data-mark", "problem");
-        await expect(s.getByTestId("strip-mark")).toHaveText("ZNAČKA?");
+        await expect(s.getByTestId("strip-mark")).toHaveText("TAG?");
         await expect(s.getByTestId("mute-link")).toHaveCount(0);
       }
       // `/api/status` lists the problems: the id on both strips, the mute

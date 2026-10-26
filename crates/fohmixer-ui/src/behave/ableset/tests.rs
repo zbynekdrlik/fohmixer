@@ -315,46 +315,43 @@ fn the_page_says_what_it_shows() {
 
 #[test]
 fn the_panels_say_what_the_approved_mockup_says() {
-    assert_eq!(panel_title(Panel::Down), "AbleSet nebeží");
-    assert_eq!(panel_title(Panel::SignIn), "Prihlásenie do AbleSetu");
-    assert_eq!(panel_title(Panel::Elsewhere), "Núdzová adresa");
+    assert_eq!(panel_title(Panel::Down), "AbleSet is not running");
+    assert_eq!(panel_title(Panel::SignIn), "AbleSet sign-in");
+    assert_eq!(panel_title(Panel::Elsewhere), "Fallback address");
     assert_eq!(panel_title(Panel::Checking), "");
     assert_eq!(
         panel_text(Panel::Down, true),
-        "AbleSet na PC teraz neodpovedá. Fohmixer ho skúša znova sám; mixér funguje ďalej."
+        "AbleSet on the PC is not answering right now. Fohmixer keeps retrying; the mixer works as usual."
     );
     assert_eq!(
         panel_text(Panel::SignIn, false),
-        "Si mimo kostola. AbleSet chce raz potvrdiť prihlásenie, rovnako ako fohmixer."
+        "You are away from the church. AbleSet wants you to confirm the sign-in once, like fohmixer."
     );
     assert_eq!(
         panel_text(Panel::Elsewhere, true),
-        "Fohmixer je otvorený cez IP bez certifikátu, tak sa AbleSet nedá vložiť. Otvor fohmixer cez jeho meno, alebo AbleSet priamo:"
+        "Fohmixer is open by IP without a certificate, so AbleSet can't be embedded. Open fohmixer by its name, or open AbleSet directly:"
     );
     assert_eq!(
         panel_text(Panel::Elsewhere, false),
-        "Fohmixer nie je otvorený cez svoje meno, tak sa AbleSet nedá vložiť. Otvor fohmixer cez jeho meno."
+        "Fohmixer is not open by its own name, so AbleSet can't be embedded. Open fohmixer by its name."
     );
-    assert_eq!(panel_text(Panel::Checking, false), "Pripájam AbleSet…");
-    assert_eq!(SIGNIN_BUTTON, "PRIHLÁSIŤ SA");
+    assert_eq!(panel_text(Panel::Checking, false), "Connecting to AbleSet…");
+    assert_eq!(SIGNIN_BUTTON, "SIGN IN");
 }
 
 #[test]
 fn a_probe_that_fails_on_the_lan_says_why() {
     // #90 PR C review M2: not in the approved mockup, a state of its own.
     for why in [Fail::Error, Fail::Late] {
-        assert_eq!(
-            panel_title(Panel::Unreachable(why)),
-            "AbleSet sa nedá načítať"
-        );
+        assert_eq!(panel_title(Panel::Unreachable(why)), "AbleSet can't load");
     }
     assert_eq!(
         panel_text(Panel::Unreachable(Fail::Error), false),
-        "AbleSet sa cez sieť kostola nenačítal: jeho meno alebo certifikát nefunguje. Mixér funguje ďalej; fohmixer to skúsi znova, keď sa sem vrátiš."
+        "AbleSet did not load over the church network: its name or certificate does not work. The mixer works as usual; fohmixer tries again when you come back here."
     );
     assert_eq!(
         panel_text(Panel::Unreachable(Fail::Late), false),
-        "AbleSet neodpovedal do 8 sekúnd. Mixér funguje ďalej; fohmixer to skúsi znova, keď sa sem vrátiš."
+        "AbleSet did not answer within 8 seconds. The mixer works as usual; fohmixer tries again when you come back here."
     );
     assert_eq!(PROBE_MS, 8_000);
 }

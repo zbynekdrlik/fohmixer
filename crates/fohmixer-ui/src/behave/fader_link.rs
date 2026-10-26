@@ -80,25 +80,25 @@ pub fn flink_compact(flag: bool, mute_count: Option<&str>) -> bool {
 /// A leader's switch (the button's capitals are the stylesheet's).
 pub fn link_text(labels: &[String]) -> String {
     if labels.is_empty() {
-        "SPOJENÝ".to_string()
+        "LINKED".to_string()
     } else {
-        format!("SPOJENÝ S {}", labels.join(", "))
+        format!("LINKED TO {}", labels.join(", "))
     }
 }
 
 /// A partner's note: its leader.
 pub fn follow_text(leader: &str) -> String {
-    format!("IDE S {leader}")
+    format!("FOLLOWS {leader}")
 }
 
 /// A partner's note: whether its leader moves it, and where it is switched.
 pub fn follow_state(on: Option<bool>, fixed: bool, leader: &str) -> String {
     if fixed {
-        return "vždy spojené".to_string();
+        return "always linked".to_string();
     }
     match on {
-        Some(true) => "spojenie zapnuté".to_string(),
-        Some(false) => format!("spojenie vypnuté · zapína sa v detaile {leader}"),
+        Some(true) => "link on".to_string(),
+        Some(false) => format!("link off · switch it in {leader}'s detail"),
         None => String::new(),
     }
 }
@@ -194,25 +194,22 @@ mod tests {
 
     #[test]
     fn the_details_texts_name_the_partners_and_the_leader() {
-        assert_eq!(link_text(&["Rev ST".to_string()]), "SPOJENÝ S Rev ST");
+        assert_eq!(link_text(&["Rev ST".to_string()]), "LINKED TO Rev ST");
         assert_eq!(
             link_text(&["#11".to_string(), "Rev ST".to_string()]),
-            "SPOJENÝ S #11, Rev ST"
+            "LINKED TO #11, Rev ST"
         );
-        assert_eq!(link_text(&[]), "SPOJENÝ");
-        assert_eq!(follow_text("Rev PA"), "IDE S Rev PA");
-        assert_eq!(
-            follow_state(Some(true), false, "Rev PA"),
-            "spojenie zapnuté"
-        );
+        assert_eq!(link_text(&[]), "LINKED");
+        assert_eq!(follow_text("Rev PA"), "FOLLOWS Rev PA");
+        assert_eq!(follow_state(Some(true), false, "Rev PA"), "link on");
         assert_eq!(
             follow_state(Some(false), false, "Rev PA"),
-            "spojenie vypnuté · zapína sa v detaile Rev PA"
+            "link off · switch it in Rev PA's detail"
         );
         assert_eq!(follow_state(None, false, "Rev PA"), "");
         assert_eq!(
             follow_state(Some(false), true, "Podklady All"),
-            "vždy spojené"
+            "always linked"
         );
     }
 

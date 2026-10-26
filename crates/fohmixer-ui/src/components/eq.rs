@@ -7,12 +7,12 @@
 //!   comes back online, and once the screen closed), one
 //!   card each: its last picture (fetched with the token into a blob URL;
 //!   a plain field before a first open), where it sits, and `OTVORIŤ EQ NA
-//!   CELÚ OBRAZOVKU`, or `ZAMKNUTÉ` while another page holds an editor (one
+//!   CELÚ OBRAZOVKU`, or `LOCKED` while another page holds an editor (one
 //!   Pro-Q 4 on the PC's screen at a time): this one's holder since when,
 //!   or that another engineer uses Pro-Q 4 since when.
 //! - **The screen** ([`EqScreen`], over the whole surface, mounted while
 //!   [`EqNav`] names an editor; outside the layout's shell, so a new layout
-//!   keeps it): the bar (`← SPÄŤ NA KANÁL`, the chip, `Pro-Q 4 · <where>`,
+//!   keeps it): the bar (`← BACK TO CHANNEL`, the chip, `Pro-Q 4 · <where>`,
 //!   the lock mark, `?` with the touch legend) and the live picture: the
 //!   binary frames drawn into a canvas through `createImageBitmap`, fitted
 //!   (`object-fit: contain`), the newest frame winning while one decodes.
@@ -35,9 +35,9 @@
 //!   nothing, and a hint over the picture says so. The canvas gets a
 //!   CSS transform, and while zoomed the bar shows the overview (the latest
 //!   frame small, in the picture's shape, a frame around the part in
-//!   sight), the factor and `CELÝ EQ`. Leaving it sends `eq_close`; the hub
+//!   sight), the factor and `FULL EQ`. Leaving it sends `eq_close`; the hub
 //!   closing it (refused, failed, its window gone, the socket lost) brings
-//!   the detail back. The bar's ↶ VRÁTIŤ (#71 PR P2b, the approved mockup
+//!   the detail back. The bar's ↶ UNDO (#71 PR P2b, the approved mockup
 //!   `docs/mockups/proq-undo-v1.html`) asks the hub to tap Pro-Q's own undo
 //!   (`eq_undo`, numbered with the fingers' inputs); it takes no press
 //!   while a finger keeps the PC's contact nor within 700 ms of the last
@@ -242,7 +242,7 @@ fn EqCard(
     };
     let no_keys: Vec<String> = Vec::new();
     let path_attr = item.path.clone();
-    let alt = format!("{PRODUCT}, posledný obraz");
+    let alt = format!("{PRODUCT}, last image");
     let picture = move || match shown.try_get().flatten() {
         Some(url) => {
             view! { <img class="eq-card-img" data-testid="eq-card-img" src=url alt=alt.clone() /> }
@@ -261,7 +261,7 @@ fn EqCard(
                 {picture}
                 {move || since().map(|text| view! {
                     <div class="eq-card-lock" data-testid="eq-card-lock">
-                        <span class="eq-card-lock-word">"ZAMKNUTÉ"</span>
+                        <span class="eq-card-lock-word">"LOCKED"</span>
                         <span>{text}</span>
                     </div>
                 })}
@@ -275,7 +275,7 @@ fn EqCard(
                 aria-disabled=disabled
                 on:pointerdown=on_open
             >
-                {move || if other() { "ZAMKNUTÉ" } else { "OTVORIŤ EQ NA CELÚ OBRAZOVKU" }}
+                {move || if other() { "LOCKED" } else { "OPEN EQ FULL SCREEN" }}
             </button>
             {move || note().map(|text| view! {
                 <div class="eq-card-note" data-testid="eq-card-note">{text}</div>
@@ -335,7 +335,7 @@ pub fn EqCards(strip: Strip, label: String, color: Option<RwSignal<Slot>>) -> im
     let instance = strip.binding.instance.clone();
     let body = move || {
         let Some(list) = list.try_get().flatten() else {
-            return view! { <p class="eq-note" data-testid="eq-note">"Hľadám Pro-Q 4…"</p> }
+            return view! { <p class="eq-note" data-testid="eq-note">"Looking for Pro-Q 4…"</p> }
                 .into_any();
         };
         if let Some(error) = list.error {
@@ -346,7 +346,7 @@ pub fn EqCards(strip: Strip, label: String, color: Option<RwSignal<Slot>>) -> im
         }
         if list.items.is_empty() {
             return view! {
-                <p class="eq-note" data-testid="eq-note">"Na tomto tracku nie je Pro-Q 4."</p>
+                <p class="eq-note" data-testid="eq-note">"No Pro-Q 4 on this track."</p>
             }
             .into_any();
         }
@@ -700,7 +700,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     };
     // A finger whose end the browser never delivered (#124: iOS took it for
     // a system gesture) ends at a primary down of its type anywhere on the
-    // screen (the picture, ↶ VRÁTIŤ, CELÝ EQ: a primary down proves no other
+    // screen (the picture, ↶ UNDO, FULL EQ: a primary down proves no other
     // pointer of its type is down), before that down does anything: its
     // contact cancelled at the PC (numbered before the down's own input, so
     // the hub ends it first and an undo is not refused busy), and every such
@@ -730,7 +730,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
     // a new first finger.
     let caught_up = RwSignal::new(true);
     let tap_pending = RwSignal::new(false);
-    // The bar's ↶ VRÁTIŤ (PR P2b): the last press it took (page ms),
+    // The bar's ↶ UNDO (PR P2b): the last press it took (page ms),
     // whether it takes none now (`aria-disabled`), its flash, and the note
     // of the hub's answer (its text, when it came, whether it shows).
     let undo_at = StoredValue::new(None::<f64>);
@@ -1095,7 +1095,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         ev.prevent_default();
         let _ = legend.try_update(|on| *on = !*on);
     };
-    // `CELÝ EQ`: the whole picture again (the frame loop draws it). A finger
+    // `FULL EQ`: the whole picture again (the frame loop draws it). A finger
     // whose end never came ends first (#124 review I1); a finger on the
     // editor ends then, with its cancel where it was (the PR I review: a
     // drag went on at 1×, its points remapped); a pinch goes on.
@@ -1110,7 +1110,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
         note_takes();
         let _ = viewer.try_update_value(Viewer::whole);
     };
-    // ↶ VRÁTIŤ (PR P2b): Pro-Q's own undo, when the bar's rule takes the
+    // ↶ UNDO (PR P2b): Pro-Q's own undo, when the bar's rule takes the
     // press (`undo_ready`); it goes numbered as the editor's next input,
     // then the control rests 700 ms and flashes, and a first finger waits
     // until a picture shows the undo (`note_takes`, as after a finger's
@@ -1200,8 +1200,8 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                     use:owns_touches=exit_keys
                     on:pointerdown=exit
                 >
-                    <span class="eq-exit-long">"← SPÄŤ NA KANÁL"</span>
-                    <span class="eq-exit-short">"← KANÁL"</span>
+                    <span class="eq-exit-long">"← BACK TO CHANNEL"</span>
+                    <span class="eq-exit-short">"← CHANNEL"</span>
                 </button>
                 <div class="eq-name">
                     <span class="detail-chip" style=chip>{target.label.clone()}</span>
@@ -1220,7 +1220,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                         use:owns_touches=whole_keys
                         on:pointerdown=whole
                     >
-                        "CELÝ EQ"
+                        "FULL EQ"
                     </button>
                 </div>
                 <button
@@ -1233,10 +1233,10 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                     on:pointerdown=undo
                 >
                     <span class="eq-undo-arrow" data-testid="eq-undo-arrow">"↶"</span>
-                    <span class="eq-undo-word" data-testid="eq-undo-word">"VRÁTIŤ"</span>
+                    <span class="eq-undo-word" data-testid="eq-undo-word">"UNDO"</span>
                 </button>
                 <span class="eq-mine" data-testid="eq-mine" data-shown=move || open().to_string()>
-                    "zamknuté pre teba"
+                    "locked to you"
                 </span>
                 <button
                     type="button"
@@ -1268,7 +1268,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                     node_ref=canvas_ref
                 ></canvas>
                 <div class="eq-hint" data-testid="eq-hint" data-shown=hint_shown>
-                    "Ťukni na miesto, ktoré chceš upraviť"
+                    "Tap where you want to edit"
                 </div>
                 <div class="eq-hint eq-stale" data-testid="eq-stale" data-shown=stale_text_shown>
                     {STALE_TEXT}
@@ -1276,7 +1276,7 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
                 <div class="eq-undo-note" data-testid="eq-undo-note" data-shown=undo_note_shown_text>
                     {undo_note_text}
                 </div>
-                {move || opening().then(|| view! { <div class="eq-wait">"Otváram Pro-Q 4…"</div> })}
+                {move || opening().then(|| view! { <div class="eq-wait">"Opening Pro-Q 4…"</div> })}
             </div>
             {move || legend.try_get().unwrap_or(false).then(|| view! { <EqLegend /> })}
         </div>
@@ -1287,31 +1287,31 @@ pub fn EqScreen(target: EqTarget) -> impl IntoView {
 /// in (the owner's ruling of 2026-10-11); zoomed 2× or more real touches
 /// reach the PC; two fingers zoom this page's picture only (PR F, the
 /// mockup's lines); a hold opens nothing (PR O proved it on the PC); ↶
-/// VRÁTIŤ takes back Pro-Q's last change (PR P2b).
+/// UNDO takes back Pro-Q's last change (PR P2b).
 #[component]
 fn EqLegend() -> impl IntoView {
     view! {
         <div class="eq-legend" data-testid="eq-legend">
-            <h3>"DOTYK V PRO-Q"</h3>
+            <h3>"TOUCH IN PRO-Q"</h3>
             <table>
                 <tr class="eq-legend-zoom" data-testid="eq-legend-overview">
-                    <td>"ťuk na celý EQ"</td>
-                    <td>"Ťukni na miesto, ktoré chceš upraviť: priblíži sa 3×. Upravuje sa až pri priblížení 2× a viac."</td>
+                    <td>"tap the full EQ"</td>
+                    <td>"Tap where you want to edit: it zooms 3×. Editing works from 2× zoom up."</td>
                 </tr>
-                <tr><td>"1 prst ťuk"</td><td>"klik (tlačidlá, výber pásma)"</td></tr>
-                <tr><td>"1 prst ťah"</td><td>"ťahanie (pásmo, gombík); kurzor na PC počas ťahu skočí"</td></tr>
-                <tr><td>"dvojťuk"</td><td>"dvojklik (nové pásmo v krivke; na pásme jeho frekvencia)"</td></tr>
-                <tr data-testid="eq-legend-hold"><td>"podržať"</td><td>"nič: ponuka pásma sa neotvorí"</td></tr>
-                <tr class="eq-legend-zoom"><td>"2 prsty od seba / k sebe"</td><td>"priblížiť / oddialiť (1× až 4×)"</td></tr>
-                <tr class="eq-legend-zoom"><td>"2 prsty spolu"</td><td>"posúvať priblížený obraz"</td></tr>
-                <tr class="eq-legend-zoom"><td>"CELÝ EQ"</td><td>"späť na celý obraz"</td></tr>
+                <tr><td>"1 finger tap"</td><td>"click (buttons, band select)"</td></tr>
+                <tr><td>"1 finger drag"</td><td>"drag (band, knob); the PC cursor jumps while you drag"</td></tr>
+                <tr><td>"double-tap"</td><td>"double-click (new band on the curve; on a band, its frequency)"</td></tr>
+                <tr data-testid="eq-legend-hold"><td>"hold"</td><td>"nothing: the band menu does not open"</td></tr>
+                <tr class="eq-legend-zoom"><td>"pinch out / in"</td><td>"zoom in / out (1× to 4×)"</td></tr>
+                <tr class="eq-legend-zoom"><td>"2-finger drag"</td><td>"pan the zoomed image"</td></tr>
+                <tr class="eq-legend-zoom"><td>"FULL EQ"</td><td>"back to the whole image"</td></tr>
                 <tr class="eq-legend-undo" data-testid="eq-legend-undo">
-                    <td>"↶ VRÁTIŤ"</td>
-                    <td>"vráti poslednú zmenu v Pro-Q"</td>
+                    <td>"↶ UNDO"</td>
+                    <td>"undoes the last change in Pro-Q"</td>
                 </tr>
             </table>
             <p class="eq-legend-note">
-                "Pri priblížení obraz na PC zostáva rovnaký: mení sa len pohľad na tomto zariadení."
+                "When zoomed, the image on the PC stays the same: only the view on this device changes."
             </p>
         </div>
     }

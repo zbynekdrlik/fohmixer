@@ -87,7 +87,7 @@ impl Rule {
     /// Why a press it refuses did nothing (the failure flash's words).
     pub fn refusal(self) -> &'static str {
         match self {
-            Self::Stage => "STAGE AUT cannot be switched now",
+            Self::Stage => "STAGE AUTO cannot be switched now",
             Self::Reverb => "REVERB cannot be switched now",
             Self::Autotune => "AUTOTUNE cannot be switched now",
         }
@@ -194,9 +194,9 @@ pub fn settling(changed_at: Option<f64>, now: f64) -> bool {
 }
 
 /// The pill's word, shared by every rail button with an automatic mode and
-/// by the texts that name it (#140 PR 3c: AUTOTUNE's panel; #141 renames it
-/// in its own PR).
-pub const AUT_BADGE: &str = "AUT";
+/// by the texts that name it (#140 PR 3c: AUTOTUNE's panel; #141: the
+/// console word, AUTO).
+pub const AUT_BADGE: &str = "AUTO";
 
 /// The `AUT` pill: none, white (the rule runs) or outlined (a tap
 /// overrides it until the next stop or start).
@@ -236,18 +236,18 @@ pub struct RailLook {
 /// The second line while the press is full: what its lift will do.
 pub fn full_text(aut_on: bool) -> &'static str {
     if aut_on {
-        "pusť — vypne AUT"
+        "release — AUTO off"
     } else {
-        "pusť — zapne AUT"
+        "release — AUTO on"
     }
 }
 
 /// The second line while a hold fills the button.
 pub fn hold_text(aut_on: bool) -> &'static str {
     if aut_on {
-        "drž… vypína AUT"
+        "hold… AUTO off"
     } else {
-        "drž… zapína AUT"
+        "hold… AUTO on"
     }
 }
 
@@ -293,10 +293,10 @@ pub fn stage_look(
 /// way holds until the next stop or start.
 fn stage_sub((playing, muted): (bool, bool)) -> &'static str {
     match (playing, muted) {
-        (true, true) => "hrá · stíšené",
-        (false, false) => "stojí · zapnuté",
-        (true, false) => "ručne do zastavenia",
-        (false, true) => "ručne do štartu",
+        (true, true) => "PLAY · muted",
+        (false, false) => "STOP · open",
+        (true, false) => "MAN · until STOP",
+        (false, true) => "MAN · until PLAY",
     }
 }
 
@@ -319,8 +319,8 @@ mod tests {
     }
 
     #[test]
-    fn the_pill_says_aut() {
-        assert_eq!(AUT_BADGE, "AUT");
+    fn the_pill_says_auto() {
+        assert_eq!(AUT_BADGE, "AUTO");
     }
 
     #[test]
@@ -335,8 +335,8 @@ mod tests {
 
     #[test]
     fn the_hold_says_what_it_will_do() {
-        assert_eq!(hold_text(false), "drž… zapína AUT");
-        assert_eq!(hold_text(true), "drž… vypína AUT");
+        assert_eq!(hold_text(false), "hold… AUTO on");
+        assert_eq!(hold_text(true), "hold… AUTO off");
         assert_eq!(
             [Aut::Off.name(), Aut::Run.name(), Aut::Held.name()],
             ["off", "run", "held"]
@@ -381,7 +381,7 @@ mod tests {
             RailLook {
                 lit: false,
                 aut: Aut::Run,
-                sub: Some("hrá · stíšené".into()),
+                sub: Some("PLAY · muted".into()),
                 low: false,
                 mixed: false,
             }
@@ -391,7 +391,7 @@ mod tests {
             RailLook {
                 lit: true,
                 aut: Aut::Run,
-                sub: Some("stojí · zapnuté".into()),
+                sub: Some("STOP · open".into()),
                 low: false,
                 mixed: false,
             }
@@ -402,7 +402,7 @@ mod tests {
             RailLook {
                 lit: true,
                 aut: Aut::Held,
-                sub: Some("ručne do zastavenia".into()),
+                sub: Some("MAN · until STOP".into()),
                 low: false,
                 mixed: false,
             }
@@ -412,7 +412,7 @@ mod tests {
             RailLook {
                 lit: false,
                 aut: Aut::Held,
-                sub: Some("ručne do štartu".into()),
+                sub: Some("MAN · until PLAY".into()),
                 low: false,
                 mixed: false,
             }
@@ -446,19 +446,19 @@ mod tests {
             stage_look(Some(false), Some(true), Some(true), Fill::Filling, false)
                 .sub
                 .as_deref(),
-            Some("drž… zapína AUT")
+            Some("hold… AUTO on")
         );
         assert_eq!(
             stage_look(Some(true), Some(true), Some(true), Fill::Filling, false)
                 .sub
                 .as_deref(),
-            Some("drž… vypína AUT")
+            Some("hold… AUTO off")
         );
         assert_eq!(
             stage_look(None, None, None, Fill::Filling, false)
                 .sub
                 .as_deref(),
-            Some("drž… zapína AUT")
+            Some("hold… AUTO on")
         );
         // The pill and the light stay what they were.
         let look = stage_look(Some(true), Some(true), Some(false), Fill::Filling, false);
@@ -475,7 +475,7 @@ mod tests {
             RailLook {
                 lit: true,
                 aut: Aut::Run,
-                sub: Some("hrá · stíšené".into()),
+                sub: Some("PLAY · muted".into()),
                 low: false,
                 mixed: false,
             }
@@ -485,7 +485,7 @@ mod tests {
             RailLook {
                 lit: false,
                 aut: Aut::Run,
-                sub: Some("stojí · zapnuté".into()),
+                sub: Some("STOP · open".into()),
                 low: false,
                 mixed: false,
             }
@@ -510,7 +510,7 @@ mod tests {
             stage_look(Some(true), Some(true), Some(false), Fill::Filling, true)
                 .sub
                 .as_deref(),
-            Some("drž… vypína AUT")
+            Some("hold… AUTO off")
         );
     }
 
@@ -607,25 +607,25 @@ mod tests {
 
     #[test]
     fn a_full_press_says_what_its_lift_will_do() {
-        assert_eq!(full_text(false), "pusť — zapne AUT");
-        assert_eq!(full_text(true), "pusť — vypne AUT");
+        assert_eq!(full_text(false), "release — AUTO on");
+        assert_eq!(full_text(true), "release — AUTO off");
         let line = |aut, fill| stage_look(aut, Some(true), Some(true), fill, false).sub;
         assert_eq!(
             line(Some(false), Fill::Full).as_deref(),
-            Some("pusť — zapne AUT")
+            Some("release — AUTO on")
         );
         assert_eq!(
             line(Some(true), Fill::Full).as_deref(),
-            Some("pusť — vypne AUT")
+            Some("release — AUTO off")
         );
-        assert_eq!(line(None, Fill::Full).as_deref(), Some("pusť — zapne AUT"));
+        assert_eq!(line(None, Fill::Full).as_deref(), Some("release — AUTO on"));
         assert_eq!(
             line(Some(true), Fill::Filling).as_deref(),
-            Some("drž… vypína AUT")
+            Some("hold… AUTO off")
         );
         assert_eq!(
             line(Some(true), Fill::None).as_deref(),
-            Some("hrá · stíšené")
+            Some("PLAY · muted")
         );
         assert_eq!(line(Some(false), Fill::None), None);
         // The pill and the light stay what they were.
@@ -658,7 +658,7 @@ mod tests {
         assert_eq!(
             [Rule::Stage, Rule::Reverb, Rule::Autotune].map(Rule::refusal),
             [
-                "STAGE AUT cannot be switched now",
+                "STAGE AUTO cannot be switched now",
                 "REVERB cannot be switched now",
                 "AUTOTUNE cannot be switched now"
             ]

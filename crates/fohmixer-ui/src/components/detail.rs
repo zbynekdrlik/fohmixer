@@ -4,7 +4,7 @@
 //! the mix, the name chip in the track's colour, its group and instance),
 //! then on the left (the left thumb) the mute, Live's dB and a tall fader
 //! with its scale and meter, on the right (the right thumb) the pan with
-//! Live's display string and STRED; in the middle the channel's Pro-Q 4
+//! Live's display string and CENTER; in the middle the channel's Pro-Q 4
 //! instances (#71 PR E, `components/eq.rs`). Its parts are the strip's components, its
 //! subscriptions `binding::detail_subs` (the surface's wanted set has them
 //! through `binding::wanted_subs`), its look `detail.css`.
@@ -82,7 +82,7 @@ pub fn bar_text(title: Option<&str>, instance: &str, ret: bool) -> String {
     }
 }
 
-/// STRED (F11, #71): a tap writes the pan's centre, panning 0.0, as a final
+/// CENTER (F11, #71): a tap writes the pan's centre, panning 0.0, as a final
 /// `set` (#43); it owns its touches with the pan's key, and waits for Live's
 /// value like the pan (I8). The pan's dot shows the write's state.
 #[component]
@@ -125,7 +125,7 @@ fn CentreView(state: RwSignal<Slot>, spec: SubSpec) -> impl IntoView {
             aria-disabled=disabled
             on:pointerdown=on_down
         >
-            "STRED"
+            "CENTER"
         </button>
     }
 }
@@ -329,7 +329,7 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
                     data-testid="detail-exit"
                     on:pointerdown=close
                 >
-                    <span class="detail-exit-long">"← SPÄŤ NA MIX"</span>
+                    <span class="detail-exit-long">"← BACK TO MIX"</span>
                     <span class="detail-exit-short">"← MIX"</span>
                 </button>
                 <div class="detail-name">
@@ -358,7 +358,7 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
                     <EqCards strip=cards_strip label=cards_label color=color />
                 </section>
                 <section class="detail-box detail-right" data-testid="detail-right">
-                    <h2 class="detail-title">"PANORÁMA"</h2>
+                    <h2 class="detail-title">"PAN"</h2>
                     {pan_view}
                     <div class="detail-pan-row">
                         <span>"L 50"</span>

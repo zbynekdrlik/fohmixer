@@ -491,9 +491,9 @@ test.describe("A probe that fails on the LAN", () => {
     expect(refused).toBe(1);
     const panel = page.getByTestId("ableset-panel");
     await expect(panel).toHaveAttribute("data-panel", "unreachable");
-    await expect(panel.locator("h3")).toHaveText("AbleSet sa nedá načítať");
+    await expect(panel.locator("h3")).toHaveText("AbleSet can't load");
     await expect(panel.locator(".ableset-text")).toHaveText(
-      "AbleSet sa cez sieť kostola nenačítal: jeho meno alebo certifikát nefunguje. Mixér funguje ďalej; fohmixer to skúsi znova, keď sa sem vrátiš.",
+      "AbleSet did not load over the church network: its name or certificate does not work. The mixer works as usual; fohmixer tries again when you come back here.",
     );
     // Nothing to tap that would take the mixer away, and it stays.
     await expect(panel.locator("button")).toHaveCount(0);
@@ -548,9 +548,9 @@ test.describe("A probe with no answer within its bound", () => {
     await page.clock.fastForward(PROBE_MS);
     await expect(area).toHaveAttribute("data-state", "unreachable");
     const panel = page.getByTestId("ableset-panel");
-    await expect(panel.locator("h3")).toHaveText("AbleSet sa nedá načítať");
+    await expect(panel.locator("h3")).toHaveText("AbleSet can't load");
     await expect(panel.locator(".ableset-text")).toHaveText(
-      "AbleSet neodpovedal do 8 sekúnd. Mixér funguje ďalej; fohmixer to skúsi znova, keď sa sem vrátiš.",
+      "AbleSet did not answer within 8 seconds. The mixer works as usual; fohmixer tries again when you come back here.",
     );
     // The held probe answers late: only a probe on its way takes an answer,
     // and the page takes this one without a fault.
@@ -607,9 +607,9 @@ test.describe("AbleSet down while its tab is open", () => {
       await expect(page.getByTestId("ableset-dot")).toBeVisible();
       await expect(page.getByTestId("ableset-frame")).toHaveCount(0);
       const panel = page.getByTestId("ableset-panel");
-      await expect(panel.locator("h3")).toHaveText("AbleSet nebeží");
+      await expect(panel.locator("h3")).toHaveText("AbleSet is not running");
       await expect(panel.locator(".ableset-text")).toHaveText(
-        "AbleSet na PC teraz neodpovedá. Fohmixer ho skúša znova sám; mixér funguje ďalej.",
+        "AbleSet on the PC is not answering right now. Fohmixer keeps retrying; the mixer works as usual.",
       );
     } finally {
       await fakeAbleSet.up();
@@ -659,12 +659,12 @@ test.describe("AbleSet's tab on the internet path", () => {
     const area = await openAbleSet(page);
     await expect(area).toHaveAttribute("data-state", "signin");
     const panel = page.getByTestId("ableset-panel");
-    await expect(panel.locator("h3")).toHaveText("Prihlásenie do AbleSetu");
+    await expect(panel.locator("h3")).toHaveText("AbleSet sign-in");
     await expect(panel.locator(".ableset-text")).toHaveText(
-      "Si mimo kostola. AbleSet chce raz potvrdiť prihlásenie, rovnako ako fohmixer.",
+      "You are away from the church. AbleSet wants you to confirm the sign-in once, like fohmixer.",
     );
     const signIn = page.getByTestId("ableset-signin");
-    await expect(signIn).toHaveText("PRIHLÁSIŤ SA");
+    await expect(signIn).toHaveText("SIGN IN");
     await expect(page.getByTestId("ableset-frame")).toHaveCount(0);
     // Cloudflare's sign-in for AbleSet's name sets its own cookie: here, at once.
     await context.addCookies([
@@ -697,9 +697,9 @@ test.describe("AbleSet's tab on the emergency address", () => {
     const area = await openAbleSet(page);
     await expect(area).toHaveAttribute("data-state", "elsewhere");
     const panel = page.getByTestId("ableset-panel");
-    await expect(panel.locator("h3")).toHaveText("Núdzová adresa");
+    await expect(panel.locator("h3")).toHaveText("Fallback address");
     await expect(panel.locator(".ableset-text")).toHaveText(
-      "Fohmixer je otvorený cez IP bez certifikátu, tak sa AbleSet nedá vložiť. Otvor fohmixer cez jeho meno, alebo AbleSet priamo:",
+      "Fohmixer is open by IP without a certificate, so AbleSet can't be embedded. Open fohmixer by its name, or open AbleSet directly:",
     );
     const direct = page.getByTestId("ableset-direct");
     await expect(direct).toHaveText(`http://127.0.0.1:${port}/`);

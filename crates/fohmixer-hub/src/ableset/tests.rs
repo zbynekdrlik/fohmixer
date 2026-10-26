@@ -345,7 +345,7 @@ async fn a_navigation_gets_a_page_that_tries_again_anything_else_json() {
         assert_eq!(page.headers()["content-type"], "text/html; charset=utf-8");
         let text = text_of(page).await;
         assert!(
-            text.contains("AbleSet na PC neodpovedá. Skúšam znova o 5 s."),
+            text.contains("AbleSet on the PC is not answering. Retrying in 5 s."),
             "{text}"
         );
         assert!(
@@ -1121,7 +1121,11 @@ async fn when_ableset_does_not_answer_the_hub_does() {
     assert_eq!(page.status(), StatusCode::BAD_GATEWAY);
     let page_policy = "default-src 'none'; style-src 'unsafe-inline'";
     assert_eq!(policies(page.headers()), [page_policy, OURS]);
-    assert!(text_of(page).await.contains("AbleSet na PC neodpovedá"));
+    assert!(
+        text_of(page)
+            .await
+            .contains("AbleSet on the PC is not answering")
+    );
     let poll = plain(&hub, get_from(NAME, "/socket.io/?EIO=4", "10.0.0.5", &[])).await;
     let body: Value = serde_json::from_str(&text_of(poll).await).unwrap();
     assert_eq!(body["code"], "ABLESET_DOWN");
@@ -3364,7 +3368,7 @@ fn the_locked_page_is_dark_and_goes_on_to_ableset_without_its_script() {
     let refresh = format!("<meta http-equiv=\"refresh\" content=\"3;url={LOCKED}?failed=script\">");
     let script = format!("<script src=\"{LOCK_SCRIPT}\"></script>");
     let wanted = format!(
-        "<!doctype html><html lang=\"sk\"><meta charset=\"utf-8\">\
+        "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">\
          <meta name=\"color-scheme\" content=\"dark\">{refresh}<title>AbleSet</title>{script}</html>"
     );
     assert_eq!(LOCK_PAGE, wanted);

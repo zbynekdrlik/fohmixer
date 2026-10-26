@@ -166,10 +166,16 @@ fn build_tray(
         None::<&str>,
     )?;
     let open_item = MenuItem::with_id(app, view::OPEN, "Open fohmixer", true, None::<&str>)?;
-    let manual_item = MenuItem::with_id(app, view::MANUAL, "Návod k značkám", true, None::<&str>)?;
+    let manual_item = MenuItem::with_id(app, view::MANUAL, "Tag manual", true, None::<&str>)?;
     let (copy_label, copy_enabled) = view::copy_item(links.public.as_deref());
     let copy_item = MenuItem::with_id(app, view::COPY, copy_label, copy_enabled, None::<&str>)?;
-    let exit_item = MenuItem::with_id(app, view::EXIT, "Exit (the tray only)", true, None::<&str>)?;
+    let exit_item = MenuItem::with_id(
+        app,
+        view::EXIT,
+        "Quit tray (hub keeps running)",
+        true,
+        None::<&str>,
+    )?;
     let separator1 = PredefinedMenuItem::separator(app)?;
     let separator2 = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(
@@ -215,7 +221,7 @@ fn build_tray(
         })
         .on_menu_event(move |app, event| match view::action(event.id.as_ref()) {
             Some(MenuAction::Open) => open(app, &links.open, "Open fohmixer"),
-            Some(MenuAction::Manual) => open(app, &links.manual, "The tag manual"),
+            Some(MenuAction::Manual) => open(app, &links.manual, "Tag manual"),
             Some(MenuAction::Copy) => match &links.public {
                 Some(url) => copy(app, url),
                 None => {

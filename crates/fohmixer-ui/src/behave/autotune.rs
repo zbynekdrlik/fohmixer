@@ -975,7 +975,7 @@ mod tests {
             panel_foot(&s),
             [
                 "Song map: 165 songs with a key, 8 key changes, 1 problem.".to_string(),
-                "Live: F Major. Hold AUTOTUNE 1 s: AUT on/off.".to_string(),
+                "Live: F Major. Hold AUTOTUNE 1 s: AUTO on/off.".to_string(),
             ]
         );
         s.map_keyed = 1;
@@ -986,7 +986,7 @@ mod tests {
             panel_foot(&s),
             [
                 "Song map: 1 song with a key, 1 key change, 0 problems.".to_string(),
-                "Live: —. Hold AUTOTUNE 1 s: AUT on/off.".to_string(),
+                "Live: —. Hold AUTOTUNE 1 s: AUTO on/off.".to_string(),
             ]
         );
         s.map_keyed = 0;

@@ -71,7 +71,7 @@ impl EqView {
 /// The page's editor right after it asked to open `path` on `instance`
 /// (`sent`: the socket took the ask): opening, or closed with [`SOCKET`]
 /// when the socket could not take it (nothing would ever answer, and the
-/// screen would wait on "Otváram Pro-Q 4…" until left).
+/// screen would wait on "Opening Pro-Q 4…" until left).
 pub fn asked(instance: &str, path: &str, sent: bool) -> EqView {
     let mut view = EqView::opening(instance, path);
     if !sent {
@@ -91,7 +91,7 @@ pub fn screen_view<'a>(view: Option<&'a EqView>, instance: &str, path: &str) -> 
 
 /// The screen's state (its `data-state`): its editor's, and `opening`
 /// until the hub speaks of that editor (the page asked to open it), so
-/// "Otváram Pro-Q 4…" shows until it is open.
+/// "Opening Pro-Q 4…" shows until it is open.
 pub fn screen_state(view: Option<&EqView>, instance: &str, path: &str) -> &'static str {
     match screen_view(view, instance, path).map(|v| v.state) {
         Some(EqState::Open) => "open",

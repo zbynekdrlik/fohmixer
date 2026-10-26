@@ -84,7 +84,7 @@ struct Nav {
     /// The page shown before a view (#68): a second tap on the view's
     /// button goes back to it.
     before_view: RwSignal<Option<String>>,
-    /// The tag manual's overlay is open (#68: the column's ZNAČKY chip
+    /// The tag manual's overlay is open (#68: the column's TAGS chip
     /// opens it). Here, not in a layout's shell: a Tuner edit in Live is a
     /// new layout, and it must not close the manual explaining it.
     manual: RwSignal<bool>,
@@ -479,7 +479,7 @@ pub fn ColumnHead() -> impl IntoView {
             })
             .collect_view();
         view! {
-            <div class="cap-title" data-testid="views-title">"Pohľady"</div>
+            <div class="cap-title" data-testid="views-title">"Views"</div>
             <div class="seg views" data-testid="views">
                 {buttons}
             </div>
@@ -581,14 +581,14 @@ fn ManualChip() -> impl IntoView {
                 let _ = open.try_set(true);
             }
         >
-            "ZNAČKY"
+            "TAGS"
         </button>
     }
 }
 
 /// The tag manual over the screen (#68): `znacky.html`, fetched from the
 /// hub (one source with the page the tray opens), its `<main>` with its
-/// `<style>` (`manual::manual_parts`); "✕ Zavrieť" closes it.
+/// `<style>` (`manual::manual_parts`); "✕ Close" closes it.
 #[component]
 fn ManualView() -> impl IntoView {
     let open = expect_context::<Nav>().manual;
@@ -608,9 +608,10 @@ fn ManualView() -> impl IntoView {
     });
     let no_keys: Vec<String> = Vec::new();
     let content = move || match parts.try_get().flatten() {
-        None => view! { <p class="manual-note">"Načítavam…"</p> }.into_any(),
+        None => view! { <p class="manual-note">"Loading…"</p> }.into_any(),
         Some(Err(why)) => {
-            view! { <p class="manual-note">{format!("Návod sa nenačítal: {why}")}</p> }.into_any()
+            view! { <p class="manual-note">{format!("The manual did not load: {why}")}</p> }
+                .into_any()
         }
         Some(Ok((style, main))) => view! {
             <style>{style}</style>
@@ -629,7 +630,7 @@ fn ManualView() -> impl IntoView {
                     let _ = open.try_set(false);
                 }
             >
-                "✕ Zavrieť"
+                "✕ Close"
             </button>
             {content}
         </div>
@@ -876,7 +877,7 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
                     data-testid="column-close"
                     on:pointerdown=close
                 >
-                    "✕ ZAVRIEŤ"
+                    "✕ CLOSE"
                 </button>
                 <ColumnHead />
                 <div class="shifts">

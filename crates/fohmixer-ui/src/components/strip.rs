@@ -219,7 +219,7 @@ fn StripMenu(strip: Strip) -> impl IntoView {
             class="strip-menu"
             use:owns_touches=no_keys
             data-testid="strip-menu"
-            aria-label="Detail kanála (podrž)"
+            aria-label="Channel detail (hold)"
             data-holding=move || holding.try_get().unwrap_or(false).to_string()
             data-hint=move || hint.try_get().unwrap_or(false).to_string()
             on:pointerdown=on_down

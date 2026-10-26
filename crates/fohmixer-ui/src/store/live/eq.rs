@@ -172,7 +172,7 @@ impl LiveStore {
         });
     }
 
-    /// The bar's ↶ VRÁTIŤ (#71 PR P2b): Pro-Q's own undo of the open
+    /// The bar's ↶ UNDO (#71 PR P2b): Pro-Q's own undo of the open
     /// editor, numbered as its next input (`Inputs::number`: a picture then
     /// shows it before a first finger is taken again), its press at `at`
     /// (page epoch ms) kept for its `eq_undo` event. Its number; none

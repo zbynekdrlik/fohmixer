@@ -7,7 +7,7 @@
 //! (STAGE: the stage mics by hand; REVERB: the reverb faders 10 dB down or
 //! back, asked of the hub; AUTOTUNE: the singers' panel opened or closed,
 //! nothing sent, `components::autotune_panel`); at 1 s the press is full (the fill stays full, the line says
-//! `pusť — zapne AUT` / `pusť — vypne AUT`, nothing is sent) and the lift
+//! `release — AUTO on` / `release — AUTO off`, nothing is sent) and the lift
 //! then turns the automatic mode on or off. The press is
 //! `behave::hold::Hold::lifted`: a slide past 10 px, a cancel, a lost
 //! capture or a hidden page end it with nothing done, before or after the

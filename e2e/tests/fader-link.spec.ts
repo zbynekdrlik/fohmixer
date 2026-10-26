@@ -195,15 +195,15 @@ test.describe("A fader link", () => {
     // The partner's detail names its leader and has no switch.
     const partner = await openDetail(page, "#3");
     await expect(partner.getByTestId("fader-link")).toHaveCount(0);
-    await expect(partner.getByTestId("fader-follow")).toContainText("IDE S Rev PA");
-    await expect(partner.getByTestId("fader-follow")).toContainText("spojenie zapnuté");
+    await expect(partner.getByTestId("fader-follow")).toContainText("FOLLOWS Rev PA");
+    await expect(partner.getByTestId("fader-follow")).toContainText("link on");
     await expect(partner.getByTestId("fader-follow")).toHaveAttribute("data-on", "true");
     await partner.getByTestId("detail-exit").click();
 
     // Switched off in the leader's detail: the marks go, the leader moves alone.
     const detail = await openDetail(page, "#4");
     const link = detail.getByTestId("fader-link");
-    await expect(link).toHaveText(/SPOJENÝ S Rev ST/i);
+    await expect(link).toHaveText(/LINKED TO Rev ST/i);
     await expect(link).toHaveAttribute("data-on", "true");
     await expect(link).toHaveClass(/\bon\b/);
     expect(
@@ -220,7 +220,7 @@ test.describe("A fader link", () => {
     await expect(page.getByTestId("fader-link-mark")).toHaveCount(0);
     await expect(strip(page, "Rev PA")).toHaveAttribute("data-flink", "");
     const off = await openDetail(page, "#3");
-    await expect(off.getByTestId("fader-follow")).toContainText("spojenie vypnuté · zapína sa v detaile Rev PA");
+    await expect(off.getByTestId("fader-follow")).toContainText("link off · switch it in Rev PA's detail");
     await expect(off.getByTestId("fader-follow")).toHaveAttribute("data-on", "false");
     await off.getByTestId("detail-exit").click();
     const since = Date.now();

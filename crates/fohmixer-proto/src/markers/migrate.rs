@@ -347,7 +347,7 @@ pub fn full_label(name: &str) -> String {
 }
 
 /// Each track's label: what its strip shows now ([`strip_label`]); where two
-/// would be equal (both strips would be a KONFLIKT), the track's name
+/// would be equal (both strips would be a CONFLICT), the track's name
 /// without its marks ([`full_label`]); where still equal, a number after it.
 fn labels(tracks: &[Track]) -> Vec<String> {
     let first: Vec<String> = tracks

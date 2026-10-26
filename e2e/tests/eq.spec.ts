@@ -61,7 +61,7 @@ const FROM = { x: 431, y: 321 };
 const TO = { x: 511, y: 281 };
 /** The drag's moves (one each two animation frames). */
 const DRAG_STEPS = 8;
-const ON_TRACK = "Pro-Q 4 · na tracku";
+const ON_TRACK = "Pro-Q 4 · on track";
 const IN_RACK = "Pro-Q 4 · Vocal FX › Main · De-ess";
 
 let live: LiveClient;
@@ -246,7 +246,7 @@ async function zoomIn(screen: Locator, at: At) {
   const canvas = screen.getByTestId("eq-canvas");
   const point = (await pictureMap(canvas)).toPage(at);
   await screen.page().mouse.click(point.x, point.y);
-  await expect(screen.getByTestId("eq-factor")).toHaveText("3,0×");
+  await expect(screen.getByTestId("eq-factor")).toHaveText("3.0×");
   await expect(screen.getByTestId("eq-hint")).toHaveAttribute("data-shown", "false");
   await frames(screen.page(), 2);
   await screen.page().waitForTimeout(ZOOM_SETTLE_MS + 50);
@@ -359,7 +359,7 @@ async function barFits(screen: Locator, inside: string[], whole: string[]) {
   }
 }
 
-/** The bar's zoom group shown, the overview in the picture's shape, and every part of the bar inside it and the screen, its texts whole (#71 PR P2b: ↶ VRÁTIŤ too). */
+/** The bar's zoom group shown, the overview in the picture's shape, and every part of the bar inside it and the screen, its texts whole (#71 PR P2b: ↶ UNDO too). */
 async function zoomBarFits(screen: Locator) {
   await expect(screen.getByTestId("eq-zoom")).toBeVisible();
   await expect.poll(() => overviewGap(screen), { message: "the overview in the picture's shape" }).toBeLessThan(0.02);
@@ -480,7 +480,7 @@ function undoAsks(sent: any[]): any[] {
   return sent.filter((m) => m.type === "eq_undo");
 }
 
-/** A real press of ↶ VRÁTIŤ at its centre (`page.mouse`: a locator's click would wait out its `aria-disabled`). */
+/** A real press of ↶ UNDO at its centre (`page.mouse`: a locator's click would wait out its `aria-disabled`). */
 async function pressUndo(screen: Locator) {
   const at = await centre(screen.getByTestId("eq-undo"));
   await screen.page().mouse.click(at.x, at.y);
@@ -502,7 +502,7 @@ const HUB_APART_MARGIN = 400;
 /**
  * Pro-Q's undo history emptied (#71 PR P2b): the simulated Pro-Q keeps it
  * through the hub's whole run, and earlier tests' drags left changes in it,
- * so ↶ VRÁTIŤ is pressed until the hub answers `nothing`.
+ * so ↶ UNDO is pressed until the hub answers `nothing`.
  */
 async function undoAll(screen: Locator, answers: any[]) {
   const undo = screen.getByTestId("eq-undo");
@@ -517,7 +517,7 @@ async function undoAll(screen: Locator, answers: any[]) {
 }
 
 /**
- * Records each state of ↶ VRÁTIŤ's note as it changes (`window.undoNotes`,
+ * Records each state of ↶ UNDO's note as it changes (`window.undoNotes`,
  * `<data-shown>|<text>`): it shows for 1.6 s, which a poll on a slow runner
  * could miss.
  */
@@ -562,7 +562,7 @@ test.describe("The Pro-Q 4 screen", () => {
     for (const c of [onTrack, inRack]) {
       await expect(c).toHaveAttribute("data-locked", "false");
       const open = c.getByTestId("eq-open");
-      await expect(open).toHaveText("OTVORIŤ EQ NA CELÚ OBRAZOVKU");
+      await expect(open).toHaveText("OPEN EQ FULL SCREEN");
       await expect(open).toHaveAttribute("aria-disabled", "false");
       await cardFits(c);
     }
@@ -572,7 +572,7 @@ test.describe("The Pro-Q 4 screen", () => {
     await detail.getByTestId("detail-exit").click();
     await expect(page.getByTestId("detail")).toHaveCount(0);
     const other = await openDetail(page, "B-Main repro #");
-    await expect(other.getByTestId("eq-note")).toHaveText("Na tomto tracku nie je Pro-Q 4.");
+    await expect(other.getByTestId("eq-note")).toHaveText("No Pro-Q 4 on this track.");
     await expect(other.getByTestId("eq-card")).toHaveCount(0);
     expect(await clipped(other.getByTestId("eq-note"))).toEqual([]);
   });
@@ -793,18 +793,18 @@ test.describe("The Pro-Q 4 screen", () => {
     }, opened);
     // The held one with its holder, the other one in use: both locked.
     for (const [c, line] of [
-      [onTrack, "Upravuje ho iný zvukár"],
-      [inRack, "Pro-Q 4 práve používa iný zvukár"],
+      [onTrack, "Another engineer is editing it"],
+      [inRack, "Pro-Q 4 is in use by another engineer"],
     ] as const) {
       await expect(c).toHaveAttribute("data-locked", "true");
       const lock = c.getByTestId("eq-card-lock");
       await expect(lock).toBeVisible();
       const text = (await lock.textContent())!;
-      expect(text.startsWith("ZAMKNUTÉ"), text).toBe(true);
+      expect(text.startsWith("LOCKED"), text).toBe(true);
       expect(times.map((hm) => text.endsWith(`${line} (od ${hm})`)), text).toContain(true);
       expect(await clipped(lock)).toEqual([]);
       const open = c.getByTestId("eq-open");
-      await expect(open).toHaveText("ZAMKNUTÉ");
+      await expect(open).toHaveText("LOCKED");
       await expect(open).toHaveAttribute("aria-disabled", "true");
       await cardFits(c);
       // A tap on it opens nothing.
@@ -826,7 +826,7 @@ test.describe("The Pro-Q 4 screen", () => {
     for (const c of [onTrack, inRack]) {
       await expect(c).toHaveAttribute("data-locked", "false");
       await expect(c.getByTestId("eq-card-lock")).toHaveCount(0);
-      await expect(c.getByTestId("eq-open")).toHaveText("OTVORIŤ EQ NA CELÚ OBRAZOVKU");
+      await expect(c.getByTestId("eq-open")).toHaveText("OPEN EQ FULL SCREEN");
       await expect(c.getByTestId("eq-open")).toHaveAttribute("aria-disabled", "false");
     }
     // The other one opens now.
@@ -866,15 +866,15 @@ test.describe("The Pro-Q 4 screen", () => {
       }
       down(`[data-testid="eq-card"][data-path="${path}"] [data-testid="eq-open"]`);
     }, trackPath);
-    await expect.poll(() => notesSeen(page), { message: "the card's note" }).toContain("ešte sa zatvára, skús znova");
+    await expect.poll(() => notesSeen(page), { message: "the card's note" }).toContain("still closing, try again");
     // The refused screen went; the first close ends with its guard, and the
     // note goes with it (the editor can open again).
     await expect(page.getByTestId("eq-screen")).toHaveCount(0);
     await closedWithGuard(before);
     await editorOpen(trackPath, false);
     await expect(onTrack.getByTestId("eq-card-note")).toHaveCount(0);
-    // The only note it showed: the Slovak one (never "Neotvoril sa: closing").
-    expect(await notesSeen(page)).toEqual(["ešte sa zatvára, skús znova"]);
+    // The only note it showed: the Slovak one (never "Did not open: closing").
+    expect(await notesSeen(page)).toEqual(["still closing, try again"]);
   });
 
   test("a page going hidden lifts its finger: the PC's contact is cancelled where it was", async ({ page }) => {
@@ -914,7 +914,7 @@ test.describe("The Pro-Q 4 screen", () => {
     expect((await touches()).filter((r) => r.phase === "up" && !near(r, INERT)), "no lift of the cancelled finger").toEqual([]);
   });
 
-  test("two fingers zoom the page's picture and send the editor nothing; a finger then reaches it where it shows; a quick tap goes down, then up; CELÝ EQ and a new open show it whole", async ({ page }) => {
+  test("two fingers zoom the page's picture and send the editor nothing; a finger then reaches it where it shows; a quick tap goes down, then up; FULL EQ and a new open show it whole", async ({ page }) => {
     await openSurface(page);
     const { onTrack, trackPath } = await hand2Cards(page);
     await editorOpen(trackPath, false);
@@ -928,11 +928,11 @@ test.describe("The Pro-Q 4 screen", () => {
     const whole = await pictureMap(canvas);
     const before = await touchMark();
 
-    // Two fingers 100 px apart about the area's middle spread to 250: 2,5×,
+    // Two fingers 100 px apart about the area's middle spread to 250: 2.5×,
     // and the picture point under their midpoint stays under it.
     await pinch(area, middle, 50, 125);
     await expect(zoom).toHaveAttribute("data-shown", "true");
-    await expect(screen.getByTestId("eq-factor")).toHaveText("2,5×");
+    await expect(screen.getByTestId("eq-factor")).toHaveText("2.5×");
     await zoomBarFits(screen);
     const map = await pictureMap(canvas);
     expect(map.scale / whole.scale, "the zoom").toBeCloseTo(2.5, 3);
@@ -983,7 +983,7 @@ test.describe("The Pro-Q 4 screen", () => {
     const tap = await touchesUntil(tapFrom, (all) => all.some((r) => r.phase === "up"), "the tap's up");
     wentFromTo(tap, map.toPicture(tapped), map.toPicture(tapped));
 
-    // CELÝ EQ while a finger drags (the PR I review): the whole picture
+    // FULL EQ while a finger drags (the PR I review): the whole picture
     // again, the group gone, and the finger's contact ends with its cancel
     // where it was; the drag goes no further (it would go on at 1×, its
     // points remapped).
@@ -1014,7 +1014,7 @@ test.describe("The Pro-Q 4 screen", () => {
 
     // Zoomed again, the exit closes as ever; the next open starts whole.
     await pinch(area, middle, 50, 100);
-    await expect(screen.getByTestId("eq-factor")).toHaveText("2,0×");
+    await expect(screen.getByTestId("eq-factor")).toHaveText("2.0×");
     const closing = (await simEq.records()).length;
     await screen.getByTestId("eq-exit").click();
     await expect(page.getByTestId("eq-screen")).toHaveCount(0);
@@ -1175,7 +1175,7 @@ test.describe("The Pro-Q 4 screen", () => {
     const hint = screen.getByTestId("eq-hint");
     await expect(hint).toHaveAttribute("data-shown", "true");
     await expect(hint).toBeVisible();
-    await expect(hint).toHaveText("Ťukni na miesto, ktoré chceš upraviť");
+    await expect(hint).toHaveText("Tap where you want to edit");
     expect(await clipped(hint)).toEqual([]);
     const whole = await pictureMap(canvas);
     const before = await touchMark();
@@ -1199,7 +1199,7 @@ test.describe("The Pro-Q 4 screen", () => {
     // at the editor.
     const tapped = whole.toPage(FROM);
     await page.mouse.click(tapped.x, tapped.y);
-    await expect(screen.getByTestId("eq-factor")).toHaveText("3,0×");
+    await expect(screen.getByTestId("eq-factor")).toHaveText("3.0×");
     // The iPad's double tap to zoom (the PR I review): a second tap right
     // after the zoom reaches nothing (checked with the tap's touches below).
     await quickTap(area, tapped, 62);
@@ -1232,7 +1232,7 @@ test.describe("The Pro-Q 4 screen", () => {
     await expect(hint).toHaveAttribute("data-shown", "true");
     const again = (await pictureMap(canvas)).toPage(FROM);
     await page.mouse.click(again.x, again.y);
-    await expect(screen.getByTestId("eq-factor")).toHaveText("3,0×");
+    await expect(screen.getByTestId("eq-factor")).toHaveText("3.0×");
     const zoomedAgain = await pictureMap(canvas);
     const heldFrom = await touchMark();
     const start = await centre(area);
@@ -1250,11 +1250,11 @@ test.describe("The Pro-Q 4 screen", () => {
 
     // The legend says it too.
     await screen.getByTestId("eq-help").click();
-    await expect(screen.getByTestId("eq-legend-overview")).toContainText("Ťukni na miesto, ktoré chceš upraviť");
+    await expect(screen.getByTestId("eq-legend-overview")).toContainText("Tap where you want to edit");
     await screen.getByTestId("eq-help").click();
     await expect(screen.getByTestId("eq-legend")).toHaveCount(0);
 
-    // CELÝ EQ: the whole picture and its hint again.
+    // FULL EQ: the whole picture and its hint again.
     await screen.getByTestId("eq-whole").click();
     await expect(screen.getByTestId("eq-zoom")).toHaveAttribute("data-shown", "false");
     await expect(hint).toHaveAttribute("data-shown", "true");
@@ -1288,7 +1288,7 @@ test.describe("The Pro-Q 4 screen", () => {
       await expect(screen.getByTestId("eq-zoom")).toHaveAttribute("data-shown", "false");
       // 2.5×: one finger edits from 2× on.
       await pinch(area, await centre(area), 50, 125);
-      await expect(screen.getByTestId("eq-factor"), `${size.width}x${size.height}`).toHaveText("2,5×");
+      await expect(screen.getByTestId("eq-factor"), `${size.width}x${size.height}`).toHaveText("2.5×");
       await zoomBarFits(screen);
     }
     // Turned while zoomed: the picture is drawn for the new area (the
@@ -1521,7 +1521,7 @@ test.describe("The Pro-Q 4 screen's part in sight", () => {
     await quickTap(area, at, 91);
     const tap = await touchesUntil(tapFrom, (all) => all.some((r) => r.phase === "up"), "the tap on the part");
     wentFromTo(tap, map.toPicture(at), map.toPicture(at));
-    // CELÝ EQ: the whole picture again.
+    // FULL EQ: the whole picture again.
     await caughtUp(screen);
     await screen.getByTestId("eq-whole").click();
     const back = frames_.length;
@@ -1743,7 +1743,7 @@ test.describe("The Pro-Q 4 screen and a lost link", () => {
       await impair.drop();
       await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "false");
       await expect(open).toHaveAttribute("aria-disabled", "true");
-      await expect(open).toHaveText("OTVORIŤ EQ NA CELÚ OBRAZOVKU");
+      await expect(open).toHaveText("OPEN EQ FULL SCREEN");
       // A real tap opens nothing.
       await open.scrollIntoViewIfNeeded();
       const { x, y } = await centre(open);
@@ -1838,7 +1838,7 @@ test.describe("The Pro-Q 4 screen on a slow link", () => {
       );
       expect(tapped).toBe("tapped behind the up");
       await expect(stale).toHaveAttribute("data-shown", "true");
-      await expect(stale).toHaveText("Obraz ešte dobieha, polož prst znova");
+      await expect(stale).toHaveText("Image still catching up, touch again");
       const drag = await touchesUntil(before, (all) => all.some((r) => r.phase === "up"), "the drag's up");
       expect(drag[0].phase).toBe("down");
       expect(sent.map((m) => m.n), JSON.stringify(sent)).toEqual(sent.map((_, i) => i + 1));
@@ -2031,7 +2031,7 @@ test.describe("The Pro-Q 4 screen on a slow link", () => {
   });
 });
 
-test.describe("The Pro-Q 4 screen's ↶ VRÁTIŤ", () => {
+test.describe("The Pro-Q 4 screen's ↶ UNDO", () => {
   // #71 PR P2b (the owner approved the look, #71 comment 6120180007, the
   // mockup docs/mockups/proq-undo-v1.html): a big undo on the bar asks the
   // hub to tap Pro-Q's own ↶ (`eq_undo`, PR P2a). The hub reads the ↶ on a
@@ -2041,7 +2041,7 @@ test.describe("The Pro-Q 4 screen's ↶ VRÁTIŤ", () => {
   // button takes no press while a finger keeps the PC's contact, nor within
   // 700 ms of the last one; a note over the picture says the hub's answer.
 
-  test("↶ VRÁTIŤ takes back Pro-Q's last change: the hub taps Pro-Q's own ↶, the note says so, the button rests 700 ms and a second press then sends nothing; with nothing left it says so and taps nothing", async ({ page }) => {
+  test("↶ UNDO takes back Pro-Q's last change: the hub taps Pro-Q's own ↶, the note says so, the button rests 700 ms and a second press then sends nothing; with nothing left it says so and taps nothing", async ({ page }) => {
     const since = Date.now();
     const { sent, answers } = watchUndo(page);
     await openSurface(page);
@@ -2145,7 +2145,7 @@ test.describe("The Pro-Q 4 screen's ↶ VRÁTIŤ", () => {
     ]);
     expect(tapped[2].left, JSON.stringify(tapped)).toBe(0);
     expect(tapped.every((r) => r.window === tapped[0].window), "one window").toBe(true);
-    await expect.poll(async () => (await undoNotes(page)).slice(notesBefore), { message: "the note" }).toContain("true|Vrátené: posledná zmena v Pro-Q");
+    await expect.poll(async () => (await undoNotes(page)).slice(notesBefore), { message: "the note" }).toContain("true|Undone: last change in Pro-Q");
     expect(await clipped(screen.getByTestId("eq-undo-note"))).toEqual([]);
 
     // The button: disabled and flashing a macrotask after the press, the
@@ -2193,7 +2193,7 @@ test.describe("The Pro-Q 4 screen's ↶ VRÁTIŤ", () => {
     const before = answers.length;
     await pressUndo(screen);
     expect((await answerAfter(answers, before)).result).toBe("nothing");
-    await expect.poll(async () => (await undoNotes(page)).slice(notesNow), { message: "the note" }).toContain("true|Nie je čo vrátiť");
+    await expect.poll(async () => (await undoNotes(page)).slice(notesNow), { message: "the note" }).toContain("true|Nothing to undo");
     await page.waitForTimeout(300);
     expect(steps((await simEq.records()).slice(nothingFrom.at)), "no tap on the ↶").toEqual([]);
 
@@ -2205,7 +2205,7 @@ test.describe("The Pro-Q 4 screen's ↶ VRÁTIŤ", () => {
     await editorOpen(trackPath, false);
   });
 
-  test("while a finger holds the picture ↶ VRÁTIŤ takes no press and nothing goes; once it lifts a press takes the drag back", async ({ page }) => {
+  test("while a finger holds the picture ↶ UNDO takes no press and nothing goes; once it lifts a press takes the drag back", async ({ page }) => {
     const { sent, answers } = watchUndo(page);
     await openSurface(page);
     const { onTrack, trackPath } = await hand2Cards(page);
@@ -2227,7 +2227,7 @@ test.describe("The Pro-Q 4 screen's ↶ VRÁTIŤ", () => {
     }
     await touchesUntil(dragFrom, (all) => all.some((r) => r.phase === "update"), "the drag's moves");
     await expect(undo).toHaveAttribute("aria-disabled", "true");
-    // A second finger on ↶ VRÁTIŤ (the mouse holds the picture): nothing goes.
+    // A second finger on ↶ UNDO (the mouse holds the picture): nothing goes.
     const asked = undoAsks(sent).length;
     await undo.dispatchEvent("pointerdown", { pointerId: 94, pointerType: "touch", isPrimary: false, bubbles: true, cancelable: true });
     await page.waitForTimeout(400);
@@ -2249,7 +2249,7 @@ test.describe("The Pro-Q 4 screen's ↶ VRÁTIŤ", () => {
     expect((await answerAfter(answers, before)).result).toBe("done");
     expect(undoAsks(sent).length - asked, "one undo").toBe(1);
     await until(async () => (await simEq.records()).slice(mark.at), (r) => r.some((x) => x.op === "undo"), "the simulated Pro-Q's undo");
-    await expect.poll(async () => (await undoNotes(page)).slice(notesBefore), { message: "the note" }).toContain("true|Vrátené: posledná zmena v Pro-Q");
+    await expect.poll(async () => (await undoNotes(page)).slice(notesBefore), { message: "the note" }).toContain("true|Undone: last change in Pro-Q");
 
     await caughtUp(screen);
     const closing = (await simEq.records()).length;
@@ -2259,7 +2259,7 @@ test.describe("The Pro-Q 4 screen's ↶ VRÁTIŤ", () => {
     await editorOpen(trackPath, false);
   });
 
-  test("↶ VRÁTIŤ sits on the bar after the name, before the lock mark and ?; upright only ↶ shows; the bar fits a phone either way; the legend names it", async ({ page }) => {
+  test("↶ UNDO sits on the bar after the name, before the lock mark and ?; upright only ↶ shows; the bar fits a phone either way; the legend names it", async ({ page }) => {
     await openSurface(page);
     const { onTrack, trackPath } = await hand2Cards(page);
     await editorOpen(trackPath, false);
@@ -2269,7 +2269,7 @@ test.describe("The Pro-Q 4 screen's ↶ VRÁTIŤ", () => {
     const undo = screen.getByTestId("eq-undo");
     const word = screen.getByTestId("eq-undo-word");
     await expect(screen.getByTestId("eq-undo-arrow")).toHaveText("↶");
-    await expect(word).toHaveText("VRÁTIŤ");
+    await expect(word).toHaveText("UNDO");
     await expect(word).toBeVisible();
     // Right of the name, left of the lock mark and ?.
     const box = async (locator: Locator) => (await locator.boundingBox())!;
@@ -2290,11 +2290,11 @@ test.describe("The Pro-Q 4 screen's ↶ VRÁTIŤ", () => {
     await barFits(screen, ["eq-exit", "eq-undo", "eq-mine", "eq-help"], ["eq-exit", "eq-undo", "eq-mine"]);
 
     // The legend: a hold opens nothing (PR O proved it on the PC), and ↶
-    // VRÁTIŤ's line.
+    // UNDO's line.
     await screen.getByTestId("eq-help").click();
     const legend = screen.getByTestId("eq-legend");
-    await expect(legend.getByTestId("eq-legend-hold").locator("td")).toHaveText(["podržať", "nič: ponuka pásma sa neotvorí"]);
-    await expect(legend.getByTestId("eq-legend-undo").locator("td")).toHaveText(["↶ VRÁTIŤ", "vráti poslednú zmenu v Pro-Q"]);
+    await expect(legend.getByTestId("eq-legend-hold").locator("td")).toHaveText(["hold", "nothing: the band menu does not open"]);
+    await expect(legend.getByTestId("eq-legend-undo").locator("td")).toHaveText(["↶ UNDO", "undoes the last change in Pro-Q"]);
     await expect(legend).not.toContainText("overiť");
     await screen.getByTestId("eq-help").click();
     await expect(legend).toHaveCount(0);
@@ -2309,7 +2309,7 @@ test.describe("The Pro-Q 4 screen's ↶ VRÁTIŤ", () => {
     expect((await box(undo)).width).toBeGreaterThanOrEqual(56);
     await barFits(screen, ["eq-exit", "eq-undo", "eq-help"], ["eq-exit", "eq-undo"]);
     await pinch(area, await centre(area), 50, 125);
-    await expect(screen.getByTestId("eq-factor")).toHaveText("2,5×");
+    await expect(screen.getByTestId("eq-factor")).toHaveText("2.5×");
     await zoomBarFits(screen);
 
     // A phone on its side: the 40 px bar, the word back, the zoom group shown.
@@ -2356,7 +2356,7 @@ test.describe("The Pro-Q 4 screen and a finger whose end never came (#124)", () 
    * browser marks it): down at `from`, `DRAG_STEPS` moves to `to`, one an
    * animation frame (the page sends at most one a frame), two frames, the
    * up at `to`. Its first move passes the 6 px slop, so its down goes at
-   * once. Whether the screen's note "Obraz ešte dobieha" (`eq-stale`)
+   * once. Whether the screen's note "Image still catching up" (`eq-stale`)
    * showed at any frame of the drag: read in the page, as it lasts only
    * 1.5 s (e2e.md's short states).
    */
@@ -2433,7 +2433,7 @@ test.describe("The Pro-Q 4 screen and a finger whose end never came (#124)", () 
 
   /** Whether the view stayed where `shown` was: no pinch zoomed or panned it. */
   async function sameView(screen: Locator, shown: { left: number; top: number }) {
-    await expect(screen.getByTestId("eq-factor")).toHaveText("3,0×");
+    await expect(screen.getByTestId("eq-factor")).toHaveText("3.0×");
     const now = await pictureMap(screen.getByTestId("eq-canvas"));
     expect(Math.max(Math.abs(now.left - shown.left), Math.abs(now.top - shown.top)), "the view stayed: no pinch").toBeLessThan(0.5);
   }
@@ -2457,7 +2457,7 @@ test.describe("The Pro-Q 4 screen and a finger whose end never came (#124)", () 
     await touchesUntil(start, (all) => all.some((r) => r.phase === "cancel"), "the pinch's cancel of the contact");
     await fingerEvent(area, "pointerup", other, SECOND, false);
     await frames(page, 2);
-    await expect(screen.getByTestId("eq-factor")).toHaveText("3,0×");
+    await expect(screen.getByTestId("eq-factor")).toHaveText("3.0×");
     const shown = await pictureMap(screen.getByTestId("eq-canvas"));
     await caughtUp(screen);
     // The next first finger (primary: no other finger is down) drags a
@@ -2502,7 +2502,7 @@ test.describe("The Pro-Q 4 screen and a finger whose end never came (#124)", () 
     // nothing, and it pinches nothing either.
     const from = { x: lostAt.x - 100, y: lostAt.y + 60 };
     const to = { x: from.x + 80, y: from.y - 40 };
-    // The engineer sees why: "Obraz ešte dobieha, polož prst znova".
+    // The engineer sees why: "Image still catching up, touch again".
     expect(await fingerDrag(area, from, to, NEXT, true), "the stale note under the refused finger").toBe(true);
     const ended = await touchesUntil(start, (all) => all.some((r) => r.phase === "cancel"), "the lost contact's cancel");
     expect(ended[0].phase).toBe("down");
@@ -2566,8 +2566,8 @@ test.describe("The Pro-Q 4 screen and a finger whose end never came (#124)", () 
     await exitScreen(page, screen, trackPath);
   });
 
-  test("a finger whose end never came leaves ↶ VRÁTIŤ and CELÝ EQ working: a primary touch on either ends it first, its contact's cancel before the undo", async ({ page }) => {
-    // #124 review I1: the lost finger kept the PC's contact, so ↶ VRÁTIŤ
+  test("a finger whose end never came leaves ↶ UNDO and FULL EQ working: a primary touch on either ends it first, its contact's cancel before the undo", async ({ page }) => {
+    // #124 review I1: the lost finger kept the PC's contact, so ↶ UNDO
     // took no press until a touch on the picture. A primary touch on the
     // bar proves no other touch is down, so it ends the lost finger first.
     const LOST = 931;
@@ -2583,7 +2583,7 @@ test.describe("The Pro-Q 4 screen and a finger whose end never came (#124)", () 
     await fingerEvent(area, "pointerdown", lostAt, LOST, true);
     await touchesUntil(start, (all) => all.some((r) => r.phase === "down"), "the lost finger's contact");
     await expect(undo, "the lost finger keeps the PC's contact").toHaveAttribute("aria-disabled", "true");
-    // A primary touch on ↶ VRÁTIŤ: the lost contact's cancel, then the undo.
+    // A primary touch on ↶ UNDO: the lost contact's cancel, then the undo.
     const sentFrom = sent.length;
     const before = answers.length;
     const press = await centre(undo);
@@ -2598,9 +2598,9 @@ test.describe("The Pro-Q 4 screen and a finger whose end never came (#124)", () 
       sent.slice(sentFrom).map((m) => (m.type === "eq_undo" ? "undo" : m.touch)),
       "on the page's socket the cancel goes before the undo",
     ).toEqual(["cancel", "undo"]);
-    // CELÝ EQ: the same. Another lost finger once a picture shows the undo,
-    // then a primary touch on CELÝ EQ: its contact's cancel, the whole
-    // picture, and ↶ VRÁTIŤ takes a press again with no touch on the
+    // FULL EQ: the same. Another lost finger once a picture shows the undo,
+    // then a primary touch on FULL EQ: its contact's cancel, the whole
+    // picture, and ↶ UNDO takes a press again with no touch on the
     // picture.
     await caughtUp(screen);
     const again = await touchMark();
@@ -2612,7 +2612,7 @@ test.describe("The Pro-Q 4 screen and a finger whose end never came (#124)", () 
     await fingerEvent(whole, "pointerup", wholeAt, WHOLE, true);
     await touchesUntil(again, (all) => all.some((r) => r.phase === "cancel"), "the second lost contact's cancel");
     await expect(screen.getByTestId("eq-zoom")).toHaveAttribute("data-shown", "false");
-    await expect(undo, "↶ VRÁTIŤ free again").toHaveAttribute("aria-disabled", "false");
+    await expect(undo, "↶ UNDO free again").toHaveAttribute("aria-disabled", "false");
     expect(await contacts(trackPath, since, 4)).toEqual(["down", "cancel", "down", "cancel"]);
     expect(await fingerRecords(since, LOST_AGAIN, "lost")).toEqual([
       ["down", LOST],
