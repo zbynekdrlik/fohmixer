@@ -801,7 +801,7 @@ test.describe("The Pro-Q 4 screen", () => {
       await expect(lock).toBeVisible();
       const text = (await lock.textContent())!;
       expect(text.startsWith("LOCKED"), text).toBe(true);
-      expect(times.map((hm) => text.endsWith(`${line} (od ${hm})`)), text).toContain(true);
+      expect(times.map((hm) => text.endsWith(`${line} (since ${hm})`)), text).toContain(true);
       expect(await clipped(lock)).toEqual([]);
       const open = c.getByTestId("eq-open");
       await expect(open).toHaveText("LOCKED");
@@ -841,7 +841,7 @@ test.describe("The Pro-Q 4 screen", () => {
     await editorOpen(rackPath, false);
   });
 
-  test("an open the hub refuses says why under its card in Slovak, never the hub's English", async ({ page }) => {
+  test("an open the hub refuses says why under its card in its own words, never the hub's reason id", async ({ page }) => {
     await openSurface(page);
     const { onTrack, trackPath } = await hand2Cards(page);
     await editorOpen(trackPath, false);
@@ -873,7 +873,7 @@ test.describe("The Pro-Q 4 screen", () => {
     await closedWithGuard(before);
     await editorOpen(trackPath, false);
     await expect(onTrack.getByTestId("eq-card-note")).toHaveCount(0);
-    // The only note it showed: the Slovak one (never "Did not open: closing").
+    // The only note it showed: the page's own words (never "Did not open: closing").
     expect(await notesSeen(page)).toEqual(["still closing, try again"]);
   });
 
@@ -2295,7 +2295,7 @@ test.describe("The Pro-Q 4 screen's ↶ UNDO", () => {
     const legend = screen.getByTestId("eq-legend");
     await expect(legend.getByTestId("eq-legend-hold").locator("td")).toHaveText(["hold", "nothing: the band menu does not open"]);
     await expect(legend.getByTestId("eq-legend-undo").locator("td")).toHaveText(["↶ UNDO", "undoes the last change in Pro-Q"]);
-    await expect(legend).not.toContainText("overiť");
+    await expect(legend).toContainText("When zoomed, the image on the PC stays the same: only the view on this device changes.");
     await screen.getByTestId("eq-help").click();
     await expect(legend).toHaveCount(0);
 

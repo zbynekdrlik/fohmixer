@@ -28,7 +28,7 @@ import {
 // REVERB AUT on or off at its lift (as the merged STAGE button's). The hub
 // runs the rule (PR 4): Live's stop lowers them after 2 s, its start
 // returns them, the hand wins. The faders show where they return (the
-// dashed mark), `AUT −10` and `MAN`; nothing takes a fader's height. The
+// dashed mark), `AUTO −10` and `MAN`; nothing takes a fader's height. The
 // reverb faders are the `+REVERB` Tuners: Rev ST on band track 2 (Hand3 #),
 // Rev PA on track 3 (Hand4 #), in Live's order.
 
@@ -94,6 +94,21 @@ async function railSteps(since: number, ok: (steps: string[]) => boolean): Promi
 /** The hub's `reverb` steps since `since` (the test's clock: one runner clock with the hub's `ts`). */
 async function reverbSteps(since: number): Promise<string[]> {
   return (await hubEvents()).filter((r: any) => r.ev === "reverb" && r.ts >= since).map((r: any) => r.step);
+}
+
+/**
+ * The `AUTO −n` pill fits between its two levels (#141 C2: `AUTO` is one
+ * letter longer than `AUT`): its box (vertical text, rotated) lies under
+ * the return mark's line and over the cap.
+ */
+async function pillFits(scope: Locator, what: string) {
+  const pill = (await scope.getByTestId("aut-mark").locator(".fz-pill").boundingBox())!;
+  const ret = (await scope.getByTestId("aut-ret").boundingBox())!;
+  const cap = (await scope.getByTestId("fader-cap").boundingBox())!;
+  const top = ret.y + ret.height / 2;
+  console.log(`AUTO pill (${test.info().project.name}, ${what}): ${pill.height.toFixed(1)} px in ${(cap.y - top).toFixed(1)} px`);
+  expect(pill.y, `${what}: the pill under the return mark`).toBeGreaterThanOrEqual(top);
+  expect(pill.y + pill.height, `${what}: the pill over the cap`).toBeLessThanOrEqual(cap.y);
 }
 
 /** The button's second line reads `text`, and the button, its line and its label with the pill fit (118 × 44, #9). */
@@ -248,6 +263,7 @@ test.describe("REVERB and REVERB AUT", () => {
       await expect(s.getByTestId("aut-mark")).toHaveClass(/\bshown\b/);
       await expect(s.getByTestId("aut-mark")).toHaveText("AUTO −10");
       await expect(s.getByTestId("hand-mark")).not.toHaveClass(/\bshown\b/);
+      await pillFits(s, label);
       await expect(s.getByTestId("strip-readout")).toHaveAttribute("data-aut", "low");
     }
     // The dashed mark at the song level; the cap 10 dB under it; the
@@ -306,6 +322,7 @@ test.describe("REVERB and REVERB AUT", () => {
     await fits(button, "STOP · −10 dB");
     await expect(button).toHaveAttribute("data-aut", "run");
     await expect(strip(page, "Rev PA").getByTestId("aut-mark")).toHaveText("AUTO −10");
+    await pillFits(strip(page, "Rev PA"), "Rev PA by AUTO");
 
     // The engineer takes Rev PA: the rule lets it go (MAN), its return
     // mark goes, Rev ST stays held.
@@ -405,7 +422,7 @@ test.describe("REVERB and REVERB AUT", () => {
     await expect(button).toHaveClass(/\bon\b/);
   });
 
-  test("the channel detail's fader shows REVERB's return mark, AUT −10 and MAN, with no height", async ({ page }) => {
+  test("the channel detail's fader shows REVERB's return mark, AUTO −10 and MAN, with no height", async ({ page }) => {
     await live.set("band", ST, "value", 0.85);
     await live.set("band", PA, "value", 0.6);
     await setUp(page);
@@ -427,7 +444,7 @@ test.describe("REVERB and REVERB AUT", () => {
     const songLevel = await cap();
 
     // Lowered (a page's tap, here the test's client: the detail covers the
-    // rail): the return mark at the song level, AUT −10, the readout in the
+    // rail): the return mark at the song level, AUTO −10, the readout in the
     // rule's colour, no height.
     live.setHub("reverb_low", true);
     await until(() => settled(live, PA), tenDown(0.6), "Rev PA −10 dB");
@@ -435,6 +452,7 @@ test.describe("REVERB and REVERB AUT", () => {
     await expect(detail.getByTestId("aut-ret")).toHaveClass(/\bshown\b/);
     await expect(detail.getByTestId("aut-mark")).toHaveClass(/\bshown\b/);
     await expect(detail.getByTestId("aut-mark")).toHaveText("AUTO −10");
+    await pillFits(detail, "the detail");
     await expect(detail.getByTestId("detail-readout")).toHaveAttribute("data-aut", "low");
     const ret = (await detail.getByTestId("aut-ret").boundingBox())!;
     expect(Math.abs(ret.y + ret.height / 2 - songLevel), "the return mark at the song level").toBeLessThan(2);
