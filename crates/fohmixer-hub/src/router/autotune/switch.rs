@@ -264,6 +264,8 @@ impl AutotuneIo {
                     )
                 };
                 let why = mine.iter().find_map(|t| self.why_of(t));
+                let waiting = why.as_ref().is_some_and(|(_, waiting)| *waiting);
+                let why = why.map(|(words, _)| words);
                 let keyed: Vec<&&Target> = mine.iter().filter(|t| checked(t)).collect();
                 let confirmed = !keyed.is_empty()
                     && keyed
@@ -278,8 +280,7 @@ impl AutotuneIo {
                     why,
                     id: id.unwrap_or_default(),
                     confirmed,
-                    // PR #150 re-review m1: not judged yet.
-                    waiting: false,
+                    waiting,
                 }
             })
             .collect()
@@ -287,11 +288,13 @@ impl AutotuneIo {
 
     /// Why a target is not fine: its problem (a missing rack too: PR #147
     /// review N3), else a found one's key's, else what keeps it DRY on the
-    /// hub's side (PR #150 review I2: `waiting_words`).
-    fn why_of(&self, target: &Target) -> Option<String> {
+    /// hub's side (PR #150 review I2: `waiting_words`), with whether it is
+    /// that wait (PR #150 re-review m1: the panel then shows the key as it
+    /// stands, nothing rewritten at the next change).
+    fn why_of(&self, target: &Target) -> Option<(String, bool)> {
         let part = part(target.spec.on);
         if let Some(trouble) = trouble(target) {
-            return Some(format!("{part}: {trouble}"));
+            return Some((format!("{part}: {trouble}"), false));
         }
         target.found.as_ref()?;
         let seen = match target.values {
@@ -299,19 +302,15 @@ impl AutotuneIo {
             _ => None,
         };
         if self.check_of(target) == KeyCheck::Bad {
-            return Some(key_why(
-                part,
-                target.keyt.state(),
-                target.keyt.wanted(),
-                seen,
-            ));
+            let why = key_why(part, target.keyt.state(), target.keyt.wanted(), seen);
+            return Some((why, false));
         }
         let decision = target.decision?;
         let problem = self
             .safe
             .get(&target.instance)
             .and_then(|safe| safe.problem.as_deref());
-        waiting_words(decision.why, problem).map(|words| format!("{part}: {words}"))
+        waiting_words(decision.why, problem).map(|words| (format!("{part}: {words}"), true))
     }
 
     /// A found target's input to its decision (`held`: its set's writes

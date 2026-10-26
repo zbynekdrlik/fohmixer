@@ -378,8 +378,16 @@ impl Router {
             false,
         );
         let (song, key) = key_now(map, position);
-        position.change = coming_now(map, position);
+        let change = coming_now(map, position);
+        // A jump that keeps the key can still leave its coming change behind:
+        // the pages' head never names a change that will not come (PR #150
+        // re-review m2; the tell sends nothing for an unchanged state).
+        let moved = position.change != change;
+        position.change = change;
         let Some(why) = position.follow.on_position((song, key)) else {
+            if moved {
+                self.autotune_tell();
+            }
             return;
         };
         self.autotune_step(
