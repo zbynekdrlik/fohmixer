@@ -289,10 +289,10 @@ test.describe("AUTOTUNE and its singers' panel", () => {
     const since = Date.now();
     const sincePage = await pageNow(page);
     const full = await hold(button);
-    expect(full).toMatchObject({ holding: "true", full: "true", sub: "pusť — zapne AUT", failed: false });
+    expect(full).toMatchObject({ holding: "true", full: "true", sub: "release — AUTO on", failed: false });
     await until(async () => live.autotune?.aut, (v: boolean) => v === true, "AUTOTUNE AUT on");
     await expect(button).toHaveAttribute("data-aut", "run");
-    await expect(button.getByTestId("aut-badge")).toHaveText("AUT");
+    await expect(button.getByTestId("aut-badge")).toHaveText("AUTO");
     await expect(button.getByTestId("btn-sub")).toHaveText("stopped · —");
     expect(await clipped(button)).toEqual([]);
     const status = await hubStatus();
@@ -309,7 +309,7 @@ test.describe("AUTOTUNE and its singers' panel", () => {
     expect(await macros(live)).toEqual(DRY);
     // A second hold turns it off at its lift.
     const off = await hold(button);
-    expect(off).toMatchObject({ holding: "true", full: "true", sub: "pusť — vypne AUT" });
+    expect(off).toMatchObject({ holding: "true", full: "true", sub: "release — AUTO off" });
     await until(async () => live.autotune?.aut, (v: boolean) => v === false, "AUTOTUNE AUT off again");
     await expect(button).toHaveAttribute("data-aut", "off");
     await expect(button.getByTestId("btn-sub")).toHaveText("off · —");
@@ -452,7 +452,7 @@ test.describe("AUTOTUNE and its singers' panel", () => {
     // Its foot: the song map's counts and Live's bar.
     await expect(panel.getByTestId("autotune-panel-map")).toHaveText("Song map: 1 song with a key, 0 key changes, 0 problems.");
     const bar = (await hubStatus()).autotune.keys.find((k: any) => k.instance === "band")?.bar ?? "—";
-    await expect(panel.getByTestId("autotune-panel-live")).toHaveText(`Live: ${bar}. Hold AUTOTUNE 1 s: AUT on/off.`);
+    await expect(panel.getByTestId("autotune-panel-live")).toHaveText(`Live: ${bar}. Hold AUTOTUNE 1 s: AUTO on/off.`);
     // Beside the column, inside the screen, its switch a tap target.
     const box = (await panel.boundingBox())!;
     const column = (await page.getByTestId("column").boundingBox())!;
@@ -821,7 +821,7 @@ test.describe("AUTOTUNE and its singers' panel", () => {
       { wait: 100 },
     ]);
     expect(press.snaps[0]).toMatchObject({ holding: "false", full: "false" });
-    expect(press.snaps[0].sub).not.toMatch(/drž|pusť/);
+    expect(press.snaps[0].sub).not.toMatch(/hold…|release —/);
     expect(press.snaps[1].full).toBe("false");
     await expect.poll(() => page.evaluate(() => (window as any).tuneFlashes)).toBe(2);
     await page.waitForTimeout(600);

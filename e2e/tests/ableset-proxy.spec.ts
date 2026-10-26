@@ -176,7 +176,7 @@ test.describe("AbleSet down", () => {
     try {
       const answer = await page.goto(`${ABLESET.origin}/`);
       expect(answer?.status()).toBe(502);
-      await expect(page.locator("body")).toHaveText("AbleSet na PC neodpovedá. Skúšam znova o 5 s.");
+      await expect(page.locator("body")).toHaveText("AbleSet on the PC is not answering. Retrying in 5 s.");
       const down = await until(() => ablesetStatus(bearer), (s) => s.online === false, "AbleSet's link down", 15_000);
       expect(down.last_error).toContain("AbleSet does not answer");
     } finally {

@@ -18,8 +18,8 @@ pub fn mark_look(
 ) -> Option<(&'static str, &'static str)> {
     use fohmixer_proto::layout::StripMark;
     match mark? {
-        StripMark::Conflict => Some(("conflict", "KONFLIKT")),
-        StripMark::Problem => Some(("problem", "ZNAČKA?")),
+        StripMark::Conflict => Some(("conflict", "CONFLICT")),
+        StripMark::Problem => Some(("problem", "TAG?")),
     }
 }
 
@@ -49,11 +49,11 @@ mod tests {
         use fohmixer_proto::layout::StripMark;
         assert_eq!(
             mark_look(Some(StripMark::Conflict)),
-            Some(("conflict", "KONFLIKT"))
+            Some(("conflict", "CONFLICT"))
         );
         assert_eq!(
             mark_look(Some(StripMark::Problem)),
-            Some(("problem", "ZNAČKA?"))
+            Some(("problem", "TAG?"))
         );
         assert_eq!(mark_look(None), None);
     }

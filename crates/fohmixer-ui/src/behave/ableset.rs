@@ -230,10 +230,10 @@ pub fn returns_to_tab(hash: &str) -> bool {
 /// A panel's title (none for the brief check).
 pub fn panel_title(panel: Panel) -> &'static str {
     match panel {
-        Panel::Down => "AbleSet nebeží",
-        Panel::SignIn => "Prihlásenie do AbleSetu",
-        Panel::Unreachable(_) => "AbleSet sa nedá načítať",
-        Panel::Elsewhere => "Núdzová adresa",
+        Panel::Down => "AbleSet is not running",
+        Panel::SignIn => "AbleSet sign-in",
+        Panel::Unreachable(_) => "AbleSet can't load",
+        Panel::Elsewhere => "Fallback address",
         Panel::Checking => "",
     }
 }
@@ -243,29 +243,29 @@ pub fn panel_title(panel: Panel) -> &'static str {
 pub fn panel_text(panel: Panel, direct: bool) -> &'static str {
     match panel {
         Panel::Down => {
-            "AbleSet na PC teraz neodpovedá. Fohmixer ho skúša znova sám; mixér funguje ďalej."
+            "AbleSet on the PC is not answering right now. Fohmixer keeps retrying; the mixer works as usual."
         }
         Panel::SignIn => {
-            "Si mimo kostola. AbleSet chce raz potvrdiť prihlásenie, rovnako ako fohmixer."
+            "You are away from the church. AbleSet wants you to confirm the sign-in once, like fohmixer."
         }
         Panel::Unreachable(Fail::Error) => {
-            "AbleSet sa cez sieť kostola nenačítal: jeho meno alebo certifikát nefunguje. Mixér funguje ďalej; fohmixer to skúsi znova, keď sa sem vrátiš."
+            "AbleSet did not load over the church network: its name or certificate does not work. The mixer works as usual; fohmixer tries again when you come back here."
         }
         Panel::Unreachable(Fail::Late) => {
-            "AbleSet neodpovedal do 8 sekúnd. Mixér funguje ďalej; fohmixer to skúsi znova, keď sa sem vrátiš."
+            "AbleSet did not answer within 8 seconds. The mixer works as usual; fohmixer tries again when you come back here."
         }
         Panel::Elsewhere if direct => {
-            "Fohmixer je otvorený cez IP bez certifikátu, tak sa AbleSet nedá vložiť. Otvor fohmixer cez jeho meno, alebo AbleSet priamo:"
+            "Fohmixer is open by IP without a certificate, so AbleSet can't be embedded. Open fohmixer by its name, or open AbleSet directly:"
         }
         Panel::Elsewhere => {
-            "Fohmixer nie je otvorený cez svoje meno, tak sa AbleSet nedá vložiť. Otvor fohmixer cez jeho meno."
+            "Fohmixer is not open by its own name, so AbleSet can't be embedded. Open fohmixer by its name."
         }
-        Panel::Checking => "Pripájam AbleSet…",
+        Panel::Checking => "Connecting to AbleSet…",
     }
 }
 
 /// The sign-in panel's button.
-pub const SIGNIN_BUTTON: &str = "PRIHLÁSIŤ SA";
+pub const SIGNIN_BUTTON: &str = "SIGN IN";
 
 #[cfg(test)]
 mod tests;

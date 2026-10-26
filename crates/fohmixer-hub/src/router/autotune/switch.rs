@@ -263,7 +263,13 @@ impl AutotuneIo {
                             .map(|t| state_of(t)),
                     )
                 };
-                let why = mine.iter().find_map(|t| self.why_of(t));
+                // A track's own trouble or key refusal before the hub's
+                // wait on another (#140): the first of Live's order among
+                // those, else the first wait.
+                let why = mine
+                    .iter()
+                    .filter_map(|t| self.why_of(t))
+                    .min_by_key(|(_, waiting)| *waiting);
                 let waiting = why.as_ref().is_some_and(|(_, waiting)| *waiting);
                 let why = why.map(|(words, _)| words);
                 let keyed: Vec<&&Target> = mine.iter().filter(|t| checked(t)).collect();

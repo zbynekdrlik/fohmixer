@@ -1251,7 +1251,7 @@ fn a_cropped_editors_guard_sends_its_whole_picture_first() {
     worker.step_at(40.0);
     wait_for("a second part", || got.lock().unwrap().len() == 2);
     assert!(!got.lock().unwrap()[1].whole());
-    // CELÝ EQ: the page went back to the whole picture, and the guard comes
+    // FULL EQ: the page went back to the whole picture, and the guard comes
     // while that grab's whole frame may still be encoded (the PR L
     // re-review: forgotten, it would leave the card without the edits).
     worker.command_at(

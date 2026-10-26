@@ -111,7 +111,7 @@ async function sweep(
       `<span class="strip-corner">${flag}${chain}${fader}${ret}<span class="mute-mark" aria-hidden="true">MUTE</span></span>` +
       `</div>` +
       `<div class="strip-info"><div class="strip-readout" data-testid="strip-readout"><span class="status"></span>` +
-      `<span class="db" data-testid="db">−12.0</span>${c.flag ? '<span class="strip-mark" data-testid="strip-mark">ZNAČKA?</span>' : ""}</div>` +
+      `<span class="db" data-testid="db">−12.0</span>${c.flag ? '<span class="strip-mark" data-testid="strip-mark">TAG?</span>' : ""}</div>` +
       `<button type="button" class="strip-menu" data-testid="strip-menu"><span class="strip-menu-icon" aria-hidden="true">☰</span></button></div>` +
       `</div>`;
     host.appendChild(s);

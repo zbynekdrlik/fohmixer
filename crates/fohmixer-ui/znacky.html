@@ -1,12 +1,12 @@
 <!doctype html>
 <!-- fohmixer #68 (spec D16): the tag manual. One source: the hub serves it as
-     /znacky.html (the tray's menu opens it), and the app's ZNAČKY overlay
+     /znacky.html (the tray's menu opens it), and the app's TAGS overlay
      fetches it and shows its main element with the style of its head. -->
-<html lang="sk">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Fohmixer značky</title>
+<title>Fohmixer tags</title>
 <style>
 .znacky {
     max-width: 760px;
@@ -36,66 +36,66 @@ html, body { margin: 0; background: #0b0b12; }
 </head>
 <body>
 <main class="znacky" data-testid="znacky">
-<h1>ZNAČKY V TUNERI</h1>
-<p>Čo je na fohmixeri, určuje <b>Tuner</b> v tracku v Abletone. Pridaj ho do tracku (najlepšie vypnutý: zvuk nemení a nič nestojí) a premenuj ho (<b>Ctrl+R</b>). Meno tracku sa nepoužíva.</p>
-<p>Príklad: <code>"Vox 1" +G:VOCALS:2 +G:TALKSHOW:1 +PIN +MG</code></p>
+<h1>TAGS IN THE TUNER</h1>
+<p>What fohmixer shows is set by a <b>Tuner</b> on a track in Ableton. Add one to the track (best switched off: it changes no sound and costs nothing) and rename it (<b>Ctrl+R</b>). The track's own name is not used.</p>
+<p>Example: <code>"Vox 1" +G:VOCALS:2 +G:TALKSHOW:1 +PIN +MG</code></p>
 
-<h2>ZÁPIS</h2>
+<h2>SYNTAX</h2>
 <table>
-<tr><td><code>"Vox 1"</code></td><td>meno na fadri, v úvodzovkách, môže mať aj viac slov</td></tr>
-<tr><td><code>+G:VOCALS</code></td><td>skupina: veľké písmená, číslice, <code>-</code> a <code>_</code> (<code>_</code> sa ukáže ako medzera); fader stojí v poradí trackov v Live</td></tr>
-<tr><td><code>+G:VOCALS:2</code></td><td>skupina a pozícia v nej (1 až 999); môže sa opakovať: jeden fader vo viacerých skupinách</td></tr>
-<tr><td><code>+PIN</code></td><td>vždy na obrazovke: v každom pohľade aj pri posune ◀ ▶</td></tr>
-<tr><td><code>+MG</code></td><td>ochrana mute: zmena chce druhé ťuknutie</td></tr>
-<tr><td><code>+ID:VOX1</code></td><td>značka pásu pre linknutý mute (nižšie): veľké písmená, číslice, <code>-</code> a <code>_</code></td></tr>
-<tr><td><code>+MUTE:VOX1</code></td><td>tento track sa stíši a zapne spolu s pásom, ktorý má <code>+ID:VOX1</code></td></tr>
-<tr><td><code>+ID:REV</code></td><td>značka pásu aj pre spojený fader (nižšie): to isté <code>+ID</code> môže slúžiť mute aj fadru</td></tr>
-<tr><td><code>+FADER:REV</code></td><td>fader tohto tracku sa pohne o rovnaké dB, keď pohneš pásom s <code>+ID:REV</code> (ak je spojenie zapnuté)</td></tr>
-<tr><td><code>+REVERB</code></td><td>fader reverbu: tlačidlo REVERB ho stíši o 10 dB a vráti, REVERB AUT pri zastavení Live. Patrí len na pás (meno v úvodzovkách a skupina); bez vlastného mena (alebo s menom, ktoré má aj iný pás) to fader reverbu nie je.</td></tr>
-<tr><td><code>+AUTOTUNE</code></td><td>autotune tohto tracku (nižšie): rack s menom <b>Latencies</b>, aj vo vnútri iného racku, a jeho prvé makro; zapnutý 127, vypnutý 0 (stream)</td></tr>
-<tr><td><code>+AUTOTUNE:0</code></td><td>to isté, zapnutý 0 a vypnutý 127 (repro)</td></tr>
+<tr><td><code>"Vox 1"</code></td><td>name on the fader, in quotes, may have several words</td></tr>
+<tr><td><code>+G:VOCALS</code></td><td>group: capital letters, digits, <code>-</code> and <code>_</code> (<code>_</code> shows as a space); the fader sits in Live's track order</td></tr>
+<tr><td><code>+G:VOCALS:2</code></td><td>group and position in it (1 to 999); may repeat: one fader in several groups</td></tr>
+<tr><td><code>+PIN</code></td><td>always on screen: in every view and when shifting ◀ ▶</td></tr>
+<tr><td><code>+MG</code></td><td>mute guard: a change needs a second tap</td></tr>
+<tr><td><code>+ID:VOX1</code></td><td>strip tag for a linked mute (below): capital letters, digits, <code>-</code> and <code>_</code></td></tr>
+<tr><td><code>+MUTE:VOX1</code></td><td>this track mutes and unmutes together with the strip that has <code>+ID:VOX1</code></td></tr>
+<tr><td><code>+ID:REV</code></td><td>strip tag for a linked fader too (below): the same <code>+ID</code> can serve the mute and the fader</td></tr>
+<tr><td><code>+FADER:REV</code></td><td>this track's fader moves by the same dB when you move the strip with <code>+ID:REV</code> (if the link is on)</td></tr>
+<tr><td><code>+REVERB</code></td><td>reverb fader: the REVERB button lowers it by 10 dB and returns it; REVERB AUTO does it when Live stops. Only on a strip (quoted name and group); without its own name (or with a name another strip has) it is not a reverb fader.</td></tr>
+<tr><td><code>+AUTOTUNE</code></td><td>this track's autotune (below): the rack named <b>Latencies</b>, also inside another rack, and its first macro; on = 127, off = 0 (stream)</td></tr>
+<tr><td><code>+AUTOTUNE:0</code></td><td>the same, on = 0 and off = 127 (repro)</td></tr>
 </table>
-<p>Značky píš veľkými písmenami (ako v AbleSete). Tuner bez úvodzoviek a bez značky <code>+</code> je obyčajný Tuner a fohmixer si ho nevšíma.</p>
+<p>Write tags in capital letters (as in AbleSet). A Tuner without quotes and without a <code>+</code> tag is an ordinary Tuner and fohmixer ignores it.</p>
 
-<h2>LINKNUTÝ MUTE</h2>
-<p>Jeden MUTE môže stíšiť naraz viac trackov, napríklad repro aj stream toho istého speváka. Tuner pásu dostane <code>+ID:</code> s krátkym názvom, ktorý si vymyslíš, a Tuner každého ďalšieho tracku alebo returnu <code>+MUTE:</code> s tým istým názvom. Tuner, ktorý má iba <code>+MUTE</code> (bez mena v úvodzovkách), nerobí na fohmixeri žiadny pás. Ak ten track už Tuner so značkami má, pridaj <code>+MUTE</code> do neho (dva Tunery v jednom tracku sú chyba).</p>
-<p>Príklad: Tuner speváka <code>"Vox 1" +G:STAGE +ID:VOX1</code>, Tuner jeho stream tracku <code>+MUTE:VOX1</code>.</p>
-<p>Na tlačidle je vľavo hore reťaz s počtom linknutých trackov: sivá, keď všetky hrajú, červená, keď sú všetky stíšené, a oranžová napríklad <b>1/3</b>, keď niekto v Abletone ručne stíšil len časť. Ťuk stíši všetky; keď sú všetky stíšené, ťuk ich všetky zapne. Pás stmavne, len keď sú stíšené všetky. Na úzkom páse sa nápis MUTE neukáže, ak sa nezmestí vedľa reťaze: stíšenie vtedy ukazuje červená reťaz a tmavý pás. Názov platí v rámci jedného Live setu.</p>
+<h2>LINKED MUTE</h2>
+<p>One MUTE can mute several tracks at once, for example the repro and the stream of the same singer. The strip's Tuner gets <code>+ID:</code> with a short name you choose, and the Tuner of every other track or return gets <code>+MUTE:</code> with the same name. A Tuner with only <code>+MUTE</code> (no quoted name) makes no strip in fohmixer. If the track already has a Tuner with tags, add <code>+MUTE</code> to it (two Tuners on one track is an error).</p>
+<p>Example: the singer's Tuner <code>"Vox 1" +G:STAGE +ID:VOX1</code>, the Tuner of their stream track <code>+MUTE:VOX1</code>.</p>
+<p>The button shows a chain at the top left with the number of linked tracks: grey when all play, red when all are muted, and orange, for example <b>1/3</b>, when someone muted only some of them by hand in Ableton. A tap mutes all; when all are muted, a tap unmutes all. The strip goes dark only when all are muted. On a narrow strip the word MUTE is not shown if it does not fit beside the chain: the red chain and the dark strip show the mute then. A name is valid within one Live set.</p>
 
-<h2>SPOJENÉ FADRE</h2>
-<p>Fader pásu môže viesť fadre iných trackov alebo returnov, ako linknutý mute. Tuner vedúceho pásu má <code>+ID:</code> s krátkym názvom a Tuner každého partnera <code>+FADER:</code> s tým istým názvom. Keď je spojenie zapnuté, ťah alebo dvojklik vedúceho pohne každým partnerom o rovnaké dB. Keď pohneš partnerom sám, ide len on. Tuner, ktorý má iba <code>+FADER</code> a <code>+MUTE</code> (bez mena v úvodzovkách), nerobí na fohmixeri žiadny pás.</p>
-<p>Príklad: Tuner repro reverbu <code>"Rev PA" +G:EFFECTS +REVERB +ID:REV</code>, Tuner stream reverbu <code>"Rev ST" +G:EFFECTS +REVERB +FADER:REV</code>.</p>
-<p>Spojenie sa zapína a vypína v detaile vedúceho pásu (podrž ☰): <b>SPOJENÝ S …</b>. Kým je zapnuté, vedúci má v rohu mena značku <b>dB</b> s reťazou a tyrkysovú čiarku na gombíku; partner má rovnakú značku obtiahnutú. Detail partnera povie, kto ho vedie.</p>
-<p><b>Podklady All</b> nemá vlastný track: jeho stopy sú tracky, ktorých Tuner má <code>+FADER:PODKLADY</code>. Je spojený vždy.</p>
+<h2>LINKED FADERS</h2>
+<p>A strip's fader can lead the faders of other tracks or returns, like a linked mute. The leading strip's Tuner has <code>+ID:</code> with a short name and every partner's Tuner has <code>+FADER:</code> with the same name. While the link is on, a drag or double-tap on the leader moves every partner by the same dB. When you move a partner by itself, only it moves. A Tuner with only <code>+FADER</code> and <code>+MUTE</code> (no quoted name) makes no strip in fohmixer.</p>
+<p>Example: the repro reverb's Tuner <code>"Rev PA" +G:EFFECTS +REVERB +ID:REV</code>, the stream reverb's Tuner <code>"Rev ST" +G:EFFECTS +REVERB +FADER:REV</code>.</p>
+<p>The link is switched on and off in the leader's detail (hold ☰): <b>LINKED TO …</b>. While it is on, the leader shows a <b>dB</b> mark with a chain in the corner of its name and a teal line on the knob; the partner shows the same mark outlined. A partner's detail says who leads it.</p>
+<p><b>Podklady All</b> (the backing tracks) has no track of its own: its tracks are the tracks whose Tuner has <code>+FADER:PODKLADY</code>. It is always linked.</p>
 
 <h2>AUTOTUNE</h2>
-<p>Tlačidlo <b>AUTOTUNE</b> ukazuje a riadi autotune spevákov. Tuner každého tracku s autotunom dostane <code>+AUTOTUNE</code> (zapnutý, keď je prvé makro racku na 127) alebo <code>+AUTOTUNE:0</code> (zapnutý na 0). Fohmixer v tracku nájde rack s menom <b>Latencies</b>, aj vo vnútri iného racku (najviac tri racky hlboko), a prepína jeho prvé makro. V tracku musí byť práve jeden taký rack. Tuner, ktorý má iba <code>+MUTE</code>, <code>+FADER</code> a <code>+AUTOTUNE</code> (bez mena v úvodzovkách), nerobí žiadny pás, takže stream track môže mať <code>+MUTE:VOX1 +AUTOTUNE</code>. Značky platia, len keď má layout tlačidlo AUTOTUNE.</p>
-<p>Príklad: Tuner speváka <code>"Vox 1" +G:STAGE +ID:VOX1 +AUTOTUNE:0</code>, Tuner jeho stream tracku <code>+MUTE:VOX1 +AUTOTUNE</code>.</p>
-<p>Každý spevák je dvojica trackov: jeho PA track (Tuner s <code>+ID:</code>) a jeho stream track (Tuner s <code>+MUTE:</code> s tým istým názvom). Tónina sa zapisuje vždy podľa lokátora piesne a klipov <code>Key {G}</code> na tracku <b>Sections</b>.</p>
-<p><b>AUT</b> (podrž AUTOTUNE 1 s a pusť; rovnako sa vypína): kým je zapnutý, každý spevák ladí, keď Live hrá v piesni s tóninou a jeho tónina je zapísaná a spätne prečítaná; inak je na svojom DRY chaine. Keď je AUT vypnutý, sú všetci na DRY. Druhý riadok tlačidla ukazuje stav a tóninu: <code>off · F</code>, <code>stopped · F</code>, <code>no song</code>, <code>no key</code>, <code>checking · F</code>, <code>tuning · F</code>, <code>waiting · F</code> (neladí nikto a dôvod je v paneli), <code>tuning · F · 1 off</code>, <code>tuning · F · 1 !</code>.</p>
-<p>Tlačidlo svieti oranžovo, keď ladí každý spevák, je tmavé, keď neladí nikto, a s oranžovým okrajom, keď ladí len časť. Žltý <b>!</b> vľavo hore znamená speváka, ktorého tónina alebo track nesedí, alebo chybu v lokátoroch piesní.</p>
-<p><b>Panel spevákov</b>: ťuk na AUTOTUNE ho otvorí vedľa stredného pásu; zavrie ho ťuk mimo panelu (ten ťuk nič iné neurobí) alebo znova na AUTOTUNE. V riadku speváka je jeho stream a PA (<code>TUNE</code>, <code>DRY</code>, <code>—</code> bez tracku), tónina (<code>F ✓</code> zapísaná a spätne prečítaná, <code>F …</code> ešte sa overuje, <b>!</b> nesedí, dôvod pod riadkom) a jeho prepínač <code>OFF</code>/<code>ON</code>. Keď speváka drží na DRY sám hub (jeho záloha na DRY nie je uložená, čaká na zoznam trackov alebo na nové nájdenie racku), tónina sa ukazuje ďalej a pod riadkom je len ten dôvod. Hore je pieseň a tónina, aj najbližšia zmena tóniny s jej klipom; dole počty z lokátorov a ich chyby.</p>
-<p>Žltý <b>!</b> v rohu tlačidla AUTOTUNE na chvíľu blikne pri zmene zoznamu trackov v Live alebo po opätovnom pripojení, kým hub znova overí racky; to nie je chyba.</p>
-<h3>Postup: vypnúť jedného speváka</h3>
+<p>The <b>AUTOTUNE</b> button shows and controls the singers' autotune. The Tuner of every track with autotune gets <code>+AUTOTUNE</code> (on when the rack's first macro is at 127) or <code>+AUTOTUNE:0</code> (on at 0). Fohmixer finds the rack named <b>Latencies</b> in the track, also inside another rack (at most three racks deep), and switches its first macro. There must be exactly one such rack in the track. A Tuner with only <code>+MUTE</code>, <code>+FADER</code> and <code>+AUTOTUNE</code> (no quoted name) makes no strip, so a stream track can have <code>+MUTE:VOX1 +AUTOTUNE</code>. The tags count only when the layout has an AUTOTUNE button.</p>
+<p>Example: the singer's Tuner <code>"Vox 1" +G:STAGE +ID:VOX1 +AUTOTUNE:0</code>, the Tuner of their stream track <code>+MUTE:VOX1 +AUTOTUNE</code>.</p>
+<p>Every singer is a pair of tracks: their PA track (the Tuner with <code>+ID:</code>) and their stream track (the Tuner with <code>+MUTE:</code> with the same name). The key is always written from the song's locator and the <code>Key {G}</code> clips on the <b>Sections</b> track.</p>
+<p><b>AUTO</b> (hold AUTOTUNE for 1 s and release; the same switches it off): while it is on, every singer tunes when Live plays in a song with a key and their key is written and read back; otherwise they are on their DRY chain. With AUTO off everyone is on DRY. The button's second line shows the state and the key: <code>off · F</code>, <code>stopped · F</code>, <code>no song</code>, <code>no key</code>, <code>checking · F</code>, <code>tuning · F</code>, <code>waiting · F</code> (nobody tunes and the reason is in the panel), <code>tuning · F · 1 off</code>, <code>tuning · F · 1 !</code>.</p>
+<p>The button lights orange when every singer tunes, is dark when nobody tunes, and has an orange rim when only some tune. A yellow <b>!</b> at the top left means a singer whose key or track is not right, or an error in the song locators.</p>
+<p><b>The singers' panel</b>: a tap on AUTOTUNE opens it beside the middle strip; a tap outside the panel (that tap does nothing else) or on AUTOTUNE again closes it. A singer's row shows their stream and PA (<code>TUNE</code>, <code>DRY</code>, <code>—</code> with no track), the key (<code>F ✓</code> written and read back, <code>F …</code> still being checked, <b>!</b> not right, the reason under the row) and their <code>OFF</code>/<code>ON</code> switch. When the hub itself keeps a singer on DRY (its fall back to DRY is not kept, it waits for the track list or for the rack to be found again), the key still shows and only that reason is under the row. At the top are the song and the key, and the next key change with its clip; at the bottom the counts from the locators and their errors.</p>
+<p>The yellow <b>!</b> in the AUTOTUNE button's corner flashes briefly when Live's track list changes or after a reconnect, while the hub checks the racks again; that is no error.</p>
+<h3>Procedure: switch one singer off</h3>
 <ol>
-<li>Ťukni na <b>AUTOTUNE</b>: otvorí sa panel spevákov.</li>
-<li>Pri spevákovi ťukni na <code>OFF</code>: jeho stream aj PA idú hneď na DRY a ostanú tak aj cez ďalšie piesne a reštart hubu.</li>
-<li>Späť ho zapne ťuk na <code>ON</code>; ladiť začne podľa pravidiel.</li>
+<li>Tap <b>AUTOTUNE</b>: the singers' panel opens.</li>
+<li>Tap <code>OFF</code> by the singer: their stream and PA go to DRY at once and stay there through the next songs and a hub restart.</li>
+<li>A tap on <code>ON</code> switches them back on; they tune by the rules again.</li>
 </ol>
 
-<h2>POHĽADY</h2>
-<p>Skupinu, ktorú hlavný pohľad nemá, ukáže tlačidlo v strednom páse (POHĽADY): jej fadre a všetky pripnuté. Ďalší ťuk ťa vráti späť.</p>
+<h2>VIEWS</h2>
+<p>A group the main view does not have is shown by a button in the middle strip (VIEWS): its faders and all pinned ones. Another tap takes you back.</p>
 
-<h2>CHYBY</h2>
+<h2>ERRORS</h2>
 <ul>
-<li><b>KONFLIKT:</b> dva Tunery s rovnakým menom. Oba fadre sú vypnuté, kým jedno meno nezmeníš.</li>
-<li><b>Žltý roh (ZNAČKA?):</b> neznáma značka, zlá hodnota, dva Tunery v jednom tracku alebo dva fadre na jednej pozícii. Fader funguje, oprav meno Tunera.</li>
-<li><b>Linknutý mute:</b> to isté <code>+ID</code> na dvoch pásoch (oba majú žltý roh a nelinkuje sa ani jeden), <code>+MUTE</code> s názvom, ktorý nemá žiadny pás, alebo <code>+MUTE</code> s názvom vlastného pásu. Číslo na reťazi je počet trackov, ktoré MUTE stíši, aj s pásom samotným. Skontroluj reťaz: ak chýba, alebo je číslo na nej (po chvíli) menšie, ako koľko trackov si prepojil, niektorý <code>+MUTE</code> Tuner má preklep.</li>
-<li><b>Spojený fader:</b> to isté <code>+ID</code> na dvoch pásoch (nespojí sa nič), <code>+FADER</code> s názvom, ktorý nemá žiadny pás, <code>+FADER</code> s názvom vlastného pásu alebo ten istý <code>+FADER</code> dvakrát. Podklady All bez jediného <code>+FADER:PODKLADY</code> je červený.</li>
-<li><b>Autotune:</b> <code>+AUTOTUNE:</code> s inou hodnotou ako <code>0</code> alebo druhý <code>+AUTOTUNE</code> v jednom Tuneri je zlá značka. Track bez racku Latencies alebo s dvoma sa neprepína: tlačidlo AUTOTUNE má vľavo hore žltý <b>!</b> (ostatné tracky prepína ďalej), a keď sa nenájde ani jeden rack, je červené. Stav hubu (<code>/api/status</code>, <code>autotune.targets</code>) povie, ktorý track a prečo.</li>
-<li>Tuner bez skupiny (<code>+G:</code>) sa neukáže nikde.</li>
+<li><b>CONFLICT:</b> two Tuners with the same name. Both faders are off until you change one name.</li>
+<li><b>Yellow corner (TAG?):</b> unknown tag, bad value, two Tuners on one track or two faders in one position. The fader works; fix the Tuner's name.</li>
+<li><b>Linked mute:</b> the same <code>+ID</code> on two strips (both get a yellow corner and neither links), <code>+MUTE</code> with a name no strip has, or <code>+MUTE</code> with the name of its own strip. The number on the chain is the count of tracks the MUTE mutes, the strip itself included. Check the chain: if it is missing, or its number is (after a moment) smaller than the number of tracks you linked, some <code>+MUTE</code> Tuner has a typo.</li>
+<li><b>Linked fader:</b> the same <code>+ID</code> on two strips (nothing links), <code>+FADER</code> with a name no strip has, <code>+FADER</code> with the name of its own strip, or the same <code>+FADER</code> twice. Podklady All with no <code>+FADER:PODKLADY</code> at all is red.</li>
+<li><b>Autotune:</b> <code>+AUTOTUNE:</code> with a value other than <code>0</code>, or a second <code>+AUTOTUNE</code> in one Tuner, is a bad tag. A track without a Latencies rack, or with two, is not switched: the AUTOTUNE button shows a yellow <b>!</b> at the top left (the other tracks still switch), and when no rack is found at all it is red. The hub status (<code>/api/status</code>, <code>autotune.targets</code>) says which track and why.</li>
+<li>A Tuner without a group (<code>+G:</code>) is shown nowhere.</li>
 </ul>
-<p>Zmena v Abletone sa na tablete ukáže do sekundy.</p>
+<p>A change in Ableton shows on the iPad within a second.</p>
 </main>
 </body>
 </html>

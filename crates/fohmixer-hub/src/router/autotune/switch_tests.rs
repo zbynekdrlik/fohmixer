@@ -1536,8 +1536,9 @@ async fn no_write_when_live_already_shows_the_decision() {
 /// found with their values heard and on DRY, a script that refuses every
 /// registration (one before 1.13.0: nothing is ever kept), then the song
 /// map read and the keys written and read back: every track stays DRY,
-/// `unarmed`.
-async fn unarmed_in_a_song(dir: &std::path::Path) -> (Router, Live) {
+/// `unarmed`. A Max map holds the `held` key parameters (their writes
+/// refused).
+async fn unarmed_in_a_song(dir: &std::path::Path, held: &[&str]) -> (Router, Live) {
     let state = HubState {
         stage_aut: false,
         reverb: crate::rules::reverb::Saved::default(),
@@ -1547,6 +1548,7 @@ async fn unarmed_in_a_song(dir: &std::path::Path) -> (Router, Live) {
     };
     let (mut router, mut live, _rx) = scripted_router(dir, state);
     live.old_script = true;
+    live.held.extend(held.iter().map(|id| id.to_string()));
     assert!(router.autotune.state().aut, "a saved AUT on is honoured");
     router.handle(layout(1, vec![pa(), stream()]));
     find(&mut router, PA, rack(6));
@@ -1618,7 +1620,7 @@ async fn a_singer_kept_dry_by_its_sets_fall_back_not_kept_says_why() {
     // PR #150 review I2: the pages never read `tuning` with every track DRY
     // for a reason of the hub's own; the singer shows it.
     let dir = tempfile::tempdir().unwrap();
-    let (router, _live) = unarmed_in_a_song(dir.path()).await;
+    let (router, _live) = unarmed_in_a_song(dir.path(), &[]).await;
     let state = router.autotune.state();
     let vox = &state.singers[0];
     assert!(!vox.key_ok, "{vox:?}");
@@ -1628,6 +1630,20 @@ async fn a_singer_kept_dry_by_its_sets_fall_back_not_kept_says_why() {
     );
     // PR #150 re-review m1: the hub's own wait, never its key's.
     assert!(vox.waiting, "{vox:?}");
+}
+
+#[tokio::test]
+async fn a_key_refusal_on_a_singers_other_track_wins_over_the_hubs_wait() {
+    // #140 (carried Minor): the PA (Live's first track of VOX1) waits for
+    // its fall back to DRY, the stream's key write is refused; the singer
+    // names the refusal, which the engineer can act on, never the wait.
+    let dir = tempfile::tempdir().unwrap();
+    let (router, _live) = unarmed_in_a_song(dir.path(), &["k7", "s7"]).await;
+    let state = router.autotune.state();
+    let vox = &state.singers[0];
+    assert!(!vox.key_ok, "{vox:?}");
+    assert_eq!(vox.why.as_deref(), Some("stream Key refused, wrote D"));
+    assert!(!vox.waiting, "a key's why: {vox:?}");
 }
 
 #[tokio::test]

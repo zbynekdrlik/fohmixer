@@ -160,7 +160,7 @@
     background: var(--bar);
 }
 
-/* "← SPÄŤ NA KANÁL"; "← KANÁL" on a phone upright (the mockup's). */
+/* "← BACK TO CHANNEL"; "← CHANNEL" on a phone upright (the mockup's). */
 .eq-exit-short {
     display: none;
 }
@@ -199,7 +199,7 @@
 }
 
 /* The zoom group (PR F), only while zoomed: the overview (the latest frame
-   drawn small, a frame around the part in sight), the factor and CELÝ EQ.
+   drawn small, a frame around the part in sight), the factor and FULL EQ.
    The overview keeps the picture's shape at the bar's height: each frame
    sets its aspect-ratio (`behave::eq::overview_size`, #74 review). Its
    line is drawn over it (`::after`), not as its border: WebKit took the
@@ -276,7 +276,7 @@
     touch-action: none;
 }
 
-/* ↶ VRÁTIŤ (#71 PR P2b): Pro-Q's own undo, big and always in one place.
+/* ↶ UNDO (#71 PR P2b): Pro-Q's own undo, big and always in one place.
    Dim while it takes no press (a finger on the picture, 0.7 s after a
    press), a short flash when a press goes. */
 .eq-undo {

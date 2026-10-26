@@ -28,7 +28,7 @@ import {
 // REVERB AUT on or off at its lift (as the merged STAGE button's). The hub
 // runs the rule (PR 4): Live's stop lowers them after 2 s, its start
 // returns them, the hand wins. The faders show where they return (the
-// dashed mark), `AUT −10` and `RUKA`; nothing takes a fader's height. The
+// dashed mark), `AUTO −10` and `MAN`; nothing takes a fader's height. The
 // reverb faders are the `+REVERB` Tuners: Rev ST on band track 2 (Hand3 #),
 // Rev PA on track 3 (Hand4 #), in Live's order.
 
@@ -94,6 +94,21 @@ async function railSteps(since: number, ok: (steps: string[]) => boolean): Promi
 /** The hub's `reverb` steps since `since` (the test's clock: one runner clock with the hub's `ts`). */
 async function reverbSteps(since: number): Promise<string[]> {
   return (await hubEvents()).filter((r: any) => r.ev === "reverb" && r.ts >= since).map((r: any) => r.step);
+}
+
+/**
+ * The `AUTO −n` pill fits between its two levels (#141 C2: `AUTO` is one
+ * letter longer than `AUT`): its box (vertical text, rotated) lies under
+ * the return mark's line and over the cap.
+ */
+async function pillFits(scope: Locator, what: string) {
+  const pill = (await scope.getByTestId("aut-mark").locator(".fz-pill").boundingBox())!;
+  const ret = (await scope.getByTestId("aut-ret").boundingBox())!;
+  const cap = (await scope.getByTestId("fader-cap").boundingBox())!;
+  const top = ret.y + ret.height / 2;
+  console.log(`AUTO pill (${test.info().project.name}, ${what}): ${pill.height.toFixed(1)} px in ${(cap.y - top).toFixed(1)} px`);
+  expect(pill.y, `${what}: the pill under the return mark`).toBeGreaterThanOrEqual(top);
+  expect(pill.y + pill.height, `${what}: the pill over the cap`).toBeLessThanOrEqual(cap.y);
 }
 
 /** The button's second line reads `text`, and the button, its line and its label with the pill fit (118 × 44, #9). */
@@ -239,15 +254,16 @@ test.describe("REVERB and REVERB AUT", () => {
     await expect(button).not.toHaveClass(/\bon\b/);
     await expect(button).toHaveAttribute("data-low", "true");
     await expect(button).toHaveAttribute("data-aut", "off");
-    await fits(button, "ručne · −10 dB");
+    await fits(button, "MAN · −10 dB");
     await expect(button.getByTestId("btn-sub")).toHaveClass(/\blow\b/);
     for (const label of ["Rev ST", "Rev PA"]) {
       const s = strip(page, label);
       await expect(s.getByTestId("aut-span")).toHaveClass(/\bshown\b/);
       await expect(s.getByTestId("aut-ret")).toHaveClass(/\bshown\b/);
       await expect(s.getByTestId("aut-mark")).toHaveClass(/\bshown\b/);
-      await expect(s.getByTestId("aut-mark")).toHaveText("AUT −10");
+      await expect(s.getByTestId("aut-mark")).toHaveText("AUTO −10");
       await expect(s.getByTestId("hand-mark")).not.toHaveClass(/\bshown\b/);
+      await pillFits(s, label);
       await expect(s.getByTestId("strip-readout")).toHaveAttribute("data-aut", "low");
     }
     // The dashed mark at the song level; the cap 10 dB under it; the
@@ -280,34 +296,35 @@ test.describe("REVERB and REVERB AUT", () => {
     await live.call("band", "live_set", "start_playing");
     const button = await setUp(page);
     const sincePage = await pageNow(page);
-    await hold(button, "pusť — zapne AUT", live, true);
+    await hold(button, "release — AUTO on", live, true);
     await expect(button).toHaveAttribute("data-aut", "run");
-    await expect(button.getByTestId("aut-badge")).toHaveText("AUT");
-    await fits(button, "hrá · plný");
+    await expect(button.getByTestId("aut-badge")).toHaveText("AUTO");
+    await fits(button, "PLAY · normal");
     // A tap during the song: lowered until the next stop, AUT stays on
     // (outlined); the next tap returns them.
     await button.click();
     await until(() => settled(live, ST), tenDown(0.85), "Rev ST lowered by the tap");
     await expect(button).toHaveAttribute("data-aut", "held");
-    await fits(button, "ručne −10 · do zast.");
+    await fits(button, "MAN −10 · until STOP");
     await button.click();
     await until(() => settled(live, ST), (v) => v === 0.85, "Rev ST back by the tap");
     await until(() => settled(live, PA), (v) => v === 0.6, "Rev PA back by the tap");
     await expect(button).toHaveAttribute("data-aut", "run");
-    await fits(button, "hrá · plný");
+    await fits(button, "PLAY · normal");
 
     // Live stops: 2 s of the last chord's tail, then 10 dB down over 2 s.
     const since = Date.now();
     await live.call("band", "live_set", "stop_playing");
-    await fits(button, "stojí · plný");
-    await expect(button.getByTestId("btn-sub")).toHaveText("stojí · −10 dB", { timeout: 4000 });
+    await fits(button, "STOP · normal");
+    await expect(button.getByTestId("btn-sub")).toHaveText("STOP · −10 dB", { timeout: 4000 });
     await until(() => settled(live, ST), tenDown(0.85), "Rev ST lowered", 6000);
     await until(() => settled(live, PA), tenDown(0.6), "Rev PA lowered", 6000);
-    await fits(button, "stojí · −10 dB");
+    await fits(button, "STOP · −10 dB");
     await expect(button).toHaveAttribute("data-aut", "run");
-    await expect(strip(page, "Rev PA").getByTestId("aut-mark")).toHaveText("AUT −10");
+    await expect(strip(page, "Rev PA").getByTestId("aut-mark")).toHaveText("AUTO −10");
+    await pillFits(strip(page, "Rev PA"), "Rev PA by AUTO");
 
-    // The engineer takes Rev PA: the rule lets it go (RUKA), its return
+    // The engineer takes Rev PA: the rule lets it go (MAN), its return
     // mark goes, Rev ST stays held.
     const fader = strip(page, "Rev PA").getByTestId("fader");
     await dispatchPointer(fader, [
@@ -317,33 +334,33 @@ test.describe("REVERB and REVERB AUT", () => {
       { type: "pointerup", dy: 20 },
     ]);
     await expect(strip(page, "Rev PA").getByTestId("hand-mark")).toHaveClass(/\bshown\b/);
-    await expect(strip(page, "Rev PA").getByTestId("hand-mark")).toHaveText("RUKA");
+    await expect(strip(page, "Rev PA").getByTestId("hand-mark")).toHaveText("MAN");
     await expect(strip(page, "Rev PA").getByTestId("aut-ret")).not.toHaveClass(/\bshown\b/);
     await expect(strip(page, "Rev PA").getByTestId("aut-mark")).not.toHaveClass(/\bshown\b/);
     await expect(strip(page, "Rev PA").getByTestId("strip-readout")).toHaveAttribute("data-aut", "");
     await expect(strip(page, "Rev ST").getByTestId("aut-ret")).toHaveClass(/\bshown\b/);
     // The button names no fader in the hand (the owner's ruling on #130 of
     // 2026-10-21): the faders show it; the line stays REVERB's own.
-    await fits(button, "stojí · −10 dB");
+    await fits(button, "STOP · −10 dB");
     await expect(button).toHaveAttribute("data-aut", "run");
     const handLevel = await settled(live, PA);
 
     // Live plays: Rev ST back exactly, Rev PA stays where the hand left it,
-    // RUKA through the song (F30: let go until the next stop).
+    // MAN through the song (F30: let go until the next stop).
     await live.call("band", "live_set", "start_playing");
     await until(() => settled(live, ST), (v) => v === 0.85, "Rev ST back exactly");
     await page.waitForTimeout(800);
     expect(await settled(live, PA), "the hand wins").toBe(handLevel);
     await expect(strip(page, "Rev ST").getByTestId("aut-ret")).not.toHaveClass(/\bshown\b/);
     await expect(strip(page, "Rev PA").getByTestId("hand-mark")).toHaveClass(/\bshown\b/);
-    await fits(button, "hrá · plný");
+    await fits(button, "PLAY · normal");
 
     // A second hold turns it off at its lift.
-    await hold(button, "pusť — vypne AUT", live, false);
+    await hold(button, "release — AUTO off", live, false);
     await expect(button).toHaveAttribute("data-aut", "off");
     await expect(button.getByTestId("aut-badge")).toHaveCount(0);
     await expect(strip(page, "Rev PA").getByTestId("hand-mark")).toHaveClass(/\bshown\b/);
-    // The next stop ends RUKA, with AUT off too, and lowers nothing.
+    // The next stop ends MAN, with AUT off too, and lowers nothing.
     await live.call("band", "live_set", "stop_playing");
     await expect(strip(page, "Rev PA").getByTestId("hand-mark")).not.toHaveClass(/\bshown\b/);
     await expect(button.getByTestId("btn-sub")).toHaveText("");
@@ -380,21 +397,21 @@ test.describe("REVERB and REVERB AUT", () => {
     await expect(button).toHaveAttribute("data-aut", "run");
     await live.call("band", "live_set", "stop_playing");
     await until(() => settled(live, ST), tenDown(0.85), "lowered", 6000);
-    await fits(button, "stojí · −10 dB");
+    await fits(button, "STOP · −10 dB");
     // A tap back while Live stands: full until the start (outlined), back
     // exactly; a tap down again is the stop's lowering.
     await button.click();
     await until(() => settled(live, ST), (v) => v === 0.85, "back by the tap");
     await until(() => settled(live, PA), (v) => v === 0.6, "Rev PA back by the tap");
     await expect(button).toHaveAttribute("data-aut", "held");
-    await fits(button, "ručne plný · do štartu");
+    await fits(button, "MAN normal · to PLAY");
     await button.click();
     await until(() => settled(live, ST), tenDown(0.85), "lowered by the tap", 6000);
-    await fits(button, "stojí · −10 dB");
+    await fits(button, "STOP · −10 dB");
     await expect(button).toHaveAttribute("data-aut", "run");
     // AUT off while lowered: the faders stay, the lowering is a tap's.
     live.setHub("reverb_aut", false);
-    await fits(button, "ručne · −10 dB");
+    await fits(button, "MAN · −10 dB");
     await expect(button).toHaveAttribute("data-aut", "off");
     await page.waitForTimeout(600);
     expect(Math.abs(value2db(await settled(live, ST)) - (value2db(0.85) - 10))).toBeLessThan(DB_CLOSE);
@@ -405,7 +422,7 @@ test.describe("REVERB and REVERB AUT", () => {
     await expect(button).toHaveClass(/\bon\b/);
   });
 
-  test("the channel detail's fader shows REVERB's return mark, AUT −10 and RUKA, with no height", async ({ page }) => {
+  test("the channel detail's fader shows REVERB's return mark, AUTO −10 and MAN, with no height", async ({ page }) => {
     await live.set("band", ST, "value", 0.85);
     await live.set("band", PA, "value", 0.6);
     await setUp(page);
@@ -427,21 +444,22 @@ test.describe("REVERB and REVERB AUT", () => {
     const songLevel = await cap();
 
     // Lowered (a page's tap, here the test's client: the detail covers the
-    // rail): the return mark at the song level, AUT −10, the readout in the
+    // rail): the return mark at the song level, AUTO −10, the readout in the
     // rule's colour, no height.
     live.setHub("reverb_low", true);
     await until(() => settled(live, PA), tenDown(0.6), "Rev PA −10 dB");
     await expect(detail.getByTestId("aut-span")).toHaveClass(/\bshown\b/);
     await expect(detail.getByTestId("aut-ret")).toHaveClass(/\bshown\b/);
     await expect(detail.getByTestId("aut-mark")).toHaveClass(/\bshown\b/);
-    await expect(detail.getByTestId("aut-mark")).toHaveText("AUT −10");
+    await expect(detail.getByTestId("aut-mark")).toHaveText("AUTO −10");
+    await pillFits(detail, "the detail");
     await expect(detail.getByTestId("detail-readout")).toHaveAttribute("data-aut", "low");
     const ret = (await detail.getByTestId("aut-ret").boundingBox())!;
     expect(Math.abs(ret.y + ret.height / 2 - songLevel), "the return mark at the song level").toBeLessThan(2);
     expect(await cap(), "the cap under its return mark").toBeGreaterThan(songLevel + 10);
     expect((await fader.boundingBox())!.height, "no height").toBeCloseTo(travel, 0);
 
-    // Dragged in the detail: the rule lets it go, RUKA there and on the strip.
+    // Dragged in the detail: the rule lets it go, MAN there and on the strip.
     await dispatchPointer(fader, [
       { type: "pointerdown" },
       { type: "pointermove", dy: 0 },
@@ -450,7 +468,7 @@ test.describe("REVERB and REVERB AUT", () => {
     ]);
     await until(async () => live.reverb?.faders?.[1]?.hand, (v: boolean) => v === true, "the hub let Rev PA go");
     await expect(detail.getByTestId("hand-mark")).toHaveClass(/\bshown\b/);
-    await expect(detail.getByTestId("hand-mark")).toHaveText("RUKA");
+    await expect(detail.getByTestId("hand-mark")).toHaveText("MAN");
     await expect(detail.getByTestId("aut-ret")).not.toHaveClass(/\bshown\b/);
     await expect(detail.getByTestId("detail-readout")).toHaveAttribute("data-aut", "");
     expect((await fader.boundingBox())!.height, "no height").toBeCloseTo(travel, 0);
@@ -567,7 +585,7 @@ test.describe("REVERB and REVERB AUT", () => {
       { wait: 100 },
     ]);
     expect(press.snaps[0]).toMatchObject({ holding: "false", full: "false" });
-    expect(press.snaps[0].sub).not.toMatch(/drž|pusť/);
+    expect(press.snaps[0].sub).not.toMatch(/hold…|release —/);
     expect(press.snaps[1].full).toBe("false");
     await expect.poll(() => page.evaluate(() => (window as any).reverbFlashes)).toBe(2);
     await page.waitForTimeout(600);

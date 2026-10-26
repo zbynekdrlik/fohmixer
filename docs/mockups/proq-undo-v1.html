@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="sk">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
@@ -212,7 +212,7 @@ html, body {
 <div class="page">
   <div class="notes">
     <h1>Pro-Q 4 na tablete: veľké tlačidlo „vrátiť“ (návrh v1)</h1>
-    <div class="muted">Vyskúšaj priamo v tomto okne: potiahni prstom (myšou) bod pásma, potom stlač ↶ VRÁTIŤ. Obraz EQ je tu len nakreslená náhrada; skutočné drobné ↶ v Pro-Q je vľavo hore v jeho lište.</div>
+    <div class="muted">Vyskúšaj priamo v tomto okne: potiahni prstom (myšou) bod pásma, potom stlač ↶ UNDO. Obraz EQ je tu len nakreslená náhrada; skutočné drobné ↶ v Pro-Q je vľavo hore v jeho lište.</div>
   </div>
 
   <div class="label">Tablet (1194 × 834)</div>
@@ -234,11 +234,11 @@ html, body {
   <div class="notes">
     <h2>Ako to funguje</h2>
     <ul>
-      <li><b>↶ VRÁTIŤ</b> vráti poslednú zmenu v Pro-Q, presne ako jeho vlastná šípka ↶ vľavo hore. Tá je na tablete len asi 2 mm veľká; toto tlačidlo je veľké a stále na tom istom mieste v lište.</li>
+      <li><b>↶ UNDO</b> undoes the last change in Pro-Q, presne ako jeho vlastná šípka ↶ vľavo hore. Tá je na tablete len asi 2 mm veľká; toto tlačidlo je veľké a stále na tom istom mieste v lište.</li>
       <li>Každé stlačenie vráti jednu zmenu (ťah bodu, nové pásmo, zmenu gombíka…). Ďalšie stlačenie vráti tú predošlú.</li>
-      <li>Keď v Pro-Q nie je čo vrátiť, tlačidlo nič nestlačí a na chvíľu ukáže „Nie je čo vrátiť“.</li>
+      <li>Keď v Pro-Q nie je čo vrátiť, tlačidlo nič nestlačí a na chvíľu ukáže „Nothing to undo“.</li>
       <li>Kým máš prst na obraze EQ, tlačidlo nereaguje. Po stlačení je 0,7 s nedostupné, aby sa z dvoch rýchlych stlačení nestal dvojklik.</li>
-      <li>Hub pred každým ťuknutím pozrie do obrazu, či je šípka ↶ v Pro-Q naozaj na svojom mieste. Keby tam nebola (napr. iná verzia Pro-Q), neťukne nikam a ukáže „Späť sa v Pro-Q nenašlo — nič sa nestlačilo“.</li>
+      <li>Hub pred každým ťuknutím pozrie do obrazu, či je šípka ↶ v Pro-Q naozaj na svojom mieste. Keby tam nebola (napr. iná verzia Pro-Q), neťukne nikam a ukáže „Pro-Q's undo was not found — nothing was pressed“.</li>
       <li>Na telefóne na výšku je z tlačidla len veľká šípka ↶ (lišta je úzka).</li>
       <li>Zároveň sa opraví riadok v pomocníkovi (?) o podržaní prsta: podržanie už ponuku pásma neotvorí.</li>
     </ul>
@@ -330,10 +330,10 @@ function undo(f) {
     setTimeout(() => f.undo.classList.remove("flash"), 180);
     const last = history.pop();
     if (!last) {
-        toast("Nie je čo vrátiť");
+        toast("Nothing to undo");
     } else {
         bands[last.i] = last.before;
-        toast("Vrátené: posledná zmena v Pro-Q");
+        toast("Undone: last change in Pro-Q");
     }
     redraw();
 }
@@ -343,10 +343,10 @@ function makeFrame(id, w, h, bar) {
     dev.innerHTML = `
       <div class="screen">
         <div class="bar">
-          <button class="btn exit" type="button"><span class="long">← SPÄŤ NA KANÁL</span><span class="short-word">← KANÁL</span></button>
-          <div class="name"><span class="chip">Vox 1</span><span class="where">Pro-Q 4 · na tracku</span></div>
-          <button class="btn undo" type="button" aria-disabled="false"><span class="arrow">↶</span><span class="word">VRÁTIŤ</span></button>
-          <span class="mine">zamknuté pre teba</span>
+          <button class="btn exit" type="button"><span class="long">← BACK TO CHANNEL</span><span class="short-word">← CHANNEL</span></button>
+          <div class="name"><span class="chip">Vox 1</span><span class="where">Pro-Q 4 · on track</span></div>
+          <button class="btn undo" type="button" aria-disabled="false"><span class="arrow">↶</span><span class="word">UNDO</span></button>
+          <span class="mine">locked to you</span>
           <button class="btn help" type="button">?</button>
         </div>
         <div class="area"><div class="toast"></div></div>

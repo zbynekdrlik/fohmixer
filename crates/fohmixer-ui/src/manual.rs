@@ -1,5 +1,5 @@
 //! The tag manual (#68, spec D16): one page, `znacky.html`, served by the
-//! hub (the tray opens it) and shown by the column's ZNAČKY chip in an
+//! hub (the tray opens it) and shown by the column's TAGS chip in an
 //! overlay. The hub sends every page with `X-Frame-Options: DENY`, so the
 //! overlay fetches the file and shows its `<main>` with its `<style>`.
 
@@ -65,10 +65,10 @@ mod tests {
         assert_eq!(main.matches("<main").count(), 1, "{main}");
         assert!(main.ends_with("</main>"), "{main}");
         assert!(main.contains("+G:VOCALS:2"), "the syntax");
-        assert!(main.contains("KONFLIKT"), "the problems");
+        assert!(main.contains("CONFLICT"), "the problems");
         // Spec §9's "postup" (PR #150 review K3): one singer off.
         assert!(
-            main.contains("Postup: vypnúť jedného speváka"),
+            main.contains("Procedure: switch one singer off"),
             "the procedure"
         );
         assert!(main.contains("<code>OFF</code>") && main.contains("<code>ON</code>"));

@@ -1,6 +1,6 @@
 <!doctype html>
 <!-- fohmixer #63: the phone's control column behind a ☰ (the owner's request of 2026-10-08), built on the approved surface-column-v3 (invented track names); not part of the app. -->
-<html lang="sk">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -556,7 +556,7 @@ function overlayView(d, lines) {
     col.classList.add("overlay");
     col.style.width = d.col + "px";
     col.style.left = (d.w - d.col) / 2 + "px";
-    const close = el("button", "close", "✕ ZAVRIEŤ");
+    const close = el("button", "close", "✕ CLOSE");
     close.addEventListener("pointerdown", () => { state.open = false; render(); });
     col.prepend(close);
     const shade = el("div", "shade");

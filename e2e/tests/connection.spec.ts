@@ -168,7 +168,7 @@ test.describe("A reconnect", () => {
       ]);
       const looks = await watchedLooks(page);
       expect(press.snaps[0].holding).toBe("false");
-      expect(press.snaps[0].sub).not.toMatch(/drž|pusť/);
+      expect(press.snaps[0].sub).not.toMatch(/hold…|release —/);
       const flashes = flashStarts(looks).map((t) => t - press.start);
       expect(flashes, "one refusal flash, at the 1 s mark, before the lift").toHaveLength(1);
       expect(flashes[0]).toBeGreaterThanOrEqual(1000);
@@ -205,7 +205,7 @@ test.describe("A reconnect", () => {
       // Held past the 1 s mark: full, nothing sent (read in the page's
       // timer order).
       const press = await dispatchSnapped(stage, [{ type: "pointerdown" }, { wait: 1300 }, { snap: true }]);
-      expect(press.snaps[0]).toMatchObject({ holding: "true", full: "true", sub: "pusť — zapne AUT", failed: false });
+      expect(press.snaps[0]).toMatchObject({ holding: "true", full: "true", sub: "release — AUTO on", failed: false });
       expect(live.hub.get("stage_aut")).toBe(false);
       // The finger stays down; the socket drops and the page reconnects,
       // and the new socket has no STAGE AUT from the hub: the full press can

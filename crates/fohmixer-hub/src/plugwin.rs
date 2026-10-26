@@ -2114,7 +2114,7 @@ impl Worker {
         // A cropped editor's card gets its whole picture now, before the
         // guard moves it (PR L review: the edits at 2× and more were only
         // ever in parts, so the card kept the picture from before them; and
-        // the whole frame after CELÝ EQ may be the one just forgotten).
+        // the whole frame after FULL EQ may be the one just forgotten).
         // Counted as the worker's frames are (its last rate holds it). One
         // that was whole all along sends nothing more: under 2× nothing
         // edits it, so the frame just forgotten showed no edit.

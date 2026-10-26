@@ -33,7 +33,7 @@
 //!
 //! A reverb fader (#130, D18) carries REVERB's marks (`ReverbMarks`): while
 //! the hub's rule holds it low, the lowered part of its groove, its return
-//! level and `AUT −n`; once the engineer took it, `RUKA`.
+//! level and `AUTO −n`; once the engineer took it, `MAN`.
 
 use fohmixer_proto::client::set_key;
 use leptos::html;
@@ -195,8 +195,8 @@ fn vca_intent(views: &[(State, Option<f64>)]) -> (State, Option<f64>) {
 /// The REVERB rule's marks on a reverb fader (#130, D18; the approved
 /// mockup reverb-link-v2, screen 1, states 3 and 4): while the rule holds
 /// it low, the lowered part of its groove, a dashed return mark at its song
-/// level (`--r`) and `AUT −n` (the live difference, `aut_text`); once the
-/// engineer took it, `RUKA`. Each is hidden unless `.shown`. No touch, no
+/// level (`--r`) and `AUTO −n` (the live difference, `aut_text`); once the
+/// engineer took it, `MAN`. Each is hidden unless `.shown`. No touch, no
 /// height: they sit in the fader and read its `--p` and `--x`.
 /// `volume_key` is the fader's volume's write key (the hub's
 /// `ReverbFader.key`), `state` its slot, `law` the strip's volume law.
@@ -235,7 +235,7 @@ pub fn ReverbMarks(volume_key: String, state: RwSignal<Slot>, law: VolumeLaw) ->
             <span class="fz-pill">{text}</span>
         </div>
         <div class="fz-mark hand" data-testid="hand-mark" class:shown=hand>
-            <span class="fz-pill">"RUKA"</span>
+            <span class="fz-pill">"MAN"</span>
         </div>
     }
 }

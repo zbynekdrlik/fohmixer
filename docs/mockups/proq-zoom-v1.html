@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="sk">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
@@ -246,17 +246,17 @@ html, body {
     <div class="tablet" id="tablet">
       <div class="screen">
         <div class="bar">
-          <button class="btn exit" type="button">← SPÄŤ NA KANÁL</button>
+          <button class="btn exit" type="button">← BACK TO CHANNEL</button>
           <div class="name">
             <span class="chip">Vox 1</span>
-            <span class="where">Pro-Q 4 · na tracku</span>
+            <span class="where">Pro-Q 4 · on track</span>
           </div>
           <div class="zoom" id="zoom" hidden>
             <div class="overview" id="overview"><svg id="mini" width="67" height="40" viewBox="0 0 1349 809" preserveAspectRatio="none"></svg><div class="view" id="view"></div></div>
-            <span class="factor" id="factor">1,0×</span>
-            <button class="btn whole" id="whole" type="button">CELÝ EQ</button>
+            <span class="factor" id="factor">1.0×</span>
+            <button class="btn whole" id="whole" type="button">FULL EQ</button>
           </div>
-          <span class="mine">zamknuté pre teba</span>
+          <span class="mine">locked to you</span>
           <button class="btn help" id="help" type="button">?</button>
         </div>
         <div class="area" id="area">
@@ -267,10 +267,10 @@ html, body {
           <div class="ring pinch" id="ring2"></div>
           <div class="legend" id="legend" hidden>
             <h3>OVLÁDANIE</h3>
-            <p>Jeden prst: ako myš v Pro-Q (ťuk = klik, ťah = ťah, dvojťuk = dvojklik).</p>
-            <p class="new">Dva prsty od seba / k sebe: priblížiť / oddialiť (1× až 4×).</p>
-            <p class="new">Dva prsty spolu: posúvať priblížený obraz.</p>
-            <p class="new">CELÝ EQ: späť na celý obraz.</p>
+            <p>Jeden prst: ako myš v Pro-Q (ťuk = klik, ťah = ťah, double-tap = dvojklik).</p>
+            <p class="new">Dva prsty od seba / k sebe: zoom in / out (1× to 4×).</p>
+            <p class="new">Dva prsty spolu: pan the zoomed image.</p>
+            <p class="new">FULL EQ: back to the whole image.</p>
             <p>Pri priblížení obraz na PC zostáva rovnaký: mení sa len pohľad na tablete.</p>
           </div>
         </div>
@@ -286,7 +286,7 @@ html, body {
       <li><b>Dva prsty</b> od seba priblížia obraz okolo miesta medzi prstami (až 4×), k sebe ho oddialia. Ťahanie dvoma prstami posúva priblížený obraz.</li>
       <li><b>Jeden prst</b> ide do Pro-Q ako doteraz, vždy na to miesto obrazu, kde ho vidíš. Pri priblížení sú body pásiem väčšie: pri 3× má bod asi 6 mm namiesto 2 mm.</li>
       <li>Aby priblíženie neklikalo do Pro-Q, prvý prst sa do Pro-Q pošle až po 0,12 s alebo keď sa pohne. Ak medzitým pribudne druhý prst, je to priblíženie a do Pro-Q nejde nič.</li>
-      <li>Pri priblížení sa v hornej lište ukáže <b>malý náhľad</b> s rámikom (ktorá časť EQ je vidieť), <b>koľkokrát</b> je obraz zväčšený a tlačidlo <b>CELÝ EQ</b>. Pri celom obraze tam nie je nič nové.</li>
+      <li>Pri priblížení sa v hornej lište ukáže <b>malý náhľad</b> s rámikom (ktorá časť EQ je vidieť), <b>koľkokrát</b> je obraz zväčšený a tlačidlo <b>FULL EQ</b>. Pri celom obraze tam nie je nič nové.</li>
       <li>Priblíženie je len na tablete: okno Pro-Q na PC sa nemení a druhý zvukár ani PC ho nevidia. Po zatvorení a novom otvorení EQ sa začína znova od celého obrazu.</li>
       <li>Na PC (myšou) v tomto návrhu približuje koliesko; na tablete ho netreba.</li>
     </ul>

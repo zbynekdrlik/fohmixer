@@ -5,11 +5,11 @@
 //! a tap asks the hub for the reverb faders 10 dB down or back, a 1 s hold
 //! turns REVERB AUT on or off at its lift (the press is `behave::rail`'s,
 //! as the merged STAGE button's). It is lit at the song level and dark
-//! while lowered; with REVERB AUT on it wears the `AUT` pill, outlined
+//! while lowered; with REVERB AUT on it wears the `AUTO` pill, outlined
 //! while a tap overrides the rule until the next stop or start, and a
 //! second line says in plain words what the rule does now. A reverb fader
-//! the rule holds low shows where it returns and `AUT −n` (the live
-//! difference); one the engineer took shows `RUKA` (screen 1, states 3
+//! the rule holds low shows where it returns and `AUTO −n` (the live
+//! difference); one the engineer took shows `MAN` (screen 1, states 3
 //! and 4). Everything here reads the hub's `ReverbState`.
 
 use fohmixer_proto::client::{ReverbFader, ReverbState};
@@ -45,7 +45,7 @@ pub fn tap_step(value: Option<bool>) -> &'static str {
 }
 
 /// The REVERB button (D18; mockup screen 3): lit at the song level, dark
-/// while lowered; the `AUT` pill outlined while a tap overrides the rule; a
+/// while lowered; the `AUTO` pill outlined while a tap overrides the rule; a
 /// press's fill (`behave::rail::fill_of`) shows its own line.
 pub fn reverb_look(state: Option<&ReverbState>, fill: Fill) -> RailLook {
     let Some(s) = state else {
@@ -90,7 +90,7 @@ fn overridden(s: &ReverbState, lowered: bool) -> bool {
     }
 }
 
-/// Every reverb fader taken by hand (`RUKA`), none brought up by a tap.
+/// Every reverb fader taken by hand (`MAN`), none brought up by a tap.
 fn all_in_hand(faders: &[ReverbFader]) -> bool {
     !faders.is_empty() && faders.iter().all(|f| f.hand)
 }
@@ -98,36 +98,36 @@ fn all_in_hand(faders: &[ReverbFader]) -> bool {
 /// What REVERB does now, in plain words; none while it says nothing (AUT
 /// off at the song level, or the transport not yet heard). It names no
 /// fader in the hand (the owner's ruling on #130 of 2026-10-21): the faders
-/// show that themselves (`RUKA`, `AUT −10`). With every fader in the hand
+/// show that themselves (`MAN`, `AUTO −10`). With every fader in the hand
 /// while Live stands, nothing is held and no tap overrides the rule: its
-/// own `stojí · plný` (PR #139 review I3), never the tap's line.
+/// own `STOP · normal` (PR #139 review I3), never the tap's line.
 fn reverb_sub(s: &ReverbState, lowered: bool) -> Option<String> {
     if !s.aut {
-        return lowered.then(|| "ručne · −10 dB".to_string());
+        return lowered.then(|| "MAN · −10 dB".to_string());
     }
     let playing = s.playing?;
     let line = match (lowered, playing, s.waiting) {
-        (false, true, _) => "hrá · plný",
-        (false, false, true) => "stojí · plný",
-        (false, false, false) if all_in_hand(&s.faders) => "stojí · plný",
-        (false, false, false) => "ručne plný · do štartu",
-        (true, true, _) => "ručne −10 · do zast.",
-        (true, false, _) => "stojí · −10 dB",
+        (false, true, _) => "PLAY · normal",
+        (false, false, true) => "STOP · normal",
+        (false, false, false) if all_in_hand(&s.faders) => "STOP · normal",
+        (false, false, false) => "MAN normal · to PLAY",
+        (true, true, _) => "MAN −10 · until STOP",
+        (true, false, _) => "STOP · −10 dB",
     };
     Some(line.to_string())
 }
 
 /// The pill beside a held fader: the live difference to its return level,
-/// in whole dB (`AUT −10`); `AUT −∞` for a fader at −∞, and `AUT` alone
+/// in whole dB (`AUTO −10`); `AUTO −∞` for a fader at −∞, and `AUTO` alone
 /// under 1 dB.
 pub fn aut_text(back: f64, live: f64) -> String {
     let n = (value2db(back) - value2db(live)).round();
     if n == f64::INFINITY {
-        "AUT −∞".to_string()
+        "AUTO −∞".to_string()
     } else if n >= 1.0 {
-        format!("AUT −{n:.0}")
+        format!("AUTO −{n:.0}")
     } else {
-        "AUT".to_string()
+        "AUTO".to_string()
     }
 }
 
@@ -139,7 +139,7 @@ pub enum Mark {
     Aut {
         back: f64,
     },
-    /// Let go (`RUKA`).
+    /// Let go (`MAN`).
     Hand,
 }
 
@@ -261,7 +261,7 @@ mod tests {
             RailLook {
                 lit: false,
                 aut: Aut::Off,
-                sub: Some("ručne · −10 dB".into()),
+                sub: Some("MAN · −10 dB".into()),
                 low: true,
                 mixed: false,
             }
@@ -274,7 +274,7 @@ mod tests {
             RailLook {
                 lit: true,
                 aut: Aut::Run,
-                sub: Some("hrá · plný".into()),
+                sub: Some("PLAY · normal".into()),
                 low: false,
                 mixed: false,
             }
@@ -284,7 +284,7 @@ mod tests {
             RailLook {
                 lit: true,
                 aut: Aut::Run,
-                sub: Some("stojí · plný".into()),
+                sub: Some("STOP · normal".into()),
                 low: false,
                 mixed: false,
             }
@@ -294,7 +294,7 @@ mod tests {
             RailLook {
                 lit: false,
                 aut: Aut::Run,
-                sub: Some("stojí · −10 dB".into()),
+                sub: Some("STOP · −10 dB".into()),
                 low: true,
                 mixed: false,
             }
@@ -305,7 +305,7 @@ mod tests {
             RailLook {
                 lit: false,
                 aut: Aut::Held,
-                sub: Some("ručne −10 · do zast.".into()),
+                sub: Some("MAN −10 · until STOP".into()),
                 low: true,
                 mixed: false,
             }
@@ -315,7 +315,7 @@ mod tests {
             RailLook {
                 lit: true,
                 aut: Aut::Held,
-                sub: Some("ručne plný · do štartu".into()),
+                sub: Some("MAN normal · to PLAY".into()),
                 low: false,
                 mixed: false,
             }
@@ -361,17 +361,14 @@ mod tests {
         let off = with(false, None, None, false);
         assert_eq!(
             line(&playing, Fill::Filling).as_deref(),
-            Some("drž… vypína AUT")
+            Some("hold… AUTO off")
         );
-        assert_eq!(
-            line(&off, Fill::Filling).as_deref(),
-            Some("drž… zapína AUT")
-        );
+        assert_eq!(line(&off, Fill::Filling).as_deref(), Some("hold… AUTO on"));
         assert_eq!(
             line(&playing, Fill::Full).as_deref(),
-            Some("pusť — vypne AUT")
+            Some("release — AUTO off")
         );
-        assert_eq!(line(&off, Fill::Full).as_deref(), Some("pusť — zapne AUT"));
+        assert_eq!(line(&off, Fill::Full).as_deref(), Some("release — AUTO on"));
         // The light, the pill and the line's colour stay what they were.
         let lowered = with(true, Some(Low::Tap), Some(true), false);
         let held = reverb_look(Some(&lowered), Fill::Full);
@@ -386,19 +383,19 @@ mod tests {
     #[test]
     fn the_button_names_no_fader_in_the_hand() {
         // The owner's ruling on #130 of 2026-10-21: the faders show the
-        // hand (RUKA) and the lowering (AUT −10) themselves, so the line is
+        // hand (MAN) and the lowering (AUTO −10) themselves, so the line is
         // REVERB's own: Rev ST held lowered, Rev PA taken by hand.
         let mut s = with(true, Some(Low::Stop), Some(false), false);
         s.faders[1].back = None;
         s.faders[1].hand = true;
         let one = look(&s);
-        assert_eq!(one.sub.as_deref(), Some("stojí · −10 dB"));
+        assert_eq!(one.sub.as_deref(), Some("STOP · −10 dB"));
         assert_eq!((one.aut, one.lit, one.low), (Aut::Run, false, true));
         // While Live plays the tap's override, the same with a hand.
         let mut tap = with(true, Some(Low::Tap), Some(true), false);
         tap.faders[1].back = None;
         tap.faders[1].hand = true;
-        assert_eq!(look(&tap).sub.as_deref(), Some("ručne −10 · do zast."));
+        assert_eq!(look(&tap).sub.as_deref(), Some("MAN −10 · until STOP"));
     }
 
     #[test]
@@ -407,7 +404,7 @@ mod tests {
         // fader taken by hand, no tap, so the pill runs (no tap overrides
         // the rule) and the line is REVERB's own state with nothing held,
         // naming no hand (the owner's ruling on #130 of 2026-10-21; PR #139
-        // review I3: never the tap override's `ručne plný · do štartu`).
+        // review I3: never the tap override's `MAN normal · to PLAY`).
         let mut s = with(true, None, Some(false), false);
         s.faders[0].hand = true;
         s.faders[1].hand = true;
@@ -416,7 +413,7 @@ mod tests {
             RailLook {
                 lit: true,
                 aut: Aut::Run,
-                sub: Some("stojí · plný".into()),
+                sub: Some("STOP · normal".into()),
                 low: false,
                 mixed: false,
             }
@@ -427,20 +424,20 @@ mod tests {
         let wait = look(&waiting);
         assert_eq!(
             (wait.aut, wait.sub.as_deref()),
-            (Aut::Run, Some("stojí · plný"))
+            (Aut::Run, Some("STOP · normal"))
         );
         let mut playing = with(true, None, Some(true), false);
         playing.faders[1].hand = true;
         let play = look(&playing);
         assert_eq!(
             (play.aut, play.sub.as_deref()),
-            (Aut::Run, Some("hrá · plný"))
+            (Aut::Run, Some("PLAY · normal"))
         );
         // AUT off: a hand changes nothing on the button.
         let mut manual = with(false, Some(Low::Tap), Some(false), false);
         manual.faders[1].back = None;
         manual.faders[1].hand = true;
-        assert_eq!(look(&manual).sub.as_deref(), Some("ručne · −10 dB"));
+        assert_eq!(look(&manual).sub.as_deref(), Some("MAN · −10 dB"));
         // AUT off, every fader in the hand at the song level: no line.
         let mut idle = with(false, None, Some(false), false);
         idle.faders[0].hand = true;
@@ -453,7 +450,7 @@ mod tests {
         // REVERB AUT on, Live stopped, both lowered; Rev PA taken by hand,
         // then a tap back returned Rev ST (the hand stays until the next
         // stop): the tap's override until the start, outlined (F30); Rev
-        // PA's own fader shows RUKA (#130 PR 5 re-review N1, the main
+        // PA's own fader shows MAN (#130 PR 5 re-review N1, the main
         // session's ruling).
         let mut s = with(true, None, Some(false), false);
         s.faders[1].hand = true;
@@ -462,7 +459,7 @@ mod tests {
             RailLook {
                 lit: true,
                 aut: Aut::Held,
-                sub: Some("ručne plný · do štartu".into()),
+                sub: Some("MAN normal · to PLAY".into()),
                 low: false,
                 mixed: false,
             }
@@ -475,7 +472,7 @@ mod tests {
         let empty = look(&none);
         assert_eq!(
             (empty.aut, empty.sub.as_deref()),
-            (Aut::Held, Some("ručne plný · do štartu"))
+            (Aut::Held, Some("MAN normal · to PLAY"))
         );
     }
 
@@ -495,14 +492,14 @@ mod tests {
         // A hand wins over a return level the state may still carry.
         h.faders[0].hand = true;
         assert_eq!(mark_of(Some(&h), ST), Mark::Hand);
-        assert_eq!(aut_text(0.85, volume_of(-10.0)), "AUT −10");
-        assert_eq!(aut_text(0.85, 0.85), "AUT");
-        assert_eq!(aut_text(0.85, volume_of(-0.6)), "AUT −1");
-        assert_eq!(aut_text(0.85, volume_of(-0.4)), "AUT");
-        assert_eq!(aut_text(0.6, volume_of(-20.0)), "AUT −10");
-        assert_eq!(aut_text(0.85, 0.0), "AUT −∞");
-        assert_eq!(aut_text(0.0, 0.0), "AUT");
-        assert_eq!(aut_text(0.6, 0.85), "AUT", "above its return level");
+        assert_eq!(aut_text(0.85, volume_of(-10.0)), "AUTO −10");
+        assert_eq!(aut_text(0.85, 0.85), "AUTO");
+        assert_eq!(aut_text(0.85, volume_of(-0.6)), "AUTO −1");
+        assert_eq!(aut_text(0.85, volume_of(-0.4)), "AUTO");
+        assert_eq!(aut_text(0.6, volume_of(-20.0)), "AUTO −10");
+        assert_eq!(aut_text(0.85, 0.0), "AUTO −∞");
+        assert_eq!(aut_text(0.0, 0.0), "AUTO");
+        assert_eq!(aut_text(0.6, 0.85), "AUTO", "above its return level");
     }
 
     #[test]

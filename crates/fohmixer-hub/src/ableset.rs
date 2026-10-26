@@ -209,7 +209,7 @@ pub const LOCK_POLICY: &str = "default-src 'none'; script-src 'self'";
 ///   policy and the frame's sandbox. A refresh is a navigation, no fetch:
 ///   the policy's `default-src` covers the fetch directives only (CSP 3's
 ///   navigation directives are `form-action` and `frame-ancestors`).
-pub const LOCK_PAGE: &str = "<!doctype html><html lang=\"sk\"><meta charset=\"utf-8\">\
+pub const LOCK_PAGE: &str = "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">\
     <meta name=\"color-scheme\" content=\"dark\">\
     <meta http-equiv=\"refresh\" content=\"3;url=/.fohmixer/locked?failed=script\">\
     <title>AbleSet</title><script src=\"/.fohmixer/locked.js\"></script></html>";
@@ -1667,10 +1667,10 @@ pub fn down_answer(dest: Option<&str>, timed_out: bool) -> Response {
     if !matches!(dest, Some("document" | "iframe")) {
         return crate::auth::error_response(status, code, "AbleSet on the PC does not answer");
     }
-    let page = "<!doctype html><html lang=\"sk\"><meta charset=\"utf-8\">\
+    let page = "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">\
         <meta http-equiv=\"refresh\" content=\"5\"><title>AbleSet</title>\
         <style>body{font:18px sans-serif;margin:2em}</style>\
-        <p>AbleSet na PC neodpovedá. Skúšam znova o 5 s.</p></html>";
+        <p>AbleSet on the PC is not answering. Retrying in 5 s.</p></html>";
     (
         status,
         [

@@ -9,7 +9,7 @@
 //! is lit in the former toggle's orange while every singer tunes, dark
 //! while none does, and mixed (dark, an orange ring, half its light) while
 //! some do and some do not (off by hand, a mismatch). With AUT on it wears
-//! the `AUT` pill, and its second line says the state and the key:
+//! the `AUTO` pill, and its second line says the state and the key:
 //! `off · F`, `stopped · F`, `tuning · F`, `no song`, `no key`,
 //! `checking · F`, `tuning · F · 1 off`, `tuning · F · 1 !`. A singer whose
 //! key does not read back, or a problem in the song map, shows the yellow
@@ -407,6 +407,22 @@ pub fn panel_place(anchor: Anchor, view_w: f64, view_h: f64, height: f64) -> Pla
 /// can move it up or above the button.
 pub fn natural_height(scroll: f64, offset: f64, client: f64) -> f64 {
     scroll + (offset - client)
+}
+
+/// The panel's style (#140): its placement, and hidden until its natural
+/// height is measured (`height` none), so it never paints a frame at the
+/// placement for height 0 (on a phone: below the button, before it moves
+/// above).
+pub fn panel_style(place: Place, height: Option<f64>) -> String {
+    let hidden = if height.is_some() {
+        ""
+    } else {
+        "visibility:hidden;"
+    };
+    format!(
+        "--tp-left:{}px;--tp-top:{}px;--tp-max:{}px;{hidden}",
+        place.left, place.top, place.max_h
+    )
 }
 
 /// Whether a down closes the open panel and is taken for that alone (PR
@@ -975,7 +991,7 @@ mod tests {
             panel_foot(&s),
             [
                 "Song map: 165 songs with a key, 8 key changes, 1 problem.".to_string(),
-                "Live: F Major. Hold AUTOTUNE 1 s: AUT on/off.".to_string(),
+                "Live: F Major. Hold AUTOTUNE 1 s: AUTO on/off.".to_string(),
             ]
         );
         s.map_keyed = 1;
@@ -986,7 +1002,7 @@ mod tests {
             panel_foot(&s),
             [
                 "Song map: 1 song with a key, 1 key change, 0 problems.".to_string(),
-                "Live: —. Hold AUTOTUNE 1 s: AUT on/off.".to_string(),
+                "Live: —. Hold AUTOTUNE 1 s: AUTO on/off.".to_string(),
             ]
         );
         s.map_keyed = 0;
@@ -1107,6 +1123,29 @@ mod tests {
         // box its max height caps at 150 px, 1 px borders.
         assert_eq!(natural_height(300.0, 152.0, 150.0), 302.0);
         assert_eq!(natural_height(120.0, 122.0, 120.0), 122.0);
+    }
+
+    #[test]
+    fn the_panel_is_hidden_until_its_height_is_measured() {
+        // #140 (carried nit): no frame at the placement for height 0.
+        let place = Place {
+            left: 140.0,
+            top: 300.5,
+            max_h: 220.0,
+        };
+        assert_eq!(
+            panel_style(place, None),
+            "--tp-left:140px;--tp-top:300.5px;--tp-max:220px;visibility:hidden;"
+        );
+        assert_eq!(
+            panel_style(place, Some(180.0)),
+            "--tp-left:140px;--tp-top:300.5px;--tp-max:220px;"
+        );
+        // A measured height of 0 (an empty panel) is still measured.
+        assert_eq!(
+            panel_style(place, Some(0.0)),
+            "--tp-left:140px;--tp-top:300.5px;--tp-max:220px;"
+        );
     }
 
     #[test]

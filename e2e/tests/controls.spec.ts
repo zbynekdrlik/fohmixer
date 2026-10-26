@@ -170,33 +170,33 @@ test.describe("The merged STAGE button (#104, D18)", () => {
       { wait: 1000 },
       { snap: true },
     ]);
-    expect(on.snaps[0]).toMatchObject({ holding: "true", full: "false", sub: "drž… zapína AUT" });
-    expect(on.snaps[1]).toMatchObject({ holding: "true", full: "true", sub: "pusť — zapne AUT" });
+    expect(on.snaps[0]).toMatchObject({ holding: "true", full: "false", sub: "hold… AUTO on" });
+    expect(on.snaps[1]).toMatchObject({ holding: "true", full: "true", sub: "release — AUTO on" });
     expect(await button.locator(".hold").evaluate((el) => getComputedStyle(el).transitionDuration)).toBe("1s");
     expect(live.hub.get("stage_aut")).toBe(false);
     expect(await live.get("band", mics, "mute")).toBe(false);
     await dispatchPointer(button, [{ type: "pointerup" }]);
     await until(async () => live.hub.get("stage_aut"), (v) => v === true, "STAGE AUT on");
     await expect(button).toHaveAttribute("data-aut", "run");
-    await expect(button.getByTestId("aut-badge")).toHaveText("AUT");
+    await expect(button.getByTestId("aut-badge")).toHaveText("AUTO");
     await expect(button).toHaveAttribute("data-holding", "false");
     expect(await live.get("band", mics, "mute")).toBe(false);
-    await expect(button.getByTestId("btn-sub")).toHaveText("stojí · zapnuté");
+    await expect(button.getByTestId("btn-sub")).toHaveText("STOP · open");
 
     // The rule: playing → muted, stopped → live.
     await live.call("band", "live_set", "start_playing");
     await until(() => live.get("band", mics, "mute"), (v) => v === true, "muted while playing");
-    await expect(button.getByTestId("btn-sub")).toHaveText("hrá · stíšené");
+    await expect(button.getByTestId("btn-sub")).toHaveText("PLAY · muted");
     await expect(button).toHaveAttribute("data-aut", "run");
     await expect(button).not.toHaveClass(/\bon\b/);
     // A tap during the song overrides it until the next stop: outlined AUT.
     await button.click();
     await until(() => live.get("band", mics, "mute"), (v) => v === false, "live by hand during the song");
     await expect(button).toHaveAttribute("data-aut", "held");
-    await expect(button.getByTestId("btn-sub")).toHaveText("ručne do zastavenia");
+    await expect(button.getByTestId("btn-sub")).toHaveText("MAN · until STOP");
     await live.call("band", "live_set", "stop_playing");
     await expect(button).toHaveAttribute("data-aut", "run");
-    await expect(button.getByTestId("btn-sub")).toHaveText("stojí · zapnuté");
+    await expect(button.getByTestId("btn-sub")).toHaveText("STOP · open");
     expect(await live.get("band", mics, "mute")).toBe(false);
 
     // The page's steps in its flight recorder.
@@ -213,7 +213,7 @@ test.describe("The merged STAGE button (#104, D18)", () => {
     const button = page.getByTestId("stage-mics");
     await ready(button);
     await expect(button).toHaveAttribute("data-aut", "run");
-    await expect(button.getByTestId("btn-sub")).toHaveText("stojí · zapnuté");
+    await expect(button.getByTestId("btn-sub")).toHaveText("STOP · open");
 
     // A slide past 10 px ends the press: no hold, no tap.
     await dispatchPointer(button, [
@@ -246,8 +246,8 @@ test.describe("The merged STAGE button (#104, D18)", () => {
       { wait: 1000 },
       { snap: true },
     ]);
-    expect(off.snaps[0]).toMatchObject({ holding: "true", full: "false", sub: "drž… vypína AUT" });
-    expect(off.snaps[1]).toMatchObject({ holding: "true", full: "true", sub: "pusť — vypne AUT" });
+    expect(off.snaps[0]).toMatchObject({ holding: "true", full: "false", sub: "hold… AUTO off" });
+    expect(off.snaps[1]).toMatchObject({ holding: "true", full: "true", sub: "release — AUTO off" });
     expect(live.hub.get("stage_aut")).toBe(true);
     await dispatchPointer(button, [{ type: "pointerup" }]);
     await until(async () => live.hub.get("stage_aut"), (v) => v === false, "STAGE AUT off");
@@ -311,7 +311,7 @@ test.describe("The merged STAGE button (#104, D18)", () => {
       await dispatchPointer(button, [{ type: "pointerdown" }, { wait: 1200 }], 21);
       await expect(button).toHaveAttribute("data-full", "true");
       await expect(button).toHaveAttribute("data-holding", "true");
-      await expect(button.getByTestId("btn-sub")).toHaveText("pusť — zapne AUT");
+      await expect(button.getByTestId("btn-sub")).toHaveText("release — AUTO on");
       expect(live.hub.get("stage_aut")).toBe(false);
       expect(await live.get("band", mics, "mute")).toBe(false);
       expect(await railSteps(since, (s) => s.includes("full"))).toEqual(["press", "full"]);
@@ -345,7 +345,7 @@ test.describe("The merged STAGE button (#104, D18)", () => {
     // On: full at 1 s, unchanged until the lift (about 1.3 s).
     await dispatchPointer(button, [{ type: "pointerdown" }, { wait: 1100 }]);
     await expect(button).toHaveAttribute("data-full", "true");
-    await expect(sub).toHaveText("pusť — zapne AUT");
+    await expect(sub).toHaveText("release — AUTO on");
     await page.waitForTimeout(200);
     expect(live.hub.get("stage_aut"), "nothing before the lift").toBe(false);
     await dispatchPointer(button, [{ type: "pointerup" }]);
@@ -355,7 +355,7 @@ test.describe("The merged STAGE button (#104, D18)", () => {
     // Off the same way.
     await dispatchPointer(button, [{ type: "pointerdown" }, { wait: 1100 }]);
     await expect(button).toHaveAttribute("data-full", "true");
-    await expect(sub).toHaveText("pusť — vypne AUT");
+    await expect(sub).toHaveText("release — AUTO off");
     await page.waitForTimeout(200);
     expect(live.hub.get("stage_aut"), "nothing before the lift").toBe(true);
     await dispatchPointer(button, [{ type: "pointerup" }]);
@@ -388,24 +388,24 @@ test.describe("The merged STAGE button (#104, D18)", () => {
         const row = await button.locator(".btn-row").evaluate((el) => [el.scrollWidth, el.clientWidth]);
         expect(row[0], `its label and pill side by side with "${text}"`).toBeLessThanOrEqual(row[1]);
       };
-      await fits("stojí · zapnuté", "run");
+      await fits("STOP · open", "run");
       // A tap mutes the mics while Live stands: the override until the start.
       await button.click();
       await until(() => live.get("band", mics, "mute"), (v) => v === true, "muted by the tap");
-      await fits("ručne do štartu", "held");
+      await fits("MAN · until PLAY", "held");
       await live.call("band", "live_set", "start_playing");
-      await fits("hrá · stíšené", "run");
+      await fits("PLAY · muted", "run");
       // A tap opens them during the song: the override until the stop.
       await button.click();
       await until(() => live.get("band", mics, "mute"), (v) => v === false, "live by the tap");
-      await fits("ručne do zastavenia", "held");
+      await fits("MAN · until STOP", "held");
       // The full press's two lines (#104): a hold to full, then its lift.
       await dispatchPointer(button, [{ type: "pointerdown" }, { wait: 1200 }]);
-      await fits("pusť — vypne AUT", "held");
+      await fits("release — AUTO off", "held");
       await dispatchPointer(button, [{ type: "pointerup" }]);
       await until(async () => live.hub.get("stage_aut"), (v) => v === false, "STAGE AUT off");
       await dispatchPointer(button, [{ type: "pointerdown" }, { wait: 1200 }]);
-      await fits("pusť — zapne AUT", "off");
+      await fits("release — AUTO on", "off");
       await dispatchPointer(button, [{ type: "pointerup" }]);
       await until(async () => live.hub.get("stage_aut"), (v) => v === true, "STAGE AUT on");
     });

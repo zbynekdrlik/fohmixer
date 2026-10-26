@@ -1,13 +1,13 @@
 /* fohmixer: the rail buttons with an automatic mode (#104, #130, D18, D19;
    the approved mockups reverb-link-v1, screen 2, reverb-link-v2, screens 1
    and 3, and autotune-v1): the merged STAGE button's, REVERB's and
-   AUTOTUNE's label with its AUT pill, its second line and the 1 s hold's
+   AUTOTUNE's label with its AUTO pill, its second line and the 1 s hold's
    fill (components/rail.rs RuleButton), AUTOTUNE's mixed look and problem
    corner, and REVERB's marks on a reverb fader (components/fader.rs
    ReverbMarks). Linked after vca.css. */
 
 /* The rule's colour (the old hub toggles' blue) and its lighter line. The
-   AUT pill is in the page only while the rule is on (rail.rs). */
+   AUTO pill is in the page only while the rule is on (rail.rs). */
 :root {
     --aut: #6d86ff;
     --aut-hi: #9cadff;
@@ -75,10 +75,11 @@
     min-width: 0;
 }
 
-/* The label's width leaves the pill its room (32 px): the base formula of
-   buttons.css `.rail .btn-text` less it. */
+/* The label's width leaves the pill its room (40 px: the AUTO pill is
+   about 34 px, #141): the base formula of buttons.css `.rail .btn-text`
+   less it. */
 .rail .rule-btn .btn-text {
-    font-size: min(11.5px, calc((var(--tw, 65px) - 32px - var(--n, 5) * 0.6px) / (var(--n, 5) * 0.65)));
+    font-size: min(11.5px, calc((var(--tw, 65px) - 40px - var(--n, 5) * 0.6px) / (var(--n, 5) * 0.65)));
 }
 
 .aut-badge {
@@ -177,7 +178,7 @@
 
 /* A low screen: page.css's size of a rail button's words again (this file
    comes after it), 3 px short of the text width so a long label ends left
-   of its AUT dot (#104: at 844 x 390 the column's button is 67 px, its dot
+   of its AUTO dot (#104: at 844 x 390 the column's button is 67 px, its dot
    starts 44 px after the label's start, a pixel inside `--tw`, and
    AUTOTUNE's glyphs ran 0.8 px into it at the full width; STAGE and REVERB
    keep their 9.5 px). */
@@ -193,9 +194,9 @@
    fader low: over the groove, the part the rule took away, hollow in the
    rule's colour, from the cap up to where the fader returns (`--r`); there
    a dashed line (wider than the cap, so it is never the amber line of an
-   unconfirmed write, intent.css); beside it, right of the groove, AUT −n on
+   unconfirmed write, intent.css); beside it, right of the groove, AUTO −n on
    its side; the readout in the rule's colour. Once the engineer took it:
-   RUKA on its side above the cap. No touch, no height: they read the
+   MAN on its side above the cap. No touch, no height: they read the
    fader's `--p` and `--x`. */
 .aut-span,
 .aut-ret,

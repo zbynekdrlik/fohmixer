@@ -1,6 +1,6 @@
 <!doctype html>
 <!-- fohmixer #71 v2: a mockup of the channel detail (a long hold on a strip's ☰ opens one channel full screen: fader, mute, pan, its Pro-Q 4), the full-screen Pro-Q 4 from there, and the EQ lock between engineers; built on the approved #68 views mockup (invented names); the Pro-Q pictures are captured from the PC in the test of 2026-10-09, the track name in them masked; not part of the app. -->
-<html lang="sk">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -392,7 +392,7 @@ body { display: flex; flex-direction: column; }
 .bigfz .cap::after { left: 12px; right: 12px; top: 16px; }
 .bigfz .fader::before { left: calc(50% - 3px); width: 6px; }
 .bigfz .fader .fill { left: calc(50% - 3px); width: 6px; }
-/* The pan: wide, in the middle of the hand's reach, a tap on STRED or a double tap centres it. */
+/* The pan: wide, in the middle of the hand's reach, a tap on CENTER or a double tap centres it. */
 .pan2 { position: relative; height: 64px; border-radius: 10px; background: var(--track); touch-action: none; }
 .pan2::before { content: ""; position: absolute; left: 50%; top: 10px; bottom: 10px; width: 2px; background: #3a3a55; }
 .pan2 .knob { position: absolute; top: 8px; width: 48px; height: 48px; margin-left: -24px; border-radius: 10px; background: linear-gradient(#4a4a62, #2c2c40); box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6); }
@@ -456,7 +456,7 @@ const C = ["#7cf27c", "#3fcf3f", "#f0f7b0", "#2ec4b6", "#1aa3e8", "#9be7a8", "#f
 const strip = (name, i, o = {}) => ({ name, tc: C[i % C.length], muted: !!o.muted, pinned: !!o.pinned, conflict: !!o.conflict, warn: o.warn, guard: !!o.guard, db: o.db ?? 0, pan: o.pan ?? 0, level: o.muted ? 0.2 : 0.35 + ((i * 37) % 40) / 100, eqs: o.eqs ?? ["rack Vocal FX › chain Main"] });
 const group = (title, color, strips) => ({ title, color, strips });
 const SUBPAGES = [
-    group("STAGE", "var(--band)", [strip("Vox 1", 0), strip("Vox 2", 1, { pan: -12 }), strip("Vox 3", 2), strip("Vox 4", 3), strip("Vox 5", 4, { muted: true }), strip("Gitara", 5, { db: -Infinity, warn: "ZNAČKA?" }), strip("Vox 6", 6, { muted: true }), strip("Vox 7", 7, { muted: true }), strip("Klavir", 8, { conflict: true }), strip("Vox bus", 9, { pinned: true, guard: true, eqs: ["na tracku", "rack Bus FX › chain Air"] })]),
+    group("STAGE", "var(--band)", [strip("Vox 1", 0), strip("Vox 2", 1, { pan: -12 }), strip("Vox 3", 2), strip("Vox 4", 3), strip("Vox 5", 4, { muted: true }), strip("Gitara", 5, { db: -Infinity, warn: "TAG?" }), strip("Vox 6", 6, { muted: true }), strip("Vox 7", 7, { muted: true }), strip("Klavir", 8, { conflict: true }), strip("Vox bus", 9, { pinned: true, guard: true, eqs: ["on track", "rack Bus FX › chain Air"] })]),
     group("BAND B", "var(--band)", ["Gitara B", "Bas B", "Klavir B", "Bicie B", "Vox B"].map((n, i) => strip(n, i + 3))),
     group("OTHERS", "var(--band)", ["Hosť 1", "Hosť 2"].map((n, i) => strip(n, i + 6))),
 ];
@@ -549,10 +549,10 @@ function stripView(s) {
     if (!s.conflict) name.addEventListener("pointerdown", () => { s.muted = !s.muted; render(); });
     // The readout line: Live's dB on the left, ☰ on the right. Only a hold on ☰ opens the channel; a tap says so.
     const dbl = el("div", "dbl");
-    const v = el("span", "v", s.conflict ? "KONFLIKT" : s.warn ? s.warn : dbText(s.db));
+    const v = el("span", "v", s.conflict ? "CONFLICT" : s.warn ? s.warn : dbText(s.db));
     const burger = el("button", "burger");
     burger.append(el("i"), el("span", "", "☰"));
-    burger.setAttribute("aria-label", "Detail kanála (podrž)");
+    burger.setAttribute("aria-label", "Channel detail (hold)");
     if (!s.conflict) {
         let timer = null;
         burger.addEventListener("pointerdown", (e) => {
@@ -635,7 +635,7 @@ function lineHalf(strips, d) {
 function columnView(d, lines) {
     const col = el("div", "column");
     const status = el("div", "status");
-    status.append(el("span", "badge", "BAND"), el("span", "badge", "MASTER"), el("span", "count", "0"), el("span", "", "v0.1.0"), el("button", "chip", "ZNAČKY"));
+    status.append(el("span", "badge", "BAND"), el("span", "badge", "MASTER"), el("span", "count", "0"), el("span", "", "v0.1.0"), el("button", "chip", "TAGS"));
     col.append(status);
     const pages = el("div", "grid three");
     for (const [t, on] of PAGES) pages.append(el("button", "btn" + (on ? " on" : ""), t));
@@ -692,7 +692,7 @@ function channelView(d) {
     const s = state.ch;
     const g = groupOf(s);
     const v = el("div", "chv");
-    v.append(barView(d.id === "phone-p" ? "← MIX" : "← SPÄŤ NA MIX", () => { state.ch = null; render(); }, s, d.id === "tablet" ? `${g.title} · band · track 12` : "", []));
+    v.append(barView(d.id === "phone-p" ? "← MIX" : "← BACK TO MIX", () => { state.ch = null; render(); }, s, d.id === "tablet" ? `${g.title} · band · track 12` : "", []));
     const body = el("div", "chbody" + (d.id === "phone-p" ? " portrait" : ""));
     body.style.setProperty("--chl", d.chl + "px");
     body.style.setProperty("--chr", d.chr + "px");
@@ -706,7 +706,7 @@ function channelView(d) {
 
     const eqs = el("div", "box eqs");
     eqs.append(el("h4", "", "EQ"));
-    if (s.eqs.length === 0) eqs.append(el("div", "none", "Na tomto tracku nie je Pro-Q 4."));
+    if (s.eqs.length === 0) eqs.append(el("div", "none", "No Pro-Q 4 on this track."));
     s.eqs.forEach((where, i) => {
         const locked = lockedByOther(s);
         const card = el("div", "card" + (locked ? " locked" : ""));
@@ -721,7 +721,7 @@ function channelView(d) {
             pic.append(m);
         }
         card.append(pic, el("div", "where", `Pro-Q 4 · ${where}` + (locked ? "" : " · posledný obraz 12:38")));
-        const open = el("button", "open", locked ? "ZAMKNUTÉ" : "OTVORIŤ EQ NA CELÚ OBRAZOVKU");
+        const open = el("button", "open", locked ? "LOCKED" : "OPEN EQ FULL SCREEN");
         if (!locked) open.addEventListener("pointerdown", () => { state.eq = i; state.touch = null; state.hover = false; render(); });
         card.append(open);
         eqs.append(card);
@@ -747,7 +747,7 @@ function channelView(d) {
     pan.addEventListener("pointerup", () => { pd = null; });
     const row = el("div", "panrow");
     row.append(el("span", "", "L 50"), val, el("span", "", "R 50"));
-    const centre = el("button", "btn", "STRED");
+    const centre = el("button", "btn", "CENTER");
     centre.addEventListener("pointerdown", () => { s.pan = 0; placePan(); });
     right.append(pan, row, centre);
 
@@ -764,8 +764,8 @@ function eqView(d) {
     const help = el("button", "btn", "?");
     help.addEventListener("pointerdown", () => { state.legend = !state.legend; render(); });
     const mine = el("span", "mine");
-    mine.insertAdjacentHTML("beforeend", LOCK_SVG + (d.id === "tablet" ? "zamknuté pre teba" : ""));
-    v.append(barView(d.id === "phone-p" ? "← KANÁL" : "← SPÄŤ NA KANÁL", () => { state.eq = null; state.legend = false; render(); }, s, d.id === "tablet" ? `Pro-Q 4 · ${where}` : "", [mine, help]));
+    mine.insertAdjacentHTML("beforeend", LOCK_SVG + (d.id === "tablet" ? "locked to you" : ""));
+    v.append(barView(d.id === "phone-p" ? "← CHANNEL" : "← BACK TO CHANNEL", () => { state.eq = null; state.legend = false; render(); }, s, d.id === "tablet" ? `Pro-Q 4 · ${where}` : "", [mine, help]));
     const pic = el("div", "eqpic");
     const img = el("img");
     img.alt = "Pro-Q 4, živý obraz z PC";
@@ -798,12 +798,12 @@ function eqView(d) {
     v.append(pic);
     if (state.legend) {
         const m = el("div", "legend");
-        m.insertAdjacentHTML("beforeend", `<h3>DOTYK V PRO-Q</h3>
+        m.insertAdjacentHTML("beforeend", `<h3>TOUCH IN PRO-Q</h3>
 <table>
-<tr><td>1 prst ťuk</td><td>klik (tlačidlá, výber pásma)</td></tr>
-<tr><td>1 prst ťah</td><td>ťahanie (pásmo, gombík); myš na PC sa nehýbe</td></tr>
-<tr><td>dvojťuk</td><td>dvojklik (nové pásmo v krivke)</td></tr>
-<tr><td>podržať</td><td>pravé tlačidlo (menu pásma)</td></tr>
+<tr><td>1 finger tap</td><td>click (buttons, band select)</td></tr>
+<tr><td>1 finger drag</td><td>ťahanie (pásmo, gombík); myš na PC sa nehýbe</td></tr>
+<tr><td>double-tap</td><td>dvojklik (nové pásmo v krivke)</td></tr>
+<tr><td>hold</td><td>pravé tlačidlo (menu pásma)</td></tr>
 <tr><td>2 prsty hore/dole</td><td>koliesko (Q pásma) <span class="tbd">· ešte overiť na PC</span></td></tr>
 <tr><td>2 prsty roztiahnuť</td><td>zväčšiť obraz (telefón)</td></tr>
 </table>`);
@@ -857,10 +857,10 @@ function render() {
     if (state.ch && state.eq !== null) {
         const t = state.touch;
         out.textContent = t ? `dotyk → klik do Pro-Q na (${t.x}, ${t.y})` : "živý obraz Pro-Q z PC";
-        note.textContent = "EQ je zamknutý pre toto zariadenie, kým ho nezavrieš. ← SPÄŤ NA KANÁL zavrie EQ (aj okno na PC) a vráti detail kanála. Ťukni na zelený bod pásma: Pro-Q ukáže jeho okienko (obraz z testu).";
+        note.textContent = "EQ je zamknutý pre toto zariadenie, kým ho nezavrieš. ← BACK TO CHANNEL zavrie EQ (aj okno na PC) a vráti detail kanála. Ťukni na zelený bod pásma: Pro-Q ukáže jeho okienko (obraz z testu).";
     } else if (state.ch) {
         out.textContent = `detail kanála ${state.ch.name}`;
-        note.textContent = "Len tento kanál: fader a mute vľavo, panoráma vpravo (dvojťuk alebo STRED = stred), jeho Pro-Q v strede. Vox 3 ukáže zámok, keď jeho EQ upravuje iný zvukár. ← SPÄŤ NA MIX vráti pôvodný mix.";
+        note.textContent = "Len tento kanál: fader a mute vľavo, panoráma vpravo (double-tap alebo CENTER = stred), jeho Pro-Q v strede. Vox 3 ukáže zámok, keď jeho EQ upravuje iný zvukár. ← BACK TO MIX vráti pôvodný mix.";
     } else {
         out.textContent = `${d.w}×${d.h}: bez panorámy na páse`;
         note.textContent = "Podrž ☰ na riadku s dB (pol sekundy, tlačidlo sa naplní): otvorí detail kanála. Krátky ťuk len poradí. Panoráma už nie je na spodku pásu.";

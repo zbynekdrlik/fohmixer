@@ -18,7 +18,7 @@
 //! - **The hand wins:** a page's write of a fader while the rule holds it
 //!   (lowered, the wait, a glide), or a value of Live's off where the rule
 //!   left it once the rule's last write was applied, lets that fader go
-//!   (`RUKA`) until the next stop (AUT on or off) or a lowering that takes
+//!   (`MAN`) until the next stop (AUT on or off) or a lowering that takes
 //!   it again (a tap down); a start or a tap back keeps it. With AUT on the
 //!   stop's lowering takes it again from where it is.
 //! - **A first value never lowers:** a hub start, a reconnect or a set load
@@ -287,7 +287,7 @@ struct Fader {
     back: Option<f64>,
     /// Where the rule left it (its lowering's end).
     left: Option<f64>,
-    /// The engineer took it (`RUKA`) while the rule held it: let go until
+    /// The engineer took it (`MAN`) while the rule held it: let go until
     /// the next stop, or a lowering that takes it again (F30).
     hand: bool,
     glide: Option<Glide>,
@@ -701,7 +701,7 @@ impl Reverb {
         acts
     }
 
-    /// Every fader's hand ends (`RUKA`): a stop.
+    /// Every fader's hand ends (`MAN`): a stop.
     fn drop_hands(&mut self) {
         for fader in &mut self.faders {
             fader.hand = false;
@@ -828,7 +828,7 @@ impl Reverb {
     }
 
     /// Every held fader glides back to its song level; the rule lets go.
-    /// A fader in the hand keeps it (`RUKA` until the next stop or
+    /// A fader in the hand keeps it (`MAN` until the next stop or
     /// lowering).
     fn return_all(&mut self, now: f64) -> Vec<Act> {
         let held: Vec<usize> = self

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="sk">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
@@ -101,9 +101,9 @@ html, body { margin: 0; background: #000; color: var(--text); font-family: var(-
   </div>
   <div class="controls" id="states">
     <button type="button" data-s="frame" class="on">AbleSet beží</button>
-    <button type="button" data-s="down">AbleSet nebeží</button>
+    <button type="button" data-s="down">AbleSet is not running</button>
     <button type="button" data-s="signin">Mimo kostola: prihlásenie</button>
-    <button type="button" data-s="emergency">Núdzová adresa (IP)</button>
+    <button type="button" data-s="emergency">Fallback address (IP)</button>
   </div>
   <div class="fit" id="fit"><div class="tablet" id="tablet"></div></div>
   <div class="notes">
@@ -113,9 +113,9 @@ html, body { margin: 0; background: #000; color: var(--text); font-family: var(-
       <li><b>Variant A (odporúčam):</b> na stránke AbleSetu sa stĺpec presunie k pravému okraju, AbleSet dostane zvyšok (asi 1040 × 820 bodov). Späť na mixér je jeden ťuk.</li>
       <li><b>Variant B:</b> AbleSet dostane takmer celú šírku (asi 1150 bodov), vpravo je len tenký pruh s ☰. Späť na mixér sú dva ťuky (☰, potom záložka).</li>
       <li>AbleSet sa načíta len keď je jeho záložka otvorená, aby mixér ostal rýchly.</li>
-      <li><b>AbleSet nebeží:</b> namiesto stránky je oznam a fohmixer ho skúša znova sám.</li>
+      <li><b>AbleSet is not running:</b> namiesto stránky je oznam a fohmixer ho skúša znova sám.</li>
       <li><b>Mimo kostola:</b> pri prvom otvorení cez internet treba raz potvrdiť prihlásenie (ako pri fohmixeri).</li>
-      <li><b>Núdzová adresa (IP):</b> bez certifikátu sa AbleSet do fohmixera vložiť nedá; ukáže sa jeho priama adresa v lokálnej sieti.</li>
+      <li><b>Fallback address (IP):</b> bez certifikátu sa AbleSet do fohmixera vložiť nedá; ukáže sa jeho priama adresa v lokálnej sieti.</li>
       <li>Ťuky vo vnútri AbleSetu sú AbleSetu, fohmixer ich nevidí ani nezapisuje.</li>
     </ul>
   </div>
@@ -139,9 +139,9 @@ const able = `
     <div class="as-tag">stránka AbleSetu (náhrada)</div>
   </div>`;
 const panels = {
-  down: `<div class="panel"><div class="box"><h3>AbleSet nebeží</h3>AbleSet na PC teraz neodpovedá. Fohmixer ho skúša znova sám; mixér funguje ďalej.</div></div>`,
-  signin: `<div class="panel"><div class="box"><h3>Prihlásenie do AbleSetu</h3>Si mimo kostola. AbleSet chce raz potvrdiť prihlásenie, rovnako ako fohmixer.<div class="btn">PRIHLÁSIŤ SA</div></div></div>`,
-  emergency: `<div class="panel"><div class="box"><h3>Núdzová adresa</h3>Fohmixer je otvorený cez IP bez certifikátu, tak sa AbleSet nedá vložiť. Otvor fohmixer cez jeho meno, alebo AbleSet priamo:<div class="addr">http://&lt;PC v sieti&gt;</div></div></div>`,
+  down: `<div class="panel"><div class="box"><h3>AbleSet is not running</h3>AbleSet on the PC is not answering right now. Fohmixer keeps retrying; the mixer works as usual.</div></div>`,
+  signin: `<div class="panel"><div class="box"><h3>AbleSet sign-in</h3>You are away from the church. AbleSet wants you to confirm the sign-in once, like fohmixer.<div class="btn">SIGN IN</div></div></div>`,
+  emergency: `<div class="panel"><div class="box"><h3>Fallback address</h3>Fohmixer is open by IP without a certificate, so AbleSet can't be embedded. Open fohmixer by its name, or open AbleSet directly:<div class="addr">http://&lt;PC v sieti&gt;</div></div></div>`,
 };
 function column() {
   return `<div class="column">
