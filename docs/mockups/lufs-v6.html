@@ -6,7 +6,10 @@
      dimmed, the name grey and of low contrast, the meter, the cap and the
      readout faded; no red fill, no MUTED badge, no strike, nothing brighter
      than an unmuted strip. Unmuted stays v5's (a calm readable name, a thin
-     colour edge). v5 is v4
+     colour edge). And ONE colour per strip (#151, 26.10): the Live track's
+     own, as the name's thin edge; the layout group's coloured top edge is
+     gone and the group's name on the strip's side is calm grey text. v5 is
+     v4
      (lufs-v4.html) with the owner's ruling on it (#151, 26.10): the SEL key
      (A) approved, B dropped; the LUFS is quiet text, small dim numerals, no
      fill, box, border or glow; out of range only the text is tinted (muted
@@ -995,7 +998,8 @@ table.legend th {
 }
 
 /* The group's name (#127) moves from the scale column into the info
-   column, under the LUFS, read bottom to top as today. */
+   column, under the LUFS, read bottom to top as today. v6: calm grey text,
+   no group colour (one colour per strip, the track's own). */
 .gside {
     position: absolute;
     top: 40px;
@@ -1003,7 +1007,7 @@ table.legend th {
     width: 11px;
     height: 96px;
     overflow: hidden;
-    color: var(--band);
+    color: var(--faint);
     font: 600 9.5px/11px var(--ui);
     letter-spacing: 0.1em;
     text-overflow: ellipsis;
@@ -1013,8 +1017,10 @@ table.legend th {
     transform: rotate(180deg);
 }
 
-.gside[data-instance="master"] {
-    color: var(--master);
+/* v6: one colour per strip, the Live track's own (the name's 4 px edge):
+   the layout group's 3 px top edge (#127, --gc) is not drawn. */
+.strip.one::before {
+    display: none;
 }
 
 /* A narrow strip (under 78 px: the phones; the app knows the width from
@@ -1299,6 +1305,7 @@ table.mtable td {
 <div class="sheet">
     <div class="overline">fohmixer #151 · hlasitosť (LUFS) a stereo meter v dráhe fadra · návrh v6 na schválenie</div>
     <h1>Pás ako vo Waves LV1: stereo meter v dráhe fadra, stupnica vpravo, vľavo čísla</h1>
+    <p><b>Jedna farba na pás (v6):</b> doteraz mal pás dve farby: hornú hranu vo farbe <b>skupiny</b> z rozloženia (STAGE, BAND …) a meno vo farbe <b>stopy</b> z Live. Preto hlavička a meno svietili inak. Teraz má pás <b>jedinú farbu: farbu stopy, ako ju máte nastavenú v Ableton Live</b>, ako tenký pásik na ľavom okraji mena. Farebná horná hrana skupiny zmizla; skupinu ďalej pomenúva jej meno na boku pása, ale len tlmeným sivým textom. Farbu pása teda meníte v Live, nie vo fohmixeri.</p>
     <p><b>Čo je nové vo v6:</b> stlmený pás sa <b>stiahne do pozadia</b>, ako to robí dnešný povrch: celý pás stmavne, meno je sivé a málo kontrastné, meter, gombík fadra aj dB vyblednú, farebný pásik pri mene skoro zmizne. Žiadna červená výplň, žiadne MUTED, žiadne prečiarknutie; v rohu ostáva len malé sivé slovo MUTE ako dnes. Stlmený pás nie je nikdy výraznejší než pás, ktorý hrá (stránka to nižšie overuje). Vo v5 bol stlmený kanál najvýraznejšia vec na mixe, a to je presne naopak. Nestlmený pás ostáva ako vo v5. Ukážka vedľa seba: Click a Talk na iPade, Keys a Click na telefóne na výšku, Drums a Click na boku, a „Vox 2“ hrajúci aj stlmený v stavoch nižšie.</p>
     <p><b>Vo v5:</b> kláves <b>SEL</b> (variant A) si schválil, variant B (ikona) je preč. <b>LUFS je teraz tichý text:</b> malé tlmené sivé číslice, bez farebného rámčeka, bez okraja, bez žiary. V cieli (−28 až −22) je len sivé číslo; mimo cieľa sa zafarbí iba samotný text, tlmene: jantárovo za ±3 LU, tlmene červeno za ±6 LU, nikdy nie tvar. Keď spevák nespieva, <b>nie je tam nič</b> (ani pomlčka, ani rámček). Vo v4 bol farebný rámček najkrikľavejšia vec na páse a svietiaci štvorček pri tichu bol zlý.</p>
     <p><b>Meno pásu je pokojné (v5):</b> tlačidlo s menom (je to MUTE) už nie je celé zaliate farbou stopy z Live: bolo krikľavé a farby pôsobili náhodne, a MUTE sa používa zriedka. Teraz je to svetlé, veľké meno na tmavom podklade; farba stopy ostala len ako tenký pásik (4 px) na ľavom okraji tlačidla, aby sa pásy dali rozlíšiť. Ťuk aj veľkosť tlačidla sú ako dnes. (Červený stlmený vzhľad z v5 je preč, pozri v6 vyššie.)</p>
@@ -1320,6 +1327,7 @@ table.mtable td {
             <p><b>Zhora nadol (v6, pás „Vox 2“):</b></p>
             <ol>
                 <li><b>Meno</b> = tlačidlo MUTE (ťuk a veľkosť ako dnes): svetlé veľké meno na tmavom podklade, farba stopy ako 4 px pásik vľavo; stlmené = celý pás stmavne a meno zosivie (ako dnes), bez červenej.</li>
+                <li><b>Jedna farba:</b> pás nesie len farbu stopy z Ableton Live (pásik vľavo pri mene). Horná farebná hrana skupiny je preč (dve rôzne farby na jednom páse mýlili); meno skupiny na boku ostáva ako tlmený sivý text.</li>
                 <li><b>Riadok pod menom:</b> svetielko spojenia a dB fadra z Live (pri držaní fadra tyrkysový ako dnes). ☰ tu už nie je.</li>
                 <li><b>Vľavo stĺpik:</b> <code>LUFS</code> a malé tlmené číslo (−21, text tlmene jantárový: 4 LU nad cieľom), pod ním meno skupiny zdola nahor, <b>dole kláves SEL</b> (detail kanála), 36 × 36 px na dotyk, podržanie 0,5 s otvorí detail.</li>
                 <li><b>V strede dráha fadra</b> so stereo metrom L | R; gombík ide ponad stĺpiky, je nepriehľadný s tmavým okrajom, jeho biela čiara je vždy čitateľná. Značka 0 dB po oboch stranách dráhy.</li>
@@ -1538,7 +1546,7 @@ function zone(m) {
 }
 
 function strip(m, w) {
-    const cls = ["strip"];
+    const cls = ["strip", "one"];
     if (m.wide) cls.push("wide");
     if (m.muted) cls.push("muted");
     const s = el("div", cls.join(" "), { style: `--gc:${m.gc};`, "data-name": m.name });
@@ -1767,6 +1775,19 @@ function quieter(root) {
 }
 // A muted strip recedes (v6): its name button is darker and its name of
 // lower contrast than every unmuted strip's on the same screen, no red.
+// One colour per strip (v6): no group top edge, the group's name grey.
+function oneColour(root) {
+    let ok = true;
+    for (const st of root.querySelectorAll(".strip.one")) {
+        if (getComputedStyle(st, "::before").display !== "none") ok = false;
+        const g = st.querySelector(".gside");
+        if (g) {
+            const [r, gg, b] = getComputedStyle(g).color.match(/[\d.]+/g).map(Number);
+            if (Math.max(r, gg, b) - Math.min(r, gg, b) > 40) ok = false;
+        }
+    }
+    return ok;
+}
 function recedes(root) {
     const looks = [...root.querySelectorAll(".strip-head > .mute.calm")].map((b) => {
         const st = getComputedStyle(b), lab = getComputedStyle(b.querySelector(".strip-label"));
@@ -1779,7 +1800,7 @@ function recedes(root) {
 }
 const yes = (b) => `<span class="${b ? "ok" : "bad"}">${b ? "yes" : "NO"}</span>`;
 function measure() {
-    const rows = ['<tr><th>Screen</th><th>strip</th><th>travel +LUFS</th><th>travel plain</th><th>vs today</th><th>texts fit</th><th>cap clear of info</th><th>scale inside</th><th>detail key (touch box)</th><th>key clear of cap</th><th>LUFS quieter than dB</th><th>muted recedes</th></tr>'];
+    const rows = ['<tr><th>Screen</th><th>strip</th><th>travel +LUFS</th><th>travel plain</th><th>vs today</th><th>texts fit</th><th>cap clear of info</th><th>scale inside</th><th>detail key (touch box)</th><th>key clear of cap</th><th>LUFS quieter than dB</th><th>muted recedes</th><th>one colour</th></tr>'];
     const today = document.querySelector('[data-name="today"] .fader').offsetHeight;
     const v6anat = document.querySelector('#anat .strip[data-name="Vox 2"] .zone').offsetHeight;
     let all = true;
@@ -1796,22 +1817,24 @@ function measure() {
         const okRef = ref === null ? Math.abs(a - b) < 0.01 : a >= ref - 0.01 && Math.abs(a - b) < 0.01;
         const q = quieter(d);
         const r = recedes(d);
-        all = all && okRef && c.fit && c.clear && c.inside && c.key && q.ok && r.ok && r.n > 0;
+        const one = oneColour(d);
+        all = all && okRef && c.fit && c.clear && c.inside && c.key && q.ok && r.ok && r.n > 0 && one;
         results[id] = a;
         results[id + "_key"] = c.sizes;
-        rows.push(`<tr><td>${name}</td><td>${w} px</td><td>${a.toFixed(1)} px</td><td>${b.toFixed(1)} px</td><td>${ref === null ? "head unchanged" : `${ref} px today: ${yes(okRef)}`}</td><td>${yes(c.fit)}</td><td>${yes(c.clear)}</td><td>${yes(c.inside)}</td><td>${c.sizes}</td><td>${yes(c.key)}</td><td>${yes(q.ok)} (contrast ≤ ${(q.worst * 100).toFixed(0)} % of dB's)</td><td>${yes(r.ok && r.n > 0)} (${r.n} muted)</td></tr>`);
+        rows.push(`<tr><td>${name}</td><td>${w} px</td><td>${a.toFixed(1)} px</td><td>${b.toFixed(1)} px</td><td>${ref === null ? "head unchanged" : `${ref} px today: ${yes(okRef)}`}</td><td>${yes(c.fit)}</td><td>${yes(c.clear)}</td><td>${yes(c.inside)}</td><td>${c.sizes}</td><td>${yes(c.key)}</td><td>${yes(q.ok)} (contrast ≤ ${(q.worst * 100).toFixed(0)} % of dB's)</td><td>${yes(r.ok && r.n > 0)} (${r.n} muted)</td><td>${yes(one)}</td></tr>`);
     }
     for (const id of ["samples", "sweep"]) {
         const c = checks(document.getElementById(id));
         const k = keys(document.getElementById(id));
         const q = quieter(document.getElementById(id));
         const r = recedes(document.getElementById(id));
-        all = all && c.fit && c.clear && c.inside && k.clear && q.ok && r.ok;
-        rows.push(`<tr><td>${id === "samples" ? "all states" : "width sweep 64–120"}</td><td>—</td><td>—</td><td>—</td><td>—</td><td>${yes(c.fit)}</td><td>${yes(c.clear)}</td><td>${yes(c.inside)}</td><td>${k.sizes}</td><td>${yes(k.clear)}</td><td>${yes(q.ok)}</td><td>${yes(r.ok)} (${r.n} muted)</td></tr>`);
+        const one = oneColour(document.getElementById(id));
+        all = all && c.fit && c.clear && c.inside && k.clear && q.ok && r.ok && one;
+        rows.push(`<tr><td>${id === "samples" ? "all states" : "width sweep 64–120"}</td><td>—</td><td>—</td><td>—</td><td>—</td><td>${yes(c.fit)}</td><td>${yes(c.clear)}</td><td>${yes(c.inside)}</td><td>${k.sizes}</td><td>${yes(k.clear)}</td><td>${yes(q.ok)}</td><td>${yes(r.ok)} (${r.n} muted)</td><td>${yes(one)}</td></tr>`);
     }
     rows.push(`<tr><td>anatomy (408 px line)</td><td>83.16 px</td><td>${v6anat} px (v6)</td><td>${today} px (today's CSS)</td><td>${yes(v6anat === today)}</td><td></td><td></td><td></td></tr>`);
     document.getElementById("measure").innerHTML = rows.join("");
-    document.getElementById("measure-top").innerHTML = `Merané v tejto stránke: dráha fadra na iPade <b>${results.ipad.toFixed(1)} px</b> (dnes ${TODAY_IPAD} px), telefón na boku ${results.side.toFixed(1)} px, na výšku ${results.up.toFixed(1)} px; s LUFS aj bez rovnaká; kláves detailu na iPade ${results.ipad_key} px; čísla aj kláves sa zmestia, gombík fadra ich neprekryje LUFS je tichší než dB a stlmený pás ustúpi: ${yes(all)} (podrobne v Poznámkach).`;
+    document.getElementById("measure-top").innerHTML = `Merané v tejto stránke: dráha fadra na iPade <b>${results.ipad.toFixed(1)} px</b> (dnes ${TODAY_IPAD} px), telefón na boku ${results.side.toFixed(1)} px, na výšku ${results.up.toFixed(1)} px; s LUFS aj bez rovnaká; kláves detailu na iPade ${results.ipad_key} px; čísla aj kláves sa zmestia, gombík fadra ich neprekryje, LUFS je tichší než dB a stlmený pás ustúpi, jedna farba na pás: ${yes(all)} (podrobne v Poznámkach).`;
     document.body.dataset.measured = JSON.stringify({ ...results, all, today, v6anat });
 }
 document.fonts.ready.then(measure);
