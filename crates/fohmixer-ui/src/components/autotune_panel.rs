@@ -13,8 +13,13 @@
 //! page and again whenever its content changes size (a `ResizeObserver` on
 //! `.tpanel-in`; PR #150 re-review m3: never the box its max height caps),
 //! so it stays inside the screen and never over the button
-//! (`behave::autotune::panel_place`). The decisions are
-//! `behave::autotune`'s.
+//! (`behave::autotune::panel_place`). It stays hidden until its first
+//! measure (#140: placed at height 0, a phone painted it one frame below
+//! the button before it moved above), and the observer's measure lands in
+//! the next animation frame, so the new placement never changes the layout
+//! inside the observer's own delivery (with classic scrollbars a scrollbar
+//! appearing would otherwise leave "undelivered notifications"). The
+//! decisions are `behave::autotune`'s.
 
 use fohmixer_proto::client::HUB_AUTOTUNE_SINGER;
 use leptos::html;
@@ -50,7 +55,7 @@ pub fn AutotunePanel(anchor: Anchor) -> impl IntoView {
     // button: measured once in the page and again at every size change of
     // its content (a why line, a singer added), which its max height never
     // caps. The observer goes with the panel.
-    let height = RwSignal::new(0.0_f64);
+    let height = RwSignal::new(None::<f64>);
     let watcher = StoredValue::new_local(None::<PanelObserver>);
     panel.on_load(move |el: web_sys::HtmlDivElement| {
         let measure = {
@@ -63,12 +68,15 @@ pub fn AutotunePanel(anchor: Anchor) -> impl IntoView {
                 )
             }
         };
-        let _ = height.try_set(measure());
+        let _ = height.try_set(Some(measure()));
         let Some(inner) = el.first_element_child() else {
             return;
         };
         let callback = Closure::wrap(Box::new(move || {
-            let _ = height.try_set(measure());
+            let measure = measure.clone();
+            request_animation_frame(move || {
+                let _ = height.try_set(Some(measure()));
+            });
         }) as Box<dyn FnMut()>);
         if let Ok(observer) = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()) {
             observer.observe(&inner);
@@ -88,14 +96,20 @@ pub fn AutotunePanel(anchor: Anchor) -> impl IntoView {
                     .and_then(|v| v.as_f64())
                     .unwrap_or(0.0)
             };
+        let measured = height.try_get().flatten();
         let place = panel_place(
             anchor,
             size(web_sys::Window::inner_width),
             size(web_sys::Window::inner_height),
-            height.try_get().unwrap_or(0.0),
+            measured.unwrap_or(0.0),
         );
+        let hidden = if measured.is_some() {
+            ""
+        } else {
+            "visibility:hidden;"
+        };
         format!(
-            "--tp-left:{}px;--tp-top:{}px;--tp-max:{}px;",
+            "--tp-left:{}px;--tp-top:{}px;--tp-max:{}px;{hidden}",
             place.left, place.top, place.max_h
         )
     };
