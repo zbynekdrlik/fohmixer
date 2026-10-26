@@ -12,7 +12,7 @@
      strip size (83.16 px), the fonts are the app's own files, inlined. The
      page measures its own faders and writes the numbers. Invented names, no
      site data. -->
-<html lang="sk">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -626,7 +626,7 @@ body {
    part the rule took away, hollow in the rule's colour, from the cap up to
    where the fader returns (`--r`); there a dashed line (wider than the
    cap, so it is never the amber line of an unconfirmed write, intent.css);
-   beside it, right of the groove, AUT −10 on its side; the readout in the
+   beside it, right of the groove, AUTO −10 on its side; the readout in the
    rule's colour. No touch, no height. === */
 .aut-span {
     position: absolute;
@@ -1226,13 +1226,13 @@ h2 {
             <h2><span class="vletter">3</span>Rozprávanie · REVERB AUT</h2>
             <div class="frame"><div class="line" data-state="3"></div></div>
             <div class="railcut two" data-rail="3"></div>
-            <p class="cap">Live zastal: o 2 s oba fadre klesnú o 10 dB (za 2 s). <span class="ret-swatch"></span> = kam sa vrátia, keď Live zahrá (za 0,5 s). Pri fadri <span class="inline-pill">AUT −10</span>, dB svieti modro.</p>
+            <p class="cap">Live zastal: o 2 s oba fadre klesnú o 10 dB (za 2 s). <span class="ret-swatch"></span> = kam sa vrátia, keď Live zahrá (za 0,5 s). Pri fadri <span class="inline-pill">AUTO −10</span>, dB svieti modro.</p>
         </section>
         <section class="col">
             <h2><span class="vletter">4</span>Zvukár prevzal PA</h2>
             <div class="frame"><div class="line" data-state="4"></div></div>
             <div class="railcut two" data-rail="4"></div>
-            <p class="cap">Rozpojené, PA potiahol hore: pravidlo ho pustí, čiarka zmizne, pri gombíku <span class="inline-pill hand">RUKA</span>; pri štarte ostane, kde je. ST sa vráti. Spojené: ruka vezme oba.</p>
+            <p class="cap">Rozpojené, PA potiahol hore: pravidlo ho pustí, čiarka zmizne, pri gombíku <span class="inline-pill hand">MAN</span>; pri štarte ostane, kde je. ST sa vráti. Spojené: ruka vezme oba.</p>
         </section>
     </div>
     <div class="row bottom">
@@ -1437,12 +1437,12 @@ function strip(m) {
     fader.append(rail);
     if (m.ret !== undefined) {
         const mark = el("div", "fz-mark aut");
-        mark.append(el("span", "fz-pill", { text: `AUT −${Math.round(m.ret - m.db)}` }));
+        mark.append(el("span", "fz-pill", { text: `AUTO −${Math.round(m.ret - m.db)}` }));
         fader.append(mark);
     }
     if (m.hand) {
         const mark = el("div", "fz-mark hand");
-        mark.append(el("span", "fz-pill", { text: "RUKA" }));
+        mark.append(el("span", "fz-pill", { text: "MAN" }));
         fader.append(mark);
     }
     fz.append(scale, meter, fader);
@@ -1475,9 +1475,9 @@ function railBtn(b) {
 
 const STAGE_OFF = { cls: "stage-mics", label: "STAGE" };
 const RAILS = {
-    1: [STAGE_OFF, { cls: "reverb-btn", label: "REVERB", on: true, aut: "run", sub: "hrá · plný" }],
-    2: [STAGE_OFF, { cls: "reverb-btn", label: "REVERB", on: true, aut: "run", sub: "hrá · plný" }],
-    3: [STAGE_OFF, { cls: "reverb-btn", label: "REVERB", aut: "run", sub: "stojí · −10 dB", low: true }],
+    1: [STAGE_OFF, { cls: "reverb-btn", label: "REVERB", on: true, aut: "run", sub: "PLAY · normal" }],
+    2: [STAGE_OFF, { cls: "reverb-btn", label: "REVERB", on: true, aut: "run", sub: "PLAY · normal" }],
+    3: [STAGE_OFF, { cls: "reverb-btn", label: "REVERB", aut: "run", sub: "STOP · −10 dB", low: true }],
     4: [STAGE_OFF, { cls: "reverb-btn", label: "REVERB", aut: "run", sub: "ST −10 · PA v ruke", low: true }],
     "link-on": [{ cls: "rev-link", label: "REV LINK", on: true }],
     "link-off": [{ cls: "rev-link", label: "REV LINK" }],
@@ -1491,7 +1491,7 @@ const chip = document.querySelector("[data-chip]");
 chip.textContent = PA.name;
 chip.style.cssText = `--tc:${PA.tc};--tt:${textOn(PA.tc)};`;
 const detail = document.querySelector("[data-detail]");
-detail.append(el("h4", "detail-title", { text: "FADER" }), railBtn({ cls: "rev-link", label: "SPOJENÝ S REVERB ST", on: true }));
+detail.append(el("h4", "detail-title", { text: "FADER" }), railBtn({ cls: "rev-link", label: "LINKED TO REVERB ST", on: true }));
 detail.style.width = "220px";
 
 // Screen 2's cells: a column cut-out with the button, a title, a caption.
@@ -1499,20 +1499,20 @@ const CELLS = {
     stage: [
         { n: "1", t: "Vypnuté", b: { cls: "stage-mics", label: "STAGE" }, p: "Mikrofóny zo stage stíšené. Ťuk ich zapne, ako dnes." },
         { n: "2", t: "Zapnuté", b: { cls: "stage-mics", label: "STAGE", on: true }, p: "Svieti: mikrofóny zo stage idú do tvojho reproduktora." },
-        { n: "3", t: "Podržanie 3 s", b: { cls: "stage-mics", label: "STAGE", hold: 64, sub: "drž… zapína AUT" }, p: "Pruh sa plní zľava; po 3 s je AUT zapnuté. Rovnako sa vypína." },
-        { n: "4", t: "AUT · pieseň", b: { cls: "stage-mics", label: "STAGE", aut: "run", sub: "hrá · stíšené" }, p: "Biele AUT: automatika beží. Live hrá, pravidlo mikrofóny stíšilo." },
-        { n: "5", t: "AUT · Live stojí", b: { cls: "stage-mics", label: "STAGE", on: true, aut: "run", sub: "stojí · zapnuté" }, p: "Live zastal, pravidlo mikrofóny zaplo: počuješ, čo chcú zo stage." },
-        { n: "6", t: "AUT · ručne", b: { cls: "stage-mics", label: "STAGE", on: true, aut: "held", sub: "ručne do zastavenia" }, p: "Ťukol si počas piesne: zapnuté ručne do najbližšieho zastavenia; prázdne AUT, automatika ostáva." },
+        { n: "3", t: "Podržanie 3 s", b: { cls: "stage-mics", label: "STAGE", hold: 64, sub: "hold… AUTO on" }, p: "Pruh sa plní zľava; po 3 s je AUT zapnuté. Rovnako sa vypína." },
+        { n: "4", t: "AUT · pieseň", b: { cls: "stage-mics", label: "STAGE", aut: "run", sub: "PLAY · muted" }, p: "Biele AUT: automatika beží. Live hrá, pravidlo mikrofóny stíšilo." },
+        { n: "5", t: "AUT · Live stojí", b: { cls: "stage-mics", label: "STAGE", on: true, aut: "run", sub: "STOP · open" }, p: "Live zastal, pravidlo mikrofóny zaplo: počuješ, čo chcú zo stage." },
+        { n: "6", t: "AUT · ručne", b: { cls: "stage-mics", label: "STAGE", on: true, aut: "held", sub: "MAN · until STOP" }, p: "Ťukol si počas piesne: zapnuté ručne do najbližšieho zastavenia; prázdne AUT, automatika ostáva." },
     ],
     reverb: [
         { n: "1", t: "Plný", b: { cls: "reverb-btn", label: "REVERB", on: true }, p: "Svieti: reverby na úrovni piesne. Ťuk: oba −10 dB." },
-        { n: "2", t: "Ťuk: −10 dB", b: { cls: "reverb-btn", label: "REVERB", sub: "ručne · −10 dB", low: true }, p: "Oba fadre zišli o 10 dB, čiarka ukazuje návrat. Ďalší ťuk ich vráti." },
-        { n: "3", t: "AUT · pieseň", b: { cls: "reverb-btn", label: "REVERB", on: true, aut: "run", sub: "hrá · plný" }, p: "Podržaním 3 s zapnuté AUT. Live hrá: plný." },
-        { n: "4", t: "AUT · Live stojí", b: { cls: "reverb-btn", label: "REVERB", aut: "run", sub: "stojí · −10 dB", low: true }, p: "Live zastal: pravidlo dalo oba −10 dB (obrazovka 1, stav 3)." },
-        { n: "5", t: "AUT · ručne", b: { cls: "reverb-btn", label: "REVERB", aut: "held", sub: "ručne −10 · do zast.", low: true }, p: "Modlitba v piesni: ťuk, −10 dB do najbližšieho zastavenia; AUT ostáva." },
+        { n: "2", t: "Ťuk: −10 dB", b: { cls: "reverb-btn", label: "REVERB", sub: "MAN · −10 dB", low: true }, p: "Oba fadre zišli o 10 dB, čiarka ukazuje návrat. Ďalší ťuk ich vráti." },
+        { n: "3", t: "AUT · pieseň", b: { cls: "reverb-btn", label: "REVERB", on: true, aut: "run", sub: "PLAY · normal" }, p: "Podržaním 3 s zapnuté AUT. Live hrá: plný." },
+        { n: "4", t: "AUT · Live stojí", b: { cls: "reverb-btn", label: "REVERB", aut: "run", sub: "STOP · −10 dB", low: true }, p: "Live zastal: pravidlo dalo oba −10 dB (obrazovka 1, stav 3)." },
+        { n: "5", t: "AUT · ručne", b: { cls: "reverb-btn", label: "REVERB", aut: "held", sub: "MAN −10 · until STOP", low: true }, p: "Modlitba v piesni: ťuk, −10 dB do najbližšieho zastavenia; AUT ostáva." },
         null,
-        { n: "A", t: "REVERB AUT", alt: true, b: { cls: "hub-toggle", label: "REVERB AUT", on: true, sub: "hrá · plný" }, p: "Samostatný prepínač: ťuk zapne pravidlo. Live hrá." },
-        { n: "B", t: "REVERB AUT · stojí", alt: true, b: { cls: "hub-toggle", label: "REVERB AUT", on: true, sub: "stojí · −10 dB", low: true }, p: "Live stojí, pravidlo drží oba −10 dB." },
+        { n: "A", t: "REVERB AUT", alt: true, b: { cls: "hub-toggle", label: "REVERB AUT", on: true, sub: "PLAY · normal" }, p: "Samostatný prepínač: ťuk zapne pravidlo. Live hrá." },
+        { n: "B", t: "REVERB AUT · stojí", alt: true, b: { cls: "hub-toggle", label: "REVERB AUT", on: true, sub: "STOP · −10 dB", low: true }, p: "Live stojí, pravidlo drží oba −10 dB." },
     ],
 };
 for (const box of document.querySelectorAll("[data-cells]")) {

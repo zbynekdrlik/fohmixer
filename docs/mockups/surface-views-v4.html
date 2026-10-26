@@ -1,6 +1,6 @@
 <!doctype html>
 <!-- fohmixer #68: a mockup of the views (tag groups the default view does not place, shown by a button in the control column), the conflict and problem marks on a strip, and the tag manual; built on the approved #63 column mockup (invented names); not part of the app. -->
-<html lang="sk">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -338,7 +338,7 @@ body { display: flex; flex-direction: column; }
 <div class="mock">
     <div class="set" id="devices"></div>
     <span class="out" id="out"></span>
-    <span class="note">Oranžové tlačidlá POHĽADY = skupiny, ktoré hlavný pohľad nemá (ťuk ukáže len ich fadre a pripnuté, ďalší ťuk späť). Šrafovaný červený pás = konflikt (rovnaké meno v dvoch Tuneroch, oba vypnuté). Žltý roh = chyba v značke, pás funguje. ZNAČKY otvorí návod.</span>
+    <span class="note">Oranžové tlačidlá POHĽADY = skupiny, ktoré hlavný pohľad nemá (ťuk ukáže len ich fadre a pripnuté, ďalší ťuk späť). Šrafovaný červený pás = konflikt (rovnaké meno v dvoch Tuneroch, oba vypnuté). Žltý roh = chyba v značke, pás funguje. TAGS otvorí návod.</span>
 </div>
 <div class="stage" id="stage"><div class="screen" id="screen"></div></div>
 <script>
@@ -354,7 +354,7 @@ const C = ["#7cf27c", "#3fcf3f", "#f0f7b0", "#2ec4b6", "#1aa3e8", "#9be7a8", "#f
 const strip = (name, i, o = {}) => ({ name, tc: C[i % C.length], muted: !!o.muted, pinned: !!o.pinned, conflict: !!o.conflict, warn: o.warn, db: o.db ?? 0, level: o.muted ? 0.2 : 0.35 + ((i * 37) % 40) / 100 });
 const group = (title, color, strips) => ({ title, color, strips });
 const SUBPAGES = [
-    group("STAGE", "var(--band)", [strip("Vox 1", 0), strip("Vox 2", 1), strip("Vox 3", 2), strip("Vox 4", 3), strip("Vox 5", 4, { muted: true }), strip("Gitara", 5, { db: -Infinity, warn: "ZNAČKA?" }), strip("Vox 6", 6, { muted: true }), strip("Vox 7", 7, { muted: true }), strip("Klavir", 8, { conflict: true }), strip("Vox bus", 9, { pinned: true })]),
+    group("STAGE", "var(--band)", [strip("Vox 1", 0), strip("Vox 2", 1), strip("Vox 3", 2), strip("Vox 4", 3), strip("Vox 5", 4, { muted: true }), strip("Gitara", 5, { db: -Infinity, warn: "TAG?" }), strip("Vox 6", 6, { muted: true }), strip("Vox 7", 7, { muted: true }), strip("Klavir", 8, { conflict: true }), strip("Vox bus", 9, { pinned: true })]),
     group("BAND B", "var(--band)", ["Gitara B", "Bas B", "Klavir B", "Bicie B", "Vox B"].map((n, i) => strip(n, i + 3))),
     group("OTHERS", "var(--band)", ["Hosť 1", "Hosť 2"].map((n, i) => strip(n, i + 6))),
 ];
@@ -402,7 +402,7 @@ function stripView(s) {
     const root = el("div", "strip" + (s.muted ? " muted" : "") + (s.pinned ? " pinned" : "") + (s.conflict ? " conflict" : "") + (s.warn ? " warn" : ""));
     root.style.setProperty("--tc", s.tc);
     const name = el("button", "name", s.name);
-    const dbl = el("div", "dbl", s.conflict ? "KONFLIKT" : s.warn ? s.warn : dbText(s.db));
+    const dbl = el("div", "dbl", s.conflict ? "CONFLICT" : s.warn ? s.warn : dbText(s.db));
     if (!s.conflict) name.addEventListener("pointerdown", () => { s.muted = !s.muted; root.classList.toggle("muted", s.muted); });
     root.append(name, dbl, el("div", "pan"));
     const fz = el("div", "fz");
@@ -509,7 +509,7 @@ function columnView(d, lines) {
     const col = el("div", "column");
     const status = el("div", "status");
     status.append(el("span", "badge", "BAND"), el("span", "badge", "MASTER"), el("span", "count", "0"), el("span", "", "v0.1.0"));
-    const help = el("button", "chip", "ZNAČKY");
+    const help = el("button", "chip", "TAGS");
     help.addEventListener("pointerdown", () => { state.manual = !state.manual; render(); });
     status.append(help);
     col.append(status);
@@ -601,11 +601,11 @@ function render() {
 
 function manualView() {
     const m = el("div", "manual");
-    const x = el("button", "btn x", "✕ Zavrieť");
+    const x = el("button", "btn x", "✕ Close");
     x.style.padding = "0 10px";
     x.addEventListener("pointerdown", () => { state.manual = false; render(); });
     m.append(x);
-    m.insertAdjacentHTML("beforeend", `<h2>ZNAČKY V TUNERI</h2>
+    m.insertAdjacentHTML("beforeend", `<h2>TAGS IN THE TUNER</h2>
 <p>Fader na fohmixeri = <b>Tuner</b> v tracku (najlepšie vypnutý), premenovaný (Ctrl+R). Meno tracku sa nepoužíva.</p>
 <p>Príklad: <code>"Vox 1" +G:VOCALS:2 +G:TALKSHOW:1 +PIN +MG</code></p>
 <table>
@@ -615,8 +615,8 @@ function manualView() {
 <tr><td><code>+PIN</code></td><td>vždy na obrazovke, v každom pohľade aj pri posune ◀ ▶</td></tr>
 <tr><td><code>+MG</code></td><td>ochrana mute: zmena chce druhé ťuknutie</td></tr>
 </table>
-<p><b>Pohľady:</b> skupina, ktorú hlavný pohľad nemá, je tlačidlo v strednom páse (POHĽADY): ukáže svoje fadre a pripnuté, ďalší ťuk späť.</p>
-<p><b>Chyby:</b> rovnaké meno v dvoch Tuneroch = oba fadre vypnuté, červené KONFLIKT. Neznáma značka, zlá hodnota, dva Tunery v jednom tracku, dva fadre na jednej pozícii = žltý roh, fader funguje.</p>`);
+<p><b>Views:</b> skupina, ktorú hlavný pohľad nemá, je tlačidlo v strednom páse (POHĽADY): ukáže svoje fadre a pripnuté, ďalší ťuk späť.</p>
+<p><b>Chyby:</b> rovnaké meno v dvoch Tuneroch = oba fadre vypnuté, červené CONFLICT. Neznáma značka, zlá hodnota, dva Tunery v jednom tracku, dva fadre na jednej pozícii = žltý roh, fader funguje.</p>`);
     return m;
 }
 
