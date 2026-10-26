@@ -57,6 +57,32 @@ pub const METRICS: Metrics = Metrics {
     line_gap: 6.0,
 };
 
+/// A strip narrower than this (px, its own width) is narrow (#151, mockup
+/// v8): its marks take their compact forms and its detail key is taller.
+pub const NARROW_BELOW: f64 = 78.0;
+
+/// Whether a strip of width `strip_w` (px) is narrow.
+pub fn is_narrow(strip_w: f64) -> bool {
+    strip_w < NARROW_BELOW
+}
+
+/// Which strips of a page are narrow (#151): a normal strip by the page's
+/// strip width, a wide one by its own (`Metrics::wide` of it). The page
+/// writes both on `.body` (`data-narrow`, `data-narrow-wide`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Narrow {
+    pub normal: bool,
+    pub wide: bool,
+}
+
+/// The narrow flags of a page whose strip width is `width` (px).
+pub fn narrow(width: f64, m: &Metrics) -> Narrow {
+    Narrow {
+        normal: is_narrow(width),
+        wide: is_narrow(width * m.wide),
+    }
+}
+
 /// A control of the page: its group's index in [`PageModel::groups`] and
 /// its own index in the group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

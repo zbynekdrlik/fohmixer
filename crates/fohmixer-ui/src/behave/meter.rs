@@ -51,6 +51,17 @@ pub fn level_to_pos(level: f64) -> f64 {
     y0 + (level - x0) / (x1 - x0) * (y1 - y0)
 }
 
+/// Which level slot each of a strip's two meter bars reads (#151: the
+/// stereo pair in the fader's track): none without a level, the one value
+/// on both bars for `level`, left and right for `lr`.
+pub fn bar_sources(count: usize) -> Option<[usize; 2]> {
+    match count {
+        0 => None,
+        1 => Some([0, 0]),
+        _ => Some([0, 1]),
+    }
+}
+
 /// The colour of a level in dB on the fader scale.
 pub fn color_for_db(db: f64) -> Rgb {
     if db >= RED_DB {
@@ -150,6 +161,22 @@ mod tests {
         // Not a number reads as silence: a NaN position would stick in the
         // bar (every later animation starts from it).
         assert_eq!(level_to_pos(f64::NAN), 0.0);
+    }
+
+    #[test]
+    fn level_feeds_both_bars() {
+        assert_eq!(bar_sources(1), Some([0, 0]));
+    }
+
+    #[test]
+    fn lr_feeds_one_bar_each() {
+        assert_eq!(bar_sources(2), Some([0, 1]));
+        assert_eq!(bar_sources(3), Some([0, 1]));
+    }
+
+    #[test]
+    fn no_level_no_bars() {
+        assert_eq!(bar_sources(0), None);
     }
 
     #[test]

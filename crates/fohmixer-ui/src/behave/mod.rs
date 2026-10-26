@@ -10,8 +10,8 @@
 //! page's idle state (#51, `idle`), AbleSet's tab (#90, `ableset`), the
 //! rail buttons with an automatic mode (#104, #130, D18, `rail`), the
 //! fader link's marks and same-dB move (#130, `fader_link`), REVERB's
-//! button and the faders' marks (#130, `reverb`) and AUTOTUNE's button
-//! (#104, D19, `autotune`).
+//! button and the faders' marks (#130, `reverb`), AUTOTUNE's button
+//! (#104, D19, `autotune`) and the strip's marks line (#151, `marks`).
 
 pub mod ableset;
 pub mod autotune;
@@ -26,6 +26,7 @@ pub mod hold;
 pub mod idle;
 pub mod label;
 pub mod link;
+pub mod marks;
 pub mod meter;
 pub mod mute;
 pub mod pan;
