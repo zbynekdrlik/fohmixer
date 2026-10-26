@@ -169,7 +169,7 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
     // Right after a hold opens it, its parts take no touch for what is left
     // of OPEN_GUARD_MS (`data-guard`, `detail.css`; `guard_left`: a new
     // layout's remount guards no more): a second tap at SEL's spot would land
-    // on its MUTE. The detail itself still takes them, so nothing passes
+    // on the detail's left box (its fader). The detail itself still takes them, so nothing passes
     // through to the strips below. The timer goes with the detail.
     let opened_at = shown
         .and_then(|d| d.opened_at.try_get_value())

@@ -68,7 +68,8 @@
     color: var(--danger);
 }
 
-/* SEL's rule names the zone too, so it wins over a muted strip's 0.6. */
+/* SEL's rule names the zone to match a muted strip's 0.6 rule (both
+   0,4,0), and wins by order: states.css comes after strip.css. */
 .strip[data-mark="conflict"] .mute,
 .strip[data-mark="conflict"] .fader,
 .strip[data-mark="conflict"] .strip-zone > .strip-sel {

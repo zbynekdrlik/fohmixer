@@ -9,8 +9,8 @@
 //! that lands on SEL never opens the detail). Else only
 //! its release ends the press, and a cancel or a lost capture ends it
 //! without a tap. Right after a hold opens the detail, its parts take no
-//! touch for `OPEN_GUARD_MS` (a second tap at SEL's spot would land on its
-//! MUTE; `guard_left`: a new layout's remount does not guard again).
+//! touch for `OPEN_GUARD_MS` (a second tap at SEL's spot would land on the
+//! detail's left box; `guard_left`: a new layout's remount does not guard again).
 //!
 //! A rail button with an automatic mode (#104, #130, D18) presses the same
 //! way with its own hold (`behave::rail::RAIL_HOLD_MS`) but acts at its

@@ -104,7 +104,7 @@
     /* The strip's texts are sized from the strip width (`--strip-w`), never
        measured (#21: measuring each text forced a layout per text, and
        WebKit stopped drawing frames while it ran): the tag's longest form
-       "MASTER" fits from the narrowest strip up (no RET, #151) (the name: see
+       "MASTER" fits from the narrowest strip up, no RET since #151 (the name: see
        .strip-label); an ellipsis is the last guard, never an overflow (#9). */
     font: 700 clamp(7px, calc((var(--strip-w, 76px) - 22px) / 7), 8.5px) / 1.3 var(--ui);
     letter-spacing: 0.3px;
@@ -153,8 +153,11 @@
     padding: 8px 0 10px;
 }
 
+/* Both end lines too: an absolutely placed child (SEL) with only start
+   lines would take the padding edge for its `auto` end lines, so its
+   `bottom` would count from 10 px under the cell. */
 .strip-zone > * {
-    grid-area: 1 / 1;
+    grid-area: 1 / 1 / 2 / 2;
 }
 
 .strip-zone .fader {
@@ -190,10 +193,6 @@
     background: #08080f;
     box-shadow: inset 0 0 0 1px var(--line);
     pointer-events: none;
-}
-
-.fader-track .meter-peak {
-    opacity: 0.85;
 }
 
 /* The unity mark: 20 px, centred on the track, under it. */
@@ -578,6 +577,21 @@
     color: var(--text);
 }
 
+/* The armed guard's pulse and an open write's outline (intent.css) drawn
+   inside the button (#151): it is the strip's top edge and its whole
+   width, so an outline outside it would be cut by the line at the top. */
+.strip-head > .mute:is(.armed, [data-intent="unconfirmed"], [data-intent="not_sent"]) {
+    outline-offset: -2px;
+}
+
+.strip-head > .mute.armed {
+    animation-name: arm-in;
+}
+
+@keyframes arm-in {
+    to { outline-offset: -6px; outline-color: transparent; }
+}
+
 .strip-head > .mute::after {
     content: "";
     position: absolute;
@@ -586,7 +600,8 @@
     left: 0;
     width: 3px;
     border-radius: 8px 0 0 5px;
-    background: var(--tc);
+    /* Until Live gives the track's colour (or when it cannot): no edge. */
+    background: var(--tc, transparent);
     pointer-events: none;
 }
 

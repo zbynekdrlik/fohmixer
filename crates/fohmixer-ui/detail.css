@@ -34,8 +34,8 @@
 }
 
 /* Right after it opens (`data-guard`, OPEN_GUARD_MS), its parts take no
-   touch (a second tap at ☰'s spot would land on MUTE, the fader's cap's
-   own `auto` included); the detail itself takes them, so nothing passes
+   touch (a second tap at SEL's spot, the strip's bottom left, would land
+   on the detail's left box, the fader's cap's own `auto` included); the detail itself takes them, so nothing passes
    through to the strips below. */
 .detail[data-guard="true"] :is(.detail-bar, .detail-body),
 .detail[data-guard="true"] :is(.detail-bar, .detail-body) * {
@@ -375,18 +375,20 @@
 /* --- the way in: SEL at a strip's bottom left (#151, mockup v8) --- */
 
 /* A hold opens the channel detail (F27). Its touch box runs from the
-   strip's inner edge (over the strip's 4 px padding) toward the cap's
-   widest reach (3 px clear of it) and from the zone's foot (over its 10 px
-   bottom padding) up: 36 x 36 px on an 83 px iPad strip, the column's room
-   on a narrower one, 44 px high on a narrow strip, so it never meets the
-   cap, even at −∞. It is over the fader (z-index 2) and takes its own
+   strip's inner edge (over the strip's 4 px padding) to 3 px short of the
+   cap's widest reach (the main session's ruling on #151: the v8 formula's
+   `- 21px` met the cap exactly; `- 24px` leaves a finger aimed at the
+   cap's left edge at −∞ to the cap) and from the zone's foot (over its
+   10 px bottom padding) up: 36 px high (44 px on a narrow strip), 36 px
+   wide from an 86 px strip, narrower below (33.2 px on the iPad's 83 px,
+   17 px at 64 px), so it never meets the cap, even at −∞. It is over the fader (z-index 2) and takes its own
    touches; the rest of the zone stays the fader's. The drawn key is 2 px
    inside the box and fills from the bottom while the finger stays
    (`data-holding`: a transition, never an animation); a tap's hint shows
    above it for a moment (`data-hint`: no element, no layout change, no
    touch). */
-/* Placed in the zone's grid cell (its content box, `.strip-zone > *`), as
-   the mockup places it in its zone. */
+/* Placed in the zone's grid cell (its content box, `.strip-zone > *`
+   names both end lines), as the mockup places it in its zone. */
 .strip-sel {
     position: absolute;
     left: -4px;
@@ -394,7 +396,7 @@
     z-index: 2;
     display: grid;
     place-items: center;
-    width: min(36px, calc(100% - 21px - var(--cap-w) / 2));
+    width: min(36px, calc(100% - 24px - var(--cap-w) / 2));
     height: 36px;
     margin: 0;
     padding: 0;

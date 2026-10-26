@@ -23,16 +23,16 @@ use crate::store::Slot;
 
 /// Moves the bars under `root` (its `.meter-bar` children in order, at any
 /// depth) in the frame loop: bar `i` reads `levels[i]` (one slot may feed
-/// two bars), on the fader's volume law. Each bar carries its own
-/// `data-level` / `data-peak`; `root` carries the first bar's.
+/// two bars), on the fader's volume law. `root` carries the first bar's
+/// `data-level` / `data-peak` (two attribute writes a changed frame per
+/// meter; a test reads another bar from its cover's `scaleY` and its peak
+/// line's `--pk`, the drawing itself).
 fn animate_bars(root: NodeRef<html::Div>, levels: Vec<RwSignal<Slot>>, law: VolumeLaw) {
     let count = levels.len();
     raf::animate(root, move |el| {
-        let bar = |i: usize| dom::child(&el, &format!(".meter-bar:nth-child({})", i + 1));
         let part = |i: usize, name: &str| {
             dom::child(&el, &format!(".meter-bar:nth-child({}) .{name}", i + 1))
         };
-        let boxes: Vec<Option<web_sys::HtmlElement>> = (0..count).map(bar).collect();
         let covers: Vec<Option<web_sys::HtmlElement>> =
             (0..count).map(|i| part(i, "meter-cover")).collect();
         let lines: Vec<Option<web_sys::HtmlElement>> =
@@ -63,10 +63,6 @@ fn animate_bars(root: NodeRef<html::Div>, levels: Vec<RwSignal<Slot>>, law: Volu
                     dom::set_style(line, "--pk", &format!("{peak:.4}"));
                     dom::set_style(line, "opacity", if peak > 0.001 { "0.75" } else { "0" });
                 }
-                if let Some(b) = &boxes[i] {
-                    dom::set_attr(b, "data-level", &format!("{pos:.4}"));
-                    dom::set_attr(b, "data-peak", &format!("{peak:.4}"));
-                }
                 if i == 0 {
                     dom::set_attr(&el, "data-level", &format!("{pos:.4}"));
                     dom::set_attr(&el, "data-peak", &format!("{peak:.4}"));
@@ -80,7 +76,7 @@ fn animate_bars(root: NodeRef<html::Div>, levels: Vec<RwSignal<Slot>>, law: Volu
 /// One meter bar's parts.
 fn bar_view() -> impl IntoView {
     view! {
-        <div class="meter-bar" data-testid="meter-bar" data-level="0" data-peak="0">
+        <div class="meter-bar" data-testid="meter-bar">
             <div class="meter-zones"></div>
             <div class="meter-cover"></div>
             <div class="meter-peak"></div>
