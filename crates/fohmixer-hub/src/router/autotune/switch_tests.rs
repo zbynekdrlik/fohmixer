@@ -1120,6 +1120,7 @@ async fn a_key_change_keeps_tuning_and_a_bad_read_back_drops_only_that_track() {
         (TrackState::Dry, TrackState::Tune, false)
     );
     assert_eq!(singer.why.as_deref(), Some("stream Key refused, wrote G"));
+    assert!(!singer.waiting, "a key's why");
 }
 
 impl Live {
@@ -1219,6 +1220,7 @@ async fn another_writer_is_shown_and_dry_wins() {
         singer.why.as_deref(),
         Some("stream: another writer moves its selector")
     );
+    assert!(!singer.waiting, "a target's why");
     // The PA tunes meanwhile; the stream's selector left as it is.
     assert_eq!(live.written(), vec![batch(&[("p6", 0.0)])]);
     // The next song start resets the guard: DRY again, then on once its
@@ -1624,6 +1626,8 @@ async fn a_singer_kept_dry_by_its_sets_fall_back_not_kept_says_why() {
         vox.why.as_deref(),
         Some("PA: its fall back to DRY is not kept (no such function: safe_writes)")
     );
+    // PR #150 re-review m1: the hub's own wait, never its key's.
+    assert!(vox.waiting, "{vox:?}");
 }
 
 #[tokio::test]
@@ -1682,6 +1686,7 @@ async fn the_pages_are_told_the_singers_and_the_key() {
                 key_ok: true,
                 why: None,
                 confirmed: true,
+                waiting: false,
             },
             SingerState {
                 id: "#Vox 7".into(),
@@ -1692,6 +1697,7 @@ async fn the_pages_are_told_the_singers_and_the_key() {
                 key_ok: true,
                 why: None,
                 confirmed: false,
+                waiting: false,
             },
         ]
     );
@@ -2067,6 +2073,7 @@ async fn a_missing_target_is_a_problem_never_a_key_being_checked() {
     let vox1 = &state.singers[0];
     assert!(!vox1.key_ok);
     assert_eq!(vox1.why.as_deref(), Some("stream: no rack named Latencies"));
+    assert!(!vox1.waiting, "a target's trouble");
     assert_eq!(vox1.stream, TrackState::Dry);
     // A key device missing: a problem too, never checking.
     let mut keyless = rack(7);

@@ -1537,8 +1537,9 @@ fn an_autotune_message_round_trips_and_an_older_page_reads_it_as_unknown() {
                 pa: TrackState::Dry,
                 off: false,
                 key_ok: false,
-                why: Some("PA Key reads G, wrote F".into()),
+                why: Some("PA: waits for Live's track list".into()),
                 confirmed: false,
+                waiting: true,
             },
             SingerState {
                 id: "#Vox 7".into(),
@@ -1549,6 +1550,7 @@ fn an_autotune_message_round_trips_and_an_older_page_reads_it_as_unknown() {
                 key_ok: true,
                 why: None,
                 confirmed: true,
+                waiting: false,
             },
         ],
         map_problems: 1,
@@ -1566,7 +1568,8 @@ fn an_autotune_message_round_trips_and_an_older_page_reads_it_as_unknown() {
         json!({"type": "autotune", "aut": true, "playing": true, "targets": [],
                "song": 31, "key": "F", "checking": true, "singers": [
                    {"id": "VOX1", "label": "Vox 1", "stream": "tune", "pa": "dry",
-                    "off": false, "key_ok": false, "why": "PA Key reads G, wrote F"},
+                    "off": false, "key_ok": false, "why": "PA: waits for Live's track list",
+                    "waiting": true},
                    {"id": "#Vox 7", "label": "Vox 7", "stream": "none", "pa": "dry",
                     "off": true, "key_ok": true, "confirmed": true}],
                "map_problems": 1, "map_changes": 8, "map_keyed": 165, "bar": "F",

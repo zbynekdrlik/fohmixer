@@ -709,6 +709,12 @@ pub struct SingerState {
     /// that, never a key still on its way).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub confirmed: bool,
+    /// Its `why` is the hub's own wait (its set's fall back to DRY not
+    /// kept, Live's track list, a rack not found again: PR #150 re-review
+    /// m1), never its key's or its target's: the panel shows its key as it
+    /// stands and no "rewrite at the next change".
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub waiting: bool,
 }
 
 /// Why a target's selector is where the hub's rule put it (#140 PR 3b,

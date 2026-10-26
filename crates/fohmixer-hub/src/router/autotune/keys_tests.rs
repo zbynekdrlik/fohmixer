@@ -742,6 +742,48 @@ async fn the_key_in_force_follows_the_song_time() {
 }
 
 #[tokio::test]
+async fn a_jump_that_keeps_the_key_tells_the_pages_its_coming_change() {
+    // PR #150 re-review m2: a jump from before a key clip to past the clip
+    // back to the song's key keeps the key in force; the pages' head never
+    // names a change that will not come.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, _own, _rx) = offline_router(dir.path());
+    let page = attach(&mut router, 1);
+    router.handle(layout(1, vec![stream()]));
+    let mut listing = songs("F");
+    listing.clips.push(ClipName {
+        name: "Key {F}".into(),
+        start: Some(70.0),
+    });
+    map_read(&mut router, 1, listing);
+    transport(&mut router, true);
+    deliver(&mut router, TEMPO_KEY, 120.0);
+    deliver(&mut router, TIME, 10.0);
+    let state = router.autotune.state();
+    assert_eq!((state.song, state.key.as_deref()), (Some(1), Some("F")));
+    assert_eq!(
+        state.change,
+        Some(fohmixer_proto::client::ComingChange {
+            key: "G".into(),
+            clip: "Key {G}".into(),
+        })
+    );
+    let _ = told(&page);
+    deliver(&mut router, TIME, 80.0);
+    let state = router.autotune.state();
+    assert_eq!(
+        (state.song, state.key.as_deref(), state.change),
+        (Some(1), Some("F"), None)
+    );
+    let after = told(&page);
+    assert_eq!(
+        after.last().map(|s| s.change.clone()),
+        Some(None),
+        "{after:?}"
+    );
+}
+
+#[tokio::test]
 async fn the_lookahead_is_a_playing_sets_only() {
     let dir = tempfile::tempdir().unwrap();
     let (mut router, _own, rx) = offline_router(dir.path());

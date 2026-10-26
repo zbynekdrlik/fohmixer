@@ -278,6 +278,8 @@ impl AutotuneIo {
                     why,
                     id: id.unwrap_or_default(),
                     confirmed,
+                    // PR #150 re-review m1: not judged yet.
+                    waiting: false,
                 }
             })
             .collect()

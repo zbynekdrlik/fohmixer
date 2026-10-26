@@ -423,6 +423,7 @@ mod tests {
             key_ok: true,
             why: None,
             confirmed: true,
+            waiting: false,
         }
     }
 
@@ -850,6 +851,38 @@ mod tests {
     }
 
     #[test]
+    fn a_singer_the_hub_keeps_dry_shows_its_key_and_only_the_hubs_reason() {
+        // PR #150 re-review m1: the hub's own wait is no key problem: no `!`
+        // in the key column, and nothing is rewritten at the next change.
+        let mut kept = bad(
+            singer("VOX1", Dry, Dry),
+            "PA: its fall back to DRY is not kept yet",
+        );
+        kept.waiting = true;
+        let mut pending = bad(singer("VOX2", Dry, Dry), "PA: waits for Live's track list");
+        pending.waiting = true;
+        pending.confirmed = false;
+        let s = state(true, Some(true), Some("F"), vec![kept.clone(), pending]);
+        let rows = panel_rows(&s);
+        assert_eq!((rows[0].key.as_str(), rows[0].ok), ("F ✓", true));
+        assert_eq!(
+            rows[0].why.as_deref(),
+            Some("Vox 1: PA: its fall back to DRY is not kept yet")
+        );
+        assert_eq!((rows[1].key.as_str(), rows[1].ok), ("F …", true));
+        assert_eq!(
+            rows[1].why.as_deref(),
+            Some("Vox 2: PA: waits for Live's track list")
+        );
+        // Without a key in force: none to show.
+        let keyless = state(true, Some(true), None, vec![kept]);
+        assert_eq!(panel_rows(&keyless)[0].key, "—");
+        // The surface still counts it: waiting, the corner lit.
+        assert_eq!(line(&s), "waiting · F");
+        assert!(has_problem(Some(&s)));
+    }
+
+    #[test]
     fn the_panel_head_names_the_coming_change_and_its_clip() {
         // PR #150 review K1, mockup v2's head.
         let mut s = state(true, Some(true), Some("F"), Vec::new());
@@ -1001,10 +1034,12 @@ mod tests {
             panel_place(at(200.0), 390.0, 844.0, 300.0),
             place(240.0, 596.0)
         );
-        // The button low (600..632): 196 below, 584 above; 300 fits above.
+        // The button low (600..632): 196 below, 584 above; 300 fits above,
+        // held to its own height so a panel that grows never covers the
+        // button (PR #150 re-review m3).
         assert_eq!(
             panel_place(at(600.0), 390.0, 844.0, 300.0),
-            place(292.0, 584.0)
+            place(292.0, 300.0)
         );
         // Fits below exactly: below.
         assert_eq!(
