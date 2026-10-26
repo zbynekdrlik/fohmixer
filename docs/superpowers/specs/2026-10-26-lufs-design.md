@@ -1,6 +1,6 @@
 # Loudness (LUFS) on the mics and on the PA output (#151)
 
-Status: draft for the owner's approval, 2026-10-26. The rules in §2 are the owner's, recorded on #151 on 2026-10-26 (brainstorm answers and two DECIDED comments). The main session's calls are marked *(call)*. Nothing is built before the owner approves this note and mockup `docs/mockups/lufs-v2.html`. Mockup v1 (`lufs-v1.html`, two variants of a pill beside today's meter) was rejected by the owner on 2026-10-26 (#151, "OWNER FEEDBACK on mockup v1"): the strip is redrawn the Waves LV1 way, a stereo meter inside the fader's track and the scale on its right (§6.2, §6.3).
+Status: draft for the owner's approval, 2026-10-26. The rules in §2 are the owner's, recorded on #151 on 2026-10-26 (brainstorm answers and two DECIDED comments). The main session's calls are marked *(call)*. Nothing is built before the owner approves this note and mockup `docs/mockups/lufs-v3.html`. Mockup v3 is v2 (`lufs-v2.html`) without the PEAK number and without any clip light or clip state, on the owner's feedback to v2 (#151, 26.10): Live mixes in 32-bit float, so a track cannot clip inside Live. Mockup v1 (`lufs-v1.html`, two variants of a pill beside today's meter) was rejected by the owner on 2026-10-26 (#151, "OWNER FEEDBACK on mockup v1"): the strip is redrawn the Waves LV1 way, a stereo meter inside the fader's track and the scale on its right (§6.2, §6.3).
 
 ## 0. Zhrnutie pre vlastníka
 
@@ -11,7 +11,7 @@ Status: draft for the owner's approval, 2026-10-26. The rules in §2 are the own
 - Keď spevák nespieva, číslo zmizne a ukáže sa sivá pomlčka `—`. Ticho a pauzy nikdy nerozsvietia žltú ani červenú.
 - Na výstupe do reprákov (master return): len živé short-term číslo, bez farby a bez priemeru za pieseň.
 - Pás ako vo Waves LV1: v dráhe fadra pod gombíkom dva tenké stĺpiky L a R (stereo, panoráma a nevyvážený obraz sú vidno), stupnica dB vpravo od dráhy, dnešný tyrkysový pás vo fadri a tmavý meter vľavo zmiznú.
-- Vľavo od gombíka stĺpik čísel: LUFS (na pásoch so značkou) a PEAK (špička za 1,5 s, pri clipe CLIP).
+- Vľavo od gombíka stĺpik: LUFS (na pásoch so značkou) a pod ním meno skupiny. Žiadne číslo špičky ani svetielko clipu (Live mieša v 32-bitovom floate, stopa v ňom neclipne).
 - Fadre ostávajú presne také vysoké ako dnes (322 px na iPade, zmerané v mockupe). Nad fadre nepribudne nič.
 
 **Odkiaľ to číslo príde**
@@ -218,23 +218,24 @@ A strip in `none` because the device is missing also shows the existing problem 
 
 v1's two variants (a pill in the readout line, or over the top of today's meter) are gone with the owner's rejection of v1. In v2 the readings sit in the information column the new fader zone frees (§6.3): the LUFS in a pill of its state's colour at the column's top, under a small `LUFS` caption, on `+LUFS` strips only; the row stays empty on every other strip, so the eye finds each number at the same place. Live's dB stays in the readout line under the name, as today (held: accent, as today).
 
-On a narrow strip (under 78 px: the phones) the column is 13–24 px wide: the LUFS stands upright, digit under digit (`writing-mode: vertical-rl; text-orientation: upright`), and the captions and PEAK leave. Which layout a strip takes is decided from the strip width the arrangement already computes (`arrange.rs`), never by measuring text (#21). The mockup checks every reading inside its box on all screens and in a sweep of one strip from 64 to 120 px.
+On a narrow strip (under 78 px: the phones) the column is 13–24 px wide: the LUFS stands upright, digit under digit (`writing-mode: vertical-rl; text-orientation: upright`), and the caption leaves. Which layout a strip takes is decided from the strip width the arrangement already computes (`arrange.rs`), never by measuring text (#21). The mockup checks every reading inside its box on all screens and in a sweep of one strip from 64 to 120 px.
 
 ### 6.3 The strip's fader zone (mockup v2, the LV1 way)
 
 The owner's reference is Waves LV1's new generation: a thin stereo meter pair inside the fader's own track, under the cap, and the dB scale on the track's right. The zone keeps today's height (the head, 30 + 2 + 22 px, and the zone's padding, 8 px top and 10 px bottom, unchanged): **322 px of travel on the iPad's FOH page (1194 × 834, two lines), 292 px on a phone on its side and 327 px upright**, measured in the mockup, the same with and without LUFS. Right to left, in the zone:
 
 - **The scale** (17 px, the strip's right edge): today's labels (+6 … −60), left-aligned beside the track. The cap (32 px on the iPad) overhangs the labels' first ~8 px as it passes (the price of a usable information column; the label under the cap is read from the cap's own position).
-- **The track** (12 px, 2 px from the scale): two bars, L and R, 4 px each, 2 px apart, on the fader's dB scale (today's zones: green, yellow from −12 dB, red from −3 dB; the TouchOSC-calibrated position, as today), each with its peak line (held 1.5 s). The 0 dB mark is 4 px either side of the track. **One clip light per bar** over the track (today: one for the meter), a tap resets both.
+- **The track** (12 px, 2 px from the scale): two bars, L and R, 4 px each, 2 px apart, on the fader's dB scale (today's zones: green, yellow from −12 dB, red from −3 dB; the TouchOSC-calibrated position, as today), each with its peak line (the highest level of the last 1.5 s; never called or shown as a clip). The 0 dB mark is 4 px either side of the track.
+- **No clip light, no clip state (v3, the owner's feedback to v2, #151, 26.10):** Live mixes in 32-bit float, so a track cannot clip inside Live; the strip drops today's clip light (`MeterView`'s `clip` signal, `.meter-clip`, `behave::peak::clips` / `CLIP_LEVEL` lose their strip use), and v2's per-channel lights and red `CLIP` are gone. The zone keeps its 8 px top padding (today's room for the light), so the travel stays today's.
 - **The cap**, centred on the track, opaque, with a 1 px dark ring (no blur): the bars run under it, its white line stays readable over them. Today's turquoise fill in the groove is gone.
-- **The information column**, from the zone's left edge to 3 px left of the cap's widest reach (29 px on an 83 px iPad strip, 37 px on a wide one): LUFS (§6.2), then `PEAK` and the held peak in whole dB on the fader's scale (the level the peak line points at, max of L and R; `CLIP` in red while the clip light is lit), then the group's name (#127, bottom to top; it moves here from the scale column).
-- Considered and left out of the column: the pan position (it would need the pan subscribed on every strip; the L/R bars show its effect, and it is in the channel detail), gain reduction (not in the LOM), automation state (shown by the REVERB/AUTO marks).
+- **The information column**, from the zone's left edge to 3 px left of the cap's widest reach (29 px on an 83 px iPad strip, 37 px on a wide one): LUFS (§6.2), then the group's name (#127, bottom to top; it moves here from the scale column). Nothing else: v2's PEAK number was removed in v3 (the owner's feedback, #151, 26.10).
+- Considered and left out of the column: a peak number and a clip mark (v3, above), the pan position (it would need the pan subscribed on every strip; the L/R bars show its effect, and it is in the channel detail), gain reduction (not in the LOM), automation state (shown by the REVERB/AUTO marks).
 
 The whole zone stays the fader's touch target (TouchOSC's 1:1); the column, the scale and the bars take no touch. The meter moves as today: a cover's `scaleY` and a peak layer's `translateY` per bar, no layout per frame (#21).
 
 ### 6.4 Texts (English, #141)
 
-- On the strip: the number only (`−25`, `−18`), `—` when silent or missing; on a strip of 78 px or more the small captions `LUFS` and `PEAK` over the numbers, `CLIP` for a lit clip light. No unit beside the number.
+- On the strip: the number only (`−25`, `−18`), `—` when silent or missing; on a strip of 78 px or more the small caption `LUFS` over the number. No unit beside the number. No PEAK and no CLIP text (v3).
 - In the problem list: `no LUFS meter`, `two LUFS meters`, `bad LUFS tag`, `no meter device` (§3.4).
 - The tag manual (`znacky.html`): `+LUFS:<target>` and `+LUFS`, with the states table.
 
@@ -259,7 +260,7 @@ The whole zone stays the fader's touch target (TouchOSC's 1:1); the column, the 
 - **The device against the reference (PC, an L check):** the test signals rendered as WAVs, played through the device in Live; its parameters agree with the reference within 0.1 LU. The `.genexpr` text and the Rust module share one written-out coefficient table, kept equal by a CI check *(call)*.
 - **proto:** the tag (`+LUFS`, `+LUFS:-25`, `+LUFS:-5` bad, `+LUFS:x` bad, two tags), the composition into `Strip.lufs`, `judge` on every boundary (−22 fine, −21 warn, −19 warn, −18 far, −28 fine, −29 warn, −31 warn, −32 far, −70 silent, rounding of −21.5 and −22.4), the frame file's `lufs` field.
 - **hub (SimLive):** SimLive gains a Max device with `Short-term`/`Voice` parameters it can drive. A walk finds it two racks deep; a device inserted before it re-walks and follows the new ref; a missing and a doubled device give their problems; a disconnect clears; pacing and an idle page; `/api/status`. The mutation gate covers `judge`, the walk's matching and the pacing.
-- **E2E (Playwright, Chromium and WebKit iPad, the phone sizes):** a SimLive `Voice` of −25, −21, −33, −70 shows `−25` green, `−21` yellow, `−33` red, `—`; the output shows its plain number; two bars in the fader track with SimLive's different L and R levels at different heights; a clip on one channel lights its own light and `CLIP`; the fader travel on the FOH fixture at 1194 × 834 is at least 322 px and a `+LUFS` strip's equals a plain strip's; every reading inside its box in the 64–120 px sweep; zero console errors.
+- **E2E (Playwright, Chromium and WebKit iPad, the phone sizes):** a SimLive `Voice` of −25, −21, −33, −70 shows `−25` green, `−21` yellow, `−33` red, `—`; the output shows its plain number; two bars in the fader track with SimLive's different L and R levels at different heights; a level at Live's top (1.0) lights no clip mark and shows no `CLIP` or `PEAK` text anywhere on the strip; the fader travel on the FOH fixture at 1194 × 834 is at least 322 px and a `+LUFS` strip's equals a plain strip's; every reading inside its box in the 64–120 px sweep; zero console errors.
 - **hub (armed tracks, §3.4):** SimLive's meter device's L/R plus the fader's dB and the pan law give the strip's output level; a muted track reads −∞; a non-armed track keeps Live's meters.
 
 ## 10. Rollout on the PC
@@ -275,5 +276,5 @@ The whole zone stays the fader's touch target (TouchOSC's 1:1); the column, the 
 ## 11. Open questions for the owner
 
 - **Q1. Bleed on the vocal mics.** With the band playing and the singer silent, how loud is the stage in a vocal mic after its trim? If it can reach −40 LUFS, the gate (−40) should go lower than the bleed would read as a voice, e.g. −36. A one-song check during P1 answers it; the owner only confirms which level counts as "not singing".
-- **Q2. PEAK in the column:** keep the held peak number (and `CLIP`) under the LUFS on every strip, or only LUFS for a calmer column? (Mockup v2 shows it; the note's proposal is to keep it.)
+- **Q2 (answered, 26.10):** no PEAK number and no clip light or clip state on the strips (Live mixes in 32-bit float); mockup v3.
 - **Q3. Which tracks:** only the PA singers and the speakers' return, or also the master Live's hand mics (speech) with the same −25 target?
