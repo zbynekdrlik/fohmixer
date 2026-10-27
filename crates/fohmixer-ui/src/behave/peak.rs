@@ -1,15 +1,11 @@
-//! The meter's peak hold and clip light (#21, new with the redesign; TouchOSC
-//! had neither): a bar's highest position stays 1.5 s, then falls to the
-//! bar; a level at the calibration's 0 dB point lights the clip light,
-//! which stays lit until it is tapped.
+//! The meter's peak hold (#21, new with the redesign; TouchOSC had none):
+//! a bar's highest position stays 1.5 s, then falls to the bar. No clip
+//! light (#151: Live mixes in 32-bit float, a track cannot clip inside it).
 
 /// How long a peak holds (ms).
 pub const HOLD_MS: f64 = 1500.0;
 /// How fast a peak falls after its hold (fader positions per ms).
 pub const FALL_PER_MS: f64 = 0.0005;
-/// Live's meter level at 0 dB on the fader scale (the meter calibration's
-/// point at position 0.729): from here the clip light lights.
-pub const CLIP_LEVEL: f64 = 0.92;
 
 /// A bar's peak (positions on the fader scale).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -38,11 +34,6 @@ impl Peak {
             shown
         }
     }
-}
-
-/// Whether Live's meter level lights the clip light.
-pub fn clips(level: f64) -> bool {
-    level >= CLIP_LEVEL
 }
 
 #[cfg(test)]
@@ -81,13 +72,5 @@ mod tests {
         // so at 2600 ms the peak has fallen 100 ms' worth, not 1100's.
         assert_eq!(p.step(0.6, 1000.0), 0.6);
         assert!((p.step(0.0, 2600.0) - 0.55).abs() < 1e-12);
-    }
-
-    #[test]
-    fn the_clip_light_lights_from_0_db() {
-        assert!(clips(0.92));
-        assert!(clips(1.0));
-        assert!(!clips(0.919_999_999_999_999_9));
-        assert!(!clips(0.5));
     }
 }

@@ -8,9 +8,15 @@
    Live's dB under it), the fader zone runs down to the foot, which a hand
    holding the tablet covers. No pan (#71, D17: it is the channel detail's;
    at the foot the iPad's home bar waits for a swipe). The instance tag
-   only in a group whose strips differ. */
+   only in a group whose strips differ. The owner's mockup v8 (#151): the
+   name button is the strip's top edge (no padding above it), and the
+   strip carries one colour, its Live track's (the name button's 3 px
+   edge; no group colour on a strip). `--cap-w`: the fader cap's width,
+   narrower on a strip under 70 px so it stays inside it (SEL keeps clear
+   of it). */
 .strip {
-    --head-w: calc(var(--strip-w, 76px) - 10px);
+    --head-w: calc(var(--strip-w, 76px) - 2px);
+    --cap-w: min(32px, calc(var(--strip-w, 76px) - 38px));
     position: relative;
     display: grid;
     grid-template-columns: minmax(0, 1fr);
@@ -19,7 +25,7 @@
     flex: none;
     width: var(--strip-w, 76px);
     min-height: 0;
-    padding: 5px 4px 4px;
+    padding: 0 4px 4px;
     border: 1px solid transparent;
     border-radius: 9px;
     background: var(--panel);
@@ -29,28 +35,23 @@
     grid-template-rows: auto auto minmax(0, 1fr);
 }
 
-/* `--head-w`: the head's width (the strip's less its padding and border;
-   the hint over the name button, detail.css). */
+/* `--head-w`: the head's width (the strip's less its border: the name
+   button reaches over the side padding; SEL's hint, detail.css). */
 .strip.wide {
-    --head-w: calc(var(--strip-w, 76px) * 1.1 - 10px);
+    --head-w: calc(var(--strip-w, 76px) * 1.1 - 2px);
     width: calc(var(--strip-w, 76px) * 1.1);
 }
 
 /* No rounded clip on the strip (a clip is painted again with every change
    inside it): its edge lines are borders of a layer as large as the strip,
-   so they follow its rounded corners, and take no touch. */
-.strip::before,
+   so they follow its rounded corners, and take no touch. No group colour
+   on a strip (#151, v8: one colour per strip, the track's own). */
 .strip::after {
     content: "";
     position: absolute;
     inset: 0;
     border-radius: 8px;
     pointer-events: none;
-}
-
-.strip::before {
-    border-top: 3px solid var(--gc, var(--accent));
-    opacity: 0.9;
 }
 
 /* A pager's slot the shown sub-page leaves empty (#63): the strips after it
@@ -60,24 +61,21 @@
     background: none;
 }
 
-.strip.blank::before {
-    display: none;
-}
-
-/* A muted strip steps back (#63): darker, its fader, meter and readout
-   dimmed; only the name button's small MUTE mark is red. The strips that
-   sound stand out, not the silent ones. */
+/* A muted strip steps back (#63; #151, v8): darker, its cap, meter,
+   readout and info column dimmed, SEL a little; only the name button's
+   small MUTED word is red, quiet. The strips that sound stand out, never
+   the silent ones. */
 /* The colour only: a conflict's hatching (`states.css`) stays. */
 .strip:has(.mute[data-muted="true"]) {
     background-color: var(--panel-mute);
 }
 
-.strip:has(.mute[data-muted="true"])::before {
-    opacity: 0.3;
+.strip:has(.mute[data-muted="true"]) :is(.fader-cap, .fader-track, .strip-readout, .strip-col) {
+    opacity: 0.4;
 }
 
-.strip:has(.mute[data-muted="true"]) :is(.fader-cap, .fader-fill, .meter, .strip-readout) {
-    opacity: 0.4;
+.strip:has(.mute[data-muted="true"]) .strip-sel {
+    opacity: 0.6;
 }
 
 /* While a finger or a glide drives the fader (`data-held`), the strip lights
@@ -106,7 +104,7 @@
     /* The strip's texts are sized from the strip width (`--strip-w`), never
        measured (#21: measuring each text forced a layout per text, and
        WebKit stopped drawing frames while it ran): the tag's longest form
-       "MASTER · RET" fits from the narrowest strip up (the name: see
+       "MASTER" fits from the narrowest strip up, no RET since #151 (the name: see
        .strip-label); an ellipsis is the last guard, never an overflow (#9). */
     font: 700 clamp(7px, calc((var(--strip-w, 76px) - 22px) / 7), 8.5px) / 1.3 var(--ui);
     letter-spacing: 0.3px;
@@ -123,32 +121,16 @@
     background: rgba(139, 125, 255, 0.16);
 }
 
-/* The fader zone: the dB scale, the meter, the fader, one height. The
-   fader covers the whole zone (its touch target is the strip's width, not
-   its column); its groove, fill and cap sit in the third column, centred at
-   50% + 17px (the scale's 17 px, the meter's 11, two 3 px gaps). */
+/* A former MIDI fader's zone (params.rs; vca.css adds the backing-tracks
+   fader's scale column): its fader, centred. */
 .strip-fz {
     display: grid;
-    grid-template-columns: 17px 11px minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr);
     gap: 3px;
     min-height: 0;
     /* The cap's lower half at −∞ (11 px) stays off the strip's foot and
-       the screen's edge (#71: no pan under the zone any more). */
+       the screen's edge (#71). */
     padding: 8px 0 10px;
-}
-
-.strip-fz .scale {
-    grid-area: 1 / 1;
-}
-
-.strip-fz .meter {
-    grid-area: 1 / 2;
-}
-
-.strip-fz .fader {
-    grid-area: 1 / 1 / 2 / 4;
-    --x: calc(50% + 17px);
 }
 
 .param-fz .fader {
@@ -156,8 +138,140 @@
     --x: 50%;
 }
 
-.meter-clip {
-    z-index: 2;
+/* A strip's fader zone (#151, the owner's mockup v8, the LV1 way): right
+   to left the dB scale (17 px, at the right edge), 2 px, the fader's
+   track (12 px) holding the stereo meter, the cap centred on the track,
+   and left of the cap's widest reach the info column; SEL at the bottom
+   left. Every part lies over the whole zone (one grid cell): the fader
+   covers it and takes the touch everywhere but on SEL. The cap's lower
+   half at −∞ (11 px) stays off the strip's foot and the screen's edge. */
+.strip-zone {
+    position: relative;
+    display: grid;
+    grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+    min-height: 0;
+    padding: 8px 0 10px;
+}
+
+/* Both end lines too: an absolutely placed child (SEL) with only start
+   lines would take the padding edge for its `auto` end lines, so its
+   `bottom` would count from 10 px under the cell. */
+.strip-zone > * {
+    grid-area: 1 / 1 / 2 / 2;
+}
+
+.strip-zone .fader {
+    --x: calc(100% - 25px);
+}
+
+.strip-zone .scale {
+    justify-self: end;
+    width: 17px;
+}
+
+/* The labels left-aligned beside the track (the cap overhangs their first
+   8 px as it passes). */
+.strip-zone .tick {
+    left: 0;
+    right: auto;
+}
+
+/* The track: two bars, L and R, 4 px each, 2 px apart (TrackMeter), on
+   the fader's own dB scale; over the unity mark, under the cap. */
+.fader-track {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: calc(var(--x, 50%) - 6px);
+    z-index: 1;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px;
+    width: 12px;
+    padding: 1px;
+    border-radius: 3px;
+    background: #08080f;
+    box-shadow: inset 0 0 0 1px var(--line);
+    pointer-events: none;
+}
+
+/* The unity mark: 20 px, centred on the track, under it. */
+.strip-zone .fader::after {
+    left: calc(var(--x) - 10px);
+    right: auto;
+    width: 20px;
+    background: rgba(255, 255, 255, 0.4);
+}
+
+/* An open write's ghost line over the track. */
+.strip-zone .fader-ghost {
+    z-index: 1;
+}
+
+/* Opaque, with a 1 px dark ring (no blur): the bars run under it and its
+   white line stays readable over them. */
+.strip-zone .fader-cap {
+    box-shadow: 0 0 0 1px #07070c;
+}
+
+/* The info column (#151): left of the cap's widest reach (3 px clear), the
+   zone's height: the LUFS caption and value (their rows kept, hidden
+   until the LUFS source), then the group's name (group.css). No touch. */
+.strip-col {
+    position: relative;
+    justify-self: start;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: calc(100% - 28px - var(--cap-w) / 2);
+    min-width: 0;
+    pointer-events: none;
+}
+
+.lufs-cap {
+    overflow: hidden;
+    visibility: hidden;
+    color: var(--faint);
+    font: 700 7.5px/9px var(--ui);
+    letter-spacing: 0.08em;
+    text-align: center;
+    white-space: nowrap;
+}
+
+.lufs {
+    align-self: center;
+    width: min(100%, 40px);
+    height: 16px;
+    overflow: hidden;
+    color: var(--faint);
+    font: 500 10.5px/16px var(--mono);
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    white-space: nowrap;
+}
+
+.lufs[data-l="none"] {
+    visibility: hidden;
+}
+
+/* A narrow strip (#151: under 78 px, `arrange::narrow` on `.body`): the
+   column is 13-24 px, so the LUFS will stand upright and the caption
+   leaves; an empty one takes no row. */
+:is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .lufs-cap {
+    display: none;
+}
+
+:is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .lufs {
+    height: auto;
+    padding: 3px 0;
+    font: 500 9.5px/12px var(--mono);
+    letter-spacing: -1px;
+    text-orientation: upright;
+    writing-mode: vertical-rl;
+}
+
+:is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .lufs[data-l="none"] {
+    display: none;
 }
 
 .scale {
@@ -188,33 +302,6 @@
     grid-auto-columns: 1fr;
     grid-auto-flow: column;
     gap: 1px;
-}
-
-/* The clip light over the bars (a larger tap area than its 4 px light). */
-.meter-clip {
-    position: absolute;
-    top: -9px;
-    left: -3px;
-    right: -3px;
-    height: 9px;
-    cursor: pointer;
-    touch-action: none;
-}
-
-.meter-clip::before {
-    content: "";
-    position: absolute;
-    top: 2px;
-    left: 3px;
-    right: 3px;
-    height: 4px;
-    border-radius: 2px;
-    background: #2a1016;
-}
-
-.meter-clip.on::before {
-    background: var(--m-red);
-    box-shadow: 0 0 6px var(--m-red);
 }
 
 /* The peak line: a layer as tall as the bar, its line at the top edge,
@@ -324,16 +411,15 @@
     will-change: transform;
 }
 
-/* 32 px wide, narrower on a strip under 70 px so it stays inside it (its
-   centre is 45 px from the fader's left edge at 64 px). */
+/* `--cap-w` wide (`.strip`: 32 px, narrower on a strip under 70 px so it
+   stays inside it; 32 px outside a strip). */
 .fader-cap {
-    --cap-w: min(32px, calc(var(--strip-w, 76px) - 38px));
     position: absolute;
     top: 100%;
     left: var(--x, 50%);
-    width: var(--cap-w);
+    width: var(--cap-w, 32px);
     height: 22px;
-    margin: -11px 0 0 calc(var(--cap-w) / -2);
+    margin: -11px 0 0 calc(var(--cap-w, 32px) / -2);
     border: 1px solid #4a4a66;
     border-bottom-color: #15151f;
     border-radius: 6px;
@@ -357,30 +443,30 @@
     border-color: var(--accent);
 }
 
-/* The top of the strip (#63): the name button, 30 px (the fader, not the
-   button, gets the height), the readout line under it, and a return's RET
-   mark. */
+/* The top of the strip (#63; #151, v8): the name button, 37 px, as the
+   strip's top edge, and the readout line under it: 37 + 2 + 20 px, the
+   59 px of the head before (5 px of padding, 30 + 2 + 22), so the fader
+   keeps its travel. */
 .strip-head {
     position: relative;
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: 30px 22px;
+    grid-template-rows: 37px 20px;
     row-gap: 2px;
     min-width: 0;
 }
 
-/* The readout line (#71): the status light and Live's dB (or a mark's
-   word) centred in its first column, which takes no touch, and ☰ at its
-   end, 22 px wide from an 88 px strip, 18 px at 72 px and under. It
-   reaches 2 px into the strip's padding each side, so the readout has room
-   beside ☰ from the narrowest strip up. */
+/* The readout line (#71; #151: no ☰, SEL is at the strip's foot): the
+   status light and Live's dB (or a mark's word) centred, no touch. It
+   reaches 2 px into the strip's padding each side. `--menu-w` is 0: the
+   readout's sizes keep their formulas. */
 .strip-info {
-    --menu-w: clamp(18px, calc(var(--strip-w, 76px) * 0.25), 22px);
+    --menu-w: 0px;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
     align-items: center;
     min-width: 0;
-    height: 22px;
+    height: 20px;
     margin: 0 -2px;
 }
 
@@ -396,56 +482,15 @@
     pointer-events: none;
 }
 
-/* Live's dB beside ☰ (#71): the font shrinks with the strip width, so the
-   longest reading ("−69.9", 3 em of the mono face) fits the first column
-   less the light from the narrowest strip up (nothing is measured; swept
-   over 64–120 px in Chromium and WebKit): 8.5 px at 64 px, 12 px from
-   76.8 px. Its line is 17 px whatever the size (the face's whole height at
-   12 px; at the smallest sizes Chromium rounds the face's metrics up). */
+/* Live's dB (#71): the font shrinks with the strip width, so the longest
+   reading ("−69.9", 3 em of the mono face) fits the line less the light
+   from the narrowest strip up (nothing is measured; swept over 64–120 px
+   in Chromium and WebKit): 12 px from 57.6 px, so at every strip width
+   since ☰ left (#151). Its line is 17 px whatever the size (the face's
+   whole height at 12 px). */
 .strip-readout .db {
     font-size: clamp(7px, calc((var(--strip-w, 76px) - 18px - var(--menu-w)) / 3.3), 12px);
     line-height: 17px;
-}
-
-/* The name button's corner line (#127, the approved mockup paired-mute-v3,
-   variant A; MuteView draws it in the strip's button), over the name: a
-   problem's `!` (states.css), the linked mute's chain and a return's RET
-   at the left, in this order, and the MUTE mark at the right end, where it
-   was before #127. A mark that does not fit the line wraps onto a second
-   one, which the line clips (the 16 px row gap puts it below the clip
-   whatever the first line's height): the MUTE mark goes first, then RET
-   (the review's I1 ruling); `!` and the chain always fit, whatever the
-   count: one of four characters or more is drawn compact (link.css,
-   `.link-mark.compact`, #127 re-review N1; swept over 64-120 px in both
-   engines, strip-head.spec.ts). The marks' real widths
-   decide, in each engine; nothing is guessed. No touch: a tap reaches the
-   button. */
-.strip-corner {
-    position: absolute;
-    top: 1.5px;
-    right: 3px;
-    left: 3px;
-    display: flex;
-    flex-wrap: wrap;
-    align-content: flex-start;
-    align-items: flex-start;
-    gap: 16px 3px;
-    height: 13.5px;
-    overflow: hidden;
-    letter-spacing: 0;
-    pointer-events: none;
-}
-
-.strip-ret {
-    flex: none;
-    margin-top: 1.5px;
-    padding: 0 2px;
-    border-radius: 3px;
-    background: rgba(7, 7, 12, 0.6);
-    color: var(--muted);
-    /* A line as tall as the face's glyphs (the text never passes its box). */
-    font: 800 7.5px/1.4 var(--ui);
-    letter-spacing: 0.6px;
 }
 
 .status {
@@ -469,9 +514,9 @@
     color: #ffffff;
 }
 
-/* The name button is the mute: lit in the track's Live colour (`--tc`, the
-   text `--tt`) while the track is audible; dark with a red MUTE mark while
-   muted. */
+/* The name button is the mute: the channel detail's is lit in the track's
+   Live colour (`--tc`, the text `--tt`) while the track is audible, dark
+   with a red MUTE mark while muted; a strip's is calm (below). */
 .mute {
     position: relative;
     display: flex;
@@ -509,12 +554,117 @@
     to { outline-offset: 4px; outline-color: transparent; }
 }
 
-/* A strip's name button: the head's first line, its name under the corner
-   marks (the chain, RET, MUTE: #127, the approved mockup paired-mute-v3,
-   variant A, on every strip). */
-.strip-head > .mute {
-    height: 30px;
-    padding: 9px 3px 0;
+/* A strip's name button (#151, the owner's mockup v8): the strip's top
+   edge, its whole width (over the 4 px side padding to the 1 px edge),
+   37 px, its top corners the strip's. Calm: the strip's dark ground and
+   the name in light, the track's Live colour only as a 3 px edge at its
+   left (`--tc`). Read top-down: the name first, at the top, centred; under
+   it, toward the bottom edge, one line of marks (`.strip-marks`). Muted,
+   it recedes with its strip: darker, the name grey, the edge faded; no
+   fill colour, no strike. */
+.strip-head > .mute,
+.strip-head > .mute.lit {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: space-between;
+    height: 37px;
+    margin: 0 -4px;
+    padding: 3px 3px 3px 7px;
+    border-radius: 8px 8px 5px 5px;
+    background: #15151f;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--text);
+}
+
+/* The armed guard's pulse and an open write's outline (intent.css) drawn
+   inside the button (#151): it is the strip's top edge and its whole
+   width, so an outline outside it would be cut by the line at the top. */
+.strip-head > .mute:is(.armed, [data-intent="unconfirmed"], [data-intent="not_sent"]) {
+    outline-offset: -2px;
+}
+
+.strip-head > .mute.armed {
+    animation-name: arm-in;
+}
+
+@keyframes arm-in {
+    to { outline-offset: -6px; outline-color: transparent; }
+}
+
+.strip-head > .mute::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 3px;
+    border-radius: 8px 0 0 5px;
+    /* Until Live gives the track's colour (or when it cannot): no edge. */
+    background: var(--tc, transparent);
+    pointer-events: none;
+}
+
+.strip-head > .mute[data-muted="true"] {
+    background: #101018;
+    box-shadow: inset 0 0 0 1px var(--line-soft);
+    color: #55556e;
+}
+
+.strip-head > .mute[data-muted="true"]::after {
+    opacity: 0.3;
+}
+
+.strip-head > .mute > .strip-label {
+    height: 20px;
+    line-height: 20px;
+    text-align: center;
+}
+
+/* The marks line (#151, v8): a problem's `!` (states.css), the linked
+   mute's chain and the fader link's mark (link.css), left to right, and
+   `MUTED` at the right end. What gives way when it fills is
+   `behave::marks::marks_look`, from what the strip carries (nothing is
+   measured): a muted chain drops its count, with three marks the fader
+   link drops its "dB", with four the gaps narrow and on a narrow strip the
+   fader link's mark yields. `!`, the chain and MUTED never yield. One flex
+   line; a mark that did not fit would wrap below the clip (16 px row
+   gap). No touch: a tap reaches the button. */
+.strip-marks {
+    display: flex;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    align-items: center;
+    gap: 16px 3px;
+    height: 10px;
+    overflow: hidden;
+    letter-spacing: 0;
+    pointer-events: none;
+}
+
+.strip-marks.crowd,
+:is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .strip-marks {
+    gap: 16px 2px;
+}
+
+.strip-marks .strip-flag {
+    width: 10px;
+    height: 10px;
+    margin: 0;
+    border-radius: 2px;
+    font: 800 8.5px/10px var(--ui);
+}
+
+/* MUTED (v8: a muted, darker red of lower contrast, 7 px; text only). */
+.strip-marks .mute-mark {
+    margin: 0 0 0 auto;
+    color: #a8474f;
+    font: 800 7px/10px var(--ui);
+    letter-spacing: 0.5px;
+}
+
+:is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .strip-marks .mute-mark {
+    letter-spacing: 0.3px;
 }
 
 /* The name's size comes from the strip width and the name's length `--n`
@@ -537,9 +687,8 @@
     white-space: nowrap;
 }
 
-/* The MUTE mark, red while every track of the mute is muted: the right end
-   of a strip's corner line (`.strip-corner`), 2 px from the top and 3 px
-   from the right as before #127; the channel detail's MUTE shows none. */
+/* The MUTE mark, red while every track of the mute is muted: the channel
+   detail's on its button; a strip's is the marks line's MUTED. */
 .mute-mark {
     display: none;
     flex: none;
@@ -557,6 +706,7 @@
    Live's display string of its first target. */
 .strip.param-fader {
     grid-template-rows: auto minmax(0, 1fr) auto;
+    padding-top: 5px;
 }
 
 .param-fz {

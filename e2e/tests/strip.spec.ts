@@ -9,11 +9,13 @@ import {
   doubleTap,
   frames,
   hostLine,
+  hubEvents,
   harness,
   openDetail,
   openSurface,
   panning,
   ready,
+  seen,
   selectPage,
   shown,
   strip,
@@ -38,6 +40,23 @@ test.afterEach(async () => {
 });
 
 const HAND2 = track("Hand2 #");
+/**
+ * Each meter bar as drawn (#151: no per-bar attribute is written each
+ * frame): its level, 1 − its cover's `scaleY`, and its peak line's `--pk`.
+ */
+async function drawn(bars: import("@playwright/test").Locator): Promise<{ level: number; peak: number }[]> {
+  return bars.evaluateAll((all) =>
+    all.map((b) => {
+      const cover = b.querySelector(".meter-cover") as HTMLElement;
+      const scale = /scaleY\(([-\d.]+)\)/.exec(cover.style.transform);
+      const peak = (b.querySelector(".meter-peak") as HTMLElement).style.getPropertyValue("--pk");
+      return { level: scale ? 1 - Number(scale[1]) : 0, peak: Number(peak || 0) };
+    }),
+  );
+}
+
+/** A strip's calm name button (#151, mockup v8: `#15151f`). */
+const CALM = "rgb(21, 21, 31)";
 
 test.describe("A strip", () => {
   test("shows Live's volume in TouchOSC's form, white exactly at 0 dB", async ({ page }) => {
@@ -60,14 +79,17 @@ test.describe("A strip", () => {
     await expect(strip(page, "B-Main repro #").getByTestId("strip-label")).toHaveText("Main");
     // #63, #127: a group whose strips share an instance names it once, on
     // the side of its run's first strip (Hand2's group is untitled: the name
-    // is the set's), not on each strip; a return says RET on its name button.
+    // is the set's), not on each strip; #151: no RET on any strip.
     const named = await groupLabelOf(page, strip(page, "Hand2 #"));
     await expect(named).toHaveText("BAND");
     await expect(named).toHaveAttribute("data-instance", "band");
     await expect(strip(page, "Hand2 #").getByTestId("strip-instance")).toHaveCount(0);
     await expect(strip(page, "B-Main repro #").getByTestId("strip-instance")).toHaveCount(0);
-    await expect(strip(page, "B-Main repro #").getByTestId("strip-ret")).toHaveText("RET");
-    await expect(strip(page, "Hand2 #").getByTestId("strip-ret")).toHaveCount(0);
+    await expect(page.locator('[data-testid="strip"] .strip-ret')).toHaveCount(0);
+    for (const s of await page.getByTestId("strip").all()) {
+      expect(await s.textContent(), `${await s.getAttribute("data-track")}: no RET`).not.toMatch(/\bRET\b/i);
+    }
+    expect(await strip(page, "B-Main repro #").textContent()).not.toMatch(/\bRET\b/i);
   });
 
   test("its texts fit their boxes: the dB text, the name and the group's name", async ({ page }) => {
@@ -80,7 +102,7 @@ test.describe("A strip", () => {
       await openSurface(page);
       const narrow = strip(page, "Vocal 1 repro#");
       await expect(narrow.getByTestId("db")).toHaveText(dbForm(await live.display("band", volume(VOCAL1), 0.829725)));
-      // #127: the group's name on the strip's side, in its instance's colour.
+      // #127: the group's name on the strip's side (#151: in its info column).
       const named = narrow.getByTestId("group-side");
       await expect(named).toHaveText(/stage/i);
       await expect(named).toHaveAttribute("data-instance", "band");
@@ -95,8 +117,6 @@ test.describe("A strip", () => {
           expect(await clipped(el), `${name} ${part}`).toEqual([]);
         }
       }
-      const ret = strip(page, "B-Main repro #").getByTestId("strip-ret");
-      expect(await clipped(ret), "the RET mark").toEqual([]);
     } finally {
       await live.set("band", volume(VOCAL1), "value", before);
     }
@@ -120,7 +140,8 @@ test.describe("A strip", () => {
       binding: { instance, anchor: { kind: "track", name } },
       strip_kind: "standard",
     }));
-    // A master return first: the longest instance tag, "master · ret".
+    // A master return first: its instance tag says the instance alone (#151:
+    // no RET on a strip).
     strips.unshift({ kind: "strip", binding: { instance: "master", anchor: { kind: "return", name: "A-Reverb #" } }, strip_kind: "return" });
     foh.rows = [{ sections: [{ kind: "group", id: "narrow", title: "Narrow", controls: strips }] }];
     await page.setViewportSize({ width: 1236, height: 720 });
@@ -155,7 +176,7 @@ test.describe("A strip", () => {
         }),
       );
       expect(outside).toEqual([]);
-      await expect(cells.locator('[data-testid="strip"][data-track="A-Reverb #"]').getByTestId("strip-instance")).toHaveText(/master · ret/i);
+      await expect(cells.locator('[data-testid="strip"][data-track="A-Reverb #"]').getByTestId("strip-instance")).toHaveText(/^master$/i);
       for (const part of ["strip-label", "strip-instance"]) {
         for (const text of await cells.getByTestId(part).all()) {
           expect(await clipped(text), `${part} ${await text.textContent()}`).toEqual([]);
@@ -287,6 +308,14 @@ test.describe("A strip", () => {
     await ready(mute);
     await mute.click();
     await expect(mute).toHaveClass(/\barmed\b/);
+    // #151 (PR #153's review M5): the armed outline is drawn inside the name
+    // button, the strip's top edge, so no line's top can cut it.
+    const reach = await mute.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { style: cs.outlineStyle, reach: parseFloat(cs.outlineOffset) + parseFloat(cs.outlineWidth) };
+    });
+    expect(reach.style).not.toBe("none");
+    expect(reach.reach, "the armed outline inside the button").toBeLessThanOrEqual(0.01);
     await page.waitForTimeout(700);
     expect(await live.get("master", hand1, "mute")).toBe(false);
     await expect(mute).not.toHaveClass(/\barmed\b/);
@@ -297,38 +326,114 @@ test.describe("A strip", () => {
     await live.set("master", hand1, "mute", false);
   });
 
-  test("the name button takes the track's colour from Live and follows it", async ({ page }) => {
-    // #21: the strip's name button is its mute, lit in the track's Live
-    // colour (SimLive's Hand2 #: 0xFF3636) with the text that reads on it.
+  test("the name button is calm, the track's colour only as its 3 px edge, and follows Live's colour", async ({ page }) => {
+    // #151, mockup v8: one colour per strip, the Live track's own, as a thin
+    // edge at the name button's left (SimLive's Hand2 #: 0xFF3636); the
+    // button itself is the strip's dark ground with the name in light.
     await live.set("band", HAND2, "mute", false);
     const before = await live.get("band", HAND2, "color");
     try {
       await openSurface(page);
       const mute = strip(page, "Hand2 #").getByTestId("mute");
       await ready(mute);
-      await expect(mute).toHaveCSS("background-color", "rgb(255, 54, 54)");
-      await expect(mute).toHaveCSS("color", "rgb(16, 16, 26)");
+      const edge = (el: Element) => {
+        const after = getComputedStyle(el, "::after");
+        return { color: after.backgroundColor, width: after.width };
+      };
+      await expect(mute).toHaveCSS("background-color", CALM);
+      await expect(mute).toHaveCSS("color", "rgb(234, 234, 240)");
+      await expect.poll(() => mute.evaluate(edge)).toEqual({ color: "rgb(255, 54, 54)", width: "3px" });
+      // Another strip of another colour: the same button, its own edge.
+      const other = strip(page, "B-Main repro #").getByTestId("mute");
+      await ready(other);
+      await expect(other).toHaveCSS("background-color", CALM);
+      expect((await other.evaluate(edge)).color).not.toBe("rgb(255, 54, 54)");
+      // A colour change in Live changes the edge only.
       await live.set("band", HAND2, "color", 0x1e3a8a);
-      await expect(mute).toHaveCSS("background-color", "rgb(30, 58, 138)");
-      await expect(mute).toHaveCSS("color", "rgb(244, 244, 250)");
-      // Muted: dark whatever the colour, with its MUTE mark.
-      await mute.click();
-      await expect(mute).toHaveAttribute("data-muted", "true");
-      await expect(mute).toHaveCSS("background-color", "rgb(31, 31, 46)");
-      await expect(mute.locator(".mute-mark")).toBeVisible();
+      await expect.poll(() => mute.evaluate(edge)).toEqual({ color: "rgb(30, 58, 138)", width: "3px" });
+      await expect(mute).toHaveCSS("background-color", CALM);
+      await expect(mute).toHaveCSS("color", "rgb(234, 234, 240)");
+      // No group colour on a strip: no top edge.
+      expect(await strip(page, "Hand2 #").evaluate((el) => getComputedStyle(el, "::before").borderTopWidth)).toBe("0px");
     } finally {
       await live.set("band", HAND2, "color", before);
+    }
+  });
+
+  test("a muted strip recedes: darker, its name of lower contrast, MUTED under the name, its cap, meter and readout dimmed", async ({ page }) => {
+    // #151, mockup v6-v8: what is switched off is never the most striking
+    // thing on the mix.
+    await live.set("band", HAND2, "mute", false);
+    try {
+      await openSurface(page);
+      const s = strip(page, "Hand2 #");
+      const mute = s.getByTestId("mute");
+      await ready(mute);
+      await mute.click();
+      await until(() => live.get("band", HAND2, "mute"), (v) => v === true, "muted");
+      await expect(mute).toHaveAttribute("data-muted", "true");
+      await expect(mute).toHaveCSS("background-color", "rgb(16, 16, 24)");
+      const looks = await page.getByTestId("mute").evaluateAll((all) => {
+        const lum = (c: string) => {
+          const m = (c.match(/[\d.]+/g) ?? []).map(Number);
+          const lin = (v: number) => {
+            v /= 255;
+            return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+          };
+          return 0.2126 * lin(m[0]) + 0.7152 * lin(m[1]) + 0.0722 * lin(m[2]);
+        };
+        const contrast = (a: string, b: string) => {
+          const x = lum(a);
+          const y = lum(b);
+          return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+        };
+        return all
+          // The strips' buttons with Live's values (an unresolved one is red, I5).
+          .filter((b) => b.closest('[data-testid="strip"]') && b.getAttribute("data-binding") !== "unresolved")
+          .map((b) => {
+            const cs = getComputedStyle(b);
+            const label = b.querySelector(".strip-label")!;
+            const ls = getComputedStyle(label);
+            return { muted: b.getAttribute("data-muted") === "true", bg: lum(cs.backgroundColor), c: contrast(ls.color, cs.backgroundColor), deco: ls.textDecorationLine };
+          });
+      });
+      const on = looks.filter((l) => !l.muted);
+      const off = looks.filter((l) => l.muted);
+      expect(on.length, "strips that play").toBeGreaterThan(0);
+      expect(off.length, "muted strips").toBeGreaterThan(0);
+      for (const m of off) {
+        expect(m.deco).toBe("none");
+        for (const u of on) {
+          expect(m.bg, "darker than every strip that plays").toBeLessThan(u.bg);
+          expect(m.c, "a name of lower contrast").toBeLessThan(u.c);
+        }
+      }
+      // MUTED under the name, quiet red.
+      const word = s.getByTestId("mute-mark");
+      expect(await seen(word)).toBe(true);
+      await expect(word).toHaveText("MUTED");
+      await expect(word).toHaveCSS("color", "rgb(168, 71, 79)");
+      const name = (await s.getByTestId("strip-label").boundingBox())!;
+      expect((await word.boundingBox())!.y).toBeGreaterThanOrEqual(name.y + name.height - 0.5);
+      for (const part of [s.getByTestId("fader-cap"), s.getByTestId("meter"), s.getByTestId("strip-readout"), s.getByTestId("strip-col")]) {
+        await expect(part).toHaveCSS("opacity", "0.4");
+      }
+      // A strip that plays has no mute word.
+      expect(await seen(strip(page, "B-Main repro #").getByTestId("mute-mark"))).toBe(false);
+    } finally {
       await live.set("band", HAND2, "mute", false);
     }
   });
 
-  test("the dB scale sits beside the fader, its 0 at the fader's 0 dB", async ({ page }) => {
+  test("the dB scale sits right of the track, its 0 at the fader's 0 dB and the unity mark", async ({ page }) => {
     // #21 (parity audit #12): TouchOSC's labels at the fader positions of
-    // their levels.
+    // their levels; #151 (mockup v8, the LV1 way): 17 px at the strip's
+    // right, 2 px right of the fader's 12 px track, labels left-aligned.
     await live.set("band", volume(HAND2), "value", 0.85);
     await openSurface(page);
     const s = strip(page, "Hand2 #");
-    const ticks = s.getByTestId("scale").locator(".tick");
+    const scale = s.getByTestId("scale");
+    const ticks = scale.locator(".tick");
     // #63: Live's own fader law by default, its low end spread out as a
     // console's, so −30 and −60 are labelled too.
     await expect(ticks).toHaveText(["+6", "0", "−6", "−12", "−18", "−24", "−30", "−40", "−60"]);
@@ -336,65 +441,157 @@ test.describe("A strip", () => {
     await ready(fader);
     await until(() => shown(fader), (v) => Math.abs(v - 0.85) < 0.001, "the fader at 0 dB");
     await frames(page);
-    const cap = (await s.locator(".fader-cap").boundingBox())!;
+    const box = (await scale.boundingBox())!;
+    const track = (await s.getByTestId("meter").boundingBox())!;
+    expect(Math.abs(track.width - 12), `the track ${track.width} px wide`).toBeLessThan(0.5);
+    expect(Math.abs(box.width - 17), `the scale ${box.width} px wide`).toBeLessThan(0.5);
+    expect(Math.abs(box.x - (track.x + track.width) - 2), "the scale 2 px right of the track").toBeLessThan(0.5);
+    const left = await ticks.evaluateAll((all) => all.map((t) => t.getBoundingClientRect().left));
+    for (const x of left) expect(Math.abs(x - box.x), "every label at the scale's left").toBeLessThan(0.5);
+    const cap = (await s.getByTestId("fader-cap").boundingBox())!;
     const zero = (await ticks.nth(1).boundingBox())!;
     expect(Math.abs(cap.y + cap.height / 2 - (zero.y + zero.height / 2))).toBeLessThan(2);
+    // The unity mark (the fader's ::after, 1 px high, its top at the 0 dB
+    // position) under the 0 label's centre, which translateY(-50%) puts at
+    // that same position: compare the mark's top edge.
+    const unity = await fader.evaluate((el) => el.getBoundingClientRect().top + parseFloat(getComputedStyle(el, "::after").top));
+    expect(Math.abs(unity - (zero.y + zero.height / 2)), "the 0 label on the unity mark").toBeLessThan(0.5);
     // +6 dB is the top of the travel.
-    const track = (await fader.boundingBox())!;
+    const travel = (await fader.boundingBox())!;
     const top = (await ticks.nth(0).boundingBox())!;
-    expect(Math.abs(top.y + top.height / 2 - track.y)).toBeLessThan(2);
+    expect(Math.abs(top.y + top.height / 2 - travel.y)).toBeLessThan(2);
     // The position is Live's volume: 0 dB at 85 % of the travel.
-    const down = (cap.y + cap.height / 2 - track.y) / track.height;
+    const down = (cap.y + cap.height / 2 - travel.y) / travel.height;
     expect(Math.abs(down - 0.15), `0 dB ${down} of the travel from its top`).toBeLessThan(0.01);
   });
 
-  test("the meter moves with Live's meter", async ({ page }) => {
+  test("the strip's meter is two bars in the fader's track, under the cap, with no clip light", async ({ page }) => {
+    // #151 (mockup v8): the stereo pair in the fader's track replaces the
+    // meter beside the scale and the fader's fill; no clip light anywhere
+    // (Live mixes in 32-bit float). The fixture's source is `level`: both
+    // bars read the one value.
+    await live.set("band", volume(HAND2), "value", 0.85);
     await openSurface(page);
-    const meter = strip(page, "Hand2 #").getByTestId("meter");
-    const first = await until(async () => Number(await meter.getAttribute("data-level")), (v) => v > 0, "a level");
-    await until(async () => Number(await meter.getAttribute("data-level")), (v) => v !== first, "the level to move");
-  });
-
-  test("the meter holds its peak and lights the clip light at 0 dB until it is tapped", async ({ page }) => {
-    // #21: new with the redesign (TouchOSC had neither).
-    await openSurface(page);
-    const meter = strip(page, "Hand2 #").getByTestId("meter");
-    const clip = meter.getByTestId("clip");
-    await expect(clip).toHaveAttribute("data-on", "false");
-    await until(async () => Number(await meter.getAttribute("data-peak")), (v) => v > 0, "a peak");
+    const s = strip(page, "Hand2 #");
+    const track = s.getByTestId("meter");
+    const bars = track.getByTestId("meter-bar");
+    await expect(bars).toHaveCount(2);
     try {
+      expect(await hostLine("band", 'meter "Hand2 #" 0.6')).toBe("METER 1");
+      const pair = async () => (await drawn(bars)).map((b) => b.level);
+      const both = await until(pair, (v) => v[0] > 0.3 && Math.abs(v[0] - v[1]) < 1e-4, "both bars at the held level");
+      expect(both[1]).toBeCloseTo(both[0], 4);
+      const fader = s.getByTestId("fader");
+      await ready(fader);
+      await until(() => shown(fader), (v) => Math.abs(v - 0.85) < 0.001, "the fader at 0 dB");
+      await frames(page);
+      const t = (await track.boundingBox())!;
+      const cap = (await s.getByTestId("fader-cap").boundingBox())!;
+      expect(Math.abs(t.width - 12)).toBeLessThan(0.5);
+      expect(Math.abs(t.x + t.width / 2 - (cap.x + cap.width / 2)), "the track centred on the cap").toBeLessThan(0.5);
+      const hit = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.getAttribute("data-testid"), [cap.x + cap.width / 2, cap.y + cap.height / 2]);
+      expect(hit, "the cap over the bars").toBe("fader-cap");
+      await expect(s.locator(".fader-fill")).toHaveCount(0);
+      await expect(s.locator(".fader-groove")).toHaveCount(0);
+      // At 0 dB of Live's meter: no clip light, no CLIP or PEAK text, on the
+      // strip or in its detail.
       expect(await hostLine("band", 'meter "Hand2 #" 1.0')).toBe("METER 1");
-      await expect(clip).toHaveAttribute("data-on", "true");
-      await until(async () => Number(await meter.getAttribute("data-peak")), (v) => v > 0.99, "the peak at the top");
-      // The level falls; the light stays lit and the peak holds a while.
+      await until(pair, (v) => v[0] > 0.9, "the bars at the top");
+      // The peak line holds a while after the level falls (each bar's own).
       expect(await hostLine("band", 'meter "Hand2 #" 0.3')).toBe("METER 1");
-      await until(async () => Number(await meter.getAttribute("data-level")), (v) => v < 0.5, "the bar down");
-      expect(Number(await meter.getAttribute("data-peak"))).toBeGreaterThan(0.9);
-      await expect(clip).toHaveAttribute("data-on", "true");
-      // Then the peak falls back to the bar.
-      await until(async () => Number(await meter.getAttribute("data-peak")), (v) => v < 0.5, "the peak down", 5000);
-      // A tap turns the light off.
-      await clip.click();
-      await expect(clip).toHaveAttribute("data-on", "false");
+      await until(pair, (v) => v[0] < 0.5 && v[1] < 0.5, "the bars down");
+      const peaks = (await drawn(bars)).map((b) => b.peak);
+      for (const p of peaks) expect(p, "the peak held").toBeGreaterThan(0.9);
+      await expect(page.getByTestId("clip")).toHaveCount(0);
+      expect(await s.textContent()).not.toMatch(/CLIP|PEAK/);
+      const detail = await openDetail(page, "Hand2 #");
+      await expect(detail.getByTestId("meter")).toHaveCount(1);
+      await expect(page.getByTestId("clip")).toHaveCount(0);
+      await expect(page.locator(".meter-clip")).toHaveCount(0);
     } finally {
       await hostLine("band", 'meter "Hand2 #" off');
     }
   });
 
-  test("with the stereo meter source a strip shows two bars", async ({ page }) => {
+  test("the info column holds the empty LUFS slot and the group's name, clear of the cap", async ({ page }) => {
+    // #151 (mockup v8): left of the cap's widest reach, the LUFS row (empty
+    // and hidden until the LUFS source) and the group's name.
+    await live.set("band", volume(HAND2), "value", 0.85);
+    await openSurface(page);
+    const lufs = page.locator('[data-testid="strip"] [data-testid="lufs"]');
+    expect(await lufs.count()).toBe(await page.getByTestId("strip").count());
+    for (const l of await lufs.all()) {
+      await expect(l).toHaveText("");
+      await expect(l).toHaveCSS("visibility", "hidden");
+    }
+    const s = strip(page, "Hand2 #");
+    expect((await s.getByTestId("lufs").boundingBox())!.height).toBeCloseTo(16, 1);
+    const fader = s.getByTestId("fader");
+    await ready(fader);
+    const col = s.getByTestId("strip-col");
+    const { x, y } = await centre(fader);
+    try {
+      // The cap at the top, then at the bottom: the column stays 3 px clear.
+      for (const dy of [-400, 800]) {
+        await page.mouse.move(x, y);
+        await page.mouse.down();
+        for (let i = 1; i <= 10; i++) await page.mouse.move(x, y + (dy * i) / 10);
+        await page.mouse.up();
+        await frames(page);
+        const c = (await col.boundingBox())!;
+        const cap = (await s.getByTestId("fader-cap").boundingBox())!;
+        expect(cap.x - (c.x + c.width), "the column 3 px clear of the cap").toBeGreaterThanOrEqual(3 - 0.01);
+      }
+    } finally {
+      await live.set("band", volume(HAND2), "value", 0.85);
+    }
+  });
+
+  test("a layout switching the meter source rebuilds the bars: lr one channel each, level the one value on both", async ({ page }) => {
+    // #151 (Review Focus 4): SimLive's moving meters give L and R apart.
     const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
     await openSurface(page);
-    const bars = strip(page, "Hand2 #").getByTestId("meter").locator(".meter-bar");
-    await expect(bars).toHaveCount(1);
-    const changed = JSON.parse(readFileSync(LAYOUT, "utf-8"));
-    changed.config.meter_source = "lr";
+    const bars = () => strip(page, "Hand2 #").getByTestId("meter").getByTestId("meter-bar");
+    const pair = async () => (await drawn(bars())).map((b) => b.level);
+    await expect(bars()).toHaveCount(2);
+    const lr = JSON.parse(readFileSync(LAYOUT, "utf-8"));
+    lr.config.meter_source = "lr";
+    const level = JSON.parse(readFileSync(LAYOUT, "utf-8"));
+    level.config.meter_source = "level";
     try {
-      await harness("/hub/layout", { layout: changed });
-      await expect(bars).toHaveCount(2, { timeout: 10_000 });
+      await harness("/hub/layout", { layout: lr });
+      await until(pair, (v) => v.length === 2 && Math.abs(v[0] - v[1]) > 0.01, "the bars apart (L and R)", 10_000);
+      await harness("/hub/layout", { layout: level });
+      // Equal on every frame from the rebuild on.
+      await until(pair, (v) => v.length === 2 && v[0] > 0 && Math.abs(v[0] - v[1]) < 1e-4, "the bars together (one value)", 10_000);
+      for (let i = 0; i < 5; i++) {
+        await frames(page);
+        const v = await pair();
+        expect(Math.abs(v[0] - v[1]), `frame ${i}: ${v}`).toBeLessThan(1e-4);
+      }
     } finally {
       await harness("/hub/layout/reset");
     }
-    await expect(bars).toHaveCount(1, { timeout: 10_000 });
+    await expect(bars()).toHaveCount(2, { timeout: 10_000 });
+  });
+
+  test("the fader's travel on the iPad is at least 322 px", async ({ page }) => {
+    // #151: the v8 head (37 + 2 + 20 px) costs the fader nothing (the FOH
+    // fixture at the iPad's 1194 × 834; a tagged strip loses the tag's
+    // ~16 px, as before).
+    await page.setViewportSize({ width: 1194, height: 834 });
+    await openSurface(page);
+    await expect(page.getByTestId("strip").first()).toBeVisible();
+    await frames(page);
+    const travels = await page.getByTestId("strip").evaluateAll((all) =>
+      all
+        .filter((s) => !s.querySelector('[data-testid="strip-instance"]') && s.querySelector('[data-testid="fader"]'))
+        .map((s) => ({ name: s.getAttribute("data-track"), h: s.querySelector('[data-testid="fader"]')!.getBoundingClientRect().height })),
+    );
+    expect(travels.length).toBeGreaterThan(0);
+    console.log(`v8 travel (${test.info().project.name}): ${[...new Set(travels.map((t) => t.h.toFixed(2)))].join(", ")} px`);
+    // 322 px within the rows' sub-pixel rounding (reverb.spec.ts pins it within 1 px).
+    for (const t of travels) expect(t.h, `${t.name}`).toBeGreaterThanOrEqual(322 - 0.5);
   });
 
   test("the status pill is red when unbound and not red when bound", async ({ page }) => {
@@ -424,6 +621,84 @@ test.describe("A strip", () => {
     await expect(master.getByTestId("db")).toHaveText(dbForm(await live.display("master", volume(track("Hand1 #")), 0.6)));
   });
 });
+
+// SEL never takes the fader's touch (#151, Review Focus 3, the main
+// session's ruling on #151): with the cap at −∞ the key's touch box ends
+// 3 px left of the cap, a finger down on SEL and dragged writes no volume,
+// and a finger down on the cap's centre grabs the fader. On the iPad and on
+// both phones. The key is 44 px high on a narrow strip, 36 px else, by the
+// strip's own measured width (arrange::is_narrow: under 78 px; a wide strip
+// is measured at its own 1.1x), never by the viewport: upright, a phone's
+// strips are stretched to about 79 px, not narrow.
+for (const size of [
+  { width: 1194, height: 834 },
+  { width: 844, height: 390 },
+  { width: 390, height: 844 },
+]) {
+  test.describe(`SEL and the cap at −∞, ${size.width} × ${size.height}`, () => {
+    test.use({ viewport: { width: size.width, height: size.height } });
+
+    test("SEL ends 3 px left of the cap; a drag from SEL writes no volume, a drag from the cap moves the fader", async ({ page }) => {
+      await openSurface(page);
+      await expect(page.getByTestId("strip").first()).toBeVisible();
+      await frames(page);
+      // A bound, unmarked track strip whole on the screen.
+      const pick = await page.getByTestId("strip").evaluateAll((all) => {
+        for (const s of all) {
+          const r = s.getBoundingClientRect();
+          const fader = s.querySelector('[data-testid="fader"]');
+          const on = r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight;
+          if (on && fader && fader.getAttribute("aria-disabled") === "false" && !s.hasAttribute("data-mark") && s.getAttribute("data-kind") === "standard") {
+            return { track: s.getAttribute("data-track")!, instance: s.getAttribute("data-instance")!, keys: fader.getAttribute("data-keys")! };
+          }
+        }
+        return null;
+      });
+      expect(pick, "a strip whole on the screen").not.toBeNull();
+      const key: string = JSON.parse(pick!.keys)[0];
+      const [instance, target, prop] = key.split("|");
+      const s = strip(page, pick!.track, pick!.instance);
+      const fader = s.getByTestId("fader");
+      const before = await live.get(instance, target, prop);
+      try {
+        await live.set(instance, target, prop, 0);
+        await until(() => shown(fader), (v) => v === 0, "the fader at −∞");
+        await frames(page);
+        const sel = (await s.getByTestId("detail-key").boundingBox())!;
+        const cap = (await s.getByTestId("fader-cap").boundingBox())!;
+        const own = (await s.boundingBox())!.width;
+        const high = own < 78 ? 44 : 36;
+        expect(Math.abs(sel.height - high), `SEL ${sel.width} × ${sel.height} on a ${own} px strip`).toBeLessThan(0.5);
+        expect(sel.width).toBeGreaterThanOrEqual(15);
+        expect(cap.x - (sel.x + sel.width), "SEL 3 px left of the cap at −∞").toBeGreaterThanOrEqual(3 - 0.01);
+        // A finger down on SEL, dragged up over the fader, then lifted:
+        // no volume write, Live still at −∞.
+        const since = Date.now();
+        const k = { x: sel.x + sel.width / 2, y: sel.y + sel.height / 2 };
+        await page.mouse.move(k.x, k.y);
+        await page.mouse.down();
+        for (let i = 1; i <= 8; i++) await page.mouse.move(k.x, k.y - 10 * i);
+        await page.mouse.up();
+        await page.waitForTimeout(500);
+        expect(await live.get(instance, target, prop), "Live untouched by SEL").toBe(0);
+        const sets = (await hubEvents()).filter((r: any) => r.ev === "set" && r.ts >= since && r.key === key);
+        expect(sets, "no volume write from SEL").toEqual([]);
+        await expect(page.getByTestId("detail")).toHaveCount(0);
+        // A finger down on the cap's centre grabs the fader.
+        const c = { x: cap.x + cap.width / 2, y: cap.y + cap.height / 2 };
+        const hit = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.getAttribute("data-testid"), [c.x, c.y]);
+        expect(hit, "the cap's centre is the cap's").toBe("fader-cap");
+        await page.mouse.move(c.x, c.y);
+        await page.mouse.down();
+        for (let i = 1; i <= 10; i++) await page.mouse.move(c.x, c.y - 8 * i);
+        await page.mouse.up();
+        await until(() => live.get(instance, target, prop), (v) => v > 0.05, "the volume to rise from the cap");
+      } finally {
+        await live.set(instance, target, prop, before);
+      }
+    });
+  });
+}
 
 test.describe("Controls wait for Live's value (I8)", () => {
   test("right after load the controls are disabled until their first value and take no input", async ({ page }) => {

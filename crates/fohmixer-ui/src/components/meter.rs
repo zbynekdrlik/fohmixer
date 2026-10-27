@@ -1,33 +1,34 @@
-//! The strip meter (spec F13, X2) and the status light (spec F5, I5): both
-//! move only in the frame loop, reading their slots untracked, so Live's
-//! meter pushes never re-render the view. A bar is the zone gradient of the
+//! The meters (spec F13, X2) and the status light (spec F5, I5): all move
+//! only in the frame loop, reading their slots untracked, so Live's meter
+//! pushes never re-render the view. A bar is the zone gradient of the
 //! scale (green, yellow from −12 dB, red from −3 dB, as TouchOSC's colours)
-//! under a cover the loop shrinks to the level, with a peak line held 1.5 s;
-//! the clip light over the bars lights at 0 dB and stays lit until tapped
-//! (#21).
+//! under a cover the loop shrinks to the level, with a peak line held 1.5 s.
+//! A strip's meter is the stereo pair in its fader's track (#151,
+//! `TrackMeter`); the channel detail keeps `MeterView` beside its fader.
+//! No clip light (#151: Live mixes in 32-bit float, a track cannot clip
+//! inside it).
 
 use leptos::html;
 use leptos::prelude::*;
 
-use super::owns_touches;
 use crate::behave::css;
 use crate::behave::fader::VolumeLaw;
-use crate::behave::meter::{MeterBar, level_to_pos};
-use crate::behave::peak::{Peak, clips};
+use crate::behave::meter::{MeterBar, bar_sources, level_to_pos};
+use crate::behave::peak::Peak;
 use crate::behave::scale::zone_style;
 use crate::behave::status::status_color;
 use crate::dom;
 use crate::raf;
 use crate::store::Slot;
 
-/// A meter: one bar per level slot (one for `level`, two for `lr`), on the
-/// fader's volume law (#63: the calibration places a level on TouchOSC's
-/// scale; the bar shows it where the fader reads the same dB).
-#[component]
-pub fn MeterView(levels: Vec<RwSignal<Slot>>, law: VolumeLaw) -> impl IntoView {
-    let root = NodeRef::<html::Div>::new();
+/// Moves the bars under `root` (its `.meter-bar` children in order, at any
+/// depth) in the frame loop: bar `i` reads `levels[i]` (one slot may feed
+/// two bars), on the fader's volume law. `root` carries the first bar's
+/// `data-level` / `data-peak` (two attribute writes a changed frame per
+/// meter; a test reads another bar from its cover's `scaleY` and its peak
+/// line's `--pk`, the drawing itself).
+fn animate_bars(root: NodeRef<html::Div>, levels: Vec<RwSignal<Slot>>, law: VolumeLaw) {
     let count = levels.len();
-    let clip = RwSignal::new(false);
     raf::animate(root, move |el| {
         let part = |i: usize, name: &str| {
             dom::child(&el, &format!(".meter-bar:nth-child({}) .{name}", i + 1))
@@ -47,9 +48,6 @@ pub fn MeterView(levels: Vec<RwSignal<Slot>>, law: VolumeLaw) -> impl IntoView {
                     .try_with_untracked(Slot::fresh_number)
                     .flatten()
                     .unwrap_or(0.0);
-                if clips(level) && clip.try_get_untracked() == Some(false) {
-                    let _ = clip.try_set(true);
-                }
                 bars[i].target(level_to_pos(level));
                 let (shown, _color) = bars[i].step(step);
                 let pos = law.from_touchosc(shown);
@@ -73,23 +71,29 @@ pub fn MeterView(levels: Vec<RwSignal<Slot>>, law: VolumeLaw) -> impl IntoView {
             }
         })
     });
-    let bars = (0..count)
-        .map(|_| {
-            view! {
-                <div class="meter-bar">
-                    <div class="meter-zones"></div>
-                    <div class="meter-cover"></div>
-                    <div class="meter-peak"></div>
-                </div>
-            }
-        })
-        .collect_view();
-    let reset = move |ev: web_sys::PointerEvent| {
-        ev.prevent_default();
-        let _ = clip.try_set(false);
-    };
-    // The clip light is a tap target: it owns its touches (#43 PR G).
-    let no_keys: Vec<String> = Vec::new();
+}
+
+/// One meter bar's parts.
+fn bar_view() -> impl IntoView {
+    view! {
+        <div class="meter-bar" data-testid="meter-bar">
+            <div class="meter-zones"></div>
+            <div class="meter-cover"></div>
+            <div class="meter-peak"></div>
+        </div>
+    }
+}
+
+/// A meter beside a fader (the channel detail's): one bar per level slot
+/// (one for `level`, two for `lr`), on the fader's volume law (#63: the
+/// calibration places a level on TouchOSC's scale; the bar shows it where
+/// the fader reads the same dB).
+#[component]
+pub fn MeterView(levels: Vec<RwSignal<Slot>>, law: VolumeLaw) -> impl IntoView {
+    let root = NodeRef::<html::Div>::new();
+    let count = levels.len();
+    animate_bars(root, levels, law);
+    let bars = (0..count).map(|_| bar_view()).collect_view();
     view! {
         <div
             class="meter"
@@ -99,17 +103,36 @@ pub fn MeterView(levels: Vec<RwSignal<Slot>>, law: VolumeLaw) -> impl IntoView {
             style={zone_style(law)}
             node_ref=root
         >
-            <div
-                class="meter-clip"
-                class:on=move || clip.try_get().unwrap_or(false)
-                data-testid="clip"
-                data-on=move || clip.try_get().unwrap_or(false).to_string()
-                use:owns_touches=no_keys
-                on:pointerdown=reset
-            ></div>
             <div class="meter-bars">{bars}</div>
         </div>
     }
+}
+
+/// A strip's meter in its fader's track (#151, mockup v8): two bars, L and
+/// R, under the cap; with the `level` source both read the one value
+/// (`behave::meter::bar_sources`), with `lr` one channel each. No level
+/// slot, no track meter.
+#[component]
+pub fn TrackMeter(levels: Vec<RwSignal<Slot>>, law: VolumeLaw) -> impl IntoView {
+    let fed: Option<Vec<RwSignal<Slot>>> =
+        bar_sources(levels.len()).map(|sources| sources.iter().map(|&i| levels[i]).collect());
+    fed.map(|fed| {
+        let root = NodeRef::<html::Div>::new();
+        animate_bars(root, fed, law);
+        view! {
+            <div
+                class="fader-track"
+                data-testid="meter"
+                data-level="0"
+                data-peak="0"
+                style={zone_style(law)}
+                node_ref=root
+            >
+                {bar_view()}
+                {bar_view()}
+            </div>
+        }
+    })
 }
 
 /// The status light: red while the strip is not bound (a binding does not

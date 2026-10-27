@@ -131,8 +131,12 @@ test("an equal label disables both strips; a tag problem marks a strip that stil
     await dragUp(page, conflict.first().getByTestId("fader"));
     await page.waitForTimeout(500);
     expect(await live.get("band", target, "value")).toBe(before);
-    // Its ☰ is inert too (#71): a finger held on it opens no detail.
-    const menu = (await conflict.first().getByTestId("strip-menu").boundingBox())!;
+    // Its SEL is inert too (#71, #151): dimmed as the conflict dims the
+    // strip's fader, and a finger held on it opens no detail.
+    const key = conflict.first().getByTestId("detail-key");
+    await expect(key).toHaveCSS("opacity", "0.35");
+    await expect(conflict.first().getByTestId("fader")).toHaveCSS("opacity", "0.35");
+    const menu = (await key.boundingBox())!;
     await page.mouse.move(menu.x + menu.width / 2, menu.y + menu.height / 2);
     await page.mouse.down();
     await page.waitForTimeout(700);

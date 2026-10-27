@@ -1,0 +1,1117 @@
+<!doctype html>
+<!-- fohmixer #151: mockup v1 of the loudness (LUFS) readings, for the
+     owner's decision; not part of the app. Design note:
+     docs/superpowers/specs/2026-10-26-lufs-design.md. The owner's rules
+     (#151, 2026-10-26): a PA mic's short-term LUFS right after its Trim IN
+     against -25 LUFS, +-3 LU fine, beyond yellow, beyond +-6 LU red; the
+     PA output's short-term number only, no colour. Two variants of where
+     the number sits, neither adding a row: A in the readout line under the
+     name button (Live's dB while the fader is held), B a pill over the top
+     of the meter (Live's dB stays). Screens 1 and 2: the iPad's 1194 x 834
+     at 1:1, variant A and B. Screen 3: the phones (on its side 844 x 390,
+     upright 390 x 844) and every state of both variants. Screen 4: the
+     legend, the notes and the questions. The strips use the app's CSS
+     (crates/fohmixer-ui strip.css, detail.css, states.css, v1.17.0); the
+     arrangement around them is simplified. The fonts are the app's own
+     files, loaded by relative path. The page measures its faders and the
+     pills' fit and writes the numbers. Invented names and values, no site
+     data. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fohmixer LUFS v1</title>
+<style>
+/* The app's fonts (crates/fohmixer-ui/fonts, SIL OFL 1.1), by relative
+   path; style.css's faces and ranges. */
+@font-face {
+    font-family: "Barlow Condensed";
+    font-weight: 700;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-700-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "Barlow Condensed";
+    font-weight: 700;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-ext-700-normal.woff2") format("woff2");
+    unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 600;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-600-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 600;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-ext-600-normal.woff2") format("woff2");
+    unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 700;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-700-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 700;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-ext-700-normal.woff2") format("woff2");
+    unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+    font-family: "JetBrains Mono";
+    font-weight: 500;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "JetBrains Mono";
+    font-weight: 600;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-600-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+
+/* --- the app's tokens (style.css) --- */
+:root {
+    color-scheme: dark;
+    --bg: #07070c;
+    --page: #0b0b12;
+    --bar: #11111b;
+    --section: #151522;
+    --panel: #1a1a28;
+    --panel-mute: #12121b;
+    --panel-hi: #20203a;
+    --track: #0a0a14;
+    --line: #2a2a44;
+    --line-soft: rgba(255, 255, 255, 0.06);
+    --accent: #4ecdc4;
+    --accent-dim: rgba(78, 205, 196, 0.28);
+    --mute: #e63946;
+    --solo: #f4d35e;
+    --band: #4ecdc4;
+    --master: #8b7dff;
+    --text: #eaeaf0;
+    --muted: #9a9ab4;
+    --faint: #5c5c78;
+    --m-green: #36d67a;
+    --m-yellow: #f5d547;
+    --m-red: #ff4757;
+    --danger: #ff3b30;
+    --warn: #f5a623;
+    --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+    --ui: "Barlow", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    /* NEW (#151): the loudness states. Fine, warn and far are the meter's
+       own zone colours (the team knows them from the meters); plain is the
+       output's neutral pill. */
+    --l-fine: var(--m-green);
+    --l-warn: var(--m-yellow);
+    --l-far: var(--m-red);
+    --l-plain: #34344e;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--ui);
+    -webkit-text-size-adjust: 100%;
+}
+
+body {
+    padding: 16px;
+}
+
+/* --- strip.css (v1.17.0), the parts a strip draws --- */
+.strip {
+    --head-w: calc(var(--strip-w, 76px) - 10px);
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 3px;
+    flex: none;
+    width: var(--strip-w, 76px);
+    min-height: 0;
+    padding: 5px 4px 4px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: var(--panel);
+}
+
+.strip.wide {
+    --head-w: calc(var(--strip-w, 76px) * 1.1 - 10px);
+    width: calc(var(--strip-w, 76px) * 1.1);
+}
+
+.strip::before,
+.strip::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 8px;
+    pointer-events: none;
+}
+
+.strip::before {
+    border-top: 3px solid var(--gc, var(--accent));
+    opacity: 0.9;
+}
+
+.strip:has(.fader[data-held="true"])::after {
+    border: 2px solid var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-dim);
+}
+
+.strip:has(.fader[data-held="true"]) .strip-readout {
+    background: var(--accent);
+    opacity: 1;
+}
+
+.strip:has(.fader[data-held="true"]) .strip-readout .db {
+    color: #07131a;
+}
+
+.strip-fz {
+    position: relative;
+    display: grid;
+    grid-template-columns: 17px 11px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 3px;
+    min-height: 0;
+    padding: 8px 0 10px;
+}
+
+.strip-fz .scale { grid-area: 1 / 1; }
+.strip-fz .meter { grid-area: 1 / 2; }
+.strip-fz .fader {
+    grid-area: 1 / 1 / 2 / 4;
+    --x: calc(50% + 17px);
+}
+
+.scale { position: relative; }
+
+.tick {
+    position: absolute;
+    right: 0;
+    transform: translateY(-50%);
+    color: var(--faint);
+    font: 500 8.5px/1 var(--mono);
+    white-space: nowrap;
+}
+
+.tick.unity { color: var(--muted); }
+
+.meter { position: relative; }
+
+.meter-bars {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    grid-auto-columns: 1fr;
+    grid-auto-flow: column;
+    gap: 1px;
+}
+
+.meter-clip {
+    position: absolute;
+    z-index: 2;
+    top: -9px;
+    left: -3px;
+    right: -3px;
+    height: 9px;
+}
+
+.meter-clip::before {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 3px;
+    right: 3px;
+    height: 4px;
+    border-radius: 2px;
+    background: #2a1016;
+}
+
+.meter-peak {
+    position: absolute;
+    inset: 0;
+    transform: translateY(calc((1 - var(--pk, 0)) * 100%));
+}
+
+.meter-peak::before {
+    content: "";
+    position: absolute;
+    top: -1px;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: #ffffff;
+}
+
+.meter-bar {
+    position: relative;
+    overflow: hidden;
+    background: #0e0e18;
+}
+
+.meter-zones {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+        to top,
+        var(--m-green) 0 var(--yellow, 31%),
+        var(--m-yellow) var(--yellow, 31%) var(--red, 61%),
+        var(--m-red) var(--red, 61%) 100%
+    );
+}
+
+.meter-cover {
+    position: absolute;
+    inset: 0;
+    background: #0e0e18;
+    transform-origin: top;
+}
+
+.fader {
+    position: relative;
+}
+
+.fader::after {
+    content: "";
+    position: absolute;
+    top: calc((1 - var(--u, 0.7294)) * 100%);
+    left: calc(var(--x, 50%) - 16px);
+    right: 2px;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.28);
+}
+
+.fader-groove,
+.fader-fill {
+    position: absolute;
+    left: var(--x, 50%);
+    width: 6px;
+    margin-left: -3px;
+    border-radius: 3px;
+}
+
+.fader-groove {
+    top: 0;
+    bottom: 0;
+    background: var(--track);
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.fader-fill {
+    bottom: 0;
+    height: 100%;
+    transform-origin: bottom;
+    transform: scaleY(var(--p, 0));
+    background: linear-gradient(to top, rgba(78, 205, 196, 0.25), var(--accent));
+}
+
+.fader-rail {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    transform: translateY(calc(var(--p, 0) * -100%));
+}
+
+.fader-cap {
+    --cap-w: min(32px, calc(var(--strip-w, 76px) - 38px));
+    position: absolute;
+    top: 100%;
+    left: var(--x, 50%);
+    width: var(--cap-w);
+    height: 22px;
+    margin: -11px 0 0 calc(var(--cap-w) / -2);
+    border: 1px solid #4a4a66;
+    border-bottom-color: #15151f;
+    border-radius: 6px;
+    background: linear-gradient(#3a3a52, #262638);
+}
+
+.fader[data-held="true"] .fader-cap {
+    border-color: var(--accent);
+}
+
+.fader-cap::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 6px;
+    right: 6px;
+    height: 2px;
+    margin-top: -1px;
+    border-radius: 1px;
+    background: var(--text);
+}
+
+.strip-head {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 30px 22px;
+    row-gap: 2px;
+    min-width: 0;
+}
+
+.strip-info {
+    --menu-w: clamp(18px, calc(var(--strip-w, 76px) * 0.25), 22px);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    min-width: 0;
+    height: 22px;
+    margin: 0 -2px;
+}
+
+.strip-readout {
+    display: flex;
+    justify-self: center;
+    align-items: center;
+    gap: 2px;
+    max-width: 100%;
+    min-width: 0;
+    padding: 0 2px;
+    border-radius: 5px;
+    pointer-events: none;
+}
+
+.strip-readout .db {
+    font-size: clamp(7px, calc((var(--strip-w, 76px) - 18px - var(--menu-w)) / 3.3), 12px);
+    line-height: 17px;
+}
+
+.db {
+    color: #9be7a8;
+    font: 600 12px/1.4 var(--mono);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.db.unity { color: #ffffff; }
+
+.strip-menu {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: var(--menu-w);
+    height: 20px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: #141420;
+    color: var(--muted);
+    font: 700 12px/1 var(--ui);
+}
+
+.mute {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    height: 34px;
+    padding: 0 4px;
+    border-radius: 7px;
+    background: #1f1f2e;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--faint);
+    font: 700 clamp(11px, calc(var(--strip-w, 76px) * 0.2), 15px) / 1 var(--display);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+.mute.lit {
+    background: var(--tc, var(--accent));
+    box-shadow: none;
+    color: var(--tt, #10101a);
+}
+
+.strip-head > .mute {
+    height: 30px;
+    padding: 9px 3px 0;
+}
+
+.strip-label {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    font-size: clamp(
+        9px,
+        calc((var(--strip-w, 76px) - 18px - var(--n, 5) * 0.5px) / (var(--n, 5) * 0.5)),
+        17px
+    );
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.strip-corner {
+    position: absolute;
+    top: 1.5px;
+    right: 3px;
+    left: 3px;
+    display: flex;
+    gap: 16px 3px;
+    height: 13.5px;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+.strip-ret {
+    flex: none;
+    margin-top: 1.5px;
+    padding: 0 2px;
+    border-radius: 3px;
+    background: rgba(7, 7, 12, 0.6);
+    color: var(--muted);
+    font: 800 7.5px/1.4 var(--ui);
+    letter-spacing: 0.6px;
+}
+
+/* states.css: a problem's `!` */
+.strip-flag {
+    flex: none;
+    margin-top: 1.5px;
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    background: var(--warn);
+    color: #0b0b12;
+    font: 800 10px/12px var(--ui);
+    text-align: center;
+}
+
+/* --- NEW (#151): the loudness reading --- */
+
+/* Variant A: the readout line holds the loudness instead of Live's dB, in
+   a pill of its state's colour. While the fader is held, the readout is
+   Live's dB in accent, as today (the rules above). */
+.strip-readout.lufs[data-l="fine"] { background: var(--l-fine); }
+.strip-readout.lufs[data-l="warn"] { background: var(--l-warn); }
+.strip-readout.lufs[data-l="far"] { background: var(--l-far); }
+.strip-readout.lufs[data-l="plain"] { background: var(--l-plain); }
+
+/* Three characters, not dB's five: larger than the dB from the same
+   column (12 px from a 64 px strip up; the column less ☰ is 28 px there). */
+.strip-readout.lufs .db {
+    font-size: clamp(7px, calc((var(--strip-w, 76px) - 18px - var(--menu-w)) / 2.2), 12px);
+    min-width: 3.2ch;
+    color: #0b0b12;
+    text-align: center;
+}
+
+.strip-readout.lufs[data-l="plain"] .db {
+    color: var(--text);
+}
+
+.strip-readout.lufs:is([data-l="silent"], [data-l="none"]) .db {
+    color: var(--faint);
+}
+
+/* Variant B: a pill over the top of the scale and the meter, under the
+   clip light, left of the cap's widest reach; no touch. It is laid before
+   the fader, so the cap (its own layer) passes over it. */
+.lufs-pill {
+    --cap-w: min(32px, calc(var(--strip-w, 76px) - 38px));
+    position: absolute;
+    top: 9px;
+    left: 0;
+    width: calc(50% + 17px - var(--cap-w) / 2 - 3px);
+    height: 16px;
+    border-radius: 4px;
+    background: var(--panel);
+    box-shadow: 0 0 0 1px var(--line);
+    color: #0b0b12;
+    font: 600 clamp(10px, calc((var(--strip-w, 76px) - 40px) / 3.6), 12px) / 16px var(--mono);
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+.lufs-pill[data-l="fine"] { background: var(--l-fine); box-shadow: none; }
+.lufs-pill[data-l="warn"] { background: var(--l-warn); box-shadow: none; }
+.lufs-pill[data-l="far"] { background: var(--l-far); box-shadow: none; }
+.lufs-pill[data-l="plain"] { background: var(--l-plain); box-shadow: none; color: var(--text); }
+.lufs-pill:is([data-l="silent"], [data-l="none"]) { color: var(--faint); }
+
+/* --- the device's screen (simplified around the app's strips) --- */
+.device {
+    position: relative;
+    flex: none;
+    overflow: hidden;
+    border-radius: 14px;
+    background: var(--page);
+    box-shadow: 0 0 0 2px #000, 0 0 0 4px #24243a;
+}
+
+.ipad { width: 1194px; height: 834px; }
+.phone-side { width: 844px; height: 390px; }
+.phone-up { width: 390px; height: 844px; }
+
+.bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    height: 34px;
+    padding: 0 12px;
+    background: var(--bar);
+    color: var(--muted);
+    font: 700 11px/1 var(--ui);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.bar .tab {
+    padding: 5px 9px;
+    border-radius: 6px;
+}
+
+.bar .tab.on {
+    background: var(--panel-hi);
+    color: var(--text);
+}
+
+.bar .ver {
+    margin-left: auto;
+    color: var(--faint);
+    font: 600 10px/1 var(--mono);
+    letter-spacing: 0;
+    text-transform: none;
+}
+
+.body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 132px minmax(0, 1fr);
+    gap: 6px;
+    height: calc(100% - 34px);
+    padding: 6px;
+}
+
+.side {
+    display: flex;
+    gap: 4px;
+    min-width: 0;
+    min-height: 0;
+}
+
+.side.right { justify-content: flex-end; }
+
+.column {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 6px;
+    border-radius: 10px;
+    background: #10101a;
+}
+
+.rbtn {
+    display: grid;
+    place-items: center;
+    height: 44px;
+    border-radius: 9px;
+    background: #1d1d2c;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--muted);
+    font: 700 15px/1 var(--display);
+    letter-spacing: 0.04em;
+}
+
+/* A phone (#63, phone-burger-v1): the column behind ☰. */
+.pbody {
+    position: relative;
+    display: grid;
+    gap: 6px;
+    height: calc(100% - 34px);
+    padding: 6px;
+}
+
+.pline {
+    display: flex;
+    gap: 4px;
+    min-height: 0;
+}
+
+.burger {
+    position: absolute;
+    z-index: 3;
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 9px;
+    background: #1d1d2c;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--muted);
+    font: 700 16px/1 var(--ui);
+}
+
+/* --- the mockup's own page --- */
+.sheet {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-width: 1230px;
+    margin: 0 auto 40px;
+}
+
+.wrap {
+    overflow-x: auto;
+    padding: 6px;
+}
+
+.overline {
+    color: var(--muted);
+    font: 700 10px/1.2 var(--ui);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+h1, h2 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    font: 700 24px/1.1 var(--display);
+    letter-spacing: 0.03em;
+}
+
+h2 { font-size: 19px; }
+
+.vletter {
+    display: grid;
+    flex: none;
+    place-items: center;
+    min-width: 26px;
+    height: 26px;
+    padding: 0 6px;
+    border-radius: 7px;
+    background: var(--solo);
+    color: #10101a;
+    font: 700 18px/1 var(--display);
+}
+
+p, li {
+    max-width: 1000px;
+    color: var(--muted);
+    font: 600 14px/1.5 var(--ui);
+}
+
+p b, li b { color: var(--text); }
+
+code {
+    color: var(--accent);
+    font: 600 12.5px/1.4 var(--mono);
+}
+
+.num {
+    color: var(--solo);
+    font: 600 13px/1.4 var(--mono);
+}
+
+.row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 22px;
+}
+
+.box {
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: var(--section);
+}
+
+.samples {
+    display: flex;
+    gap: 6px;
+    height: 300px;
+    padding: 6px;
+    border-radius: 10px;
+    background: var(--page);
+}
+
+.sample-cap {
+    width: var(--strip-w);
+    color: var(--muted);
+    font: 600 11px/1.3 var(--ui);
+    text-align: center;
+}
+
+.sample-caps {
+    display: flex;
+    gap: 6px;
+    padding: 0 6px;
+}
+
+table.legend {
+    border-collapse: collapse;
+}
+
+table.legend td, table.legend th {
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--line);
+    color: var(--muted);
+    font: 600 13.5px/1.4 var(--ui);
+    text-align: left;
+    vertical-align: middle;
+}
+
+table.legend th {
+    color: var(--text);
+    font-weight: 700;
+}
+
+.chip {
+    display: inline-block;
+    min-width: 40px;
+    padding: 0 6px;
+    border-radius: 5px;
+    color: #0b0b12;
+    font: 600 12px/20px var(--mono);
+    text-align: center;
+}
+
+.chip[data-l="fine"] { background: var(--l-fine); }
+.chip[data-l="warn"] { background: var(--l-warn); }
+.chip[data-l="far"] { background: var(--l-far); }
+.chip[data-l="plain"] { background: var(--l-plain); color: var(--text); }
+.chip[data-l="silent"], .chip[data-l="none"] { background: #141420; color: var(--faint); box-shadow: inset 0 0 0 1px var(--line); }
+
+.measure {
+    color: var(--text);
+    font: 600 13px/1.5 var(--mono);
+}
+
+.ok { color: var(--m-green); }
+.bad { color: var(--m-red); }
+
+.q {
+    padding: 12px 14px;
+    border-left: 3px solid var(--solo);
+    border-radius: 6px;
+    background: var(--section);
+}
+</style>
+</head>
+<body>
+<div class="sheet">
+    <div class="overline">fohmixer #151 · hlasitosť (LUFS) na mikrofónoch a na výstupe do reprákov · návrh v1 na schválenie</div>
+    <h1>LUFS na pásoch — dva varianty, kde stojí číslo</h1>
+    <p>Každý PA mikrofón speváka ukazuje svoju krátkodobú hlasitosť (short-term LUFS) hneď za <b>Trim IN</b>, ako celé číslo: zelené pri cieli −25 ±3 LU, žlté do ±6 LU, červené za tým. Keď spevák nespieva, je tam sivá pomlčka <span class="chip" data-l="silent">—</span>. Výstup do reprákov (<b>PA Out</b>) ukazuje len holé číslo bez farby. <b>Žiadny variant nepridáva riadok</b>: fadre majú presne rovnakú dráhu ako dnes (stránka to meria nižšie). Mená a hodnoty sú vymyslené; pásy kreslí CSS aplikácie v1.17.0, rozmiestnenie okolo nich je zjednodušené.</p>
+    <p class="measure" id="measure-top"></p>
+
+    <h2><span class="vletter">A</span>Variant A — číslo v riadku pod menom (namiesto dB)</h2>
+    <p>Na páse so značkou <code>+LUFS</code> riadok pod menom ukazuje hlasitosť vo farebnom rámčeku namiesto dB z Live. Keď držíš fader prstom, riadok ukáže dB tyrkysovo ako dnes (stav „held“ v ukážke stavov nižšie). Pustíš — vráti sa LUFS. dB zostáva aj v detaile kanála (☰). Nič nové na páse nepribudne.</p>
+    <div class="wrap"><div class="device ipad" id="ipad-a"></div></div>
+
+    <h2><span class="vletter">B</span>Variant B — rámček navrchu metra (dB ostáva)</h2>
+    <p>dB z Live ostáva v riadku pod menom. Hlasitosť je malý rámček navrchu stupnice a metra, pod svetielkom clipu, vľavo od gombíka fadra. Nereaguje na dotyk (fader aj clip fungujú cez neho). Zakryje horných 16 px metra a značku <span class="num">+6</span> na stupnici; gombík fadra ide pri +6 dB ponad neho.</p>
+    <div class="wrap"><div class="device ipad" id="ipad-b"></div></div>
+
+    <h2>Telefóny a všetky stavy</h2>
+    <p>Na telefóne majú pásy aj 64 px. Číslo stojí na tom istom mieste ako na iPade a písmo sa zmenší so šírkou pásu (ako dnes dB). Hore telefón na boku, dole na výšku; vľavo A, vpravo B.</p>
+    <div class="row">
+        <div class="wrap"><div class="overline">A · na boku 844 × 390</div><div class="device phone-side" id="side-a"></div></div>
+        <div class="wrap"><div class="overline">B · na boku 844 × 390</div><div class="device phone-side" id="side-b"></div></div>
+    </div>
+    <div class="row">
+        <div class="wrap"><div class="overline">A · na výšku 390 × 844</div><div class="device phone-up" id="up-a"></div></div>
+        <div class="wrap"><div class="overline">B · na výšku 390 × 844</div><div class="device phone-up" id="up-b"></div></div>
+        <div class="col" style="display:flex;flex-direction:column;gap:10px;">
+            <div class="overline">Všetky stavy · A (pás 83 px ako na iPade)</div>
+            <div class="samples" id="samples-a" style="--strip-w:83.16px;"></div>
+            <div class="sample-caps" id="caps-a" style="--strip-w:83.16px;"></div>
+            <div class="overline">Všetky stavy · B</div>
+            <div class="samples" id="samples-b" style="--strip-w:83.16px;"></div>
+            <div class="sample-caps" id="caps-b" style="--strip-w:83.16px;"></div>
+        </div>
+    </div>
+
+    <h2>Legenda (texty na povrchu sú anglické)</h2>
+    <div class="box">
+        <table class="legend">
+            <tr><th>On the surface</th><th>State</th><th>Čo to znamená</th></tr>
+            <tr><td><span class="chip" data-l="fine">−25</span></td><td>fine</td><td>Mikrofón: hlasitosť za Trim IN je do ±3 LU od cieľa −25 (−28 až −22). Trim je dobre.</td></tr>
+            <tr><td><span class="chip" data-l="warn">−21</span></td><td>warn</td><td>3 až 6 LU od cieľa (−31 až −29 alebo −21 až −19). Pozri, čo sa zmenilo.</td></tr>
+            <tr><td><span class="chip" data-l="far">−33</span></td><td>far</td><td>Viac ako 6 LU od cieľa (−32 a menej, −18 a viac). Niečo technicky nesedí (gain, výmena mikrofónu, slabý spevák).</td></tr>
+            <tr><td><span class="chip" data-l="silent">—</span></td><td>silent</td><td>Spevák nespieva: za posledné 3 s menej ako 1 s hlasu nad −40 LUFS. Ticho ani pauzy nikdy nesvietia žlto či červeno.</td></tr>
+            <tr><td><span class="chip" data-l="plain">−18</span></td><td>plain</td><td>Výstup do reprákov (<code>+LUFS</code> bez cieľa): živé short-term číslo, bez farby, bez priemeru za pieseň.</td></tr>
+            <tr><td><span class="chip" data-l="none">—</span> + <span class="strip-flag" style="display:inline-block">!</span></td><td>no LUFS meter</td><td>Stopa má značku, ale chýba v nej zariadenie <code>FohMixer LUFS</code> (alebo sú dve). V zozname problémov: <code>no LUFS meter</code> / <code>two LUFS meters</code>. Bez spojenia s Live je tiež <code>—</code>.</td></tr>
+        </table>
+        <p>Číslo je zaokrúhlené na celé LU a farba sa určuje z toho istého zaokrúhleného čísla, takže číslo a farba si nikdy neodporujú. Jednotka (LUFS) na páse nie je (na 64 px páse sa nezmestí); hovorí ju táto legenda a manuál značiek.</p>
+    </div>
+
+    <h2>Poznámky</h2>
+    <div class="box">
+        <ul>
+            <li><b>Kde sa meria:</b> nové zariadenie Max for Live <code>FohMixer LUFS</code> v paralelnom chaine racku <code>CORE Effects</code> vedľa Sonible trueLevel, teda presne v bode, kde dnes čítate −25. Do chainu posiela ticho, zvuk ani latencia speváka sa nemení. Na výstupe do reprákov je v reťazi toho returnu v master Live.</li>
+            <li><b>Ktoré stopy:</b> značka v Tuneri. <code>"Vox 1" +G:STAGE +LUFS:-25</code> = meraj a porovnaj s −25. <code>"PA Out" +LUFS</code> = len číslo.</li>
+            <li><b>Ticho:</b> mikrofón ukazuje „hlas“: priemer len tých úsekov z posledných 3 s, kde spevák spieva (nad −40 LUFS), a aspoň 1 s z nich. Koniec frázy preto nespadne do žltej; spev, ktorý je naozaj potichu (napr. −34), je stále červený.</li>
+            <li><b>Výška fadrov:</b> oba varianty používajú len miesto, ktoré pás už má. Nad fadre nič nepribudlo; čísla nižšie sú zmerané v tejto stránke.</li>
+        </ul>
+        <p class="measure" id="measure"></p>
+    </div>
+
+    <h2>Otázky na schválenie</h2>
+    <div class="q">
+        <p><b>1. Variant:</b> A (číslo namiesto dB v riadku pod menom, dB pri držaní fadra) alebo B (rámček navrchu metra, dB ostáva)? Ja by som zvolil A: číslo je väčšie a nezakrýva meter.</p>
+        <p><b>2. Spill na speváckych mikrofónoch:</b> keď kapela hrá a spevák mlčí, môže byť v jeho mikrofóne za Trim IN hlasitosť nad −40 LUFS? Ak áno, prah „nespieva“ posunieme (napr. na −36), aby spill nesvietil ako slabý spev. Overím to na PC jednou piesňou.</p>
+        <p><b>3. Ďalšie stopy:</b> len PA speváci a výstup do reprákov, alebo aj ručné mikrofóny v master Live (reč) s rovnakým cieľom −25?</p>
+    </div>
+</div>
+
+<script>
+"use strict";
+// Live's volume taper (behave/fader.rs value2db) and the position of `db`.
+function value2db(v) {
+    if (v > 1) return 0;
+    if (v >= 0.4) return 40 * v - 34;
+    if (v >= 0.15) return -((399.751894 * v - 201.871345) ** 2 + 12630.61132) / 799.503788;
+    const db = 118.426374 * v ** (5567 / 7504) - 70;
+    return db <= -70 ? -Infinity : db;
+}
+function posOf(db) {
+    let low = 0, high = 1;
+    for (let i = 0; i < 14; i++) {
+        const mid = (low + high) / 2;
+        if (value2db(mid) < db) low = mid; else high = mid;
+    }
+    return (low + high) / 2;
+}
+const UNITY = 0.85;
+const TICKS = [6, 0, -6, -12, -18, -24, -30, -40, -60];
+const minus = (x) => (x < 0 ? "−" + -x : String(x));
+const tickLabel = (db) => (db > 0 ? "+" + db : db < 0 ? "−" + -db : "0");
+const dbText = (db) => (db === 0 ? "0.0" : (db < 0 ? "−" + (-db).toFixed(1) : db.toFixed(1)));
+
+// The rule (design note §6.1): the integer shown, its colour judged on
+// that integer; tolerances 3 and 6 LU; -70 is silence.
+function judge(v, target) {
+    if (v === null) return { l: "none", text: "—" };
+    if (v <= -70) return { l: "silent", text: "—" };
+    const n = Math.sign(v) * Math.round(Math.abs(v));
+    if (target === null) return { l: "plain", text: minus(n) };
+    const d = Math.abs(n - target);
+    return { l: d <= 3 ? "fine" : d <= 6 ? "warn" : "far", text: minus(n) };
+}
+
+function textOn(hex) {
+    const lin = (c) => { c /= 255; return c <= 10 / 255 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+    const n = parseInt(hex.slice(1), 16);
+    const l = 0.2126 * lin((n >> 16) & 255) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
+    return l > 0.179 ? "#10101a" : "#f4f4fa";
+}
+
+function el(tag, cls, attrs = {}) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    for (const [k, v] of Object.entries(attrs)) {
+        if (k === "text") e.textContent = v; else e.setAttribute(k, v);
+    }
+    return e;
+}
+
+// Invented tracks. `lufs`: the device's value (null: none), `target`:
+// the tag's (null: +LUFS alone, the output); no `lufs` key: no tag.
+const STAGE = "#FFA529", BAND = "#4fa3ff", MASTER = "#8b7dff";
+const T = {
+    v1: { name: "Vox 1", tc: "#FF94A6", gc: STAGE, db: -1.5, lvl: 0.62, lufs: -24.6, target: -25 },
+    v2: { name: "Vox 2", tc: "#FFA529", gc: STAGE, db: -3, lvl: 0.66, lufs: -20.8, target: -25 },
+    v3: { name: "Vox 3", tc: "#F7F47C", gc: STAGE, db: -4.5, lvl: 0.4, lufs: -33.2, target: -25 },
+    v4: { name: "Vox 4", tc: "#BFFB00", gc: STAGE, db: -2, lvl: 0.06, lufs: -70, target: -25 },
+    v5: { name: "Vox 5", tc: "#87FF67", gc: STAGE, db: -6, lvl: 0.5, lufs: null, target: -25, flag: true },
+    keys: { name: "Keys", tc: "#5ECBF1", gc: BAND, db: -8, lvl: 0.5 },
+    gtr: { name: "Gtr", tc: "#8BC5FF", gc: BAND, db: -10, lvl: 0.45 },
+    band: { name: "Band", tc: "#D86CE4", gc: MASTER, db: -2, lvl: 0.7 },
+    media: { name: "Media", tc: "#E553A0", gc: MASTER, db: -12, lvl: 0.1 },
+    hand1: { name: "Hand 1", tc: "#FFF034", gc: MASTER, db: -6, lvl: 0.2 },
+    rev: { name: "Reverb PA", tc: "#8BC5FF", gc: MASTER, db: -9, lvl: 0.4, ret: true },
+    sub: { name: "Sub", tc: "#A6BE00", gc: MASTER, db: -4, lvl: 0.55 },
+    out: { name: "PA Out", tc: "#C4C4C4", gc: MASTER, db: 0, lvl: 0.72, lufs: -17.8, target: null, ret: true, wide: true },
+};
+
+function muteButton(m) {
+    const b = el("div", "mute lit", { style: `--tc:${m.tc};--tt:${textOn(m.tc)};` });
+    b.append(el("span", "strip-label", { text: m.name, style: `--n:${[...m.name].length};` }));
+    const corner = el("span", "strip-corner");
+    if (m.flag) corner.append(el("span", "strip-flag", { text: "!" }));
+    if (m.ret) corner.append(el("span", "strip-ret", { text: "RET" }));
+    b.append(corner);
+    return b;
+}
+
+function stripHead(m, variant) {
+    const h = el("div", "strip-head");
+    const info = el("div", "strip-info");
+    let readout;
+    if (variant === "A" && "lufs" in m && !m.held) {
+        const j = judge(m.lufs, m.target);
+        readout = el("div", "strip-readout lufs", { "data-l": j.l });
+        readout.append(el("span", "db", { text: j.text }));
+    } else {
+        readout = el("div", "strip-readout");
+        readout.append(el("span", m.db === 0 ? "db unity" : "db", { text: dbText(m.db) }));
+    }
+    const menu = el("div", "strip-menu");
+    menu.append(el("span", "", { text: "☰" }));
+    info.append(readout, menu);
+    h.append(muteButton(m), info);
+    return h;
+}
+
+function strip(m, variant) {
+    const s = el("div", m.wide ? "strip wide" : "strip", { style: `--gc:${m.gc};`, "data-name": m.name });
+    if ("lufs" in m) s.dataset.lufs = "true";
+    const fz = el("div", "strip-fz", { style: `--u:${UNITY};` });
+    const scale = el("div", "scale");
+    for (const db of TICKS) {
+        scale.append(el("span", db === 0 ? "tick unity" : "tick", { text: tickLabel(db), style: `top:${((1 - posOf(db)) * 100).toFixed(3)}%;` }));
+    }
+    const meter = el("div", "meter", { style: `--yellow:${(posOf(-12) * 100).toFixed(2)}%;--red:${(posOf(-3) * 100).toFixed(2)}%;` });
+    const bars = el("div", "meter-bars");
+    const bar = el("div", "meter-bar");
+    bar.append(
+        el("div", "meter-zones"),
+        el("div", "meter-cover", { style: `transform:scaleY(${(1 - m.lvl).toFixed(4)});` }),
+        el("div", "meter-peak", { style: `--pk:${Math.min(1, m.lvl + 0.05).toFixed(4)};opacity:0.75;` }),
+    );
+    bars.append(bar);
+    meter.append(el("div", "meter-clip"), bars);
+    const fader = el("div", "fader", { style: `--p:${posOf(m.db).toFixed(4)};`, "data-held": m.held ? "true" : "false" });
+    const rail = el("div", "fader-rail");
+    rail.append(el("div", "fader-cap"));
+    fader.append(el("div", "fader-groove"), el("div", "fader-fill"), rail);
+    fz.append(scale, meter);
+    if (variant === "B" && "lufs" in m) {
+        const j = judge(m.lufs, m.target);
+        fz.append(el("div", "lufs-pill", { "data-l": j.l, text: j.text }));
+    }
+    fz.append(fader);
+    s.append(stripHead(m, variant), fz);
+    return s;
+}
+
+function bar(label) {
+    const b = el("div", "bar");
+    b.append(el("span", "tab on", { text: "FOH" }), el("span", "tab", { text: "Deck" }), el("span", "tab", { text: "AbleSet" }), el("span", "", { text: label }), el("span", "ver", { text: "v1.18.0" }));
+    return b;
+}
+
+// The iPad: 6 strips a side at 83.16 px (the app's width there), the
+// control column in the middle.
+function ipad(id, variant) {
+    const d = document.getElementById(id);
+    d.style.setProperty("--strip-w", "83.16px");
+    d.append(bar("WORSHIP · STAGE"));
+    const body = el("div", "body");
+    const left = el("div", "side");
+    for (const m of [T.v1, T.v2, T.v3, T.v4, T.v5, T.keys]) left.append(strip(m, variant));
+    const col = el("div", "column");
+    for (const t of ["STAGE", "BAND B", "OTHERS", "EFFECTS", "REVERB", "AUTOTUNE", "VIEWS"]) col.append(el("div", "rbtn", { text: t }));
+    const right = el("div", "side right");
+    for (const m of [T.band, T.media, T.hand1, T.rev, T.out]) right.append(strip(m, variant));
+    body.append(left, col, right);
+    d.append(body);
+}
+
+// A phone on its side: one line of 64 px strips, the column behind ☰.
+function phoneSide(id, variant) {
+    const d = document.getElementById(id);
+    d.style.setProperty("--strip-w", "64px");
+    d.append(bar("STAGE"));
+    const body = el("div", "pbody");
+    const line = el("div", "pline");
+    for (const m of [T.v1, T.v2, T.v3, T.v4, T.v5, T.keys, T.band, T.media, T.rev, T.out]) line.append(strip(m, variant));
+    body.append(line);
+    const b = el("div", "burger", { text: "☰", style: "right:10px;bottom:10px;" });
+    d.append(body, b);
+}
+
+// A phone upright: two lines of five 64 px strips.
+function phoneUp(id, variant) {
+    const d = document.getElementById(id);
+    d.style.setProperty("--strip-w", "64px");
+    d.append(bar("STAGE"));
+    const body = el("div", "pbody", { style: "grid-template-rows:1fr 1fr;" });
+    const l1 = el("div", "pline");
+    for (const m of [T.v1, T.v2, T.v3, T.v4, T.v5]) l1.append(strip(m, variant));
+    const l2 = el("div", "pline");
+    for (const m of [T.keys, T.band, T.media, T.rev, T.out]) l2.append(strip(m, variant));
+    body.append(l1, l2);
+    const b = el("div", "burger", { text: "☰", style: "right:5px;top:40px;" });
+    d.append(body, b);
+}
+
+// Every state side by side.
+const SAMPLES = [
+    [{ ...T.v1 }, "fine −25"],
+    [{ ...T.v2 }, "warn −21"],
+    [{ ...T.v3 }, "far −33"],
+    [{ ...T.v4 }, "silent"],
+    [{ ...T.v5 }, "no meter"],
+    [{ ...T.out, wide: false }, "output"],
+    [{ ...T.v2, held: true }, "held"],
+];
+function samples(variant) {
+    const box = document.getElementById("samples-" + variant.toLowerCase());
+    const caps = document.getElementById("caps-" + variant.toLowerCase());
+    for (const [m, cap] of SAMPLES) {
+        box.append(strip(m, variant));
+        caps.append(el("div", "sample-cap", { text: variant === "B" && cap === "held" ? "held (dB as today)" : cap }));
+    }
+}
+
+ipad("ipad-a", "A");
+ipad("ipad-b", "B");
+phoneSide("side-a", "A");
+phoneSide("side-b", "B");
+phoneUp("up-a", "A");
+phoneUp("up-b", "B");
+samples("A");
+samples("B");
+
+// The page measures itself: the fader travel of a strip with LUFS and of
+// one without on each device, and whether every reading fits its box.
+function measure() {
+    const lines = [];
+    let allEqual = true, allFit = true;
+    for (const id of ["ipad-a", "ipad-b", "side-a", "side-b", "up-a", "up-b"]) {
+        const d = document.getElementById(id);
+        const withL = d.querySelector('.strip[data-lufs="true"] .fader');
+        const without = d.querySelector('.strip:not([data-lufs]) .fader');
+        const a = withL.getBoundingClientRect().height, b = without.getBoundingClientRect().height;
+        const equal = Math.abs(a - b) < 0.01;
+        allEqual = allEqual && equal;
+        const fits = [...d.querySelectorAll(".strip-readout.lufs .db, .lufs-pill")].every((e) => e.scrollWidth <= e.clientWidth + 0.5);
+        allFit = allFit && fits;
+        lines.push(`${id}: fader travel with LUFS ${a.toFixed(1)} px, without ${b.toFixed(1)} px <span class="${equal ? "ok" : "bad"}">${equal ? "= equal" : "≠ DIFFERENT"}</span>; readings ${fits ? '<span class="ok">fit</span>' : '<span class="bad">overflow</span>'}`);
+    }
+    document.getElementById("measure").innerHTML = lines.join("<br>");
+    document.getElementById("measure-top").innerHTML = `Merané v tejto stránke: dráha fadra s LUFS = bez LUFS na všetkých 6 obrazovkách: <span class="${allEqual ? "ok" : "bad"}">${allEqual ? "áno" : "NIE"}</span>; čísla sa zmestia: <span class="${allFit ? "ok" : "bad"}">${allFit ? "áno" : "NIE"}</span> (podrobne v Poznámkach).`;
+}
+document.fonts.ready.then(measure);
+</script>
+</body>
+</html>

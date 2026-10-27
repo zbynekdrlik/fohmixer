@@ -22,15 +22,19 @@ async function travel(page: Page, name: string, instance = "band"): Promise<numb
   return (await fader.boundingBox())!.height;
 }
 
-/** Nothing of a strip above its name button: the button is the strip's first part, 30 px high. */
+/** Nothing of a strip above its name button: the button is the strip's first part and its top edge (#151: 37 px, at the strip's top inside its 1 px border). */
 async function headFirst(page: Page): Promise<string[]> {
   return page.getByTestId("strip").evaluateAll((strips) =>
     strips.flatMap((s) => {
       const head = s.firstElementChild;
       const mute = s.querySelector(".mute");
       if (!head || !head.classList.contains("strip-head") || !mute) return [`${s.getAttribute("data-track")}: no head first`];
-      const h = mute.getBoundingClientRect().height;
-      return Math.abs(h - 30) > 0.5 ? [`${s.getAttribute("data-track")}: a ${h} px name button`] : [];
+      const b = mute.getBoundingClientRect();
+      const top = b.top - s.getBoundingClientRect().top;
+      const out: string[] = [];
+      if (Math.abs(b.height - 37) > 0.5) out.push(`${s.getAttribute("data-track")}: a ${b.height} px name button`);
+      if (top > 1.01) out.push(`${s.getAttribute("data-track")}: the name button ${top} px under the strip's top`);
+      return out;
     }),
   );
 }
@@ -138,17 +142,23 @@ test.describe("At the tablet's and the desktop's own size", () => {
     const least = viewport.height >= 800 ? 285 : 225;
     expect(await travel(page, "Hand2 #"), "the fader's travel (px)").toBeGreaterThan(least);
     // No pan on the strip (#71, D17: it is the channel detail's, the iPad's
-    // home bar waits at the foot): the readout line with ☰ under the name
-    // button, then the fader down to the strip's foot.
+    // home bar waits at the foot): the readout line under the name button,
+    // then the fader down to the strip's foot, and SEL at its bottom left
+    // (#151), under the info column.
     const hand2 = strip(page, "Hand2 #");
     await expect(hand2.getByTestId("pan")).toHaveCount(0);
     const area = (await hand2.boundingBox())!;
     const mute = (await hand2.getByTestId("mute").boundingBox())!;
-    const menu = (await hand2.getByTestId("strip-menu").boundingBox())!;
+    const readout = (await hand2.locator(".strip-info").boundingBox())!;
+    const key = (await hand2.getByTestId("detail-key").boundingBox())!;
+    const col = (await hand2.getByTestId("strip-col").boundingBox())!;
     const fader = (await hand2.getByTestId("fader").boundingBox())!;
-    expect(menu.y, "☰ under the name button").toBeGreaterThanOrEqual(mute.y + mute.height - 0.5);
-    expect(fader.y, "the fader under ☰").toBeGreaterThanOrEqual(menu.y + menu.height - 0.5);
+    expect(readout.y, "the readout under the name button").toBeGreaterThanOrEqual(mute.y + mute.height - 0.5);
+    expect(fader.y, "the fader under the readout").toBeGreaterThanOrEqual(readout.y + readout.height - 0.5);
     expect(area.y + area.height - (fader.y + fader.height), "the fader's foot from the strip's (px)").toBeLessThan(16);
+    expect(Math.abs(key.x - area.x - 1), "SEL at the strip's inner left edge").toBeLessThan(0.5);
+    expect(Math.abs(area.y + area.height - 5 - (key.y + key.height)), "SEL at the strip's foot (its 4 px padding, 1 px border)").toBeLessThan(0.5);
+    expect(key.y, "SEL in the lower part of the info column").toBeGreaterThan(col.y + col.height / 2);
     for (const tab of await page.getByTestId("tab").all()) {
       expect(await clipped(tab), `tab ${await tab.getAttribute("data-page")}`).toEqual([]);
     }

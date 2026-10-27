@@ -1,12 +1,12 @@
 /* fohmixer: a group on the page (#127; split from page.css and strip.css,
    linked after strip.css). `arrange::items` decides what a run of a
    group's cells shows: a run that starts with a strip names the group on
-   that strip's side (`.group-side`, in its scale column), any other run
-   keeps the group's title over it when there is one to show (a title, or
-   the Live set its strips share). The group's colour is on every strip's
-   3 px top edge (strip.css `.strip::before`) and on every block's (a group
-   of buttons, `.block::before` below), so a coloured group whose run shows
-   no title still shows its colour. */
+   that strip's side (`.group-side`, in its info column, #151), any other
+   run keeps the group's title over it when there is one to show (a title,
+   or the Live set its strips share). The group's colour is on every
+   block's 3 px top edge (a group of buttons, `.block::before` below) and
+   on its title; a strip carries one colour, its track's own (#151, v8:
+   the name button's edge), so a strip shows no group colour. */
 
 /* A line keeps the titles' 16 px at its top only while it shows a title
    over a run on any of its sub-pages and windows (`data-captions`,
@@ -95,37 +95,30 @@
 }
 
 /* A group's name on its side in its run's first strip (variant B of
-   docs/mockups/group-captions-v1.html): its title, or an untitled group's
-   shared Live set (BAND, MASTER). On the scale's left edge, read bottom to
-   top, 2 px clear of the 8.5 px +6 and −6 dB labels (ScaleView's
-   `--side-from`, `--side-to`), beside the right-aligned 0 dB label; 11 px
-   thick, so a long name ends in an ellipsis and never widens anything. In
-   the colour of the Live set the group's strips share (teal band, violet
-   master), muted when they differ. The fader over the scale takes the
-   touch. */
+   docs/mockups/group-captions-v1.html; #151, mockup v8: in the info
+   column, calm grey, no group colour): its title, or an untitled group's
+   shared Live set (BAND, MASTER). 40 px under the column's top (44 px on a
+   narrow strip), read bottom to top, 11 px thick and 96 px long, so a
+   long name ends in an ellipsis and never widens anything. The fader under
+   the column takes the touch. */
 .group-side {
     position: absolute;
-    top: calc(var(--side-from) + 6.25px);
+    top: 40px;
     left: 0;
     width: 11px;
-    height: calc(var(--side-to) - var(--side-from) - 12.5px);
+    height: 96px;
     overflow: hidden;
     writing-mode: vertical-rl;
     transform: rotate(180deg);
-    text-align: end;
-    color: var(--muted);
+    color: var(--faint);
     font: 600 9.5px/11px var(--ui);
-    letter-spacing: 1.2px;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
     white-space: nowrap;
     text-overflow: ellipsis;
     pointer-events: none;
 }
 
-.group-side[data-instance] {
-    color: var(--band);
-}
-
-.group-side[data-instance="master"] {
-    color: var(--master);
+:is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .group-side {
+    top: 44px;
 }

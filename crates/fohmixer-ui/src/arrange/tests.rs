@@ -1761,3 +1761,33 @@ fn a_lines_room_is_the_same_in_every_window() {
         vec![false]
     );
 }
+
+#[test]
+fn narrow_is_under_78_px_of_the_strips_own_width() {
+    assert!(!is_narrow(78.0));
+    assert!(is_narrow(78.0_f64.next_down()));
+    assert!(is_narrow(64.0));
+    assert!(!is_narrow(120.0));
+}
+
+#[test]
+fn a_wide_strip_is_narrow_by_its_own_width() {
+    // 71.0 px: 78.1 px wide.
+    assert_eq!(
+        narrow(71.0, &METRICS),
+        Narrow {
+            normal: true,
+            wide: false
+        }
+    );
+    // 70.9 px: 77.99 px wide.
+    assert!(narrow(70.9, &METRICS).wide);
+    assert!(narrow(70.9, &METRICS).normal);
+    assert_eq!(
+        narrow(83.16, &METRICS),
+        Narrow {
+            normal: false,
+            wide: false
+        }
+    );
+}

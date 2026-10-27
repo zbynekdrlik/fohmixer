@@ -16,8 +16,9 @@ use super::{
     BtnText, fail_flash, intent_look, key_of, owns_touches, readiness, slot_of, trace_touch,
 };
 use crate::behave::colour::{css_color, text_on};
-use crate::behave::fader_link::{Flink, flink_compact};
+use crate::behave::fader_link::Flink;
 use crate::behave::label::{label_chars, strip_label};
+use crate::behave::marks::marks_look;
 use crate::behave::mute::{GUARD_MS, GuardAction, Linked, MuteGuard, Reach, chain_compact};
 use crate::binding::{SubSpec, mute_sub, solo_sub};
 use crate::dom;
@@ -103,9 +104,13 @@ fn linked_now(slots: &[RwSignal<Slot>], tracked: bool) -> Reach {
 /// strip's own and each partner's; a partner without Live's value is not
 /// counted), grey while all play, red while all are muted, amber `m/N`
 /// while m of them are muted by hand in Live. It takes no touch and no
-/// height.
+/// height. `bare`: the chain without its count (#151: a muted strip's
+/// marks line, where `MUTED` says it).
 #[component]
-pub fn LinkMark(slots: Vec<RwSignal<Slot>>) -> impl IntoView {
+pub fn LinkMark(
+    slots: Vec<RwSignal<Slot>>,
+    #[prop(optional, into)] bare: Signal<bool>,
+) -> impl IntoView {
     let count = slots.len();
     let slots = StoredValue::new(slots);
     let reach = Memo::new(move |_| {
@@ -119,13 +124,15 @@ pub fn LinkMark(slots: Vec<RwSignal<Slot>>) -> impl IntoView {
             .try_with(|r| r.text(count))
             .unwrap_or_else(|| count.to_string())
     };
-    // A long count is drawn compact, so it fits the strip's corner line
+    // A long count is drawn compact, so it fits the strip's marks line
     // beside a problem's `!` (#127 re-review N1).
     let compact = move || chain_compact(&text());
+    let is_bare = move || bare.try_get().unwrap_or(false);
     view! {
         <span
             class="link-mark"
             class:compact=compact
+            class:bare=is_bare
             data-testid="mute-link"
             data-state=look
             aria-hidden="true"
@@ -137,27 +144,27 @@ pub fn LinkMark(slots: Vec<RwSignal<Slot>>) -> impl IntoView {
     }
 }
 
-/// What a strip's name button shows on its corner line (#127, strip.css
-/// `.strip-corner`): a problem's `!` and a return's RET around the linked
-/// mute's chain, and the MUTE mark at its right end. The channel detail's
-/// MUTE has no corner line: its chain is a pill on the button.
+/// What a strip's name button shows on its marks line besides the chain,
+/// the fader link and `MUTED` (#151, mockup v8; strip.css `.strip-marks`):
+/// a problem's `!`. The channel detail's MUTE has no marks line: its chain
+/// is a pill on the button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Corner {
     /// A marker problem's `!` (#68).
     pub flag: bool,
-    /// RET: a return in a group that names its instance (#63).
-    pub ret: bool,
 }
 
-/// A strip's name button, its mute: lit in the track's Live colour while the
-/// track is audible; a guarded strip needs a second tap within 500 ms (the
+/// A strip's name button, its mute (#151, mockup v8: calm, the strip's top
+/// edge, the name first and the marks line under it; the detail's MUTE is
+/// lit in the track's Live colour while the track is audible); a guarded
+/// strip needs a second tap within 500 ms (the
 /// first arms and pulses). A linked mute (#127, `partners`) shows and writes
 /// its partners' mutes with its own: lit while any of them plays, dark only
 /// when all are muted; a tap mutes all, or unmutes all when all are muted,
 /// in one `sets` message. It takes a tap once the strip's own track has
 /// Live's value: a partner without one is left out of the tap and of what
 /// the button shows, and never disables it (the PA mute always works;
-/// `behave::mute::Reach`). `corner`: a strip's corner line, with the chain;
+/// `behave::mute::Reach`). `corner`: a strip's marks line, with the chain;
 /// none for the channel detail's MUTE, which carries the chain on the
 /// button.
 #[component]
@@ -169,7 +176,7 @@ pub fn MuteView(
     color: Option<RwSignal<Slot>>,
     partners: Vec<Partner>,
     corner: Option<Corner>,
-    /// The fader link's mark in the corner line (#130): a leader's or a
+    /// The fader link's mark on the marks line (#130): a leader's or a
     /// partner's; none on the detail's MUTE.
     #[prop(optional, into)]
     flink: Signal<Flink>,
@@ -184,36 +191,52 @@ pub fn MuteView(
         .chain(partners.iter().map(|p| p.spec.clone()))
         .collect();
     let keys: Vec<String> = specs.iter().map(key_of).collect();
-    // The strip's corner line, or the detail's MUTE mark and pill. The
-    // fader link's mark (#130) goes after the chain, compact beside a
-    // crowded one (`flink_compact`: the chain's count as LinkMark shows it).
-    let count = all.len();
-    let count_slots = all.clone();
-    let chain_text = (linked && corner.is_some())
-        .then(|| Memo::new(move |_| linked_now(&count_slots, true).text(count)));
+    // What the button shows, every track's mute together.
+    let shown_slots = all.clone();
+    let shown = Memo::new(move |_| linked_now(&shown_slots, true).state);
+    // The strip's marks line (#151, mockup v8), under the name: a problem's
+    // `!`, the chain, the fader link's mark and `MUTED` at its right end;
+    // what gives way when it fills is `behave::marks::marks_look`, from
+    // what the strip carries (nothing is measured). The detail's MUTE has
+    // its mark and pill on the button instead.
     let line_slots = all.clone();
     let line = corner.map(move |c| {
+        let looks = Memo::new(move |_| {
+            let fader = flink.try_get().unwrap_or_default().shown();
+            let muted = shown.try_get() == Some(Linked::Muted);
+            marks_look(c.flag, linked, fader, muted)
+        });
+        let chain_bare = Signal::derive(move || looks.try_get().is_some_and(|l| l.chain_bare));
+        let flink_bare = move || looks.try_get().is_some_and(|l| l.flink_bare);
+        let flink_yield = move || looks.try_get().is_some_and(|l| l.flink_yield);
+        let crowd = move || looks.try_get().is_some_and(|l| l.crowd);
         let flag = c
             .flag
             .then(|| view! { <span class="strip-flag" aria-hidden="true">"!"</span> });
-        let chain = linked.then(move || view! { <LinkMark slots=line_slots /> });
-        let ret = c.ret.then(|| {
-            view! { <span class="strip-ret" data-testid="strip-ret" aria-hidden="true">"RET"</span> }
-        });
-        let compact = move || {
-            let text = chain_text.and_then(|t| t.try_get());
-            flink_compact(c.flag, text.as_deref())
-        };
+        let chain = linked.then(move || view! { <LinkMark slots=line_slots bare=chain_bare /> });
         let fader_mark = move || {
             let role = flink.try_get().unwrap_or_default();
             role.shown().then(|| {
                 let name = role.name();
                 let follow = role.follows();
+                // One class list (`yield` is a Rust keyword, so no
+                // `class:yield`).
+                let classes = move || {
+                    let mut list = String::from("link-mark flink");
+                    for (on, class) in [
+                        (follow, " follow"),
+                        (flink_bare(), " bare"),
+                        (flink_yield(), " yield"),
+                    ] {
+                        if on {
+                            list.push_str(class);
+                        }
+                    }
+                    list
+                };
                 view! {
                     <span
-                        class="link-mark flink"
-                        class:follow=follow
-                        class:compact=compact
+                        class=classes
                         data-testid="fader-link-mark"
                         data-role=name
                         aria-hidden="true"
@@ -224,12 +247,11 @@ pub fn MuteView(
             })
         };
         view! {
-            <span class="strip-corner">
+            <span class="strip-marks" class:crowd=crowd data-testid="strip-marks">
                 {flag}
                 {chain}
                 {fader_mark}
-                {ret}
-                <span class="mute-mark" aria-hidden="true">"MUTE"</span>
+                <span class="mute-mark" data-testid="mute-mark" aria-hidden="true">"MUTED"</span>
             </span>
         }
     });
@@ -299,11 +321,6 @@ pub fn MuteView(
             }
         }
     };
-    let shown = Memo::new(move |_| {
-        slots
-            .try_with_value(|s| linked_now(s, true).state)
-            .unwrap_or(Linked::Unknown)
-    });
     let now = move || shown.try_get().unwrap_or(Linked::Unknown);
     // Its own track's readiness alone (#127 review M2).
     let state = Memo::new(move |_| readiness(&[slot]));

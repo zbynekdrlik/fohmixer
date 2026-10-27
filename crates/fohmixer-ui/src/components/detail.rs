@@ -1,5 +1,5 @@
 //! The channel detail (spec F27, D17; #71 PR D; the approved mockup
-//! `docs/mockups/channel-detail-v2.html`): a hold on a strip's ☰ opens that
+//! `docs/mockups/channel-detail-v2.html`): a hold on a strip's SEL opens that
 //! channel over the whole screen, focused work on it alone. A bar (back to
 //! the mix, the name chip in the track's colour, its group and instance),
 //! then on the left (the left thumb) the mute, Live's dB and a tall fader
@@ -34,7 +34,7 @@ use crate::dom;
 use crate::store::{LiveStore, Readiness, Slot};
 
 /// The channel detail's strip, as held (`Nav.detail` on the surface), and
-/// when a hold opened it: a context, so a hold on a strip's ☰ opens it, its
+/// when a hold opened it: a context, so a hold on a strip's SEL opens it, its
 /// exit and a new layout close it. Each open and close goes to the flight
 /// recorder with the strip's keys.
 #[derive(Clone, Copy)]
@@ -168,8 +168,8 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
 
     // Right after a hold opens it, its parts take no touch for what is left
     // of OPEN_GUARD_MS (`data-guard`, `detail.css`; `guard_left`: a new
-    // layout's remount guards no more): a second tap at ☰'s spot would land
-    // on its MUTE. The detail itself still takes them, so nothing passes
+    // layout's remount guards no more): a second tap at SEL's spot would land
+    // on the detail's left box (its fader). The detail itself still takes them, so nothing passes
     // through to the strips below. The timer goes with the detail.
     let opened_at = shown
         .and_then(|d| d.opened_at.try_get_value())
@@ -209,7 +209,7 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
     let mute_label = "MUTE".to_string();
     let no_colour: Option<RwSignal<Slot>> = None;
     // A linked mute (#127) writes its partners here too, its chain on the
-    // button (no corner line: that is the strip's).
+    // button (no marks line: that is the strip's).
     let no_corner: Option<Corner> = None;
     let partners: Vec<Partner> = subs
         .linked

@@ -218,7 +218,7 @@ pub fn deck(
 }
 
 /// A channel detail's step (#71): `what` — `press` (a finger down on a
-/// strip's ☰), `slid` (it slid off: no tap, nothing opens), `tap` (lifted
+/// strip's SEL, #151), `slid` (it slid off: no tap, nothing opens), `tap` (lifted
 /// before the hold: the hint), `open` (`why`: `check`, the hold's check;
 /// `lift`, a lift after the hold no check had seen) or `close` (`why`:
 /// `exit`, `layout` — a new layout without its strip, or a placeholder

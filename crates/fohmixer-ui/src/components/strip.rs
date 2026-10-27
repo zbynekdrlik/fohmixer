@@ -1,27 +1,28 @@
 //! A mixer strip (spec F2–F5, F8–F13; the redesign, #21; held in the hands,
-//! #63): at the top the name button, the mute, lit in the track's Live
-//! colour while the track is audible and only 30 px high (the fader gets
-//! the height), with the status light and Live's dB readout on the line
-//! under it (a hand holding the tablet covers the bottom of the screen, so
-//! nothing to read sits there); then the instance tag when the group's
-//! strips differ and the fader zone (the dB scale, the meter, the fader).
-//! The first strip of a group's run names the group on its side in the
-//! scale column (#127).
-//! The pan left the strip for the channel detail (#71, D17: at the foot
-//! the iPad's home bar waits for a swipe, and pans are rarely used), so the
-//! strip neither draws nor subscribes it (`StripSubs::shown`): a hold on
-//! the ☰ at the end of the readout line opens the detail.
+//! #63; the owner's mockup v8, #151): at the top the name button, the mute,
+//! as the strip's top edge (37 px, calm: the track's Live colour only as a
+//! 3 px edge), the name first and one marks line under it, with the status
+//! light and Live's dB readout on the line under it (a hand holding the
+//! tablet covers the bottom of the screen, so nothing to read sits there);
+//! then the instance tag when the group's strips differ and the fader
+//! zone: the info column (the LUFS slot, the group's name on the first
+//! strip of its run, #127), the fader with the stereo meter in its track,
+//! the dB scale on its right, and SEL at the bottom left, whose hold opens
+//! the channel detail. The pan left the strip for the channel detail (#71,
+//! D17: at the foot the iPad's home bar waits for a swipe, and pans are
+//! rarely used), so the strip neither draws nor subscribes it
+//! (`StripSubs::shown`).
 
 use std::time::Duration;
 
-use fohmixer_proto::layout::{Strip, StripKind};
+use fohmixer_proto::layout::Strip;
 use leptos::prelude::*;
 
 use super::buttons::{Corner, MuteView, Partner, anchor_name};
 use super::detail::DetailStrip;
 use super::fader::{FaderView, Law, Target};
 use super::fader_link::link_parts;
-use super::meter::{MeterView, StatusView};
+use super::meter::StatusView;
 use super::{Settings, key_of, owns_touches, trace_detail};
 use crate::arrange::GroupLabel;
 use crate::behave::db_text::db_text;
@@ -29,33 +30,17 @@ use crate::behave::fader::{UNITY, VolumeLaw};
 use crate::behave::hold::{HINT_MS, HOLD_MS, Hold, Lift};
 use crate::behave::label::{mark_look, shown_label};
 use crate::behave::reverb::held_low;
-use crate::behave::scale::{side_style, tick_label, tick_pos, ticks};
+use crate::behave::scale::{tick_label, tick_pos, ticks};
 use crate::binding::{detail_keys, strip_subs};
 use crate::dom;
 use crate::store::{LiveStore, Slot};
 
 /// The dB scale beside a fader: the labels of the fader's volume law at the
-/// fader positions of their levels; on the first strip of a group's run,
-/// `group_name`, the group's name on its side (#127, `group.css` `.group-side`):
-/// between the +6 and −6 dB labels of the law (`behave::scale::side_style`),
-/// in the colour of the Live instance the group's strips share
-/// (`data-instance`, none when they differ). It takes no touch: the fader
-/// over the scale gets it.
+/// fader positions of their levels. It takes no touch: the fader over the
+/// scale gets it. A strip's sits right of its fader's track (#151,
+/// `strip.css`), the detail's left of its meter.
 #[component]
-pub fn ScaleView(
-    law: VolumeLaw,
-    #[prop(optional, into)] group_name: Signal<Option<GroupLabel>>,
-) -> impl IntoView {
-    let place = side_style(law);
-    let side = move || {
-        group_name.try_get().flatten().map(|GroupLabel { text, instance }| {
-            view! {
-                <span class="group-side" data-testid="group-side" data-instance=instance style=place.clone()>
-                    {text}
-                </span>
-            }
-        })
-    };
+pub fn ScaleView(law: VolumeLaw) -> impl IntoView {
     let labels = ticks(law)
         .iter()
         .map(|db| {
@@ -68,7 +53,36 @@ pub fn ScaleView(
             }
         })
         .collect_view();
-    view! { <div class="scale" data-testid="scale" aria-hidden="true">{labels}{side}</div> }
+    view! { <div class="scale" data-testid="scale" aria-hidden="true">{labels}</div> }
+}
+
+/// A strip's info column (#151, mockup v8): left of the cap's widest
+/// reach, the zone's height: the LUFS caption and value (empty and hidden
+/// until the LUFS source, their rows kept), and on the first strip of a
+/// group's run `group_name`, the group's name read bottom to top, in grey
+/// (#127; one colour per strip, the track's own). It takes no touch: the
+/// fader under it gets it.
+#[component]
+fn InfoColumn(group_name: Signal<Option<GroupLabel>>) -> impl IntoView {
+    let side = move || {
+        group_name
+            .try_get()
+            .flatten()
+            .map(|GroupLabel { text, instance }| {
+                view! {
+                    <span class="group-side" data-testid="group-side" data-instance=instance>
+                        {text}
+                    </span>
+                }
+            })
+    };
+    view! {
+        <div class="strip-col" data-testid="strip-col" aria-hidden="true">
+            <div class="lufs-cap">"LUFS"</div>
+            <div class="lufs" data-testid="lufs" data-l="none"></div>
+            {side}
+        </div>
+    }
 }
 
 /// Live's dB readout in TouchOSC's form (one decimal, no unit, white exactly
@@ -83,17 +97,18 @@ pub fn DbView(state: RwSignal<Slot>) -> impl IntoView {
     }
 }
 
-/// The ☰ at the end of a strip's readout line (#71, F27): a hold of
-/// `HOLD_MS` opens the strip's channel detail (`behave::hold`; the button
-/// fills meanwhile, `data-holding`, a CSS transition), a tap shows the hint
-/// for `HINT_MS` (`data-hint`: the stylesheet's text over the name button,
-/// no layout change), a finger that slides further than `SLIDE_PX` ends
-/// the press with neither (a fader grab that lands on ☰). It owns its
-/// touches and writes no key; each step (press, slid, tap, open) goes to
-/// the flight recorder with the strip's keys (`binding::detail_keys`); a
-/// conflicted strip's is inert like the rest of it (`states.css`).
+/// SEL at a strip's bottom left (#151, mockup v8; ☰ on the readout line
+/// before, #71, F27): a hold of `HOLD_MS` opens the strip's channel detail
+/// (`behave::hold`; the key fills meanwhile, `data-holding`, a CSS
+/// transition), a tap shows the hint for `HINT_MS` (`data-hint`: the
+/// stylesheet's text above the key, no layout change), a finger that
+/// slides further than `SLIDE_PX` ends the press with neither (a fader grab
+/// that lands on SEL). It owns its touches and writes no key; each step
+/// (press, slid, tap, open) goes to the flight recorder with the strip's
+/// keys (`binding::detail_keys`); a conflicted strip's is inert like the
+/// rest of it (`states.css`).
 #[component]
-fn StripMenu(strip: Strip) -> impl IntoView {
+fn DetailKey(strip: Strip) -> impl IntoView {
     let detail = use_context::<DetailStrip>();
     let keys = StoredValue::new(detail_keys(&strip));
     let strip = StoredValue::new(strip);
@@ -216,9 +231,9 @@ fn StripMenu(strip: Strip) -> impl IntoView {
     view! {
         <button
             type="button"
-            class="strip-menu"
+            class="strip-sel"
             use:owns_touches=no_keys
-            data-testid="strip-menu"
+            data-testid="detail-key"
             aria-label="Channel detail (hold)"
             data-holding=move || holding.try_get().unwrap_or(false).to_string()
             data-hint=move || hint.try_get().unwrap_or(false).to_string()
@@ -228,7 +243,9 @@ fn StripMenu(strip: Strip) -> impl IntoView {
             on:pointercancel=on_cancel
             on:lostpointercapture=on_cancel
         >
-            <span class="strip-menu-icon" aria-hidden="true">"☰"</span>
+            <span class="strip-sel-key" aria-hidden="true">
+                <span class="strip-sel-word">"SEL"</span>
+            </span>
         </button>
     }
 }
@@ -236,7 +253,7 @@ fn StripMenu(strip: Strip) -> impl IntoView {
 /// One strip; `shared` is the Live instance every strip of its group shares
 /// (#63: the group names it once, since #127 by its name on the side of
 /// its run's first strip, so the strip does not); `group_name` that name
-/// when the strip starts a run (#127, `ScaleView`).
+/// when the strip starts a run (#127, `InfoColumn`).
 #[component]
 pub fn StripView(
     strip: Strip,
@@ -245,8 +262,8 @@ pub fn StripView(
     #[prop(optional, into)] group_name: Signal<Option<GroupLabel>>,
 ) -> impl IntoView {
     let store = expect_context::<LiveStore>();
-    // The strip its ☰ opens the detail of (#71).
-    let menu_strip = strip.clone();
+    // The strip its SEL opens the detail of (#71, #151).
+    let key_strip = strip.clone();
     let subs = strip_subs(&strip, settings.meter_source);
     // The fader link (#130, D18): a leader's partners and switch, a
     // partner's leaders, the corner's mark.
@@ -290,6 +307,8 @@ pub fn StripView(
             slot,
             law: Law::Volume(settings.law),
         }];
+        // The stereo pair in the fader's track (#151).
+        let track_meters = meters.clone();
         view! {
             <FaderView
                 targets=targets
@@ -297,10 +316,10 @@ pub fn StripView(
                 partners=link_partners
                 link_on=link_on
                 reverb=reverb
+                meters=track_meters
             />
         }
     });
-    let ret = strip.strip_kind == StripKind::Return;
     // The instance tag only where the group does not name it (#63).
     let tagged = shared.as_deref() != Some(instance.as_str());
     // A marker problem (#68): a conflict disables the strip, any other
@@ -308,8 +327,8 @@ pub fn StripView(
     let look = mark_look(strip.mark);
     let mark = look.map(|(mark, _)| mark);
     // The linked mute (#127): each partner's mute, read and written with
-    // the strip's own. The name button's corner line holds a problem's `!`,
-    // the chain, the RET of a return in a named group and the MUTE mark.
+    // the strip's own. The name button's marks line (#151) holds a
+    // problem's `!`, the chain, the fader link's mark and `MUTED`; no RET.
     let partners: Vec<Partner> = subs
         .linked
         .iter()
@@ -320,7 +339,6 @@ pub fn StripView(
         .collect();
     let corner: Option<Corner> = Some(Corner {
         flag: mark == Some("problem"),
-        ret: ret && !tagged,
     });
     let mute_view = mute.zip(subs.mute.clone()).map(|(slot, spec)| {
         view! {
@@ -337,12 +355,9 @@ pub fn StripView(
         }
     });
     let db = volume.map(|slot| view! { <DbView state=slot /> });
+    // The instance alone, a return's too (#151: no RET on a strip).
     let tag = tagged.then(|| {
-        let text = if ret {
-            format!("{instance} · ret")
-        } else {
-            instance.clone()
-        };
+        let text = instance.clone();
         let tag_instance = instance.clone();
         view! {
             <span class="strip-tag" data-testid="strip-instance" data-instance=tag_instance>
@@ -359,7 +374,7 @@ pub fn StripView(
     let strip_instance = instance;
     let wide = strip.wide;
     let law = settings.law;
-    // The unity line at 0 dB on the fader's law (`strip.css` `.fader::after`).
+    // The unity mark at 0 dB on the fader's law (`strip.css` `.fader::after`).
     let unity = format!("--u:{:.4};", law.to_pos(UNITY));
     // The fader link's mark (#130): `link.css` gives a leader's cap line
     // the accent.
@@ -384,14 +399,14 @@ pub fn StripView(
                         {db}
                         {mark_word}
                     </div>
-                    <StripMenu strip=menu_strip />
                 </div>
             </div>
             {tag}
-            <div class="strip-fz" style=unity>
-                <ScaleView law=law group_name=group_name />
-                <MeterView levels={meters.clone()} law=law />
+            <div class="strip-zone" style=unity>
+                <InfoColumn group_name=group_name />
+                <ScaleView law=law />
                 {fader}
+                <DetailKey strip=key_strip />
             </div>
         </div>
     }

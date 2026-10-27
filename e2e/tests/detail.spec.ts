@@ -24,8 +24,8 @@ import {
 } from "./support/live";
 
 // The channel detail (#71 PR D; spec F27, D17; the approved mockup
-// docs/mockups/channel-detail-v2.html): a hold of 500 ms on a strip's ☰ (at
-// the end of its readout line) opens that channel over the whole screen: its
+// docs/mockups/channel-detail-v2.html): a hold of 500 ms on a strip's SEL (at
+// its bottom left since #151; ☰ on the readout line before) opens that channel over the whole screen: its
 // name, group and instance, ← BACK TO MIX, the mute, Live's dB and a tall
 // fader on the left, the pan (which left the strip) with Live's display
 // string and CENTER on the right. A shorter touch only shows the hint. It
@@ -66,12 +66,12 @@ async function textsFit(detail: Locator) {
   }
 }
 
-/** ☰'s state as the page draws it: its fill, its hint and the hint's text. */
+/** SEL's state as the page draws it: its fill, its hint and the hint's text. */
 type MenuState = { holding: string | null; hint: string | null; after: string };
 
 /**
  * Dispatches one event of a finger (`pointerId` 21, as `dispatchPointer`) on
- * ☰ and reads ☰'s state a macrotask later (the page draws in a microtask),
+ * SEL and reads SEL's state a macrotask later (the page draws in a microtask),
  * inside the same evaluate: no round trip a slow runner could stretch past
  * a short state.
  */
@@ -90,20 +90,17 @@ async function fireAndRead(menu: Locator, type: "pointerdown" | "pointerup"): Pr
 }
 
 test.describe("The channel detail", () => {
-  test("a short touch on ☰ shows the hint and opens nothing; strips show no pan", async ({ page }) => {
+  test("a short touch on SEL shows the hint above it and opens nothing; strips show no pan", async ({ page }) => {
     await openSurface(page);
     const s = strip(page, "Hand2 #");
-    const menu = s.getByTestId("strip-menu");
+    const menu = s.getByTestId("detail-key");
     await expect(menu).toHaveAttribute("aria-label", "Channel detail (hold)");
-    await expect(menu).toHaveText("☰");
-    // ☰ ends the readout line: under the name button, after Live's dB.
+    // #151 (mockup v8): SEL at the strip's bottom left, no ☰ on any strip.
+    await expect(menu).toHaveText("SEL");
+    await expect(page.locator('[data-testid="strip"] [data-testid="strip-menu"]')).toHaveCount(0);
+    for (const one of await page.getByTestId("strip").all()) expect(await one.textContent()).not.toContain("☰");
     await expect(s.getByTestId("db")).not.toHaveText("");
-    const mute = (await s.getByTestId("mute").boundingBox())!;
-    const box = (await menu.boundingBox())!;
-    const db = (await s.getByTestId("db").boundingBox())!;
-    expect(box.y, "☰ under the name button").toBeGreaterThanOrEqual(mute.y + mute.height - 0.5);
-    expect(box.x, "☰ after the dB").toBeGreaterThanOrEqual(db.x + db.width - 0.5);
-    expect(await clipped(s.getByTestId("db")), "the dB beside ☰").toEqual([]);
+    expect(await clipped(s.getByTestId("db")), "the dB alone on its line").toEqual([]);
     // No strip draws a pan any more (D17: it is the detail's).
     await expect(page.getByTestId("strip").first()).toBeVisible();
     await expect(page.getByTestId("pan")).toHaveCount(0);
@@ -133,17 +130,30 @@ test.describe("The channel detail", () => {
     expect(reads.down.hint).toBe("false");
     expect(reads.up.holding).toBe("false");
     expect(reads.up.hint, "the hint after the tap").toBe("true");
+    expect(reads.up.after).toContain("hold SEL");
     expect(reads.up.after).toContain("for detail");
+    // The hint above the key, inside the strip.
+    const place = await menu.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      const a = getComputedStyle(el, "::after");
+      const strip = el.closest('[data-testid="strip"]')!.getBoundingClientRect();
+      const left = r.left + parseFloat(a.left);
+      const bottom = r.bottom - parseFloat(a.bottom);
+      return { left, right: left + parseFloat(a.width), bottom, keyTop: r.top, stripLeft: strip.left, stripRight: strip.right };
+    });
+    expect(place.left, "the hint inside the strip").toBeGreaterThanOrEqual(place.stripLeft - 0.5);
+    expect(place.right, "the hint inside the strip").toBeLessThanOrEqual(place.stripRight + 0.5);
+    expect(Math.abs(place.keyTop - place.bottom - 4), "4 px above the key").toBeLessThanOrEqual(1);
     // Nothing opens, not after the hold's time either, and the hint goes.
     await page.waitForTimeout(700);
     await expect(page.getByTestId("detail")).toHaveCount(0);
     await expect(menu).toHaveAttribute("data-hint", "false", { timeout: 2000 });
   });
 
-  test("a hold fills ☰ and opens that channel's detail with its name, group and instance; ← BACK TO MIX returns to the page", async ({ page }) => {
+  test("a hold fills SEL and opens that channel's detail with its name, group and instance; ← BACK TO MIX returns to the page", async ({ page }) => {
     await openSurface(page);
     const s = strip(page, "Hand2 #", "master");
-    const menu = s.getByTestId("strip-menu");
+    const menu = s.getByTestId("detail-key");
     await ready(s.getByTestId("fader"));
     // The page's subscriptions (`data-subs`): the detail adds its pan's.
     const surface = page.getByTestId("surface");
@@ -378,7 +388,7 @@ test.describe("The channel detail", () => {
 test.describe("The channel detail with real input", () => {
   /** In the page: what happened since, recorded as it happened (no polling window). */
   type Seen = {
-    /** ☰ filled, showed its hint, a detail appeared. */
+    /** SEL filled, showed its hint, a detail appeared. */
     holding: boolean;
     hint: boolean;
     detail: boolean;
@@ -388,7 +398,7 @@ test.describe("The channel detail with real input", () => {
     downs: { trusted: boolean; guard: string | null; onDetail: boolean; onMute: boolean }[];
   };
 
-  /** Starts recording ☰'s states, the detail's insertion and every pointerdown. */
+  /** Starts recording SEL's states, the detail's insertion and every pointerdown. */
   async function record(menu: Locator) {
     await menu.evaluate((el) => {
       const seen: Seen = { holding: false, hint: false, detail: false, atOpen: null, downs: [] };
@@ -427,29 +437,30 @@ test.describe("The channel detail with real input", () => {
 
   const seen = (page: Page): Promise<Seen> => page.evaluate(() => (window as any).e2eSeen);
 
-  test("a drag off ☰ opens nothing; a hold opens the detail, whose MUTE takes no click inside its guard and one after it", async ({ page }) => {
+  test("a drag off SEL opens nothing; a hold opens the detail, whose MUTE takes no click inside its guard and one after it", async ({ page }) => {
     await live.set("band", HAND2, "mute", false);
     try {
       await openSurface(page);
       const s = strip(page, "Hand2 #");
       await ready(s.getByTestId("fader"));
-      const menu = s.getByTestId("strip-menu");
+      const menu = s.getByTestId("detail-key");
       const at = await centre(menu);
       const detail = page.getByTestId("detail");
 
-      // A drag that starts on ☰ and slides 30 px (a fader grab that lands on
+      // A drag that starts on SEL and slides 30 px (a fader grab that lands on
       // it): the press ends, held past the hold nothing opens, no hint.
       await record(menu);
       await page.mouse.move(at.x, at.y);
       await page.mouse.down();
       // Three moves: the first only anchors the press (as the iPad's late
-      // first move does), the last is 20 px past it.
-      for (const dy of [10, 20, 30]) await page.mouse.move(at.x, at.y + dy);
+      // first move does), the last is 20 px past it; upward (#151: SEL sits
+      // at the strip's foot, near the screen's edge).
+      for (const dy of [-10, -20, -30]) await page.mouse.move(at.x, at.y + dy);
       await page.waitForTimeout(700);
       await page.mouse.up();
       await page.waitForTimeout(100);
       const slid = await seen(page);
-      expect(slid.holding, "the press started on ☰").toBe(true);
+      expect(slid.holding, "the press started on SEL").toBe(true);
       expect(slid.detail, "no detail after a slide").toBe(false);
       expect(slid.hint, "no hint after a slide").toBe(false);
       await expect(detail).toHaveCount(0);
