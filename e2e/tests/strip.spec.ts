@@ -626,11 +626,14 @@ test.describe("A strip", () => {
 // session's ruling on #151): with the cap at −∞ the key's touch box ends
 // 3 px left of the cap, a finger down on SEL and dragged writes no volume,
 // and a finger down on the cap's centre grabs the fader. On the iPad and on
-// both phones (a narrow strip's key is 44 px high).
+// both phones. The key is 44 px high on a narrow strip, 36 px else, by the
+// strip's own measured width (arrange::is_narrow: under 78 px; a wide strip
+// is measured at its own 1.1x), never by the viewport: upright, a phone's
+// strips are stretched to about 79 px, not narrow.
 for (const size of [
-  { width: 1194, height: 834, key: 36 },
-  { width: 844, height: 390, key: 44 },
-  { width: 390, height: 844, key: 44 },
+  { width: 1194, height: 834 },
+  { width: 844, height: 390 },
+  { width: 390, height: 844 },
 ]) {
   test.describe(`SEL and the cap at −∞, ${size.width} × ${size.height}`, () => {
     test.use({ viewport: { width: size.width, height: size.height } });
@@ -663,7 +666,9 @@ for (const size of [
         await frames(page);
         const sel = (await s.getByTestId("detail-key").boundingBox())!;
         const cap = (await s.getByTestId("fader-cap").boundingBox())!;
-        expect(Math.abs(sel.height - size.key), `SEL ${sel.width} × ${sel.height}`).toBeLessThan(0.5);
+        const own = (await s.boundingBox())!.width;
+        const high = own < 78 ? 44 : 36;
+        expect(Math.abs(sel.height - high), `SEL ${sel.width} × ${sel.height} on a ${own} px strip`).toBeLessThan(0.5);
         expect(sel.width).toBeGreaterThanOrEqual(15);
         expect(cap.x - (sel.x + sel.width), "SEL 3 px left of the cap at −∞").toBeGreaterThanOrEqual(3 - 0.01);
         // A finger down on SEL, dragged up over the fader, then lifted:
