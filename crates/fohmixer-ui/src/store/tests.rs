@@ -442,3 +442,68 @@ fn autotunes_state_stays_through_an_outage_stale_until_the_hub_tells_it_again() 
     assert_eq!(autotune.shown(), Some(&next));
     assert_eq!(autotune.fresh(), Some(&next));
 }
+
+#[test]
+fn lufs_points_take_each_item_and_a_close_forgets_them() {
+    use fohmixer_proto::client::LufsItem;
+    use fohmixer_proto::lufs::LufsProblem;
+    let item = |instance: &str, target: &str, tenths, problem| LufsItem {
+        instance: instance.into(),
+        target: target.into(),
+        tenths,
+        problem,
+    };
+    let mut lufs = HubLufs::default();
+    assert_eq!(
+        lufs.point("band", "live_set tracks 1"),
+        LufsPoint::default()
+    );
+    lufs.put(vec![
+        item("band", "live_set tracks 1", Some(-253), None),
+        item(
+            "master",
+            "live_set tracks 1",
+            None,
+            Some(LufsProblem::NoLufsMeter),
+        ),
+    ]);
+    assert_eq!(
+        lufs.point("band", "live_set tracks 1"),
+        LufsPoint {
+            tenths: Some(-253),
+            problem: None
+        }
+    );
+    // The same target in the other set is its own point.
+    assert_eq!(
+        lufs.point("master", "live_set tracks 1"),
+        LufsPoint {
+            tenths: None,
+            problem: Some(LufsProblem::NoLufsMeter)
+        }
+    );
+    assert_eq!(
+        lufs.point("band", "live_set tracks 2"),
+        LufsPoint::default()
+    );
+    // A change replaces only its point.
+    lufs.put(vec![item("band", "live_set tracks 1", None, None)]);
+    assert_eq!(
+        lufs.point("band", "live_set tracks 1"),
+        LufsPoint::default()
+    );
+    assert_eq!(
+        lufs.point("master", "live_set tracks 1").problem,
+        Some(LufsProblem::NoLufsMeter)
+    );
+    lufs.put(vec![item("band", "live_set tracks 1", Some(-210), None)]);
+    lufs.closed();
+    assert_eq!(
+        lufs.point("band", "live_set tracks 1"),
+        LufsPoint::default()
+    );
+    assert_eq!(
+        lufs.point("master", "live_set tracks 1"),
+        LufsPoint::default()
+    );
+}

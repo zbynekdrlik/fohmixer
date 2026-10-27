@@ -54,6 +54,8 @@ html, body { margin: 0; background: #0b0b12; }
 <tr><td><code>+REVERB</code></td><td>reverb fader: the REVERB button lowers it by 10 dB and returns it; REVERB AUTO does it when Live stops. Only on a strip (quoted name and group); without its own name (or with a name another strip has) it is not a reverb fader.</td></tr>
 <tr><td><code>+AUTOTUNE</code></td><td>this track's autotune (below): the rack named <b>Latencies</b>, also inside another rack, and its first macro; on = 127, off = 0 (stream)</td></tr>
 <tr><td><code>+AUTOTUNE:0</code></td><td>the same, on = 0 and off = 127 (repro)</td></tr>
+<tr><td><code>+LUFS:-25</code></td><td>loudness of a mic after its Trim IN, judged against the target (here −25 LUFS): <code>LUFS IN</code> (below)</td></tr>
+<tr><td><code>+LUFS</code></td><td>loudness of an output (the PA return, a bus), plain: <code>LUFS OUT</code> (below)</td></tr>
 </table>
 <p>Write tags in capital letters (as in AbleSet). A Tuner without quotes and without a <code>+</code> tag is an ordinary Tuner and fohmixer ignores it.</p>
 
@@ -83,6 +85,17 @@ html, body { margin: 0; background: #0b0b12; }
 <li>A tap on <code>ON</code> switches them back on; they tune by the rules again.</li>
 </ol>
 
+<h2>LUFS</h2>
+<p>A strip with <code>+LUFS</code> shows its short-term loudness as a small grey number at the top of the column left of the fader, under the caption <code>LUFS</code> over <code>IN</code> or <code>OUT</code> (on a narrow phone strip the number alone, upright). The number comes from the Max for Live device <b>FohMixer LUFS</b> on that track; it has no controls and passes no sound, so it always sits in a parallel chain of an Audio Effect Rack: on a mic in <b>CORE Effects</b> beside trueLevel, on an output point in a rack of its own (an empty chain plus the device's chain).</p>
+<table>
+<tr><td><code>−25</code> grey</td><td><code>+LUFS:-25</code>: within 3 LU of the target (−28 to −22)</td></tr>
+<tr><td><code>−21</code> amber text</td><td>3 to 6 LU off the target (−31 to −29, −21 to −19)</td></tr>
+<tr><td><code>−17</code> red text</td><td>more than 6 LU off the target</td></tr>
+<tr><td><code>−18</code> grey</td><td><code>+LUFS</code>: the output's short-term after its fader, never coloured</td></tr>
+<tr><td>(nothing)</td><td>silence (−70 or less: the singer is not singing), no reading yet, or Live offline; the caption goes too</td></tr>
+</table>
+<p>The number is quieter than Live's dB on purpose. An armed mic also needs the <b>FohMixer Meter</b> device last in its chain (in a rack of its own, as above).</p>
+
 <h2>VIEWS</h2>
 <p>A group the main view does not have is shown by a button in the middle strip (VIEWS): its faders and all pinned ones. Another tap takes you back.</p>
 
@@ -93,6 +106,7 @@ html, body { margin: 0; background: #0b0b12; }
 <li><b>Linked mute:</b> the same <code>+ID</code> on two strips (both get a yellow ! and neither links), <code>+MUTE</code> with a name no strip has, or <code>+MUTE</code> with the name of its own strip. The number on the chain is the count of tracks the MUTE mutes, the strip itself included. Check the chain: if it is missing, or its number is (after a moment) smaller than the number of tracks you linked, some <code>+MUTE</code> Tuner has a typo.</li>
 <li><b>Linked fader:</b> the same <code>+ID</code> on two strips (nothing links), <code>+FADER</code> with a name no strip has, <code>+FADER</code> with the name of its own strip, or the same <code>+FADER</code> twice. Podklady All with no <code>+FADER:PODKLADY</code> at all is red.</li>
 <li><b>Autotune:</b> <code>+AUTOTUNE:</code> with a value other than <code>0</code>, or a second <code>+AUTOTUNE</code> in one Tuner, is a bad tag. A track without a Latencies rack, or with two, is not switched: the AUTOTUNE button shows a yellow <b>!</b> at the top left (the other tracks still switch), and when no rack is found at all it is red. The hub status (<code>/api/status</code>, <code>autotune.targets</code>) says which track and why.</li>
+<li><b>LUFS:</b> <code>+LUFS:</code> with a target outside −40 to −10, or two <code>+LUFS</code> tags, is a bad LUFS tag. A strip with <code>+LUFS</code> but no FohMixer LUFS device on its track (<code>no LUFS meter</code>), or with two (<code>two LUFS meters</code>, also when both Live sets have one at that place), shows a yellow <b>!</b> under its name and no number; an armed <code>+LUFS:</code> mic without FohMixer Meter is <code>no meter device</code>. The hub status (<code>/api/status</code>, <code>lufs.strips</code>) says which strip and why.</li>
 <li>A Tuner without a group (<code>+G:</code>) is shown nowhere.</li>
 </ul>
 <p>A change in Ableton shows on the iPad within a second.</p>

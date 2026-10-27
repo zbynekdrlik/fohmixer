@@ -215,8 +215,8 @@
 }
 
 /* The info column (#151): left of the cap's widest reach (3 px clear), the
-   zone's height: the LUFS caption and value (their rows kept, hidden
-   until the LUFS source), then the group's name (group.css). No touch. */
+   zone's height: the LUFS caption and value (their rows kept whatever they
+   show), then the group's name (group.css). No touch. */
 .strip-col {
     position: relative;
     justify-self: start;
@@ -228,9 +228,14 @@
     pointer-events: none;
 }
 
+/* The caption (mockup v9, the owner's ruling of 27.10): `LUFS` over `IN`
+   or `OUT`, two 9 px lines in PR 1's caption font; shown only while the
+   number shows (`data-shown`), its rows kept: 9 + 9 + 2 + 16 = 36 px, above
+   the group's name at 40 px. */
 .lufs-cap {
+    display: flex;
+    flex-direction: column;
     overflow: hidden;
-    visibility: hidden;
     color: var(--faint);
     font: 700 7.5px/9px var(--ui);
     letter-spacing: 0.08em;
@@ -238,25 +243,48 @@
     white-space: nowrap;
 }
 
+.lufs-cap > span {
+    display: block;
+    height: 9px;
+    overflow: hidden;
+}
+
+.lufs-cap:not([data-shown="true"]) {
+    visibility: hidden;
+}
+
+/* The reading (mockup v5, the owner's ruling of 26.10): quiet text, never a
+   shape (no fill, box, border or glow), quieter than Live's dB (12 px,
+   600, #9be7a8) in size, weight and contrast. In range and on an output
+   the dim grey; out of range only the text is tinted, muted; silent or
+   none: nothing at all, the row kept. */
 .lufs {
     align-self: center;
     width: min(100%, 40px);
     height: 16px;
     overflow: hidden;
-    color: var(--faint);
+    color: #6e6e88;
     font: 500 10.5px/16px var(--mono);
     font-variant-numeric: tabular-nums;
     text-align: center;
     white-space: nowrap;
 }
 
-.lufs[data-l="none"] {
+.lufs[data-l="warn"] {
+    color: #a8894a;
+}
+
+.lufs[data-l="far"] {
+    color: #b0585f;
+}
+
+.lufs:is([data-l="silent"], [data-l="none"]) {
     visibility: hidden;
 }
 
 /* A narrow strip (#151: under 78 px, `arrange::narrow` on `.body`): the
-   column is 13-24 px, so the LUFS will stand upright and the caption
-   leaves; an empty one takes no row. */
+   column is 13-24 px, so the LUFS stands upright, digit under digit, and
+   the caption leaves; an empty one takes no row. */
 :is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .lufs-cap {
     display: none;
 }
@@ -270,7 +298,7 @@
     writing-mode: vertical-rl;
 }
 
-:is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .lufs[data-l="none"] {
+:is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .lufs:is([data-l="silent"], [data-l="none"]) {
     display: none;
 }
 

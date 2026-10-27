@@ -518,16 +518,24 @@ test.describe("A strip", () => {
     }
   });
 
-  test("the info column holds the empty LUFS slot and the group's name, clear of the cap", async ({ page }) => {
-    // #151 (mockup v8): left of the cap's widest reach, the LUFS row (empty
-    // and hidden until the LUFS source) and the group's name.
+  test("no reading on a strip without +LUFS: the info column keeps its empty rows and the group's name, clear of the cap", async ({ page }) => {
+    // #151 (mockups v8 and v9): left of the cap's widest reach, the LUFS
+    // caption and row (empty and hidden on a strip without `+LUFS`, their
+    // rows kept) and the group's name. lufs.spec.ts shows the readings.
     await live.set("band", volume(HAND2), "value", 0.85);
     await openSurface(page);
-    const lufs = page.locator('[data-testid="strip"] [data-testid="lufs"]');
-    expect(await lufs.count()).toBe(await page.getByTestId("strip").count());
+    const plain = page.locator('[data-testid="strip"]:not([data-lufs])');
+    expect(await plain.count()).toBe(await page.getByTestId("strip").count());
+    const lufs = plain.getByTestId("lufs");
+    expect(await lufs.count()).toBe(await plain.count());
     for (const l of await lufs.all()) {
       await expect(l).toHaveText("");
+      await expect(l).toHaveAttribute("data-l", "none");
       await expect(l).toHaveCSS("visibility", "hidden");
+    }
+    for (const c of await plain.getByTestId("lufs-cap").all()) {
+      await expect(c).toHaveText("");
+      await expect(c).toHaveCSS("visibility", "hidden");
     }
     const s = strip(page, "Hand2 #");
     expect((await s.getByTestId("lufs").boundingBox())!.height).toBeCloseTo(16, 1);

@@ -11,7 +11,8 @@
 //! rail buttons with an automatic mode (#104, #130, D18, `rail`), the
 //! fader link's marks and same-dB move (#130, `fader_link`), REVERB's
 //! button and the faders' marks (#130, `reverb`), AUTOTUNE's button
-//! (#104, D19, `autotune`) and the strip's marks line (#151, `marks`).
+//! (#104, D19, `autotune`), the strip's marks line (#151, `marks`) and
+//! its loudness reading (#151, `lufs`).
 
 pub mod ableset;
 pub mod autotune;
@@ -26,6 +27,7 @@ pub mod hold;
 pub mod idle;
 pub mod label;
 pub mod link;
+pub mod lufs;
 pub mod marks;
 pub mod meter;
 pub mod mute;

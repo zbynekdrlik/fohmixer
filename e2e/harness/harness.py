@@ -173,17 +173,25 @@ ANSWERS = {
     "sets": "SETS",
     # PR #150 review K1: a Sections key clip.
     "clip": "CLIP",
+    # #151: SimLive's Max for Live devices and their readings (lufs.spec.ts).
+    "maxdev": "MAXDEV",
+    "lufs": "LUFS",
+    "level": "LEVEL",
+    "flood": "FLOOD",
 }
 
 
-def hub_config(http_port, band_port, master_port, remote=None, companion=None, ableset=None):
+def hub_config(
+    http_port, band_port, master_port, remote=None, companion=None, ableset=None, lufs_port=None
+):
     """The hub's ``fohmixer-hub.toml`` for the two hosts (layout polled fast) and
     the Pro-Q 4 screen on the simulated window backend (#71 PR E), with the
     Stream Deck's ``[companion]`` on ``companion`` (host, port) when given (#52),
     then the remote-access tables of ``remote`` (``name``, ``https_port``, and
     ``team``, ``aud``, ``jwks_url`` for ``[access]``) when given, and
     ``[ableset]`` of ``ableset`` (``name``, ``upstream``, ``aud``) beside a
-    ``[tls]`` name (#90)."""
+    ``[tls]`` name (#90), and ``[lufs]`` on ``lufs_port`` when given (#151:
+    the LUFS devices' UDP port, where both hosts' SimLive devices send)."""
     text = (
         f"http_port = {http_port}\n"
         'layout = "layout.json"\n'
@@ -197,6 +205,8 @@ def hub_config(http_port, band_port, master_port, remote=None, companion=None, a
         "[eq]\n"
         'backend = "sim"\n'
     )
+    if lufs_port is not None:
+        text += f"[lufs]\nport = {lufs_port}\n"
     if companion:
         host, port = companion
         text += f'[companion]\nhost = "{host}"\nport = {port}\n'
@@ -445,10 +455,11 @@ def copy_cert(cert, key, folder):
 class Host:
     """One ``sim/host.py`` process with its stdin and stdout lines."""
 
-    def __init__(self, name, port, meters_hz, log_dir):
+    def __init__(self, name, port, meters_hz, log_dir, lufs_port=None):
         self.name = name
         self.port = port
         self.meters_hz = meters_hz
+        self.lufs_port = lufs_port
         self.log_dir = os.path.join(log_dir, f"host-{name}")
         os.makedirs(self.log_dir, exist_ok=True)
         self.lock = threading.Lock()
@@ -472,6 +483,7 @@ class Host:
                 str(self.meters_hz),
                 "--log-dir",
                 self.log_dir,
+                *(["--lufs-port", str(self.lufs_port)] if self.lufs_port else []),
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -575,8 +587,11 @@ class Harness:
         log_dir = os.path.abspath(args.log_dir or self.data)
         os.makedirs(log_dir, exist_ok=True)
         self.hosts = {}
-        self.hosts["band"] = Host("band", args.band_port, args.meters_hz, log_dir)
-        self.hosts["master"] = Host("master", args.master_port, args.meters_hz, log_dir)
+        self.lufs_port = args.lufs_port
+        self.hosts["band"] = Host("band", args.band_port, args.meters_hz, log_dir, args.lufs_port)
+        self.hosts["master"] = Host(
+            "master", args.master_port, args.meters_hz, log_dir, args.lufs_port
+        )
         self.jwks = access_jwks(args.access_key) if args.access_key else None
         remote = {
             "name": args.public_name,
@@ -624,6 +639,7 @@ class Harness:
                     self.remote,
                     self.companion if self.companion_on else None,
                     self.ableset if self.ableset_on else None,
+                    self.lufs_port,
                 )
             )
 
@@ -857,6 +873,8 @@ def parse_args(argv):
     parser.add_argument("--band-port", type=int, default=39101)
     parser.add_argument("--master-port", type=int, default=39102)
     parser.add_argument("--meters-hz", type=float, default=30.0)
+    # #151: the hub's [lufs] port and the hosts' SimLive devices' target.
+    parser.add_argument("--lufs-port", type=int, default=39110)
     parser.add_argument("--log-dir", default=None)
     # The impair proxy's port (#43); 0 takes any free one (the harness's own tests).
     parser.add_argument("--link-port", type=int, default=0)

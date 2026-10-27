@@ -33,7 +33,8 @@ mod live;
 
 use std::collections::BTreeMap;
 
-use fohmixer_proto::client::{AutotuneState, ReverbState};
+use fohmixer_proto::client::{AutotuneState, LufsItem, ReverbState};
+use fohmixer_proto::lufs::LufsProblem;
 use serde_json::{Value, json};
 
 use crate::binding::SubSpec;
@@ -372,6 +373,51 @@ pub type HubReverb = HubTold<ReverbState>;
 
 /// AUTOTUNE's state as the hub last told it (#104).
 pub type HubAutotune = HubTold<AutotuneState>;
+
+/// One loudness point as the hub last sent it (#151): its reading in
+/// tenths and its problem, none of either until the hub says.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LufsPoint {
+    pub tenths: Option<i16>,
+    pub problem: Option<LufsProblem>,
+}
+
+/// The loudness points' readings (#151, `ServerMsg::Lufs`), by the strip's
+/// instance and track target: every point at a page's attach, then only
+/// changes. A closed socket forgets them all (nothing stale is shown: the
+/// next connection's attach sends every point again).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HubLufs {
+    points: BTreeMap<(String, String), LufsPoint>,
+}
+
+impl HubLufs {
+    /// The hub's `lufs` message: each item replaces its point.
+    pub fn put(&mut self, items: Vec<LufsItem>) {
+        for item in items {
+            self.points.insert(
+                (item.instance, item.target),
+                LufsPoint {
+                    tenths: item.tenths,
+                    problem: item.problem,
+                },
+            );
+        }
+    }
+
+    /// The socket closed: no reading, no problem until the next attach.
+    pub fn closed(&mut self) {
+        self.points.clear();
+    }
+
+    /// A point's reading and problem (none of either when the hub sent none).
+    pub fn point(&self, instance: &str, target: &str) -> LufsPoint {
+        self.points
+            .get(&(instance.to_string(), target.to_string()))
+            .copied()
+            .unwrap_or_default()
+    }
+}
 
 /// A connection badge's state (spec §2.5 robustness).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
