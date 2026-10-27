@@ -156,6 +156,26 @@ pub(super) struct LufsIo {
     pub reads: u64,
     pub reading: BTreeMap<String, u64>,
     pub failures: BTreeMap<String, u32>,
+    /// Each instance's reads still on their way (the names, the confirming
+    /// walks): a disconnect aborts them, so none asks the next connection
+    /// (a set loaded meanwhile) anything (the song map's review M4).
+    pub tasks: BTreeMap<String, Vec<tokio::task::AbortHandle>>,
+}
+
+impl LufsIo {
+    /// Keeps a read's task of `instance` (the finished ones let go).
+    fn keep(&mut self, instance: &str, task: tokio::task::AbortHandle) {
+        let tasks = self.tasks.entry(instance.to_string()).or_default();
+        tasks.retain(|t| !t.is_finished());
+        tasks.push(task);
+    }
+
+    /// Aborts every read of `instance` still on its way.
+    fn abort(&mut self, instance: &str) {
+        for task in self.tasks.remove(instance).unwrap_or_default() {
+            task.abort();
+        }
+    }
 }
 
 /// A confirming walk of `track` in one Live (bounded by its reads).
@@ -349,8 +369,9 @@ impl Router {
         let read = self.lufs.reads;
         self.lufs.reading.insert(instance.to_string(), read);
         let tx = self.io.tx.clone();
+        let owner = instance.to_string();
         let instance = instance.to_string();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let commands = vec![
                 get("live_set", "name"),
                 get("live_set master_track", "name"),
@@ -365,6 +386,7 @@ impl Router {
                 outcome,
             });
         });
+        self.lufs.keep(&owner, task.abort_handle());
     }
 
     /// The names read's answer (void unless the instance's newest).
@@ -413,6 +435,7 @@ impl Router {
 
     /// An instance went offline: its matches and names dropped.
     pub(super) fn lufs_offline(&mut self, instance: &str) {
+        self.lufs.abort(instance);
         self.lufs.reading.remove(instance);
         self.lufs.masters.remove(instance);
         self.lufs.faders.retain(|(i, _), _| i != instance);
@@ -478,7 +501,8 @@ impl Router {
             return;
         };
         let tx = self.io.tx.clone();
-        tokio::spawn(async move {
+        let owner = instance.clone();
+        let task = tokio::spawn(async move {
             let answer = confirm_walk(live, &key, &track).await;
             let _ = tx.send(RouterMsg::LufsConfirmed {
                 key,
@@ -487,6 +511,7 @@ impl Router {
                 answer,
             });
         });
+        self.lufs.keep(&owner, task.abort_handle());
     }
 }
 
