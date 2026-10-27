@@ -29,7 +29,7 @@ use crate::behave::db_text::db_text;
 use crate::behave::fader::{UNITY, VolumeLaw};
 use crate::behave::hold::{HINT_MS, HOLD_MS, Hold, Lift};
 use crate::behave::label::{mark_look, shown_label};
-use crate::behave::lufs::{LufsLook, kind_name, look, point_key};
+use crate::behave::lufs::{LufsLook, kind_name, look as lufs_look_of, point_key};
 use crate::behave::reverb::held_low;
 use crate::behave::scale::{tick_label, tick_pos, ticks};
 use crate::binding::{detail_keys, strip_subs};
@@ -383,7 +383,7 @@ pub fn StripView(
             })
             .flatten()
             .unwrap_or_default();
-        look(point.tenths, point.problem, lufs_spec)
+        lufs_look_of(point.tenths, point.problem, lufs_spec)
     });
     let lufs_flag =
         Signal::derive(move || lufs_look.try_with(|l| l.problem.is_some()).unwrap_or(false));
