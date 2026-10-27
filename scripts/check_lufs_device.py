@@ -50,8 +50,11 @@ def table(text: str, pattern: re.Pattern[str], what: str) -> tuple[dict[str, flo
     found: dict[str, float] = {}
     errors: list[str] = []
     for line in lines[begins[0] + 1 : ends[0]]:
+        if not line or line.startswith("//"):
+            continue
         match = pattern.match(line)
         if match is None:
+            errors.append(f"{what}: a line in the table is no constant it can read: {line}")
             continue
         name, value = match[1], float(match[2])
         if name in found:

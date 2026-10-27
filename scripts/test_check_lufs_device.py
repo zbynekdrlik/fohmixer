@@ -154,6 +154,14 @@ class TableTests(unittest.TestCase):
         text = "// lufs-table begin\nB = 1;\nB = 1;\n// lufs-table end\n"
         self.assertEqual(cl.table(text, cl.GEN_CONST, "x")[1], ["x: B is in the table twice"])
 
+    def test_a_line_that_is_no_readable_constant_is_an_error(self) -> None:
+        # PR #154's review: a constant written so the pattern misses it (a
+        # digit separator) was skipped, its value never compared.
+        text = "// lufs-table begin\n// a comment\n\nB = 1;\nC = 1_000.0;\n// lufs-table end\n"
+        found, errors = cl.table(text, cl.GEN_CONST, "x")
+        self.assertEqual(found, {"B": 1.0})
+        self.assertEqual(errors, ["x: a line in the table is no constant it can read: C = 1_000.0;"])
+
     def test_an_empty_table_is_an_error(self) -> None:
         text = "// lufs-table begin\n// lufs-table end\n"
         self.assertEqual(cl.table(text, cl.GEN_CONST, "x")[1], ["x: the table is empty"])

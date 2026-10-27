@@ -64,13 +64,37 @@ fn the_derived_48_khz_coefficients_are_the_published_ones() {
     }
 }
 
+/// A biquad's gain in dB at `f` Hz when run at `rate` Hz.
+fn gain_db(q: &Biquad, f: f64, rate: f64) -> f64 {
+    let w = 2.0 * std::f64::consts::PI * f / rate;
+    let (c1, s1, c2, s2) = (w.cos(), -w.sin(), (2.0 * w).cos(), -(2.0 * w).sin());
+    let num = (
+        q.b[0] + q.b[1] * c1 + q.b[2] * c2,
+        q.b[1] * s1 + q.b[2] * s2,
+    );
+    let den = (1.0 + q.a[0] * c1 + q.a[1] * c2, q.a[0] * s1 + q.a[1] * s2);
+    10.0 * ((num.0 * num.0 + num.1 * num.1) / (den.0 * den.0 + den.1 * den.1)).log10()
+}
+
 #[test]
 fn the_coefficients_follow_the_sample_rate() {
-    // The same prototype at another rate gives other coefficients, and the
-    // shelf's gain at DC stays 1 (b0 + b1 + b2 = 1 + a1 + a2) at every rate.
-    for rate in [44_100.0, 48_000.0, 96_000.0] {
+    // The shelf derived at another rate answers as the published 48 kHz one
+    // does, within 0.005 dB from the bass to past its corner (measured: 0.0015
+    // at most; a derivation without the bilinear prewarp, k = pi f0 / rate,
+    // is 0.018 off at the corner and 0.0096 at 1 kHz at 44.1 kHz).
+    let published = Biquad::new(
+        [1.53512485958697, -2.69169618940638, 1.19839281085285],
+        [-1.69065929318241, 0.73248077421585],
+    );
+    for rate in [44_100.0, 96_000.0] {
         let pre = pre_filter(rate);
-        near(pre.b.iter().sum::<f64>(), 1.0 + pre.a[0] + pre.a[1], 1e-12);
+        for f in [100.0, 1000.0, SHELF_F0, 3000.0] {
+            near(
+                gain_db(&pre, f, rate),
+                gain_db(&published, f, 48_000.0),
+                0.005,
+            );
+        }
         let rlb = rlb_filter(rate);
         // The high-pass passes Nyquist at about 0 dB: (1 + 2 + 1) / (1 - a1 + a2).
         let nyquist = 4.0 / (1.0 - rlb.a[0] + rlb.a[1]);
@@ -78,10 +102,6 @@ fn the_coefficients_follow_the_sample_rate() {
     }
     assert_ne!(pre_filter(44_100.0), pre_filter(48_000.0));
     assert_ne!(rlb_filter(48_000.0), rlb_filter(96_000.0));
-    // The shelf's gain near Nyquist is its +4 dB.
-    let pre = pre_filter(96_000.0);
-    let nyquist = (pre.b[0] - pre.b[1] + pre.b[2]) / (1.0 - pre.a[0] + pre.a[1]);
-    near(20.0 * nyquist.log10(), SHELF_GAIN_DB, 0.05);
 }
 
 #[test]
