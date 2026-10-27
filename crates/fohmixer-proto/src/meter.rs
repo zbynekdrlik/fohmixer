@@ -35,8 +35,13 @@ pub fn live_value(db: f64) -> f64 {
     }
 }
 
+/// A pan gain at or below this (linear) is silence: `cos(π/2)` is 6e-17 in
+/// floating point, not 0, so a hard-panned side would read −321 dB.
+pub const SILENT_GAIN: f64 = 1e-6;
+
 /// Live's pan law: each side's gain in dB at pan `pan` (−1 left .. +1
-/// right, clamped); a silent side is −∞.
+/// right, clamped); a silent side (a gain at or below [`SILENT_GAIN`]) is
+/// −∞.
 pub fn pan_gains_db(pan: f64) -> (f64, f64) {
     let pan = if pan.is_nan() {
         0.0
@@ -44,8 +49,17 @@ pub fn pan_gains_db(pan: f64) -> (f64, f64) {
         pan.clamp(-1.0, 1.0)
     };
     let angle = (pan + 1.0) * std::f64::consts::FRAC_PI_4;
-    let gain = |g: f64| 20.0 * (std::f64::consts::SQRT_2 * g).log10();
-    (gain(angle.cos()), gain(angle.sin()))
+    (gain_db(angle.cos()), gain_db(angle.sin()))
+}
+
+/// One side's pan gain in dB: `√2·g`, silence at or below [`SILENT_GAIN`].
+fn gain_db(g: f64) -> f64 {
+    let gain = std::f64::consts::SQRT_2 * g;
+    if gain <= SILENT_GAIN {
+        f64::NEG_INFINITY
+    } else {
+        20.0 * gain.log10()
+    }
 }
 
 /// One side's meter value: the device's peak (tenths of dBFS) plus the

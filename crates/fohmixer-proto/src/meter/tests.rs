@@ -107,3 +107,18 @@ fn the_devices_silence_stays_silent() {
     // A fader at −∞ silences both sides.
     assert_eq!(post_fader(0, 0, 0.0, 0.0, false), (0.0, 0.0));
 }
+
+#[test]
+fn a_gain_at_the_silent_floor_is_silence() {
+    assert_eq!(SILENT_GAIN, 1e-6);
+    assert_eq!(
+        gain_db(0.5 * SILENT_GAIN / std::f64::consts::SQRT_2),
+        f64::NEG_INFINITY
+    );
+    assert_eq!(gain_db(0.0), f64::NEG_INFINITY);
+    let just_over = gain_db(2e-6 / std::f64::consts::SQRT_2);
+    assert!(
+        (just_over - 20.0 * 2e-6_f64.log10()).abs() < 1e-9,
+        "{just_over}"
+    );
+}

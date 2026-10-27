@@ -576,7 +576,8 @@ function Install-FohUserDevices {
     # Audio Effects\Max Audio Effect, where Live's browser lists it (the
     # rollout loads it from there through the LOM). A file is written only when
     # its content differs (a second run writes nothing); nothing else in the
-    # folder is touched. The User Library must exist. Returns the names written.
+    # folder is touched. The User Library must exist. Writes the names written
+    # to the pipeline one by one (a caller takes them with @(...)).
     param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$UserLibrary)
     if (-not (Test-Path -LiteralPath $UserLibrary -PathType Container)) { throw "Live's User Library not found: $UserLibrary" }
     $dest = Join-Path $UserLibrary $script:DevicePresets
@@ -591,7 +592,7 @@ function Install-FohUserDevices {
         Move-Item -LiteralPath ($to + '.tmp') -Destination $to -Force
         $written += $d
     }
-    return , $written
+    return $written
 }
 
 # ---- the accounts ----
