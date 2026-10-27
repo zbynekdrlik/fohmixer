@@ -129,7 +129,8 @@ fn a_device_on_a_lufs_strip_reaches_the_page_and_clears_once_it_stops() {
         assert_eq!(device.state, "matched");
         assert_eq!(device.instance.as_deref(), Some("band"));
         assert_eq!(device.parents, vec!["LUFS", "LUFS", "Hand2 #", "Test Site"]);
-        assert_eq!(device.version, "v1.19.0");
+        // SimLive sends the devices' version.txt, which tracks the workspace.
+        assert_eq!(device.version, format!("v{}", env!("CARGO_PKG_VERSION")));
         assert_eq!(status.lufs.strips[0].tenths, Some(-253));
         assert_eq!(status.lufs.listener.refused.len(), 0);
         // The device stops: the number goes within 1.5 s, one lost record.
