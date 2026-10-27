@@ -1,9 +1,9 @@
 use super::*;
 
 fn hex(text: &str) -> Vec<u8> {
-    text.as_bytes()
-        .chunks_exact(2)
-        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+    (0..text.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&text[at..at + 2], 16).unwrap())
         .collect()
 }
 
