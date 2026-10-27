@@ -215,13 +215,25 @@ fn a_place_held_in_both_sets_is_two_lufs_meters_and_shows_nothing() {
         points(&hub, 2).await;
         assert_eq!(band.maxdev("lufs track 1 -300 -253"), 1);
         let mut client = hub.client().await;
-        for instance in ["band", "master"] {
-            let got = item(&mut client, instance, SECS_5, |i| {
-                i.problem == Some(LufsProblem::TwoLufsMeters)
+        // Both points change in one message: one wait reads both (a second
+        // wait would look for a message that never comes, `wait` takes the
+        // one it matched).
+        let both = client
+            .wait(SECS_5, |m| match m {
+                ServerMsg::Lufs { items } => {
+                    let two = |instance: &str| {
+                        items.iter().any(|i| {
+                            i.instance == instance
+                                && i.target == TRACK
+                                && i.problem == Some(LufsProblem::TwoLufsMeters)
+                        })
+                    };
+                    (two("band") && two("master")).then(|| items.clone())
+                }
+                _ => None,
             })
             .await;
-            assert_eq!(got.tenths, None);
-        }
+        assert!(both.iter().all(|i| i.tenths.is_none()), "{both:?}");
         let status = hub.status().await;
         assert_eq!(status.lufs.devices[0].state, "two");
         assert!(status.lufs.strips.iter().all(|s| s.tenths.is_none()));
