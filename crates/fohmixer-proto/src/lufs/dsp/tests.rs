@@ -72,8 +72,9 @@ fn the_coefficients_follow_the_sample_rate() {
         let pre = pre_filter(rate);
         near(pre.b.iter().sum::<f64>(), 1.0 + pre.a[0] + pre.a[1], 1e-12);
         let rlb = rlb_filter(rate);
-        // The high-pass's gain at Nyquist is (1 + 2 + 1) / (1 - a1 + a2).
-        assert!(rlb.a[0] < -1.99 && rlb.a[1] > 0.99, "{rate}: {:?}", rlb.a);
+        // The high-pass passes Nyquist at about 0 dB: (1 + 2 + 1) / (1 - a1 + a2).
+        let nyquist = 4.0 / (1.0 - rlb.a[0] + rlb.a[1]);
+        near(20.0 * nyquist.log10(), 0.0, 0.06);
     }
     assert_ne!(pre_filter(44_100.0), pre_filter(48_000.0));
     assert_ne!(rlb_filter(48_000.0), rlb_filter(96_000.0));
@@ -134,7 +135,7 @@ fn a_sub_block_is_voiced_by_the_400_ms_ending_with_it_for_3_s() {
     let mut counts = vec![w.push(voice_gate_sum()).voiced];
     counts.extend((0..39).map(|_| w.push(0.0).voiced));
     let want: Vec<usize> = (1..=40usize)
-        .map(|n| (1..=4).filter(|&p| p + WINDOW_BLOCKS > n).count())
+        .map(|n| (1..=4).filter(|&p| p <= n && p + WINDOW_BLOCKS > n).count())
         .collect();
     assert_eq!(counts, want);
 }
