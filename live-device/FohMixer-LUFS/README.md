@@ -18,18 +18,15 @@ sits in adds nothing to the signal.
 | File | What it is |
 |---|---|
 | `FohMixer LUFS.maxpat` | The device's patcher: `plugin~` → `gen~` (its code embedded) → `snapshot~ 100` → `change` → the two `live.numbox` parameters; `plugout~` gets the gen~'s two zero outputs. Its face shows the two numbers and the version. |
-| `fohmixer_lufs.genexpr` | The readable copy of the gen~'s code: the same steps as the Rust reference, `fohmixer_proto::lufs::dsp`. |
+| `fohmixer_lufs.genexpr` | The readable copy of the gen~'s code. |
 | `version.txt` | The workspace version (`scripts/check_version.py` keeps it equal); the face shows `v<version>`. |
 | `build_amxd.py` | Writes `FohMixer LUFS.amxd` from the patcher. |
 
-`scripts/check_lufs_device.py` (CI) fails when the constants table in the
-`.genexpr` differs from the one in `crates/fohmixer-proto/src/lufs/dsp.rs`,
-when the code the patcher embeds differs from the `.genexpr`, when a
-parameter's name, range or unit is off, when the face's version is not
-`version.txt`, or when the patcher holds an absolute file path. A change to
-the DSP is made in the `.genexpr` and copied into the patcher's codebox (or
-made in Max's codebox and copied back), with the Rust module changed the same
-way.
+`scripts/check_lufs_device.py` (CI) fails when the code the patcher embeds
+differs from the `.genexpr`, when a parameter's name, range or unit is off,
+when the face's version is not `version.txt`, or when the patcher holds an
+absolute file path. A change to the DSP is made in the `.genexpr` and copied
+into the patcher's codebox (or made in Max's codebox and copied back).
 
 ## The one open setting: parameter visibility
 
@@ -55,5 +52,5 @@ author's file paths, which hold the Windows user name.
    `FohMixer LUFS.amxd` into the Live user's User Library, and never copy
    the frozen file back into this repository.
 
-The device on the PC is checked against the Rust reference with rendered
-test signals (spec §9, an L check): its parameters agree within 0.1 LU.
+The device on the PC is checked against Sonible trueLevel's short-term on the
+same signal (spec §9, the owner's ruling of 27.10): within 0.5 LU.

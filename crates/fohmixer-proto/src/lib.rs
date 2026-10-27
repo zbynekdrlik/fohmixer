@@ -7,7 +7,7 @@
 //! ([`markers`], D16), the LOM path grammar both use ([`path`], S2 design
 //! note §3.1), Live's volume law in dB ([`volume`], #130) and the song map
 //! of a set's locators and Sections key clips ([`songmap`], #140), and the
-//! loudness meter's reference DSP ([`lufs`], #151).
+//! loudness readings of the LUFS devices ([`lufs`], #151).
 
 use serde::{Deserialize, Serialize};
 

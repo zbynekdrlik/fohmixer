@@ -104,7 +104,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m unittest discover -s e2e/harness -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/harness-tests.log"
-      - name: LUFS device (its gen~ code and table equal the Rust reference, #151)
+      - name: LUFS devices (the gen~ code, the patch, the port, the version, #151)
         if: ${{ !cancelled() }}
         run: python scripts/check_lufs_device.py
       - name: LUFS device build tool tests (the .amxd header, #151)

@@ -1,9 +1,8 @@
 // FohMixer LUFS (#151, spec docs/superpowers/specs/2026-10-26-lufs-design.md §3.3):
 // BS.1770-4 short-term loudness and the gated Voice reading of a stereo input.
-// The same steps as the reference DSP, fohmixer_proto::lufs::dsp (Rust, tested
-// in CI). This file is the readable copy of the code the gen~ in
-// "FohMixer LUFS.maxpat" embeds; scripts/check_lufs_device.py keeps the two
-// equal, and keeps the table below equal to the Rust module's.
+// This file is the readable copy of the code the gen~ in "FohMixer LUFS.maxpat"
+// embeds; scripts/check_lufs_device.py keeps the two equal. The device's
+// numbers are checked on the PC against Sonible trueLevel's short-term (§9).
 //
 // in 1, in 2: left, right.
 // out 1, out 2: silence (the device adds nothing to its chain, §3.2).
@@ -28,8 +27,7 @@ History short_term(-70), voice(-70);
 Data blocks(30);
 Data voiced(30);
 
-// The constants: a copy of the table in fohmixer_proto::lufs::dsp.
-// lufs-table begin
+// The constants (§3.3).
 SHELF_F0 = 1681.974450955533;
 SHELF_GAIN_DB = 3.999843853973347;
 SHELF_Q = 0.7071752369554196;
@@ -44,7 +42,6 @@ VOICE_GATE_LUFS = -40;
 MIN_VOICED = 10;
 FLOOR_LUFS = -70;
 TOP_LUFS = 0;
-// lufs-table end
 
 c_pb0 = pb0; c_pb1 = pb1; c_pb2 = pb2; c_pa1 = pa1; c_pa2 = pa2;
 c_ra1 = ra1; c_ra2 = ra2; c_len = block_len; c_gate = gate_sum;

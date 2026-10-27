@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
-"""Keep the FohMixer LUFS device's source equal to the reference DSP (#151).
+"""Keep the FohMixer LUFS device's source in shape (#151).
 
 Spec docs/superpowers/specs/2026-10-26-lufs-design.md §4.2 and §9:
 
-- the constants table between `lufs-table begin` / `lufs-table end` in
-  `crates/fohmixer-proto/src/lufs/dsp.rs` and in the device's
-  `fohmixer_lufs.genexpr`: the same names with the same values;
-- the gen~ code embedded in `FohMixer LUFS.maxpat` equals the `.genexpr` (the
-  device has no file dependencies), and its rings are WINDOW_BLOCKS long;
+- the gen~ code embedded in `FohMixer LUFS.maxpat` equals the
+  `fohmixer_lufs.genexpr` (the device has no file dependencies);
 - the patch: the two `live.numbox` parameters `Short-term` and `Voice`
   (float, -70..0, LUFS, the same visibility, which probe P1 decides), the
   version on its face equal to `version.txt`, and no absolute file path.
@@ -24,72 +21,14 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-RUST = Path("crates") / "fohmixer-proto" / "src" / "lufs" / "dsp.rs"
 DEVICE = Path("live-device") / "FohMixer-LUFS"
 GENEXPR = DEVICE / "fohmixer_lufs.genexpr"
 MAXPAT = DEVICE / "FohMixer LUFS.maxpat"
 VERSION_TXT = DEVICE / "version.txt"
-BEGIN, END = "lufs-table begin", "lufs-table end"
-NUMBER = r"(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)"
-RUST_CONST = re.compile(rf"^pub const (\w+): (?:f64|usize) = {NUMBER};$")
-GEN_CONST = re.compile(rf"^(\w+) = {NUMBER};$")
-GEN_DATA = re.compile(r"^Data (\w+)\((\d+)\);$")
 PARAMETERS = ("Short-term", "Voice")
 # A drive letter path (raw or JSON-escaped), a UNC path, a Unix home.
 ABSOLUTE_PATH = re.compile(r"\b[A-Za-z]:(?:\\\\|\\|/)|\\\\\\\\|/(?:Users|home)/")
 VISIBILITIES = (0, 1)
-
-
-def table(text: str, pattern: re.Pattern[str], what: str) -> tuple[dict[str, float], list[str]]:
-    """The constants between the markers, and the problems reading them."""
-    lines = [line.strip() for line in text.splitlines()]
-    begins = [i for i, line in enumerate(lines) if line.endswith(BEGIN)]
-    ends = [i for i, line in enumerate(lines) if line.endswith(END)]
-    if len(begins) != 1 or len(ends) != 1 or ends[0] < begins[0]:
-        return {}, [f"{what}: needs exactly one '{BEGIN}' line before one '{END}' line"]
-    found: dict[str, float] = {}
-    errors: list[str] = []
-    for line in lines[begins[0] + 1 : ends[0]]:
-        if not line or line.startswith("//"):
-            continue
-        match = pattern.match(line)
-        if match is None:
-            errors.append(f"{what}: a line in the table is no constant it can read: {line}")
-            continue
-        name, value = match[1], float(match[2])
-        if name in found:
-            errors.append(f"{what}: {name} is in the table twice")
-        found[name] = value
-    if not found:
-        errors.append(f"{what}: the table is empty")
-    return found, errors
-
-
-def compare_tables(rust: dict[str, float], gen: dict[str, float]) -> list[str]:
-    errors = [f"{GENEXPR.as_posix()} lacks {name}" for name in sorted(rust.keys() - gen.keys())]
-    errors += [
-        f"{GENEXPR.as_posix()} has {name}, which the Rust table lacks"
-        for name in sorted(gen.keys() - rust.keys())
-    ]
-    errors += [
-        f"{name}: {RUST.as_posix()} has {rust[name]!r}, {GENEXPR.as_posix()} {gen[name]!r}"
-        for name in sorted(rust.keys() & gen.keys())
-        if rust[name] != gen[name]
-    ]
-    return errors
-
-
-def data_sizes(code: str, window: float | None) -> list[str]:
-    sizes = {
-        m[1]: int(m[2]) for m in (GEN_DATA.match(line.strip()) for line in code.splitlines()) if m
-    }
-    if not sizes:
-        return [f"{GENEXPR.as_posix()}: no Data ring"]
-    return [
-        f"{GENEXPR.as_posix()}: Data {name}({size}) is not WINDOW_BLOCKS ({window})"
-        for name, size in sorted(sizes.items())
-        if size != window
-    ]
 
 
 def boxes(patcher: dict) -> list[dict]:
@@ -165,21 +104,14 @@ def patch_errors(maxpat_text: str, code: str, version: str) -> list[str]:
 
 
 def check(root: Path) -> list[str]:
-    rust, errors = table((root / RUST).read_text(encoding="utf-8"), RUST_CONST, RUST.as_posix())
     code = (root / GENEXPR).read_text(encoding="utf-8")
-    gen, gen_errors = table(code, GEN_CONST, GENEXPR.as_posix())
-    errors += gen_errors
-    if rust and gen:
-        errors += compare_tables(rust, gen)
-    errors += data_sizes(code, rust.get("WINDOW_BLOCKS"))
     version = (root / VERSION_TXT).read_text(encoding="utf-8").strip()
-    errors += patch_errors((root / MAXPAT).read_text(encoding="utf-8"), code, version)
-    return errors
+    return patch_errors((root / MAXPAT).read_text(encoding="utf-8"), code, version)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="The LUFS device's source against the Rust reference."
+        description="The LUFS device's patch, its gen~ code and its version."
     )
     parser.add_argument("--root", type=Path, default=ROOT)
     args = parser.parse_args(argv)
@@ -188,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"::error::{error}")
     if errors:
         return 1
-    print("FohMixer LUFS: the table, the embedded gen~ code and the patch agree")
+    print("FohMixer LUFS: the embedded gen~ code and the patch agree")
     return 0
 
 

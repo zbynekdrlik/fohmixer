@@ -20,7 +20,7 @@ class TreeTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp())
-        for rel in (cl.RUST, cl.GENEXPR, cl.MAXPAT, cl.VERSION_TXT):
+        for rel in (cl.GENEXPR, cl.MAXPAT, cl.VERSION_TXT):
             (self.root / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(REPO / rel, self.root / rel)
 
@@ -51,32 +51,6 @@ class TreeTests(unittest.TestCase):
 
     def test_the_copy_passes(self) -> None:
         self.assertEqual(self.errors(), [])
-
-    def test_a_value_that_differs_fails(self) -> None:
-        self.edit(cl.GENEXPR, "SHELF_Q = 0.7071752369554196;", "SHELF_Q = 0.7071752369554197;")
-        errors = self.errors()
-        # The table differs, and so does the code the patch embeds.
-        self.assertEqual(len(errors), 2, errors)
-        self.assertIn("SHELF_Q", errors[0])
-        self.assertIn("gen~ code differs", errors[1])
-        self.assertEqual(cl.main(["--root", str(self.root)]), 1)
-
-    def test_a_rust_value_that_differs_fails(self) -> None:
-        self.edit(cl.RUST, "pub const MIN_VOICED: usize = 10;", "pub const MIN_VOICED: usize = 9;")
-        self.assertTrue(any("MIN_VOICED" in e for e in self.errors()))
-
-    def test_a_name_missing_on_either_side_fails(self) -> None:
-        self.edit(cl.GENEXPR, "TOP_LUFS = 0;\n", "")
-        self.assertTrue(any("lacks TOP_LUFS" in e for e in self.errors()))
-
-    def test_an_extra_name_fails(self) -> None:
-        self.edit(cl.GENEXPR, "TOP_LUFS = 0;\n", "TOP_LUFS = 0;\nEXTRA = 1;\n")
-        self.assertTrue(any("EXTRA" in e for e in self.errors()))
-
-    def test_a_ring_not_window_long_fails(self) -> None:
-        self.edit(cl.GENEXPR, "Data voiced(30);", "Data voiced(31);")
-        errors = self.errors()
-        self.assertTrue(any("Data voiced(31)" in e for e in errors), errors)
 
     def test_the_embedded_code_must_equal_the_genexpr(self) -> None:
         self.edit(cl.GENEXPR, "out1 = 0;", "out1 = in1;")
@@ -135,38 +109,9 @@ class TreeTests(unittest.TestCase):
         self.save(patch)
         self.assertIn(f"{cl.MAXPAT.as_posix()}: no plugout~", self.errors())
 
-    def test_a_table_without_its_markers_fails(self) -> None:
-        self.edit(cl.GENEXPR, "// lufs-table end", "// the end")
-        self.assertTrue(any("lufs-table" in e for e in self.errors()))
-
     def test_text_that_is_no_patcher_fails(self) -> None:
         (self.root / cl.MAXPAT).write_text("not json", encoding="utf-8")
         self.assertTrue(any("is not a Max patcher" in e for e in self.errors()))
-
-
-class TableTests(unittest.TestCase):
-    def test_reads_floats_and_integers_between_the_markers_only(self) -> None:
-        text = "A = 1;\n// lufs-table begin\nB = -2.5;\nC = 30;\nD = 1e-3;\n// lufs-table end\nE = 3;\n"
-        found, errors = cl.table(text, cl.GEN_CONST, "x")
-        self.assertEqual((found, errors), ({"B": -2.5, "C": 30.0, "D": 0.001}, []))
-
-    def test_a_name_twice_is_an_error(self) -> None:
-        text = "// lufs-table begin\nB = 1;\nB = 1;\n// lufs-table end\n"
-        self.assertEqual(cl.table(text, cl.GEN_CONST, "x")[1], ["x: B is in the table twice"])
-
-    def test_a_line_that_is_no_readable_constant_is_an_error(self) -> None:
-        # PR #154's review: a constant written so the pattern misses it (a
-        # digit separator) was skipped, its value never compared.
-        text = "// lufs-table begin\n// a comment\n\nB = 1;\nC = 1_000.0;\n// lufs-table end\n"
-        found, errors = cl.table(text, cl.GEN_CONST, "x")
-        self.assertEqual(found, {"B": 1.0})
-        self.assertEqual(
-            errors, ["x: a line in the table is no constant it can read: C = 1_000.0;"]
-        )
-
-    def test_an_empty_table_is_an_error(self) -> None:
-        text = "// lufs-table begin\n// lufs-table end\n"
-        self.assertEqual(cl.table(text, cl.GEN_CONST, "x")[1], ["x: the table is empty"])
 
 
 if __name__ == "__main__":
