@@ -336,6 +336,33 @@ fn is(item: &fohmixer_proto::client::ValueItem, want: f64) -> bool {
         .is_some_and(|v| (v - want).abs() < 1e-6)
 }
 
+/// Waits until the latest values heard of `left` and `right` are `want`
+/// (L, R; within 1e-6). Both keys' items often come in one `values`
+/// message, so they are read together: a `value_until` of one consumes the
+/// other's item with the message.
+async fn pair_until(client: &mut Client, left: &str, right: &str, want: (f64, f64)) {
+    let deadline = tokio::time::Instant::now() + SECS_5;
+    let mut heard: (Option<f64>, Option<f64>) = (None, None);
+    let near = |v: Option<f64>, w: f64| v.is_some_and(|v| (v - w).abs() < 1e-6);
+    while !(near(heard.0, want.0) && near(heard.1, want.1)) {
+        let left_time = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let msg = client
+            .next_message(left_time)
+            .await
+            .unwrap_or_else(|| panic!("no levels {want:?} within 5 s; last heard {heard:?}"));
+        if let ServerMsg::Values { items } = msg {
+            for item in items {
+                let value = item.value.as_ref().and_then(Value::as_f64);
+                if item.sub == left {
+                    heard.0 = value;
+                } else if item.sub == right {
+                    heard.1 = value;
+                }
+            }
+        }
+    }
+}
+
 /// Every value of `sub` that arrives within `limit`.
 async fn values_for(client: &mut Client, sub: &str, limit: Duration) -> Vec<f64> {
     let deadline = tokio::time::Instant::now() + limit;
@@ -390,23 +417,26 @@ fn an_armed_strips_meter_follows_its_fader() {
         // bisection is not exactly 0 dB).
         let at = |volume: f64| post_fader(-120, -180, volume, 0.0, false);
         let (l, r) = at(volume_of(0.0));
-        client.value_until(&left, SECS_5, |i| is(i, l)).await;
-        client.value_until(&right, SECS_5, |i| is(i, r)).await;
+        pair_until(&mut client, &left, &right, (l, r)).await;
         assert!((l - fohmixer_proto::meter::live_value(-12.0)).abs() < 1e-3);
-        let cleared = item(&mut client, "band", SECS_5, |i| i.problem.is_none()).await;
-        assert_eq!(cleared.tenths, Some(-253));
+        // The problem cleared, the reading kept (read from the status:
+        // `pair_until` reads the page's messages in order and passes the
+        // `lufs` ones over).
+        let status = hub
+            .status_until(SECS_5, |s| s.lufs.strips[0].problem.is_none())
+            .await;
+        assert_eq!(status.lufs.strips[0].tenths, Some(-253));
         // The fader 10 dB down: both bars fall by 10 dB.
         let volume = format!("{TRACK} mixer_device volume");
         client
             .set("band", &volume, "value", json!(volume_of(-10.0)))
             .await;
         let (l, r) = at(volume_of(-10.0));
-        client.value_until(&left, SECS_5, |i| is(i, l)).await;
-        client.value_until(&right, SECS_5, |i| is(i, r)).await;
+        pair_until(&mut client, &left, &right, (l, r)).await;
         assert!((l - fohmixer_proto::meter::live_value(-22.0)).abs() < 1e-3);
         // Muted: the floor.
         client.set("band", TRACK, "mute", json!(true)).await;
-        client.value_until(&left, SECS_5, |i| is(i, 0.0)).await;
+        pair_until(&mut client, &left, &right, (0.0, 0.0)).await;
         let status = hub.status().await;
         assert!(
             status
