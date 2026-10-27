@@ -110,8 +110,9 @@ pub fn listen_fields(addr: &str, error: Option<&str>) -> Value {
 /// The `lufs` record of a key's change of dropping.
 pub fn dropping_fields(key: &Key, change: Dropping) -> Value {
     let started = change == Dropping::Started;
+    let what = if started { "dropping" } else { "under_bound" };
     let mut fields = json!({
-        "what": if started { "dropping" } else { "under_bound" },
+        "what": what,
         "kind": kind_word(key.kind),
         "device": key.device,
         "parents": key.parents,
@@ -141,7 +142,10 @@ pub fn spawn(
         Err(e) => {
             let error = e.to_string();
             tracing::error!(addr = %wanted, error = %error, "lufs: cannot listen for the LUFS devices; the hub runs on without them");
-            events.record("lufs", listen_fields(&wanted.to_string(), Some(&error)));
+            events.record(
+                "lufs",
+                listen_fields(&wanted.to_string(), Some(error.as_str())),
+            );
             counters.set_addr(None, Some(error));
             return Err(e);
         }

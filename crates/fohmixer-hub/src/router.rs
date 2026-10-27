@@ -208,6 +208,8 @@ pub enum RouterMsg {
         fader_leaders: Vec<LinkId>,
         /// The AUTOTUNE rule's tracks (`Layout::autotune_targets`, #104).
         autotune: Vec<AutotuneTarget>,
+        /// The loudness points (`Layout::lufs_points`, #151).
+        lufs: Vec<fohmixer_proto::layout::LufsPoint>,
     },
     /// The router's part of `/api/status`.
     Status {
