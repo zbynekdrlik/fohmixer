@@ -192,13 +192,19 @@ test.describe("The LUFS reading on a strip", () => {
     expect(await captionOf(s)).toEqual(["", ""]);
     expect((await lufs.boundingBox())!.height).toBeCloseTo(row, 1);
     expect((await cap.boundingBox())!.height).toBeCloseTo(caption, 1);
-    // The device stops: the number goes within 1.5 s (the hub's 1 s stale).
+    // The device stops: the number goes within 1.5 s (the hub's 1 s stale
+    // and its 100 ms tick). Read every 50 ms: `toHaveText`'s own back-off
+    // looks at 850 ms, then at 1850 ms, so it cannot tell 1.5 s.
     await voice(page, -250, "−25");
     expect(await hostLine("band", "lufs track 1 off")).toBe("LUFS 0");
-    await expect(lufs).toHaveText("", { timeout: 1500 });
+    const stopped = Date.now();
+    await expect.poll(() => lufs.textContent(), { timeout: 1500, intervals: [50] }).toBe("");
+    test.info().annotations.push({ type: "cleared-ms", description: String(Date.now() - stopped) });
     await expect(lufs).toHaveAttribute("data-l", "none");
     await expect(cap).toBeHidden();
-    await expect(s).not.toHaveAttribute("data-lufs-problem", /./);
+    // A stopped device is no device: the strip's `!` and its words.
+    await expect(s).toHaveAttribute("data-lufs-problem", "no LUFS meter", { timeout: 5000 });
+    await expect(s.getByTestId("strip-flag")).toHaveText("!");
   });
 
   test("the output shows its plain short-term under LUFS OUT; a strip with no device shows ! and nothing in the row", async ({ page }) => {
@@ -231,7 +237,7 @@ test.describe("The LUFS reading on a strip", () => {
   test("the LUFS is quieter than the dB; a +LUFS strip's travel equals a plain strip's, at least 322 px", async ({ page }) => {
     saved = await setUp(page, live);
     await voice(page, -210, "−21");
-    expect(await hostLine("band", "lufs track 2 -183 -700")).toBe("LUFS 1");
+    expect(await hostLine("band", "lufs track 2 -183 -700")).toBe("LUFS 2"); // the input's device sends too (SimLive counts every device sending)
     await expect(lufsStrip(page, "Vocals").getByTestId("lufs")).toHaveText("−18", { timeout: 10_000 });
     await frames(page);
     const looks = await page.locator('[data-testid="strip"][data-lufs]').evaluateAll((all) => {
@@ -293,7 +299,7 @@ test.describe("The LUFS reading on a strip", () => {
   test("every reading inside its box from 64 to 120 px: the caption from 78 px, the number upright under it", async ({ page }) => {
     saved = await setUp(page, live);
     await voice(page, -330, "−33");
-    expect(await hostLine("band", "lufs track 2 -183 -700")).toBe("LUFS 1");
+    expect(await hostLine("band", "lufs track 2 -183 -700")).toBe("LUFS 2"); // the input's device sends too (SimLive counts every device sending)
     const out = lufsStrip(page, "Vocals");
     await expect(out.getByTestId("lufs")).toHaveText("−18", { timeout: 10_000 });
     for (const s of [lufsStrip(page, "Vox 1"), out]) {
@@ -348,7 +354,7 @@ for (const size of [
     test("the caption only on a strip of 78 px or more, every reading inside its column", async ({ page }) => {
       saved = await setUp(page, live);
       await voice(page, -250, "−25");
-      expect(await hostLine("band", "lufs track 2 -183 -700")).toBe("LUFS 1");
+      expect(await hostLine("band", "lufs track 2 -183 -700")).toBe("LUFS 2"); // the input's device sends too (SimLive counts every device sending)
       const out = lufsStrip(page, "Vocals");
       await expect(out.getByTestId("lufs")).toHaveText("−18", { timeout: 10_000 });
       await frames(page);

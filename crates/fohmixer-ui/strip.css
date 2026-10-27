@@ -284,7 +284,9 @@
 
 /* A narrow strip (#151: under 78 px, `arrange::narrow` on `.body`): the
    column is 13-24 px, so the LUFS stands upright, digit under digit, and
-   the caption leaves; an empty one takes no row. */
+   the caption leaves; an empty one takes no row. Upright, the line is the
+   text's width: 13 px holds the mono face's whole content area at 9.5 px
+   (12 px let it pass the box by 1 px, lufs.spec.ts' sweep). */
 :is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .lufs-cap {
     display: none;
 }
@@ -292,7 +294,7 @@
 :is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .lufs {
     height: auto;
     padding: 3px 0;
-    font: 500 9.5px/12px var(--mono);
+    font: 500 9.5px/13px var(--mono);
     letter-spacing: -1px;
     text-orientation: upright;
     writing-mode: vertical-rl;
