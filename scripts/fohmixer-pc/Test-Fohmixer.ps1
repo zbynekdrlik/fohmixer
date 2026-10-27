@@ -699,6 +699,16 @@ try {
     [IO.File]::WriteAllText((Join-Path $devLib 'Presets\Audio Effects\Max Audio Effect\FohMixer Meter.amxd'), 'frozen by hand')
     $w = @(Install-FohUserDevices -Source (Join-Path $appV1 'live-device') -UserLibrary $devLib)
     Assert ($w.Count -eq 1 -and $w[0] -ceq 'FohMixer Meter.amxd') "devices-a-changed-one-is-written-again ($($w -join ', '))"
+    # (#151) -Hold (a Live runs): a differing device is held, never replaced; a missing one is still written.
+    [IO.File]::WriteAllText((Join-Path $devLib 'Presets\Audio Effects\Max Audio Effect\FohMixer Meter.amxd'), 'loaded by a running Live')
+    Remove-Item -LiteralPath (Join-Path $devLib 'Presets\Audio Effects\Max Audio Effect\FohMixer LUFS.amxd')
+    $held = [System.Collections.Generic.List[string]]::new()
+    $w = @(Install-FohUserDevices -Source (Join-Path $appV1 'live-device') -UserLibrary $devLib -Hold -Held $held)
+    Assert ($w.Count -eq 1 -and $w[0] -ceq 'FohMixer LUFS.amxd') "devices-hold-writes-a-missing-one ($($w -join ', '))"
+    Assert ($held.Count -eq 1 -and $held[0] -ceq 'FohMixer Meter.amxd') "devices-hold-names-the-held-one ($($held -join ', '))"
+    Assert ([IO.File]::ReadAllText((Join-Path $devLib 'Presets\Audio Effects\Max Audio Effect\FohMixer Meter.amxd')) -ceq 'loaded by a running Live') 'devices-hold-leaves-the-loaded-file-alone'
+    $w = @(Install-FohUserDevices -Source (Join-Path $appV1 'live-device') -UserLibrary $devLib)
+    Assert ($w.Count -eq 1 -and $w[0] -ceq 'FohMixer Meter.amxd') "devices-without-hold-replaces-it ($($w -join ', '))"
     $e = ErrorOf { Install-FohUserDevices -Source (Join-Path $appV1 'live-device') -UserLibrary (Join-Path $base 'no-such-lib') }
     Assert ($e -like "*Live's User Library not found*") "devices-refuse-a-missing-user-library ($e)"
 

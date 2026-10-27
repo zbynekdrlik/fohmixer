@@ -578,7 +578,13 @@ function Install-FohUserDevices {
     # its content differs (a second run writes nothing); nothing else in the
     # folder is touched. The User Library must exist. Writes the names written
     # to the pipeline one by one (a caller takes them with @(...)).
-    param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$UserLibrary)
+    # -Hold (a Live runs): a device already there that differs is not
+    # replaced but added to -Held. Max reloads every loaded instance of a
+    # replaced .amxd at once, and the band Live, holding 15 of them, crashed
+    # doing so on the 1.20.0 install (#151, 27.10). A missing device is still
+    # written: no Live has it loaded.
+    param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$UserLibrary,
+        [switch]$Hold, [System.Collections.Generic.List[string]]$Held)
     if (-not (Test-Path -LiteralPath $UserLibrary -PathType Container)) { throw "Live's User Library not found: $UserLibrary" }
     $dest = Join-Path $UserLibrary $script:DevicePresets
     $written = @()
@@ -586,13 +592,25 @@ function Install-FohUserDevices {
         $from = Join-Path $Source $d
         Test-FohAmxd -Path $from
         $to = Join-Path $dest $d
-        if ((Test-Path -LiteralPath $to -PathType Leaf) -and ((Get-FohSha256 $to) -ceq (Get-FohSha256 $from))) { continue }
+        $there = Test-Path -LiteralPath $to -PathType Leaf
+        if ($there -and ((Get-FohSha256 $to) -ceq (Get-FohSha256 $from))) { continue }
+        if ($there -and $Hold) {
+            if ($null -ne $Held) { $Held.Add($d) }
+            continue
+        }
         New-Item -ItemType Directory -Force -Path $dest | Out-Null
         Copy-Item -LiteralPath $from -Destination ($to + '.tmp') -Force
         Move-Item -LiteralPath ($to + '.tmp') -Destination $to -Force
         $written += $d
     }
     return $written
+}
+
+function Test-FohLiveRunning {
+    # Whether any Ableton Live runs on this PC (the band's or the master's
+    # renamed copy; Live's indexer, Ableton Index, is not a Live).
+    return [bool](@(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+                $_.ProcessName -like 'Ableton Live*' -or $_.ProcessName -like 'AbletonLive*' }).Count)
 }
 
 # ---- the accounts ----
@@ -802,17 +820,23 @@ function Invoke-FohInstall {
         # 5. the FohMixer copies (printed without their paths: they name the Windows accounts)
         $source = Join-Path $app.dir $script:ScriptName
         $copies = @()
+        # (#151) A running Live keeps its loaded devices: see Install-FohUserDevices.
+        $liveRunning = Test-FohLiveRunning
         foreach ($u in @(
                 @{ instance = 'band'; library = $BandUserLibrary; port = $BandPort },
                 @{ instance = 'master'; library = $MasterUserLibrary; port = $MasterPort })) {
             $r = Install-FohUserScript -Source $source -UserLibrary $u.library -Instance $u.instance -Port $u.port
             Write-Host ("fohmixer install: the {0} user's FohMixer (replaced: {1}, Config.py written: {2})" -f $u.instance, $r.replaced, $r.config_written)
             # The Max for Live devices (#151), printed by name only.
-            $devices = Install-FohUserDevices -Source (Join-Path $app.dir $script:DeviceDir) -UserLibrary $u.library
+            $held = [System.Collections.Generic.List[string]]::new()
+            $devices = Install-FohUserDevices -Source (Join-Path $app.dir $script:DeviceDir) -UserLibrary $u.library -Hold:$liveRunning -Held $held
             $wrote = 'nothing'
             if (@($devices).Count -gt 0) { $wrote = (@($devices) -join ', ') }
             Write-Host ("fohmixer install: the {0} user's Max devices in {1} (written: {2})" -f $u.instance, $script:DevicePresets, $wrote)
-            $copies += [pscustomobject]@{ instance = $u.instance; replaced = $r.replaced; config_written = $r.config_written; removed = $r.removed; devices = @($devices) }
+            if ($held.Count -gt 0) {
+                Write-Host ("fohmixer install: the {0} user's Max devices held while a Live runs: {1} (close both Lives and run this install again to update them)" -f $u.instance, ($held -join ', '))
+            }
+            $copies += [pscustomobject]@{ instance = $u.instance; replaced = $r.replaced; config_written = $r.config_written; removed = $r.removed; devices = @($devices); devices_held = @($held) }
         }
         # 5b. remote access (#17): the name on this PC, the shortcut, the tunnel token
         $remoteResult = $null
