@@ -196,6 +196,12 @@ pub fn handle_datagram(
     tx.send(RouterMsg::Lufs { reading }).is_ok()
 }
 
+/// Whether the bound forgets its unheard keys at `now`: the last sweep
+/// (`swept`) is [`SWEEP`] or longer ago.
+pub fn sweep_due(swept: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(swept) >= SWEEP
+}
+
 async fn listen(
     socket: tokio::net::UdpSocket,
     tx: mpsc::UnboundedSender<RouterMsg>,
@@ -222,7 +228,7 @@ async fn listen(
         if !handle_datagram(&buf[..n], now, &mut bound, &counters, &events, &tx) {
             return;
         }
-        if now.saturating_duration_since(swept) >= SWEEP {
+        if sweep_due(swept, now) {
             swept = now;
             if let Some(cutoff) = now.checked_sub(Duration::from_millis(FORGET_MS)) {
                 bound.forget_before(cutoff);
@@ -318,6 +324,19 @@ mod tests {
         let ended = dropping_fields(&key, Dropping::Ended);
         assert_eq!(ended["what"], "under_bound");
         assert!(ended.get("warn").is_none());
+    }
+
+    #[test]
+    fn the_bound_is_swept_once_a_second() {
+        // PR #155's mutation gate: the sweep's decision, on its boundary.
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        assert_eq!(SWEEP, ms(1000));
+        assert!(!sweep_due(t0, t0));
+        assert!(!sweep_due(t0, t0 + ms(999)));
+        assert!(sweep_due(t0, t0 + ms(1000)));
+        assert!(sweep_due(t0, t0 + ms(2500)));
+        assert!(!sweep_due(t0 + ms(1000), t0), "a clock that went back");
     }
 
     #[test]

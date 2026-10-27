@@ -990,3 +990,74 @@ fn names_are_due_after_five_seconds() {
     assert!(!names_due(Some(1000), 5999));
     assert!(names_due(Some(1000), 6000));
 }
+
+// --- PR #155's mutation gate ---
+
+#[test]
+fn an_offline_live_forgets_its_own_points_faders_only() {
+    let mut rule = matched(None);
+    let fader = Fader {
+        volume: Some(fohmixer_proto::volume::volume_of(0.0)),
+        mute: Some(false),
+        pan: None,
+        arm: None,
+    };
+    let acts = rule.fader("band", "live_set tracks 1", fader, 30);
+    assert_eq!(sends(&acts), vec![item("band", 1, Some(-300))]);
+    // Another Live goes: band's point keeps its fader and its reading.
+    assert!(sends(&rule.offline("master", 40)).is_empty());
+    assert_eq!(rule.items(), vec![item("band", 1, Some(-300))]);
+    // Band goes: its fader is forgotten, so once matched again the point
+    // shows nothing until its fader is heard again.
+    rule.offline("band", 50);
+    rule.connected("band", 60);
+    rule.named("band", SET, 60);
+    let r = on_vox(-300, -253);
+    let asked = confirms(&rule.reading(&r, 70));
+    assert_eq!(asked.len(), 1);
+    let acts = rule.answered(&key_of(&r), "band", asked[0].2, Answer::Ours, 80);
+    assert_eq!(whats(&acts)[0], "matched");
+    assert_eq!(rule.items(), vec![item("band", 1, None)]);
+}
+
+#[test]
+fn offline_answers_the_walk_out_whatever_its_number() {
+    let mut rule = rule(vec![
+        strip("band", 3, "Vox 1", Some(-25)),
+        strip("master", 3, "Vox 1", Some(-25)),
+    ]);
+    // Another key on the track takes the first walk.
+    let other = reading(9, ["Vox 1", SET, "-", "-"], -300, -253);
+    assert_eq!(confirms(&rule.reading(&other, 5))[0].2, 1);
+    let r = on_vox(-300, -253);
+    let ask = confirms(&rule.reading(&r, 10))[0].2;
+    assert_eq!(ask, 2);
+    rule.answered(&key_of(&r), "band", ask, Answer::Ours, 20);
+    // Master goes before it answered walk 2: it counts as not ours there.
+    let acts = rule.offline("master", 30);
+    assert!(whats(&acts).contains(&"matched".to_string()), "{acts:?}");
+    let status = rule.device_status(30);
+    assert!(
+        status.iter().any(|s| s.device == 1
+            && s.state == "matched"
+            && s.instance.as_deref() == Some("band")),
+        "{status:?}"
+    );
+}
+
+#[test]
+fn a_two_in_one_live_leaves_the_other_lives_point_alone() {
+    let mut rule = rule(vec![
+        strip("band", 3, "Vox 1", Some(-25)),
+        strip("master", 3, "Vox 1", Some(-25)),
+    ]);
+    let r = on_vox(-300, -253);
+    let ask = confirms(&rule.reading(&r, 10))[0].2;
+    rule.answered(&key_of(&r), "band", ask, Answer::Two, 20);
+    let acts = rule.answered(&key_of(&r), "master", ask, Answer::NotOurs, 30);
+    assert_eq!(whats(&acts)[0], "two");
+    let mut band = item("band", 3, None);
+    band.problem = Some(LufsProblem::TwoLufsMeters);
+    assert_eq!(sends(&acts), vec![band.clone()]);
+    assert_eq!(rule.items(), vec![band, item("master", 3, None)]);
+}
