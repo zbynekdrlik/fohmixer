@@ -86,13 +86,13 @@ html, body { margin: 0; background: #0b0b12; }
 </ol>
 
 <h2>LUFS</h2>
-<p>A strip with <code>+LUFS</code> shows its short-term loudness as a small grey number at the top of the column left of the fader, under the caption <code>LUFS</code> over <code>IN</code> or <code>OUT</code> (on a narrow phone strip the number alone, upright). The number comes from the Max for Live device <b>FohMixer LUFS</b> on that track; it has no controls and passes no sound, so it always sits in a parallel chain of an Audio Effect Rack: on a mic in <b>CORE Effects</b> beside trueLevel, on an output point in a rack of its own (an empty chain plus the device's chain).</p>
+<p>A strip with <code>+LUFS</code> shows its short-term loudness (as Sonible trueLevel's short-term: 3 s, one decimal) as a small number at the top of the column left of the fader, under the caption <code>LUFS</code> over <code>IN</code> or <code>OUT</code> (on a narrow phone strip the number alone, upright). The number comes from the Max for Live device <b>FohMixer LUFS</b> on that track; it has no controls and passes no sound, so it always sits in a parallel chain of an Audio Effect Rack: on a mic in <b>CORE Effects</b> beside trueLevel, on an output point in a rack of its own (an empty chain plus the device's chain).</p>
 <table>
-<tr><td><code>−25</code> grey</td><td><code>+LUFS:-25</code>: within 3 LU of the target (−28 to −22)</td></tr>
-<tr><td><code>−21</code> amber text</td><td>3 to 6 LU off the target (−31 to −29, −21 to −19)</td></tr>
-<tr><td><code>−17</code> red text</td><td>more than 6 LU off the target</td></tr>
-<tr><td><code>−18</code> grey</td><td><code>+LUFS</code>: the output's short-term after its fader, never coloured</td></tr>
-<tr><td>(nothing)</td><td>silence (−70 or less: the singer is not singing), no reading yet, or Live offline; the caption goes too</td></tr>
+<tr><td><code>−25.4</code> green</td><td><code>+LUFS:-25</code>: within 1 LU of the target (−26.0 to −24.0), as trueLevel's green band</td></tr>
+<tr><td><code>−21.3</code> grey</td><td>further from the target, any direction</td></tr>
+<tr><td><code>−18.3</code> grey</td><td><code>+LUFS</code>: the output's short-term after its fader, never coloured</td></tr>
+<tr><td><code>−∞</code> grey</td><td>silence (−70 or less: nobody sings), the caption stays</td></tr>
+<tr><td>(nothing)</td><td>no reading yet, the device stopped, or Live offline; the caption goes too</td></tr>
 </table>
 <p>The number is quieter than Live's dB on purpose. An armed mic also needs the <b>FohMixer Meter</b> device last in its chain (in a rack of its own, as above).</p>
 

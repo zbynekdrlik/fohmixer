@@ -229,9 +229,9 @@
 }
 
 /* The caption (mockup v9, the owner's ruling of 27.10): `LUFS` over `IN`
-   or `OUT`, two 9 px lines in PR 1's caption font; shown only while the
-   number shows (`data-shown`), its rows kept: 9 + 9 + 2 + 16 = 36 px, above
-   the group's name at 40 px. */
+   or `OUT`, two 9 px lines in PR 1's caption font; shown while the number
+   shows, `−∞` in silence too (`data-shown`), its rows kept: 9 + 9 + 2 + 16
+   = 36 px, above the group's name at 40 px. */
 .lufs-cap {
     display: flex;
     flex-direction: column;
@@ -253,11 +253,16 @@
     visibility: hidden;
 }
 
-/* The reading (mockup v5, the owner's ruling of 26.10): quiet text, never a
-   shape (no fill, box, border or glow), quieter than Live's dB (12 px,
-   600, #9be7a8) in size, weight and contrast. In range and on an output
-   the dim grey; out of range only the text is tinted, muted; silent or
-   none: nothing at all, the row kept. */
+/* The reading, like Sonible trueLevel (the owner's ruling of 27.10
+   evening): short-term with one decimal (`−25.9`, `−∞` in silence), quiet
+   text, never a shape (no fill, box, border or glow), quieter than Live's
+   dB. Calm grey, but an input point within ±1 LU of its target in
+   trueLevel's green (`in`); no amber, no red. No reading: nothing, the row
+   kept. The size fits `−25.9` (3 em of the mono face) in the column
+   (`strip-w − 38 px − cap-w / 2`) at every strip width: / 3.4 keeps it
+   inside in WebKit (3 em exactly) and in Chromium, which rounds the face's
+   advance to whole px at small sizes (5 px from 7.5 px, 6 px from 9.17 px:
+   both still inside at / 3.4); 8.6 px on the iPad's 83.16 px strip. */
 .lufs {
     align-self: center;
     width: min(100%, 40px);
@@ -265,28 +270,28 @@
     overflow: hidden;
     color: #6e6e88;
     font: 500 10.5px/16px var(--mono);
+    font-size: clamp(6.5px, calc((var(--strip-w, 76px) - 38px - var(--cap-w) / 2) / 3.4), 10.5px);
     font-variant-numeric: tabular-nums;
     text-align: center;
     white-space: nowrap;
 }
 
-.lufs[data-l="warn"] {
-    color: #a8894a;
+.lufs[data-l="in"] {
+    color: #2fc79a;
 }
 
-.lufs[data-l="far"] {
-    color: #b0585f;
-}
-
-.lufs:is([data-l="silent"], [data-l="none"]) {
+.lufs[data-l="none"] {
     visibility: hidden;
 }
 
 /* A narrow strip (#151: under 78 px, `arrange::narrow` on `.body`): the
    column is 13-24 px, so the LUFS stands upright, digit under digit, and
    the caption leaves; an empty one takes no row. Upright, the line is the
-   text's width: 13 px holds the mono face's whole content area at 9.5 px
-   (12 px let it pass the box by 1 px, lufs.spec.ts' sweep). */
+   text's width: 13 px holds the mono face's whole content area (12 px let
+   it pass the box by 1 px, lufs.spec.ts' sweep). `−25.9` upright at 8.5 px
+   is 61 px high in Chromium (its upright advance is the face's height),
+   26.5 px in WebKit, so the group's name starts at 64 px there
+   (group.css). */
 :is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .lufs-cap {
     display: none;
 }
@@ -294,13 +299,13 @@
 :is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .lufs {
     height: auto;
     padding: 3px 0;
-    font: 500 9.5px/13px var(--mono);
+    font: 500 8.5px/13px var(--mono);
     letter-spacing: -1px;
     text-orientation: upright;
     writing-mode: vertical-rl;
 }
 
-:is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .lufs:is([data-l="silent"], [data-l="none"]) {
+:is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .lufs[data-l="none"] {
     display: none;
 }
 
@@ -525,12 +530,19 @@
     line-height: 17px;
 }
 
+/* The status light (#151, the owner's ruling of 27.10): red only while
+   the strip is not bound; bound, it is not drawn at all (the readout stays
+   centred) and never blinks with Live's values. */
 .status {
     flex: none;
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--danger);
+    background: #f00;
+}
+
+.status[data-state="bound"] {
+    display: none;
 }
 
 .db {

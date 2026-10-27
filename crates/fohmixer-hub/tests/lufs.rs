@@ -117,19 +117,20 @@ fn a_device_on_a_lufs_strip_reaches_the_page_and_clears_once_it_stops() {
         );
         points(&hub, 1).await;
         assert_eq!(host.maxdev("maxdev lufs track 1 add rack"), 1);
-        assert_eq!(host.maxdev("lufs track 1 -300 -253"), 1);
+        assert_eq!(host.maxdev("lufs track 1 -253 -300"), 1);
         let mut client = hub.client().await;
         let got = item(&mut client, "band", SECS_5, |i| i.tenths.is_some()).await;
-        assert_eq!(got.tenths, Some(-253), "an input point shows V");
+        assert_eq!(got.tenths, Some(-253), "an input point shows S, not V");
         assert_eq!(got.problem, None);
         let status = hub
-            .status_until(SECS_5, |s| s.lufs.strips[0].state == LufsState::Fine)
+            .status_until(SECS_5, |s| s.lufs.strips[0].state == LufsState::In)
             .await;
         let device = &status.lufs.devices[0];
         assert_eq!(device.state, "matched");
         assert_eq!(device.instance.as_deref(), Some("band"));
         assert_eq!(device.parents, vec!["LUFS", "LUFS", "Hand2 #", "Test Site"]);
-        assert_eq!(device.version, "v1.19.0");
+        // SimLive sends the devices' version.txt, which tracks the workspace.
+        assert_eq!(device.version, format!("v{}", env!("CARGO_PKG_VERSION")));
         assert_eq!(status.lufs.strips[0].tenths, Some(-253));
         assert_eq!(status.lufs.listener.refused.len(), 0);
         // The device stops: the number goes within 1.5 s, one lost record.
@@ -179,7 +180,7 @@ fn the_same_id_and_place_in_two_sets_goes_to_the_set_that_holds_the_strip() {
             status.lufs.strips[0].tenths, None,
             "the master's is not band's"
         );
-        assert_eq!(band.maxdev("lufs track 1 -300 -253"), 1);
+        assert_eq!(band.maxdev("lufs track 1 -253 -300"), 1);
         let mut client = hub.client().await;
         let got = item(&mut client, "band", SECS_5, |i| i.tenths.is_some()).await;
         assert_eq!(got.tenths, Some(-253));
@@ -216,7 +217,7 @@ fn a_place_held_in_both_sets_is_two_lufs_meters_and_shows_nothing() {
             assert_eq!(host.maxdev("maxdev lufs track 1 add rack"), 1);
         }
         points(&hub, 2).await;
-        assert_eq!(band.maxdev("lufs track 1 -300 -253"), 1);
+        assert_eq!(band.maxdev("lufs track 1 -253 -300"), 1);
         let mut client = hub.client().await;
         // Both points change in one message: one wait reads both (a second
         // wait would look for a message that never comes, `wait` takes the
@@ -402,7 +403,7 @@ fn an_armed_strips_meter_follows_its_fader() {
             .await;
         // Armed, with its LUFS device and no meter device: `no meter device`.
         assert_eq!(host.maxdev("maxdev lufs track 1 add rack"), 1);
-        assert_eq!(host.maxdev("lufs track 1 -300 -253"), 1);
+        assert_eq!(host.maxdev("lufs track 1 -253 -300"), 1);
         client.set("band", TRACK, "arm", json!(true)).await;
         let got = item(&mut client, "band", SECS_5, |i| i.problem.is_some()).await;
         assert_eq!(got.problem, Some(LufsProblem::NoMeterDevice));

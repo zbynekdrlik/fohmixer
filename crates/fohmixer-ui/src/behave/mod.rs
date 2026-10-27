@@ -152,12 +152,6 @@ pub fn touch_end(mine: bool, last: Option<f64>) -> TouchEnd {
 /// A colour as 0–255 channels (fractional while it fades).
 pub type Rgb = [f64; 3];
 
-/// The CSS text of a colour, channels rounded.
-pub fn css(color: Rgb) -> String {
-    let [r, g, b] = color.map(|c| c.clamp(0.0, 255.0).round());
-    format!("rgb({r}, {g}, {b})")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,12 +204,5 @@ mod tests {
                 primary: false,
             }
         );
-    }
-
-    #[test]
-    fn css_rounds_and_clamps_the_channels() {
-        assert_eq!(css([255.0, 204.0, 0.0]), "rgb(255, 204, 0)");
-        assert_eq!(css([127.5, 0.4, 300.0]), "rgb(128, 0, 255)");
-        assert_eq!(css([-3.0, 12.6, 99.49]), "rgb(0, 13, 99)");
     }
 }

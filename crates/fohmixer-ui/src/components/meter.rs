@@ -11,12 +11,11 @@
 use leptos::html;
 use leptos::prelude::*;
 
-use crate::behave::css;
 use crate::behave::fader::VolumeLaw;
 use crate::behave::meter::{MeterBar, bar_sources, level_to_pos};
 use crate::behave::peak::Peak;
 use crate::behave::scale::zone_style;
-use crate::behave::status::status_color;
+use crate::behave::status::status_state;
 use crate::dom;
 use crate::raf;
 use crate::store::Slot;
@@ -136,30 +135,22 @@ pub fn TrackMeter(levels: Vec<RwSignal<Slot>>, law: VolumeLaw) -> impl IntoView 
 }
 
 /// The status light: red while the strip is not bound (a binding does not
-/// resolve, or Live's values are not here or only stale ones are, #43),
-/// yellow after a value, fading to green.
+/// resolve, or Live's values are not here or only stale ones are, #43);
+/// while bound and fresh it is not drawn at all (`data-state="bound"`,
+/// `display: none` in the stylesheet, so the readout stays centred). It
+/// never blinks with Live's values (#151, the owner's ruling of 27.10).
 #[component]
-pub fn StatusView(slots: Vec<RwSignal<Slot>>, activity: Vec<RwSignal<Slot>>) -> impl IntoView {
+pub fn StatusView(slots: Vec<RwSignal<Slot>>) -> impl IntoView {
     let root = NodeRef::<html::Div>::new();
     raf::animate(root, move |el| {
-        let mut drawn = (String::new(), None::<bool>);
-        Box::new(move |now: f64, _step: f64| {
+        let mut drawn = None::<bool>;
+        Box::new(move |_now: f64, _step: f64| {
             let bound = slots
                 .iter()
                 .all(|s| s.try_with_untracked(Slot::is_fresh).unwrap_or(false));
-            let last = activity
-                .iter()
-                .filter_map(|s| s.try_with_untracked(Slot::at).flatten())
-                .fold(f64::NEG_INFINITY, f64::max);
-            let color = css(status_color(bound, now - last));
-            if drawn.0 != color {
-                dom::set_style(&el, "background", &color);
-                drawn.0 = color;
-            }
-            if drawn.1 != Some(bound) {
-                let state = if bound { "bound" } else { "unbound" };
-                dom::set_attr(&el, "data-state", state);
-                drawn.1 = Some(bound);
+            if drawn != Some(bound) {
+                dom::set_attr(&el, "data-state", status_state(bound));
+                drawn = Some(bound);
             }
         })
     });

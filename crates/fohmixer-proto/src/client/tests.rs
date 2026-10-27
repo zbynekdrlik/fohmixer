@@ -760,7 +760,7 @@ fn api_bodies_round_trip() {
                 target: "live_set tracks 1".into(),
                 label: "Vox 1".into(),
                 track: Some("Vox 1".into()),
-                state: crate::lufs::LufsState::Fine,
+                state: crate::lufs::LufsState::In,
                 tenths: Some(-253),
                 problem: None,
             }],
@@ -770,7 +770,7 @@ fn api_bodies_round_trip() {
     assert_eq!(
         json["lufs"]["strips"],
         json!([{"instance": "band", "target": "live_set tracks 1", "label": "Vox 1",
-                "track": "Vox 1", "state": "fine", "tenths": -253, "problem": null}])
+                "track": "Vox 1", "state": "in", "tenths": -253, "problem": null}])
     );
     assert_eq!(
         json["autotune"],

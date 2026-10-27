@@ -148,13 +148,12 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
     let color = subs.color.as_ref().map(|s| store.slot(s));
     let meters: Vec<RwSignal<Slot>> = subs.meters.iter().map(|s| store.slot(s)).collect();
     // The status light: every value the detail shows (the pan too; the
-    // colour never gates it), and activity from the volume and the meters.
+    // colour never gates it); it never blinks with them (#151).
     let all: Vec<RwSignal<Slot>> = [volume, pan, mute]
         .into_iter()
         .flatten()
         .chain(meters.iter().copied())
         .collect();
-    let activity: Vec<RwSignal<Slot>> = volume.into_iter().chain(meters.iter().copied()).collect();
     let name = anchor_name(&strip.binding);
     let label = shown_label(strip.label.as_deref(), &name);
     let label_attr = label.clone();
@@ -345,7 +344,7 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
                 <section class="detail-box detail-left" data-testid="detail-left">
                     {mute_view}
                     <div class="detail-readout" data-testid="detail-readout" data-aut=readout_aut>
-                        <StatusView slots=all activity=activity />
+                        <StatusView slots=all />
                         {db}
                     </div>
                     <div class="detail-fz" style=unity>

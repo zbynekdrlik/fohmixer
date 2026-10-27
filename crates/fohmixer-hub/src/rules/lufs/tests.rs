@@ -86,7 +86,7 @@ fn key_of(r: &Reading) -> Key {
 /// A rule whose band strip on track 1 has matched the key of [`on_vox`].
 fn matched(target: Option<i8>) -> Lufs {
     let mut rule = rule(vec![strip("band", 1, "Vox 1", target)]);
-    let r = on_vox(-300, -253);
+    let r = on_vox(-253, -300);
     let acts = rule.reading(&r, 10);
     let ask = confirms(&acts)[0].2;
     rule.answered(&key_of(&r), "band", ask, Answer::Ours, 20);
@@ -118,7 +118,7 @@ fn a_new_key_asks_each_candidate_instance() {
         strip("master", 5, "Vox 1", None),
         strip("band", 4, "Vox 2", Some(-25)),
     ]);
-    let acts = rule.reading(&on_vox(-300, -253), 10);
+    let acts = rule.reading(&on_vox(-253, -300), 10);
     assert_eq!(whats(&acts)[0], "found");
     let asked = confirms(&acts);
     assert_eq!(
@@ -133,7 +133,7 @@ fn a_new_key_asks_each_candidate_instance() {
     );
     assert_eq!(asked[0].2, asked[1].2);
     // A second reading while asking asks nothing again.
-    assert!(confirms(&rule.reading(&on_vox(-300, -253), 20)).is_empty());
+    assert!(confirms(&rule.reading(&on_vox(-253, -300), 20)).is_empty());
     assert_eq!(rule.device_status(20)[0].state, "asking");
 }
 
@@ -143,7 +143,7 @@ fn only_the_instance_that_holds_it_matches() {
         strip("band", 3, "Vox 1", Some(-25)),
         strip("master", 3, "Vox 1", Some(-25)),
     ]);
-    let r = on_vox(-300, -253);
+    let r = on_vox(-253, -300);
     let ask = confirms(&rule.reading(&r, 10))[0].2;
     assert!(
         rule.answered(&key_of(&r), "band", ask, Answer::Ours, 20)
@@ -158,7 +158,7 @@ fn only_the_instance_that_holds_it_matches() {
     assert_eq!(status[0].instance.as_deref(), Some("band"));
     // The next reading reaches the band strip only.
     assert_eq!(
-        sends(&rule.reading(&on_vox(-300, -240), 40)),
+        sends(&rule.reading(&on_vox(-240, -300), 40)),
         vec![item("band", 3, Some(-240))]
     );
     // An answer of an older walk, or of a Live not asked, is void.
@@ -174,7 +174,7 @@ fn both_confirm_is_two_meters_and_nothing_shown() {
         strip("band", 3, "Vox 1", Some(-25)),
         strip("master", 3, "Vox 1", Some(-25)),
     ]);
-    let r = on_vox(-300, -253);
+    let r = on_vox(-253, -300);
     let ask = confirms(&rule.reading(&r, 10))[0].2;
     rule.answered(&key_of(&r), "band", ask, Answer::Ours, 20);
     let acts = rule.answered(&key_of(&r), "master", ask, Answer::Ours, 30);
@@ -192,7 +192,7 @@ fn both_confirm_is_two_meters_and_nothing_shown() {
 #[test]
 fn a_live_with_two_at_the_place_is_two() {
     let mut rule = rule(vec![strip("band", 3, "Vox 1", Some(-25))]);
-    let r = on_vox(-300, -253);
+    let r = on_vox(-253, -300);
     let ask = confirms(&rule.reading(&r, 10))[0].2;
     let acts = rule.answered(&key_of(&r), "band", ask, Answer::Two, 20);
     assert_eq!(sends(&acts)[0].problem, Some(LufsProblem::TwoLufsMeters));
@@ -213,7 +213,7 @@ fn two_matched_keys_on_one_point_are_two_meters() {
 #[test]
 fn none_confirms_asks_again_after_ten_seconds_or_a_track_change() {
     let mut rule = rule(vec![strip("band", 3, "Vox 1", Some(-25))]);
-    let r = on_vox(-300, -253);
+    let r = on_vox(-253, -300);
     let ask = confirms(&rule.reading(&r, 10))[0].2;
     let acts = rule.answered(&key_of(&r), "band", ask, Answer::NotOurs, 20);
     assert_eq!(whats(&acts), vec!["unmatched".to_string()]);
@@ -268,28 +268,34 @@ fn a_key_before_its_lives_set_name_waits_without_a_record() {
     let mut rule = Lufs::new();
     rule.connected("band", 0);
     rule.set_strips(vec![strip("band", 1, "Vox 1", Some(-25))], true, 0);
-    let acts = rule.reading(&on_vox(-300, -253), 10);
+    let acts = rule.reading(&on_vox(-253, -300), 10);
     assert_eq!(whats(&acts), vec!["found"]);
     assert!(confirms(&acts).is_empty());
     rule.named("band", SET, 20);
-    assert_eq!(confirms(&rule.reading(&on_vox(-300, -253), 30)).len(), 1);
+    assert_eq!(confirms(&rule.reading(&on_vox(-253, -300), 30)).len(), 1);
 }
 
 #[test]
-fn an_input_point_sends_v_an_output_point_sends_s() {
+fn an_input_point_sends_s_an_output_point_sends_s_after_its_fader() {
     let mut rule = matched(Some(-25));
     assert_eq!(
-        sends(&rule.reading(&on_vox(-300, -253), 30)),
+        sends(&rule.reading(&on_vox(-253, -300), 30)),
         Vec::<LufsItem>::new(),
         "unchanged: nothing sent"
     );
+    // An input point shows S (`first`), as trueLevel: never V (`second`).
     assert_eq!(
-        sends(&rule.reading(&on_vox(-310, -250), 40)),
+        sends(&rule.reading(&on_vox(-250, -310), 40)),
         vec![item("band", 1, Some(-250))]
+    );
+    assert_eq!(
+        sends(&rule.reading(&on_vox(-250, -200), 45)),
+        Vec::<LufsItem>::new(),
+        "a change of V alone sends nothing"
     );
     // An output point: nothing until its fader is known, then S + fader dB.
     let mut out = matched(None);
-    assert_eq!(sends(&out.reading(&on_vox(-300, -253), 30)), vec![]);
+    assert_eq!(sends(&out.reading(&on_vox(-253, -300), 30)), vec![]);
     let unity = fohmixer_proto::volume::volume_of(0.0);
     let acts = out.fader(
         "band",
@@ -302,7 +308,7 @@ fn an_input_point_sends_v_an_output_point_sends_s() {
         },
         40,
     );
-    assert_eq!(sends(&acts), vec![item("band", 1, Some(-300))]);
+    assert_eq!(sends(&acts), vec![item("band", 1, Some(-253))]);
     let acts = out.fader(
         "band",
         "live_set tracks 1",
@@ -314,7 +320,7 @@ fn an_input_point_sends_v_an_output_point_sends_s() {
         },
         50,
     );
-    assert_eq!(sends(&acts), vec![item("band", 1, Some(-400))]);
+    assert_eq!(sends(&acts), vec![item("band", 1, Some(-353))]);
     let acts = out.fader(
         "band",
         "live_set tracks 1",
@@ -343,31 +349,31 @@ fn the_out_rule_on_its_boundaries() {
         pan: None,
         arm: None,
     };
-    assert_eq!(reading_of(inp, -300, -253, Fader::default()), Some(-253));
-    assert_eq!(reading_of(inp, -300, -253, open(-20.0)), Some(-253));
-    assert_eq!(reading_of(out, -300, -253, Fader::default()), None);
+    assert_eq!(reading_of(inp, -300, Fader::default()), Some(-300));
+    assert_eq!(reading_of(inp, -253, open(-20.0)), Some(-253));
+    assert_eq!(reading_of(out, -300, Fader::default()), None);
     let volume_only = Fader {
         volume: Some(0.85),
         mute: None,
         pan: None,
         arm: None,
     };
-    assert_eq!(reading_of(out, -300, -253, volume_only), None);
+    assert_eq!(reading_of(out, -300, volume_only), None);
     let mute_only = Fader {
         volume: None,
         mute: Some(false),
         pan: None,
         arm: None,
     };
-    assert_eq!(reading_of(out, -300, -253, mute_only), None);
+    assert_eq!(reading_of(out, -300, mute_only), None);
     let muted = Fader {
         volume: None,
         mute: Some(true),
         pan: None,
         arm: None,
     };
-    assert_eq!(reading_of(out, -300, -253, muted), Some(SILENT_TENTHS));
-    assert_eq!(reading_of(out, -300, -253, open(6.0)), Some(-240));
+    assert_eq!(reading_of(out, -300, muted), Some(SILENT_TENTHS));
+    assert_eq!(reading_of(out, -300, open(6.0)), Some(-240));
     assert_eq!(post_fader(-300, 0.0), -300);
     assert_eq!(post_fader(-300, -3.04), -330);
     assert_eq!(post_fader(-300, -3.06), -331);
@@ -385,7 +391,7 @@ fn the_out_rule_on_its_boundaries() {
 #[test]
 fn stale_at_1000_ms_not_at_999() {
     let mut rule = matched(Some(-25));
-    rule.reading(&on_vox(-300, -253), 1000);
+    rule.reading(&on_vox(-253, -300), 1000);
     assert!(rule.tick(1999).is_empty());
     let acts = rule.tick(2000);
     assert_eq!(whats(&acts)[0], "lost");
@@ -403,14 +409,14 @@ fn stale_at_1000_ms_not_at_999() {
 #[test]
 fn the_lost_record_says_how_long_and_its_last_values() {
     let mut rule = matched(Some(-25));
-    rule.reading(&on_vox(-310, -251), 500);
+    rule.reading(&on_vox(-251, -310), 500);
     let acts = rule.tick(1500);
     let Some(Act::Log(line)) = acts.iter().find(|a| matches!(a, Act::Log(_))) else {
         panic!("no record");
     };
     assert_eq!(line.fields["lived_ms"], 490);
-    assert_eq!(line.fields["first"], -310);
-    assert_eq!(line.fields["second"], -251);
+    assert_eq!(line.fields["first"], -251);
+    assert_eq!(line.fields["second"], -310);
     assert_eq!(line.fields["instance"], "band");
     assert!(!line.warn);
 }
@@ -418,7 +424,7 @@ fn the_lost_record_says_how_long_and_its_last_values() {
 #[test]
 fn a_moved_device_is_a_new_key_and_the_old_one_goes_stale() {
     let mut rule = matched(Some(-25));
-    let moved = reading(1, ["LUFS", "LUFS", "Vox 1", SET], -300, -260);
+    let moved = reading(1, ["LUFS", "LUFS", "Vox 1", SET], -260, -300);
     let acts = rule.reading(&moved, 500);
     assert_eq!(whats(&acts)[0], "found");
     let ask = confirms(&acts)[0].2;
@@ -447,7 +453,7 @@ fn no_lufs_meter_after_the_grace() {
     let acts = rule.set_strips(vec![strip("band", 1, "Vox 1", Some(-25))], true, 5000);
     assert_eq!(sends(&acts), vec![item("band", 1, None)]);
     // A device clears it.
-    let r = on_vox(-300, -253);
+    let r = on_vox(-253, -300);
     let ask = confirms(&rule.reading(&r, 6000))[0].2;
     let acts = rule.answered(&key_of(&r), "band", ask, Answer::Ours, 6010);
     assert_eq!(sends(&acts), vec![item("band", 1, Some(-253))]);
@@ -482,11 +488,11 @@ fn offline_drops_the_instances_matches() {
     let mut rule = matched(Some(-25));
     let acts = rule.offline("band", 30);
     assert_eq!(sends(&acts), vec![item("band", 1, None)]);
-    assert!(sends(&rule.reading(&on_vox(-300, -253), 40)).is_empty());
+    assert!(sends(&rule.reading(&on_vox(-253, -300), 40)).is_empty());
     // Back online and named: asked again at the next reading.
     rule.connected("band", 50);
     rule.named("band", SET, 50);
-    assert_eq!(confirms(&rule.reading(&on_vox(-300, -253), 60)).len(), 1);
+    assert_eq!(confirms(&rule.reading(&on_vox(-253, -300), 60)).len(), 1);
 }
 
 #[test]
@@ -495,7 +501,7 @@ fn offline_answers_a_walk_still_out() {
         strip("band", 3, "Vox 1", Some(-25)),
         strip("master", 3, "Vox 1", Some(-25)),
     ]);
-    let r = on_vox(-300, -253);
+    let r = on_vox(-253, -300);
     let ask = confirms(&rule.reading(&r, 10))[0].2;
     rule.answered(&key_of(&r), "band", ask, Answer::Ours, 20);
     let acts = rule.offline("master", 30);
@@ -505,34 +511,43 @@ fn offline_answers_a_walk_still_out() {
 
 #[test]
 fn state_line_once_per_three_seconds() {
-    assert!(state_due(LufsState::None, LufsState::Fine, None));
-    assert!(!state_due(LufsState::Fine, LufsState::Fine, None));
-    assert!(!state_due(LufsState::Fine, LufsState::Warn, Some(2999)));
-    assert!(state_due(LufsState::Fine, LufsState::Warn, Some(3000)));
+    assert!(state_due(LufsState::None, LufsState::In, None));
+    assert!(!state_due(LufsState::In, LufsState::In, None));
+    assert!(!state_due(LufsState::In, LufsState::Off, Some(2999)));
+    assert!(state_due(LufsState::In, LufsState::Off, Some(3000)));
     let mut rule = matched(Some(-25));
-    // Matched at 20: `fine` recorded then.
+    // Matched at 20: `in` recorded then (−25.3 against −25).
     let states = |acts: &[Act]| {
         acts.iter()
             .filter_map(|a| match a {
-                Act::Log(l) if l.fields["what"] == "state" => {
-                    l.fields["state"].as_str().map(str::to_string)
-                }
+                Act::Log(l) if l.fields["what"] == "state" => Some((
+                    l.fields["state"].as_str().map(str::to_string),
+                    l.fields["text"].as_str().map(str::to_string),
+                )),
                 _ => None,
             })
             .collect::<Vec<_>>()
     };
     assert!(
-        states(&rule.reading(&on_vox(-300, -200), 100)).is_empty(),
+        states(&rule.reading(&on_vox(-239, -300), 100)).is_empty(),
         "within 3 s"
     );
     assert_eq!(
-        states(&rule.reading(&on_vox(-300, -200), 3020)),
-        vec!["warn"]
+        states(&rule.reading(&on_vox(-239, -300), 3020)),
+        vec![(Some("off".to_string()), Some("\u{2212}23.9".to_string()))]
     );
-    assert!(states(&rule.reading(&on_vox(-300, -100), 3100)).is_empty());
+    assert!(states(&rule.reading(&on_vox(-240, -300), 3100)).is_empty());
     assert_eq!(
-        states(&rule.reading(&on_vox(-300, -100), 6020)),
-        vec!["far"]
+        states(&rule.reading(&on_vox(-240, -300), 6020)),
+        vec![(Some("in".to_string()), Some("\u{2212}24.0".to_string()))]
+    );
+    assert!(states(&rule.reading(&on_vox(-700, -300), 6100)).is_empty());
+    assert_eq!(
+        states(&rule.reading(&on_vox(-700, -300), 9020)),
+        vec![(
+            Some("silent".to_string()),
+            Some("\u{2212}\u{221e}".to_string())
+        )]
     );
 }
 
@@ -552,14 +567,14 @@ fn a_page_gets_every_point_at_attach_and_the_status_lists_them() {
         vec![item("band", 1, Some(-253)), item("band", 2, None)]
     );
     let strips = rule.strip_status();
-    assert_eq!(strips[0].state, LufsState::Fine);
+    assert_eq!(strips[0].state, LufsState::In);
     assert_eq!(strips[0].tenths, Some(-253));
     assert_eq!(strips[1].state, LufsState::None);
     assert_eq!(strips[1].track.as_deref(), Some("Vox 2"));
     let devices = rule.device_status(130);
     assert_eq!(devices.len(), 1);
     assert_eq!(devices[0].age_ms, 120);
-    assert_eq!((devices[0].first, devices[0].second), (-300, -253));
+    assert_eq!((devices[0].first, devices[0].second), (-253, -300));
     assert_eq!(devices[0].version, "v1.19.0");
     assert_eq!(devices[0].kind, "lufs");
     assert_eq!(rule.strips().len(), 2);
@@ -608,7 +623,12 @@ fn the_records_are_warn_only_for_problems() {
     assert!(!problem_line(&s, None).warn);
     assert!(problem_line(&s, None).fields.get("warn").is_none());
     assert_eq!(unmatched_line(&key, &BTreeSet::new()).fields["warn"], true);
-    assert!(!state_line(&s, LufsState::Far, Some(-100)).warn);
+    assert!(!state_line(&s, LufsState::Off, Some(-100)).warn);
+    assert_eq!(
+        state_line(&s, LufsState::Off, Some(-100)).fields["text"],
+        "\u{2212}10.0"
+    );
+    assert!(state_line(&s, LufsState::None, None).fields["text"].is_null());
     assert_eq!(found_line(&key, "v1").fields["parents"][0], "Vox 1");
 }
 
@@ -618,14 +638,14 @@ fn an_unchanged_reading_is_never_sent_again() {
     // changed, never once per datagram.
     let mut rule = matched(Some(-25));
     for n in 0..20 {
-        let acts = rule.reading(&on_vox(-300 - n, -253), 30 + 200 * n as u64);
+        let acts = rule.reading(&on_vox(-253, -300 - n), 30 + 200 * n as u64);
         assert!(sends(&acts).is_empty(), "datagram {n}: V unchanged");
     }
     assert_eq!(
-        sends(&rule.reading(&on_vox(-300, -252), 5000)),
+        sends(&rule.reading(&on_vox(-252, -300), 5000)),
         vec![item("band", 1, Some(-252))]
     );
-    assert!(sends(&rule.reading(&on_vox(-300, -252), 5200)).is_empty());
+    assert!(sends(&rule.reading(&on_vox(-252, -300), 5200)).is_empty());
     assert!(sends(&rule.tick(5300)).is_empty(), "a tick resends nothing");
 }
 
@@ -816,7 +836,7 @@ fn armed_lufs_strip_without_meter_device_is_a_problem() {
     let acts = rule.fader("band", "live_set tracks 1", open_fader(0.0, 0.0, true), 100);
     assert!(sends(&acts).is_empty());
     // The LUFS device keeps sending (its key fresh at the grace's end).
-    rule.reading(&on_vox(-300, -253), 2900);
+    rule.reading(&on_vox(-253, -300), 2900);
     let acts = rule.tick(3000);
     let mut want = item("band", 1, Some(-253));
     want.problem = Some(LufsProblem::NoMeterDevice);
@@ -841,7 +861,7 @@ fn armed_lufs_strip_without_meter_device_is_a_problem() {
     // An armed output point never has it.
     let mut out = matched(None);
     out.fader("band", "live_set tracks 1", open_fader(0.0, 0.0, true), 100);
-    out.reading(&on_vox(-300, -253), 2900);
+    out.reading(&on_vox(-253, -300), 2900);
     let acts = out.tick(3000);
     assert_eq!(sends(&acts), Vec::<LufsItem>::new());
     assert_eq!(out.items()[0].problem, None);
@@ -916,7 +936,7 @@ fn a_live_that_went_offline_after_answering_ours_is_forgotten() {
         strip("band", 3, "Vox 1", Some(-25)),
         strip("master", 3, "Vox 1", Some(-25)),
     ]);
-    let r = on_vox(-300, -253);
+    let r = on_vox(-253, -300);
     let ask = confirms(&rule.reading(&r, 10))[0].2;
     rule.answered(&key_of(&r), "band", ask, Answer::Ours, 20);
     // Band goes away with its answer in; master then says not ours.
@@ -927,7 +947,7 @@ fn a_live_that_went_offline_after_answering_ours_is_forgotten() {
     assert_eq!(rule.device_status(40)[0].instance, None);
     // A Live's "two" answer is forgotten the same way.
     let mut rule = rule_two_then_offline();
-    let acts = rule.answered(&key_of(&on_vox(-300, -253)), "master", 1, Answer::Ours, 40);
+    let acts = rule.answered(&key_of(&on_vox(-253, -300)), "master", 1, Answer::Ours, 40);
     assert!(whats(&acts).contains(&"matched".to_string()), "{acts:?}");
     assert_eq!(
         rule.device_status(40)[0].instance.as_deref(),
@@ -941,7 +961,7 @@ fn rule_two_then_offline() -> Lufs {
         strip("band", 3, "Vox 1", Some(-25)),
         strip("master", 3, "Vox 1", Some(-25)),
     ]);
-    let r = on_vox(-300, -253);
+    let r = on_vox(-253, -300);
     let ask = confirms(&rule.reading(&r, 10))[0].2;
     assert_eq!(ask, 1);
     rule.answered(&key_of(&r), "band", ask, Answer::Two, 20);
@@ -962,15 +982,15 @@ fn read_names(acts: &[Act]) -> Vec<String> {
 fn a_key_of_a_set_saved_under_another_name_reads_the_names_again() {
     // Both Lives named SET at 0; band's set is saved as "New Set" later.
     let mut rule = rule(vec![strip("band", 1, "Vox 1", Some(-25))]);
-    let r = reading(1, ["Vox 1", "New Set", "-", "-"], -300, -253);
+    let r = reading(1, ["Vox 1", "New Set", "-", "-"], -253, -300);
     // Within 5 s of the names' read: no read again, unmatched.
     let acts = rule.reading(&r, 4999);
     assert!(read_names(&acts).is_empty());
     // A new key after that: every Live's names are read again, once per 5 s.
-    let r2 = reading(2, ["Vox 1", "New Set", "-", "-"], -300, -253);
+    let r2 = reading(2, ["Vox 1", "New Set", "-", "-"], -253, -300);
     let acts = rule.reading(&r2, 5000);
     assert_eq!(read_names(&acts), vec!["band", "master"]);
-    let r3 = reading(3, ["Vox 1", "New Set", "-", "-"], -300, -253);
+    let r3 = reading(3, ["Vox 1", "New Set", "-", "-"], -253, -300);
     assert!(read_names(&rule.reading(&r3, 9999)).is_empty());
     // The read answers the new name: the key is asked and matched.
     rule.named("band", "New Set", 10_100);
@@ -1003,16 +1023,16 @@ fn an_offline_live_forgets_its_own_points_faders_only() {
         arm: None,
     };
     let acts = rule.fader("band", "live_set tracks 1", fader, 30);
-    assert_eq!(sends(&acts), vec![item("band", 1, Some(-300))]);
+    assert_eq!(sends(&acts), vec![item("band", 1, Some(-253))]);
     // Another Live goes: band's point keeps its fader and its reading.
     assert!(sends(&rule.offline("master", 40)).is_empty());
-    assert_eq!(rule.items(), vec![item("band", 1, Some(-300))]);
+    assert_eq!(rule.items(), vec![item("band", 1, Some(-253))]);
     // Band goes: its fader is forgotten, so once matched again the point
     // shows nothing until its fader is heard again.
     rule.offline("band", 50);
     rule.connected("band", 60);
     rule.named("band", SET, 60);
-    let r = on_vox(-300, -253);
+    let r = on_vox(-253, -300);
     let asked = confirms(&rule.reading(&r, 70));
     assert_eq!(asked.len(), 1);
     let acts = rule.answered(&key_of(&r), "band", asked[0].2, Answer::Ours, 80);
@@ -1027,9 +1047,9 @@ fn offline_answers_the_walk_out_whatever_its_number() {
         strip("master", 3, "Vox 1", Some(-25)),
     ]);
     // Another key on the track takes the first walk.
-    let other = reading(9, ["Vox 1", SET, "-", "-"], -300, -253);
+    let other = reading(9, ["Vox 1", SET, "-", "-"], -253, -300);
     assert_eq!(confirms(&rule.reading(&other, 5))[0].2, 1);
-    let r = on_vox(-300, -253);
+    let r = on_vox(-253, -300);
     let ask = confirms(&rule.reading(&r, 10))[0].2;
     assert_eq!(ask, 2);
     rule.answered(&key_of(&r), "band", ask, Answer::Ours, 20);
@@ -1051,7 +1071,7 @@ fn a_two_in_one_live_leaves_the_other_lives_point_alone() {
         strip("band", 3, "Vox 1", Some(-25)),
         strip("master", 3, "Vox 1", Some(-25)),
     ]);
-    let r = on_vox(-300, -253);
+    let r = on_vox(-253, -300);
     let ask = confirms(&rule.reading(&r, 10))[0].2;
     rule.answered(&key_of(&r), "band", ask, Answer::Two, 20);
     let acts = rule.answered(&key_of(&r), "master", ask, Answer::NotOurs, 30);

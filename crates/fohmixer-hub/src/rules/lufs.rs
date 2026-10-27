@@ -18,9 +18,10 @@
 //!   asked again at the key's next reading after [`RECONFIRM_MS`], a
 //!   track-list change of a Live, a Live's set name read, a layout or a
 //!   disconnect.
-//! - **The reading** a matched point shows ([`reading_of`], the main
-//!   session's ruling 4 of 27.10): an input point (`+LUFS:<target>`) its
-//!   `V`, pre-fader, as trueLevel; an output point (`+LUFS`) its `S` plus
+//! - **The reading** a matched point shows ([`reading_of`], the owner's
+//!   ruling of 27.10 evening: like Sonible trueLevel): an input point
+//!   (`+LUFS:<target>`) its `S`, pre-fader, as trueLevel's short-term (the
+//!   device still sends `V`, no longer shown); an output point (`+LUFS`) its `S` plus
 //!   the strip's fader dB ([`post_fader`], exact for a gain: K-weighting is
 //!   linear and short-term has no gate), silence when the track is muted,
 //!   none until the fader is known.
@@ -47,7 +48,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use fohmixer_proto::client::{LufsDeviceStatus, LufsItem, LufsStripStatus};
 use fohmixer_proto::layout::LufsSpec;
 use fohmixer_proto::lufs::wire::{DeviceKind, Reading, track_and_set};
-use fohmixer_proto::lufs::{LufsProblem, LufsState, SILENT_TENTHS, judge};
+use fohmixer_proto::lufs::{LufsProblem, LufsState, SILENT_TENTHS, judge, text};
 use fohmixer_proto::meter;
 use fohmixer_proto::volume::value2db;
 use serde_json::{Value, json};
@@ -142,13 +143,13 @@ pub fn post_fader(tenths: i16, db: f64) -> i16 {
     }
 }
 
-/// The reading a matched point shows (the main session's ruling 4): an
-/// input point its `V` (`second`) unchanged; an output point its `S`
-/// (`first`) after the fader, silence while muted, none until both the
-/// volume and the mute are known.
-pub fn reading_of(spec: LufsSpec, first: i16, second: i16, fader: Fader) -> Option<i16> {
+/// The reading a matched point shows (the owner's ruling of 27.10
+/// evening, trueLevel's short-term): an input point its `S` (`first`)
+/// unchanged; an output point its `S` after the fader, silence while
+/// muted, none until both the volume and the mute are known.
+pub fn reading_of(spec: LufsSpec, first: i16, fader: Fader) -> Option<i16> {
     if spec.target.is_some() {
-        return Some(second);
+        return Some(first);
     }
     match (fader.mute, fader.volume) {
         (Some(true), _) => Some(SILENT_TENTHS),
@@ -339,7 +340,7 @@ pub fn problem_line(strip: &LufsStrip, problem: Option<LufsProblem>) -> Line {
     }
 }
 
-/// A point's state change.
+/// A point's state change, with the text its strip shows (`−25.9`, `−∞`).
 pub fn state_line(strip: &LufsStrip, state: LufsState, tenths: Option<i16>) -> Line {
     Line {
         warn: false,
@@ -350,6 +351,7 @@ pub fn state_line(strip: &LufsStrip, state: LufsState, tenths: Option<i16>) -> L
             "label": strip.label,
             "state": state.as_str(),
             "tenths": tenths,
+            "text": tenths.map(text),
         }),
         text: "a loudness point's state changed".to_string(),
     }
@@ -866,7 +868,7 @@ impl Lufs {
             .copied()
             .unwrap_or_default();
         let tenths = match (lufs_problem, matched.as_slice()) {
-            (None, [device]) => reading_of(strip.spec, device.first, device.second, fader),
+            (None, [device]) => reading_of(strip.spec, device.first, fader),
             _ => None,
         };
         let (meters, meters_two) = self.covering(strip, DeviceKind::Meter);
