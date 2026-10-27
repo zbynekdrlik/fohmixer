@@ -534,7 +534,7 @@
 				"box": {
 					"id": "obj-version",
 					"maxclass": "comment",
-					"text": "v1.18.0",
+					"text": "v1.19.0",
 					"numinlets": 1,
 					"numoutlets": 0,
 					"patching_rect": [
