@@ -39,8 +39,9 @@ NO_PARENT = "-"
 PARENTS = 4
 # The devices' version on the wire, ``v<version.txt>``.
 VERSION = "v1.19.0"
-# Nominal rates: the LUFS device's metro 100, the meter's metro 33.
-RATES = {LUFS: 10.0, METER: 30.0}
+# Nominal rates: the LUFS device's metro 200 (the owner, 27.10), the
+# meter's metro 33.
+RATES = {LUFS: 5.0, METER: 30.0}
 # The rack a device placed with ``rack`` sits in, and its two chains.
 RACK_NAME = "LUFS"
 DRY_CHAIN = "Dry"

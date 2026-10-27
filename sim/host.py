@@ -80,7 +80,7 @@ WebSocket server is bound. Control lines on stdin (never over the WebSocket):
     lufs <track|return|master> <index> <s_tenths> <v_tenths>
     lufs <track|return|master> <index> off
                                 the newest LUFS device there sends ``S`` and
-                                ``V`` (tenths, -700..0) 10 times a second to
+                                ``V`` (tenths, -700..0) 5 times a second to
                                 ``--lufs-port`` on 127.0.0.1, or stops; its
                                 names are read at each send (a rename or a
                                 move changes its key); prints ``LUFS <devices

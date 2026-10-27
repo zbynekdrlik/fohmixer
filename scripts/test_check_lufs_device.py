@@ -105,6 +105,30 @@ class TreeTests(unittest.TestCase):
         self.save(patch, METER)
         self.assertTrue(any("exactly one 'udpsend" in e for e in self.errors()))
 
+    def test_the_send_metro_sets_each_devices_rate(self) -> None:
+        # The owner's ruling of 27.10: the LUFS device sends every 200 ms,
+        # the meter every 33 ms.
+        self.assertEqual([d.send_ms for d in cl.DEVICES], [200, 33])
+        for device, wrong in ((LUFS, "metro 100"), (METER, "metro 200")):
+            patch = self.patcher(device)
+            box = next(b for b in cl.boxes(patch["patcher"]) if b.get("id") == cl.SEND_METRO)
+            box["text"] = wrong
+            self.save(patch, device)
+            self.assertIn(
+                f"{device.maxpat.as_posix()}: obj-send-metro must be 'metro {device.send_ms}',"
+                f" has [{wrong.split()!r}]",
+                self.errors(),
+            )
+            self.restore(device)
+        patch = self.patcher(LUFS)
+        patch["patcher"]["boxes"] = [
+            item for item in patch["patcher"]["boxes"] if item["box"].get("id") != cl.SEND_METRO
+        ]
+        self.save(patch, LUFS)
+        self.assertTrue(
+            any("obj-send-metro must be 'metro 200', has []" in e for e in self.errors())
+        )
+
     def test_the_port_follows_the_wire_module(self) -> None:
         self.edit(cl.WIRE, "DEFAULT_PORT: u16 = 39110;", "DEFAULT_PORT: u16 = 39111;")
         errors = self.errors()

@@ -155,7 +155,7 @@ class SenderTest(unittest.TestCase):
     def test_sends_its_values_at_its_rate(self):
         self.assertTrue(self.devs.send(self.track, maxdev.LUFS, -300, -253))
         self.run_for(1.0)
-        self.assertEqual(len(self.devs.sent_data), 10)
+        self.assertEqual(len(self.devs.sent_data), 5)
         fields = _decode(self.devs.sent_data[0])
         self.assertEqual(fields[0], "/fohmixer/lufs")
         self.assertEqual((fields[3], fields[6], fields[7]), (1, -300, -253))
@@ -188,10 +188,10 @@ class SenderTest(unittest.TestCase):
         self.devs.tick()
         self.clock.now += 0.35
         self.devs.tick()
-        self.assertEqual(len(self.devs.sent_data), 4)
+        self.assertEqual(len(self.devs.sent_data), 2)
         self.clock.now += 5.0
         self.devs.tick()
-        self.assertEqual(len(self.devs.sent_data), 14)
+        self.assertEqual(len(self.devs.sent_data), 7)
 
     def test_a_meter_sends_thirty_per_second(self):
         self.devs.add(self.track, maxdev.METER, rack=True)
@@ -205,7 +205,7 @@ class SenderTest(unittest.TestCase):
 
 
 class RealSocketTest(unittest.TestCase):
-    def test_sends_ten_per_second(self):
+    def test_sends_five_per_second(self):
         receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.addCleanup(receiver.close)
         receiver.bind(("127.0.0.1", 0))
@@ -229,7 +229,7 @@ class RealSocketTest(unittest.TestCase):
                 got.append(receiver.recv(1024))
             except TimeoutError:
                 continue
-        self.assertIn(len(got), range(9, 12))
+        self.assertIn(len(got), range(4, 7))
         self.assertEqual(_decode(got[0])[5], ["LUFS", "LUFS", song.tracks[1].name, song.name])
 
 

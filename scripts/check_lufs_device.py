@@ -13,6 +13,9 @@ for each patch:
   cut the sound and the signal is never doubled);
 - one `udpsend 127.0.0.1 <port>`, the port equal to the hub's default
   (`DEFAULT_PORT` in `crates/fohmixer-proto/src/lufs/wire.rs`);
+- the send rate: the box `obj-send-metro` is `metro <ms>`, 200 for the LUFS
+  device (5 datagrams a second: the owner's ruling of 27.10, the readings
+  are a 3 s window shown as integers) and 33 for the meter (~30 a second);
 - one `pack` whose first argument is the device's OSC address and whose
   version argument is `v<version.txt>`, which the face shows too;
 - the identity: the `live.path` messages for the device and its first four
@@ -45,6 +48,8 @@ IDENTITY = tuple("path this_device" + " canonical_parent" * level for level in r
 # The pack's arguments: address, wire version, id, version, 4 parents, 2 values.
 PACK_ARGS = 10
 PACK_VERSION = 3
+# The metro that bangs the pack (one datagram per bang).
+SEND_METRO = "obj-send-metro"
 
 
 @dataclass(frozen=True)
@@ -56,6 +61,7 @@ class Device:
     maxpat: Path
     address: str
     genexpr: Path | None
+    send_ms: int
 
     @property
     def version_txt(self) -> Path:
@@ -71,6 +77,7 @@ DEVICES = (
         LUFS_FOLDER / "FohMixer LUFS.maxpat",
         "/fohmixer/lufs",
         LUFS_FOLDER / "fohmixer_lufs.genexpr",
+        200,
     ),
     Device(
         "FohMixer Meter",
@@ -78,6 +85,7 @@ DEVICES = (
         METER_FOLDER / "FohMixer Meter.maxpat",
         "/fohmixer/meter",
         None,
+        33,
     ),
 )
 
@@ -148,7 +156,13 @@ def silence_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
 
 
 def patch_errors(
-    where: str, maxpat_text: str, code: str | None, version: str, address: str, port: int
+    where: str,
+    maxpat_text: str,
+    code: str | None,
+    version: str,
+    address: str,
+    port: int,
+    send_ms: int,
 ) -> list[str]:
     """The problems of one device's patch (`code`: its gen~ code, none for no gen~)."""
     errors: list[str] = []
@@ -181,6 +195,9 @@ def patch_errors(
     sends = [words(b) for b in every if words(b)[:1] == ["udpsend"]]
     if sends != [["udpsend", "127.0.0.1", str(port)]]:
         errors.append(f"{where}: needs exactly one 'udpsend 127.0.0.1 {port}', has {sends}")
+    metros = [words(b) for b in every if b.get("id") == SEND_METRO]
+    if metros != [["metro", str(send_ms)]]:
+        errors.append(f"{where}: {SEND_METRO} must be 'metro {send_ms}', has {metros}")
     packs = [words(b) for b in every if words(b)[:1] == ["pack"]]
     if len(packs) != 1 or len(packs[0]) != PACK_ARGS + 1:
         errors.append(f"{where}: needs exactly one pack of {PACK_ARGS} arguments, has {packs}")
@@ -205,7 +222,9 @@ def device_errors(root: Path, device: Device, port: int) -> list[str]:
         code = (root / device.genexpr).read_text(encoding="utf-8")
     version = (root / device.version_txt).read_text(encoding="utf-8").strip()
     text = (root / device.maxpat).read_text(encoding="utf-8")
-    return patch_errors(device.maxpat.as_posix(), text, code, version, device.address, port)
+    return patch_errors(
+        device.maxpat.as_posix(), text, code, version, device.address, port, device.send_ms
+    )
 
 
 def check(root: Path) -> list[str]:

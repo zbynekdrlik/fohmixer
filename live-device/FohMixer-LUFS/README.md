@@ -5,7 +5,8 @@ on the same PC over UDP (spec `docs/superpowers/specs/2026-10-26-lufs-design.md`
 §3.3, §3.4, §4.2, §4.4):
 
 - **`FohMixer LUFS`** (this folder) measures BS.1770-4 loudness on a stereo
-  input and sends, 10×/s:
+  input and sends, 5×/s (every 200 ms: the readings are a 3 s window shown
+  as integers, the owner's ruling of 27.10):
   - `S`, the 3 s short-term loudness, no gate;
   - `V`, the loudness of the voiced 100 ms sub-blocks among the last 30 (a
     sub-block is voiced when its 400 ms momentary loudness is at least

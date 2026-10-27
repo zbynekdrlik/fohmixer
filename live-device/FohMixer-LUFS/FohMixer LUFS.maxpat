@@ -375,7 +375,7 @@
 				"box": {
 					"id": "obj-send-metro",
 					"maxclass": "newobj",
-					"text": "metro 100",
+					"text": "metro 200",
 					"numinlets": 2,
 					"numoutlets": 1,
 					"outlettype": [
