@@ -32,3 +32,6 @@ TARGETS.md
 credentials.json
 *.pem
 *.key
+# The FohMixer LUFS device is built from its .maxpat (live-device/*/build_amxd.py) and never
+# committed: a frozen device can embed file paths (spec §4.2, public-repo hygiene)
+*.amxd
