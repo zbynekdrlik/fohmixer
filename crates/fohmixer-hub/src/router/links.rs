@@ -93,6 +93,7 @@ mod tests {
             reverb: Vec::new(),
             fader_leaders,
             autotune: Vec::new(),
+            lufs: Vec::new(),
         }
     }
 

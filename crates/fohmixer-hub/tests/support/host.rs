@@ -36,6 +36,28 @@ impl Host {
     /// A host of the set `site` (a SimLive site fixture), otherwise as
     /// [`Host::start_with`].
     pub fn start_site(instance: &str, site: &Path, port: u16, meters_hz: f64) -> Self {
+        Self::start_args(instance, site, port, meters_hz, &[])
+    }
+
+    /// A host of `site` whose Max devices send to the hub's LUFS port
+    /// `lufs_port` on 127.0.0.1 (#151, `--lufs-port`).
+    pub fn start_lufs(instance: &str, site: &Path, lufs_port: u16) -> Self {
+        Self::start_args(
+            instance,
+            site,
+            0,
+            0.0,
+            &["--lufs-port".to_string(), lufs_port.to_string()],
+        )
+    }
+
+    fn start_args(
+        instance: &str,
+        site: &Path,
+        port: u16,
+        meters_hz: f64,
+        extra: &[String],
+    ) -> Self {
         let python = std::env::var("FOHMIXER_PYTHON").unwrap_or_else(|_| "python3".to_string());
         let logs = tempfile::tempdir().unwrap();
         let root = repo();
@@ -47,6 +69,7 @@ impl Host {
             .args(["--meters-hz", &meters_hz.to_string()])
             .arg("--log-dir")
             .arg(logs.path())
+            .args(extra)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -213,6 +236,18 @@ impl Host {
             .strip_prefix("SETS ")
             .and_then(|n| n.parse().ok())
             .unwrap_or_else(|| panic!("not a SETS line: {answer}"))
+    }
+
+    /// A Max device line (#151): `maxdev …`, `lufs …`, `level …` or
+    /// `flood …`; the answer's number (-1: a bad line, no such track or
+    /// device).
+    pub fn maxdev(&mut self, line: &str) -> i64 {
+        let answer = self.answer(line);
+        let word = line.split_whitespace().next().unwrap_or("").to_uppercase();
+        answer
+            .strip_prefix(&format!("{word} "))
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("not a {word} line: {answer}"))
     }
 
     /// The Live listeners on `prop` of the object at `path` (-1: none there).

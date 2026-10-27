@@ -763,6 +763,51 @@ impl Layout {
         found.into_values().collect()
     }
 
+    /// The loudness points (#151, spec §4.4): every strip with `lufs`, each
+    /// track once (a strip shows in several views), in document order of
+    /// its first place; its target in canonical form (the key a page holds
+    /// its strip by), its anchor (the hub names its track from it) and its
+    /// label (the strip's own, else its track name's first word).
+    pub fn lufs_points(&self) -> Vec<LufsPoint> {
+        let mut points: Vec<LufsPoint> = Vec::new();
+        for control in self.controls() {
+            let Control::Strip(strip) = control else {
+                continue;
+            };
+            let Some(spec) = strip.lufs else {
+                continue;
+            };
+            let track = Binding {
+                instance: strip.binding.instance.clone(),
+                anchor: strip.binding.anchor.clone(),
+                path: None,
+            };
+            let Ok(target) = track.target() else {
+                continue;
+            };
+            let target = crate::path::canonical_target(&target);
+            if points
+                .iter()
+                .any(|p| p.instance == strip.binding.instance && p.target == target)
+            {
+                continue;
+            }
+            let label = match (&strip.label, &strip.binding.anchor) {
+                (Some(label), _) => label.clone(),
+                (None, Anchor::Track { name } | Anchor::Return { name }) => strip_label(name),
+                (None, _) => target.clone(),
+            };
+            points.push(LufsPoint {
+                instance: strip.binding.instance.clone(),
+                anchor: strip.binding.anchor.clone(),
+                target,
+                spec,
+                label,
+            });
+        }
+        points
+    }
+
     /// The frame's linked faders (#130, D18: Podklady All): each one's link
     /// and label, in document order.
     pub fn linked_faders(&self) -> Vec<(LinkId, String)> {
@@ -817,6 +862,17 @@ pub struct RuleFader {
     pub instance: String,
     pub label: String,
     pub target: String,
+}
+
+/// One loudness point of a served layout (#151): its strip's instance,
+/// anchor and track target (canonical), its spec and its label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LufsPoint {
+    pub instance: String,
+    pub anchor: Anchor,
+    pub target: String,
+    pub spec: LufsSpec,
+    pub label: String,
 }
 
 struct Validator {

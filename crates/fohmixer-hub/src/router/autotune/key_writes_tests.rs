@@ -62,6 +62,7 @@ fn layout(rev: u64, autotune: Vec<AutotuneTarget>) -> RouterMsg {
         reverb: Vec::new(),
         fader_leaders: Vec::new(),
         autotune,
+        lufs: Vec::new(),
     }
 }
 

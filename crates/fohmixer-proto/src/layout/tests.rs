@@ -1316,3 +1316,49 @@ fn lufs_targets_are_minus_40_to_minus_10() {
     assert!(!lufs_target_ok(-41));
     assert!(!lufs_target_ok(-9));
 }
+
+#[test]
+fn the_lufs_points_are_the_strips_with_lufs_each_track_once() {
+    let strip = |anchor: Value, label: Option<&str>, lufs: Option<Value>| {
+        let mut v = json!({"kind": "strip", "binding": {"instance": "band", "anchor": anchor},
+            "strip_kind": "standard"});
+        if let Some(label) = label {
+            v["label"] = json!(label);
+        }
+        if let Some(lufs) = lufs {
+            v["lufs"] = lufs;
+        }
+        v
+    };
+    let layout = parse(json!({"schema": 2, "default_page": "p", "pages": [
+        {"id": "p", "title": "P", "rows": [{"sections": [
+            {"kind": "group", "id": "fx", "controls": [
+                strip(json!({"kind": "track_at", "index": 3}), Some("Vox 1"), Some(json!({"target": -25}))),
+                strip(json!({"kind": "track", "name": "Vocals bus"}), None, Some(json!({}))),
+                strip(json!({"kind": "track_at", "index": 4}), Some("Vox 2"), None)]}]}]},
+        {"id": "view-FX", "title": "FX", "view": true, "rows": [{"sections": [
+            {"kind": "group", "id": "view-fx", "controls": [
+                strip(json!({"kind": "track_at", "index": 3}), Some("Vox 1"), Some(json!({"target": -25})))]}]}]}]}));
+    assert!(layout.validate().is_empty(), "{:?}", layout.validate());
+    assert_eq!(
+        layout.lufs_points(),
+        vec![
+            LufsPoint {
+                instance: "band".into(),
+                anchor: Anchor::TrackAt { index: 3 },
+                target: "live_set tracks 3".into(),
+                spec: LufsSpec { target: Some(-25) },
+                label: "Vox 1".into(),
+            },
+            LufsPoint {
+                instance: "band".into(),
+                anchor: Anchor::Track {
+                    name: "Vocals bus".into()
+                },
+                target: "live_set tracks[name=Vocals bus]".into(),
+                spec: LufsSpec { target: None },
+                label: "Vocals".into(),
+            },
+        ]
+    );
+}

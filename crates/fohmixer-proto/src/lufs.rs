@@ -10,8 +10,9 @@
 //!   the integer it shows and [`caption`] the words over it (§6.2), shared
 //!   by the UI and the hub's log.
 //! - [`wire`] is the devices' datagram and its parser (§4.4).
+//! - [`LufsProblem`] is a loudness point's problem in words (§6.5).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::layout::LufsKind;
 
@@ -25,7 +26,7 @@ pub const FAR_LU: i16 = 6;
 pub const SILENT_TENTHS: i16 = -700;
 
 /// How a strip shows its reading (§6.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LufsState {
     /// An input point within [`FINE_LU`] of its target.
@@ -91,6 +92,32 @@ pub fn caption(kind: LufsKind) -> [&'static str; 2] {
     match kind {
         LufsKind::In => ["LUFS", "IN"],
         LufsKind::Out => ["LUFS", "OUT"],
+    }
+}
+
+/// A loudness point's problem (spec §4.4, §5.2, §6.5), shown with the
+/// strip and in `/api/status`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LufsProblem {
+    /// No matched LUFS device sends for the strip (3 s after its Live
+    /// connected or the layout was served).
+    NoLufsMeter,
+    /// Two devices claim the strip: both Lives hold one at its place, or
+    /// its track holds two.
+    TwoLufsMeters,
+    /// An armed input point without a meter device (§3.4, #151 Task 13).
+    NoMeterDevice,
+}
+
+impl LufsProblem {
+    /// Its words (English, #141).
+    pub fn text(self) -> &'static str {
+        match self {
+            LufsProblem::NoLufsMeter => "no LUFS meter",
+            LufsProblem::TwoLufsMeters => "two LUFS meters",
+            LufsProblem::NoMeterDevice => "no meter device",
+        }
     }
 }
 

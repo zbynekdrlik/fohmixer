@@ -90,6 +90,9 @@ impl TestHub {
         let mut config = Config::defaults(dir);
         config.instances = instances;
         config.layout_poll_ms = 100;
+        // No LUFS listener unless a test asks for one (#151): parallel test
+        // hubs would all bind the default port.
+        config.lufs.port = 0;
         Self::start_config(config).await
     }
 

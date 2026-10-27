@@ -102,3 +102,30 @@ fn the_states_words() {
 fn the_owners_constants() {
     assert_eq!((FINE_LU, FAR_LU, SILENT_TENTHS), (3, 6, -700));
 }
+
+#[test]
+fn the_problems_words_and_wire_names() {
+    for (problem, text, wire) in [
+        (LufsProblem::NoLufsMeter, "no LUFS meter", "no_lufs_meter"),
+        (
+            LufsProblem::TwoLufsMeters,
+            "two LUFS meters",
+            "two_lufs_meters",
+        ),
+        (
+            LufsProblem::NoMeterDevice,
+            "no meter device",
+            "no_meter_device",
+        ),
+    ] {
+        assert_eq!(problem.text(), text);
+        assert_eq!(
+            serde_json::to_value(problem).unwrap(),
+            serde_json::json!(wire)
+        );
+        assert_eq!(
+            serde_json::from_value::<LufsProblem>(serde_json::json!(wire)).unwrap(),
+            problem
+        );
+    }
+}

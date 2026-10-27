@@ -654,6 +654,9 @@ impl LiveStore {
                 since,
             }),
             ServerMsg::Link { .. } => {}
+            // The loudness points' readings (#151): the strip shows them
+            // from PR 2's UI task on.
+            ServerMsg::Lufs { .. } => {}
             // Pro-Q 4's own undo (#71 PR P2a): the answer to the bar's
             // ↶ UNDO (PR P2b).
             ServerMsg::EqUndo { session, n, result } => self.on_eq_undo(session, n, result),

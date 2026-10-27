@@ -23,6 +23,7 @@ use serde_json::Value;
 
 use crate::eq::{Area, EqItem, EqLock, EqState, Part, Touch};
 use crate::layout::{Binding, LinkId};
+use crate::lufs::{LufsProblem, LufsState};
 use crate::path::canonical_target;
 use crate::songmap::{Counts, Key, ProblemKind, SectionsState, Span};
 
@@ -513,6 +514,9 @@ pub enum ServerMsg {
     /// AUTOTUNE (#104, D19): AUTOTUNE AUT, the first target's Live set's
     /// transport and each target's state; at attach and on every change.
     Autotune(AutotuneState),
+    /// The loudness points' readings (#151, spec §5.3): each changed
+    /// strip's latest, paced with the meters (#51).
+    Lufs { items: Vec<LufsItem> },
     /// A message of a newer hub that this page does not know (#90 B3): any
     /// other `type` reads as this, and the page ignores it, so a new
     /// message never breaks an older page.
@@ -1437,6 +1441,88 @@ pub struct HubStatus {
     /// answer.
     #[serde(default)]
     pub songmap: Vec<SongMapStatus>,
+    /// The LUFS devices and points (#151); the defaults in an older hub's
+    /// answer.
+    #[serde(default)]
+    pub lufs: LufsStatus,
+}
+
+/// One loudness point's reading (#151, spec §5.3): the strip by its
+/// instance and binding target (canonical, the key a page holds its strip
+/// by), the reading in tenths (an input point's `V`, pre-fader; an output
+/// point's `S` plus its fader's dB, silence when muted), none when there is
+/// none (no device, stale, offline), and the strip's problem.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LufsItem {
+    pub instance: String,
+    pub target: String,
+    pub tenths: Option<i16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<LufsProblem>,
+}
+
+/// `/api/status` `lufs` (#151, spec §5.3).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LufsStatus {
+    #[serde(default)]
+    pub listener: LufsListenerStatus,
+    #[serde(default)]
+    pub devices: Vec<LufsDeviceStatus>,
+    #[serde(default)]
+    pub strips: Vec<LufsStripStatus>,
+}
+
+/// The UDP listener: its address (none: off or not bound), its bind error,
+/// and the datagrams taken, refused (by reason), dropped by a key's bound
+/// and refused for a full key table.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LufsListenerStatus {
+    #[serde(default)]
+    pub addr: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub taken: u64,
+    #[serde(default)]
+    pub refused: std::collections::BTreeMap<String, u64>,
+    #[serde(default)]
+    pub dropped: u64,
+    #[serde(default)]
+    pub full: u64,
+}
+
+/// One device the hub hears (a key): its kind (`lufs`, `meter`), Max id,
+/// version and parents, where it stands (`asking`, `matched`, `unmatched`,
+/// `two`), the instance it matched, the age of its last datagram and its
+/// last values (tenths).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LufsDeviceStatus {
+    pub kind: String,
+    pub device: i32,
+    pub version: String,
+    pub parents: Vec<String>,
+    pub state: String,
+    #[serde(default)]
+    pub instance: Option<String>,
+    pub age_ms: u64,
+    pub first: i16,
+    pub second: i16,
+}
+
+/// One loudness point: its strip (instance, target, label), the track name
+/// the hub knows it by, how it shows now, its reading and its problem.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LufsStripStatus {
+    pub instance: String,
+    pub target: String,
+    pub label: String,
+    #[serde(default)]
+    pub track: Option<String>,
+    pub state: LufsState,
+    #[serde(default)]
+    pub tenths: Option<i16>,
+    #[serde(default)]
+    pub problem: Option<LufsProblem>,
 }
 
 #[cfg(test)]

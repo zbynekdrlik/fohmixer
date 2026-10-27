@@ -80,6 +80,7 @@ pub mod https;
 pub mod layout;
 pub mod live;
 pub mod login_guard;
+pub mod lufs_udp;
 pub mod outbox;
 pub mod pepper;
 pub mod pin_hash;
@@ -204,6 +205,8 @@ pub struct HubInner {
     pub pictures: Arc<eq::Pictures>,
     /// The Pro-Q 4 screen is on (`[eq] backend` is not `off`).
     pub eq: bool,
+    /// The LUFS devices' listener's counts and state (#151).
+    pub lufs: Arc<lufs_udp::Counters>,
     /// Its window worker, awaited after the stop so its windows are handed
     /// back and its contact ended before the process ends.
     plugwin: Option<plugwin::Plugwin>,
@@ -406,6 +409,11 @@ impl HubInner {
             fader_links: router.fader_links,
             autotune: router.autotune,
             songmap: router.songmap,
+            lufs: fohmixer_proto::client::LufsStatus {
+                listener: self.lufs.status(),
+                devices: router.lufs.devices,
+                strips: router.lufs.strips,
+            },
             clients: router.clients,
             client_reports: self.reports.list(),
             remote: self.remote.snapshot(&self.config, https, now),
@@ -539,6 +547,23 @@ impl Hub {
             router = router.with_ableset(ableset::link::Page::of(cfg, tls));
         }
         tokio::spawn(router.run(router_rx));
+        // The LUFS devices' listener (#151): 127.0.0.1 only; a port taken
+        // is recorded and shown, and the hub runs on without it.
+        let lufs = Arc::new(lufs_udp::Counters::default());
+        if config.lufs.port != 0 {
+            if let Ok((_, task)) = lufs_udp::spawn(
+                config.lufs.port,
+                router_tx.clone(),
+                Arc::clone(&lufs),
+                events.clone(),
+            ) {
+                tasks.push(task);
+            }
+            tasks.push(tokio::spawn(router::lufs_ticks(
+                router_tx.clone(),
+                router::LUFS_TICK,
+            )));
+        }
         tasks.push(tokio::spawn(poll_layout(
             Arc::clone(&layout),
             router_tx.clone(),
@@ -564,6 +589,7 @@ impl Hub {
             companion_task: Mutex::new(companion_task),
             pictures,
             eq,
+            lufs,
             plugwin,
             live,
             router: router_tx,
