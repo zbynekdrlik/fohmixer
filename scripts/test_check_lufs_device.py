@@ -160,7 +160,9 @@ class TableTests(unittest.TestCase):
         text = "// lufs-table begin\n// a comment\n\nB = 1;\nC = 1_000.0;\n// lufs-table end\n"
         found, errors = cl.table(text, cl.GEN_CONST, "x")
         self.assertEqual(found, {"B": 1.0})
-        self.assertEqual(errors, ["x: a line in the table is no constant it can read: C = 1_000.0;"])
+        self.assertEqual(
+            errors, ["x: a line in the table is no constant it can read: C = 1_000.0;"]
+        )
 
     def test_an_empty_table_is_an_error(self) -> None:
         text = "// lufs-table begin\n// lufs-table end\n"
