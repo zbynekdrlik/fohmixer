@@ -214,6 +214,18 @@ impl Inner {
         self.meters.insert(kept.sub.clone(), kept);
     }
 
+    /// A subscription's item that replaces what is held for its key, never
+    /// the louder kept (#151): a meter key's source changing (an armed
+    /// track's meter device starting or ending, `router/lufs.rs`) must not
+    /// let the other source's held number win once.
+    fn replace_value(&mut self, item: ValueItem) {
+        if self.pace == Pace::Full || !is_meter_key(&item.sub) {
+            self.values.insert(item.sub.clone(), item);
+        } else {
+            self.meters.insert(item.sub.clone(), item);
+        }
+    }
+
     /// The page's meter pace from `now` on (#51): full rate puts every held
     /// meter with the values (they go at once); a pace starts its first
     /// period, unless one runs already; a pause holds them.
@@ -389,6 +401,12 @@ impl Outbox {
     /// is held back (#51, [`Outbox::pace_meters`]).
     pub fn value(&self, item: ValueItem) {
         self.put(|inner| inner.put_value(item));
+    }
+
+    /// The item of a subscription whose source changed (#151): it replaces
+    /// a held meter's number instead of the louder one being kept.
+    pub fn replace_value(&self, item: ValueItem) {
+        self.put(|inner| inner.replace_value(item));
     }
 
     /// The loudness points' latest items (#151): each strip's newest kept,
@@ -1490,6 +1508,42 @@ mod tests {
             taken(&outbox, at(t, 1250)),
             vec![values(vec![meter("Kick", Value::Null)])]
         );
+    }
+
+    #[test]
+    fn a_replacing_item_takes_a_held_meters_place_whatever_its_level() {
+        // #151: a meter key's source changing (the armed track's meter
+        // device) never lets the other source's louder number win once.
+        let outbox = Outbox::new();
+        let t = Instant::now();
+        outbox.pace_meters(every(250), t);
+        outbox.value(meter("Kick", json!(0.9)));
+        outbox.replace_value(meter("Kick", json!(0.2)));
+        assert_eq!(
+            taken(&outbox, at(t, 250)),
+            vec![values(vec![meter("Kick", json!(0.2))])]
+        );
+        // A later plain value keeps the louder again.
+        outbox.replace_value(meter("Kick", json!(0.3)));
+        outbox.value(meter("Kick", json!(0.1)));
+        assert_eq!(
+            taken(&outbox, at(t, 500)),
+            vec![values(vec![meter("Kick", json!(0.3))])]
+        );
+        // Awake, and for a key that is no meter's, it goes as any value.
+        outbox.pace_meters(Pace::Full, at(t, 600));
+        let mute = ValueItem::value("band|live_set tracks[name=Kick]|mute|false", json!(1), None);
+        outbox.replace_value(mute.clone());
+        outbox.replace_value(meter("Kick", json!(0.4)));
+        assert_eq!(
+            taken(&outbox, at(t, 600)),
+            vec![values(vec![mute, meter("Kick", json!(0.4))])]
+        );
+        // Paced, a key that is no meter's is not held.
+        outbox.pace_meters(every(250), at(t, 700));
+        let solo = ValueItem::value("band|live_set tracks[name=Kick]|solo|false", json!(1), None);
+        outbox.replace_value(solo.clone());
+        assert_eq!(taken(&outbox, at(t, 700)), vec![values(vec![solo])]);
     }
 
     #[test]

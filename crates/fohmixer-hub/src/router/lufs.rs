@@ -116,6 +116,14 @@ pub(super) fn meter_keys(instance: &str, target: &str, levels: (f64, f64)) -> Ve
         .collect()
 }
 
+/// Whether a meter key's item replaces what a paced page holds for it
+/// (`Outbox::replace_value`) instead of the louder being kept: the levels'
+/// start (`levels` and the key not substituted yet) and their end (no
+/// `levels`); the levels' own changes keep the louder.
+pub(super) fn replaces(levels: bool, substituted: bool) -> bool {
+    !(levels && substituted)
+}
+
 /// One subscription a point's fader needs.
 struct Follow {
     instance: String,
@@ -525,6 +533,10 @@ impl Router {
                 Act::LevelsGone { instance, target } => {
                     self.lufs_levels(&instance, &target, None);
                 }
+                Act::ReadNames { instance } => {
+                    tracing::info!(instance = %instance, "lufs: a device matches no point; the set's names are read again");
+                    self.lufs_read_names(&instance);
+                }
                 Act::Log(line) => {
                     if line.warn {
                         tracing::warn!(record = %line.fields, "lufs: {}", line.text);
@@ -553,6 +565,9 @@ impl Router {
     fn lufs_levels(&mut self, instance: &str, target: &str, levels: Option<(f64, f64)>) {
         let keys = meter_keys(instance, target, levels.unwrap_or((0.0, 0.0)));
         for (key, value) in keys {
+            // A start or an end of the levels replaces what a paced page
+            // holds for the key; the levels' own changes keep the louder.
+            let edge = replaces(levels.is_some(), self.lufs.substituted.contains_key(&key));
             let item = match levels {
                 Some(_) => {
                     self.lufs.substituted.insert(key.clone(), value);
@@ -568,7 +583,11 @@ impl Router {
             };
             for client in self.subs.clients_of(&key) {
                 if let Some(outbox) = self.clients.get(&client) {
-                    outbox.value(item.clone());
+                    if edge {
+                        outbox.replace_value(item.clone());
+                    } else {
+                        outbox.value(item.clone());
+                    }
                 }
             }
         }

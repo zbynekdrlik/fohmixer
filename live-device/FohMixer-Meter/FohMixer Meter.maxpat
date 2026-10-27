@@ -103,24 +103,6 @@
 			},
 			{
 				"box": {
-					"id": "obj-send-metro",
-					"maxclass": "newobj",
-					"text": "metro 33",
-					"numinlets": 2,
-					"numoutlets": 1,
-					"outlettype": [
-						"bang"
-					],
-					"patching_rect": [
-						30.0,
-						420.0,
-						84.0,
-						22.0
-					]
-				}
-			},
-			{
-				"box": {
 					"id": "obj-udpsend",
 					"maxclass": "newobj",
 					"text": "udpsend 127.0.0.1 39110",
@@ -1473,6 +1455,25 @@
 						22.0
 					]
 				}
+			},
+			{
+				"box": {
+					"id": "obj-send-trigger",
+					"maxclass": "newobj",
+					"text": "t b f",
+					"numinlets": 1,
+					"numoutlets": 2,
+					"outlettype": [
+						"bang",
+						"float"
+					],
+					"patching_rect": [
+						30.0,
+						420.0,
+						84.0,
+						22.0
+					]
+				}
 			}
 		],
 		"lines": [
@@ -1497,30 +1498,6 @@
 					"destination": [
 						"obj-plugout",
 						1
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-thisdevice",
-						0
-					],
-					"destination": [
-						"obj-send-metro",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-send-metro",
-						0
-					],
-					"destination": [
-						"obj-pack",
-						0
 					]
 				}
 			},
@@ -1699,8 +1676,8 @@
 						0
 					],
 					"destination": [
-						"obj-pack",
-						9
+						"obj-send-trigger",
+						0
 					]
 				}
 			},
@@ -2553,6 +2530,30 @@
 					"destination": [
 						"obj-pack",
 						7
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-send-trigger",
+						1
+					],
+					"destination": [
+						"obj-pack",
+						9
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-send-trigger",
+						0
+					],
+					"destination": [
+						"obj-pack",
+						0
 					]
 				}
 			}

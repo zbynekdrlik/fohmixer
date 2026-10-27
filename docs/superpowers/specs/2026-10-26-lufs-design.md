@@ -177,7 +177,7 @@ Outcome: option (a) is out; the localhost path (§4.4) is built.
 ### 4.4 The localhost path (the design since 27.10)
 
 - **Transport:** each device sends one UDP datagram per reading to `127.0.0.1:<port>` with Max's `udpsend`. The hub binds its UDP socket on `127.0.0.1` only (never `0.0.0.0`): nothing off the PC reaches it.
-- **Format:** an OSC 1.0 message, because `udpsend` speaks OSC and nothing else *(call: a JSON datagram would need a `js` / `node.script` sender in each device; OSC is what Max sends natively, small and fixed)*. Address `/fohmixer/lufs` (or `/fohmixer/meter`), type tags `,iisssssii`, ONE message per reading carrying everything (the patch's `pack`, banged by its `metro`; the identity cached in it):
+- **Format:** an OSC 1.0 message, because `udpsend` speaks OSC and nothing else *(call: a JSON datagram would need a `js` / `node.script` sender in each device; OSC is what Max sends natively, small and fixed)*. Address `/fohmixer/lufs` (or `/fohmixer/meter`), type tags `,iisssssii`, ONE message per reading carrying everything (the patch's `pack`, banged by a `t b f` from its audio object's own clock, `snapshot~ 200` or `peakamp~ 33`, which outputs only while Live's DSP runs the device, so a device switched off goes stale: no `metro`, the review of PR 2; the identity cached in it):
 
   | # | type | value |
   |---|---|---|

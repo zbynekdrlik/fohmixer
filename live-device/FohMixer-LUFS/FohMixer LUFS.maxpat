@@ -321,7 +321,7 @@
 				"box": {
 					"id": "obj-snap-s",
 					"maxclass": "newobj",
-					"text": "snapshot~ 100",
+					"text": "snapshot~ 200",
 					"numinlets": 2,
 					"numoutlets": 1,
 					"outlettype": [
@@ -339,7 +339,7 @@
 				"box": {
 					"id": "obj-snap-v",
 					"maxclass": "newobj",
-					"text": "snapshot~ 100",
+					"text": "snapshot~ 200",
 					"numinlets": 2,
 					"numoutlets": 1,
 					"outlettype": [
@@ -367,24 +367,6 @@
 						30.0,
 						460.0,
 						412.0,
-						22.0
-					]
-				}
-			},
-			{
-				"box": {
-					"id": "obj-send-metro",
-					"maxclass": "newobj",
-					"text": "metro 200",
-					"numinlets": 2,
-					"numoutlets": 1,
-					"outlettype": [
-						"bang"
-					],
-					"patching_rect": [
-						30.0,
-						420.0,
-						92.0,
 						22.0
 					]
 				}
@@ -1671,6 +1653,25 @@
 						22.0
 					]
 				}
+			},
+			{
+				"box": {
+					"id": "obj-send-trigger",
+					"maxclass": "newobj",
+					"text": "t b f",
+					"numinlets": 1,
+					"numoutlets": 2,
+					"outlettype": [
+						"bang",
+						"float"
+					],
+					"patching_rect": [
+						30.0,
+						420.0,
+						92.0,
+						22.0
+					]
+				}
 			}
 		],
 		"lines": [
@@ -1742,30 +1743,6 @@
 					],
 					"destination": [
 						"obj-snap-v",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-thisdevice",
-						0
-					],
-					"destination": [
-						"obj-send-metro",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-send-metro",
-						0
-					],
-					"destination": [
-						"obj-pack",
 						0
 					]
 				}
@@ -1873,8 +1850,8 @@
 						0
 					],
 					"destination": [
-						"obj-pack",
-						9
+						"obj-send-trigger",
+						0
 					]
 				}
 			},
@@ -2727,6 +2704,30 @@
 					"destination": [
 						"obj-pack",
 						7
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-send-trigger",
+						1
+					],
+					"destination": [
+						"obj-pack",
+						9
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-send-trigger",
+						0
+					],
+					"destination": [
+						"obj-pack",
+						0
 					]
 				}
 			}

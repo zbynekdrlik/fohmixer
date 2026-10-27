@@ -893,3 +893,100 @@ fn offline_and_a_point_gone_give_the_keys_back() {
     ));
     assert!(levels(&rule.tick(200)).is_empty());
 }
+
+// --- the review's findings on PR 2 ---
+
+#[test]
+fn a_point_back_in_the_layout_is_told_its_state_even_when_none() {
+    let mut rule = matched(Some(-25));
+    assert_eq!(rule.items(), vec![item("band", 1, Some(-253))]);
+    // The point leaves the layout; its device goes silent meanwhile.
+    rule.set_strips(Vec::new(), true, 30);
+    assert_eq!(whats(&rule.tick(1100)), vec!["lost"]);
+    // Back: the page still shows -253 unless it is told none.
+    let acts = rule.set_strips(vec![strip("band", 1, "Vox 1", Some(-25))], true, 1200);
+    assert_eq!(sends(&acts), vec![item("band", 1, None)]);
+    // Told once: the next refresh sends nothing.
+    assert!(sends(&rule.tick(1300)).is_empty());
+}
+
+#[test]
+fn a_live_that_went_offline_after_answering_ours_is_forgotten() {
+    let mut rule = rule(vec![
+        strip("band", 3, "Vox 1", Some(-25)),
+        strip("master", 3, "Vox 1", Some(-25)),
+    ]);
+    let r = on_vox(-300, -253);
+    let ask = confirms(&rule.reading(&r, 10))[0].2;
+    rule.answered(&key_of(&r), "band", ask, Answer::Ours, 20);
+    // Band goes away with its answer in; master then says not ours.
+    rule.offline("band", 30);
+    let acts = rule.answered(&key_of(&r), "master", ask, Answer::NotOurs, 40);
+    assert!(!whats(&acts).contains(&"matched".to_string()), "{acts:?}");
+    assert_eq!(rule.device_status(40)[0].state, "unmatched");
+    assert_eq!(rule.device_status(40)[0].instance, None);
+    // A Live's "two" answer is forgotten the same way.
+    let mut rule = rule_two_then_offline();
+    let acts = rule.answered(&key_of(&on_vox(-300, -253)), "master", 1, Answer::Ours, 40);
+    assert!(whats(&acts).contains(&"matched".to_string()), "{acts:?}");
+    assert_eq!(
+        rule.device_status(40)[0].instance.as_deref(),
+        Some("master")
+    );
+}
+
+/// Band answered `Two` for the key of [`on_vox`] (ask 1) and went offline.
+fn rule_two_then_offline() -> Lufs {
+    let mut rule = rule(vec![
+        strip("band", 3, "Vox 1", Some(-25)),
+        strip("master", 3, "Vox 1", Some(-25)),
+    ]);
+    let r = on_vox(-300, -253);
+    let ask = confirms(&rule.reading(&r, 10))[0].2;
+    assert_eq!(ask, 1);
+    rule.answered(&key_of(&r), "band", ask, Answer::Two, 20);
+    rule.offline("band", 30);
+    rule
+}
+
+fn read_names(acts: &[Act]) -> Vec<String> {
+    acts.iter()
+        .filter_map(|a| match a {
+            Act::ReadNames { instance } => Some(instance.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_key_of_a_set_saved_under_another_name_reads_the_names_again() {
+    // Both Lives named SET at 0; band's set is saved as "New Set" later.
+    let mut rule = rule(vec![strip("band", 1, "Vox 1", Some(-25))]);
+    let r = reading(1, ["Vox 1", "New Set", "-", "-"], -300, -253);
+    // Within 5 s of the names' read: no read again, unmatched.
+    let acts = rule.reading(&r, 4999);
+    assert!(read_names(&acts).is_empty());
+    // A new key after that: every Live's names are read again, once per 5 s.
+    let r2 = reading(2, ["Vox 1", "New Set", "-", "-"], -300, -253);
+    let acts = rule.reading(&r2, 5000);
+    assert_eq!(read_names(&acts), vec!["band", "master"]);
+    let r3 = reading(3, ["Vox 1", "New Set", "-", "-"], -300, -253);
+    assert!(read_names(&rule.reading(&r3, 9999)).is_empty());
+    // The read answers the new name: the key is asked and matched.
+    rule.named("band", "New Set", 10_100);
+    let acts = rule.reading(&r2, 10_200);
+    let asked = confirms(&acts);
+    assert_eq!(asked.len(), 1, "{acts:?}");
+    let acts = rule.answered(&key_of(&r2), "band", asked[0].2, Answer::Ours, 10_210);
+    assert_eq!(whats(&acts)[0], "matched");
+    // A matched key reads nothing again.
+    assert!(read_names(&rule.reading(&r2, 20_000)).is_empty());
+}
+
+#[test]
+fn names_are_due_after_five_seconds() {
+    assert_eq!(NAMES_AGAIN_MS, 5000);
+    assert!(names_due(None, 0));
+    assert!(!names_due(Some(1000), 5999));
+    assert!(names_due(Some(1000), 6000));
+}

@@ -51,7 +51,12 @@ Max's `live.path` gives no absolute path (`getpath` echoes the path it was
 given), so the device reads its id and each parent's `name` instead, at load
 and every second, on Max's low-priority thread (`deferlow`). The whole
 message is one `pack` (its slots cold, the identity cached in them), banged
-by a `metro`: the hub gets one datagram per reading.
+by `obj-send-trigger` (`t b f`) each time the last value comes out of its
+audio object's own clock (`snapshot~ 200` for the LUFS device, `peakamp~ 33`
+for the meter): those output only while Live's DSP runs the device, so a
+device switched off (or its chain) sends nothing and the hub sees it go
+stale; no `metro` drives the send (the review of PR 2: one kept sending a
+frozen value). The hub gets one datagram per reading.
 
 The hub binds `127.0.0.1` only. Another port than 39110 (the hub's
 `[lufs] port`) means the devices rebuilt with `--port` (below): a device
@@ -61,9 +66,9 @@ cannot read the hub's config.
 
 | File | What it is |
 |---|---|
-| `FohMixer LUFS.maxpat` | The LUFS device: `sig~ 0.` → `plugout~`; `plugin~` → `gen~` (its code embedded) → `snapshot~ 100` ×2 → `* 10.` → `round` → `clip` → the `pack`'s two values; the identity; `udpsend`. |
+| `FohMixer LUFS.maxpat` | The LUFS device: `sig~ 0.` → `plugout~`; `plugin~` → `gen~` (its code embedded) → `snapshot~ 200` ×2 → `* 10.` → `round` → `clip` → the `pack`'s two values, `V` through `t b f`, which bangs the `pack`; the identity; `udpsend`. |
 | `fohmixer_lufs.genexpr` | The readable copy of the gen~'s code. |
-| `../FohMixer-Meter/FohMixer Meter.maxpat` | The meter device: `sig~ 0.` → `plugout~`; `peakamp~ 33` per channel → `atodb` → tenths → the `pack`; the identity; `udpsend`. |
+| `../FohMixer-Meter/FohMixer Meter.maxpat` | The meter device: `sig~ 0.` → `plugout~`; `peakamp~ 33` per channel → `atodb` → tenths → the `pack`, `R` through `t b f`, which bangs it; the identity; `udpsend`. |
 | `version.txt`, `../FohMixer-Meter/version.txt` | The workspace version (`scripts/check_version.py` keeps both equal to it); each face and each `pack` carry `v<version>`. |
 | `build_amxd.py` | Writes either device's `.amxd` from its patcher. |
 

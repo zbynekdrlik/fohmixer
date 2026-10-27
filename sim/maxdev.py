@@ -39,8 +39,10 @@ NO_PARENT = "-"
 PARENTS = 4
 # The devices' version on the wire, ``v<version.txt>``.
 VERSION = "v1.19.0"
-# Nominal rates: the LUFS device's metro 200 (the owner, 27.10), the
-# meter's metro 33.
+# Nominal rates: the LUFS device's `snapshot~ 200` (the owner, 27.10), the
+# meter's `peakamp~ 33`; the real devices send only while Live's DSP runs
+# them (a device switched off goes silent, its key stale), and SimLive's
+# `lufs`/`level ... off` lines play that.
 RATES = {LUFS: 5.0, METER: 30.0}
 # The rack a device placed with ``rack`` sits in, and its two chains.
 RACK_NAME = "LUFS"

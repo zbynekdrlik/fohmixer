@@ -71,6 +71,16 @@ pub const NO_METER_GRACE_MS: u64 = 3000;
 pub const RECONFIRM_MS: u64 = 10_000;
 /// A point's state change is recorded at most once in this long.
 pub const STATE_LOG_MS: u64 = 3000;
+/// A Live's set and master names are read again at most once in this long
+/// when a key matches no point (a set saved under another name, a renamed
+/// master track: the names are read at the connect only).
+pub const NAMES_AGAIN_MS: u64 = 5000;
+
+/// Whether a Live's names, last read (or asked for) at `last`, are read
+/// again at `now`.
+pub fn names_due(last: Option<u64>, now: u64) -> bool {
+    last.is_none_or(|at| now.saturating_sub(at) >= NAMES_AGAIN_MS)
+}
 
 /// How long a key of `kind` lives without a datagram.
 pub fn stale_ms(kind: DeviceKind) -> u64 {
@@ -369,6 +379,9 @@ pub enum Act {
     },
     /// A point's meter keys go back to Live's own values.
     LevelsGone { instance: String, target: String },
+    /// Read the set's and the master track's names of `instance` again
+    /// (their answer to [`Lufs::named`]).
+    ReadNames { instance: String },
 }
 
 /// Where a key stands.
@@ -419,6 +432,9 @@ struct Device {
 /// What a point last told the pages, and its state log.
 #[derive(Debug, Clone, PartialEq)]
 struct Shown {
+    /// Told to the pages at least once (a point new to the layout, or back
+    /// in it, is told its state once even when that is `none`).
+    told: bool,
     tenths: Option<i16>,
     problem: Option<LufsProblem>,
     logged: LufsState,
@@ -428,6 +444,7 @@ struct Shown {
 impl Default for Shown {
     fn default() -> Self {
         Self {
+            told: false,
             tenths: None,
             problem: None,
             logged: LufsState::None,
@@ -454,6 +471,8 @@ pub struct Lufs {
     shown: BTreeMap<(String, String), Shown>,
     /// The levels each point's meter keys carry now (sent as `Levels`).
     levels: BTreeMap<(String, String), (f64, f64)>,
+    /// When each Live's names were last read or asked for.
+    names_at: BTreeMap<String, u64>,
     asks: u64,
 }
 
@@ -503,6 +522,7 @@ impl Lufs {
         if let Some(online) = self.online.get_mut(instance) {
             online.set = Some(set.to_string());
         }
+        self.names_at.insert(instance.to_string(), now);
         self.ask_again();
         self.refresh(now)
     }
@@ -514,6 +534,14 @@ impl Lufs {
         let mut acts = Vec::new();
         let keys: Vec<Key> = self.devices.keys().cloned().collect();
         for key in keys {
+            // A walk still out forgets what this Live answered: its answer
+            // is of a connection that ended.
+            if let Some(Status::Asking { ours, two, .. }) =
+                self.devices.get_mut(&key).map(|d| &mut d.status)
+            {
+                ours.remove(instance);
+                two.remove(instance);
+            }
             let gone = match &self.devices[&key].status {
                 Status::Matched(i) => i == instance,
                 Status::Two(set) => set.contains(instance),
@@ -653,7 +681,11 @@ impl Lufs {
                 }
                 return Vec::new();
             }
-            return self.unmatched(key, &BTreeSet::new(), now);
+            // No point there: a Live's names may have changed since its
+            // connect (a Save As, a renamed master track).
+            let mut acts = self.names_again(now);
+            acts.extend(self.unmatched(key, &BTreeSet::new(), now));
+            return acts;
         }
         self.asks += 1;
         let ask = self.asks;
@@ -674,6 +706,22 @@ impl Lufs {
                 track,
                 ask,
             })
+            .collect()
+    }
+
+    /// Every online Live whose names are due is asked to read them again.
+    fn names_again(&mut self, now: u64) -> Vec<Act> {
+        let due: Vec<String> = self
+            .online
+            .keys()
+            .filter(|i| names_due(self.names_at.get(*i).copied(), now))
+            .cloned()
+            .collect();
+        for instance in &due {
+            self.names_at.insert(instance.clone(), now);
+        }
+        due.into_iter()
+            .map(|instance| Act::ReadNames { instance })
             .collect()
     }
 
@@ -866,7 +914,7 @@ impl Lufs {
                 .shown
                 .entry((strip.instance.clone(), strip.target.clone()))
                 .or_default();
-            if (shown.tenths, shown.problem) != (tenths, problem) {
+            if !shown.told || (shown.tenths, shown.problem) != (tenths, problem) {
                 acts.push(Act::Send(LufsItem {
                     instance: strip.instance.clone(),
                     target: strip.target.clone(),
@@ -877,6 +925,7 @@ impl Lufs {
             if shown.problem != problem {
                 acts.push(Act::Log(problem_line(strip, problem)));
             }
+            shown.told = true;
             shown.tenths = tenths;
             shown.problem = problem;
             let state = judge(tenths, strip.spec.target);

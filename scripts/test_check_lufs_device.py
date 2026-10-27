@@ -105,29 +105,79 @@ class TreeTests(unittest.TestCase):
         self.save(patch, METER)
         self.assertTrue(any("exactly one 'udpsend" in e for e in self.errors()))
 
-    def test_the_send_metro_sets_each_devices_rate(self) -> None:
+    def test_the_audio_clock_sets_each_devices_rate(self) -> None:
         # The owner's ruling of 27.10: the LUFS device sends every 200 ms,
-        # the meter every 33 ms.
+        # the meter every 33 ms, each on its audio object's own interval.
         self.assertEqual([d.send_ms for d in cl.DEVICES], [200, 33])
-        for device, wrong in ((LUFS, "metro 100"), (METER, "metro 200")):
+        self.assertEqual([d.clock for d in cl.DEVICES], ["snapshot~", "peakamp~"])
+        for device, old, wrong in (
+            (LUFS, '"snapshot~ 200"', "snapshot~ 100"),
+            (METER, '"peakamp~ 33"', "peakamp~ 200"),
+        ):
+            self.edit(device.maxpat, old, f'"{wrong}"')
+            errors = self.errors()
+            self.assertTrue(
+                any(
+                    f"every {device.clock} must be '{device.clock} {device.send_ms}'" in e
+                    for e in errors
+                ),
+                errors,
+            )
+            self.restore(device)
+        self.assertEqual(self.errors(), [])
+
+    def test_no_metro_bangs_the_pack(self) -> None:
+        # The review of PR 2: a metro sent a frozen value with the DSP off.
+        for device in cl.DEVICES:
             patch = self.patcher(device)
-            box = next(b for b in cl.boxes(patch["patcher"]) if b.get("id") == cl.SEND_METRO)
-            box["text"] = wrong
+            patch["patcher"]["boxes"].append(
+                {
+                    "box": {
+                        "id": "obj-send-metro",
+                        "maxclass": "newobj",
+                        "text": "metro 200",
+                        "numinlets": 2,
+                        "numoutlets": 1,
+                    }
+                }
+            )
+            patch["patcher"]["lines"].append(
+                {"patchline": {"source": ["obj-send-metro", 0], "destination": ["obj-pack", 0]}}
+            )
             self.save(patch, device)
-            self.assertIn(
-                f"{device.maxpat.as_posix()}: obj-send-metro must be 'metro {device.send_ms}',"
-                f" has [{wrong.split()!r}]",
-                self.errors(),
+            errors = self.errors()
+            self.assertTrue(
+                any(
+                    "the pack must be banged by obj-send-trigger alone (no metro)" in e
+                    for e in errors
+                ),
+                errors,
+            )
+            self.restore(device)
+
+    def test_the_trigger_is_fed_by_the_last_value_alone(self) -> None:
+        for device in cl.DEVICES:
+            patch = self.patcher(device)
+            for item in patch["patcher"]["lines"]:
+                line = item["patchline"]
+                if line["destination"] == [cl.SEND_TRIGGER, 0]:
+                    line["destination"] = ["obj-pack", 9]
+            self.save(patch, device)
+            errors = self.errors()
+            self.assertTrue(
+                any(
+                    f"obj-send-trigger must be fed by {device.send_from} alone, has []" in e
+                    for e in errors
+                ),
+                errors,
             )
             self.restore(device)
         patch = self.patcher(LUFS)
-        patch["patcher"]["boxes"] = [
-            item for item in patch["patcher"]["boxes"] if item["box"].get("id") != cl.SEND_METRO
-        ]
-        self.save(patch, LUFS)
-        self.assertTrue(
-            any("obj-send-metro must be 'metro 200', has []" in e for e in self.errors())
+        next(b for b in cl.boxes(patch["patcher"]) if b.get("id") == cl.SEND_TRIGGER)["text"] = (
+            "t b i"
         )
+        self.save(patch, LUFS)
+        self.assertTrue(any("obj-send-trigger must be 't b f'" in e for e in self.errors()))
 
     def test_the_port_follows_the_wire_module(self) -> None:
         self.edit(cl.WIRE, "DEFAULT_PORT: u16 = 39110;", "DEFAULT_PORT: u16 = 39111;")

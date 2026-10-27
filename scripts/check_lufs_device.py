@@ -13,9 +13,14 @@ for each patch:
   cut the sound and the signal is never doubled);
 - one `udpsend 127.0.0.1 <port>`, the port equal to the hub's default
   (`DEFAULT_PORT` in `crates/fohmixer-proto/src/lufs/wire.rs`);
-- the send rate: the box `obj-send-metro` is `metro <ms>`, 200 for the LUFS
-  device (5 datagrams a second: the owner's ruling of 27.10, the readings
-  are a 3 s window shown as integers) and 33 for the meter (~30 a second);
+- the send follows the audio (the review of PR 2: a `metro` kept sending a
+  frozen value with the device's DSP off, so its key never went stale):
+  the pack's bang comes only from `obj-send-trigger` (`t b f`), fed only by
+  the last value's chain (`send_from`), whose clock is the audio object's
+  own interval: every `snapshot~` of the LUFS device is `snapshot~ 200` (5
+  datagrams a second: the owner's ruling of 27.10, the readings are a 3 s
+  window shown as integers) and every `peakamp~` of the meter
+  `peakamp~ 33` (~30 a second); they output only while the DSP runs;
 - one `pack` whose first argument is the device's OSC address and whose
   version argument is `v<version.txt>`, which the face shows too;
 - the identity: the `live.path` messages for the device and its first four
@@ -48,8 +53,10 @@ IDENTITY = tuple("path this_device" + " canonical_parent" * level for level in r
 # The pack's arguments: address, wire version, id, version, 4 parents, 2 values.
 PACK_ARGS = 10
 PACK_VERSION = 3
-# The metro that bangs the pack (one datagram per bang).
-SEND_METRO = "obj-send-metro"
+# The trigger that bangs the pack (one datagram per value of the audio
+# side's clock) and hands the last value on first.
+SEND_TRIGGER = "obj-send-trigger"
+SEND_TRIGGER_WORDS = ["t", "b", "f"]
 
 
 @dataclass(frozen=True)
@@ -62,6 +69,8 @@ class Device:
     address: str
     genexpr: Path | None
     send_ms: int
+    clock: str
+    send_from: str
 
     @property
     def version_txt(self) -> Path:
@@ -78,6 +87,8 @@ DEVICES = (
         "/fohmixer/lufs",
         LUFS_FOLDER / "fohmixer_lufs.genexpr",
         200,
+        "snapshot~",
+        "obj-clip-v",
     ),
     Device(
         "FohMixer Meter",
@@ -86,6 +97,8 @@ DEVICES = (
         "/fohmixer/meter",
         None,
         33,
+        "peakamp~",
+        "obj-clip-r",
     ),
 )
 
@@ -163,6 +176,8 @@ def patch_errors(
     address: str,
     port: int,
     send_ms: int,
+    clock: str,
+    send_from: str,
 ) -> list[str]:
     """The problems of one device's patch (`code`: its gen~ code, none for no gen~)."""
     errors: list[str] = []
@@ -195,9 +210,7 @@ def patch_errors(
     sends = [words(b) for b in every if words(b)[:1] == ["udpsend"]]
     if sends != [["udpsend", "127.0.0.1", str(port)]]:
         errors.append(f"{where}: needs exactly one 'udpsend 127.0.0.1 {port}', has {sends}")
-    metros = [words(b) for b in every if b.get("id") == SEND_METRO]
-    if metros != [["metro", str(send_ms)]]:
-        errors.append(f"{where}: {SEND_METRO} must be 'metro {send_ms}', has {metros}")
+    errors += send_errors(where, patcher, every, send_ms, clock, send_from)
     packs = [words(b) for b in every if words(b)[:1] == ["pack"]]
     if len(packs) != 1 or len(packs[0]) != PACK_ARGS + 1:
         errors.append(f"{where}: needs exactly one pack of {PACK_ARGS} arguments, has {packs}")
@@ -216,6 +229,42 @@ def patch_errors(
     return errors
 
 
+def feeds(patcher: dict, box: str, inlet: int) -> list[list]:
+    """The sources (box id, outlet) of the lines into `box`'s `inlet`."""
+    return sorted(
+        list(item.get("patchline", {}).get("source", []))
+        for item in patcher.get("lines", [])
+        if item.get("patchline", {}).get("destination") == [box, inlet]
+    )
+
+
+def send_errors(
+    where: str, patcher: dict, every: list[dict], send_ms: int, clock: str, send_from: str
+) -> list[str]:
+    """The send's clock is the audio side's: the pack banged only by the
+    trigger, the trigger fed only by `send_from`, every `clock` box at
+    `send_ms`."""
+    errors = []
+    clocks = [words(b) for b in every if words(b)[:1] == [clock]]
+    if not clocks or any(c != [clock, str(send_ms)] for c in clocks):
+        errors.append(f"{where}: every {clock} must be '{clock} {send_ms}', has {clocks}")
+    triggers = [words(b) for b in every if b.get("id") == SEND_TRIGGER]
+    if triggers != [SEND_TRIGGER_WORDS]:
+        errors.append(f"{where}: {SEND_TRIGGER} must be 't b f', has {triggers}")
+    packs = [b.get("id") for b in every if words(b)[:1] == ["pack"]]
+    if len(packs) == 1 and feeds(patcher, packs[0], 0) != [[SEND_TRIGGER, 0]]:
+        errors.append(
+            f"{where}: the pack must be banged by {SEND_TRIGGER} alone (no metro), "
+            f"has {feeds(patcher, packs[0], 0)}"
+        )
+    if feeds(patcher, SEND_TRIGGER, 0) != [[send_from, 0]]:
+        errors.append(
+            f"{where}: {SEND_TRIGGER} must be fed by {send_from} alone, "
+            f"has {feeds(patcher, SEND_TRIGGER, 0)}"
+        )
+    return errors
+
+
 def device_errors(root: Path, device: Device, port: int) -> list[str]:
     code = None
     if device.genexpr is not None:
@@ -223,7 +272,15 @@ def device_errors(root: Path, device: Device, port: int) -> list[str]:
     version = (root / device.version_txt).read_text(encoding="utf-8").strip()
     text = (root / device.maxpat).read_text(encoding="utf-8")
     return patch_errors(
-        device.maxpat.as_posix(), text, code, version, device.address, port, device.send_ms
+        device.maxpat.as_posix(),
+        text,
+        code,
+        version,
+        device.address,
+        port,
+        device.send_ms,
+        device.clock,
+        device.send_from,
     )
 
 

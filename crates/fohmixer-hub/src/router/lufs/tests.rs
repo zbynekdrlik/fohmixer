@@ -194,3 +194,11 @@ fn a_points_meter_keys_carry_its_levels() {
             .all(|(k, _)| fohmixer_proto::client::is_meter_key(k))
     );
 }
+
+#[test]
+fn a_meter_keys_source_change_replaces_what_a_paced_page_holds() {
+    assert!(replaces(true, false), "the levels start");
+    assert!(!replaces(true, true), "the levels move on");
+    assert!(replaces(false, true), "the levels end");
+    assert!(replaces(false, false));
+}
