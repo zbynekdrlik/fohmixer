@@ -9,10 +9,13 @@
 //! - [`judge`] says how a reading looks on its strip (§6.1), [`shown`] is
 //!   the integer it shows and [`caption`] the words over it (§6.2), shared
 //!   by the UI and the hub's log.
+//! - [`wire`] is the devices' datagram and its parser (§4.4).
 
 use serde::Serialize;
 
 use crate::layout::LufsKind;
+
+pub mod wire;
 
 /// Within this many LU of the target a reading is fine (the owner's rule).
 pub const FINE_LU: i16 = 3;
