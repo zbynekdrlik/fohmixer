@@ -1,12 +1,14 @@
-//! A strip's loudness reading (#151, spec §6.1, §6.2; mockup v9): which
-//! point a strip shows (`point_key`, the hub's `LufsItem` key), and how it
-//! looks (`look`): the state, the integer and the caption come from the
-//! shared `fohmixer_proto::lufs` decisions, never re-derived here. Silence,
-//! no reading, a problem or a strip without `+LUFS` show nothing at all:
-//! no number, no caption (the row keeps its height in the stylesheet).
+//! A strip's loudness reading (#151, spec §6.1, §6.2; the owner's ruling of
+//! 27.10 evening: like Sonible trueLevel): which point a strip shows
+//! (`point_key`, the hub's `LufsItem` key), and how it looks (`look`): the
+//! state, the one-decimal text and the caption come from the shared
+//! `fohmixer_proto::lufs` decisions, never re-derived here. Silence shows
+//! `−∞` with its caption; no reading, a problem or a strip without `+LUFS`
+//! show nothing at all: no number, no caption (the row keeps its height in
+//! the stylesheet).
 
 use fohmixer_proto::layout::{Binding, LufsKind, LufsSpec, Strip};
-use fohmixer_proto::lufs::{LufsProblem, LufsState, caption, judge, shown};
+use fohmixer_proto::lufs::{LufsProblem, LufsState, caption, judge, text};
 use fohmixer_proto::path::canonical_target;
 
 /// The key the hub sends a strip's reading under (`LufsItem`'s instance
@@ -36,10 +38,11 @@ pub fn kind_name(spec: Option<LufsSpec>) -> Option<&'static str> {
 /// How a strip's reading looks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LufsLook {
-    /// `data-l` (`LufsState::as_str`): the stylesheet's tint.
+    /// `data-l` (`LufsState::as_str`): the stylesheet's colour (`in`
+    /// green, every other state calm).
     pub state: LufsState,
-    /// The number, with a typographic minus (`−25`); none while nothing
-    /// shows.
+    /// The number, one decimal with a typographic minus (`−25.9`, `−∞` in
+    /// silence); none while nothing shows.
     pub text: Option<String>,
     /// The caption's two lines (`LUFS` over `IN` / `OUT`), only while the
     /// number shows.
@@ -60,15 +63,6 @@ impl LufsLook {
     }
 }
 
-/// The integer with a typographic minus (`−25`, `0`, `3`).
-pub fn number_text(n: i16) -> String {
-    if n < 0 {
-        format!("\u{2212}{}", n.unsigned_abs())
-    } else {
-        n.to_string()
-    }
-}
-
 /// How a strip with `spec` shows the reading `tenths` and its `problem`
 /// (the hub's latest `LufsItem`): a strip without `+LUFS` shows nothing
 /// and has no problem; a problem shows nothing but its `!`.
@@ -78,11 +72,10 @@ pub fn look(tenths: Option<i16>, problem: Option<LufsProblem>, spec: Option<Lufs
     };
     let tenths = if problem.is_some() { None } else { tenths };
     let state = judge(tenths, spec.target);
-    let showing = !matches!(state, LufsState::Silent | LufsState::None);
     LufsLook {
         state,
-        text: tenths.filter(|_| showing).map(|t| number_text(shown(t))),
-        caption: showing.then(|| caption(spec.kind())),
+        text: tenths.map(text),
+        caption: tenths.map(|_| caption(spec.kind())),
         problem: problem.map(LufsProblem::text),
     }
 }
@@ -121,23 +114,22 @@ mod tests {
     fn look_of_an_input_point() {
         let at = |tenths: i16| look(Some(tenths), None, IN);
         assert_eq!(
-            at(-250),
+            at(-259),
             LufsLook {
-                state: LufsState::Fine,
-                text: Some("\u{2212}25".into()),
+                state: LufsState::In,
+                text: Some("\u{2212}25.9".into()),
                 caption: Some(["LUFS", "IN"]),
                 problem: None,
             }
         );
-        // The tint is judged on the shown integer (the proto's `judge`).
-        assert_eq!(at(-210).state, LufsState::Warn);
-        assert_eq!(at(-210).text.as_deref(), Some("\u{2212}21"));
-        assert_eq!(at(-300).state, LufsState::Warn);
-        assert_eq!(at(-170).state, LufsState::Far);
-        assert_eq!(at(-330).state, LufsState::Far);
-        assert_eq!(at(-330).text.as_deref(), Some("\u{2212}33"));
-        assert_eq!(at(-215).text.as_deref(), Some("\u{2212}22"));
-        assert_eq!(at(-215).state, LufsState::Fine);
+        // Green within ±1.0 LU of −25, both ends included; calm outside.
+        assert_eq!(at(-240).state, LufsState::In);
+        assert_eq!(at(-260).state, LufsState::In);
+        assert_eq!(at(-239).state, LufsState::Off);
+        assert_eq!(at(-239).text.as_deref(), Some("\u{2212}23.9"));
+        assert_eq!(at(-261).state, LufsState::Off);
+        assert_eq!(at(-330).state, LufsState::Off);
+        assert_eq!(at(-330).caption, Some(["LUFS", "IN"]));
     }
 
     #[test]
@@ -146,30 +138,46 @@ mod tests {
             look(Some(-183), None, OUT),
             LufsLook {
                 state: LufsState::Plain,
-                text: Some("\u{2212}18".into()),
+                text: Some("\u{2212}18.3".into()),
                 caption: Some(["LUFS", "OUT"]),
                 problem: None,
             }
         );
+        // Even inside an input's band an output point stays calm.
+        assert_eq!(look(Some(-250), None, OUT).state, LufsState::Plain);
     }
 
     #[test]
-    fn silent_shows_nothing_and_no_caption() {
-        let nothing = |state| LufsLook {
-            state,
-            text: None,
-            caption: None,
-            problem: None,
-        };
-        assert_eq!(look(Some(-700), None, IN), nothing(LufsState::Silent));
-        assert_eq!(look(Some(-700), None, OUT), nothing(LufsState::Silent));
-        assert_eq!(look(None, None, IN), nothing(LufsState::None));
-        assert_eq!(look(None, None, OUT), nothing(LufsState::None));
-        // Just above silence shows.
+    fn silence_shows_minus_infinity_with_its_caption() {
+        assert_eq!(
+            look(Some(-700), None, IN),
+            LufsLook {
+                state: LufsState::Silent,
+                text: Some("\u{2212}\u{221e}".into()),
+                caption: Some(["LUFS", "IN"]),
+                problem: None,
+            }
+        );
+        assert_eq!(
+            look(Some(-701), None, OUT),
+            LufsLook {
+                state: LufsState::Silent,
+                text: Some("\u{2212}\u{221e}".into()),
+                caption: Some(["LUFS", "OUT"]),
+                problem: None,
+            }
+        );
+        // Just above silence shows its number.
         assert_eq!(
             look(Some(-699), None, OUT).text.as_deref(),
-            Some("\u{2212}70")
+            Some("\u{2212}69.9")
         );
+    }
+
+    #[test]
+    fn no_reading_shows_nothing_and_no_caption() {
+        assert_eq!(look(None, None, IN), LufsLook::nothing());
+        assert_eq!(look(None, None, OUT), LufsLook::nothing());
     }
 
     #[test]
@@ -199,15 +207,6 @@ mod tests {
         };
         assert_eq!(look(Some(-250), None, None), none);
         assert_eq!(look(Some(-250), Some(LufsProblem::NoLufsMeter), None), none);
-    }
-
-    #[test]
-    fn the_text_uses_a_typographic_minus() {
-        assert_eq!(number_text(-25), "\u{2212}25");
-        assert_eq!(number_text(-1), "\u{2212}1");
-        assert_eq!(number_text(0), "0");
-        assert_eq!(number_text(3), "3");
-        assert_eq!(number_text(i16::MIN), "\u{2212}32768");
     }
 
     #[test]

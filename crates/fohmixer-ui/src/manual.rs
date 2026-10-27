@@ -77,5 +77,9 @@ mod tests {
         assert!(main.contains("<code>LUFS IN</code>") && main.contains("<code>LUFS OUT</code>"));
         assert!(main.contains("FohMixer LUFS") && main.contains("FohMixer Meter"));
         assert!(main.contains("<code>no LUFS meter</code>"), "the problem");
+        // The owner's ruling of 27.10 evening: like trueLevel, green within
+        // 1 LU, silence as −∞, no amber or red.
+        assert!(main.contains("<code>−∞</code>") && main.contains("within 1 LU"));
+        assert!(!main.contains("amber") && !main.contains("red text"));
     }
 }

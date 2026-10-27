@@ -97,7 +97,7 @@
 /* A group's name on its side in its run's first strip (variant B of
    docs/mockups/group-captions-v1.html; #151, mockup v8: in the info
    column, calm grey, no group colour): its title, or an untitled group's
-   shared Live set (BAND, MASTER). 40 px under the column's top (44 px on a
+   shared Live set (BAND, MASTER). 40 px under the column's top (64 px on a
    narrow strip), read bottom to top, 11 px thick and 96 px long, so a
    long name ends in an ellipsis and never widens anything. The fader under
    the column takes the touch. */
@@ -120,5 +120,5 @@
 }
 
 :is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .group-side {
-    top: 44px;
+    top: 64px;
 }

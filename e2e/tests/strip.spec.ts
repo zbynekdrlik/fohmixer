@@ -607,11 +607,41 @@ test.describe("A strip", () => {
     for (const t of travels) expect(t.h, `${t.name}`).toBeGreaterThanOrEqual(322 - 0.5);
   });
 
-  test("the status pill is red when unbound and not red when bound", async ({ page }) => {
+  test("the status light is red when unbound and not drawn when bound, never blinking with Live's values", async ({ page }) => {
+    // #151, the owner's ruling of 27.10: no yellow flash on every value; a
+    // bound strip draws no light at all and its readout stays centred.
     await openSurface(page);
-    const bound = strip(page, "Hand2 #").getByTestId("status");
+    const hand2 = strip(page, "Hand2 #");
+    const bound = hand2.getByTestId("status");
     await expect(bound).toHaveAttribute("data-state", "bound");
-    await expect(bound).not.toHaveCSS("background-color", "rgb(255, 0, 0)");
+    await expect(bound).toHaveCSS("display", "none");
+    await expect(bound).toBeHidden();
+    // Live's meter moving: sampled every animation frame for 1 s, the light
+    // never shows and never takes a colour of its own.
+    expect(await hostLine("band", 'meter "Hand2 #" 0.6')).toBe("METER 1");
+    try {
+      const looks = await bound.evaluate(
+        (el) =>
+          new Promise<string[]>((done) => {
+            const seen = new Set<string>();
+            const end = performance.now() + 1000;
+            const frame = () => {
+              const s = getComputedStyle(el);
+              seen.add(`${s.display}|${(el as HTMLElement).style.background}`);
+              if (performance.now() < end) requestAnimationFrame(frame);
+              else done([...seen]);
+            };
+            requestAnimationFrame(frame);
+          }),
+      );
+      expect(looks).toEqual(["none|"]);
+    } finally {
+      await hostLine("band", 'meter "Hand2 #" off');
+    }
+    // The readout's dB centred in its line with no light beside it.
+    const readout = (await hand2.getByTestId("strip-readout").boundingBox())!;
+    const db = (await hand2.getByTestId("db").boundingBox())!;
+    expect(Math.abs(readout.x + readout.width / 2 - (db.x + db.width / 2))).toBeLessThan(0.5);
     // Two tracks are called "Keys 1": ambiguous, never guessed (spec I5).
     const keys = strip(page, "Keys 1");
     await expect(keys.getByTestId("status")).toHaveAttribute("data-state", "unbound");

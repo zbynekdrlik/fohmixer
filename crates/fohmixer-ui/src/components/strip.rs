@@ -60,8 +60,9 @@ pub fn ScaleView(law: VolumeLaw) -> impl IntoView {
 /// A strip's info column (#151, mockups v8 and v9): left of the cap's
 /// widest reach, the zone's height: the LUFS caption (`LUFS` over `IN` or
 /// `OUT`, two 9 px lines) and the reading (`behave::lufs::look`: quiet
-/// text, tinted only out of range; silence, no reading, a problem or a
-/// strip without `+LUFS` show nothing, their rows kept), and on the first
+/// text with one decimal, green only within an input point's ±1 LU band,
+/// `−∞` in silence; no reading, a problem or a strip without `+LUFS` show
+/// nothing, their rows kept), and on the first
 /// strip of a group's run `group_name`, the group's name read bottom to
 /// top, in grey (#127; one colour per strip, the track's own). It takes no
 /// touch: the fader under it gets it.
@@ -302,13 +303,12 @@ pub fn StripView(
     let color = subs.color.as_ref().map(|s| store.slot(s));
     let meters: Vec<RwSignal<Slot>> = subs.meters.iter().map(|s| store.slot(s)).collect();
     // The status light: every value the strip shows (the colour never
-    // gates it), and activity from the volume and the meters.
+    // gates it); it never blinks with them (#151).
     let all: Vec<RwSignal<Slot>> = [volume, mute]
         .into_iter()
         .flatten()
         .chain(meters.iter().copied())
         .collect();
-    let activity: Vec<RwSignal<Slot>> = volume.into_iter().chain(meters.iter().copied()).collect();
     let name = anchor_name(&strip.binding);
     let label = shown_label(strip.label.as_deref(), &name);
     let label_attr = label.clone();
@@ -446,7 +446,7 @@ pub fn StripView(
                 {mute_view}
                 <div class="strip-info">
                     <div class="strip-readout" data-testid="strip-readout" data-aut=readout_aut>
-                        <StatusView slots=all activity=activity />
+                        <StatusView slots=all />
                         {db}
                         {mark_word}
                     </div>

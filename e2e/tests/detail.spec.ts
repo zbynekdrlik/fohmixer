@@ -189,6 +189,8 @@ test.describe("The channel detail", () => {
     }
     await expect(detail.getByTestId("db")).not.toHaveText("");
     await expect(detail.getByTestId("status")).toHaveAttribute("data-state", "bound");
+    // Bound: no light drawn (#151, the owner's ruling of 27.10).
+    await expect(detail.getByTestId("status")).toBeHidden();
     await expect(detail.getByTestId("strip-label")).toHaveText("MUTE");
     await expect(detail.getByTestId("pan-display")).not.toHaveText("");
     await textsFit(detail);

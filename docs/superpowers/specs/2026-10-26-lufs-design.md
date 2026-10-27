@@ -4,10 +4,13 @@ Status: draft for the owner's approval, 2026-10-26. The rules in §2 are the own
 
 **Revised 2026-10-27 (#151, after probe P1 and the owner's rulings of 27.10).** PR 1 (the v8 strip) shipped as v1.17.0. Probe P1 failed option (a): a parameter the device writes itself is an Undo step in Live 12, and "Stored Only" takes the parameters out of the LOM (§4.3). So the localhost path is the design: the devices have no parameters and send their readings to the hub by UDP (§4.4). The owner dropped the Rust reference DSP: the device is checked against Sonible trueLevel on the PA singers (§9, §10). The surface says which loudness a number is, `LUFS IN` or `LUFS OUT` (§3.1, §6.2). `meter_source: lr` is live on the site (§3.4). PR 2's plan: `docs/superpowers/plans/2026-10-27-lufs-pr2.md`.
 
+**Revised 2026-10-27 evening (#151, the owner's ruling after seeing the deployed 1.19.0: "behave like Sonible trueLevel").** Every point, input points too, shows plain short-term `S` (3 s, ungated, what trueLevel shows); `V` is no longer shown anywhere (the device and the wire still send it). Silence shows `−∞` with its caption; only no reading shows nothing. The number has one decimal (`−25.9`). An input point within ±1.0 LU of its target (both ends included) is trueLevel's green (`#2fc79a`, text only), anything else calm grey; no amber, no red; an output point and `−∞` are always calm. The states are `in`, `off`, `plain`, `silent`, `none`. The strip's status light no longer flashes yellow on every value: bound it is not drawn, unbound it is red. §0, §3.3, §6.1, §6.2 and §6.5 below keep the replaced text as history.
+
 ## 0. Zhrnutie pre vlastníka
 
 **Čo uvidíš na iPade**
 
+- **Od 27.10 večer (rozhodnutie vlastníka: ako Sonible trueLevel):** na každom bode krátkodobá hlasitosť short-term `S` s jedným desatinným miestom (`−25.9`); v tichu `−∞` s popisom; zelené číslo (ako zelené pásmo trueLevel) len na mikrofóne do ±1 LU od cieľa, inak pokojné sivé; žiadna jantárová ani červená. Stavové svetielko pred dB z Live už nebliká: na pripojenom páse nie je, červené len keď pás nie je pripojený. *Nižšie pôvodný text (história):*
 - Na každom speváckom mikrofóne v PA ceste: krátkodobú hlasitosť (short-term LUFS) hneď za Trim IN, ako celé číslo, napríklad `−25`.
 - Číslo je tichý text: malé tlmené sivé číslice, bez rámčeka, okraja či žiary. V cieli −25 ±3 LU (−28 až −22) len sivé číslo; za ±3 LU sa tlmene jantárovo zafarbí iba text, za ±6 LU (pod −31 alebo nad −19) tlmene červeno, nikdy nie tvar.
 - Keď spevák nespieva, nie je tam nič (ani pomlčka, ani rámček). Ticho a pauzy nikdy nič nerozsvietia.
@@ -113,7 +116,7 @@ Every 100 ms (EBU Tech 3341's 10 Hz minimum), on the stereo input (L and R, each
    - Stage bleed louder than −40 LUFS after the trim would read as a voice. Whether it does is open question Q1.
 5. **Sent** every 100 ms, whether the values changed or not (the hub takes a device silent for 1 s as gone, §4.4): `Short-term` and `Voice` in tenths of LU, integers −700…0. *History: until P1 they were two device parameters, floats −70.0…0.0 written only when the value rounded to 0.1 changed (§4.3).*
 
-An output point shows `S`, an input point shows `V` *(call)*: the output's number is the standard short-term the owner asked for, silence there between songs reads low (−50) or nothing, which is the truth for the room. Which of the two a strip shows follows its tag's kind (§3.1): `V` for `+LUFS:<target>`, `S` for `+LUFS`.
+**Since the owner's ruling of 27.10 evening every point shows `S`** (trueLevel's short-term; `V` is still made and sent, never shown). *History:* an output point shows `S`, an input point shows `V` *(call)*: the output's number is the standard short-term the owner asked for, silence there between songs reads low (−50) or nothing, which is the truth for the room. Which of the two a strip shows follows its tag's kind (§3.1): `V` for `+LUFS:<target>`, `S` for `+LUFS`.
 
 ### 3.4 The stereo output meter in the fader track (mockup v2)
 
@@ -240,6 +243,18 @@ The AUTOTUNE pattern (a pure rule, thin glue), with a listener instead of a LOM 
 
 ### 6.1 The states (pure, `fohmixer_proto::lufs::judge`, shared by the UI and the hub's log)
 
+**Since the owner's ruling of 27.10 evening:** the text is `fohmixer_proto::lufs::text`, one decimal with a typographic minus (`−25.9`; the reading is in tenths, so it is exact), `−∞` at or under −70. The states, the text's colour only:
+
+| State | Mic (`+LUFS:-25`) | Output (`+LUFS`) |
+|---|---|---|
+| `in` (trueLevel's green, `#2fc79a`) | −26.0…−24.0 (|tenths − 10·target| ≤ `BAND_TENTHS` 10) | — |
+| `off` (calm grey) | any other value > −70 | — |
+| `plain` (calm grey) | — | any value > −70 |
+| `silent` (`−∞`, calm grey, caption shown) | `S` ≤ −70 | `S` ≤ −70 |
+| `none` (nothing shown) | offline, no meter, or no value yet | same |
+
+*History (until 27.10 evening):*
+
 The value shown is the integer `round(v)` (half away from zero). The tint is judged on that same integer, so the number and its tint never disagree *(call)*. The tints colour the TEXT only (§6.2, v5):
 
 | State | Mic (`+LUFS:-25`) | Output (`+LUFS`) |
@@ -259,7 +274,7 @@ v1's two variants (a pill in the readout line, or over the top of today's meter)
 
 **The caption says which loudness it is (the owner, 27.10; §3.1):** `LUFS IN` on an input point (`+LUFS:<target>`, after the trim), `LUFS OUT` on an output point (`+LUFS`). It shows on every strip of 78 px or more while the number shows; a narrow strip shows the number alone, as before. The caption keeps PR 1's look (`--faint`, 700 7.5 px on a 9 px line, 0.08em spacing) on **two lines**, `LUFS` over `IN` / `OUT` *(call: on one line `LUFS OUT` is about 35 px at that size (an estimate; mockup v9 measures it), wider than the column's 29 px on the iPad's 83 px strips; two 9 px lines, the 2 px gap and the 16 px value row end at 36 px, above the group's name at the column's 40 px, so nothing else moves. The owner sees it on mockup v9 before the surface task is built: memory "approve layouts")*. *History: PR 1 drew a one-line `LUFS` caption, hidden.*
 
-**The look (v5, the owner's ruling on v4, #151, 26.10):** v4's filled pill was the most glaring thing on the strip, and a lit box while the singer was silent was rejected outright. The LUFS is quiet text: JetBrains Mono 500 at 10.5 px (9.5 px upright on a narrow strip), dim grey (`#6e6e88` on the strip's `#1a1a28`), no background, no box, no border, no glow, never a shape. In range (`fine`) and on the output (`plain`) it is that dim grey; out of range only the text is tinted, muted: amber (`#a8894a`) for `warn`, red (`#b0585f`) for `far`. `silent` and `none` show nothing at all: no number, no dash, no box, and the caption goes too (the row keeps its height, so nothing moves). The hierarchy rule: the fader cap and the meter bars are the loudest; the strip's name reads well, and a muted strip recedes (§6.4); then Live's dB readout (12 px, 600, `#9be7a8`); the LUFS is clearly quieter than the dB: smaller, lighter and of lower contrast (mockup v5 checks all three on every strip; its contrast is at most 44 % of the dB's). Live's dB stays in the readout line under the name, as today (held: accent, as today); since v4 the line holds the status light and the dB only, no ☰ (§6.3).
+**The look since the owner's ruling of 27.10 evening:** as below, but `−∞` and its caption show in silence, the number has one decimal, its size fits `−25.9` in the column (`strip-w − 38 px − cap-w / 2`, 3 em of the mono face; 8.6 px on the iPad's 83 px strip; 8.5 px upright on a narrow strip, where the group's name then starts at 64 px), and an input point inside its ±1 LU band is green (`#2fc79a`), everything else the dim grey: no amber, no red. The status light before Live's dB is not drawn while the strip is bound (red while unbound), and never blinks with Live's values. *History:* **The look (v5, the owner's ruling on v4, #151, 26.10):** v4's filled pill was the most glaring thing on the strip, and a lit box while the singer was silent was rejected outright. The LUFS is quiet text: JetBrains Mono 500 at 10.5 px (9.5 px upright on a narrow strip), dim grey (`#6e6e88` on the strip's `#1a1a28`), no background, no box, no border, no glow, never a shape. In range (`fine`) and on the output (`plain`) it is that dim grey; out of range only the text is tinted, muted: amber (`#a8894a`) for `warn`, red (`#b0585f`) for `far`. `silent` and `none` show nothing at all: no number, no dash, no box, and the caption goes too (the row keeps its height, so nothing moves). The hierarchy rule: the fader cap and the meter bars are the loudest; the strip's name reads well, and a muted strip recedes (§6.4); then Live's dB readout (12 px, 600, `#9be7a8`); the LUFS is clearly quieter than the dB: smaller, lighter and of lower contrast (mockup v5 checks all three on every strip; its contrast is at most 44 % of the dB's). Live's dB stays in the readout line under the name, as today (held: accent, as today); since v4 the line holds the status light and the dB only, no ☰ (§6.3).
 
 On a narrow strip (under 78 px: the phones) the column is 13–24 px wide: the LUFS stands upright, digit under digit (`writing-mode: vertical-rl; text-orientation: upright`), and the caption leaves. Which layout a strip takes is decided from the strip width the arrangement already computes (`arrange.rs`), never by measuring text (#21). The mockup checks every reading inside its box on all screens and in a sweep of one strip from 64 to 120 px.
 
@@ -297,7 +312,7 @@ Today the strip's name button (it is MUTE, #63) is filled with the Live track's 
 
 - The name button: the strip's name; the red `MUTED` at the right of the marks line under the name while muted (today: `MUTE`), nothing while unmuted; no `RET`, also not in the instance tag (the plan's ruling 5: a return's tag says its instance alone).
 - The detail key: `SEL`; its hint `hold SEL` / `for detail`.
-- On the strip: the number only (`−25`, `−18`), nothing at all when silent or missing (no `—`); on a strip of 78 px or more the small caption over the number while it shows: `LUFS IN` on an input point, `LUFS OUT` on an output point (two lines, §6.2). No unit beside the number. No PEAK and no CLIP text (v3).
+- On the strip (since 27.10 evening): the number with one decimal (`−25.9`, `−18.3`), `−∞` in silence, nothing at all when missing. *History:* the number only (`−25`, `−18`), nothing at all when silent or missing (no `—`); on a strip of 78 px or more the small caption over the number while it shows: `LUFS IN` on an input point, `LUFS OUT` on an output point (two lines, §6.2). No unit beside the number. No PEAK and no CLIP text (v3).
 - In the problem list: `no LUFS meter`, `two LUFS meters`, `bad LUFS tag`, `no meter device` (§3.4).
 - The tag manual (`znacky.html`): `+LUFS:<target>` (an input point, `LUFS IN`) and `+LUFS` (an output point, `LUFS OUT`), with the states table, and the two devices with their places in the chain.
 

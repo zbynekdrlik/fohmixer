@@ -1449,7 +1449,7 @@ pub struct HubStatus {
 
 /// One loudness point's reading (#151, spec §5.3): the strip by its
 /// instance and binding target (canonical, the key a page holds its strip
-/// by), the reading in tenths (an input point's `V`, pre-fader; an output
+/// by), the reading in tenths (an input point's `S`, pre-fader, as trueLevel; an output
 /// point's `S` plus its fader's dB, silence when muted), none when there is
 /// none (no device, stale, offline), and the strip's problem.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
