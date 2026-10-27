@@ -710,7 +710,7 @@ mod tests {
 
     #[tokio::test]
     async fn with_a_token_the_migration_answers_its_rows() {
-        // No frame: nothing planned, nothing renamed (tests/markers.rs runs
+        // No frame: nothing planned, nothing renamed (tests/it/markers.rs runs
         // it against SimLive).
         let dir = tempfile::tempdir().unwrap();
         let hub = crate::test_hub(dir.path());

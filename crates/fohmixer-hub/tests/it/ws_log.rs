@@ -1,20 +1,19 @@
 //! The socket lines end to end (#9): a WebSocket opened on the hub's real
 //! listener leaves `client connected` and `client disconnected` lines that
 //! name its peer, nothing forwarded, the LAN and the page's host. They are
-//! read back from the hub's log through a global subscriber. This is the
-//! only test of this binary, and nextest runs every test in its own
-//! process. The internet path (the forwarded address) and the cleaning and
+//! read back from the hub's log through a global subscriber, set by this
+//! test only (nextest runs every test in its own process; under `cargo test`
+//! the `it` binary's other hubs log to it too, and the lines asserted name
+//! this hub's own address). The internet path (the forwarded address) and the cleaning and
 //! quoting are `ws.rs`'s unit tests.
 //! No Live host.
-
-mod support;
 
 use std::io::Write;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use crate::support::{TestHub, runtime};
 use futures_util::SinkExt;
-use support::{TestHub, runtime};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;

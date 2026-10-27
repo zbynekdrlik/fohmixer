@@ -7,13 +7,11 @@
 //! linked mute's `sets` go to Live in one batch (#127).
 #![cfg(unix)]
 
-mod support;
-
 use std::time::Duration;
 
+use crate::support::{Client, Host, TestHub, runtime, serial};
 use fohmixer_proto::client::{AckItem, ClientMsg, ServerMsg, SetItem, ValueItem, set_key};
 use serde_json::{Value, json};
-use support::{Client, Host, TestHub, runtime, serial};
 
 const VOLUME: &str = "live_set tracks[name=Hand1 #] mixer_device volume";
 /// A volume no client subscribes to.

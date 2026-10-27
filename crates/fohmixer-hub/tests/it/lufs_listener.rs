@@ -3,16 +3,14 @@
 //! flood held to the key's bound, port 0 off, a taken port an error the hub
 //! runs on with. Host-free (no SimLive): it also runs in the `windows` job.
 
-mod support;
-
 use std::net::UdpSocket;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use crate::support::{TestHub, runtime, serial};
 use fohmixer_hub::config::Config;
 use fohmixer_proto::client::HubStatus;
 use fohmixer_proto::lufs::wire::{DeviceKind, MAX_DATAGRAM, Reading, encode};
-use support::{TestHub, runtime, serial};
 
 const SECS_5: Duration = Duration::from_secs(5);
 

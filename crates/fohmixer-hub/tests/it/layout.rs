@@ -3,15 +3,13 @@
 //! and backed up; an invalid one keeps the last good layout served and
 //! `/api/status` says why. No Live host: these run on Windows too.
 
-mod support;
-
 use std::path::Path;
 use std::time::Duration;
 
+use crate::support::{TestHub, runtime, serial};
 use fohmixer_hub::config::InstanceCfg;
 use fohmixer_proto::client::ServerMsg;
 use fohmixer_proto::layout::LayoutResponse;
-use support::{TestHub, runtime, serial};
 
 const SECS_3: Duration = Duration::from_secs(3);
 

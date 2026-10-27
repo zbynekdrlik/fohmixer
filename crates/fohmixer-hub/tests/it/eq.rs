@@ -18,18 +18,16 @@
 //! from before it dropped as stale.
 #![cfg(unix)]
 
-mod support;
-
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use crate::support::throttle::Throttle;
+use crate::support::{Client, Host, Incoming, TestHub, runtime, serial};
 use fohmixer_hub::config::{Config, EqBackend, EqCfg};
 use fohmixer_proto::client::{ClientMsg, ServerMsg};
 use fohmixer_proto::eq::{Area, EqItem, EqLock, EqState, Touch, frame_parts, reason};
 use fohmixer_proto::layout::{Anchor, Binding};
 use serde_json::{Value, json};
-use support::throttle::Throttle;
-use support::{Client, Host, Incoming, TestHub, runtime, serial};
 
 const WAIT: Duration = Duration::from_secs(5);
 const ON_TRACK: &str = "live_set tracks 1 devices 0";

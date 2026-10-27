@@ -11,17 +11,15 @@
 //! Companion (`support/companion.rs`); host-free: it also runs in the
 //! `windows` job.
 
-mod support;
-
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+use crate::support::companion::{FakeCompanion, Got, Script, image, key_state};
+use crate::support::{Client, TestHub, events_in, runtime, serial};
 use fohmixer_hub::config::{CompanionCfg, Config};
 use fohmixer_hub::deck::img_hash;
 use fohmixer_proto::client::{ClientMsg, DeckKey, ServerMsg};
 use serde_json::{Value, json};
-use support::companion::{FakeCompanion, Got, Script, image, key_state};
-use support::{Client, TestHub, events_in, runtime, serial};
 
 const WAIT: Duration = Duration::from_secs(5);
 

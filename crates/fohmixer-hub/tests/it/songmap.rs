@@ -7,13 +7,11 @@
 //! hub writes nothing to Live for it.
 #![cfg(unix)]
 
-mod support;
-
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::support::{Client, Host, TestHub, runtime, serial};
 use serde_json::{Value, json};
-use support::{Client, Host, TestHub, runtime, serial};
 
 const SECS_5: Duration = Duration::from_secs(5);
 const SONGMAP: &str = "/api/songmap?instance=band";

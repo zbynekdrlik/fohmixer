@@ -7,17 +7,15 @@
 //! is taken and kept across a restart (#140 PR 3c lifted 3b's refusal), a
 //! tap is refused, no transport change writes, and a host restart (a set
 //! load) walks the racks again and writes DRY once more. The keys are
-//! `tests/autotune_keys.rs`', the switching `tests/autotune_switch.rs`'.
+//! `tests/it/autotune_keys.rs`', the switching `tests/it/autotune_switch.rs`'.
 #![cfg(unix)]
-
-mod support;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::support::{Client, Host, TestHub, runtime, serial};
 use fohmixer_proto::client::{ClientMsg, HubStatus, ServerMsg, SwitchWhy};
 use serde_json::{Value, json};
-use support::{Client, Host, TestHub, runtime, serial};
 
 const SECS_5: Duration = Duration::from_secs(5);
 

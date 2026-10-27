@@ -6,15 +6,13 @@
 //! log (#104, D18).
 #![cfg(unix)]
 
-mod support;
-
 use std::path::Path;
 use std::time::Duration;
 
+use crate::support::{Client, Host, TestHub, runtime, serial};
 use fohmixer_hub::config::InstanceCfg;
 use fohmixer_proto::client::{ClientMsg, ServerMsg};
 use serde_json::{Value, json};
-use support::{Client, Host, TestHub, runtime, serial};
 
 const SECS_3: Duration = Duration::from_secs(3);
 const STAGE: &str = "live_set tracks[name=Mics Stage #]";

@@ -15,14 +15,12 @@
 //! PR 3c lifted 3b's refusal) and the tap refused (since PR 3b).
 #![cfg(unix)]
 
-mod support;
-
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::support::{Client, Host, TestHub, runtime, serial};
 use fohmixer_proto::client::{ClientMsg, HubStatus, KeyState, KeyTargetStatus, ServerMsg};
 use serde_json::{Value, json};
-use support::{Client, Host, TestHub, runtime, serial};
 
 const SECS_5: Duration = Duration::from_secs(5);
 const SECS_10: Duration = Duration::from_secs(10);

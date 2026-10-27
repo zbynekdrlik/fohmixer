@@ -3,17 +3,15 @@
 //! script only sends when something is wrong.
 #![cfg(unix)]
 
-mod support;
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::support::{Host, runtime, serial};
 use fohmixer_hub::config::InstanceCfg;
 use fohmixer_hub::live::client::{Events, LiveError, LiveEvent, LiveHandle};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use support::{Host, runtime, serial};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 

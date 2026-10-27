@@ -5,14 +5,12 @@
 //! reading holds up nobody and is closed (S3 plan, Task 3).
 #![cfg(unix)]
 
-mod support;
-
 use std::time::{Duration, Instant};
 
+use crate::support::{Client, Host, TestHub, runtime, serial};
 use fohmixer_proto::client::{ClientMsg, ServerMsg, UI_PROTO};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
-use support::{Client, Host, TestHub, runtime, serial};
 use tokio_tungstenite::tungstenite::Message;
 
 const VOLUME: &str = "live_set tracks[name=Hand1 #] mixer_device volume";

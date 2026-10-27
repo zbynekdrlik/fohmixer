@@ -2,28 +2,25 @@
 //! bound address, answers, and returns within its drain bound after the stop;
 //! a taken port is an error, not a hang.
 //!
-//! One test at a time, and never at the same time as
-//! `tests/graceful_stop.rs` (`SERIAL` here; `cargo test` runs one test binary
-//! at a time; the `hub-ports` test group under nextest): the kernel readily
-//! hands a just-freed port to the next bind to port 0, so another test's
-//! listener could take this one's port and answer the "refused" check.
+//! One test at a time, and never at the same time as `graceful_stop.rs`
+//! (`support::ports` under `cargo test`; the `hub-ports` test group under
+//! nextest): the kernel readily hands a just-freed port to the next bind to
+//! port 0, so another test's listener could take this one's port and answer
+//! the "refused" check.
 
 use std::future::Future;
 use std::net::{SocketAddr, TcpListener};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::MutexGuard;
 use std::time::{Duration, Instant};
 
 use fohmixer_hub::config::Config;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::oneshot;
 
-static SERIAL: Mutex<()> = Mutex::new(());
-
-/// This test's turn; a panicked earlier test does not block the rest.
+/// This test's turn (shared with `graceful_stop.rs`); a panicked earlier
+/// test does not block the rest.
 fn serial() -> MutexGuard<'static, ()> {
-    SERIAL
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    crate::support::ports()
 }
 
 /// A config on `dir` without Live instances (nothing to connect to here).
@@ -33,7 +30,7 @@ fn config(dir: &std::path::Path) -> Config {
     config
 }
 
-/// `f` on a fresh current-thread runtime (the `SERIAL` guard stays outside
+/// `f` on a fresh current-thread runtime (the `serial` guard stays outside
 /// the async code).
 fn block_on<F: Future>(f: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
