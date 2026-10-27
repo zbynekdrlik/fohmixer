@@ -29,6 +29,7 @@ use crate::behave::db_text::db_text;
 use crate::behave::fader::{UNITY, VolumeLaw};
 use crate::behave::hold::{HINT_MS, HOLD_MS, Hold, Lift};
 use crate::behave::label::{mark_look, shown_label};
+use crate::behave::lufs::{LufsLook, kind_name, look as lufs_look_of, point_key};
 use crate::behave::reverb::held_low;
 use crate::behave::scale::{tick_label, tick_pos, ticks};
 use crate::binding::{detail_keys, strip_subs};
@@ -56,14 +57,20 @@ pub fn ScaleView(law: VolumeLaw) -> impl IntoView {
     view! { <div class="scale" data-testid="scale" aria-hidden="true">{labels}</div> }
 }
 
-/// A strip's info column (#151, mockup v8): left of the cap's widest
-/// reach, the zone's height: the LUFS caption and value (empty and hidden
-/// until the LUFS source, their rows kept), and on the first strip of a
-/// group's run `group_name`, the group's name read bottom to top, in grey
-/// (#127; one colour per strip, the track's own). It takes no touch: the
-/// fader under it gets it.
+/// A strip's info column (#151, mockups v8 and v9): left of the cap's
+/// widest reach, the zone's height: the LUFS caption (`LUFS` over `IN` or
+/// `OUT`, two 9 px lines) and the reading (`behave::lufs::look`: quiet
+/// text, tinted only out of range; silence, no reading, a problem or a
+/// strip without `+LUFS` show nothing, their rows kept), and on the first
+/// strip of a group's run `group_name`, the group's name read bottom to
+/// top, in grey (#127; one colour per strip, the track's own). It takes no
+/// touch: the fader under it gets it.
 #[component]
-fn InfoColumn(group_name: Signal<Option<GroupLabel>>) -> impl IntoView {
+fn InfoColumn(
+    group_name: Signal<Option<GroupLabel>>,
+    #[prop(into)] lufs: Signal<LufsLook>,
+    kind: Option<&'static str>,
+) -> impl IntoView {
     let side = move || {
         group_name
             .try_get()
@@ -76,10 +83,32 @@ fn InfoColumn(group_name: Signal<Option<GroupLabel>>) -> impl IntoView {
                 }
             })
     };
+    let state = move || lufs.try_with(|l| l.state.as_str()).unwrap_or("none");
+    let text = move || {
+        lufs.try_with(|l| l.text.clone())
+            .flatten()
+            .unwrap_or_default()
+    };
+    let line = move |i: usize| {
+        move || {
+            lufs.try_with(|l| l.caption.map(|c| c[i]))
+                .flatten()
+                .unwrap_or_default()
+        }
+    };
+    let captioned = move || {
+        lufs.try_with(|l| l.caption.is_some())
+            .unwrap_or(false)
+            .to_string()
+    };
+    let cap_kind = kind;
     view! {
         <div class="strip-col" data-testid="strip-col" aria-hidden="true">
-            <div class="lufs-cap">"LUFS"</div>
-            <div class="lufs" data-testid="lufs" data-l="none"></div>
+            <div class="lufs-cap" data-testid="lufs-cap" data-kind=cap_kind data-shown=captioned>
+                <span>{line(0)}</span>
+                <span>{line(1)}</span>
+            </div>
+            <div class="lufs" data-testid="lufs" data-kind=kind data-l=state>{text}</div>
             {side}
         </div>
     }
@@ -340,6 +369,25 @@ pub fn StripView(
     let corner: Option<Corner> = Some(Corner {
         flag: mark == Some("problem"),
     });
+    // The loudness reading (#151): the hub's point for this strip's track,
+    // read only on a `+LUFS` strip; a problem is the marks line's `!`.
+    let lufs_spec = strip.lufs;
+    let lufs_kind = kind_name(lufs_spec);
+    let lufs_key = StoredValue::new(point_key(&strip));
+    let lufs_look = Memo::new(move |_| {
+        let point = lufs_key
+            .try_with_value(|key| {
+                key.as_ref().and_then(|(instance, target)| {
+                    store.lufs.try_with(|l| l.point(instance, target))
+                })
+            })
+            .flatten()
+            .unwrap_or_default();
+        lufs_look_of(point.tenths, point.problem, lufs_spec)
+    });
+    let lufs_flag =
+        Signal::derive(move || lufs_look.try_with(|l| l.problem.is_some()).unwrap_or(false));
+    let lufs_problem = move || lufs_look.try_with(|l| l.problem).flatten();
     let mute_view = mute.zip(subs.mute.clone()).map(|(slot, spec)| {
         view! {
             <MuteView
@@ -351,6 +399,7 @@ pub fn StripView(
                 partners=partners
                 corner=corner
                 flink=flink
+                lufs_flag=lufs_flag
             />
         }
     });
@@ -390,6 +439,8 @@ pub fn StripView(
             data-kind=kind
             data-mark=mark
             data-flink=flink_attr
+            data-lufs=lufs_kind
+            data-lufs-problem=lufs_problem
         >
             <div class="strip-head">
                 {mute_view}
@@ -403,7 +454,7 @@ pub fn StripView(
             </div>
             {tag}
             <div class="strip-zone" style=unity>
-                <InfoColumn group_name=group_name />
+                <InfoColumn group_name=group_name lufs=lufs_look kind=lufs_kind />
                 <ScaleView law=law />
                 {fader}
                 <DetailKey strip=key_strip />

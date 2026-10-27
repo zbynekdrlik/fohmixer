@@ -46,6 +46,7 @@ mod tests {
             reverb: false,
             fader_link: None,
             fader_follows: Vec::new(),
+            lufs: None,
         }))
     }
 

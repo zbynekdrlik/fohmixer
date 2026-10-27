@@ -156,7 +156,7 @@ async function sweep(list: Case[]): Promise<Result> {
       `<span class="db" data-testid="db">−69.9</span>${word ? `<span class="strip-mark" data-testid="strip-mark">${word}</span>` : ""}</div></div>` +
       `</div>` +
       `<div class="strip-zone" style="--u:0.85;">` +
-      `<div class="strip-col" data-testid="strip-col" aria-hidden="true"><div class="lufs-cap">LUFS</div><div class="lufs" data-testid="lufs" data-l="none"></div>` +
+      `<div class="strip-col" data-testid="strip-col" aria-hidden="true"><div class="lufs-cap" data-testid="lufs-cap" data-shown="false"><span></span><span></span></div><div class="lufs" data-testid="lufs" data-l="none"></div>` +
       `${c.group ? `<span class="group-side" data-testid="group-side">${c.group}</span>` : ""}</div>` +
       `<div class="scale" data-testid="scale" aria-hidden="true">${scale}</div>` +
       `<div class="fader" data-testid="fader" style="--p:0;"><div class="fader-track" data-testid="meter">${bar}${bar}</div>` +

@@ -2,6 +2,8 @@
 
 Status: draft for the owner's approval, 2026-10-26. The rules in §2 are the owner's, recorded on #151 on 2026-10-26 (brainstorm answers and two DECIDED comments). The main session's calls are marked *(call)*. Nothing is built before the owner approves this note and mockup `docs/mockups/lufs-v8.html`. Mockup v8 is v7 with the strip's head redrawn on the owner's ruling (#151, 26.10): the name button is the strip's top edge, the name first and one line of marks under it, and a quieter red `MUTED` (§6.4). Mockup v7 is v6 with the owner's ruling on it (#151, 26.10): the muted strip recedes and its name button carries today's small red text mark, its word `MUTED`; no RET mark on any strip (§6.4). Mockup v6 is v5 with the owner's ruling on its muted look (#151, 26.10): a muted strip recedes as today's surface does, never lights up, and one colour per strip, the Live track's own (§6.4). Mockup v5 is v4 with the owner's ruling on it (#151, 26.10): the SEL key approved (variant B dropped), and the LUFS as quiet text, never a shape, nothing while the singer is silent (§6.2); and the name button calm, loud only while muted (§6.4). Mockup v4 is v3 (the owner: "better", #151, 26.10) with the channel detail's ☰ moved out of the readout line under MUTE to a key at the strip's bottom left, in two pictogram candidates (§6.3). Mockup v3 is v2 (`lufs-v2.html`) without the PEAK number and without any clip light or clip state, on the owner's feedback to v2 (#151, 26.10): Live mixes in 32-bit float, so a track cannot clip inside Live. Mockup v1 (`lufs-v1.html`, two variants of a pill beside today's meter) was rejected by the owner on 2026-10-26 (#151, "OWNER FEEDBACK on mockup v1"): the strip is redrawn the Waves LV1 way, a stereo meter inside the fader's track and the scale on its right (§6.2, §6.3).
 
+**Revised 2026-10-27 (#151, after probe P1 and the owner's rulings of 27.10).** PR 1 (the v8 strip) shipped as v1.17.0. Probe P1 failed option (a): a parameter the device writes itself is an Undo step in Live 12, and "Stored Only" takes the parameters out of the LOM (§4.3). So the localhost path is the design: the devices have no parameters and send their readings to the hub by UDP (§4.4). The owner dropped the Rust reference DSP: the device is checked against Sonible trueLevel on the PA singers (§9, §10). The surface says which loudness a number is, `LUFS IN` or `LUFS OUT` (§3.1, §6.2). `meter_source: lr` is live on the site (§3.4). PR 2's plan: `docs/superpowers/plans/2026-10-27-lufs-pr2.md`.
+
 ## 0. Zhrnutie pre vlastníka
 
 **Čo uvidíš na iPade**
@@ -9,11 +11,12 @@ Status: draft for the owner's approval, 2026-10-26. The rules in §2 are the own
 - Na každom speváckom mikrofóne v PA ceste: krátkodobú hlasitosť (short-term LUFS) hneď za Trim IN, ako celé číslo, napríklad `−25`.
 - Číslo je tichý text: malé tlmené sivé číslice, bez rámčeka, okraja či žiary. V cieli −25 ±3 LU (−28 až −22) len sivé číslo; za ±3 LU sa tlmene jantárovo zafarbí iba text, za ±6 LU (pod −31 alebo nad −19) tlmene červeno, nikdy nie tvar.
 - Keď spevák nespieva, nie je tam nič (ani pomlčka, ani rámček). Ticho a pauzy nikdy nič nerozsvietia.
+- Nad číslom drobný tlmený popis, ktoré číslo to je: `LUFS IN` (za Trim IN) alebo `LUFS OUT` (výstup), v dvoch riadkoch (`LUFS` a pod ním `IN` / `OUT`). Na úzkom páse (telefón) len číslo.
 - Tlačidlo s menom je horný okraj pása cez celú šírku (37 px): najprv meno hore, pod ním jeden riadok drobných značiek (!, reťaz spojeného MUTE s počtom, spojenie fadrov, červené MUTED). Miesto sa vzalo z horného okraja pása a riadku dB, nie z fadra.
 - Meno pásu (tlačidlo MUTE) je pokojné: svetlé veľké meno na tmavom podklade, farba stopy len ako 3 px pásik vľavo; stlmený pás ustúpi do pozadia ako dnes (celý stmavne, meno sivé a málo kontrastné, meter a gombík vyblednú) a pod menom je malé tlmené červené slovo MUTED (len text, ako dnešná značka MUTE), bez výplne a bez prečiarknutia. Značka RET sa na pásoch nezobrazuje.
 - Jedna farba na pás: farba stopy z Ableton Live (tenký pásik vľavo pri mene); farebná horná hrana skupiny zmizne, skupinu pomenúva len tlmený sivý text na boku pása.
 - Poradie výraznosti: gombík fadra a stĺpiky metra; meno čitateľné; stlmený pás ustúpi, nikdy nesvieti; potom dB z Live; LUFS najtichší.
-- Na výstupe do reprákov (master return): len živé short-term číslo, bez farby a bez priemeru za pieseň.
+- Na výstupe do reprákov (master return) a na výstupných zberniciach (Vocals, Backing): len živé short-term číslo s popisom `LUFS OUT`, bez farby a bez priemeru za pieseň.
 - Pás ako vo Waves LV1: v dráhe fadra pod gombíkom dva tenké stĺpiky L a R (stereo, panoráma a nevyvážený obraz sú vidno), stupnica dB vpravo od dráhy, dnešný tyrkysový pás vo fadri a tmavý meter vľavo zmiznú.
 - Vľavo od gombíka stĺpik: LUFS (na pásoch so značkou), pod ním meno skupiny a dole kláves SEL detailu kanála (namiesto ☰ pod MUTE; na iPade 36 × 36 px). Žiadne číslo špičky ani svetielko clipu (Live mieša v 32-bitovom floate, stopa v ňom neclipne).
 - Fadre ostávajú presne také vysoké ako dnes (322 px na iPade, zmerané v mockupe). Nad fadre nepribudne nič.
@@ -23,23 +26,26 @@ Status: draft for the owner's approval, 2026-10-26. The rules in §2 are the own
 - Live samotný LUFS nemeria (LOM ho nemá).
 - Projekt dodá malé zariadenie Max for Live `FohMixer LUFS`. Počíta hlasitosť podľa normy ITU-R BS.1770, rovnako ako Sonible trueLevel.
 - Vloží sa do paralelného chainu v `CORE Effects` vedľa trueLevel. Meria teda presne v tom istom bode a zvuk ani latenciu nemení (do chainu posiela ticho).
-- Hub ho číta cez LOM ako bežný parameter zariadenia. Ktoré stopy sa merajú a aký je cieľ, povie značka v Tuneri: `+LUFS:-25` na mikrofóne, `+LUFS` na výstupe.
+- Zariadenie nemá žiadne parametre: skúška na PC 27.10 ukázala, že parameter, ktorý zariadenie samo mení, Live zapisuje do Undo. Čísla preto posiela 10× za sekundu priamo hubu na tom istom PC (localhost) spolu s tým, na ktorej stope sedí.
+- Ktoré stopy sa merajú a čo číslo znamená, povie značka v Tuneri: `+LUFS:-25` = hlasitosť hneď za Trim IN, súdená voči cieľu (popis `LUFS IN`); `+LUFS` = výstupný bod, len číslo (PA return, zbernice Vocals / Backing; popis `LUFS OUT`).
+- Nahrávané (armed) PA mikrofóny dostanú druhé malé zariadenie `FohMixer Meter` na koniec reťazca. Live na armed stope meria vstup; s ním meter na páse ukáže výstup za fadrom.
 
-**Čo sa najprv overí na PC (pred stavbou)**
+**Ako sa to overí na PC**
 
-- Či Live berie zmenu parametra zo zariadenia bez toho, aby plnil Undo a označoval set ako zmenený.
-- Ak nie, to isté zariadenie pošle čísla hubu priamo po lokálnej sieti (záložná cesta, §4.4). Značky aj povrch ostávajú rovnaké.
-- Číslo nášho zariadenia sa porovná s trueLevel na tej istej piesni a mikrofóne. Musia sedieť do 0,5 LU.
+- Číslo nášho zariadenia sa porovná so short-term čítaním trueLevel na dvoch PA spevákoch počas hranej piesne. Musia sedieť do 0,5 LU (výsledok na #151).
+- Latencia racku sa vložením nezmení a Undo ostane bez krokov od merania.
+- Pred meterom armed stôp sa na kópii setu zmeria stupnica metra v Live a zákon panorámy (sonda P2, §4.5).
 
 ## 1. Goals and non-goals
 
 **Goals**
 
 - G1. Each PA mic track shows its singer's short-term loudness right after the Trim IN, judged against the team's −25 LUFS, so a wrong trim (analog gain moved, mic swapped, weak singer that day) shows on the surface during a normal passage.
-- G2. The PA output (the master Live's return to the speakers) shows its live short-term loudness as a plain number, to compare songs' backing tracks while they play.
+- G2. The PA output (the master Live's return to the speakers), and any output bus that carries the tag (the Vocals / Backing buses), shows its live short-term loudness as a plain number, to compare songs' backing tracks while they play.
+- G2b. The surface says which loudness a number is: after the trim (`LUFS IN`) or at an output (`LUFS OUT`) (the owner, 27.10).
 - G3. Silence and pauses never light a warning.
 - G4. The faders keep their height; nothing is added above them (memory rule "fader height first").
-- G5. A thin layer over the native LOM: the measurement lives in Live, the hub follows a device parameter as it already follows macros and plug-in parameters, and the tracks are chosen by Tuner tags, as every per-track feature since #68.
+- G5. A thin layer: the measurement lives in Live (a device in the track's chain), the hub only receives its readings over localhost and matches them to the strips, and the tracks are chosen by Tuner tags, as every per-track feature since #68. *History: until P1 the hub was to follow the readings as device parameters through the LOM (§4.1 (a)).*
 
 **Non-goals**
 
@@ -55,7 +61,7 @@ Status: draft for the owner's approval, 2026-10-26. The rules in §2 are the own
 - a change of a singer's sound or timing (the meter is never in the signal path, §3.2);
 - a yellow or red light while nobody sings;
 - a number that disagrees with trueLevel on the same signal by more than 0.5 LU;
-- a set that Live marks as changed, or an Undo history filled, by the meter alone;
+- an Undo step, or an automation lane, made by the meter (the devices have no parameters, §4.2); the set's changed mark is no criterion, playback alone sets it (P1, §4.3);
 - any element above the faders, or a fader travel shorter than today's (322 px on the iPad's FOH page);
 - an output meter that does not follow the fader on a track Live meters at its input (§3.4).
 
@@ -70,17 +76,21 @@ Status: draft for the owner's approval, 2026-10-26. The rules in §2 are the own
 
 ### 3.1 The points
 
-| Strip | Live set | Track | Point | Shown |
-|---|---|---|---|---|
-| each PA singer (`Vox 1`…) | band | the PA mic track | after Trim IN: a parallel chain of its `CORE Effects` rack, beside trueLevel | `Voice` (§3.3), coloured against `+LUFS:-25` |
-| PA output | master | the return to the speakers | the return's device chain, before its mixer | `Short-term`, plain |
+| Strip | Live set | Track | Point | Shown | Caption |
+|---|---|---|---|---|---|
+| each PA singer (`Vox 1`…), tag `+LUFS:-25` | band | the PA mic track | after Trim IN: a parallel chain of its `CORE Effects` rack, beside trueLevel | `Voice` (§3.3), tinted against the target | `LUFS IN` |
+| PA output, tag `+LUFS` | master | the return to the speakers | the return's device chain, before its mixer | `Short-term`, plain | `LUFS OUT` |
+| any output bus, tag `+LUFS` (the Vocals / Backing buses, the owner 27.10) | either | the bus | its device chain, before its mixer | `Short-term`, plain | `LUFS OUT` |
+
+**The kind of a number (the owner, 27.10: the surface must say WHICH loudness a number is):** a target in the tag (`+LUFS:<target>`) makes the point an INPUT point, read after the trim (the mic's gain staging) and judged; a bare `+LUFS` makes it an OUTPUT point, the plain short-term. The kind comes from the tag alone, never from the track's place.
 
 **Seen on the PC earlier (to confirm at rollout, #151 comment of 26.10):** each PA mic track has a `CORE Effects` rack with a Sonible trueLevel in a parallel chain after the Trim IN. The team reads −25 there today. Placing our meter in a sibling chain of the same rack measures exactly the signal trueLevel measures *(call)*.
 
 ### 3.2 Never in the signal path
 
-- The device's audio output is silence (the `plugout~` is fed zeros), so its chain adds nothing to the rack's sum. *(call)*
-- The chain stays active (never muted by its activator): a deactivated chain may stop processing its devices. UNVERIFIED for Live 12; the silent output makes the question moot.
+- **The devices' output is silence** (`plugout~` fed by a `sig~ 0.` and nothing else; `scripts/check_lufs_device.py` refuses any other feed), and **each device is ALWAYS placed in a parallel chain of an Audio Effect Rack, never in series** (the owner's ruling of 27.10: a plug-in or licence failure must never cut the sound, and a doubled signal is worse than none). *(Briefly on 27.10 the devices passed their input through, after the UDP probe found the PR #154 device silencing what followed it in series; the owner's ruling replaced that.)*
+- **Where:** a mic's LUFS device in its own chain of the `CORE Effects` rack beside trueLevel (§3.1); an output point (the PA return, a Vocals / Backing bus) and an armed track's meter device (§3.4) get a rack of their own with an empty dry chain plus a chain holding the device. The dry chain carries the sound; the device's chain adds silence to the rack's sum.
+- The chain stays active (never muted by its activator): a deactivated chain may stop processing its devices. UNVERIFIED for Live 12; checked at the rollout (the readings keep coming).
 - The device reports no latency (a Max for Live device that does not set `latency` reports 0, UNVERIFIED for this exact patch: checked at rollout by reading `latency_in_samples` of the rack before and after the insertion, which must not change).
 - Memory rule "latency claims need measurement": the rollout check above is a read of Live's reported latency, not a timing claim. The path's audio is untouched by construction (the device adds silence to a sum).
 
@@ -88,7 +98,7 @@ Status: draft for the owner's approval, 2026-10-26. The rules in §2 are the own
 
 Every 100 ms (EBU Tech 3341's 10 Hz minimum), on the stereo input (L and R, each weight 1.0, as BS.1770 sums a stereo track; a centred mono mic on a stereo track therefore reads as trueLevel reads it on that track):
 
-1. **K-weighting:** BS.1770's two biquads (the high-shelf pre-filter and the RLB high-pass), coefficients derived for the running sample rate from the standard's analog prototypes (the published 48 kHz values as the test case).
+1. **K-weighting:** BS.1770's two biquads (the high-shelf pre-filter and the RLB high-pass), coefficients derived for the running sample rate from the standard's analog prototypes (at 48 kHz they give the standard's published values; the device as a whole is checked against trueLevel, §10).
 2. **Sub-blocks:** the mean square of each 100 ms sub-block, summed over channels.
 3. **Short-term** `S`: −0.691 + 10·log10 of the mean of the last 30 sub-blocks (3 s). No gating (BS.1770 short-term has none). Floor −70 (shown `—`).
 4. **Voice** `V` *(call; the gate rule G3 asks for)*:
@@ -101,42 +111,34 @@ Every 100 ms (EBU Tech 3341's 10 Hz minimum), on the stereo input (L and R, each
    - A voice that really is too quiet (−34) still reads red: it is above the −40 gate.
    - 1 s of voice in 3 s keeps a single breath or a cough from lighting a colour.
    - Stage bleed louder than −40 LUFS after the trim would read as a voice. Whether it does is open question Q1.
-5. **Parameters written** only when the value rounded to 0.1 changed (fewer LOM events): `Short-term` and `Voice`, each a float −70.0…0.0 LUFS.
+5. **Sent** every 100 ms, whether the values changed or not (the hub takes a device silent for 1 s as gone, §4.4): `Short-term` and `Voice` in tenths of LU, integers −700…0. *History: until P1 they were two device parameters, floats −70.0…0.0 written only when the value rounded to 0.1 changed (§4.3).*
 
-The master strip shows `S`, a mic strip shows `V` *(call)*: the output's number is the standard short-term the owner asked for, silence there between songs reads low (−50) or `—`, which is the truth for the room.
+An output point shows `S`, an input point shows `V` *(call)*: the output's number is the standard short-term the owner asked for, silence there between songs reads low (−50) or nothing, which is the truth for the room. Which of the two a strip shows follows its tag's kind (§3.1): `V` for `+LUFS:<target>`, `S` for `+LUFS`.
 
 ### 3.4 The stereo output meter in the fader track (mockup v2)
 
 The v2 strip draws a track's output as two bars, L and R, inside its fader's track (§6.3). Where the two levels come from:
 
-- **Already in the code:** the layout's `meter_source: lr` subscribes Live's `output_meter_left` / `output_meter_right` (`binding::meter_props`; `MeterView` draws one bar per level slot, one clip light for all). The site runs `level` (one bar, the max of L/R) since #5 K2 (2026-09-29): with `lr`, Live's CPU did not rise, but the master Live's script of then (0.1.0-dev.9) fell behind on its sends. The script's send path was rebuilt since (#9). **A PC re-test of `lr` with the current script and Live playing is the main session's job and gates the surface PR.**
-- **Armed tracks (#151, latest comments):** the PA singers' mic tracks stay armed for recording (the owner: they stay armed), and Live meters an armed track's INPUT, not its post-fader output; that is why today's strip meter does not follow the fader on those strips. For them the L/R levels come from a device the project ships, placed LAST in the track's device chain (the same Max for Live build as `FohMixer LUFS`, §4.2, or a sibling device `FohMixer Meter` *(call at build time)*), which writes its L and R peak levels as parameters, followed like the LUFS readings (§5.2).
-- **A device at the chain's end is still before Live's mixer** (the track's volume and pan come after every device). The hub turns its levels into the post-fader output: `out_L = dev_L + fader_dB + panL_dB`, `out_R = dev_R + fader_dB + panR_dB`, with the fader's dB from the volume value it already follows (`fohmixer_proto::volume::value2db`) and the pan's gains from Live's pan law (UNVERIFIED for Live 12: the law, constant power or linear, is measured on the PC before the hub uses it; the strip then subscribes the track's panning, which today only the channel detail does). A muted track's output reads −∞. The result is sent to the pages as a meter level, so the surface does not know which source a strip uses.
+- **Live's own L/R:** the layout's `meter_source: lr` subscribes Live's `output_meter_left` / `output_meter_right` (`binding::meter_props`; one bar per level slot). **Live on the site since 27.10 (#151):** the PC re-test with the current script passed. The band and master Lives' CPU stayed within the run-to-run noise, the round trip p95 under 19 ms, no read lost, no heartbeat gap of 150 ms; the 2026-09-29 failure of the old send path is gone. The deployed layout and the import's source layout both carry `"meter_source": "lr"`. Still open: the hub log's busy lines with the transport playing, read in PR 2's verification (§10).
+- **Armed tracks (#151):** the PA singers' mic tracks stay armed for recording (the owner: they stay armed), and Live meters an armed track's INPUT, not its post-fader output; that is why the strip meter does not follow the fader on those strips. For them the L/R levels come from a sibling device the project ships, **`FohMixer Meter`** *(call, 27.10: a sibling device, not a mode of `FohMixer LUFS`. The two sit at different points: the LUFS device in a parallel chain right after the Trim IN, the meter device LAST in the track's chain. A mode would need a switch the device can read, i.e. a parameter, the very thing P1 ruled out)*. It has no parameters and sends its L and R peak levels over the same localhost path as the LUFS device (§4.4, address `/fohmixer/meter`), never as device parameters.
+- **A device at the chain's end is still before Live's mixer** (the track's volume and pan come after every device). The hub turns its levels into the post-fader output: `out_L = dev_L + fader_dB + panL_dB`, `out_R = dev_R + fader_dB + panR_dB`, with the fader's dB from the volume value (`fohmixer_proto::volume::value2db`) and the pan's gains from Live's pan law, then into Live's meter scale (the 0…1 value the strip already draws). Both were measured by probe P2 on the PC (§4.5, 27.10) and live in `fohmixer_proto::meter`: Live's meter reads `(dBFS + 70) / 76` (0 at or below −70 dB, 1 at +6 dB), and the pan law is constant power normalised to unity at the centre. A muted track's output reads the meter's floor (0). The result goes to the pages on the strip's own meter keys (`output_meter_left`, `output_meter_right`, and `output_meter_level` as the larger of the two) in place of Live's values while the device is fresh, so the surface does not know which source a strip uses. A device silent for 500 ms gives the keys back to Live's values *(call)*.
 - **Non-armed tracks** (the band's instruments, returns, the master Live's tracks, the PA output) keep Live's own `output_meter_left` / `output_meter_right`.
-- Which strips use the device: a strip whose track carries the device (found by the same walk as `FohMixer LUFS`, §5.2); a missing device on an armed `+LUFS` track is the problem `no meter device` *(call: the hub could also read `arm` and flag every armed strip without one)*.
+- Which strips use the device: a served loudness point (`+LUFS` or `+LUFS:<target>`, the PA singers' strips) whose track carries a confirmed `FohMixer Meter` (§4.4's match) *(as built, PR 2: the candidates are the loudness points, as for the LUFS device; a strip without `+LUFS` is not matched)*. An armed `+LUFS:<target>` track with no fresh meter device is the problem `no meter device` *(call: the hub follows `arm` on those strips only)*.
 
 ## 4. The data source
 
 ### 4.1 The options checked
 
-**(a) A Max for Live device the project ships, its readings as device parameters followed through the LOM.** *Chosen, gated by probe P1 (§4.3).*
+**(a) A Max for Live device the project ships, its readings as device parameters followed through the LOM.** *Chosen first, failed probe P1 on 27.10 (§4.3).*
 
-- Evidence it fits:
-  - Max for Live is in use on both Lives' PC: the old autotune chain ran four Max for Live devices (autotune note §1).
-  - The hub already finds devices inside racks by a bounded walk and follows their parameters' `value` by `$ref` with its own subscriber (`router/autotune.rs`: the `Latencies` rack's macro and the key devices' Key/Scale; `rules::autotune::find`). LUFS is the same pattern: a find, a follow, a state to the pages.
-  - A device parameter is a native LOM object: the script, its protocol and its listener machinery need no change (spec P4). The script's subscription flush already coalesces per tick (~30 Hz; SimLive load: 60 metered strips at 30 Hz, `live-script.md`); about ten parameters at 10 Hz are far below that.
-  - The measurement is ours: reviewable source, BS.1770 test vectors, the same code on every track.
-- Risks (UNVERIFIED until P1):
-  - A parameter changed from inside the device may add Undo steps or mark the set changed. The Live set is saved by us after approved changes (memory "save the Live set yourself"); a set always dirty would hide real changes.
-  - A parameter with visibility "Automated and Stored" could be recorded as automation; "Stored Only" might avoid it, "Hidden" leaves the LOM. Which one Live 12 exposes in `Device.parameters` with listeners firing is part of P1.
+- Why it was first: the hub already follows device parameters inside racks (`router/autotune.rs`), so no new transport. The measurement is ours and reviewable.
+- Why it failed: a parameter the device writes is an Undo step with visibility "Automated and Stored", and with "Stored Only" the parameters leave the LOM (§4.3). "Hidden" leaves the LOM too.
 
 **(b) Reading Sonible trueLevel's meter.** *Rejected.*
 
-- Plug-ins expose their controls as parameters; their meters are outputs. VST3 has read-only output parameters, but whether trueLevel declares its loudness readings as such, and whether Live lists them in `Device.parameters`, is UNVERIFIED: nothing in the repo or its probes touches trueLevel, and this note had no PC access.
-- Even if one existed, its value range, scaling and the mode the team set on each instance (momentary, short-term, its own gate) are unknown, and differ per instance.
-- Configure mode (`program spec §4.2`) adds automatable controls, not meters.
-- It ties the feature to a third-party binary's update policy.
-- Worth one look during P1 (two minutes in Configure mode on one trueLevel). If it lists a short-term reading, this note is revised before building; otherwise (a) stands.
+- Plug-ins expose their controls as parameters; their meters are outputs. Whether trueLevel declares its loudness readings as read-only VST3 output parameters, and whether Live lists them in `Device.parameters`, is UNVERIFIED (P1 did not reach its Configure look: step 3 had already decided).
+- Even if one existed, its value range, scaling and the mode the team set on each instance are unknown and differ per instance; and it ties the feature to a third-party binary's update policy.
+- trueLevel stays the acceptance reference instead (§10 step 7).
 
 **(c) An audio tap from the virtual audio routing, measured by the hub.** *Rejected.*
 
@@ -146,62 +148,93 @@ The v2 strip draws a track's output as two bars, L and R, inside its fader's tra
 
 **(d) Live's own meters (`output_meter_level`).** *Rejected:* post-fader peak-ish levels, not K-weighted loudness; already on every strip.
 
-### 4.2 The device: `FohMixer LUFS`
+**(e) The same device, sending its readings to the hub over localhost.** *Chosen (27.10, the main session's DECIDED on #151 after P1; the program spec's first candidate, its §4.3).* The device keeps no parameters, so nothing reaches Undo or automation; the hub gets a localhost UDP listener (§4.4). Tags, the protocol to the pages and the surface are as in §5–§6.
 
-- An audio effect device, file `FohMixer LUFS.amxd`, name `FohMixer LUFS` (the hub finds it by this name, §5.2).
-- DSP in one `gen~` (the BS.1770 filters, the sub-block sums, the window ring buffers); the rest is plain Max: two `live.numbox` parameters `Short-term` and `Voice` (float, −70…0, unit "LUFS", the visibility P1 settles), driven 10×/s.
-- No controls. Its face shows the two numbers, so it can be read in Live's device view too.
-- **Source in the repo, binary built on the PC** *(call)*: `live-device/FohMixer-LUFS/` holds the patch (`.maxpat` JSON) and the `gen~` code (`.genexpr`) as text. The `.amxd` is built (frozen) on the PC and never committed: a frozen device can embed the author's file paths, which hold the Windows user name (public-repo hygiene), and the denylist scan skips binary files.
-- `live-device/FohMixer-LUFS/version.txt` follows the workspace version; the device shows it on its face, and the hub logs it from the device's name or a third parameter `Version` *(call: a parameter, read once)*.
-- **Built from the patcher** *(call, PR 2)*: `build_amxd.py` writes the unfrozen `.amxd` (the `ampf`/`aaaa` header, then the `.maxpat` JSON byte for byte); the `gen~` embeds its code, so the device has no file dependencies. `scripts/check_lufs_device.py` (CI) keeps the embedded code equal to the `.genexpr`, its constants table equal to `fohmixer_proto::lufs::dsp`'s, the two parameters as above, the face's version equal to `version.txt`, and the patcher free of absolute paths. The visibility is one value, `parameter_invisible` on both numboxes (0 Automated and Stored until P1 decides; the check refuses two different values).
-- **Edges of the readings** *(call, PR 2)*: before 3 s of audio the missing sub-blocks count as silence (the device's rings start at zero, the reference does the same); a reading above 0 LUFS is shown as 0, the parameters' top; the gen~ rounds each reading to 0.1 before `change`, so a parameter is written only when its shown value changed.
+### 4.2 The devices: `FohMixer LUFS` and `FohMixer Meter`
 
-### 4.3 Probe P1 on the PC (before PR 2)
+- **`FohMixer LUFS`:** an audio effect device, file `FohMixer LUFS.amxd`, name `FohMixer LUFS`. DSP in one `gen~` (the BS.1770 filters, the sub-block sums, the window ring buffers, §3.3); every 200 ms it sends `S` and `V` (§4.4; the owner, 27.10: 5×/s is enough for a 3 s window shown as an integer, was every 100 ms). Its audio output is silence, and it sits in a rack's parallel chain (§3.2).
+- **`FohMixer Meter`** (§3.4): an audio effect device, file `FohMixer Meter.amxd`, name `FohMixer Meter`. Its L and R peak level over each 33 ms in tenths of dBFS (floor −700 = −70 dB, top 120 = +12 dB *(call)*), sent 30×/s, Live's own meter rate (the script's ~30 Hz flush). Placed LAST in an armed track's chain, inside a rack of its own (an empty dry chain plus the device's chain, §3.2), so it reads the chain's end. Its output is silence (§3.2).
+- **No parameters of their own, on either device (P1):** no `live.*` parameter object, nothing with `parameter_enable`; only Live's own `Device On`, which nothing writes. The faces show the readings in plain Max number boxes (`flonum`, `ignoreclick`, not parameters) and the version, so they can be read in Live's device view: on `FohMixer LUFS` (the owner, 27.10) both readings big, labelled `Short-term` and `Voice`, under the caption `LUFS` (one device for every point: the IN / OUT meaning lives in the hub's tag), the version small.
+- **Who they are:** at load, and again every 1 s *(call)*, each device reads its own Max `id` through `live.path this_device`, and the `name` of each of its first four canonical parents through `live.path this_device canonical_parent …` and a `live.object` (`-` where there is none). A moved device or a renamed track is known within 1 s. *Revised 27.10 (the UDP probe): `getpath` gives no absolute path, so no path is read.*
+- **Source in the repo, binary built on the PC** *(call)*: `live-device/FohMixer-LUFS/` and `live-device/FohMixer-Meter/` hold each patch (`.maxpat` JSON); the LUFS `gen~` code also as `.genexpr` text. The `.amxd` is never committed: a frozen device can embed the author's file paths, which hold the Windows user name (public-repo hygiene), and the denylist scan skips binary files.
+- **Version:** `version.txt` beside each patch follows the workspace version; the face shows `v<version>` and every datagram carries it (§4.4), so the hub logs which build each device runs.
+- **Built from the patcher** *(call)*: `build_amxd.py` writes the unfrozen `.amxd` (the `ampf`/`aaaa` header, then the `.maxpat` JSON byte for byte) for either patch; the `gen~` embeds its code, so the devices have no file dependencies. `scripts/check_lufs_device.py` (CI) keeps, for both patches: the patch's shape (`plugin~`, `plugout~`; in the LUFS device one `gen~` with one codebox whose code equals the `.genexpr`; one `udpsend 127.0.0.1 <port>` with the port equal to the hub's default; the OSC address and the version in the one `pack`; `plugout~` fed by `plugin~` alone; the identity's `live.path` messages); no parameter objects; no absolute paths; the face's version equal to `version.txt`. *History: until 27.10 it also kept a constants table equal to a Rust reference DSP (`fohmixer_proto::lufs::dsp`, PR #154); the owner dropped the reference for the trueLevel comparison (§9), and PR 2 deletes both.*
+- **Edges of the readings** *(call)*: before 3 s of audio the missing sub-blocks count as silence (the device's rings start at zero); a reading above 0 LUFS is sent as 0; the gen~ rounds each reading to tenths before it is sent.
 
-On the PC, with the owner's yes for the session, the band Live stopped, on a copy of the set (never the event set):
+### 4.3 Probe P1 on the PC (done 27.10)
 
-1. Insert a draft device (the patch from this note) in one PA mic's `CORE Effects` sibling chain.
-2. Read through the LOM (`tools/live-probe`): the device's `name`, `class_name`, its parameters' `name`, `value`, `min`, `max`; subscribe `value` and count events for 30 s of a played song: expect about 10/s each.
-3. Check Live's Undo menu and the set's changed state after 60 s of playing: **pass** = no Undo entries from the meter, the set not marked changed.
-4. Try both visibilities ("Automated and Stored", "Stored Only"); keep the first that passes 2 and 3.
-5. Read the rack's `latency_in_samples` before and after the insertion: equal.
-6. Look at one trueLevel in Configure mode (option (b)).
+Run on a copy of the band set (the event set saved first and opened again afterwards, unchanged), with a draft `FohMixer LUFS` holding two `live.numbox` parameters, loaded through the LOM itself (the User Library's browser item and `load_item`, no GUI step). Results (#151, 27.10):
 
-Results go on #151 without host names, IPs or user paths.
+- **Class:** `class_name` `MxDeviceAudioEffect`, type `audio_effect`; the parameters `Device On`, `Short-term`, `Voice` (min −70, max 0, not quantized). The device loads in Live 12 with no Max error; its face showed both readings and the version.
+- **Rate:** on a playing backing-track bus the two values followed at **~6.9 events/s each** over 40 s (275 / 274 events; the script coalesces per tick, the device wrote only 0.1 changes), readings −18…−34 LUFS. Right after load the LOM read 0.0 while the face showed −70 (an initial value is not written as a change).
+- **Undo: FAIL.** With visibility "Automated and Stored" every value the device writes is an Undo step: Live's Edit menu showed `Undo Change "Voice"` right after the load and again after 60 s of playing. An engineer's Ctrl+Z would undo a meter reading instead of their own change.
+- **"Stored Only": FAIL** for another reason: the parameters leave the LOM (`Device.parameters` lists only `Device On`), so the hub cannot follow them.
+- **The set's changed mark is no criterion:** the copy turned changed within 1 s of `start_playing` even with both devices switched off (`Undo Change "Track Volume"` on top: something writes a volume at play).
+- Not done: the rack's `latency_in_samples` and trueLevel's Configure look; the latency check moves to the rollout (§10 step 7).
 
-### 4.4 Fallback if P1 fails: the same device sends over localhost
+Outcome: option (a) is out; the localhost path (§4.4) is built.
 
-- The device sends `Short-term` and `Voice` 10×/s by UDP to the hub on `127.0.0.1` (`udpsend`), with its own LOM `id` and its track's `id` (read once with `live.path this_device` / `canonical_parent`).
-- The hub matches the track id to the `+LUFS` markers it already knows. Tags, protocol to the pages and the surface stay as in §5–§6.
-- This is the program spec's first candidate (§4.3), but it adds a listener to the hub; it is only built if P1 fails.
+### 4.4 The localhost path (the design since 27.10)
+
+- **Transport:** each device sends one UDP datagram per reading to `127.0.0.1:<port>` with Max's `udpsend`. The hub binds its UDP socket on `127.0.0.1` only (never `0.0.0.0`): nothing off the PC reaches it.
+- **Format:** an OSC 1.0 message, because `udpsend` speaks OSC and nothing else *(call: a JSON datagram would need a `js` / `node.script` sender in each device; OSC is what Max sends natively, small and fixed)*. Address `/fohmixer/lufs` (or `/fohmixer/meter`), type tags `,iisssssii`, ONE message per reading carrying everything (the patch's `pack`, banged by a `t b f` from its audio object's own clock, `snapshot~ 200` or `peakamp~ 33`, which outputs only while Live's DSP runs the device, so a device switched off goes stale: no `metro`, the review of PR 2; the identity cached in it):
+
+  | # | type | value |
+  |---|---|---|
+  | 1 | `i` | the wire version, `1` |
+  | 2 | `i` | the device's Max id (`live.path this_device` → `id <n>`, per Live process) |
+  | 3 | `s` | the device's version, `v<version.txt>` |
+  | 4–7 | `s` | the names of the device's first four canonical parents, nearest first; `-` past the top |
+  | 8 | `i` | `/lufs`: `S` in tenths of LU (−700…0); `/meter`: the L peak in tenths of dBFS (−700…120) |
+  | 9 | `i` | `/lufs`: `V` in tenths (−700…0); `/meter`: the R peak |
+
+  *Revised 27.10 after the UDP probe (#151):* Max's `live.path` gives no absolute path (`getpath` echoes the path it was given), so there is no path field. The device names its parents instead (`live.path this_device canonical_parent …` → `live.object get name`): on a track `[track, set, -, -]`, in a rack's chain `[chain, rack, track, set]`. The last named parent is the set (the band's Live from the master's), the one before it the track (`lufs::wire::track_and_set`); a walk "up to the track" was not built in the patch, the hub decides from the four names. About 100 bytes. The hub refuses a datagram over 512 bytes, another address, other type tags, another wire version, a string that is not UTF-8, a value out of its range, bytes after the last value, or fewer than two named parents. A new field is a new wire version, never a reinterpreted one.
+- **The port** *(call)*: `39110`, the default of the hub's config (`lufs.port`) and fixed in the patches; `scripts/check_lufs_device.py` keeps the two equal. The device cannot read the hub's config, so another port means the devices rebuilt with `build_amxd.py --port <n>` (documented in the device README). Port `0` in the config turns the listener off.
+- **Which strip (the match):** the datagram's track name and set name (fields 4–7, `track_and_set`) name the device's track. A strip is a candidate when it is a served strip with `lufs` (any served strip, for a meter device) whose track has that name in a Live whose set has that name *(revised 27.10: no index or path comes on the wire; a marker strip's track is known by the hub's own track list, a frame strip by its anchor's name)*. Both Lives send to one port and Max's ids are per process, so a datagram alone does not say which Live sent it. The hub therefore **confirms** a new device: for each instance with a candidate strip it walks that track's devices (and its racks' chains, as AUTOTUNE's find does) through that instance's script, and the device is matched to the one instance where a `MxDeviceAudioEffect` named `FohMixer LUFS` (or `FohMixer Meter`) is found. None confirms: unmatched, asked again after a track-list change of a candidate instance or after 10 s. Both confirm (the same device at the same place in both sets): the strips' problem `two LUFS meters`, nothing shown. A device is known by its key (device id, its four parents' names): a moved device or a renamed track is a new key, confirmed again, and the old key goes stale.
+- **Bounded:** at most twice the nominal rate is taken from one key (10 datagrams/s for `/lufs`, 60/s for `/meter`), the rest dropped and counted; at most 64 keys are kept (a new key past that is dropped and counted). A refused datagram is counted by its reason.
+- **Stale:** a LUFS key with no datagram for **1000 ms** (5 sends missed) is gone: its strip shows nothing (`none`) and the hub logs it lost. A meter key is gone after **500 ms**, and its strip's meter keys go back to Live's values (§3.4).
+- **Offline:** an instance's disconnect drops its matches; its strips show nothing.
+- Never writes anything to Live; the confirmation is a read.
+
+### 4.5 Probe P2 on the PC (before the hub combines the armed tracks' levels)
+
+On a copy of the band set, after a draft `FohMixer Meter` is built:
+
+1. On a non-armed spare track, the meter device in a rack's parallel chain last in its chain, the fader at 0 dB, pan centre: a stepped 1 kHz sine clip (2 s each at 0, −3, −6, −12, −18, −24, −36, −48, −60 dBFS; a WAV written by `tools/live-probe`) plays. The probe reads Live's `output_meter_left` / `_right` and the device's datagrams together: the pairs give Live's meter scale (dBFS → 0…1) as a table.
+2. The same at pan −1, −0.5, +0.5, +1: Live's pan law (each side's gain in dB per pan value).
+3. The meter device's `latency_in_samples`: 0.
+
+Results on #151 without host names, IPs or user paths; the tables go into `fohmixer_proto::meter` (§7).
+
+**Done 27.10 (the main session, #151 "Probe P2 on the PC"):** Live's track meter value from a signal's peak is `(dBFS + 70) / 76`, linear in dB (0 → 0.9211, −3 → 0.8816, −6 → 0.8421, −12 → 0.7632, −18 → 0.6842, −24 → 0.6053, −36 → 0.4474, −48 → 0.2895, −60 → 0.1316; all within 0.001; the test vectors of `meter::tests`). The pan law: `gain_L = √2·cos((p+1)·π/4)`, `gain_R = √2·sin((p+1)·π/4)` (centre 0 dB both; −1: L +3.0 dB, R silent; −0.5: L +2.32 dB, R −5.33 dB; mirrored). The WAV is `tools/live-probe/sine_steps.py`'s.
 
 ## 5. How the hub gets it
 
 ### 5.1 The tag
 
-- `+LUFS:<target>` on a track's Tuner marker: measured, judged against `<target>` LUFS, an integer −40…−10 (`+LUFS:-25`).
-- `+LUFS` alone: measured, the number only (the PA output).
+- `+LUFS:<target>` on a track's Tuner marker: an INPUT point (§3.1), measured after the trim, its `V` judged against `<target>` LUFS, an integer −40…−10 (`+LUFS:-25`); caption `LUFS IN`.
+- `+LUFS` alone: an OUTPUT point, its `S` as a plain number (the PA return, the Vocals / Backing buses); caption `LUFS OUT`.
 - Problems (`markers::parse`, the existing problem list): a second `+LUFS` (`DuplicateLufs`), a target that is not an integer in range (`BadLufs`).
 - A Tuner of only `+LUFS` makes a strip like any marker (it is a strip feature, not a link like `+MUTE`).
-- A strip from the frame file (not a marker) may carry the same field in `layout.json` (`"lufs": {"target": -25}` or `"lufs": {}`), so the PA output works whether its strip is a marker or a frame strip.
+- A strip from the frame file (not a marker) may carry the same field in `layout.json` (`"lufs": {"target": -25}` or `"lufs": {}`), so the PA output works whether its strip is a marker or a frame strip (matched by its track's name, §4.4).
 - The tolerances (±3, ±6 LU) are the owner's rule and constants in code, not tag arguments *(call)*.
 
-### 5.2 The router's half (`router/lufs.rs`, `LUFS_CLIENT`)
+### 5.2 The hub's half (`lufs_udp.rs`, `rules/lufs.rs`, `router/lufs.rs`)
 
-The AUTOTUNE pattern, smaller:
+The AUTOTUNE pattern (a pure rule, thin glue), with a listener instead of a LOM follow:
 
-- For each served strip with `lufs`, a bounded walk of its track: `devices`, and inside each rack its `chains` → `devices`, two rack levels deep. Each device's `name` is compared with `FohMixer LUFS` (and `class_name` = `MxDeviceAudioEffect`, the Max audio effect class: UNVERIFIED name, read in P1).
-- Found once: its `Voice` (mic) or `Short-term` (output) parameter's `value` is followed by `$ref` with the hub's own subscriber `LUFS_CLIENT` (the next free id after `SONGMAP_CLIENT` = `ClientId::MAX - 4`; the builder confirms).
-- Not found: the strip's problem `NoLufsMeter`. Found twice: `TwoLufsMeters`, nothing followed (which one would be a guess).
-- Walked again on: connect, a track-list change (the marker keeper's lists), a `devices` value of that track (a device inserted or removed), a failed follow (a stale ref). Retries: the connect-time bound (`retries.rs`), only transient failures.
-- A disconnect drops the instance's refs and values: the strips show `—` with the offline look they already have.
+- **The listener** (`lufs_udp.rs`): one tokio task, a `UdpSocket` bound to `127.0.0.1:<lufs.port>`. Each datagram is parsed (`fohmixer_proto::lufs::wire::parse`, pure) and passed through the per-key bound (§4.4) before it reaches the router as `RouterMsg::Lufs`; refused and dropped datagrams are only counted there. A bind that fails is one error record and a `/api/status` line; the hub runs on without LUFS.
+- **The rule** (`rules/lufs.rs`, pure): the keys seen, their confirmation state, the latest reading, the matches to strips, staleness on the router's tick, the problems (`no LUFS meter` for a `+LUFS` strip of an online instance with no fresh matched device 3 s after the instance connected or the layout was served; `two LUFS meters`; `no meter device`), and each strip's state for the log (§8). Every input returns actions: a read to confirm a key, a reading to send, a record to log.
+- **The glue** (`router/lufs.rs`): runs the confirming reads through the instances' scripts with the connect-time retries (`retries.rs`); follows, with its own subscriber `LEVELS_CLIENT` (`ClientId::MAX - 5`, the next free id after `SONGMAP_CLIENT`; the builder confirms), the `mixer_device volume` and `panning` values and `mute` of each strip with a matched meter device, and `arm` of each `+LUFS:<target>` strip; substitutes the meter device's levels on those strips' meter keys (§3.4).
+- A disconnect drops the instance's matches: the strips show nothing, with the offline look they already have.
 - Never writes anything to Live.
+- *History: until P1 this was a bounded walk of each `+LUFS` track's devices and a `$ref` follow of the device's `Voice` / `Short-term` parameter with a `LUFS_CLIENT`.*
 
 ### 5.3 To the pages
 
-- `ServerMsg::Lufs { items: [{instance, label, value}] }`, `value` in tenths of LU as an integer, or none (silent / no meter / offline) *(call: tenths kept for the log and a later detail view; the strip shows the integer)*.
+- `ServerMsg::Lufs { items: [{instance, target, tenths}] }`: `target` the strip's binding target as the layout serves it (`Binding::target`, the canonical form the page already keys a strip by), `tenths` the reading in tenths of LU as an integer, or none (no device, stale, offline) *(call: tenths kept for the log and a later detail view; the strip shows the integer)*. An input point gets `V`, an output point `S`.
 - Paced with the meters (`meter_pace`, #51): at most once per the page's meter period, the latest value kept; an idle page with `meter_ms` 0 gets none until it wakes, then the current values at once.
-- `/api/status` `lufs`: per strip the device found (ref, version), the last value, its state, the problem.
+- `/api/status` `lufs`: the listener (port, bound or its error, datagrams taken / refused by reason / dropped by the bound), per key the device (kind, id, version, parents, instance and strip matched, age of the last datagram, last values), per strip its state and problem.
 
 ## 6. What the surface shows
 
@@ -222,7 +255,9 @@ A strip in `none` because the device is missing also shows the existing problem 
 
 ### 6.2 Where on the strip (mockup v2)
 
-v1's two variants (a pill in the readout line, or over the top of today's meter) are gone with the owner's rejection of v1. In v2 the readings sit in the information column the new fader zone frees (§6.3): the LUFS at the column's top, under a small `LUFS` caption, on `+LUFS` strips only; the row stays empty on every other strip, so the eye finds each number at the same place.
+v1's two variants (a pill in the readout line, or over the top of today's meter) are gone with the owner's rejection of v1. In v2 the readings sit in the information column the new fader zone frees (§6.3): the LUFS at the column's top, under a small caption, on `+LUFS` strips only; the row stays empty on every other strip, so the eye finds each number at the same place.
+
+**The caption says which loudness it is (the owner, 27.10; §3.1):** `LUFS IN` on an input point (`+LUFS:<target>`, after the trim), `LUFS OUT` on an output point (`+LUFS`). It shows on every strip of 78 px or more while the number shows; a narrow strip shows the number alone, as before. The caption keeps PR 1's look (`--faint`, 700 7.5 px on a 9 px line, 0.08em spacing) on **two lines**, `LUFS` over `IN` / `OUT` *(call: on one line `LUFS OUT` is about 35 px at that size (an estimate; mockup v9 measures it), wider than the column's 29 px on the iPad's 83 px strips; two 9 px lines, the 2 px gap and the 16 px value row end at 36 px, above the group's name at the column's 40 px, so nothing else moves. The owner sees it on mockup v9 before the surface task is built: memory "approve layouts")*. *History: PR 1 drew a one-line `LUFS` caption, hidden.*
 
 **The look (v5, the owner's ruling on v4, #151, 26.10):** v4's filled pill was the most glaring thing on the strip, and a lit box while the singer was silent was rejected outright. The LUFS is quiet text: JetBrains Mono 500 at 10.5 px (9.5 px upright on a narrow strip), dim grey (`#6e6e88` on the strip's `#1a1a28`), no background, no box, no border, no glow, never a shape. In range (`fine`) and on the output (`plain`) it is that dim grey; out of range only the text is tinted, muted: amber (`#a8894a`) for `warn`, red (`#b0585f`) for `far`. `silent` and `none` show nothing at all: no number, no dash, no box, and the caption goes too (the row keeps its height, so nothing moves). The hierarchy rule: the fader cap and the meter bars are the loudest; the strip's name reads well, and a muted strip recedes (§6.4); then Live's dB readout (12 px, 600, `#9be7a8`); the LUFS is clearly quieter than the dB: smaller, lighter and of lower contrast (mockup v5 checks all three on every strip; its contrast is at most 44 % of the dB's). Live's dB stays in the readout line under the name, as today (held: accent, as today); since v4 the line holds the status light and the dB only, no ☰ (§6.3).
 
@@ -262,47 +297,51 @@ Today the strip's name button (it is MUTE, #63) is filled with the Live track's 
 
 - The name button: the strip's name; the red `MUTED` at the right of the marks line under the name while muted (today: `MUTE`), nothing while unmuted; no `RET`, also not in the instance tag (the plan's ruling 5: a return's tag says its instance alone).
 - The detail key: `SEL`; its hint `hold SEL` / `for detail`.
-- On the strip: the number only (`−25`, `−18`), nothing at all when silent or missing (no `—`); on a strip of 78 px or more the small caption `LUFS` over the number while it shows. No unit beside the number. No PEAK and no CLIP text (v3).
+- On the strip: the number only (`−25`, `−18`), nothing at all when silent or missing (no `—`); on a strip of 78 px or more the small caption over the number while it shows: `LUFS IN` on an input point, `LUFS OUT` on an output point (two lines, §6.2). No unit beside the number. No PEAK and no CLIP text (v3).
 - In the problem list: `no LUFS meter`, `two LUFS meters`, `bad LUFS tag`, `no meter device` (§3.4).
-- The tag manual (`znacky.html`): `+LUFS:<target>` and `+LUFS`, with the states table.
+- The tag manual (`znacky.html`): `+LUFS:<target>` (an input point, `LUFS IN`) and `+LUFS` (an output point, `LUFS OUT`), with the states table, and the two devices with their places in the chain.
 
 ## 7. Protocol and data additions (summary)
 
 - `fohmixer_proto::markers`: `+LUFS`, `+LUFS:<n>`; problems `DuplicateLufs`, `BadLufs`.
-- `fohmixer_proto::layout::Strip`: `lufs: Option<LufsSpec { target: Option<i8> }>` (`deny_unknown_fields` stays).
-- `fohmixer_proto::lufs`: `judge(value_tenths, target) -> LufsState` and the display integer; the constants `FINE_LU` 3, `FAR_LU` 6, `SILENT` −70.
-- `StripMark` (or the problem list): `NoLufsMeter`, `TwoLufsMeters`.
+- `fohmixer_proto::layout::Strip`: `lufs: Option<LufsSpec { target: Option<i8> }>` (`deny_unknown_fields` stays); `LufsSpec::kind()` is `In` with a target, `Out` without.
+- `fohmixer_proto::lufs`: `judge(tenths, target) -> LufsState` and the display integer; the constants `FINE_LU` 3, `FAR_LU` 6, `SILENT_TENTHS` −700; the caption of a kind. `lufs::wire`: the datagram's parser (§4.4), `DEFAULT_PORT` 39110, `WIRE_VERSION` 1. The reference DSP `lufs::dsp` is deleted (§9).
+- `fohmixer_proto::meter`: P2's tables (Live's meter scale, the pan law) and the post-fader level of a meter device's reading (§3.4).
+- The problem list: `NoLufsMeter`, `TwoLufsMeters`, `NoMeterDevice`.
 - `ServerMsg::Lufs`, paced as meters.
-- The output meter of an armed track (§3.4): the meter device's L/R parameters followed by the hub, combined with the fader's dB and the pan law, sent as the strip's meter levels; the strip's pan subscribed for it. `meter_source: lr` on the site once the PC re-test passes.
-- No change to the Live script or its protocol (§4.1 (a)); in the fallback (§4.4) a hub UDP listener on localhost.
+- The hub's config: `lufs.port` (default 39110, 0 off).
+- The output meter of an armed track (§3.4): the meter device's L/R, combined with the fader's dB, the pan law and Live's meter scale, served on the strip's own meter keys.
+- No change to the Live script or its protocol: the confirming reads (§4.4) are ordinary reads.
 
 ## 8. Logging
 
-- `lufs` records (info): a device found or lost (strip, instance, ref, version), a problem, a walk retried or given up.
-- A mic strip's state change (`fine`/`warn`/`far`/`silent`) as one `lufs` record with the value, at most one per strip per 3 s (the window's length) *(call)*, so the forensics timeline (#43) shows "Vox 2 far −33 from 19:04:12" next to the transport. No time series of values.
+- `lufs` records (info): the listener bound (port) or its bind failed (error); a key confirmed and matched (kind, device id, version, parents, instance, strip) or lost (stale: how long it lived, its last values); a key no instance confirms (once per key) or both do (warn); a key the bound starts dropping (warn, once per key until it is under the bound for 10 s); a problem raised or cleared.
+- A strip's state change (`fine`/`warn`/`far`/`silent`/`none` on an input point; `plain`/`silent`/`none` on an output point) as one `lufs` record with the value, at most one per strip per 3 s (the window's length) *(call)*, so the forensics timeline (#43) shows "Vox 2 far −33 from 19:04:12" next to the transport. No time series of values; refused datagrams are counted in `/api/status`, never one record each.
 
 ## 9. Tests
 
-- **The reference DSP (Rust, CI):** a small pure module with the BS.1770 filters, sub-blocks, `S` and `V`, tested against EBU Tech 3341's cases that apply to short-term (a stereo 1 kHz sine at −23 dBFS reads −23.0 ±0.1; the 20 dB step cases; the sample-rate variants 44.1/48/96 kHz), and the gate: a 2 s phrase, a 2 s pause (V stays at the phrase's value, S falls), 0.5 s of voice in 3 s (silent), a voice at −34 (red, not silent), a 1 s breath at −38 (silent).
-- **The device against the reference (PC, an L check):** the test signals rendered as WAVs, played through the device in Live; its parameters agree with the reference within 0.1 LU. The `.genexpr` text and the Rust module share one written-out coefficient table, kept equal by a CI check *(call)*.
-- **proto:** the tag (`+LUFS`, `+LUFS:-25`, `+LUFS:-5` bad, `+LUFS:x` bad, two tags), the composition into `Strip.lufs`, `judge` on every boundary (−22 fine, −21 warn, −19 warn, −18 far, −28 fine, −29 warn, −31 warn, −32 far, −70 silent, rounding of −21.5 and −22.4), the frame file's `lufs` field.
-- **hub (SimLive):** SimLive gains a Max device with `Short-term`/`Voice` parameters it can drive. A walk finds it two racks deep; a device inserted before it re-walks and follows the new ref; a missing and a doubled device give their problems; a disconnect clears; pacing and an idle page; `/api/status`. The mutation gate covers `judge`, the walk's matching and the pacing.
-- **E2E (Playwright, Chromium and WebKit iPad, the phone sizes):** a SimLive `Voice` of −25, −21, −17, −30, −33, −70 shows `−25` in the quiet grey, `−21` and `−30` in the muted amber, `−17` and `−33` in the muted red (the text's colour only: the reading has no background, border or box shadow), and for −70 nothing (no text, no caption, no box, the row's height kept); the output shows its plain number in the quiet grey; on every `+LUFS` strip the LUFS text is smaller, lighter and of lower contrast than the strip's dB readout; two bars in the fader track with SimLive's different L and R levels at different heights; a level at Live's top (1.0) lights no clip mark and shows no `CLIP` or `PEAK` text anywhere on the strip; the fader travel on the FOH fixture at 1194 × 834 is at least 322 px and a `+LUFS` strip's equals a plain strip's; every reading inside its box in the 64–120 px sweep; no `strip-menu` in the readout line; the detail key (`SEL`) with its box at least 36 × 36 px on the iPad strip, clear of the cap at −∞ (a down on its spot at −∞ grabs the cap, never the key, and a down on the key never moves the fader), its 500 ms hold opening the detail and a tap only the hint (the existing ☰ tests moved to the key); the name button unmuted has no fill of the track's colour (its background is the dark ground on strips of different track colours) and a 3 px bar of the track's colour at its left edge, and muted darker than every unmuted button with a lower-contrast name, no fill colour and no strike, the muted red text `MUTED` (`#a8474f`, 7 px) seen whole on the marks line under the name at every width from 64 px, the name at the button's top and the marks line under it, every mark of every combination seen whole at 64 and 83 px (the yield rule above), the head 59 px and no mute word on an unmuted strip, no `RET` on any strip, and the strip's cap, meter and readout at 0.4 as today; its size and its tap as today; no strip draws the group's top edge (`.strip::before`) and the group's side name is grey, so the track's colour is the strip's only colour; zero console errors.
-- **hub (armed tracks, §3.4):** SimLive's meter device's L/R plus the fader's dB and the pan law give the strip's output level; a muted track reads −∞; a non-armed track keeps Live's meters.
+- **The device's numbers against trueLevel (PC, an L check; the owner, 27.10):** on a played song, our `V` against Sonible trueLevel's short-term on two PA singers (the same signal, the same rack), within 0.5 LU, recorded on #151 (§10 step 7). *History: until 27.10 a Rust reference DSP (`fohmixer_proto::lufs::dsp`, EBU Tech 3341 cases, the gate cases) and a CI check of one coefficient table shared with the `.genexpr` stood here; PR 2 deletes the module and the table half of `scripts/check_lufs_device.py`.*
+- **The devices' patches (CI, `scripts/check_lufs_device.py`):** the embedded code equals the `.genexpr`; the patch's shape (§4.2); no parameter object; `udpsend 127.0.0.1 39110` equal to `lufs::wire::DEFAULT_PORT`; no absolute paths; the face's version.
+- **proto:** the tag (`+LUFS`, `+LUFS:-25`, `+LUFS:-5` bad, `+LUFS:x` bad, two tags), the composition into `Strip.lufs` and its kind, `judge` on every boundary (−22 fine, −21 warn, −19 warn, −18 far, −28 fine, −29 warn, −31 warn, −32 far, −70 silent, rounding of −21.5 and −22.4), the frame file's `lufs` field; the wire parser (a good datagram of each address, every refusal of §4.4, the parents' track and set); `meter` (P2's table points, the pan law at −1, 0, +1, a muted track's floor).
+- **hub (SimLive):** SimLive gains the two Max devices (class `MxDeviceAudioEffect`) and sends their datagrams to the hub's port, 5×/s and 30×/s, from values a control line sets. A device on a `+LUFS` strip's track is confirmed and its reading reaches a page; the same device id and parents in both sims is matched to the instance whose set holds it; a device moved (new parents) is confirmed again; a frame strip by its track's name; stale after 1000 ms (nothing shown, one lost record); a flood held to 10/s per key; the listener bound to 127.0.0.1 only; refused datagrams counted; a missing and a doubled device give their problems; a disconnect clears; pacing and an idle page; `/api/status`. The mutation gate covers `judge`, the parser, the bound, the match and the pacing.
+- **hub (armed tracks, §3.4):** SimLive's meter device's L/R plus the fader's dB and the pan law give the strip's output level on its meter keys; a muted track reads the floor; a device silent for 500 ms gives the keys back to Live's values; a non-armed track keeps Live's meters; an armed `+LUFS:<target>` strip without the device has `no meter device`.
+- **E2E (Playwright, Chromium and WebKit iPad, the phone sizes):** a SimLive `Voice` of −25, −21, −17, −30, −33, −70 shows `−25` in the quiet grey, `−21` and `−30` in the muted amber, `−17` and `−33` in the muted red (the text's colour only: the reading has no background, border or box shadow), and for −70 nothing (no text, no caption, no box, the row's height kept); the caption `LUFS` / `IN` on the input strip and `LUFS` / `OUT` on an output strip at 78 px and wider, every caption line inside the column, none under 78 px; the output shows its plain `Short-term` in the quiet grey; on every `+LUFS` strip the LUFS text is smaller, lighter and of lower contrast than the strip's dB readout; the device stopped: the number goes within 1.5 s; an armed strip's two bars follow its fader (SimLive's meter device at a fixed level, the fader moved down 10 dB: the bars fall); the fader travel on the FOH fixture at 1194 × 834 is at least 322 px and a `+LUFS` strip's equals a plain strip's; every reading inside its box in the 64–120 px sweep; zero console errors. (PR 1's strip tests, the head, SEL, bars and scale, stay as they are.)
 
 ## 10. Rollout on the PC
 
-1. **P1** (§4.3) on a set copy; results on #151. Decide (a) or the fallback.
-2. **PR 1: the strip** (`docs/superpowers/plans/2026-10-26-strip-v8.md`; the owner-approved order on #151, the DECIDED comment of 26.10 after v8): the v8 head, one colour, no RET, no clip lights, the stereo pair in the fader track, the scale right, the info column with an empty LUFS slot, SEL; no new data source.
-3. **The device:** the patch built and frozen on the PC; `.amxd` installed into both Live users' User Libraries by `Install-Fohmixer.ps1` (the installer already checks Live's User Library for the script).
-4. **The set work (ours, memory "restart Live and do set work yourself", "save the Live set yourself"):** in the band set, a new chain `LUFS` in each PA singer's `CORE Effects` beside trueLevel, the device in it; `+LUFS:-25` on each PA singer's Tuner. In the master set, the device on the speakers' return, `+LUFS` on its Tuner (or the frame strip's `lufs`). Each set saved with Ctrl+S. Not during an owner-declared event.
-5. **Check:** each rack's `latency_in_samples` unchanged; `/api/status` lists every strip's device; a played song: our `V` vs trueLevel's short-term on two singers, within 0.5 LU (recorded on #151); Live's CPU meter before and after (all devices together).
-6. **PR 2: the LUFS source**: proto + hub + SimLive + the reference DSP and the meter device (`+LUFS` tags, the hub following it, the LUFS text and the armed tracks' output meter on the surface; after the `lr` re-test, §3.4); deployed and verified on the iPad on real Wi-Fi (memory "real-device acceptance").
-7. **Acceptance with the owner:** a song with a mic at the right trim (quiet grey number), a trim moved 5 dB (amber text) and 8 dB (red text), the singer silent (nothing shown), the output's number while a song plays.
+1. **P1** (§4.3) on a set copy: done 27.10, the localhost path chosen.
+2. **PR 1: the strip** (`docs/superpowers/plans/2026-10-26-strip-v8.md`): shipped as v1.17.0 (PR #153, 27.10).
+3. **The `lr` re-test** (§3.4): passed 27.10; the site runs `meter_source: lr`.
+4. **PR 2: the LUFS source** (`docs/superpowers/plans/2026-10-27-lufs-pr2.md`): the devices' senders, the hub's listener and match, the `+LUFS` tags, the `LUFS IN` / `LUFS OUT` text, the armed tracks' output meter; P2 (§4.5) runs during it with a draft meter device. Deployed: the hub listens; nothing sends until step 5, and a strip without a device shows nothing.
+5. **The devices:** both patches built on the PC (`build_amxd.py`), opened once in Live's Max editor (the faces show the readings, `getpath` answers in the Max console), installed into both Live users' User Libraries by `Install-Fohmixer.ps1` *(built, PR 2: the bundle job builds both `.amxd` with `build_amxd.py` into the bundle's `live-device\`; the install writes them into each user's `<User Library>\Presets\Audio Effects\Max Audio Effect\`, only when they differ)*; placed through the LOM, never a GUI drag (the owner, 27.10): the track selected, the User Library's browser item loaded with `browser load_item` (it appends to the selected track's chain), then `live_set move_device(device, chain, position)` into its rack's chain.
+6. **The set work (ours, memory "restart Live and do set work yourself", "save the Live set yourself"):** in the band set, a new chain `LUFS` in each PA singer's `CORE Effects` beside trueLevel with `FohMixer LUFS` in it, `FohMixer Meter` in a rack (an empty dry chain and the device's chain) last in each armed PA singer's chain, `+LUFS:-25` on each PA singer's Tuner. In the master set, `FohMixer LUFS` on the speakers' return and on the Vocals / Backing buses, each in a rack of its own (an empty dry chain and the device's chain; never in series, §3.2), `+LUFS` on their Tuners (or the frame strip's `lufs`). Each set saved with Ctrl+S. Not during an owner-declared event.
+7. **Check:** every device in a rack's parallel chain, none in series (§3.2), and the sound unchanged; each rack's and track's `latency_in_samples` unchanged by the devices; Live's Undo menu shows no step from them after 60 s of playing; `/api/status` lists every device matched to its strip, none refused; a played song: our `V` against trueLevel's short-term on two PA singers within 0.5 LU (recorded on #151); the armed strips' bars follow their faders; Live's CPU before and after (all devices together); the hub log's busy lines with the transport playing (open since the `lr` re-test). Deployed and verified on the iPad on real Wi-Fi (memory "real-device acceptance").
+8. **Acceptance with the owner:** a song with a mic at the right trim (quiet grey number under `LUFS IN`), a trim moved 5 dB (amber text) and 8 dB (red text), the singer silent (nothing shown), the output's number under `LUFS OUT` while a song plays.
 
 ## 11. Open questions for the owner
 
-- **Q1. Bleed on the vocal mics.** With the band playing and the singer silent, how loud is the stage in a vocal mic after its trim? If it can reach −40 LUFS, the gate (−40) should go lower than the bleed would read as a voice, e.g. −36. A one-song check during P1 answers it; the owner only confirms which level counts as "not singing".
+- **Q1. Bleed on the vocal mics.** With the band playing and the singer silent, how loud is the stage in a vocal mic after its trim? If it can reach −40 LUFS, the gate (−40) should go lower than the bleed would read as a voice, e.g. −36. A one-song look at `V` with the singer silent during the rollout's check (§10 step 7) answers it; the owner only confirms which level counts as "not singing". (P1 did not reach it.)
 - **Q4 (answered, 26.10):** the detail key is `SEL` (variant A); B dropped. The LUFS is quiet text (v5).
 - **Q2 (answered, 26.10):** no PEAK number and no clip light or clip state on the strips (Live mixes in 32-bit float); mockup v3.
-- **Q3. Which tracks:** only the PA singers and the speakers' return, or also the master Live's hand mics (speech) with the same −25 target?
+- **Q3. Which tracks:** the PA singers, the speakers' return and the Vocals / Backing buses (the owner, 27.10: any output bus may carry `+LUFS`); also the master Live's hand mics (speech) with the same −25 target?
+- **Q5 (answered, 27.10):** the surface says which loudness a number is, `LUFS IN` or `LUFS OUT`. Its two-line form is shown on mockup v9 (§6.2).

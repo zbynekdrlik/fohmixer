@@ -16,7 +16,8 @@ CRATE = '[package]\nname = "{name}"\nversion.workspace = true\n'
 
 
 def write_tree(root: Path, version: str, lock_versions: dict[str, str] | None = None,
-               script_version: str | None = None, device_version: str | None = None) -> None:
+               script_version: str | None = None, device_version: str | None = None,
+               meter_version: str | None = None) -> None:
     (root / "Cargo.toml").write_text(
         f'[workspace]\nmembers = []\n\n[workspace.package]\nversion = "{version}"\n', encoding="utf-8")
     for name in cv.CRATES:
@@ -28,9 +29,10 @@ def write_tree(root: Path, version: str, lock_versions: dict[str, str] | None = 
     script = root / "live-script" / "FohMixer" / "version.py"
     script.parent.mkdir(parents=True, exist_ok=True)
     script.write_text(f'"""The script version."""\n\nVERSION = "{script_version or version}"\n', encoding="utf-8")
-    device = root / cv.DEVICE_VERSION
-    device.parent.mkdir(parents=True, exist_ok=True)
-    device.write_text(f"{device_version or version}\n", encoding="utf-8")
+    for path, own in zip(cv.DEVICE_VERSIONS, (device_version, meter_version), strict=True):
+        device = root / path
+        device.parent.mkdir(parents=True, exist_ok=True)
+        device.write_text(f"{own or version}\n", encoding="utf-8")
 
 
 def git(root: Path, *args: str) -> None:
@@ -96,9 +98,16 @@ class ConsistencyTests(unittest.TestCase):
     def test_the_lufs_device_version_must_match(self) -> None:
         write_tree(self.root, "1.2.3", device_version="1.2.2")
         self.assertEqual(cv.consistency_errors(self.root),
-                         [f"{cv.DEVICE_VERSION.as_posix()} has '1.2.2', expected 1.2.3"])
+                         [f"{cv.DEVICE_VERSIONS[0].as_posix()} has '1.2.2', expected 1.2.3"])
         write_tree(self.root, "1.2.3")
         self.assertEqual(cv.consistency_errors(self.root), [])
+
+    def test_the_meter_device_version_must_match(self) -> None:
+        write_tree(self.root, "1.2.3", meter_version="1.2.4")
+        self.assertEqual(cv.consistency_errors(self.root),
+                         ["live-device/FohMixer-Meter/version.txt has '1.2.4', expected 1.2.3"])
+        write_tree(self.root, "1.2.3", device_version="1.2.2", meter_version="1.2.2")
+        self.assertEqual(len(cv.consistency_errors(self.root)), 2)
 
     def test_script_version_reads_the_string_assignment(self) -> None:
         self.assertEqual(cv.script_version('"""Doc."""\n\nVERSION = "1.2.3"\n'), "1.2.3")

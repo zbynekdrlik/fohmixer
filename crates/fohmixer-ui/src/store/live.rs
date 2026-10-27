@@ -29,7 +29,7 @@ use super::eq::inputs::Inputs;
 use super::eq::{EqListView, EqView};
 use super::intent::Intents;
 use super::{
-    HubAutotune, HubReverb, HubValues, InstanceView, ResultFn, Slot, TOKEN_KEY, next_range,
+    HubAutotune, HubLufs, HubReverb, HubValues, InstanceView, ResultFn, Slot, TOKEN_KEY, next_range,
 };
 use crate::behave::ableset::AbleSetInfo;
 use crate::behave::idle::IdleWatch;
@@ -170,6 +170,9 @@ pub struct LiveStore {
     /// AUTOTUNE (#104): the hub's last state, kept through a reconnect,
     /// stale until the hub's next (`HubAutotune`).
     pub autotune: RwSignal<HubAutotune>,
+    /// The loudness points' readings (#151): forgotten at a close, every
+    /// point sent again at the next attach.
+    pub lufs: RwSignal<HubLufs>,
     /// The hub socket is up and said hello.
     pub connected: RwSignal<bool>,
     /// How many subscriptions the pages on screen hold.
@@ -208,6 +211,7 @@ impl LiveStore {
             hub: RwSignal::new(HubValues::default()),
             reverb: RwSignal::new(HubReverb::default()),
             autotune: RwSignal::new(HubAutotune::default()),
+            lufs: RwSignal::new(HubLufs::default()),
             connected: RwSignal::new(false),
             subscribed: RwSignal::new(0),
             dropouts: RwSignal::new(Counter::default()),
@@ -481,6 +485,7 @@ impl LiveStore {
         let _ = self.hub.try_update(HubValues::closed);
         let _ = self.reverb.try_update(HubReverb::closed);
         let _ = self.autotune.try_update(HubAutotune::closed);
+        let _ = self.lufs.try_update(HubLufs::closed);
         let _ = self.instances.try_update(|all| {
             for view in all.values_mut() {
                 view.online = false;
@@ -654,6 +659,10 @@ impl LiveStore {
                 since,
             }),
             ServerMsg::Link { .. } => {}
+            // The loudness points' readings (#151): each strip reads its own.
+            ServerMsg::Lufs { items } => {
+                let _ = self.lufs.try_update(|lufs| lufs.put(items));
+            }
             // Pro-Q 4's own undo (#71 PR P2a): the answer to the bar's
             // ↶ UNDO (PR P2b).
             ServerMsg::EqUndo { session, n, result } => self.on_eq_undo(session, n, result),

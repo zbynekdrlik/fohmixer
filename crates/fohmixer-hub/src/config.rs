@@ -310,6 +310,29 @@ pub enum EqBackend {
     Off,
 }
 
+/// `[lufs]` (#151, spec §4.4): the UDP port on 127.0.0.1 where the LUFS
+/// and meter devices send their readings (fixed in the devices' patches:
+/// another port means the devices rebuilt with `build_amxd.py --port`);
+/// `0` turns the listener off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LufsCfg {
+    #[serde(default = "default_lufs_port")]
+    pub port: u16,
+}
+
+fn default_lufs_port() -> u16 {
+    fohmixer_proto::lufs::wire::DEFAULT_PORT
+}
+
+impl Default for LufsCfg {
+    fn default() -> Self {
+        Self {
+            port: default_lufs_port(),
+        }
+    }
+}
+
 /// `[eq]` (#71 PR E): the Pro-Q 4 screen's backend.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -463,6 +486,10 @@ pub struct Config {
     /// The Pro-Q 4 screen (#71 PR E); none: the platform's backend.
     #[serde(default)]
     pub eq: Option<EqCfg>,
+    /// The LUFS devices' listener (#151); the default port without the
+    /// table.
+    #[serde(default)]
+    pub lufs: LufsCfg,
     /// The data folder (where the file was read from).
     #[serde(skip)]
     pub data_dir: PathBuf,
@@ -484,6 +511,7 @@ impl Config {
             ableset: None,
             companion: None,
             eq: None,
+            lufs: LufsCfg::default(),
             data_dir: data_dir.to_path_buf(),
         }
     }
@@ -1369,6 +1397,36 @@ mod tests {
         ] {
             assert!(Config::parse(&table(ok), &data()).is_ok(), "{ok}");
         }
+    }
+
+    #[test]
+    fn lufs_port_defaults_to_39110() {
+        assert_eq!(Config::parse("", &data()).unwrap().lufs.port, 39110);
+        assert_eq!(Config::parse("[lufs]\n", &data()).unwrap().lufs.port, 39110);
+        assert_eq!(Config::defaults(&data()).lufs, LufsCfg { port: 39110 });
+        assert_eq!(
+            Config::parse("[lufs]\nport = 39120\n", &data())
+                .unwrap()
+                .lufs
+                .port,
+            39120
+        );
+    }
+
+    #[test]
+    fn lufs_port_zero_is_off() {
+        assert_eq!(
+            Config::parse("[lufs]\nport = 0\n", &data())
+                .unwrap()
+                .lufs
+                .port,
+            0
+        );
+        let refused = format!(
+            "{:#}",
+            Config::parse("[lufs]\nhost = \"0.0.0.0\"\n", &data()).unwrap_err()
+        );
+        assert!(refused.contains("unknown field"), "{refused}");
     }
 
     /// A config's `[eq]` backend.

@@ -1237,3 +1237,128 @@ fn the_autotune_targets_are_the_first_autotune_controls() {
             .is_empty()
     );
 }
+
+/// The FOH page's `Podklady #` strip (its first row's second group).
+fn podklady_strip(v: &mut Value) -> &mut Value {
+    &mut v["pages"][1]["rows"][0]["sections"][1]["controls"][0]
+}
+
+fn strip_of(layout: &Layout) -> &Strip {
+    let Section::Group(group) = &layout.pages[1].rows[0].sections[1] else {
+        panic!("a group")
+    };
+    match &group.controls[0] {
+        Control::Strip(strip) => strip.as_ref(),
+        _ => panic!("a strip"),
+    }
+}
+
+#[test]
+fn frame_strip_reads_lufs_field() {
+    // #151: an input point with its target, an output point without.
+    let mut v = sample();
+    podklady_strip(&mut v)["lufs"] = json!({"target": -25});
+    let layout = parse(v.clone());
+    assert_eq!(layout.validate(), vec![]);
+    let spec = strip_of(&layout).lufs.expect("a loudness point");
+    assert_eq!(spec, LufsSpec { target: Some(-25) });
+    assert_eq!(spec.kind(), LufsKind::In);
+    assert_eq!(serde_json::to_value(&layout).unwrap(), v);
+
+    let mut v = sample();
+    podklady_strip(&mut v)["lufs"] = json!({});
+    let layout = parse(v.clone());
+    assert_eq!(layout.validate(), vec![]);
+    let spec = strip_of(&layout).lufs.expect("a loudness point");
+    assert_eq!(spec, LufsSpec { target: None });
+    assert_eq!(spec.kind(), LufsKind::Out);
+    assert_eq!(serde_json::to_value(&layout).unwrap(), v);
+
+    // None by default, and left out when written.
+    assert_eq!(strip_of(&parse(sample())).lufs, None);
+}
+
+#[test]
+fn frame_strip_refuses_unknown_lufs_field() {
+    let mut v = sample();
+    podklady_strip(&mut v)["lufs"] = json!({"goal": 1});
+    assert!(serde_json::from_value::<Layout>(v).is_err());
+    let mut v = sample();
+    podklady_strip(&mut v)["lufs"] = json!({"target": -25.5});
+    assert!(serde_json::from_value::<Layout>(v).is_err());
+}
+
+#[test]
+fn frame_strip_target_out_of_range_is_invalid() {
+    for target in [-41, -9, 0, -128, 127] {
+        let mut v = sample();
+        podklady_strip(&mut v)["lufs"] = json!({"target": target});
+        assert_eq!(
+            errors(v),
+            vec![format!(
+                "pages[1].rows[0].sections[1].controls[0].lufs: target {target} is not in -40..=-10"
+            )],
+            "{target}"
+        );
+    }
+    for target in [-40, -10, -25] {
+        let mut v = sample();
+        podklady_strip(&mut v)["lufs"] = json!({"target": target});
+        assert_eq!(errors(v), Vec::<String>::new(), "{target}");
+    }
+}
+
+#[test]
+fn lufs_targets_are_minus_40_to_minus_10() {
+    assert_eq!((LUFS_TARGET_MIN, LUFS_TARGET_MAX), (-40, -10));
+    assert!(lufs_target_ok(-40));
+    assert!(lufs_target_ok(-10));
+    assert!(!lufs_target_ok(-41));
+    assert!(!lufs_target_ok(-9));
+}
+
+#[test]
+fn the_lufs_points_are_the_strips_with_lufs_each_track_once() {
+    let strip = |anchor: Value, label: Option<&str>, lufs: Option<Value>| {
+        let mut v = json!({"kind": "strip", "binding": {"instance": "band", "anchor": anchor},
+            "strip_kind": "standard"});
+        if let Some(label) = label {
+            v["label"] = json!(label);
+        }
+        if let Some(lufs) = lufs {
+            v["lufs"] = lufs;
+        }
+        v
+    };
+    let layout = parse(json!({"schema": 2, "default_page": "p", "pages": [
+        {"id": "p", "title": "P", "rows": [{"sections": [
+            {"kind": "group", "id": "fx", "controls": [
+                strip(json!({"kind": "track_at", "index": 3}), Some("Vox 1"), Some(json!({"target": -25}))),
+                strip(json!({"kind": "track", "name": "Vocals bus"}), None, Some(json!({}))),
+                strip(json!({"kind": "track_at", "index": 4}), Some("Vox 2"), None)]}]}]},
+        {"id": "view-FX", "title": "FX", "view": true, "rows": [{"sections": [
+            {"kind": "group", "id": "view-fx", "controls": [
+                strip(json!({"kind": "track_at", "index": 3}), Some("Vox 1"), Some(json!({"target": -25})))]}]}]}]}));
+    assert!(layout.validate().is_empty(), "{:?}", layout.validate());
+    assert_eq!(
+        layout.lufs_points(),
+        vec![
+            LufsPoint {
+                instance: "band".into(),
+                anchor: Anchor::TrackAt { index: 3 },
+                target: "live_set tracks 3".into(),
+                spec: LufsSpec { target: Some(-25) },
+                label: "Vox 1".into(),
+            },
+            LufsPoint {
+                instance: "band".into(),
+                anchor: Anchor::Track {
+                    name: "Vocals bus".into()
+                },
+                target: "live_set tracks[name=Vocals bus]".into(),
+                spec: LufsSpec { target: None },
+                label: "Vocals".into(),
+            },
+        ]
+    );
+}

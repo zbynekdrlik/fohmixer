@@ -224,6 +224,7 @@ pub fn is_warn(record: &Value) -> bool {
         )
         || (ev == "trace" && holds_warn_event(record))
         || (ev == "songmap" && problems_changed(record))
+        || (ev == "lufs" && record.get("warn") == Some(&Value::Bool(true)))
 }
 
 /// Whether a song map read's record says its problems changed.

@@ -180,6 +180,10 @@ pub fn MuteView(
     /// partner's; none on the detail's MUTE.
     #[prop(optional, into)]
     flink: Signal<Flink>,
+    /// A loudness point's problem (#151, `no LUFS meter`): the marks
+    /// line's `!` too, as a marker problem's.
+    #[prop(optional, into)]
+    lufs_flag: Signal<bool>,
 ) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let slot = state;
@@ -201,18 +205,21 @@ pub fn MuteView(
     // its mark and pill on the button instead.
     let line_slots = all.clone();
     let line = corner.map(move |c| {
+        let flagged = move || c.flag || lufs_flag.try_get().unwrap_or(false);
         let looks = Memo::new(move |_| {
             let fader = flink.try_get().unwrap_or_default().shown();
             let muted = shown.try_get() == Some(Linked::Muted);
-            marks_look(c.flag, linked, fader, muted)
+            marks_look(flagged(), linked, fader, muted)
         });
         let chain_bare = Signal::derive(move || looks.try_get().is_some_and(|l| l.chain_bare));
         let flink_bare = move || looks.try_get().is_some_and(|l| l.flink_bare);
         let flink_yield = move || looks.try_get().is_some_and(|l| l.flink_yield);
         let crowd = move || looks.try_get().is_some_and(|l| l.crowd);
-        let flag = c
-            .flag
-            .then(|| view! { <span class="strip-flag" aria-hidden="true">"!"</span> });
+        let flag = move || {
+            flagged().then(|| {
+                view! { <span class="strip-flag" data-testid="strip-flag" aria-hidden="true">"!"</span> }
+            })
+        };
         let chain = linked.then(move || view! { <LinkMark slots=line_slots bare=chain_bare /> });
         let fader_mark = move || {
             let role = flink.try_get().unwrap_or_default();

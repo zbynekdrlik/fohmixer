@@ -285,6 +285,51 @@ pub struct Strip {
     /// The fader links this strip is a partner of (#130): their leaders.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fader_follows: Vec<FaderFollow>,
+    /// A loudness point (#151): its Tuner marker's `+LUFS` or
+    /// `+LUFS:<target>`, or a frame strip's `"lufs"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lufs: Option<LufsSpec>,
+}
+
+/// The lowest target a `+LUFS:<target>` takes (#151, spec §5.1).
+pub const LUFS_TARGET_MIN: i8 = -40;
+/// The highest target a `+LUFS:<target>` takes.
+pub const LUFS_TARGET_MAX: i8 = -10;
+
+/// A strip's loudness point (#151, spec §3.1, §5.1): with a target an
+/// INPUT point (after the trim, its `Voice` judged against the target),
+/// without one an OUTPUT point (its plain short-term).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LufsSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<i8>,
+}
+
+/// Which loudness a point's number is (#151, the owner's FINDING of 27.10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LufsKind {
+    /// After the trim, judged against the target: `LUFS IN`.
+    In,
+    /// An output, plain: `LUFS OUT`.
+    Out,
+}
+
+impl LufsSpec {
+    /// `In` with a target, `Out` without (the kind comes from the tag
+    /// alone, never from the track's place).
+    pub fn kind(&self) -> LufsKind {
+        match self.target {
+            Some(_) => LufsKind::In,
+            None => LufsKind::Out,
+        }
+    }
+}
+
+/// Whether `target` is a target a loudness point takes.
+pub fn lufs_target_ok(target: i8) -> bool {
+    (LUFS_TARGET_MIN..=LUFS_TARGET_MAX).contains(&target)
 }
 
 /// A fader link's leader: its Live set and its `+ID` (#130, D18).
@@ -718,6 +763,51 @@ impl Layout {
         found.into_values().collect()
     }
 
+    /// The loudness points (#151, spec §4.4): every strip with `lufs`, each
+    /// track once (a strip shows in several views), in document order of
+    /// its first place; its target in canonical form (the key a page holds
+    /// its strip by), its anchor (the hub names its track from it) and its
+    /// label (the strip's own, else its track name's first word).
+    pub fn lufs_points(&self) -> Vec<LufsPoint> {
+        let mut points: Vec<LufsPoint> = Vec::new();
+        for control in self.controls() {
+            let Control::Strip(strip) = control else {
+                continue;
+            };
+            let Some(spec) = strip.lufs else {
+                continue;
+            };
+            let track = Binding {
+                instance: strip.binding.instance.clone(),
+                anchor: strip.binding.anchor.clone(),
+                path: None,
+            };
+            let Ok(target) = track.target() else {
+                continue;
+            };
+            let target = crate::path::canonical_target(&target);
+            if points
+                .iter()
+                .any(|p| p.instance == strip.binding.instance && p.target == target)
+            {
+                continue;
+            }
+            let label = match (&strip.label, &strip.binding.anchor) {
+                (Some(label), _) => label.clone(),
+                (None, Anchor::Track { name } | Anchor::Return { name }) => strip_label(name),
+                (None, _) => target.clone(),
+            };
+            points.push(LufsPoint {
+                instance: strip.binding.instance.clone(),
+                anchor: strip.binding.anchor.clone(),
+                target,
+                spec,
+                label,
+            });
+        }
+        points
+    }
+
     /// The frame's linked faders (#130, D18: Podklady All): each one's link
     /// and label, in document order.
     pub fn linked_faders(&self) -> Vec<(LinkId, String)> {
@@ -772,6 +862,17 @@ pub struct RuleFader {
     pub instance: String,
     pub label: String,
     pub target: String,
+}
+
+/// One loudness point of a served layout (#151): its strip's instance,
+/// anchor and track target (canonical), its spec and its label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LufsPoint {
+    pub instance: String,
+    pub anchor: Anchor,
+    pub target: String,
+    pub spec: LufsSpec,
+    pub label: String,
 }
 
 struct Validator {
@@ -899,6 +1000,14 @@ impl Validator {
                 }
                 for (i, link) in strip.mute_links.iter().enumerate() {
                     self.binding(&format!("{at}.mute_links[{i}]"), link);
+                }
+                if let Some(target) = strip.lufs.and_then(|l| l.target)
+                    && !lufs_target_ok(target)
+                {
+                    self.error(
+                        &format!("{at}.lufs"),
+                        format!("target {target} is not in {LUFS_TARGET_MIN}..={LUFS_TARGET_MAX}"),
+                    );
                 }
                 if let Some(link) = &strip.fader_link {
                     self.id_name(&format!("{at}.fader_link"), &link.id);

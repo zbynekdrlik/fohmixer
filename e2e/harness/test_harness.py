@@ -262,6 +262,12 @@ class HarnessTest(unittest.TestCase):
             '[[instances]]\nname = "master"\nport = 2\n'
             '[eq]\nbackend = "sim"\n',
         )
+        # #151: the LUFS devices' port, both hosts sending there.
+        self.assertIn(f"[lufs]\nport = {self.harness.lufs_port}\n", text)
+        self.assertEqual(
+            harness.hub_config(8480, 1, 2, lufs_port=39111),
+            harness.hub_config(8480, 1, 2) + "[lufs]\nport = 39111\n",
+        )
 
     def test_the_remote_tables_of_the_hub_config(self):
         remote = {
@@ -490,6 +496,10 @@ class HarnessTest(unittest.TestCase):
         self.assertEqual(harness.expected_answer("param live_set x value 1"), "PARAM")
         self.assertEqual(harness.expected_answer("sets value live_set x"), "SETS")
         self.assertEqual(harness.expected_answer("clip add 8 50 51 Key {G}"), "CLIP")
+        self.assertEqual(harness.expected_answer("maxdev lufs track 1 add rack"), "MAXDEV")
+        self.assertEqual(harness.expected_answer("lufs track 1 -300 -250"), "LUFS")
+        self.assertEqual(harness.expected_answer("level track 1 -120 -180"), "LEVEL")
+        self.assertEqual(harness.expected_answer("flood track 1 off"), "FLOOD")
         self.assertIsNone(harness.expected_answer("stall 400"))
         self.assertIsNone(harness.expected_answer(""))
 

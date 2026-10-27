@@ -267,6 +267,14 @@ class ListenerTest(unittest.TestCase):
         self.assertIn("notifications", errors[0])
         self.assertFalse(self.track.solo)
 
+    def test_arm_is_a_listened_bool(self):
+        heard = []
+        self.assertFalse(self.track.arm)
+        self.track.add_arm_listener(lambda: heard.append(self.track.arm))
+        self.track.arm = 1
+        self.assertIs(self.track.arm, True)
+        self.assertEqual(heard, [True])
+
     def test_enum_property(self):
         states = Live.Track.Track.monitoring_states
         self.assertEqual(states.names["IN"], 0)

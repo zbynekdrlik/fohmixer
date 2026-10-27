@@ -72,5 +72,10 @@ mod tests {
             "the procedure"
         );
         assert!(main.contains("<code>OFF</code>") && main.contains("<code>ON</code>"));
+        // #151: the LUFS tags, the caption, the devices and the problems.
+        assert!(main.contains("<code>+LUFS:-25</code>") && main.contains("<code>+LUFS</code>"));
+        assert!(main.contains("<code>LUFS IN</code>") && main.contains("<code>LUFS OUT</code>"));
+        assert!(main.contains("FohMixer LUFS") && main.contains("FohMixer Meter"));
+        assert!(main.contains("<code>no LUFS meter</code>"), "the problem");
     }
 }

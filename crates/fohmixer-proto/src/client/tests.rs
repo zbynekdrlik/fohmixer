@@ -730,8 +730,48 @@ fn api_bodies_round_trip() {
             stale: true,
             gave_up: true,
         }],
+        lufs: LufsStatus {
+            listener: LufsListenerStatus {
+                addr: Some("127.0.0.1:39110".into()),
+                error: None,
+                taken: 40,
+                refused: std::collections::BTreeMap::from([("tags".to_string(), 2)]),
+                dropped: 1,
+                full: 0,
+            },
+            devices: vec![LufsDeviceStatus {
+                kind: "lufs".into(),
+                device: 7,
+                version: "v1.19.0".into(),
+                parents: vec![
+                    "LUFS IN".into(),
+                    "CORE Effects".into(),
+                    "Vox 1".into(),
+                    "FOH Band".into(),
+                ],
+                state: "matched".into(),
+                instance: Some("band".into()),
+                age_ms: 40,
+                first: -300,
+                second: -253,
+            }],
+            strips: vec![LufsStripStatus {
+                instance: "band".into(),
+                target: "live_set tracks 1".into(),
+                label: "Vox 1".into(),
+                track: Some("Vox 1".into()),
+                state: crate::lufs::LufsState::Fine,
+                tenths: Some(-253),
+                problem: None,
+            }],
+        },
     };
     let json = serde_json::to_value(&status).unwrap();
+    assert_eq!(
+        json["lufs"]["strips"],
+        json!([{"instance": "band", "target": "live_set tracks 1", "label": "Vox 1",
+                "track": "Vox 1", "state": "fine", "tenths": -253, "problem": null}])
+    );
     assert_eq!(
         json["autotune"],
         json!({"aut": true, "writes": 3, "taps": 1, "targets": [
@@ -1643,4 +1683,41 @@ fn a_song_map_reports_keys_with_their_names() {
         })
     );
     assert_eq!(older.changes[0].key.name, "");
+}
+
+#[test]
+fn lufs_items_round_trip() {
+    round_trip_server(
+        ServerMsg::Lufs {
+            items: vec![
+                LufsItem {
+                    instance: "band".into(),
+                    target: "live_set tracks 1".into(),
+                    tenths: Some(-253),
+                    problem: None,
+                },
+                LufsItem {
+                    instance: "master".into(),
+                    target: "live_set return_tracks 0".into(),
+                    tenths: None,
+                    problem: Some(LufsProblem::TwoLufsMeters),
+                },
+            ],
+        },
+        json!({"type": "lufs", "items": [
+            {"instance": "band", "target": "live_set tracks 1", "tenths": -253},
+            {"instance": "master", "target": "live_set return_tracks 0", "tenths": null,
+             "problem": "two_lufs_meters"},
+        ]}),
+    );
+}
+
+#[test]
+fn an_older_hubs_status_reads_with_no_lufs() {
+    let status: LufsStatus = serde_json::from_value(json!({})).unwrap();
+    assert_eq!(status, LufsStatus::default());
+    let listener: LufsListenerStatus =
+        serde_json::from_value(json!({"addr": "127.0.0.1:39110", "taken": 3})).unwrap();
+    assert_eq!(listener.addr.as_deref(), Some("127.0.0.1:39110"));
+    assert_eq!((listener.taken, listener.dropped), (3, 0));
 }

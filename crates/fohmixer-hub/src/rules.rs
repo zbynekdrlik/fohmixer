@@ -20,6 +20,8 @@ use serde::{Deserialize, Serialize};
 pub mod autotune;
 #[path = "rules/links.rs"]
 pub mod links;
+#[path = "rules/lufs.rs"]
+pub mod lufs;
 #[path = "rules/reverb.rs"]
 pub mod reverb;
 

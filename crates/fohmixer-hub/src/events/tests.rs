@@ -504,3 +504,22 @@ fn the_record_is_warn_only_when_its_problems_changed_or_it_failed() {
     // Another record's `problems_changed` is not a song map's.
     assert!(!is_warn(&json!({"ev": "ack", "problems_changed": true})));
 }
+
+#[test]
+fn a_lufs_record_is_warn_only_when_it_says_so() {
+    // #151: a problem, an unmatched or doubled device, a dropping key.
+    assert!(is_warn(
+        &json!({"ev": "lufs", "what": "unmatched", "warn": true})
+    ));
+    assert!(!is_warn(&json!({"ev": "lufs", "what": "found"})));
+    assert!(!is_warn(
+        &json!({"ev": "lufs", "what": "state", "warn": false})
+    ));
+    assert!(!is_warn(
+        &json!({"ev": "lufs", "what": "state", "warn": "true"})
+    ));
+    assert!(!is_warn(&json!({"ev": "trace", "warn": true})));
+    assert!(is_warn(
+        &json!({"ev": "lufs", "what": "listening", "error": "in use"})
+    ));
+}

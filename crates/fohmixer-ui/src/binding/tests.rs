@@ -121,6 +121,7 @@ fn strip(name: &str) -> Strip {
         reverb: false,
         fader_link: None,
         fader_follows: Vec::new(),
+        lufs: None,
     }
 }
 
@@ -764,6 +765,7 @@ fn marker(index: u32, label: &str) -> Strip {
         reverb: false,
         fader_link: None,
         fader_follows: Vec::new(),
+        lufs: None,
     }
 }
 

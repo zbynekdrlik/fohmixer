@@ -42,7 +42,12 @@
 #   exactly as its task starts it (it reads the installed toml and polls the
 #   hub, its log says so), a stop without the stop task refused with the tray
 #   left running, and --exit (the stop task's command) ending it gracefully;
-#   --exit with no tray running exits at once.
+#   --exit with no tray running exits at once;
+# - the Max for Live devices (#151): both built by build_amxd.py (python on
+#   PATH, as in the CI jobs) into the bundle's live-device\, refused when
+#   missing or not a device, installed into each user's User Library at
+#   Presets\Audio Effects\Max Audio Effect equal to the bundle's, a second
+#   run writing nothing, a changed one written again.
 # Only its own test objects are removed; nothing is ended by force (spec I7).
 param([Parameter(Mandatory)][string]$HubExe, [Parameter(Mandatory)][string]$TrayExe)
 Set-StrictMode -Version Latest
@@ -572,9 +577,26 @@ try {
     # ---- the bundle ----
     $out = Join-Path $base 'out'
     New-Item -ItemType Directory -Force -Path $out | Out-Null
-    $e = ErrorOf { New-FohBundle -RepoRoot $repo -HubExe $HubExe -TrayExe (Join-Path $base 'no-tray.exe') -OutDir $out -Sha $sha }
+    # The two Max for Live devices (#151), built as the bundle job builds them.
+    $deviceDir = Join-Path $base 'devices'
+    New-Item -ItemType Directory -Force -Path $deviceDir | Out-Null
+    $buildAmxd = Join-Path $repo 'live-device\FohMixer-LUFS\build_amxd.py'
+    foreach ($patch in @('live-device\FohMixer-LUFS\FohMixer LUFS.maxpat', 'live-device\FohMixer-Meter\FohMixer Meter.maxpat')) {
+        $name = [IO.Path]::GetFileNameWithoutExtension($patch) + '.amxd'
+        & python $buildAmxd --patch (Join-Path $repo $patch) --out (Join-Path $deviceDir $name)
+        if ($LASTEXITCODE -ne 0) { throw "build_amxd.py failed for $patch ($LASTEXITCODE)" }
+    }
+    $e = ErrorOf { New-FohBundle -RepoRoot $repo -HubExe $HubExe -TrayExe (Join-Path $base 'no-tray.exe') -DeviceDir $deviceDir -OutDir $out -Sha $sha }
     Assert ($e -like '*the tray*does not exist*') "bundle-refuses-a-missing-tray ($e)"
-    $b1 = New-FohBundle -RepoRoot $repo -HubExe $HubExe -TrayExe $TrayExe -OutDir $out -Sha $sha
+    $noDevices = Join-Path $base 'no-devices'
+    New-Item -ItemType Directory -Force -Path $noDevices | Out-Null
+    Copy-Item -LiteralPath (Join-Path $deviceDir 'FohMixer LUFS.amxd') -Destination $noDevices
+    $e = ErrorOf { New-FohBundle -RepoRoot $repo -HubExe $HubExe -TrayExe $TrayExe -DeviceDir $noDevices -OutDir $out -Sha $sha }
+    Assert ($e -like '*FohMixer Meter.amxd does not exist*') "bundle-refuses-a-missing-device ($e)"
+    [IO.File]::WriteAllText((Join-Path $noDevices 'FohMixer Meter.amxd'), '{"patcher": {}}')
+    $e = ErrorOf { New-FohBundle -RepoRoot $repo -HubExe $HubExe -TrayExe $TrayExe -DeviceDir $noDevices -OutDir $out -Sha $sha }
+    Assert ($e -like '*not a Max audio effect device*FohMixer Meter.amxd*') "bundle-refuses-a-file-that-is-no-device ($e)"
+    $b1 = New-FohBundle -RepoRoot $repo -HubExe $HubExe -TrayExe $TrayExe -DeviceDir $deviceDir -OutDir $out -Sha $sha
     Assert ((Get-FohSha256 (Join-Path $b1.stage 'fohmixer-tray.exe')) -ceq (Get-FohSha256 $TrayExe)) 'bundle-holds-the-built-tray'
     $v1 = $b1.version
     Assert ($v1 -ceq (Get-FohScriptVersion -Path (Join-Path $repo 'live-script\FohMixer\version.py'))) 'bundle-version-is-the-workspace-version'
@@ -583,8 +605,12 @@ try {
     try { $entries = @($zip.Entries | ForEach-Object { $_.FullName }) } finally { $zip.Dispose() }
     foreach ($n in @('VERSION', 'SHA256SUMS', 'fohmixer-hub.exe', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1', 'FohmixerLivePrefs.ps1', 'FohmixerFirewall.ps1', 'FohmixerRemote.ps1', 'Start-FohmixerHub.ps1',
             'Stop-FohmixerHub.ps1', 'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py', 'FohMixer/transport/server.py',
-            'fohmixer-tray.exe', 'FohmixerTray.ps1', 'FohmixerHubProcess.ps1', 'FohmixerTasks.ps1', 'THIRD-PARTY-NOTICES.md')) {
+            'fohmixer-tray.exe', 'FohmixerTray.ps1', 'FohmixerHubProcess.ps1', 'FohmixerTasks.ps1', 'THIRD-PARTY-NOTICES.md',
+            'live-device/FohMixer LUFS.amxd', 'live-device/FohMixer Meter.amxd')) {
         Assert ($entries -ccontains $n) "bundle-holds-$n"
+    }
+    foreach ($d in @('FohMixer LUFS.amxd', 'FohMixer Meter.amxd')) {
+        Assert ((Get-FohSha256 (Join-Path $b1.stage "live-device\$d")) -ceq (Get-FohSha256 (Join-Path $deviceDir $d))) "bundle-holds-the-built-$d"
     }
     # The IJG credit jpeg-encoder's licence asks of the shipped hub's documentation (#71).
     $noticeText = [IO.File]::ReadAllText((Join-Path $b1.stage 'THIRD-PARTY-NOTICES.md'))
@@ -652,6 +678,29 @@ try {
     $masterCopy = Join-Path $masterLib 'Remote Scripts\FohMixer'
     Assert-Copy -Copy $bandCopy -Bundle (Join-Path $appV1 'FohMixer') -Instance 'band' -Port 39181 -What 'install-1-band'
     Assert-Copy -Copy $masterCopy -Bundle (Join-Path $appV1 'FohMixer') -Instance 'master' -Port 39182 -What 'install-1-master'
+    # (#151) Both devices in each user's User Library, where Live's browser lists them.
+    $bandDevices = Join-Path $bandLib 'Presets\Audio Effects\Max Audio Effect'
+    $masterDevices = Join-Path $masterLib 'Presets\Audio Effects\Max Audio Effect'
+    foreach ($lib in @($bandDevices, $masterDevices)) {
+        foreach ($d in @('FohMixer LUFS.amxd', 'FohMixer Meter.amxd')) {
+            $installed = Join-Path $lib $d
+            Assert ((Test-Path -LiteralPath $installed -PathType Leaf) -and
+                (Get-FohSha256 $installed) -ceq (Get-FohSha256 (Join-Path $appV1 "live-device\$d"))) "install-1-puts-$d-into-each-user-library"
+        }
+        Assert (@(Get-ChildItem -LiteralPath $lib -File).Count -eq 2) 'install-1-leaves-no-temp-file-beside-the-devices'
+    }
+    Assert ($r1.out -like "*the band user's Max devices in Presets\Audio Effects\Max Audio Effect (written: FohMixer LUFS.amxd, FohMixer Meter.amxd)*") 'install-1-says-which-devices-it-wrote'
+    # In-process on a library of its own: a changed device is written again, an equal one never, a missing library refused.
+    $devLib = Join-Path $base 'devices-lib'
+    New-Item -ItemType Directory -Force -Path $devLib | Out-Null
+    $w = @(Install-FohUserDevices -Source (Join-Path $appV1 'live-device') -UserLibrary $devLib)
+    Assert ($w.Count -eq 2) 'devices-first-run-writes-both'
+    Assert (@(Install-FohUserDevices -Source (Join-Path $appV1 'live-device') -UserLibrary $devLib).Count -eq 0) 'devices-second-run-writes-nothing'
+    [IO.File]::WriteAllText((Join-Path $devLib 'Presets\Audio Effects\Max Audio Effect\FohMixer Meter.amxd'), 'frozen by hand')
+    $w = @(Install-FohUserDevices -Source (Join-Path $appV1 'live-device') -UserLibrary $devLib)
+    Assert ($w.Count -eq 1 -and $w[0] -ceq 'FohMixer Meter.amxd') "devices-a-changed-one-is-written-again ($($w -join ', '))"
+    $e = ErrorOf { Install-FohUserDevices -Source (Join-Path $appV1 'live-device') -UserLibrary (Join-Path $base 'no-such-lib') }
+    Assert ($e -like "*Live's User Library not found*") "devices-refuse-a-missing-user-library ($e)"
 
     # ---- the real hub, started and stopped exactly as the tasks do it ----
     $idle = Stop-FohHub -DataDir $data -TaskPath $taskFolder
@@ -743,7 +792,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $bandCopy 'stale.py'), "# not in the bundle`n")
     $watched = @{}
     $watched[$appV1] = $oldApp
-    foreach ($p in @($bandCopy, $masterCopy, (Join-Path $data 'fohmixer-hub.toml'), (Join-Path $data 'layout.json'), (Join-Path $data 'app\current.txt'))) {
+    foreach ($p in @($bandCopy, $masterCopy, $bandDevices, $masterDevices, (Join-Path $data 'fohmixer-hub.toml'), (Join-Path $data 'layout.json'), (Join-Path $data 'app\current.txt'))) {
         $watched[$p] = $old
     }
     Set-Stamps $watched

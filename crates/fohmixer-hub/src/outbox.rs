@@ -66,7 +66,9 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use bytes::Bytes;
-use fohmixer_proto::client::{AckItem, DeckKey, Pace, ServerMsg, ValueItem, is_meter_key};
+use fohmixer_proto::client::{
+    AckItem, DeckKey, LufsItem, Pace, ServerMsg, ValueItem, is_meter_key,
+};
 use fohmixer_proto::eq::{FrameHead, frame};
 use serde_json::Value;
 use tokio::sync::Notify;
@@ -104,6 +106,10 @@ struct Inner {
     pace: Pace,
     /// When the held meters go next while paced (#51).
     meters_at: Option<Instant>,
+    /// The loudness points' latest items to go (#151), per strip.
+    lufs: BTreeMap<(String, String), LufsItem>,
+    /// Those held while the page is idle: they go with the meters.
+    lufs_held: BTreeMap<(String, String), LufsItem>,
     closed: bool,
 }
 
@@ -170,13 +176,28 @@ impl Inner {
             && self.links.is_empty()
             && self.values.is_empty()
             && self.acks.is_empty()
-            && self.deck.is_empty())
+            && self.deck.is_empty()
+            && self.lufs.is_empty())
     }
 
     /// Whether nothing waits at all (the tests' view).
     #[cfg(test)]
     fn is_empty(&self) -> bool {
-        !self.has_messages() && self.frame.is_none() && self.meters.is_empty()
+        !self.has_messages()
+            && self.frame.is_none()
+            && self.meters.is_empty()
+            && self.lufs_held.is_empty()
+    }
+
+    /// A loudness point's latest item (#151): paced as a meter (#51), the
+    /// latest per strip kept.
+    fn put_lufs(&mut self, item: LufsItem) {
+        let point = (item.instance.clone(), item.target.clone());
+        if self.pace == Pace::Full {
+            self.lufs.insert(point, item);
+        } else {
+            self.lufs_held.insert(point, item);
+        }
     }
 
     /// A subscription's latest item; while the page is idle a meter's is
@@ -193,6 +214,18 @@ impl Inner {
         self.meters.insert(kept.sub.clone(), kept);
     }
 
+    /// A subscription's item that replaces what is held for its key, never
+    /// the louder kept (#151): a meter key's source changing (an armed
+    /// track's meter device starting or ending, `router/lufs.rs`) must not
+    /// let the other source's held number win once.
+    fn replace_value(&mut self, item: ValueItem) {
+        if self.pace == Pace::Full || !is_meter_key(&item.sub) {
+            self.values.insert(item.sub.clone(), item);
+        } else {
+            self.meters.insert(item.sub.clone(), item);
+        }
+    }
+
     /// The page's meter pace from `now` on (#51): full rate puts every held
     /// meter with the values (they go at once); a pace starts its first
     /// period, unless one runs already; a pause holds them.
@@ -200,6 +233,7 @@ impl Inner {
         match pace {
             Pace::Full => {
                 self.values.append(&mut self.meters);
+                self.lufs.append(&mut self.lufs_held);
                 self.meters_at = None;
             }
             Pace::Every(period) => {
@@ -215,7 +249,7 @@ impl Inner {
     /// wakes the writer) when none are held or they are paused.
     fn meters_wake(&self, now: Instant) -> Wake {
         match (self.pace, self.meters_at) {
-            _ if self.meters.is_empty() => Wake::Woken,
+            _ if self.meters.is_empty() && self.lufs_held.is_empty() => Wake::Woken,
             (Pace::Every(_), Some(at)) if now < at => Wake::At(at),
             (Pace::Every(_), _) => Wake::Now,
             _ => Wake::Woken,
@@ -227,6 +261,7 @@ impl Inner {
     fn release_meters(&mut self, now: Instant) {
         if let (Wake::Now, Pace::Every(period)) = (self.meters_wake(now), self.pace) {
             self.values.append(&mut self.meters);
+            self.lufs.append(&mut self.lufs_held);
             self.meters_at = Some(now + period);
         }
     }
@@ -270,6 +305,11 @@ impl Inner {
         if !self.values.is_empty() {
             out.push(ServerMsg::Values {
                 items: std::mem::take(&mut self.values).into_values().collect(),
+            });
+        }
+        if !self.lufs.is_empty() {
+            out.push(ServerMsg::Lufs {
+                items: std::mem::take(&mut self.lufs).into_values().collect(),
             });
         }
         if !self.acks.is_empty() {
@@ -361,6 +401,22 @@ impl Outbox {
     /// is held back (#51, [`Outbox::pace_meters`]).
     pub fn value(&self, item: ValueItem) {
         self.put(|inner| inner.put_value(item));
+    }
+
+    /// The item of a subscription whose source changed (#151): it replaces
+    /// a held meter's number instead of the louder one being kept.
+    pub fn replace_value(&self, item: ValueItem) {
+        self.put(|inner| inner.replace_value(item));
+    }
+
+    /// The loudness points' latest items (#151): each strip's newest kept,
+    /// held with the meters while the page is idle (#51).
+    pub fn lufs(&self, items: Vec<LufsItem>) {
+        self.put(|inner| {
+            for item in items {
+                inner.put_lufs(item);
+            }
+        });
     }
 
     /// The page's meter pace from `now` on (#51, its `idle` message): full
@@ -1455,6 +1511,42 @@ mod tests {
     }
 
     #[test]
+    fn a_replacing_item_takes_a_held_meters_place_whatever_its_level() {
+        // #151: a meter key's source changing (the armed track's meter
+        // device) never lets the other source's louder number win once.
+        let outbox = Outbox::new();
+        let t = Instant::now();
+        outbox.pace_meters(every(250), t);
+        outbox.value(meter("Kick", json!(0.9)));
+        outbox.replace_value(meter("Kick", json!(0.2)));
+        assert_eq!(
+            taken(&outbox, at(t, 250)),
+            vec![values(vec![meter("Kick", json!(0.2))])]
+        );
+        // A later plain value keeps the louder again.
+        outbox.replace_value(meter("Kick", json!(0.3)));
+        outbox.value(meter("Kick", json!(0.1)));
+        assert_eq!(
+            taken(&outbox, at(t, 500)),
+            vec![values(vec![meter("Kick", json!(0.3))])]
+        );
+        // Awake, and for a key that is no meter's, it goes as any value.
+        outbox.pace_meters(Pace::Full, at(t, 600));
+        let mute = ValueItem::value("band|live_set tracks[name=Kick]|mute|false", json!(1), None);
+        outbox.replace_value(mute.clone());
+        outbox.replace_value(meter("Kick", json!(0.4)));
+        assert_eq!(
+            taken(&outbox, at(t, 600)),
+            vec![values(vec![mute, meter("Kick", json!(0.4))])]
+        );
+        // Paced, a key that is no meter's is not held.
+        outbox.pace_meters(every(250), at(t, 700));
+        let solo = ValueItem::value("band|live_set tracks[name=Kick]|solo|false", json!(1), None);
+        outbox.replace_value(solo.clone());
+        assert_eq!(taken(&outbox, at(t, 700)), vec![values(vec![solo])]);
+    }
+
+    #[test]
     fn the_louder_of_two_meter_items() {
         let kick = |v: Value| meter("Kick", v);
         assert_eq!(louder(kick(json!(0.5)), kick(json!(0.4))), kick(json!(0.5)));
@@ -1509,6 +1601,105 @@ mod tests {
             assert_eq!(outbox.take_frame(t), framed(1, 1, b"a"), "{pace:?}");
             assert_eq!(outbox.lock().meters.len(), 1, "{pace:?}: still held");
         }
+    }
+
+    fn lufs(target: &str, tenths: Option<i16>) -> LufsItem {
+        LufsItem {
+            instance: "band".into(),
+            target: target.into(),
+            tenths,
+            problem: None,
+        }
+    }
+
+    #[test]
+    fn lufs_goes_at_once_at_full_pace() {
+        let outbox = Outbox::new();
+        let t = Instant::now();
+        outbox.lufs(vec![lufs("live_set tracks 1", Some(-250))]);
+        outbox.lufs(vec![
+            lufs("live_set tracks 1", Some(-240)),
+            lufs("live_set tracks 2", None),
+        ]);
+        assert_eq!(outbox.lock().wake(t), Wake::Now);
+        assert_eq!(
+            taken(&outbox, t),
+            vec![ServerMsg::Lufs {
+                items: vec![
+                    lufs("live_set tracks 1", Some(-240)),
+                    lufs("live_set tracks 2", None)
+                ]
+            }]
+        );
+        assert!(outbox.lock().is_empty());
+    }
+
+    #[test]
+    fn lufs_waits_for_the_meter_period_when_paced() {
+        let outbox = Outbox::new();
+        let t = Instant::now();
+        outbox.pace_meters(every(250), t);
+        outbox.lufs(vec![lufs("live_set tracks 1", Some(-250))]);
+        outbox.lufs(vec![lufs("live_set tracks 1", Some(-260))]);
+        let due = at(t, 250);
+        let before = due - Duration::from_nanos(1);
+        assert_eq!(outbox.lock().wake(before), Wake::At(due));
+        assert_eq!(taken(&outbox, before), vec![], "held");
+        assert_eq!(outbox.lock().wake(due), Wake::Now);
+        assert_eq!(
+            taken(&outbox, due),
+            vec![ServerMsg::Lufs {
+                items: vec![lufs("live_set tracks 1", Some(-260))]
+            }],
+            "only the latest per strip"
+        );
+        assert!(outbox.lock().is_empty());
+    }
+
+    #[test]
+    fn lufs_held_while_paused_and_sent_on_wake() {
+        let outbox = Outbox::new();
+        let t = Instant::now();
+        outbox.pace_meters(Pace::Paused, t);
+        outbox.lufs(vec![lufs("live_set tracks 1", Some(-250))]);
+        for n in [250, 2000, 3_600_000] {
+            assert_eq!(outbox.lock().wake(at(t, n)), Wake::Woken, "{n}");
+            assert_eq!(taken(&outbox, at(t, n)), vec![], "{n}");
+        }
+        outbox.pace_meters(Pace::Full, at(t, 5000));
+        assert_eq!(outbox.lock().wake(at(t, 5000)), Wake::Now);
+        assert_eq!(
+            taken(&outbox, at(t, 5000)),
+            vec![ServerMsg::Lufs {
+                items: vec![lufs("live_set tracks 1", Some(-250))]
+            }]
+        );
+    }
+
+    #[test]
+    fn lufs_goes_after_the_values_and_before_the_acks() {
+        let outbox = Outbox::new();
+        let t = Instant::now();
+        let ack = AckItem {
+            key: "band|live_set tracks 1|mute".into(),
+            seq: 1,
+            value: Some(json!(true)),
+            error: None,
+            superseded: false,
+        };
+        outbox.ack(ack.clone());
+        outbox.lufs(vec![lufs("live_set tracks 1", Some(-250))]);
+        outbox.value(meter("Kick", json!(0.1)));
+        assert_eq!(
+            taken(&outbox, t),
+            vec![
+                values(vec![meter("Kick", json!(0.1))]),
+                ServerMsg::Lufs {
+                    items: vec![lufs("live_set tracks 1", Some(-250))]
+                },
+                ServerMsg::Ack { items: vec![ack] },
+            ]
+        );
     }
 
     #[test]

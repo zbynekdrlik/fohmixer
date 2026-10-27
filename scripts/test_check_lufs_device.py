@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_lufs_device as cl  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
+LUFS, METER = cl.DEVICES
 
 
 class TreeTests(unittest.TestCase):
@@ -20,7 +21,12 @@ class TreeTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp())
-        for rel in (cl.RUST, cl.GENEXPR, cl.MAXPAT, cl.VERSION_TXT):
+        files = [cl.WIRE]
+        for device in cl.DEVICES:
+            files += [device.maxpat, device.version_txt]
+            if device.genexpr is not None:
+                files.append(device.genexpr)
+        for rel in files:
             (self.root / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(REPO / rel, self.root / rel)
 
@@ -33,14 +39,17 @@ class TreeTests(unittest.TestCase):
         self.assertIn(old, text)
         path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
-    def patcher(self) -> dict:
-        return json.loads((self.root / cl.MAXPAT).read_text(encoding="utf-8"))
+    def patcher(self, device: cl.Device = LUFS) -> dict:
+        return json.loads((self.root / device.maxpat).read_text(encoding="utf-8"))
 
-    def save(self, patch: dict) -> None:
-        (self.root / cl.MAXPAT).write_text(json.dumps(patch, indent="\t"), encoding="utf-8")
+    def save(self, patch: dict, device: cl.Device = LUFS) -> None:
+        (self.root / device.maxpat).write_text(json.dumps(patch, indent="\t"), encoding="utf-8")
 
-    def numbox(self, patch: dict, name: str) -> dict:
-        return next(b for b in cl.boxes(patch["patcher"]) if b.get("varname") == name)
+    def box(self, patch: dict, first_word: str) -> dict:
+        return next(b for b in cl.boxes(patch["patcher"]) if cl.words(b)[:1] == [first_word])
+
+    def restore(self, device: cl.Device) -> None:
+        shutil.copyfile(REPO / device.maxpat, self.root / device.maxpat)
 
     def errors(self) -> list[str]:
         return cl.check(self.root)
@@ -49,124 +58,280 @@ class TreeTests(unittest.TestCase):
         self.assertEqual(cl.check(REPO), [])
         self.assertEqual(cl.main(["--root", str(REPO)]), 0)
 
-    def test_the_copy_passes(self) -> None:
+    def test_both_patches_pass(self) -> None:
+        self.assertEqual(self.errors(), [])
+        self.assertEqual([d.address for d in cl.DEVICES], ["/fohmixer/lufs", "/fohmixer/meter"])
+
+    def test_the_hubs_port_is_read_from_the_wire_module(self) -> None:
+        self.assertEqual(cl.default_port("x\npub const DEFAULT_PORT: u16 = 39110;\ny"), 39110)
+        self.assertIsNone(cl.default_port("pub const DEFAULT_PORT: u32 = 39110;"))
+        self.edit(cl.WIRE, "pub const DEFAULT_PORT: u16 = 39110;", "pub const PORT: u16 = 1;")
+        self.assertEqual(len(self.errors()), 1)
+        self.assertIn("DEFAULT_PORT", self.errors()[0])
+
+    def test_a_parameter_object_fails(self) -> None:
+        for device in cl.DEVICES:
+            patch = self.patcher(device)
+            patch["patcher"]["boxes"].append(
+                {"box": {"id": "obj-x", "maxclass": "live.numbox", "numinlets": 1}}
+            )
+            self.save(patch, device)
+            self.assertIn(
+                f"{device.maxpat.as_posix()}: obj-x is a parameter (the device has none)",
+                self.errors(),
+            )
+        patch = self.patcher(METER)
+        self.box(patch, "plugin~")["parameter_enable"] = 1
+        patch["patcher"]["parameters"] = {}
+        self.save(patch, METER)
+        errors = self.errors()
+        self.assertIn(
+            f"{METER.maxpat.as_posix()}: obj-plugin is a parameter (the device has none)", errors
+        )
+        self.assertTrue(any("parameters table" in e for e in errors), errors)
+        self.assertFalse(cl.is_parameter({"maxclass": "flonum", "parameter_enable": 0}))
+        self.assertFalse(cl.is_parameter({"maxclass": "newobj", "text": "live.path"}))
+
+    def test_udpsend_must_be_localhost_and_the_hubs_port(self) -> None:
+        for text in ("udpsend 0.0.0.0 39110", "udpsend 127.0.0.1 39111", "udpsend 127.0.0.1"):
+            patch = self.patcher()
+            self.box(patch, "udpsend")["text"] = text
+            self.save(patch)
+            self.assertTrue(any("udpsend 127.0.0.1 39110" in e for e in self.errors()), text)
+        patch = self.patcher(METER)
+        patch["patcher"]["boxes"].append(
+            {"box": {"id": "obj-x", "maxclass": "newobj", "text": "udpsend 127.0.0.1 39110"}}
+        )
+        self.save(patch, METER)
+        self.assertTrue(any("exactly one 'udpsend" in e for e in self.errors()))
+
+    def test_the_audio_clock_sets_each_devices_rate(self) -> None:
+        # The owner's ruling of 27.10: the LUFS device sends every 200 ms,
+        # the meter every 33 ms, each on its audio object's own interval.
+        self.assertEqual([d.send_ms for d in cl.DEVICES], [200, 33])
+        self.assertEqual([d.clock for d in cl.DEVICES], ["snapshot~", "peakamp~"])
+        for device, old, wrong in (
+            (LUFS, '"snapshot~ 200"', "snapshot~ 100"),
+            (METER, '"peakamp~ 33"', "peakamp~ 200"),
+        ):
+            self.edit(device.maxpat, old, f'"{wrong}"')
+            errors = self.errors()
+            self.assertTrue(
+                any(
+                    f"every {device.clock} must be '{device.clock} {device.send_ms}'" in e
+                    for e in errors
+                ),
+                errors,
+            )
+            self.restore(device)
         self.assertEqual(self.errors(), [])
 
-    def test_a_value_that_differs_fails(self) -> None:
-        self.edit(cl.GENEXPR, "SHELF_Q = 0.7071752369554196;", "SHELF_Q = 0.7071752369554197;")
+    def test_no_metro_bangs_the_pack(self) -> None:
+        # The review of PR 2: a metro sent a frozen value with the DSP off.
+        for device in cl.DEVICES:
+            patch = self.patcher(device)
+            patch["patcher"]["boxes"].append(
+                {
+                    "box": {
+                        "id": "obj-send-metro",
+                        "maxclass": "newobj",
+                        "text": "metro 200",
+                        "numinlets": 2,
+                        "numoutlets": 1,
+                    }
+                }
+            )
+            patch["patcher"]["lines"].append(
+                {"patchline": {"source": ["obj-send-metro", 0], "destination": ["obj-pack", 0]}}
+            )
+            self.save(patch, device)
+            errors = self.errors()
+            self.assertTrue(
+                any(
+                    "the pack must be banged by obj-send-trigger alone (no metro)" in e
+                    for e in errors
+                ),
+                errors,
+            )
+            self.restore(device)
+
+    def test_the_trigger_is_fed_by_the_last_value_alone(self) -> None:
+        for device in cl.DEVICES:
+            patch = self.patcher(device)
+            for item in patch["patcher"]["lines"]:
+                line = item["patchline"]
+                if line["destination"] == [cl.SEND_TRIGGER, 0]:
+                    line["destination"] = ["obj-pack", 9]
+            self.save(patch, device)
+            errors = self.errors()
+            self.assertTrue(
+                any(
+                    f"obj-send-trigger must be fed by {device.send_from} alone, has []" in e
+                    for e in errors
+                ),
+                errors,
+            )
+            self.restore(device)
+        patch = self.patcher(LUFS)
+        next(b for b in cl.boxes(patch["patcher"]) if b.get("id") == cl.SEND_TRIGGER)["text"] = (
+            "t b i"
+        )
+        self.save(patch, LUFS)
+        self.assertTrue(any("obj-send-trigger must be 't b f'" in e for e in self.errors()))
+
+    def test_the_port_follows_the_wire_module(self) -> None:
+        self.edit(cl.WIRE, "DEFAULT_PORT: u16 = 39110;", "DEFAULT_PORT: u16 = 39111;")
         errors = self.errors()
-        # The table differs, and so does the code the patch embeds.
         self.assertEqual(len(errors), 2, errors)
-        self.assertIn("SHELF_Q", errors[0])
-        self.assertIn("gen~ code differs", errors[1])
-        self.assertEqual(cl.main(["--root", str(self.root)]), 1)
+        self.assertTrue(all("'udpsend 127.0.0.1 39111'" in e for e in errors), errors)
 
-    def test_a_rust_value_that_differs_fails(self) -> None:
-        self.edit(cl.RUST, "pub const MIN_VOICED: usize = 10;", "pub const MIN_VOICED: usize = 9;")
-        self.assertTrue(any("MIN_VOICED" in e for e in self.errors()))
+    def test_the_address_box_names_the_kind(self) -> None:
+        patch = self.patcher()
+        pack = self.box(patch, "pack")
+        pack["text"] = pack["text"].replace("/fohmixer/lufs", "/fohmixer/meter")
+        self.save(patch)
+        self.assertIn(
+            f"{LUFS.maxpat.as_posix()}: the pack sends to /fohmixer/meter, expected /fohmixer/lufs",
+            self.errors(),
+        )
+        patch = self.patcher(METER)
+        pack = self.box(patch, "pack")
+        pack["text"] = pack["text"] + " 0"
+        self.save(patch, METER)
+        self.assertTrue(any("one pack of 10 arguments" in e for e in self.errors()))
 
-    def test_a_name_missing_on_either_side_fails(self) -> None:
-        self.edit(cl.GENEXPR, "TOP_LUFS = 0;\n", "")
-        self.assertTrue(any("lacks TOP_LUFS" in e for e in self.errors()))
+    def test_the_pack_sends_the_version(self) -> None:
+        patch = self.patcher(METER)
+        pack = self.box(patch, "pack")
+        version = (REPO / METER.version_txt).read_text(encoding="utf-8").strip()
+        pack["text"] = pack["text"].replace(f"v{version}", "v0.0.1")
+        self.save(patch, METER)
+        self.assertIn(
+            f"{METER.maxpat.as_posix()}: the pack sends v0.0.1, expected v{version}",
+            self.errors(),
+        )
 
-    def test_an_extra_name_fails(self) -> None:
-        self.edit(cl.GENEXPR, "TOP_LUFS = 0;\n", "TOP_LUFS = 0;\nEXTRA = 1;\n")
-        self.assertTrue(any("EXTRA" in e for e in self.errors()))
+    def test_the_output_is_silence_and_nothing_else_feeds_plugout(self) -> None:
+        # The input straight through (the probe's pass-through), or the gen~.
+        for source in (["obj-plugin", 0], ["obj-gen", 2]):
+            self.restore(LUFS)
+            patch = self.patcher()
+            patch["patcher"]["lines"].append(
+                {"patchline": {"source": source, "destination": ["obj-plugout", 1]}}
+            )
+            self.save(patch)
+            errors = self.errors()
+            self.assertEqual(
+                errors,
+                [
+                    f"{LUFS.maxpat.as_posix()}: plugout~ must take silence only (a sig~ 0 "
+                    f"nothing feeds; the device sits in a parallel chain), it takes "
+                    f"['{source[0]}']"
+                ],
+            )
+        # A sig~ with another value, or one the input feeds.
+        self.restore(LUFS)
+        patch = self.patcher(METER)
+        self.box(patch, "sig~")["text"] = "sig~ 1."
+        self.save(patch, METER)
+        self.assertTrue(any("silence only" in e for e in self.errors()))
+        self.restore(METER)
+        patch = self.patcher(METER)
+        patch["patcher"]["lines"].append(
+            {"patchline": {"source": ["obj-plugin", 0], "destination": ["obj-silence", 0]}}
+        )
+        self.save(patch, METER)
+        self.assertTrue(any("it takes ['obj-silence']" in e for e in self.errors()))
+        # `sig~ 0` and no audio into plugout~ at all are silence too.
+        self.restore(METER)
+        patch = self.patcher(METER)
+        self.box(patch, "sig~")["text"] = "sig~ 0"
+        self.save(patch, METER)
+        self.assertEqual(self.errors(), [])
+        patch["patcher"]["lines"] = [
+            ln
+            for ln in patch["patcher"]["lines"]
+            if ln["patchline"]["destination"][0] != "obj-plugout"
+        ]
+        self.save(patch, METER)
+        self.assertEqual(self.errors(), [])
 
-    def test_a_ring_not_window_long_fails(self) -> None:
-        self.edit(cl.GENEXPR, "Data voiced(30);", "Data voiced(31);")
+    def test_a_patch_without_plugout_fails(self) -> None:
+        patch = self.patcher()
+        self.box(patch, "plugout~")["text"] = "dac~"
+        self.save(patch)
+        self.assertIn(
+            f"{LUFS.maxpat.as_posix()}: needs exactly one plugin~ and one plugout~", self.errors()
+        )
+
+    def test_a_line_past_a_boxs_ports_fails(self) -> None:
+        patch = self.patcher(METER)
+        patch["patcher"]["lines"].append(
+            {"patchline": {"source": ["obj-plugin", 5], "destination": ["obj-pack", 0]}}
+        )
+        patch["patcher"]["lines"].append(
+            {"patchline": {"source": ["obj-gone", 0], "destination": ["obj-pack", 0]}}
+        )
+        self.save(patch, METER)
         errors = self.errors()
-        self.assertTrue(any("Data voiced(31)" in e for e in errors), errors)
+        self.assertTrue(any("obj-plugin:5 -> obj-pack:0 is past" in e for e in errors), errors)
+        self.assertTrue(any("not there: obj-gone" in e for e in errors), errors)
+
+    def test_the_identity_messages_are_there(self) -> None:
+        patch = self.patcher()
+        box = next(
+            b
+            for b in cl.boxes(patch["patcher"])
+            if b.get("text") == "path this_device canonical_parent canonical_parent"
+        )
+        box["text"] = "getpath"
+        self.save(patch)
+        self.assertIn(
+            f"{LUFS.maxpat.as_posix()}: no 'path this_device canonical_parent canonical_parent' "
+            "message",
+            self.errors(),
+        )
+        self.assertEqual(len(cl.IDENTITY), 5)
+
+    def test_the_meter_patch_needs_no_gen(self) -> None:
+        patch = self.patcher(METER)
+        self.assertEqual([b for b in cl.boxes(patch["patcher"]) if cl.words(b)[:1] == ["gen~"]], [])
+        self.assertEqual(self.errors(), [])
+        # The LUFS patch does.
+        patch = self.patcher()
+        self.box(patch, "gen~")["text"] = "mc.gen~"
+        self.save(patch)
+        self.assertTrue(any("exactly one gen~" in e for e in self.errors()))
 
     def test_the_embedded_code_must_equal_the_genexpr(self) -> None:
-        self.edit(cl.GENEXPR, "out1 = 0;", "out1 = in1;")
-        errors = self.errors()
+        self.edit(LUFS.genexpr, "out1 = 0;", "out1 = in1;")
         self.assertEqual(
-            errors, [f"{cl.MAXPAT.as_posix()}: the gen~ code differs from {cl.GENEXPR.as_posix()}"]
+            self.errors(), [f"{LUFS.maxpat.as_posix()}: the gen~ code differs from its .genexpr"]
         )
 
     def test_an_absolute_path_fails(self) -> None:
         for path in ("C:\\\\Users\\\\x\\\\a.amxd", "/Users/x/a.amxd", "/home/x/a", "D:/x"):
-            patch = self.patcher()
+            patch = self.patcher(METER)
             patch["patcher"]["filename"] = path
-            self.save(patch)
+            self.save(patch, METER)
             self.assertTrue(any("absolute file path" in e for e in self.errors()), path)
 
-    def test_a_parameter_with_another_range_or_unit_fails(self) -> None:
-        patch = self.patcher()
-        self.numbox(patch, "Voice")["saved_attribute_attributes"]["valueof"][
-            "parameter_mmin"
-        ] = -60.0
-        self.numbox(patch, "Short-term")["saved_attribute_attributes"]["valueof"][
-            "parameter_units"
-        ] = "dB"
-        self.save(patch)
+    def test_the_lufs_face_shows_its_version_txt(self) -> None:
+        (self.root / LUFS.version_txt).write_text("9.9.9\n", encoding="utf-8")
         errors = self.errors()
-        self.assertTrue(any("Voice has parameter_mmin" in e for e in errors), errors)
-        self.assertTrue(any("Short-term's unit" in e for e in errors), errors)
+        self.assertTrue(any("expected ['v9.9.9']" in e for e in errors), errors)
+        self.assertTrue(all(LUFS.maxpat.as_posix() in e for e in errors), errors)
 
-    def test_a_missing_parameter_fails(self) -> None:
-        patch = self.patcher()
-        self.numbox(patch, "Voice")["varname"] = "Voix"
-        self.save(patch)
-        self.assertTrue(any("live.numbox parameters" in e for e in self.errors()))
-
-    def test_the_visibility_is_one_setting_on_both(self) -> None:
-        for short, voice, ok in ((1, 1, True), (0, 1, False), (2, 2, False)):
-            patch = self.patcher()
-            self.numbox(patch, "Short-term")["saved_attribute_attributes"]["valueof"][
-                "parameter_invisible"
-            ] = short
-            self.numbox(patch, "Voice")["saved_attribute_attributes"]["valueof"][
-                "parameter_invisible"
-            ] = voice
-            self.save(patch)
-            visibility = [e for e in self.errors() if "visibility" in e]
-            self.assertEqual(visibility == [], ok, (short, voice, visibility))
-
-    def test_the_face_shows_version_txt(self) -> None:
-        (self.root / cl.VERSION_TXT).write_text("9.9.9\n", encoding="utf-8")
-        self.assertTrue(any("expected ['v9.9.9']" in e for e in self.errors()))
-
-    def test_a_patch_without_plugout_fails(self) -> None:
-        patch = self.patcher()
-        box = next(b for b in cl.boxes(patch["patcher"]) if b.get("text") == "plugout~")
-        box["text"] = "dac~"
-        self.save(patch)
-        self.assertIn(f"{cl.MAXPAT.as_posix()}: no plugout~", self.errors())
-
-    def test_a_table_without_its_markers_fails(self) -> None:
-        self.edit(cl.GENEXPR, "// lufs-table end", "// the end")
-        self.assertTrue(any("lufs-table" in e for e in self.errors()))
+    def test_the_meter_face_shows_its_version_txt(self) -> None:
+        (self.root / METER.version_txt).write_text("9.9.9\n", encoding="utf-8")
+        errors = self.errors()
+        self.assertTrue(any("expected ['v9.9.9']" in e for e in errors), errors)
+        self.assertTrue(all(METER.maxpat.as_posix() in e for e in errors), errors)
 
     def test_text_that_is_no_patcher_fails(self) -> None:
-        (self.root / cl.MAXPAT).write_text("not json", encoding="utf-8")
+        (self.root / METER.maxpat).write_text("not json", encoding="utf-8")
         self.assertTrue(any("is not a Max patcher" in e for e in self.errors()))
-
-
-class TableTests(unittest.TestCase):
-    def test_reads_floats_and_integers_between_the_markers_only(self) -> None:
-        text = "A = 1;\n// lufs-table begin\nB = -2.5;\nC = 30;\nD = 1e-3;\n// lufs-table end\nE = 3;\n"
-        found, errors = cl.table(text, cl.GEN_CONST, "x")
-        self.assertEqual((found, errors), ({"B": -2.5, "C": 30.0, "D": 0.001}, []))
-
-    def test_a_name_twice_is_an_error(self) -> None:
-        text = "// lufs-table begin\nB = 1;\nB = 1;\n// lufs-table end\n"
-        self.assertEqual(cl.table(text, cl.GEN_CONST, "x")[1], ["x: B is in the table twice"])
-
-    def test_a_line_that_is_no_readable_constant_is_an_error(self) -> None:
-        # PR #154's review: a constant written so the pattern misses it (a
-        # digit separator) was skipped, its value never compared.
-        text = "// lufs-table begin\n// a comment\n\nB = 1;\nC = 1_000.0;\n// lufs-table end\n"
-        found, errors = cl.table(text, cl.GEN_CONST, "x")
-        self.assertEqual(found, {"B": 1.0})
-        self.assertEqual(
-            errors, ["x: a line in the table is no constant it can read: C = 1_000.0;"]
-        )
-
-    def test_an_empty_table_is_an_error(self) -> None:
-        text = "// lufs-table begin\n// lufs-table end\n"
-        self.assertEqual(cl.table(text, cl.GEN_CONST, "x")[1], ["x: the table is empty"])
+        self.assertEqual(cl.main(["--root", str(self.root)]), 1)
 
 
 if __name__ == "__main__":

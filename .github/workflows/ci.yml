@@ -104,7 +104,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m unittest discover -s e2e/harness -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/harness-tests.log"
-      - name: LUFS device (its gen~ code and table equal the Rust reference, #151)
+      - name: LUFS devices (the gen~ code, the patch, the port, the version, #151)
         if: ${{ !cancelled() }}
         run: python scripts/check_lufs_device.py
       - name: LUFS device build tool tests (the .amxd header, #151)
@@ -210,7 +210,7 @@ jobs:
       - name: AbleSet's proxy and WebSocket tunnel tests, and the listeners' logged socket, on Windows (#90; real listeners, plain and TLS)
         run: cargo test --locked -p fohmixer-hub --lib -- "ableset::" "accept::"
       - name: Hub API tests on Windows (the layout, auth, the installer's config check, the Stream Deck's Companion link, the eq-probe CLI; no Live host needed)
-        run: cargo test --locked -p fohmixer-hub --test layout --test auth --test config_cli --test companion_client --test deck --test eq_probe_cli
+        run: cargo test --locked -p fohmixer-hub --test layout --test auth --test config_cli --test companion_client --test deck --test eq_probe_cli --test lufs_listener
       - name: PC install self-test (Windows PowerShell 5.1 as on the PC; the debug hub started and stopped by Ctrl-Break, the debug tray started and ended by --exit)
         run: |
           cargo build --locked -p fohmixer-hub -p fohmixer-tray
@@ -251,12 +251,21 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Build the hub (release, the real UI embedded) and the tray (release)
         run: cargo build --locked --release -p fohmixer-hub -p fohmixer-tray
-      - name: Zip the bundle (hub, tray, FohMixer script, PC scripts, VERSION, SHA256SUMS)
+      - name: Build the Max for Live devices (#151; the .amxd is never committed)
+        shell: powershell
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'devices'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          python live-device/FohMixer-LUFS/build_amxd.py --patch 'live-device/FohMixer-LUFS/FohMixer LUFS.maxpat' --out (Join-Path $out 'FohMixer LUFS.amxd')
+          if ($LASTEXITCODE -ne 0) { throw "build_amxd.py failed for the LUFS device ($LASTEXITCODE)" }
+          python live-device/FohMixer-LUFS/build_amxd.py --patch 'live-device/FohMixer-Meter/FohMixer Meter.maxpat' --out (Join-Path $out 'FohMixer Meter.amxd')
+          if ($LASTEXITCODE -ne 0) { throw "build_amxd.py failed for the meter device ($LASTEXITCODE)" }
+      - name: Zip the bundle (hub, tray, FohMixer script, the two devices, PC scripts, VERSION, SHA256SUMS)
         id: zip
         shell: powershell
         run: |
           Import-Module ./scripts/fohmixer-pc/FohmixerPc.psm1 -Force
-          $b = New-FohBundle -RepoRoot $PWD.Path -HubExe target/release/fohmixer-hub.exe -TrayExe target/release/fohmixer-tray.exe -OutDir $env:RUNNER_TEMP -Sha $env:GITHUB_SHA
+          $b = New-FohBundle -RepoRoot $PWD.Path -HubExe target/release/fohmixer-hub.exe -TrayExe target/release/fohmixer-tray.exe -DeviceDir (Join-Path $env:RUNNER_TEMP 'devices') -OutDir $env:RUNNER_TEMP -Sha $env:GITHUB_SHA
           Get-Content -LiteralPath (Join-Path $b.stage 'SHA256SUMS')
           [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "name=$($b.name)`n")
       - name: Install the zip once (-NoTask, a temp data folder, two fake User Libraries and Live preferences)
@@ -289,6 +298,11 @@ jobs:
           }
           foreach ($lib in @($band, $master)) {
             if (-not (Test-Path -LiteralPath (Join-Path $lib 'Remote Scripts\FohMixer\version.py') -PathType Leaf)) { throw "no FohMixer copy in $lib" }
+          }
+          foreach ($lib in @($band, $master)) {
+            foreach ($d in @('FohMixer LUFS.amxd', 'FohMixer Meter.amxd')) {
+              if (-not (Test-Path -LiteralPath (Join-Path $lib "Presets\Audio Effects\Max Audio Effect\$d") -PathType Leaf)) { throw "no $d in $lib" }
+            }
           }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -896,6 +910,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       shards: ${{ steps.count.outputs.shards }}
+      light: ${{ steps.count.outputs.light }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -923,28 +938,42 @@ jobs:
           # the 20. 2 per shard is one round (--jobs 2) plus setup, 9 to 14
           # minutes (one mutant alone: 9.4 minutes).
           MUTANTS_PER_SHARD: "2"
+          # The proto, UI and tray mutants (the `mutation-light` matrix): a
+          # mutant is tested with its own package's tests only, so one of
+          # these rebuilds no hub; 8 of them fit a shard's 20 minutes (#151,
+          # PR #155: 640 diff-scoped mutants, 449 of them the hub's, were past
+          # one 256-job matrix at 2 per shard).
+          LIGHT_PER_SHARD: "8"
           BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
           git diff "origin/${BASE_REF}...HEAD" -- '*.rs' > "$RUNNER_TEMP/pr.diff"
-          count=0
-          if [ -s "$RUNNER_TEMP/pr.diff" ]; then
-            cargo mutants --list --in-diff "$RUNNER_TEMP/pr.diff" \
-              --package fohmixer-proto --package fohmixer-hub --package fohmixer-ui --package fohmixer-tray > "$RUNNER_TEMP/mutants.txt"
-            count="$(wc -l < "$RUNNER_TEMP/mutants.txt")"
-            cat "$RUNNER_TEMP/mutants.txt"
-          fi
-          shards=$(( (count + MUTANTS_PER_SHARD - 1) / MUTANTS_PER_SHARD ))
-          if [ "$shards" -lt 1 ]; then shards=1; fi
-          # GitHub runs at most 256 jobs from one matrix: past it the
-          # `mutation` matrix would fail to expand with no reason given.
-          if [ "$shards" -gt 256 ]; then
-            echo "::error::$count mutants need $shards shards at $MUTANTS_PER_SHARD per shard, past GitHub's 256-job matrix: split the PR"
-            exit 1
-          fi
-          matrix="$(python3 -c 'import json, sys; print(json.dumps(list(range(int(sys.argv[1])))))' "$shards")"
-          echo "mutants in the diff against ${BASE_REF}: $count; shards at <= $MUTANTS_PER_SHARD per shard: $shards"
-          echo "shards=$matrix" >> "$GITHUB_OUTPUT"
+          # One matrix per cost class, each at most GitHub's 256 jobs: the
+          # hub's mutants (a mutated hub's build is the expensive one) and the
+          # light ones (proto, UI, tray).
+          shards_for() { # <name> <per shard> <package args...>: prints the matrix
+            local name="$1" per="$2"; shift 2
+            local count=0
+            if [ -s "$RUNNER_TEMP/pr.diff" ]; then
+              cargo mutants --list --in-diff "$RUNNER_TEMP/pr.diff" "$@" > "$RUNNER_TEMP/mutants-$name.txt"
+              count="$(wc -l < "$RUNNER_TEMP/mutants-$name.txt")"
+              cat "$RUNNER_TEMP/mutants-$name.txt" >&2
+            fi
+            local shards=$(( (count + per - 1) / per ))
+            if [ "$shards" -lt 1 ]; then shards=1; fi
+            # GitHub runs at most 256 jobs from one matrix: past it the matrix
+            # would fail to expand with no reason given.
+            if [ "$shards" -gt 256 ]; then
+              echo "::error::$count $name mutants need $shards shards at $per per shard, past GitHub's 256-job matrix: split the PR" >&2
+              return 1
+            fi
+            echo "$name mutants in the diff against ${BASE_REF}: $count; shards at <= $per per shard: $shards" >&2
+            python3 -c 'import json, sys; print(json.dumps(list(range(int(sys.argv[1])))))' "$shards"
+          }
+          hub="$(shards_for hub "$MUTANTS_PER_SHARD" --package fohmixer-hub)"
+          light="$(shards_for light "$LIGHT_PER_SHARD" --package fohmixer-proto --package fohmixer-ui --package fohmixer-tray)"
+          echo "shards=$hub" >> "$GITHUB_OUTPUT"
+          echo "light=$light" >> "$GITHUB_OUTPUT"
 
   mutation-warmup:
     name: mutation-warmup
@@ -1024,6 +1053,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ strategy.job-total }}
+          MUTANT_PACKAGES: --package fohmixer-hub
         run: |
           set -euo pipefail
           git diff "origin/${BASE_REF}...HEAD" -- '*.rs' > "$RUNNER_TEMP/pr.diff"
@@ -1031,7 +1061,83 @@ jobs:
             echo "No Rust changes against ${BASE_REF}: no mutants to test."
             exit 0
           fi
-          packages=(--package fohmixer-proto --package fohmixer-hub --package fohmixer-ui --package fohmixer-tray)
+          read -r -a packages <<< "$MUTANT_PACKAGES"
+          # --timeout: with --baseline=skip cargo-mutants has no measured test
+          # time and would allow 300 s per mutant. 220 s is 2x the slowest
+          # measured unmutated hub suite (78.8, 80.3 and 78.6 s in
+          # mutation-warmup, then 88.0 s with REVERB AUT's host tests, #130:
+          # 2 x 88.0 s = 176 s, past 170 s; then 90.2 s with AUTOTUNE AUT's,
+          # #104: 2 x 90.2 s = 180.4 s, past 180 s; then 95.5 s with the
+          # autotune keys' writes, #140 PR 2b: 2 x 95.5 s = 191 s, past 190
+          # s; then 100.4 s with the autotune rule's, #140 PR 3b: 2 x 100.4 s
+          # = 200.8 s, past 200 s; then 107.0 s with the AUTOTUNE button's,
+          # #140 PR 3c: 2 x 107.0 s = 214 s, past 210 s): under it a survivor
+          # reads as TIMEOUT, not MISSED (.claude/rules/ci.md).
+          status=0
+          cargo mutants --in-diff "$RUNNER_TEMP/pr.diff" --baseline=skip --timeout 220 --jobs 2 --copy-target=true \
+            --shard "${SHARD}/${SHARDS}" "${packages[@]}" --all-features -- --all-targets || status=$?
+          case "$status" in
+            0|2|3) ;;
+            *) echo "::error::cargo-mutants failed to run (exit $status)"; exit "$status" ;;
+          esac
+          if [ -f mutants.out/missed.txt ] && [ -s mutants.out/missed.txt ]; then
+            echo "--- missed mutants ---"
+            cat mutants.out/missed.txt
+          fi
+          # A mutant caught only by a timeout (not a failing test) is tested
+          # again, one at a time, with the mutants-recheck profile (60 s per
+          # test); a survivor fails the gate (exit 2).
+          recheck=0
+          python3 scripts/mutants_recheck.py --out mutants.out -- \
+            --baseline=skip --timeout 220 --jobs 1 --copy-target=true "${packages[@]}" --all-features -- --all-targets || recheck=$?
+          if [ "$status" -ne 0 ]; then exit "$status"; fi
+          exit "$recheck"
+
+  mutation-light:
+    name: mutation light shard ${{ matrix.shard }}
+    if: github.event_name == 'pull_request'
+    needs: [mutants-list, mutation-warmup]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # 0-based (cargo-mutants --shard k/n); computed by mutants-list
+        shard: ${{ fromJSON(needs.mutants-list.outputs.light) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: mutation
+          save-if: false
+      - name: Placeholder UI dist (rust-embed needs the folder)
+        run: mkdir -p crates/fohmixer-ui/dist && echo placeholder > crates/fohmixer-ui/dist/index.html
+      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: cargo-mutants@27.1.0,cargo-nextest@0.9.146
+      - name: Warm target (dependencies restored; workspace crates build once, then are copied per job)
+        run: cargo nextest run --locked --cargo-profile mutants --no-run -p fohmixer-proto -p fohmixer-hub -p fohmixer-ui -p fohmixer-tray --all-features --all-targets
+      - name: Diff-scoped mutants
+        env:
+          # .config/nextest.toml: stop at the first failing test (fail fast on hangs).
+          NEXTEST_PROFILE: mutants
+          BASE_REF: ${{ github.base_ref }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ strategy.job-total }}
+          MUTANT_PACKAGES: --package fohmixer-proto --package fohmixer-ui --package fohmixer-tray
+        run: |
+          set -euo pipefail
+          git diff "origin/${BASE_REF}...HEAD" -- '*.rs' > "$RUNNER_TEMP/pr.diff"
+          if [ ! -s "$RUNNER_TEMP/pr.diff" ]; then
+            echo "No Rust changes against ${BASE_REF}: no mutants to test."
+            exit 0
+          fi
+          read -r -a packages <<< "$MUTANT_PACKAGES"
           # --timeout: with --baseline=skip cargo-mutants has no measured test
           # time and would allow 300 s per mutant. 220 s is 2x the slowest
           # measured unmutated hub suite (78.8, 80.3 and 78.6 s in
