@@ -7,9 +7,10 @@ for each patch:
 - no parameter: no `live.*` parameter object, no box with `parameter_enable`
   on, no `parameters` table (probe P1: a parameter the device writes is an
   Undo step);
-- the audio passes through: `plugout~`'s two inlets are fed by `plugin~`'s
-  two outlets, in order, and by nothing else (the UDP probe of 27.10: a
-  silent output silenced everything after it);
+- the output is silence: `plugout~` takes nothing but a `sig~ 0` (or
+  `sig~ 0.`) that nothing feeds (the owner's ruling of 27.10: the devices sit
+  in a rack's parallel chain, never in series, so a failing device can never
+  cut the sound and the signal is never doubled);
 - one `udpsend 127.0.0.1 <port>`, the port equal to the hub's default
   (`DEFAULT_PORT` in `crates/fohmixer-proto/src/lufs/wire.rs`);
 - one `pack` whose first argument is the device's OSC address and whose
@@ -120,23 +121,28 @@ def line_errors(where: str, patcher: dict) -> list[str]:
     return errors
 
 
-def through_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
-    """`plugout~` fed by `plugin~` alone, outlet i into inlet i, both channels."""
-    ids = {b.get("id"): words(b)[:1] for b in every}
-    plugin = [i for i, w in ids.items() if w == ["plugin~"]]
-    plugout = [i for i, w in ids.items() if w == ["plugout~"]]
+SILENCE = (["sig~", "0"], ["sig~", "0."])
+
+
+def silence_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
+    """`plugout~` fed by nothing but a `sig~ 0` that nothing feeds."""
+    ids = {b.get("id"): words(b) for b in every}
+    plugin = [i for i, w in ids.items() if w[:1] == ["plugin~"]]
+    plugout = [i for i, w in ids.items() if w[:1] == ["plugout~"]]
     if len(plugin) != 1 or len(plugout) != 1:
         return [f"{where}: needs exactly one plugin~ and one plugout~"]
-    into = sorted(
-        (tuple(line["patchline"]["source"]), line["patchline"]["destination"][1])
-        for line in patcher.get("lines", [])
-        if line.get("patchline", {}).get("destination", [None])[0] == plugout[0]
+    lines = [line.get("patchline", {}) for line in patcher.get("lines", [])]
+    sources = {line["source"][0] for line in lines if line["destination"][0] == plugout[0]}
+    loud = sorted(str(s) for s in sources if ids.get(s) not in SILENCE)
+    fed = sorted(
+        str(s)
+        for s in sources
+        if ids.get(s) in SILENCE and any(ln["destination"][0] == s for ln in lines)
     )
-    want = [((plugin[0], 0), 0), ((plugin[0], 1), 1)]
-    if into != want:
+    if loud or fed:
         return [
-            f"{where}: plugout~ must get plugin~'s two outlets and nothing else "
-            f"(the audio passes through), it gets {into}"
+            f"{where}: plugout~ must take silence only (a sig~ 0 nothing feeds; the device "
+            f"sits in a parallel chain), it takes {loud + fed}"
         ]
     return []
 
@@ -161,7 +167,7 @@ def patch_errors(
         if is_parameter(b)
     ]
     errors += line_errors(where, patcher)
-    errors += through_errors(where, patcher, every)
+    errors += silence_errors(where, patcher, every)
     if code is not None:
         gens = [b for b in every if words(b)[:1] == ["gen~"]]
         if len(gens) != 1 or not isinstance(gens[0].get("patcher"), dict):

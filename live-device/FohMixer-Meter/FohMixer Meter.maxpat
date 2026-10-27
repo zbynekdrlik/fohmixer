@@ -48,6 +48,24 @@
 			},
 			{
 				"box": {
+					"id": "obj-silence",
+					"maxclass": "newobj",
+					"text": "sig~ 0.",
+					"numinlets": 1,
+					"numoutlets": 1,
+					"outlettype": [
+						"signal"
+					],
+					"patching_rect": [
+						30.0,
+						80.0,
+						76.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
 					"id": "obj-plugout",
 					"maxclass": "newobj",
 					"text": "plugout~",
@@ -1461,7 +1479,7 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-plugin",
+						"obj-silence",
 						0
 					],
 					"destination": [
@@ -1473,8 +1491,8 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-plugin",
-						1
+						"obj-silence",
+						0
 					],
 					"destination": [
 						"obj-plugout",

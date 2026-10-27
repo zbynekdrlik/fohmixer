@@ -48,6 +48,9 @@ class TreeTests(unittest.TestCase):
     def box(self, patch: dict, first_word: str) -> dict:
         return next(b for b in cl.boxes(patch["patcher"]) if cl.words(b)[:1] == [first_word])
 
+    def restore(self, device: cl.Device) -> None:
+        shutil.copyfile(REPO / device.maxpat, self.root / device.maxpat)
+
     def errors(self) -> list[str]:
         return cl.check(self.root)
 
@@ -134,32 +137,50 @@ class TreeTests(unittest.TestCase):
             self.errors(),
         )
 
-    def test_the_audio_passes_through_and_nothing_else_feeds_plugout(self) -> None:
-        # The gen~'s silent outlets into plugout~ (the PR #154 device).
-        patch = self.patcher()
-        lines = patch["patcher"]["lines"]
-        lines.append({"patchline": {"source": ["obj-gen", 0], "destination": ["obj-plugout", 0]}})
-        self.save(patch)
-        self.assertTrue(any("plugout~ must get plugin~'s two outlets" in e for e in self.errors()))
-        # A channel missing, or the channels crossed.
-        for change in ("drop", "cross"):
-            patch = self.patcher(METER)
-            lines = [
-                ln
-                for ln in patch["patcher"]["lines"]
-                if ln["patchline"]["destination"][0] != "obj-plugout"
-            ]
-            lines.append(
-                {"patchline": {"source": ["obj-plugin", 0], "destination": ["obj-plugout", 0]}}
+    def test_the_output_is_silence_and_nothing_else_feeds_plugout(self) -> None:
+        # The input straight through (the probe's pass-through), or the gen~.
+        for source in (["obj-plugin", 0], ["obj-gen", 2]):
+            self.restore(LUFS)
+            patch = self.patcher()
+            patch["patcher"]["lines"].append(
+                {"patchline": {"source": source, "destination": ["obj-plugout", 1]}}
             )
-            if change == "cross":
-                lines.append(
-                    {"patchline": {"source": ["obj-plugin", 0], "destination": ["obj-plugout", 1]}}
-                )
-            patch["patcher"]["lines"] = lines
-            self.save(patch, METER)
+            self.save(patch)
             errors = self.errors()
-            self.assertTrue(any("plugout~ must get" in e for e in errors), (change, errors))
+            self.assertEqual(
+                errors,
+                [
+                    f"{LUFS.maxpat.as_posix()}: plugout~ must take silence only (a sig~ 0 "
+                    f"nothing feeds; the device sits in a parallel chain), it takes "
+                    f"['{source[0]}']"
+                ],
+            )
+        # A sig~ with another value, or one the input feeds.
+        self.restore(LUFS)
+        patch = self.patcher(METER)
+        self.box(patch, "sig~")["text"] = "sig~ 1."
+        self.save(patch, METER)
+        self.assertTrue(any("silence only" in e for e in self.errors()))
+        self.restore(METER)
+        patch = self.patcher(METER)
+        patch["patcher"]["lines"].append(
+            {"patchline": {"source": ["obj-plugin", 0], "destination": ["obj-silence", 0]}}
+        )
+        self.save(patch, METER)
+        self.assertTrue(any("it takes ['obj-silence']" in e for e in self.errors()))
+        # `sig~ 0` and no audio into plugout~ at all are silence too.
+        self.restore(METER)
+        patch = self.patcher(METER)
+        self.box(patch, "sig~")["text"] = "sig~ 0"
+        self.save(patch, METER)
+        self.assertEqual(self.errors(), [])
+        patch["patcher"]["lines"] = [
+            ln
+            for ln in patch["patcher"]["lines"]
+            if ln["patchline"]["destination"][0] != "obj-plugout"
+        ]
+        self.save(patch, METER)
+        self.assertEqual(self.errors(), [])
 
     def test_a_patch_without_plugout_fails(self) -> None:
         patch = self.patcher()

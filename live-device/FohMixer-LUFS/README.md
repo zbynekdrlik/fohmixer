@@ -11,18 +11,23 @@ on the same PC over UDP (spec `docs/superpowers/specs/2026-10-26-lufs-design.md`
     sub-block is voiced when its 400 ms momentary loudness is at least
     −40 LUFS), valid with at least 10 of them, else −70.
 - **`FohMixer Meter`** (`../FohMixer-Meter/`) sends its L and R peak levels
-  over each 33 ms, 30×/s. It goes LAST in an armed track's chain; the hub
-  turns its levels into the track's post-fader meter.
+  over each 33 ms, 30×/s. It goes last in an armed track's chain (in a rack,
+  below); the hub turns its levels into the track's post-fader meter.
 
-Both pass their input through unchanged (`plugin~` → `plugout~`, nothing
-else into `plugout~`), so either is safe anywhere in a chain. In a rack's
-parallel chain (the LUFS device beside trueLevel), the rollout sets that
-chain's volume to −inf: the devices in it still see its input, and the
-rack's sum is unchanged.
+Both output silence (`plugout~` takes a `sig~ 0.` and nothing else) and are
+ALWAYS placed in a parallel chain of an Audio Effect Rack, never in series
+(the owner's ruling of 27.10: a plug-in or licence failure must never cut the
+sound, and a doubled signal is worse than none): a mic's LUFS device in its
+own chain of `CORE Effects` beside trueLevel; an output point's LUFS device
+and an armed track's meter device in a rack of their own, an empty dry chain
+plus a chain holding the device.
 
 Nothing is a parameter (probe P1: a value a device writes into a parameter
-is an Undo step, and with "Stored Only" it leaves the LOM). The faces show
-the readings in plain number boxes and the version.
+is an Undo step, and with "Stored Only" it leaves the LOM). The LUFS face
+shows `Short-term` and `Voice` big under the caption `LUFS` (one device for
+every point: whether a number is IN or OUT is the hub's tag), the version
+small; the meter's face its L and R. All display only (`flonum` with
+`ignoreclick`, comments).
 
 ## What they send
 
@@ -55,14 +60,14 @@ cannot read the hub's config.
 
 | File | What it is |
 |---|---|
-| `FohMixer LUFS.maxpat` | The LUFS device: `plugin~` → `plugout~`; `plugin~` → `gen~` (its code embedded) → `snapshot~ 100` ×2 → `* 10.` → `round` → `clip` → the `pack`'s two values; the identity; `udpsend`. |
+| `FohMixer LUFS.maxpat` | The LUFS device: `sig~ 0.` → `plugout~`; `plugin~` → `gen~` (its code embedded) → `snapshot~ 100` ×2 → `* 10.` → `round` → `clip` → the `pack`'s two values; the identity; `udpsend`. |
 | `fohmixer_lufs.genexpr` | The readable copy of the gen~'s code. |
-| `../FohMixer-Meter/FohMixer Meter.maxpat` | The meter device: `plugin~` → `plugout~`; `peakamp~ 33` per channel → `atodb` → tenths → the `pack`; the identity; `udpsend`. |
+| `../FohMixer-Meter/FohMixer Meter.maxpat` | The meter device: `sig~ 0.` → `plugout~`; `peakamp~ 33` per channel → `atodb` → tenths → the `pack`; the identity; `udpsend`. |
 | `version.txt`, `../FohMixer-Meter/version.txt` | The workspace version (`scripts/check_version.py` keeps both equal to it); each face and each `pack` carry `v<version>`. |
 | `build_amxd.py` | Writes either device's `.amxd` from its patcher. |
 
 `scripts/check_lufs_device.py` (CI) fails, for either patch, on a parameter
-object, on anything but `plugin~` into `plugout~`, on a `udpsend` other than
+object, on anything but silence into `plugout~`, on a `udpsend` other than
 one `udpsend 127.0.0.1 <DEFAULT_PORT>` (the hub's, read from
 `crates/fohmixer-proto/src/lufs/wire.rs`), on a `pack` with another address
 or version, on a missing identity message, on a line past a box's ports, on a
