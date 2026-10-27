@@ -437,6 +437,11 @@ test.describe("A strip", () => {
     // #63: Live's own fader law by default, its low end spread out as a
     // console's, so −30 and −60 are labelled too.
     await expect(ticks).toHaveText(["+6", "0", "−6", "−12", "−18", "−24", "−30", "−40", "−60"]);
+    // #151 (the owner, 27.10): the labels readable on the iPad, `--muted`,
+    // the 0 dB label brighter.
+    const colours = await ticks.evaluateAll((all) => all.map((t) => getComputedStyle(t).color));
+    expect(colours[1], "the 0 dB label").toBe("rgb(196, 196, 214)");
+    for (const [i, c] of colours.entries()) if (i !== 1) expect(c, `label ${i}`).toBe("rgb(154, 154, 180)");
     const fader = s.getByTestId("fader");
     await ready(fader);
     await until(() => shown(fader), (v) => Math.abs(v - 0.85) < 0.001, "the fader at 0 dB");

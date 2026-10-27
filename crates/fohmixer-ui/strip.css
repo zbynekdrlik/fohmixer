@@ -282,13 +282,15 @@
     position: absolute;
     right: 0;
     transform: translateY(-50%);
-    color: var(--faint);
+    color: var(--muted);
     font: 500 8.5px/1 var(--mono);
     white-space: nowrap;
 }
 
+/* The owner (#151, 27.10): `--faint` labels could not be read on the iPad;
+   the scale takes `--muted`, its 0 dB label one step brighter. */
 .tick.unity {
-    color: var(--muted);
+    color: #c4c4d6;
 }
 
 .meter {
