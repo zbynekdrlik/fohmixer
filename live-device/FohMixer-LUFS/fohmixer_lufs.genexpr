@@ -5,7 +5,7 @@
 // numbers are checked on the PC against Sonible trueLevel's short-term (§9).
 //
 // in 1, in 2: left, right.
-// out 1, out 2: silence (the device adds nothing to its chain, §3.2).
+// out 1, out 2: silence, unused (the patch passes plugin~ to plugout~ itself, §3.2).
 // out 3: Short-term (S), out 4: Voice (V), LUFS in -70..0 rounded to 0.1,
 // updated at the end of each 100 ms sub-block and held in between.
 

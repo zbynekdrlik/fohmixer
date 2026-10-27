@@ -41,6 +41,48 @@ class AmxdTests(unittest.TestCase):
         self.assertEqual(ba.patch_of(device), patch)
         self.assertEqual(json.loads(ba.patch_of(device)), json.loads(patch))
 
+    def test_builds_the_meter_patch(self) -> None:
+        patch = ba.METER_MAXPAT.read_bytes()
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "m.amxd"
+            self.assertEqual(ba.main(["--patch", str(ba.METER_MAXPAT), "--out", str(out)]), 0)
+            device = out.read_bytes()
+        self.assertEqual(ba.patch_of(device), patch)
+        self.assertEqual(device[8:12], b"aaaa")
+        self.assertIn(b"pack /fohmixer/meter ", device)
+
+    def test_port_rewrites_only_the_udpsend_box(self) -> None:
+        patch = ba.MAXPAT.read_bytes()
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "x.amxd"
+            self.assertEqual(ba.main(["--port", "39999", "--out", str(out)]), 0)
+            built = ba.patch_of(out.read_bytes())
+        old, new = b'"udpsend 127.0.0.1 39110"', b'"udpsend 127.0.0.1 39999"'
+        self.assertEqual(built.count(new), 1)
+        self.assertEqual(built.replace(new, old), patch)
+        self.assertEqual(len(built), len(patch))
+        # The default writes the port as it is.
+        self.assertEqual(ba.with_port(patch, ba.DEFAULT_PORT), patch)
+
+    def test_a_bad_port_or_a_patch_without_one_udpsend_is_refused(self) -> None:
+        patch = ba.MAXPAT.read_bytes()
+        for port in (0, 65536, -1):
+            with self.assertRaises(ValueError):
+                ba.with_port(patch, port)
+        self.assertEqual(ba.with_port(patch, 65535).count(b"127.0.0.1 65535"), 1)
+        self.assertEqual(ba.with_port(patch, 1).count(b'127.0.0.1 1"'), 1)
+        with self.assertRaises(ValueError):
+            ba.with_port(b'{"patcher": {}}', 39111)
+        with self.assertRaises(ValueError):
+            ba.with_port(patch + patch, 39111)
+
+    def test_the_default_out_is_the_patchs_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            patch = Path(tmp) / "Some Device.maxpat"
+            patch.write_bytes(ba.METER_MAXPAT.read_bytes())
+            self.assertEqual(ba.main(["--patch", str(patch)]), 0)
+            self.assertTrue((Path(tmp) / "Some Device.amxd").is_file())
+
     def test_text_that_is_no_patcher_is_refused(self) -> None:
         with self.assertRaises(ValueError):
             ba.amxd(b'{"box": {}}')
