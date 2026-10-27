@@ -89,12 +89,20 @@ author's file paths, which hold the Windows user name.
    (`ampf`/`aaaa` header, then the patcher JSON byte for byte). `--port <n>`
    rewrites only the `udpsend` box's port in the written file, never the
    source; `--out <file>` writes elsewhere.
-2. Copy them to the PC and open each in Live's Max editor once: no Max
-   error, the face shows its readings and `v<version>`, and a receiver on
-   the port gets one datagram per reading.
-3. Freeze them in the Max editor if Live asks for frozen devices, save them
-   into the Live user's User Library, and never copy the frozen files back
-   into this repository.
+   CI's `bundle` job builds both this way into the release bundle's
+   `live-device/` folder.
+2. `Install-Fohmixer.ps1` writes both into each Live user's
+   `<User Library>\Presets\Audio Effects\Max Audio Effect\` (only when they
+   differ), where Live's browser lists them. Open each in Live's Max editor
+   once: no Max error, the face shows its readings and `v<version>`, and a
+   receiver on the port gets one datagram per reading.
+3. Place them through the LOM, never by a GUI drag (the owner's ruling of
+   27.10): select the track, load the User Library's browser item with
+   `browser load_item` (it appends the device to the selected track's chain),
+   then `live_set move_device(device, chain, position)` into its rack's
+   chain (above: a parallel chain, never in series).
+4. A device frozen in the Max editor is never copied back into this
+   repository (the next install that differs replaces it with the bundle's).
 
 ## The check against trueLevel
 

@@ -26,7 +26,14 @@ $script:StopTask = 'fohmixer-hub-stop'
 $script:BundleFiles = @('VERSION', 'fohmixer-hub.exe', 'fohmixer-tray.exe', 'THIRD-PARTY-NOTICES.md', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1',
     'FohmixerLivePrefs.ps1', 'FohmixerFirewall.ps1', 'FohmixerRemote.ps1', 'FohmixerTray.ps1', 'FohmixerHubProcess.ps1',
     'FohmixerTasks.ps1', 'Start-FohmixerHub.ps1', 'Stop-FohmixerHub.ps1',
-    'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py')
+    'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py',
+    'live-device/FohMixer LUFS.amxd', 'live-device/FohMixer Meter.amxd')
+# The Max for Live devices (#151): the bundle's live-device\ folder, built by
+# live-device/FohMixer-LUFS/build_amxd.py (never committed), installed into
+# each Live user's User Library at Presets\Audio Effects\Max Audio Effect.
+$script:DeviceDir = 'live-device'
+$script:Devices = @('FohMixer LUFS.amxd', 'FohMixer Meter.amxd')
+$script:DevicePresets = 'Presets\Audio Effects\Max Audio Effect'
 # A SemVer version that is also a safe folder name (no trailing dot, no "..").
 $script:SemVer = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?\z'
 
@@ -137,6 +144,20 @@ function Get-FohWorkspaceVersion {
 
 # ---- the bundle (design note section 2) ----
 
+function Test-FohAmxd {
+    # An unfrozen Max audio effect device as build_amxd.py writes it: the
+    # 'ampf' header with the audio effect kind 'aaaa', then 'meta', then
+    # 'ptch' and the patcher's length, which is the rest of the file. Throws
+    # naming the file otherwise.
+    param([Parameter(Mandatory)][string]$Path)
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    $ascii = [Text.Encoding]::ASCII
+    $ok = $bytes.Length -ge 32 -and $ascii.GetString($bytes, 0, 4) -ceq 'ampf' -and $ascii.GetString($bytes, 8, 4) -ceq 'aaaa' -and
+        $ascii.GetString($bytes, 12, 4) -ceq 'meta' -and $ascii.GetString($bytes, 24, 4) -ceq 'ptch'
+    if ($ok) { $ok = ([BitConverter]::ToUInt32($bytes, 28) -eq ($bytes.Length - 32)) }
+    if (-not $ok) { throw "not a Max audio effect device (build_amxd.py's .amxd): $Path" }
+}
+
 function New-FohBundleZip {
     # Writes <Stage>\SHA256SUMS ("<sha256>  <path>" for every other file) and
     # zips the folder's content to $Zip. Entries are named here, '/' separated:
@@ -168,11 +189,14 @@ function New-FohBundle {
     # The Windows release bundle from a repo checkout, a built hub and a built
     # tray: fohmixer-hub.exe, fohmixer-tray.exe, THIRD-PARTY-NOTICES.md (the
     # notices the shipped code asks for: the IJG credit of the hub's JPEG
-    # encoder), FohMixer\ (without logs, caches or compiled files), the PC
-    # scripts, VERSION (the workspace version) and SHA256SUMS, zipped to
-    # <OutDir>\fohmixer-windows-<version>-<Sha>.zip. Returns name, version, stage and zip.
+    # encoder), FohMixer\ (without logs, caches or compiled files), the two
+    # Max for Live devices from -DeviceDir (#151: built by build_amxd.py) in
+    # live-device\, the PC scripts, VERSION (the workspace version) and
+    # SHA256SUMS, zipped to <OutDir>\fohmixer-windows-<version>-<Sha>.zip.
+    # Returns name, version, stage and zip.
     param([Parameter(Mandatory)][string]$RepoRoot, [Parameter(Mandatory)][string]$HubExe,
-          [Parameter(Mandatory)][string]$TrayExe, [Parameter(Mandatory)][string]$OutDir, [Parameter(Mandatory)][string]$Sha)
+          [Parameter(Mandatory)][string]$TrayExe, [Parameter(Mandatory)][string]$DeviceDir,
+          [Parameter(Mandatory)][string]$OutDir, [Parameter(Mandatory)][string]$Sha)
     if ($Sha -cnotmatch '^[0-9a-f]{7,40}\z') { throw "commit refused: $Sha" }
     $RepoRoot = Resolve-FohPath $RepoRoot
     $HubExe = Resolve-FohPath $HubExe
@@ -180,6 +204,12 @@ function New-FohBundle {
     $OutDir = Resolve-FohPath $OutDir
     if (-not (Test-Path -LiteralPath $HubExe -PathType Leaf)) { throw "the hub $HubExe does not exist (build it first)" }
     if (-not (Test-Path -LiteralPath $TrayExe -PathType Leaf)) { throw "the tray $TrayExe does not exist (build it first)" }
+    $DeviceDir = Resolve-FohPath $DeviceDir
+    foreach ($d in $script:Devices) {
+        $device = Join-Path $DeviceDir $d
+        if (-not (Test-Path -LiteralPath $device -PathType Leaf)) { throw "the device $device does not exist (build it with build_amxd.py first)" }
+        Test-FohAmxd -Path $device
+    }
     $version = Get-FohWorkspaceVersion -CargoToml (Join-Path $RepoRoot 'Cargo.toml')
     $scriptDir = Join-Path $RepoRoot 'live-script\FohMixer'
     $scriptVersion = Get-FohScriptVersion -Path (Join-Path $scriptDir 'version.py')
@@ -199,6 +229,9 @@ function New-FohBundle {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
         Copy-Item -LiteralPath $f.full -Destination $target
     }
+    $devices = Join-Path $stage $script:DeviceDir
+    New-Item -ItemType Directory -Force -Path $devices | Out-Null
+    foreach ($d in $script:Devices) { Copy-Item -LiteralPath (Join-Path $DeviceDir $d) -Destination (Join-Path $devices $d) }
     # -Include is ignored next to -LiteralPath in Windows PowerShell 5.1: filter by extension.
     foreach ($f in @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'scripts\fohmixer-pc') -File |
             Where-Object { @('.ps1', '.psm1') -contains $_.Extension })) {
@@ -241,6 +274,10 @@ function Test-FohBundle {
     if (-not (Test-FohVersion $version)) { throw "bundle refused: VERSION [$version]" }
     $scriptVersion = Get-FohScriptVersion -Path (Join-Path $Root 'FohMixer\version.py')
     if ($scriptVersion -cne $version) { throw "bundle refused: FohMixer\version.py says $scriptVersion, VERSION $version" }
+    foreach ($d in $script:Devices) {
+        $device = Join-Path (Join-Path $Root $script:DeviceDir) $d
+        try { Test-FohAmxd -Path $device } catch { throw "bundle refused: $($script:DeviceDir)/$d is not a Max audio effect device" }
+    }
     return $version
 }
 
@@ -533,6 +570,30 @@ function Install-FohUserScript {
     return [pscustomobject]@{ path = $dest; replaced = $replace; config_written = $configWritten; removed = $removed }
 }
 
+function Install-FohUserDevices {
+    # The Max for Live devices (#151, spec section 10 step 5) for one Live
+    # user: each of the bundle's live-device\*.amxd into <UserLibrary>\Presets\
+    # Audio Effects\Max Audio Effect, where Live's browser lists it (the
+    # rollout loads it from there through the LOM). A file is written only when
+    # its content differs (a second run writes nothing); nothing else in the
+    # folder is touched. The User Library must exist. Returns the names written.
+    param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$UserLibrary)
+    if (-not (Test-Path -LiteralPath $UserLibrary -PathType Container)) { throw "Live's User Library not found: $UserLibrary" }
+    $dest = Join-Path $UserLibrary $script:DevicePresets
+    $written = @()
+    foreach ($d in $script:Devices) {
+        $from = Join-Path $Source $d
+        Test-FohAmxd -Path $from
+        $to = Join-Path $dest $d
+        if ((Test-Path -LiteralPath $to -PathType Leaf) -and ((Get-FohSha256 $to) -ceq (Get-FohSha256 $from))) { continue }
+        New-Item -ItemType Directory -Force -Path $dest | Out-Null
+        Copy-Item -LiteralPath $from -Destination ($to + '.tmp') -Force
+        Move-Item -LiteralPath ($to + '.tmp') -Destination $to -Force
+        $written += $d
+    }
+    return , $written
+}
+
 # ---- the accounts ----
 
 function Get-FohLocalAccountName {
@@ -745,7 +806,12 @@ function Invoke-FohInstall {
                 @{ instance = 'master'; library = $MasterUserLibrary; port = $MasterPort })) {
             $r = Install-FohUserScript -Source $source -UserLibrary $u.library -Instance $u.instance -Port $u.port
             Write-Host ("fohmixer install: the {0} user's FohMixer (replaced: {1}, Config.py written: {2})" -f $u.instance, $r.replaced, $r.config_written)
-            $copies += [pscustomobject]@{ instance = $u.instance; replaced = $r.replaced; config_written = $r.config_written; removed = $r.removed }
+            # The Max for Live devices (#151), printed by name only.
+            $devices = Install-FohUserDevices -Source (Join-Path $app.dir $script:DeviceDir) -UserLibrary $u.library
+            $wrote = 'nothing'
+            if (@($devices).Count -gt 0) { $wrote = (@($devices) -join ', ') }
+            Write-Host ("fohmixer install: the {0} user's Max devices in {1} (written: {2})" -f $u.instance, $script:DevicePresets, $wrote)
+            $copies += [pscustomobject]@{ instance = $u.instance; replaced = $r.replaced; config_written = $r.config_written; removed = $r.removed; devices = @($devices) }
         }
         # 5b. remote access (#17): the name on this PC, the shortcut, the tunnel token
         $remoteResult = $null

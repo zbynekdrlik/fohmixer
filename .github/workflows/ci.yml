@@ -251,12 +251,21 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Build the hub (release, the real UI embedded) and the tray (release)
         run: cargo build --locked --release -p fohmixer-hub -p fohmixer-tray
-      - name: Zip the bundle (hub, tray, FohMixer script, PC scripts, VERSION, SHA256SUMS)
+      - name: Build the Max for Live devices (#151; the .amxd is never committed)
+        shell: powershell
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'devices'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          python live-device/FohMixer-LUFS/build_amxd.py --patch 'live-device/FohMixer-LUFS/FohMixer LUFS.maxpat' --out (Join-Path $out 'FohMixer LUFS.amxd')
+          if ($LASTEXITCODE -ne 0) { throw "build_amxd.py failed for the LUFS device ($LASTEXITCODE)" }
+          python live-device/FohMixer-LUFS/build_amxd.py --patch 'live-device/FohMixer-Meter/FohMixer Meter.maxpat' --out (Join-Path $out 'FohMixer Meter.amxd')
+          if ($LASTEXITCODE -ne 0) { throw "build_amxd.py failed for the meter device ($LASTEXITCODE)" }
+      - name: Zip the bundle (hub, tray, FohMixer script, the two devices, PC scripts, VERSION, SHA256SUMS)
         id: zip
         shell: powershell
         run: |
           Import-Module ./scripts/fohmixer-pc/FohmixerPc.psm1 -Force
-          $b = New-FohBundle -RepoRoot $PWD.Path -HubExe target/release/fohmixer-hub.exe -TrayExe target/release/fohmixer-tray.exe -OutDir $env:RUNNER_TEMP -Sha $env:GITHUB_SHA
+          $b = New-FohBundle -RepoRoot $PWD.Path -HubExe target/release/fohmixer-hub.exe -TrayExe target/release/fohmixer-tray.exe -DeviceDir (Join-Path $env:RUNNER_TEMP 'devices') -OutDir $env:RUNNER_TEMP -Sha $env:GITHUB_SHA
           Get-Content -LiteralPath (Join-Path $b.stage 'SHA256SUMS')
           [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "name=$($b.name)`n")
       - name: Install the zip once (-NoTask, a temp data folder, two fake User Libraries and Live preferences)
@@ -289,6 +298,11 @@ jobs:
           }
           foreach ($lib in @($band, $master)) {
             if (-not (Test-Path -LiteralPath (Join-Path $lib 'Remote Scripts\FohMixer\version.py') -PathType Leaf)) { throw "no FohMixer copy in $lib" }
+          }
+          foreach ($lib in @($band, $master)) {
+            foreach ($d in @('FohMixer LUFS.amxd', 'FohMixer Meter.amxd')) {
+              if (-not (Test-Path -LiteralPath (Join-Path $lib "Presets\Audio Effects\Max Audio Effect\$d") -PathType Leaf)) { throw "no $d in $lib" }
+            }
           }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
