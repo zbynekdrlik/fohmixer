@@ -167,7 +167,7 @@ fn a_track_refused_fails_and_a_later_refusal_counts_nothing() {
     let (mut walk, _) = Confirm::start(DeviceKind::Lufs, &on_track(), TRACK);
     let refusal = json!({"ok": false, "error": "not found: tracks 1"});
     assert_eq!(
-        walk.answer(&[refusal.clone()]),
+        walk.answer(std::slice::from_ref(&refusal)),
         Step::Done(Answer::Failed("not found: tracks 1".into()))
     );
     let (mut walk, _) = Confirm::start(DeviceKind::Lufs, &on_track(), TRACK);
