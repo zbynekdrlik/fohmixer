@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { test, expect } from "./support/fixtures";
-import { LiveClient, clipped, frames, harness, hostLine, hubStatus, openSurface, seen, until } from "./support/live";
+import { LiveClient, centre, clipped, frames, harness, hostLine, hubStatus, openSurface, ready, seen, until, value2db } from "./support/live";
 
 // The strip's loudness (#151, spec §6.1, §6.2, §9's E2E bullet; mockup
 // docs/mockups/lufs-v9.html): SimLive's FohMixer LUFS devices send their
@@ -100,6 +100,17 @@ async function quiet(el: Locator, colour: string) {
   await expect(el).toHaveCSS("background-image", "none");
   for (const side of ["top", "right", "bottom", "left"]) await expect(el).toHaveCSS(`border-${side}-width`, "0px");
   await expect(el).toHaveCSS("box-shadow", "none");
+}
+
+/** Each bar's drawn level (1 − its cover's `scaleY`), as `strip.spec.ts` reads it. */
+async function drawnBars(bars: Locator): Promise<{ level: number }[]> {
+  return bars.evaluateAll((all) =>
+    all.map((b) => {
+      const cover = b.querySelector(".meter-cover") as HTMLElement;
+      const scale = /scaleY\(([-\d.]+)\)/.exec(cover.style.transform);
+      return { level: scale ? 1 - Number(scale[1]) : 0 };
+    }),
+  );
 }
 
 /** The caption's two lines. */
@@ -326,6 +337,72 @@ test.describe("The LUFS reading on a strip", () => {
           expect(l.y + l.height - col.y, `${kind} ${px} px: the row ends by 36 px`).toBeLessThanOrEqual(36.5);
         }
       }
+    }
+  });
+
+  test("an armed strip's bars follow its fader through its meter device; a strip without one keeps Live's meters", async ({ page }) => {
+    // #151 Task 13 (spec §3.4): Live meters an armed track's input, so the
+    // hub puts the meter device's peaks after the fader on the strip's meter
+    // keys. SimLive's meters move 30 times a second: a strip that holds
+    // still is fed by the device, one that moves by Live.
+    saved = await setUp(page, live);
+    const pan = `${IN_TRACK} mixer_device panning`;
+    const savedPan = await live.get("band", pan, "value");
+    const vox = lufsStrip(page, "Vox 1");
+    const bars = () => vox.getByTestId("meter").getByTestId("meter-bar");
+    const out = lufsStrip(page, "Vocals").getByTestId("meter").getByTestId("meter-bar");
+    try {
+      await live.set("band", `${IN_TRACK} mixer_device volume`, "value", 0.85);
+      await live.set("band", pan, "value", 0);
+      await live.set("band", IN_TRACK, "arm", true);
+      expect(await hostLine("band", "maxdev meter track 1 add rack")).toBe("MAXDEV 1");
+      expect(await hostLine("band", "level track 1 -120 -120")).toMatch(/^LEVEL [1-9]\d*$/);
+      await until(
+        async () => (await hubStatus()).lufs.devices,
+        (d: any[]) => d.some((x) => x.kind === "meter" && x.state === "matched"),
+        "the meter device matched",
+        10_000,
+      );
+      // The bars settle on the device's level and stay there.
+      const steady = async (): Promise<number[]> => {
+        const a = (await drawnBars(bars())).map((b) => b.level);
+        await page.waitForTimeout(250);
+        const b = (await drawnBars(bars())).map((b) => b.level);
+        return a.length === 2 && b.length === 2 && a.every((v, i) => v > 0 && Math.abs(v - b[i]) < 1e-3) ? b : [];
+      };
+      const before = await until(steady, (v) => v.length === 2, "the armed strip's bars steady on the device", 10_000);
+      // A strip without a meter device keeps Live's moving meters.
+      const moving = async () => {
+        const a = (await drawnBars(out)).map((b) => b.level);
+        await page.waitForTimeout(250);
+        const b = (await drawnBars(out)).map((b) => b.level);
+        return a.some((v, i) => Math.abs(v - b[i]) > 1e-3);
+      };
+      await until(moving, (m) => m, "Live's meters on the Vocals strip", 10_000);
+      // A finger drags the fader down; Live's volume follows, and the bars fall.
+      const fader = vox.getByTestId("fader");
+      await ready(fader);
+      const cap = await centre(vox.getByTestId("fader-cap"));
+      await page.mouse.move(cap.x, cap.y);
+      await page.mouse.down();
+      for (let dy = 5; dy <= 100; dy += 5) {
+        await page.mouse.move(cap.x, cap.y + dy);
+        await frames(page);
+      }
+      await page.mouse.up();
+      const lowered = await until(
+        () => live.get("band", `${IN_TRACK} mixer_device volume`, "value"),
+        (v: number) => value2db(v) <= -5,
+        "Live's volume 5 dB down or more",
+        10_000,
+      );
+      const after = await until(steady, (v) => v.length === 2 && v.every((x, i) => x < before[i] - 0.02), "the bars fallen", 10_000);
+      test.info().annotations.push({ type: "bars", description: `${before} -> ${after} at ${value2db(lowered).toFixed(1)} dB` });
+    } finally {
+      await hostLine("band", "level track 1 off");
+      await hostLine("band", "maxdev meter track 1 remove");
+      await live.set("band", pan, "value", savedPan);
+      await live.set("band", IN_TRACK, "arm", false);
     }
   });
 });

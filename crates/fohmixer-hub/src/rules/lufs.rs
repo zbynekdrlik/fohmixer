@@ -29,7 +29,15 @@
 //!   points show nothing.
 //! - **Problems:** `two LUFS meters`; `no LUFS meter` for a point of an
 //!   online Live with no matched device [`NO_METER_GRACE_MS`] after the Live
-//!   connected and the layout was served.
+//!   connected and the layout was served; `no meter device` for an armed
+//!   input point with no matched `FohMixer Meter` after the same grace.
+//! - **The armed tracks' levels** (§3.4, Task 13): a point whose track holds
+//!   exactly one matched, fresh `FohMixer Meter` gets the device's L/R peaks
+//!   after its fader, pan and mute (`fohmixer_proto::meter::post_fader`,
+//!   [`levels_of`]) as [`Act::Levels`] on every change; when that ends (the
+//!   key stale at [`METER_STALE_MS`], unmatched, the Live offline, the point
+//!   gone, the fader not known) [`Act::LevelsGone`] gives the strip's meter
+//!   keys back to Live's own values.
 //! - **Records** (`lufs`): a key found, matched, unmatched (once per key),
 //!   two, lost; a point's problem raised (warn) or cleared; a point's state
 //!   change at most once per [`STATE_LOG_MS`]. Never one per datagram.
@@ -40,6 +48,7 @@ use fohmixer_proto::client::{LufsDeviceStatus, LufsItem, LufsStripStatus};
 use fohmixer_proto::layout::LufsSpec;
 use fohmixer_proto::lufs::wire::{DeviceKind, Reading, track_and_set};
 use fohmixer_proto::lufs::{LufsProblem, LufsState, SILENT_TENTHS, judge};
+use fohmixer_proto::meter;
 use fohmixer_proto::volume::value2db;
 use serde_json::{Value, json};
 
@@ -96,12 +105,14 @@ pub struct LufsStrip {
     pub label: String,
 }
 
-/// A strip's fader as the hub follows it (an output point's): Live's
-/// volume value (0..1) and mute, each none until heard.
+/// A point's track as the hub follows it: Live's volume value (0..1), its
+/// pan (−1..+1), mute and (an input point's) arm, each none until heard.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Fader {
     pub volume: Option<f64>,
     pub mute: Option<bool>,
+    pub pan: Option<f64>,
+    pub arm: Option<bool>,
 }
 
 /// An output point's short-term after its fader: `tenths` plus the fader's
@@ -134,6 +145,48 @@ pub fn reading_of(spec: LufsSpec, first: i16, second: i16, fader: Fader) -> Opti
         (Some(false), Some(volume)) => Some(post_fader(first, value2db(volume))),
         _ => None,
     }
+}
+
+/// A meter device's L/R peaks (tenths of dBFS) as Live's meter values after
+/// the track's fader, pan and mute: `(0, 0)` while muted, none until the
+/// mute, the volume and the pan are known (the keys stay Live's).
+pub fn levels_of(left: i16, right: i16, fader: Fader) -> Option<(f64, f64)> {
+    match (fader.mute, fader.volume, fader.pan) {
+        (Some(true), _, _) => Some((0.0, 0.0)),
+        (Some(false), Some(volume), Some(pan)) => {
+            Some(meter::post_fader(left, right, volume, pan, false))
+        }
+        _ => None,
+    }
+}
+
+/// The values of a strip's meter keys for `levels` (left, right): each of
+/// `props` that is a meter prop with its value, `output_meter_level` the
+/// louder side.
+pub fn meter_values(levels: (f64, f64), props: &[&str]) -> Vec<(String, f64)> {
+    props
+        .iter()
+        .filter_map(|prop| {
+            let value = match *prop {
+                "output_meter_left" => levels.0,
+                "output_meter_right" => levels.1,
+                "output_meter_level" => levels.0.max(levels.1),
+                _ => return None,
+            };
+            Some(((*prop).to_string(), value))
+        })
+        .collect()
+}
+
+/// An input point's meter problem: armed (Live meters an armed track's
+/// input), no matched meter device, and the grace over.
+pub fn meter_problem(
+    input: bool,
+    armed: bool,
+    has_meter: bool,
+    grace_over: bool,
+) -> Option<LufsProblem> {
+    (input && armed && !has_meter && grace_over).then_some(LufsProblem::NoMeterDevice)
 }
 
 /// The strips a key of `kind` with the track and set names `track`, `set`
@@ -307,6 +360,15 @@ pub enum Act {
     Send(LufsItem),
     /// A record and its line.
     Log(Line),
+    /// A point's meter keys carry these levels (left, right; Live's 0..1)
+    /// in place of Live's own values.
+    Levels {
+        instance: String,
+        target: String,
+        levels: (f64, f64),
+    },
+    /// A point's meter keys go back to Live's own values.
+    LevelsGone { instance: String, target: String },
 }
 
 /// Where a key stands.
@@ -390,6 +452,8 @@ pub struct Lufs {
     devices: BTreeMap<Key, Device>,
     faders: BTreeMap<(String, String), Fader>,
     shown: BTreeMap<(String, String), Shown>,
+    /// The levels each point's meter keys carry now (sent as `Levels`).
+    levels: BTreeMap<(String, String), (f64, f64)>,
     asks: u64,
 }
 
@@ -505,7 +569,7 @@ impl Lufs {
         }
     }
 
-    /// A point's fader (an output point's volume and mute).
+    /// A point's fader (its volume, pan, mute and arm as heard).
     pub fn fader(&mut self, instance: &str, target: &str, fader: Fader, now: u64) -> Vec<Act> {
         self.faders
             .insert((instance.to_string(), target.to_string()), fader);
@@ -715,13 +779,13 @@ impl Lufs {
         acts
     }
 
-    /// The LUFS devices matched to `strip` and whether a key at its place
-    /// is `two`.
-    fn covering(&self, strip: &LufsStrip) -> (Vec<&Device>, bool) {
+    /// The devices of `kind` matched to `strip` and whether a key of that
+    /// kind at its place is `two`.
+    fn covering(&self, strip: &LufsStrip, kind: DeviceKind) -> (Vec<&Device>, bool) {
         let mut matched = Vec::new();
         let mut two = false;
         for (key, device) in &self.devices {
-            if key.kind != DeviceKind::Lufs
+            if key.kind != kind
                 || track_and_set(&key.parents).map(|(t, _)| t) != strip.track.as_deref()
             {
                 continue;
@@ -735,24 +799,40 @@ impl Lufs {
         (matched, two)
     }
 
-    /// What a point shows now: its reading and its problem.
-    fn point(&self, strip: &LufsStrip, now: u64) -> (Option<i16>, Option<LufsProblem>) {
-        let (matched, two) = self.covering(strip);
+    /// What a point shows now: its reading, its problem and its meter keys'
+    /// levels.
+    fn point(
+        &self,
+        strip: &LufsStrip,
+        now: u64,
+    ) -> (Option<i16>, Option<LufsProblem>, Option<(f64, f64)>) {
+        let (matched, two) = self.covering(strip, DeviceKind::Lufs);
         let grace = self
             .online
             .get(&strip.instance)
             .is_some_and(|o| grace_over(o.since, self.served_at, now));
-        let problem = problem_of(matched.len(), two, grace);
+        let lufs_problem = problem_of(matched.len(), two, grace);
         let fader = self
             .faders
             .get(&(strip.instance.clone(), strip.target.clone()))
             .copied()
             .unwrap_or_default();
-        let tenths = match (problem, matched.as_slice()) {
+        let tenths = match (lufs_problem, matched.as_slice()) {
             (None, [device]) => reading_of(strip.spec, device.first, device.second, fader),
             _ => None,
         };
-        (tenths, problem)
+        let (meters, meters_two) = self.covering(strip, DeviceKind::Meter);
+        let levels = match (meters_two, meters.as_slice()) {
+            (false, [device]) => levels_of(device.first, device.second, fader),
+            _ => None,
+        };
+        let problem = lufs_problem.or(meter_problem(
+            strip.spec.target.is_some(),
+            fader.arm == Some(true),
+            !meters.is_empty() || meters_two,
+            grace,
+        ));
+        (tenths, problem, levels)
     }
 
     /// Every point's reading and problem: a change goes to the pages, a
@@ -761,7 +841,27 @@ impl Lufs {
         let mut acts = Vec::new();
         let strips = self.strips.clone();
         for strip in &strips {
-            let (tenths, problem) = self.point(strip, now);
+            let (tenths, problem, levels) = self.point(strip, now);
+            let point = (strip.instance.clone(), strip.target.clone());
+            if self.levels.get(&point) != levels.as_ref() {
+                match levels {
+                    Some(levels) => {
+                        self.levels.insert(point.clone(), levels);
+                        acts.push(Act::Levels {
+                            instance: strip.instance.clone(),
+                            target: strip.target.clone(),
+                            levels,
+                        });
+                    }
+                    None => {
+                        self.levels.remove(&point);
+                        acts.push(Act::LevelsGone {
+                            instance: strip.instance.clone(),
+                            target: strip.target.clone(),
+                        });
+                    }
+                }
+            }
             let shown = self
                 .shown
                 .entry((strip.instance.clone(), strip.target.clone()))
@@ -786,6 +886,21 @@ impl Lufs {
                 shown.logged = state;
                 shown.logged_at = Some(now);
             }
+        }
+        // A point no longer served gives its meter keys back.
+        let served: BTreeSet<(String, String)> = strips
+            .iter()
+            .map(|s| (s.instance.clone(), s.target.clone()))
+            .collect();
+        let gone: Vec<(String, String)> = self
+            .levels
+            .keys()
+            .filter(|point| !served.contains(*point))
+            .cloned()
+            .collect();
+        for (instance, target) in gone {
+            self.levels.remove(&(instance.clone(), target.clone()));
+            acts.push(Act::LevelsGone { instance, target });
         }
         acts
     }

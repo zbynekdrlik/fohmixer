@@ -765,7 +765,18 @@ impl Router {
                     .subs
                     .subscribe(client, &instance, &target, &prop, display)
                 {
-                    Ok(reply) => subbed(&reply.key, reply.cached.as_ref()),
+                    // A meter key that carries a point's levels (#151)
+                    // answers with them, never Live's own value.
+                    Ok(reply) => match self.lufs_substituted(&reply.key) {
+                        Some(level) => subbed(
+                            &reply.key,
+                            Some(&Cached::Value {
+                                value: json!(level),
+                                display: None,
+                            }),
+                        ),
+                        None => subbed(&reply.key, reply.cached.as_ref()),
+                    },
                     Err((key, error)) => subbed(&key, Some(&Cached::Error(error))),
                 };
                 if let Some(outbox) = self.clients.get(&client) {
@@ -1557,7 +1568,11 @@ impl Router {
             } else if client == lufs::LEVELS_CLIENT {
                 lufs_items.push(item);
             } else if let Some(outbox) = self.clients.get(&client) {
-                outbox.value(item);
+                // A meter key that carries a point's levels (#151 §3.4)
+                // never gets Live's own value.
+                if self.lufs_substituted(&item.sub).is_none() {
+                    outbox.value(item);
+                }
             }
         }
         for (sub, value) in reverb_values {

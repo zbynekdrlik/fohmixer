@@ -1414,3 +1414,16 @@ fn only_a_track_of_live_set_by_index_is_indexed() {
         vec![("live_set".to_string(), "return_tracks".to_string())]
     );
 }
+
+#[test]
+fn a_keys_clients_are_its_subscribers() {
+    let mut subs = online();
+    assert!(subs.clients_of(VOLUME_KEY).is_empty());
+    sub_volume(&mut subs, 3);
+    sub_volume(&mut subs, 1);
+    assert_eq!(subs.clients_of(VOLUME_KEY), vec![1, 3]);
+    assert!(subs.unsubscribe(3, VOLUME_KEY));
+    assert_eq!(subs.clients_of(VOLUME_KEY), vec![1]);
+    // A guard has no clients.
+    assert!(subs.clients_of(LIST_GUARD).is_empty());
+}

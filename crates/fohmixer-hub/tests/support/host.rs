@@ -51,6 +51,18 @@ impl Host {
         )
     }
 
+    /// [`Host::start_lufs`] with its meters moving `meters_hz` times a
+    /// second (#151 Task 13: Live's own values beside a meter device's).
+    pub fn start_lufs_meters(instance: &str, site: &Path, lufs_port: u16, meters_hz: f64) -> Self {
+        Self::start_args(
+            instance,
+            site,
+            0,
+            meters_hz,
+            &["--lufs-port".to_string(), lufs_port.to_string()],
+        )
+    }
+
     fn start_args(
         instance: &str,
         site: &Path,

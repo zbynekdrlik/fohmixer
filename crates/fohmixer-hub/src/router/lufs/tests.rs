@@ -96,3 +96,101 @@ fn a_names_read_is_tried_again_only_when_live_did_not_answer() {
     assert!(!read_again("no result within 3 s", CONNECT_RETRIES + 1));
     assert!(!read_again("not found: live_set", 1));
 }
+
+#[test]
+fn a_point_follows_volume_pan_mute_and_an_input_its_arm() {
+    let t = "live_set tracks 1";
+    let out = follows(t, false);
+    assert_eq!(
+        out,
+        vec![
+            (
+                "live_set tracks 1 mixer_device volume".to_string(),
+                "value",
+                Part::Volume
+            ),
+            (
+                "live_set tracks 1 mixer_device panning".to_string(),
+                "value",
+                Part::Pan
+            ),
+            ("live_set tracks 1".to_string(), "mute", Part::Mute),
+        ]
+    );
+    let input = follows(t, true);
+    assert_eq!(input.len(), 4);
+    assert_eq!(input[..3], out[..]);
+    assert_eq!(
+        input[3],
+        ("live_set tracks 1".to_string(), "arm", Part::Arm)
+    );
+}
+
+#[test]
+fn each_part_lands_in_its_field() {
+    let mut fader = Fader::default();
+    heard(&mut fader, Part::Volume, Some(&json!(0.6)));
+    heard(&mut fader, Part::Pan, Some(&json!(-0.5)));
+    heard(&mut fader, Part::Mute, Some(&json!(true)));
+    heard(&mut fader, Part::Arm, Some(&json!(1)));
+    assert_eq!(
+        fader,
+        Fader {
+            volume: Some(0.6),
+            mute: Some(true),
+            pan: Some(-0.5),
+            arm: Some(true),
+        }
+    );
+    heard(&mut fader, Part::Arm, Some(&json!(false)));
+    assert_eq!(fader.arm, Some(false));
+    heard(&mut fader, Part::Pan, None);
+    heard(&mut fader, Part::Volume, Some(&json!("x")));
+    assert_eq!(
+        fader,
+        Fader {
+            volume: None,
+            mute: Some(true),
+            pan: None,
+            arm: Some(false),
+        }
+    );
+}
+
+#[test]
+fn a_points_meter_keys_carry_its_levels() {
+    let keys = meter_keys("band", "live_set tracks 1", (0.25, 0.5));
+    assert_eq!(
+        keys,
+        vec![
+            (
+                "band|live_set tracks 1|output_meter_level|false".to_string(),
+                0.5
+            ),
+            (
+                "band|live_set tracks 1|output_meter_level|true".to_string(),
+                0.5
+            ),
+            (
+                "band|live_set tracks 1|output_meter_left|false".to_string(),
+                0.25
+            ),
+            (
+                "band|live_set tracks 1|output_meter_left|true".to_string(),
+                0.25
+            ),
+            (
+                "band|live_set tracks 1|output_meter_right|false".to_string(),
+                0.5
+            ),
+            (
+                "band|live_set tracks 1|output_meter_right|true".to_string(),
+                0.5
+            ),
+        ]
+    );
+    assert!(
+        keys.iter()
+            .all(|(k, _)| fohmixer_proto::client::is_meter_key(k))
+    );
+}

@@ -13,9 +13,12 @@ use std::time::Duration;
 use fohmixer_hub::config::Config;
 use fohmixer_proto::client::{HubStatus, LufsItem, ServerMsg};
 use fohmixer_proto::lufs::{LufsProblem, LufsState};
+use fohmixer_proto::meter::live_value;
 use fohmixer_proto::volume::volume_of;
 use serde_json::{Value, json};
 use support::{Client, Host, TestHub, repo, runtime, serial};
+
+const LEFT: &str = "output_meter_left";
 
 const SECS_5: Duration = Duration::from_secs(5);
 const TRACK: &str = "live_set tracks 1";
@@ -304,5 +307,169 @@ fn an_output_point_reads_after_its_fader_and_a_disconnect_clears() {
         let gone = item(&mut client, "band", SECS_5, |i| i.tenths.is_none()).await;
         assert_eq!(gone.problem, None);
         hub.stop().await;
+    });
+}
+
+// --- the armed tracks' output meter (#151 Task 13, spec §3.4) ---
+
+/// Hand2 # as an input point with the fader at 0 dB and the pan centred
+/// (both followed by the hub before the meter device sends).
+async fn input_point(hub: &TestHub, host: &mut Host, client: &mut Client) {
+    assert_eq!(
+        host.tuner("track", 1, "set", r#""Vox 1" +G:LUFS +LUFS:-25"#),
+        1
+    );
+    points(hub, 1).await;
+    let volume = format!("{TRACK} mixer_device volume");
+    client
+        .set("band", &volume, "value", json!(volume_of(0.0)))
+        .await;
+    let panning = format!("{TRACK} mixer_device panning");
+    client.set("band", &panning, "value", json!(0.0)).await;
+}
+
+/// Whether a meter value is `want` (the hub's dB maths, within 1e-6).
+fn is(item: &fohmixer_proto::client::ValueItem, want: f64) -> bool {
+    item.value
+        .as_ref()
+        .and_then(Value::as_f64)
+        .is_some_and(|v| (v - want).abs() < 1e-6)
+}
+
+/// Every value of `sub` that arrives within `limit`.
+async fn values_for(client: &mut Client, sub: &str, limit: Duration) -> Vec<f64> {
+    let deadline = tokio::time::Instant::now() + limit;
+    let mut out = Vec::new();
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            return out;
+        }
+        let Some(msg) = client.next_message(left).await else {
+            return out;
+        };
+        if let ServerMsg::Values { items } = msg {
+            out.extend(
+                items
+                    .iter()
+                    .filter(|i| i.sub == sub)
+                    .filter_map(|i| i.value.as_ref().and_then(Value::as_f64)),
+            );
+        }
+    }
+}
+
+#[test]
+fn an_armed_strips_meter_follows_its_fader() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let port = free_port();
+        let mut host = Host::start_lufs("band", &site(), port);
+        let dir = tempfile::tempdir().unwrap();
+        let hub = hub(dir.path(), &[&host], port).await;
+        let mut client = hub.client().await;
+        input_point(&hub, &mut host, &mut client).await;
+        let left = client.sub_key("band", TRACK, LEFT, false).await;
+        let right = client
+            .sub_key("band", TRACK, "output_meter_right", false)
+            .await;
+        // Armed, with its LUFS device and no meter device: `no meter device`.
+        assert_eq!(host.maxdev("maxdev lufs track 1 add rack"), 1);
+        assert_eq!(host.maxdev("lufs track 1 -300 -253"), 1);
+        client.set("band", TRACK, "arm", json!(true)).await;
+        let got = item(&mut client, "band", SECS_5, |i| i.problem.is_some()).await;
+        assert_eq!(got.problem, Some(LufsProblem::NoMeterDevice));
+        assert_eq!(got.tenths, Some(-253), "the LUFS reading stays");
+        // Only what comes from here on (`wait` would find an older item).
+        client.clear();
+        // The meter device: the bars read its levels at the fader's 0 dB.
+        assert_eq!(host.maxdev("maxdev meter track 1 add rack"), 1);
+        assert_eq!(host.maxdev("level track 1 -120 -180"), 1);
+        client
+            .value_until(&left, SECS_5, |i| is(i, live_value(-12.0)))
+            .await;
+        client
+            .value_until(&right, SECS_5, |i| is(i, live_value(-18.0)))
+            .await;
+        let cleared = item(&mut client, "band", SECS_5, |i| i.problem.is_none()).await;
+        assert_eq!(cleared.tenths, Some(-253));
+        // The fader 10 dB down: both bars fall by 10 dB.
+        let volume = format!("{TRACK} mixer_device volume");
+        client
+            .set("band", &volume, "value", json!(volume_of(-10.0)))
+            .await;
+        client
+            .value_until(&left, SECS_5, |i| is(i, live_value(-22.0)))
+            .await;
+        client
+            .value_until(&right, SECS_5, |i| is(i, live_value(-28.0)))
+            .await;
+        // Muted: the floor.
+        client.set("band", TRACK, "mute", json!(true)).await;
+        client.value_until(&left, SECS_5, |i| is(i, 0.0)).await;
+        let status = hub.status().await;
+        assert!(
+            status
+                .lufs
+                .devices
+                .iter()
+                .any(|d| d.kind == "meter" && d.state == "matched"),
+            "{:?}",
+            status.lufs.devices
+        );
+        hub.stop().await;
+        host.stop();
+    });
+}
+
+#[test]
+fn live_values_never_interleave_while_the_device_is_fresh_and_come_back_after() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let port = free_port();
+        // SimLive's meters move 30 times a second, as music would.
+        let mut host = Host::start_lufs_meters("band", &site(), port, 30.0);
+        let dir = tempfile::tempdir().unwrap();
+        let hub = hub(dir.path(), &[&host], port).await;
+        let mut client = hub.client().await;
+        input_point(&hub, &mut host, &mut client).await;
+        let left = client.sub_key("band", TRACK, LEFT, false).await;
+        let want = live_value(-12.0);
+        // Live's own values flow before the device.
+        let before = values_for(&mut client, &left, Duration::from_millis(500)).await;
+        assert!(
+            before.iter().any(|v| (v - want).abs() > 0.01),
+            "Live's meters move: {before:?}"
+        );
+        assert_eq!(host.maxdev("maxdev meter track 1 add rack"), 1);
+        assert_eq!(host.maxdev("level track 1 -120 -180"), 1);
+        client.value_until(&left, SECS_5, |i| is(i, want)).await;
+        // While the device sends, every value on the key is the computed one.
+        let during = values_for(&mut client, &left, Duration::from_millis(1500)).await;
+        assert!(
+            during.iter().all(|v| (v - want).abs() < 1e-6),
+            "only the device's level: {during:?}"
+        );
+        // A page subscribing now is answered with the device's level too.
+        let mut late = hub.client().await;
+        match late.sub("band", TRACK, LEFT, false).await {
+            ServerMsg::Subbed { value, .. } => {
+                let v = value.and_then(|v| v.as_f64()).unwrap();
+                assert!((v - want).abs() < 1e-6, "{v}");
+            }
+            other => panic!("not subbed: {other:?}"),
+        }
+        // The device stops: Live's own values come back once it is stale.
+        assert_eq!(host.maxdev("level track 1 off"), 0);
+        client
+            .value_until(&left, Duration::from_millis(1500), |i| {
+                i.value
+                    .as_ref()
+                    .and_then(Value::as_f64)
+                    .is_some_and(|v| (v - want).abs() > 0.01)
+            })
+            .await;
+        hub.stop().await;
+        host.stop();
     });
 }

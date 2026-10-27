@@ -10,9 +10,16 @@
 //!   a marker strip from the marker keeper's track lists (the items' `name`),
 //!   the master from the read ([`track_name`]); a list's value names them
 //!   again;
-//! - follows each output point's fader (`mixer_device volume` `value` and
-//!   `mute`) with its own subscriber [`LEVELS_CLIENT`] (in the `Status`
-//!   `own` lists), for the rule's post-fader reading;
+//! - follows each point's fader (`mixer_device volume` `value`,
+//!   `mixer_device panning` `value`, `mute`, and an input point's `arm`)
+//!   with its own subscriber [`LEVELS_CLIENT`] (in the `Status` `own`
+//!   lists), for the rule's post-fader reading, the armed tracks' levels and
+//!   `no meter device`;
+//! - puts the rule's levels of a point with a meter device on the strip's
+//!   meter keys (`output_meter_left`, `_right`, `_level`) for every page
+//!   subscribed to them, and drops Live's own values on those keys until the
+//!   levels end ([`LufsIo::substituted`]; the flush and a `sub`'s answer ask
+//!   it), then sends Live's current values again (§3.4, Task 13);
 //! - runs the rule's confirming walks (`rules/lufs/confirm.rs`) through the
 //!   instance's script, one task each ([`RouterMsg::LufsConfirmed`]);
 //! - sends the points' items to every page (`Outbox::lufs`, paced with the
@@ -23,10 +30,10 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use fohmixer_proto::client::{LufsStatus, hub_key};
+use fohmixer_proto::client::{LufsStatus, METER_PROPS, ValueItem, hub_key};
 use fohmixer_proto::layout::{Anchor, LufsPoint};
 use fohmixer_proto::lufs::wire::Reading;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use super::markers::{RETURNS, TRACKS};
@@ -37,10 +44,9 @@ use crate::live::client::LiveHandle;
 use crate::live::subs::{Cached, ClientId};
 use crate::outbox::Outbox;
 use crate::rules::lufs::confirm::{self, Confirm, Step};
-use crate::rules::lufs::{Act, Answer, Fader, Key, Lufs, LufsStrip};
+use crate::rules::lufs::{Act, Answer, Fader, Key, Lufs, LufsStrip, meter_values};
 
-/// The rule's own subscriber (the output points' faders; #151 Task 13 adds
-/// the armed tracks' levels).
+/// The rule's own subscriber (the points' faders, pans, mutes and arms).
 pub const LEVELS_CLIENT: ClientId = ClientId::MAX - 5;
 /// The rule's tick.
 pub const LUFS_TICK: Duration = Duration::from_millis(100);
@@ -60,14 +66,57 @@ pub(crate) async fn lufs_ticks(router: mpsc::UnboundedSender<RouterMsg>, period:
     }
 }
 
-/// Which part of an output point's fader a subscription follows.
+/// Which part of a point's fader a subscription follows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Part {
     Volume,
     Mute,
+    Pan,
+    Arm,
 }
 
-/// One subscription an output point's fader needs.
+/// The subscriptions a point's track needs (target, prop, part): the
+/// volume, the pan and the mute of every point, the arm of an input point
+/// (Live meters an armed track's input, §3.4).
+pub(super) fn follows(target: &str, input: bool) -> Vec<(String, &'static str, Part)> {
+    let mut out = vec![
+        (
+            format!("{target} mixer_device volume"),
+            "value",
+            Part::Volume,
+        ),
+        (format!("{target} mixer_device panning"), "value", Part::Pan),
+        (target.to_string(), "mute", Part::Mute),
+    ];
+    if input {
+        out.push((target.to_string(), "arm", Part::Arm));
+    }
+    out
+}
+
+/// A part's new state in `fader` from a value (none: not known).
+pub(super) fn heard(fader: &mut Fader, part: Part, value: Option<&Value>) {
+    match part {
+        Part::Volume => fader.volume = value.and_then(Value::as_f64),
+        Part::Pan => fader.pan = value.and_then(Value::as_f64),
+        Part::Mute => fader.mute = value.and_then(mute_of),
+        Part::Arm => fader.arm = value.and_then(mute_of),
+    }
+}
+
+/// The hub keys of a point's meter keys a page may subscribe (with and
+/// without a display string) and the levels' value of each: Live's own
+/// values on them are dropped while the levels hold.
+pub(super) fn meter_keys(instance: &str, target: &str, levels: (f64, f64)) -> Vec<(String, f64)> {
+    meter_values(levels, &METER_PROPS)
+        .into_iter()
+        .flat_map(|(prop, value)| {
+            [false, true].map(|display| (hub_key(instance, target, &prop, display), value))
+        })
+        .collect()
+}
+
+/// One subscription a point's fader needs.
 struct Follow {
     instance: String,
     point: String,
@@ -146,9 +195,12 @@ pub(super) struct LufsIo {
     pub rule: Lufs,
     /// The served layout's points.
     pub points: Vec<LufsPoint>,
-    /// The output points' fader subscriptions: hub key → point and part.
+    /// The points' fader subscriptions: hub key → point and part.
     pub watched: BTreeMap<String, (String, String, Part)>,
-    /// The output points' faders as heard.
+    /// The meter keys that carry a point's levels now (hub key → value):
+    /// Live's own values on them are dropped.
+    pub substituted: BTreeMap<String, f64>,
+    /// The points' faders as heard.
     pub faders: BTreeMap<(String, String), Fader>,
     /// Each instance's master track's name, as read.
     pub masters: BTreeMap<String, String>,
@@ -219,17 +271,12 @@ impl Router {
             .collect()
     }
 
-    /// A new layout's points: their output points' faders followed, the
-    /// rule told.
+    /// A new layout's points: their faders followed, the rule told.
     pub(super) fn lufs_layout(&mut self, points: Vec<LufsPoint>) {
         self.lufs.points = points;
         let mut wanted: BTreeMap<String, Follow> = BTreeMap::new();
-        for p in self.lufs.points.iter().filter(|p| p.spec.target.is_none()) {
-            let volume = format!("{} mixer_device volume", p.target);
-            for (part, target, prop) in [
-                (Part::Volume, volume, "value"),
-                (Part::Mute, p.target.clone(), "mute"),
-            ] {
+        for p in &self.lufs.points {
+            for (target, prop, part) in follows(&p.target, p.spec.target.is_some()) {
                 let key = hub_key(&p.instance, &target, prop, false);
                 wanted.insert(
                     key,
@@ -271,7 +318,7 @@ impl Router {
                         .insert(reply.key, (follow.instance, follow.point, follow.part));
                 }
                 Err((_, error)) => {
-                    tracing::warn!(instance = %follow.instance, target = %follow.target, error = %error, "lufs: cannot follow an output point's fader");
+                    tracing::warn!(instance = %follow.instance, target = %follow.target, error = %error, "lufs: cannot follow a loudness point's fader");
                 }
             }
         }
@@ -307,7 +354,7 @@ impl Router {
         self.lufs_apply(acts);
     }
 
-    /// A value of an output point's fader subscription.
+    /// A value of a point's fader subscription.
     pub(super) fn lufs_value(&mut self, sub: &str, value: Option<Value>) {
         let Some((instance, point, part)) = self.lufs.watched.get(sub).cloned() else {
             return;
@@ -317,10 +364,7 @@ impl Router {
             .faders
             .entry((instance.clone(), point.clone()))
             .or_default();
-        match part {
-            Part::Volume => fader.volume = value.as_ref().and_then(Value::as_f64),
-            Part::Mute => fader.mute = value.as_ref().and_then(mute_of),
-        }
+        heard(fader, part, value.as_ref());
         let fader = *fader;
         let now = self.lufs_now();
         let acts = self.lufs.rule.fader(&instance, &point, fader, now);
@@ -473,6 +517,14 @@ impl Router {
                     ask,
                 } => self.lufs_confirm(key, instance, track, ask),
                 Act::Send(item) => items.push(item),
+                Act::Levels {
+                    instance,
+                    target,
+                    levels,
+                } => self.lufs_levels(&instance, &target, Some(levels)),
+                Act::LevelsGone { instance, target } => {
+                    self.lufs_levels(&instance, &target, None);
+                }
                 Act::Log(line) => {
                     if line.warn {
                         tracing::warn!(record = %line.fields, "lufs: {}", line.text);
@@ -486,6 +538,38 @@ impl Router {
         if !items.is_empty() {
             for outbox in self.clients.values() {
                 outbox.lufs(items.clone());
+            }
+        }
+    }
+
+    /// Whether Live's own value of the hub key `sub` is dropped: the key
+    /// carries a point's levels now.
+    pub(super) fn lufs_substituted(&self, sub: &str) -> Option<f64> {
+        self.lufs.substituted.get(sub).copied()
+    }
+
+    /// A point's levels on its meter keys (none: back to Live's values,
+    /// Live's current ones sent at once), to every page subscribed.
+    fn lufs_levels(&mut self, instance: &str, target: &str, levels: Option<(f64, f64)>) {
+        let keys = meter_keys(instance, target, levels.unwrap_or((0.0, 0.0)));
+        for (key, value) in keys {
+            let item = match levels {
+                Some(_) => {
+                    self.lufs.substituted.insert(key.clone(), value);
+                    ValueItem::value(&key, json!(value), None)
+                }
+                None => {
+                    self.lufs.substituted.remove(&key);
+                    match self.subs.cached(&key) {
+                        Some(cached) => cached.item(&key),
+                        None => continue,
+                    }
+                }
+            };
+            for client in self.subs.clients_of(&key) {
+                if let Some(outbox) = self.clients.get(&client) {
+                    outbox.value(item.clone());
+                }
             }
         }
     }

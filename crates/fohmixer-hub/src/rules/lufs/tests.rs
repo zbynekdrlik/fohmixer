@@ -297,6 +297,8 @@ fn an_input_point_sends_v_an_output_point_sends_s() {
         Fader {
             volume: Some(unity),
             mute: Some(false),
+            pan: None,
+            arm: None,
         },
         40,
     );
@@ -307,6 +309,8 @@ fn an_input_point_sends_v_an_output_point_sends_s() {
         Fader {
             volume: Some(fohmixer_proto::volume::volume_of(-10.0)),
             mute: Some(false),
+            pan: None,
+            arm: None,
         },
         50,
     );
@@ -317,6 +321,8 @@ fn an_input_point_sends_v_an_output_point_sends_s() {
         Fader {
             volume: Some(unity),
             mute: Some(true),
+            pan: None,
+            arm: None,
         },
         60,
     );
@@ -334,6 +340,8 @@ fn the_out_rule_on_its_boundaries() {
     let open = |db: f64| Fader {
         volume: Some(fohmixer_proto::volume::volume_of(db)),
         mute: Some(false),
+        pan: None,
+        arm: None,
     };
     assert_eq!(reading_of(inp, -300, -253, Fader::default()), Some(-253));
     assert_eq!(reading_of(inp, -300, -253, open(-20.0)), Some(-253));
@@ -341,16 +349,22 @@ fn the_out_rule_on_its_boundaries() {
     let volume_only = Fader {
         volume: Some(0.85),
         mute: None,
+        pan: None,
+        arm: None,
     };
     assert_eq!(reading_of(out, -300, -253, volume_only), None);
     let mute_only = Fader {
         volume: None,
         mute: Some(false),
+        pan: None,
+        arm: None,
     };
     assert_eq!(reading_of(out, -300, -253, mute_only), None);
     let muted = Fader {
         volume: None,
         mute: Some(true),
+        pan: None,
+        arm: None,
     };
     assert_eq!(reading_of(out, -300, -253, muted), Some(SILENT_TENTHS));
     assert_eq!(reading_of(out, -300, -253, open(6.0)), Some(-240));
@@ -613,4 +627,269 @@ fn an_unchanged_reading_is_never_sent_again() {
     );
     assert!(sends(&rule.reading(&on_vox(-300, -252), 5200)).is_empty());
     assert!(sends(&rule.tick(5300)).is_empty(), "a tick resends nothing");
+}
+
+// --- the armed tracks' levels (#151 Task 13, spec §3.4) ---
+
+fn meter_reading(device: i32, left: i16, right: i16) -> Reading {
+    Reading {
+        kind: DeviceKind::Meter,
+        device,
+        version: "v1.19.0".to_string(),
+        parents: ["Meter", "Meter", "Vox 1", SET].map(str::to_string),
+        first: left,
+        second: right,
+    }
+}
+
+fn open_fader(db: f64, pan: f64, arm: bool) -> Fader {
+    Fader {
+        volume: Some(fohmixer_proto::volume::volume_of(db)),
+        mute: Some(false),
+        pan: Some(pan),
+        arm: Some(arm),
+    }
+}
+
+/// The levels and the levels gone among `acts`, in order.
+fn levels(acts: &[Act]) -> Vec<Option<(f64, f64)>> {
+    acts.iter()
+        .filter_map(|a| match a {
+            Act::Levels { levels, .. } => Some(Some(*levels)),
+            Act::LevelsGone { .. } => Some(None),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Matches meter device `device` on band's Vox 1 at `at` (asked at `at`,
+/// answered at `at` + 10).
+fn match_meter(rule: &mut Lufs, device: i32, at: u64) -> Vec<Act> {
+    let r = meter_reading(device, -120, -180);
+    let mut acts = rule.reading(&r, at);
+    let ask = confirms(&acts)[0].2;
+    acts.extend(rule.answered(&key_of(&r), "band", ask, Answer::Ours, at + 10));
+    acts
+}
+
+/// An input point on band's Vox 1 with its LUFS device and a meter device
+/// matched, its fader at 0 dB, centre, armed (at 40).
+fn armed() -> Lufs {
+    let mut rule = matched(Some(-25));
+    match_meter(&mut rule, 7, 25);
+    rule.fader("band", "live_set tracks 1", open_fader(0.0, 0.0, true), 40);
+    rule
+}
+
+fn close_pair(got: (f64, f64), want: (f64, f64)) -> bool {
+    (got.0 - want.0).abs() < 1e-6 && (got.1 - want.1).abs() < 1e-6
+}
+
+#[test]
+fn levels_follow_the_fader_and_pan() {
+    let mut rule = matched(Some(-25));
+    // Matched, but the fader not known: the keys stay Live's.
+    let acts = match_meter(&mut rule, 7, 25);
+    assert!(levels(&acts).is_empty(), "{acts:?}");
+    let unity = fohmixer_proto::volume::volume_of(0.0);
+    let acts = rule.fader("band", "live_set tracks 1", open_fader(0.0, 0.0, true), 40);
+    let got = levels(&acts);
+    assert_eq!(got.len(), 1);
+    let want = fohmixer_proto::meter::post_fader(-120, -180, unity, 0.0, false);
+    assert!(close_pair(got[0].unwrap(), want), "{got:?}");
+    // The fader 10 dB down.
+    let acts = rule.fader(
+        "band",
+        "live_set tracks 1",
+        open_fader(-10.0, 0.0, true),
+        50,
+    );
+    let want = (
+        fohmixer_proto::meter::live_value(-22.0),
+        fohmixer_proto::meter::live_value(-28.0),
+    );
+    assert!(close_pair(levels(&acts)[0].unwrap(), want));
+    // Panned half left.
+    let acts = rule.fader(
+        "band",
+        "live_set tracks 1",
+        open_fader(-10.0, -0.5, true),
+        60,
+    );
+    let volume = fohmixer_proto::volume::volume_of(-10.0);
+    let want = fohmixer_proto::meter::post_fader(-120, -180, volume, -0.5, false);
+    assert!(close_pair(levels(&acts)[0].unwrap(), want));
+    // A new reading moves them; the same reading again sends nothing.
+    let acts = rule.reading(&meter_reading(7, -60, -60), 70);
+    let want = fohmixer_proto::meter::post_fader(-60, -60, volume, -0.5, false);
+    assert!(close_pair(levels(&acts)[0].unwrap(), want));
+    assert!(levels(&rule.reading(&meter_reading(7, -60, -60), 80)).is_empty());
+    // Only the meter keys: the LUFS reading is unchanged.
+    assert_eq!(rule.items(), vec![item("band", 1, Some(-253))]);
+}
+
+#[test]
+fn a_muted_track_reads_zero() {
+    let mut rule = armed();
+    let mut fader = open_fader(0.0, 0.0, true);
+    fader.mute = Some(true);
+    let acts = rule.fader("band", "live_set tracks 1", fader, 50);
+    assert_eq!(levels(&acts), vec![Some((0.0, 0.0))]);
+}
+
+#[test]
+fn the_levels_need_the_mute_the_volume_and_the_pan() {
+    let all = open_fader(0.0, 0.0, false);
+    assert!(levels_of(-120, -120, all).is_some());
+    for missing in 0..3 {
+        let mut fader = all;
+        match missing {
+            0 => fader.mute = None,
+            1 => fader.volume = None,
+            _ => fader.pan = None,
+        }
+        assert_eq!(levels_of(-120, -120, fader), None, "missing {missing}");
+    }
+    let muted = Fader {
+        volume: None,
+        mute: Some(true),
+        pan: None,
+        arm: None,
+    };
+    assert_eq!(levels_of(-120, -120, muted), Some((0.0, 0.0)));
+    assert_eq!(
+        levels_of(-120, -180, all),
+        Some(fohmixer_proto::meter::post_fader(
+            -120,
+            -180,
+            fohmixer_proto::volume::volume_of(0.0),
+            0.0,
+            false
+        ))
+    );
+}
+
+#[test]
+fn stale_meter_gives_the_keys_back_at_500_ms() {
+    let mut rule = armed();
+    rule.reading(&meter_reading(7, -120, -180), 1000);
+    assert!(levels(&rule.tick(1499)).is_empty());
+    let acts = rule.tick(1500);
+    assert_eq!(levels(&acts), vec![None]);
+    assert!(whats(&acts).contains(&"lost".to_string()));
+    assert!(matches!(
+        acts.iter().find(|a| matches!(a, Act::LevelsGone { .. })),
+        Some(Act::LevelsGone { instance, target })
+            if instance == "band" && target == "live_set tracks 1"
+    ));
+    // Gone once: the next tick says nothing.
+    assert!(levels(&rule.tick(1600)).is_empty());
+}
+
+#[test]
+fn level_prop_is_the_louder_side() {
+    let props = fohmixer_proto::client::METER_PROPS;
+    assert_eq!(
+        meter_values((0.25, 0.75), &props),
+        vec![
+            ("output_meter_level".to_string(), 0.75),
+            ("output_meter_left".to_string(), 0.25),
+            ("output_meter_right".to_string(), 0.75),
+        ]
+    );
+    assert_eq!(
+        meter_values(
+            (0.75, 0.25),
+            &["output_meter_level", "value", "output_meter_right"]
+        ),
+        vec![
+            ("output_meter_level".to_string(), 0.75),
+            ("output_meter_right".to_string(), 0.25),
+        ]
+    );
+}
+
+#[test]
+fn armed_lufs_strip_without_meter_device_is_a_problem() {
+    let mut rule = matched(Some(-25));
+    // Armed before the grace: no problem yet.
+    let acts = rule.fader("band", "live_set tracks 1", open_fader(0.0, 0.0, true), 100);
+    assert!(sends(&acts).is_empty());
+    // The LUFS device keeps sending (its key fresh at the grace's end).
+    rule.reading(&on_vox(-300, -253), 2900);
+    let acts = rule.tick(3000);
+    let mut want = item("band", 1, Some(-253));
+    want.problem = Some(LufsProblem::NoMeterDevice);
+    assert_eq!(sends(&acts), vec![want], "the LUFS reading stays");
+    // Not armed: none.
+    let acts = rule.fader(
+        "band",
+        "live_set tracks 1",
+        open_fader(0.0, 0.0, false),
+        3100,
+    );
+    assert_eq!(sends(&acts), vec![item("band", 1, Some(-253))]);
+    // Armed again, then a meter device clears it.
+    rule.fader(
+        "band",
+        "live_set tracks 1",
+        open_fader(0.0, 0.0, true),
+        3200,
+    );
+    let acts = match_meter(&mut rule, 7, 3300);
+    assert_eq!(sends(&acts), vec![item("band", 1, Some(-253))]);
+    // An armed output point never has it.
+    let mut out = matched(None);
+    out.fader("band", "live_set tracks 1", open_fader(0.0, 0.0, true), 100);
+    out.reading(&on_vox(-300, -253), 2900);
+    let acts = out.tick(3000);
+    assert_eq!(sends(&acts), Vec::<LufsItem>::new());
+    assert_eq!(out.items()[0].problem, None);
+}
+
+#[test]
+fn the_meter_problem_rule() {
+    assert_eq!(
+        meter_problem(true, true, false, true),
+        Some(LufsProblem::NoMeterDevice)
+    );
+    assert_eq!(meter_problem(false, true, false, true), None);
+    assert_eq!(meter_problem(true, false, false, true), None);
+    assert_eq!(meter_problem(true, true, true, true), None);
+    assert_eq!(meter_problem(true, true, false, false), None);
+}
+
+#[test]
+fn a_meter_device_is_no_lufs_device() {
+    let mut rule = rule(vec![strip("band", 1, "Vox 1", Some(-25))]);
+    match_meter(&mut rule, 7, 10);
+    // The meter device fresh at the grace's end, matched to the point.
+    rule.reading(&meter_reading(7, -120, -180), 2900);
+    let acts = rule.tick(3000);
+    let mut want = item("band", 1, None);
+    want.problem = Some(LufsProblem::NoLufsMeter);
+    assert_eq!(sends(&acts), vec![want]);
+}
+
+#[test]
+fn two_meter_devices_carry_no_levels() {
+    let mut rule = armed();
+    let acts = match_meter(&mut rule, 8, 50);
+    assert_eq!(levels(&acts), vec![None]);
+    assert_eq!(rule.items(), vec![item("band", 1, Some(-253))]);
+}
+
+#[test]
+fn offline_and_a_point_gone_give_the_keys_back() {
+    let mut rule = armed();
+    assert_eq!(levels(&rule.offline("band", 100)), vec![None]);
+    let mut rule = armed();
+    let acts = rule.set_strips(vec![strip("band", 2, "Vox 2", Some(-25))], true, 100);
+    assert_eq!(levels(&acts), vec![None]);
+    assert!(matches!(
+        acts.iter().find(|a| matches!(a, Act::LevelsGone { .. })),
+        Some(Act::LevelsGone { instance, target })
+            if instance == "band" && target == "live_set tracks 1"
+    ));
+    assert!(levels(&rule.tick(200)).is_empty());
 }

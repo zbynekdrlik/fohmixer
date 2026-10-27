@@ -495,6 +495,14 @@ impl Subs {
         std::mem::take(&mut self.deliveries)
     }
 
+    /// The clients subscribed to the hub key `key` (none without an entry).
+    pub fn clients_of(&self, key: &str) -> Vec<ClientId> {
+        self.entries
+            .get(key)
+            .map(|e| e.clients.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
     /// The cached state of a hub key.
     pub fn cached(&self, key: &str) -> Option<&Cached> {
         self.entries.get(key).and_then(|e| e.cached.as_ref())

@@ -706,6 +706,9 @@ class _TrackClass(_LiveObject):
     color = _Prop(coerce=_int)
     mute = _Prop(coerce=_bool)
     solo = _Prop(coerce=_bool)
+    # arm (#151 Task 13): the hub follows it on a LUFS input point (Live
+    # meters an armed track's input).
+    arm = _Prop(coerce=_bool)
     current_monitoring_state = _Prop(coerce=_monitoring)
     output_meter_left = _Prop(readonly=True)
     output_meter_right = _Prop(readonly=True)
@@ -729,6 +732,7 @@ class _TrackClass(_LiveObject):
             color=color,
             mute=False,
             solo=False,
+            arm=False,
             fold_state=0,
             current_monitoring_state=_MonitoringStates.AUTO,
             output_meter_left=0.0,
