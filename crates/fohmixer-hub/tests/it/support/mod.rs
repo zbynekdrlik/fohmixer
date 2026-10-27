@@ -5,7 +5,7 @@
 //! A host is only ever asked to stop (SIGTERM, then a bounded wait): spec
 //! I7, nothing is force-ended. The hosts need a Unix shell (`kill`); the
 //! host-free tests (layout, auth) also run on Windows, the hub's platform.
-#![allow(dead_code)] // every test binary uses its own part of this module
+#![allow(dead_code)] // on Windows the Unix-only test modules are left out
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -30,13 +30,24 @@ pub use host::Host;
 pub mod companion;
 pub mod throttle;
 
-/// One host-backed test at a time within a test binary (`cargo test` runs
-/// a binary's tests on parallel threads; nextest runs them in the
-/// `hub-hosts` group instead): the timing checks measure the hub, not a
-/// crowded runner.
+/// One host-backed test at a time in the `it` binary (`cargo test` runs its
+/// tests on parallel threads; nextest runs them in the `hub-hosts` group
+/// instead): the timing checks measure the hub, not a crowded runner.
 pub fn serial() -> std::sync::MutexGuard<'static, ()> {
     static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
     SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// One port test at a time: `serve_until`'s and `graceful_stop`'s tests
+/// share this lock (`cargo test` runs them in the one `it` process; nextest
+/// runs them in the `hub-ports` group instead). The kernel readily hands a
+/// just-freed port to the next bind to port 0, so one of these tests could
+/// take the port another checks is refused and free.
+pub fn ports() -> std::sync::MutexGuard<'static, ()> {
+    static PORTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    PORTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }

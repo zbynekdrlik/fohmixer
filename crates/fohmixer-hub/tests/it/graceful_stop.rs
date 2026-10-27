@@ -3,12 +3,13 @@
 //! SIGINT closes the listener at once, open requests get up to 5 s, the
 //! process exits 0 and the port is free; with `[companion]` the Stream Deck
 //! leaves Companion (`REMOVE-DEVICE`, #52) before the process ends. The
-//! in-process `serve_until` tests are in `tests/serve_until.rs`.
+//! in-process `serve_until` tests are in `serve_until.rs`.
 //!
 //! Unix only: the tests send SIGTERM/SIGINT. The Windows stop (Ctrl-Break to
 //! the hub's console) is exercised on the PC from S3 on.
 //!
-//! One test at a time (`SERIAL` here, the `hub-ports` test group under
+//! One test at a time, and never at the same time as `serve_until.rs`
+//! (`support::ports` under `cargo test`, the `hub-ports` test group under
 //! nextest): the tests check that a stopped hub's port is refused and free,
 //! and the kernel readily hands a just-freed port to the next bind to port
 //! 0, so a hub another test starts at that moment could take it.
@@ -17,16 +18,13 @@
 use std::io::{BufRead, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::MutexGuard;
 use std::time::{Duration, Instant};
 
-static SERIAL: Mutex<()> = Mutex::new(());
-
-/// This test's turn; a panicked earlier test does not block the rest.
+/// This test's turn (shared with `serve_until.rs`); a panicked earlier
+/// test does not block the rest.
 fn serial() -> MutexGuard<'static, ()> {
-    SERIAL
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    crate::support::ports()
 }
 
 struct Server {

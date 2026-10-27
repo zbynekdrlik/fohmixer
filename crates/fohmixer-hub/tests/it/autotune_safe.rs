@@ -4,7 +4,7 @@
 //! `+AUTOTUNE:0`: on 0, off 127, standing on DRY; one song in C; invented
 //! names). The hub finds the three targets and registers each selector's
 //! DRY write with the script, AUT off (the rule's own switch-on is
-//! `tests/autotune_switch.rs`'); another writer then moves every selector to its chain
+//! `tests/it/autotune_switch.rs`'); another writer then moves every selector to its chain
 //! twice within 10 s, so the hub writes it DRY once and then stops (spec
 //! §7); every selector then reads DRY within 2 s through a raw `get` of the
 //! host's script, the script's log saying so once, when the hub is gone:
@@ -16,15 +16,13 @@
 //!   sockets closed, as a killed process's are.
 #![cfg(unix)]
 
-mod support;
-
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::support::{Host, TestHub, events_in, runtime, serial};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use support::{Host, TestHub, events_in, runtime, serial};
 use tokio_tungstenite::tungstenite::Message;
 
 const SECS_10: Duration = Duration::from_secs(10);
@@ -39,7 +37,7 @@ const MACROS: [&str; 3] = [
 const ON: [f64; 3] = [127.0, 127.0, 0.0];
 const DRY: [f64; 3] = [0.0, 0.0, 127.0];
 
-/// The test's own set, as `tests/autotune_keys.rs`'s: one song in C, Live
+/// The test's own set, as `tests/it/autotune_keys.rs`'s: one song in C, Live
 /// standing at 10 in it.
 fn site(dir: &Path) -> PathBuf {
     let tuner = |name: &str| json!({"template": "plain", "name": name, "class_name": "Tuner"});

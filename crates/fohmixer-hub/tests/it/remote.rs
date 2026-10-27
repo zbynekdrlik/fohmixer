@@ -7,13 +7,12 @@
 //! still refused without an Access assertion). AbleSet's name (#90) gets its
 //! own certificate on the same listener, by SNI.
 
-mod support;
-
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::support::TestHub;
 use fohmixer_hub::ableset::{CLOSE_BOUND, STOPPED};
 use fohmixer_hub::config::{AbleSetCfg, Config, TlsCfg};
 use fohmixer_proto::client::ServerMsg;
@@ -21,7 +20,6 @@ use futures_util::{SinkExt, StreamExt};
 use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair};
 use rustls::pki_types::{CertificateDer, ServerName};
 use serde_json::Value;
-use support::TestHub;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
@@ -504,7 +502,7 @@ async fn the_stop_waits_for_an_ableset_tunnel_to_close_and_record_it() {
     // after its record), with the bytes it carried.
     let deadline = Instant::now() + Duration::from_secs(5);
     let close = loop {
-        let records = support::events_in(dir.path());
+        let records = crate::support::events_in(dir.path());
         let close = records
             .into_iter()
             .find(|r| r["ev"] == "ableset_ws" && r["what"] == "close");

@@ -2011,7 +2011,7 @@ async fn a_resting_contact_goes_again_in_time_while_two_editors_grab_slowly() {
         .collect();
     // Wall-clock times on a thread the runner shares with every other test
     // (the coverage build, the mutation shards): it may be held up once,
-    // as the integration test allows (`tests/eq.rs`). The strict 100 ms
+    // as the integration test allows (`tests/it/eq.rs`). The strict 100 ms
     // bound is the explicit-clock test's
     // (`the_keep_alive_is_looked_at_first_and_after_each_grab_on_a_fresh_clock`).
     let gaps: Vec<f64> = times.windows(2).map(|pair| pair[1] - pair[0]).collect();

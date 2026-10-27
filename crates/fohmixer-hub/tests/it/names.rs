@@ -4,15 +4,13 @@
 //! name, and two tracks named alike (ambiguous).
 #![cfg(unix)]
 
-mod support;
-
 use std::path::Path;
 use std::time::Duration;
 
+use crate::support::{Host, TestHub, runtime, serial};
 use fohmixer_hub::config::InstanceCfg;
 use fohmixer_proto::client::Unresolved;
 use serde_json::{Value, json};
-use support::{Host, TestHub, runtime, serial};
 
 const SECS_3: Duration = Duration::from_secs(3);
 

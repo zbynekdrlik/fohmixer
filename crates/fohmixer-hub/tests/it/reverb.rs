@@ -5,16 +5,14 @@
 //! survives a hub restart; a host restart (a set load) lowers nothing again.
 #![cfg(unix)]
 
-mod support;
-
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use crate::support::{Client, Host, TestHub, runtime, serial};
 use fohmixer_proto::client::{ClientMsg, Low, ReverbState, ServerMsg, hub_key};
 use fohmixer_proto::layout::{Control, LayoutResponse};
 use fohmixer_proto::volume::{value2db, volume_of};
 use serde_json::{Value, json};
-use support::{Client, Host, TestHub, runtime, serial};
 
 const SECS_5: Duration = Duration::from_secs(5);
 

@@ -14,11 +14,11 @@ hub-ports = { max-threads = 1 }
 # The hub's host-backed tests (real sim/host.py processes, an in-process
 # hub, timing checks): two at a time, so a crowded runner does not turn a
 # latency check into a measure of the runner (`cargo test` runs them one at
-# a time per binary: `support::serial`).
+# a time: `support::serial`).
 hub-hosts = { max-threads = 2 }
 
 [[profile.default.overrides]]
-filter = 'binary_id(fohmixer-hub::graceful_stop) | binary_id(fohmixer-hub::serve_until)'
+filter = 'binary_id(fohmixer-hub::it) & (test(/^graceful_stop::/) | test(/^serve_until::/))'
 test-group = 'hub-ports'
 
 [[profile.default.overrides]]
@@ -27,7 +27,7 @@ test-group = 'hub-ports'
 # (#140), the autotune keys (#140 PR 2), the fall back to DRY (#140 PR
 # 3a) and the rule (#140 PR 3b): SimLive hosts; LUFS (#151): SimLive hosts,
 # and the listener's flood (host-free, timed)
-filter = 'binary_id(fohmixer-hub::live_client) | binary_id(fohmixer-hub::fanout) | binary_id(fohmixer-hub::stage_aut) | binary_id(fohmixer-hub::layout) | binary_id(fohmixer-hub::auth) | binary_id(fohmixer-hub::names) | binary_id(fohmixer-hub::ping) | binary_id(fohmixer-hub::setter) | binary_id(fohmixer-hub::companion_client) | binary_id(fohmixer-hub::deck) | binary_id(fohmixer-hub::unfold) | binary_id(fohmixer-hub::markers) | binary_id(fohmixer-hub::eq) | binary_id(fohmixer-hub::reverb) | binary_id(fohmixer-hub::fader_link) | binary_id(fohmixer-hub::autotune) | binary_id(fohmixer-hub::autotune_keys) | binary_id(fohmixer-hub::autotune_safe) | binary_id(fohmixer-hub::autotune_switch) | binary_id(fohmixer-hub::songmap) | binary_id(fohmixer-hub::lufs) | binary_id(fohmixer-hub::lufs_listener)'
+filter = 'binary_id(fohmixer-hub::it) & (test(/^live_client::/) | test(/^fanout::/) | test(/^stage_aut::/) | test(/^layout::/) | test(/^auth::/) | test(/^names::/) | test(/^ping::/) | test(/^setter::/) | test(/^companion_client::/) | test(/^deck::/) | test(/^unfold::/) | test(/^markers::/) | test(/^eq::/) | test(/^reverb::/) | test(/^fader_link::/) | test(/^autotune::/) | test(/^autotune_keys::/) | test(/^autotune_safe::/) | test(/^autotune_switch::/) | test(/^songmap::/) | test(/^lufs::/) | test(/^lufs_listener::/))'
 test-group = 'hub-hosts'
 
 [profile.mutants]
@@ -50,7 +50,7 @@ slow-timeout = { period = "5s", terminate-after = 2, grace-period = "2s" }
 # before any hung test reaches its timeout. Add a new bounded test here;
 # scripts/test_mutants_recheck.py checks that every name still exists.
 [[profile.mutants.overrides]]
-filter = 'test(=serve_until_answers_then_stops_within_six_seconds)'
+filter = 'test(=serve_until::serve_until_answers_then_stops_within_six_seconds)'
 priority = 100
 
 # #71 PR N: the probe's --hold tests sleep through their real holds and

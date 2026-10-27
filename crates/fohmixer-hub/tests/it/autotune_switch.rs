@@ -13,16 +13,14 @@
 //! pages are told the song, the key and the singers.
 #![cfg(unix)]
 
-mod support;
-
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::support::{Client, Host, TestHub, runtime, serial};
 use fohmixer_proto::client::{
     ClientMsg, HubStatus, KeyState, SafeState, ServerMsg, SwitchWhy, TrackState,
 };
 use serde_json::{Value, json};
-use support::{Client, Host, TestHub, runtime, serial};
 
 const SECS_10: Duration = Duration::from_secs(10);
 

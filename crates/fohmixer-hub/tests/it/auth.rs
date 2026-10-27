@@ -3,11 +3,9 @@
 //! wrong PIN is answered 401 (the spacing after three is in `auth.rs`'s
 //! tests). No Live host: this runs on Windows too.
 
-mod support;
-
+use crate::support::{Client, TestHub, http, runtime, serial};
 use fohmixer_proto::client::{AuthResponse, ServerMsg};
 use serde_json::json;
-use support::{Client, TestHub, http, runtime, serial};
 
 #[test]
 fn the_api_needs_a_token_and_the_engineer_pin_gives_one() {

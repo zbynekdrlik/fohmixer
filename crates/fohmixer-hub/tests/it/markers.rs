@@ -5,15 +5,13 @@
 //! bumps no revision (I10).
 #![cfg(unix)]
 
-mod support;
-
 use std::time::{Duration, Instant};
 
+use crate::support::{Host, TestHub, runtime, serial};
 use fohmixer_proto::layout::{Anchor, Control, LayoutResponse, StripMark};
 use fohmixer_proto::markers::TagProblem;
 use fohmixer_proto::markers::migrate::MigrationStatus;
 use serde_json::{Value, json};
-use support::{Host, TestHub, runtime, serial};
 
 const SECS_5: Duration = Duration::from_secs(5);
 

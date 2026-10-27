@@ -5,13 +5,11 @@
 //! write to an unknown instance land in the event log. No Live host: this
 //! runs on Windows too.
 
-mod support;
-
 use std::time::Duration;
 
+use crate::support::{TestHub, runtime, serial};
 use fohmixer_proto::client::{AckItem, ClientMsg, ServerMsg};
 use serde_json::{Value, json};
-use support::{TestHub, runtime, serial};
 
 const SECS_3: Duration = Duration::from_secs(3);
 

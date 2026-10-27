@@ -5,12 +5,10 @@
 //! as it is.
 #![cfg(unix)]
 
-mod support;
-
 use std::time::{Duration, Instant};
 
+use crate::support::{Client, Host, TestHub, runtime, serial};
 use serde_json::{Value, json};
-use support::{Client, Host, TestHub, runtime, serial};
 
 const SECS_3: Duration = Duration::from_secs(3);
 const STEMS: &str = "live_set tracks[name=Stems grp#]";
@@ -32,7 +30,7 @@ fn layout() -> Value {
 /// The test site with `Drums #` moved from `Stems grp#` into `Vocals Repro
 /// grp#`.
 fn moved_site() -> Value {
-    let text = std::fs::read(support::repo().join("sim/fixtures/test-site.json")).unwrap();
+    let text = std::fs::read(crate::support::repo().join("sim/fixtures/test-site.json")).unwrap();
     let mut site: Value = serde_json::from_slice(&text).unwrap();
     let tracks = site["tracks"].as_array_mut().unwrap();
     let mut drums = None;

@@ -4,19 +4,17 @@
 //! track), and serves the reading to the pages.
 #![cfg(unix)]
 
-mod support;
-
 use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::support::{Client, Host, TestHub, repo, runtime, serial};
 use fohmixer_hub::config::Config;
 use fohmixer_proto::client::{HubStatus, LufsItem, ServerMsg};
 use fohmixer_proto::lufs::{LufsProblem, LufsState};
 use fohmixer_proto::meter::post_fader;
 use fohmixer_proto::volume::volume_of;
 use serde_json::{Value, json};
-use support::{Client, Host, TestHub, repo, runtime, serial};
 
 const LEFT: &str = "output_meter_left";
 

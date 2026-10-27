@@ -4,18 +4,16 @@
 //! switch and keeps it across a restart.
 #![cfg(unix)]
 
-mod support;
-
 use std::path::Path;
 use std::time::Duration;
 
+use crate::support::{Host, TestHub, runtime, serial};
 use fohmixer_proto::client::{ClientMsg, ServerMsg};
 use fohmixer_proto::layout::{
     Anchor, Binding, Control, FaderFollow, FaderLink, LayoutResponse, LinkPartner,
 };
 use fohmixer_proto::markers::{Leader, LinkReport};
 use serde_json::{Value, json};
-use support::{Host, TestHub, runtime, serial};
 
 const SECS_5: Duration = Duration::from_secs(5);
 const REV: &str = "fader_link|band|REV";
@@ -54,7 +52,7 @@ fn track(index: u32) -> Binding {
 }
 
 /// Waits for the hub value of REV's switch to be `on`.
-async fn switch_until(client: &mut support::Client, on: bool) {
+async fn switch_until(client: &mut crate::support::Client, on: bool) {
     client
         .wait(SECS_5, |m| match m {
             ServerMsg::Hub { key, value } if key == REV && value == &json!(on) => Some(()),

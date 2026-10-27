@@ -6,15 +6,13 @@
 //! `REMOVE-DEVICE`, whose late answer the hub reads before it closes (no
 //! reset). Host-free: it also runs in the `windows` job.
 
-mod support;
-
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::support::companion::{Ended, FakeCompanion, Script, image};
+use crate::support::{runtime, serial};
 use fohmixer_hub::companion::{Answer, CompanionEvent, CompanionHandle, Events, Press, STOP_BOUND};
 use fohmixer_hub::config::CompanionCfg;
-use support::companion::{Ended, FakeCompanion, Script, image};
-use support::{runtime, serial};
 
 /// The task's events with when they came.
 #[derive(Clone, Default)]
