@@ -704,11 +704,11 @@ fn levels_follow_the_fader_and_pan() {
         open_fader(-10.0, 0.0, true),
         50,
     );
-    let want = (
-        fohmixer_proto::meter::live_value(-22.0),
-        fohmixer_proto::meter::live_value(-28.0),
-    );
+    // From the volume given (volume_of's bisection is not exactly -10 dB).
+    let ten_down = fohmixer_proto::volume::volume_of(-10.0);
+    let want = fohmixer_proto::meter::post_fader(-120, -180, ten_down, 0.0, false);
     assert!(close_pair(levels(&acts)[0].unwrap(), want));
+    assert!((want.0 - fohmixer_proto::meter::live_value(-22.0)).abs() < 1e-3);
     // Panned half left.
     let acts = rule.fader(
         "band",

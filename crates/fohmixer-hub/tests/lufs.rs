@@ -13,7 +13,7 @@ use std::time::Duration;
 use fohmixer_hub::config::Config;
 use fohmixer_proto::client::{HubStatus, LufsItem, ServerMsg};
 use fohmixer_proto::lufs::{LufsProblem, LufsState};
-use fohmixer_proto::meter::live_value;
+use fohmixer_proto::meter::post_fader;
 use fohmixer_proto::volume::volume_of;
 use serde_json::{Value, json};
 use support::{Client, Host, TestHub, repo, runtime, serial};
@@ -384,13 +384,15 @@ fn an_armed_strips_meter_follows_its_fader() {
         client.clear();
         // The meter device: the bars read its levels at the fader's 0 dB.
         assert_eq!(host.maxdev("maxdev meter track 1 add rack"), 1);
-        assert_eq!(host.maxdev("level track 1 -120 -180"), 1);
-        client
-            .value_until(&left, SECS_5, |i| is(i, live_value(-12.0)))
-            .await;
-        client
-            .value_until(&right, SECS_5, |i| is(i, live_value(-18.0)))
-            .await;
+        // SimLive counts every device sending on the host: the LUFS one too.
+        assert_eq!(host.maxdev("level track 1 -120 -180"), 2);
+        // The expected levels from the volume Live holds (volume_of's
+        // bisection is not exactly 0 dB).
+        let at = |volume: f64| post_fader(-120, -180, volume, 0.0, false);
+        let (l, r) = at(volume_of(0.0));
+        client.value_until(&left, SECS_5, |i| is(i, l)).await;
+        client.value_until(&right, SECS_5, |i| is(i, r)).await;
+        assert!((l - fohmixer_proto::meter::live_value(-12.0)).abs() < 1e-3);
         let cleared = item(&mut client, "band", SECS_5, |i| i.problem.is_none()).await;
         assert_eq!(cleared.tenths, Some(-253));
         // The fader 10 dB down: both bars fall by 10 dB.
@@ -398,12 +400,10 @@ fn an_armed_strips_meter_follows_its_fader() {
         client
             .set("band", &volume, "value", json!(volume_of(-10.0)))
             .await;
-        client
-            .value_until(&left, SECS_5, |i| is(i, live_value(-22.0)))
-            .await;
-        client
-            .value_until(&right, SECS_5, |i| is(i, live_value(-28.0)))
-            .await;
+        let (l, r) = at(volume_of(-10.0));
+        client.value_until(&left, SECS_5, |i| is(i, l)).await;
+        client.value_until(&right, SECS_5, |i| is(i, r)).await;
+        assert!((l - fohmixer_proto::meter::live_value(-22.0)).abs() < 1e-3);
         // Muted: the floor.
         client.set("band", TRACK, "mute", json!(true)).await;
         client.value_until(&left, SECS_5, |i| is(i, 0.0)).await;
@@ -434,7 +434,8 @@ fn live_values_never_interleave_while_the_device_is_fresh_and_come_back_after() 
         let mut client = hub.client().await;
         input_point(&hub, &mut host, &mut client).await;
         let left = client.sub_key("band", TRACK, LEFT, false).await;
-        let want = live_value(-12.0);
+        // From the volume Live holds (volume_of's bisection is not exactly 0 dB).
+        let want = post_fader(-120, -180, volume_of(0.0), 0.0, false).0;
         // Live's own values flow before the device.
         let before = values_for(&mut client, &left, Duration::from_millis(500)).await;
         assert!(
