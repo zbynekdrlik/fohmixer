@@ -6,13 +6,15 @@
 //! layout document ([`layout`], spec §2.5), the Tuner markers that fill it
 //! ([`markers`], D16), the LOM path grammar both use ([`path`], S2 design
 //! note §3.1), Live's volume law in dB ([`volume`], #130) and the song map
-//! of a set's locators and Sections key clips ([`songmap`], #140).
+//! of a set's locators and Sections key clips ([`songmap`], #140), and the
+//! loudness meter's reference DSP ([`lufs`], #151).
 
 use serde::{Deserialize, Serialize};
 
 pub mod client;
 pub mod eq;
 pub mod layout;
+pub mod lufs;
 pub mod markers;
 pub mod path;
 pub mod songmap;

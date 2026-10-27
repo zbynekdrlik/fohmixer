@@ -22,6 +22,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CRATES = ["fohmixer-proto", "fohmixer-hub", "fohmixer-ui", "fohmixer-tray"]
 SCRIPT_VERSION = Path("live-script") / "FohMixer" / "version.py"
+# The FohMixer LUFS device's version (#151, spec §4.2): one line, the workspace version.
+DEVICE_VERSION = Path("live-device") / "FohMixer-LUFS" / "version.txt"
 MISSING_BASE_VERSION = "0.0.0"
 SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?$")
 
@@ -91,6 +93,9 @@ def consistency_errors(root: Path) -> list[str]:
     script = script_version((root / SCRIPT_VERSION).read_text(encoding="utf-8"))
     if script != version:
         errors.append(f"{SCRIPT_VERSION.as_posix()} has VERSION {script}, expected {version}")
+    device = (root / DEVICE_VERSION).read_text(encoding="utf-8").strip()
+    if device != version:
+        errors.append(f"{DEVICE_VERSION.as_posix()} has {device!r}, expected {version}")
     return errors
 
 

@@ -1,0 +1,145 @@
+// FohMixer LUFS (#151, spec docs/superpowers/specs/2026-10-26-lufs-design.md §3.3):
+// BS.1770-4 short-term loudness and the gated Voice reading of a stereo input.
+// The same steps as the reference DSP, fohmixer_proto::lufs::dsp (Rust, tested
+// in CI). This file is the readable copy of the code the gen~ in
+// "FohMixer LUFS.maxpat" embeds; scripts/check_lufs_device.py keeps the two
+// equal, and keeps the table below equal to the Rust module's.
+//
+// in 1, in 2: left, right.
+// out 1, out 2: silence (the device adds nothing to its chain, §3.2).
+// out 3: Short-term (S), out 4: Voice (V), LUFS in -70..0 rounded to 0.1,
+// updated at the end of each 100 ms sub-block and held in between.
+
+// State between samples. Every History is read once into a local at the
+// top and written once at the bottom, so the code means the same whether a
+// History written in a sample reads back new or old within it.
+History rate_seen(0);
+History pb0(0), pb1(0), pb2(0), pa1(0), pa2(0), ra1(0), ra2(0);
+History block_len(4800);
+History gate_sum(0);
+// The filters' states (direct form II transposed), per channel.
+History lp1(0), lp2(0), lr1(0), lr2(0);
+History rp1(0), rp2(0), rr1(0), rr2(0);
+// The running sub-block; the window's rings (each sub-block's mean square
+// and whether it is voiced, WINDOW_BLOCKS long, starting silent) and the
+// next slot to write.
+History filled(0), acc(0), head(0);
+History short_term(-70), voice(-70);
+Data blocks(30);
+Data voiced(30);
+
+// The constants: a copy of the table in fohmixer_proto::lufs::dsp.
+// lufs-table begin
+SHELF_F0 = 1681.974450955533;
+SHELF_GAIN_DB = 3.999843853973347;
+SHELF_Q = 0.7071752369554196;
+SHELF_VB_EXP = 0.4996667741545416;
+HIGHPASS_F0 = 38.13547087602444;
+HIGHPASS_Q = 0.5003270373238773;
+LUFS_OFFSET = -0.691;
+BLOCKS_PER_SECOND = 10;
+WINDOW_BLOCKS = 30;
+MOMENTARY_BLOCKS = 4;
+VOICE_GATE_LUFS = -40;
+MIN_VOICED = 10;
+FLOOR_LUFS = -70;
+TOP_LUFS = 0;
+// lufs-table end
+
+c_pb0 = pb0; c_pb1 = pb1; c_pb2 = pb2; c_pa1 = pa1; c_pa2 = pa2;
+c_ra1 = ra1; c_ra2 = ra2; c_len = block_len; c_gate = gate_sum;
+s_lp1 = lp1; s_lp2 = lp2; s_lr1 = lr1; s_lr2 = lr2;
+s_rp1 = rp1; s_rp2 = rp2; s_rr1 = rr1; s_rr2 = rr2;
+s_filled = filled; s_acc = acc; s_head = head;
+s_short = short_term; s_voice = voice;
+
+i = 0; k = 0; vh = 0; vb = 0; a0 = 0; kh = 0; a0h = 0;
+if (samplerate != rate_seen) {
+	// The coefficients and the sub-block length for this rate (the
+	// analog prototypes, libebur128's form); a new rate starts over.
+	k = tan(pi * SHELF_F0 / samplerate);
+	vh = pow(10, SHELF_GAIN_DB / 20);
+	vb = pow(vh, SHELF_VB_EXP);
+	a0 = 1 + k / SHELF_Q + k * k;
+	c_pb0 = (vh + vb * k / SHELF_Q + k * k) / a0;
+	c_pb1 = 2 * (k * k - vh) / a0;
+	c_pb2 = (vh - vb * k / SHELF_Q + k * k) / a0;
+	c_pa1 = 2 * (k * k - 1) / a0;
+	c_pa2 = (1 - k / SHELF_Q + k * k) / a0;
+	kh = tan(pi * HIGHPASS_F0 / samplerate);
+	a0h = 1 + kh / HIGHPASS_Q + kh * kh;
+	c_ra1 = 2 * (kh * kh - 1) / a0h;
+	c_ra2 = (1 - kh / HIGHPASS_Q + kh * kh) / a0h;
+	c_len = floor(samplerate / BLOCKS_PER_SECOND + 0.5);
+	c_gate = MOMENTARY_BLOCKS * pow(10, (VOICE_GATE_LUFS - LUFS_OFFSET) / 10);
+	s_lp1 = 0; s_lp2 = 0; s_lr1 = 0; s_lr2 = 0;
+	s_rp1 = 0; s_rp2 = 0; s_rr1 = 0; s_rr2 = 0;
+	s_filled = 0; s_acc = 0; s_head = 0;
+	s_short = FLOOR_LUFS; s_voice = FLOOR_LUFS;
+	for (i = 0; i < WINDOW_BLOCKS; i += 1) {
+		poke(blocks, 0, i);
+		poke(voiced, 0, i);
+	}
+}
+
+// K-weighting, left: the shelf, then the RLB high-pass (b = 1, -2, 1).
+xl = in1;
+yl = c_pb0 * xl + s_lp1;
+s_lp1 = c_pb1 * xl - c_pa1 * yl + s_lp2;
+s_lp2 = c_pb2 * xl - c_pa2 * yl;
+zl = yl + s_lr1;
+s_lr1 = -2 * yl - c_ra1 * zl + s_lr2;
+s_lr2 = yl - c_ra2 * zl;
+// Right.
+xr = in2;
+yr = c_pb0 * xr + s_rp1;
+s_rp1 = c_pb1 * xr - c_pa1 * yr + s_rp2;
+s_rp2 = c_pb2 * xr - c_pa2 * yr;
+zr = yr + s_rr1;
+s_rr1 = -2 * yr - c_ra1 * zr + s_rr2;
+s_rr2 = yr - c_ra2 * zr;
+
+// The sub-block: the mean square summed over the two channels.
+s_acc = s_acc + zl * zl + zr * zr;
+s_filled = s_filled + 1;
+ms = 0; earlier = 0; total = 0; vsum = 0; vcount = 0; sl = 0; vl = 0;
+if (s_filled >= c_len) {
+	ms = s_acc / c_len;
+	s_acc = 0;
+	s_filled = 0;
+	// Voiced: this sub-block and the three before it reach the gate.
+	for (i = 1; i < MOMENTARY_BLOCKS; i += 1) {
+		earlier = earlier + peek(blocks, wrap(s_head - i, 0, WINDOW_BLOCKS));
+	}
+	poke(blocks, ms, s_head);
+	poke(voiced, ms + earlier >= c_gate, s_head);
+	s_head = wrap(s_head + 1, 0, WINDOW_BLOCKS);
+	for (i = 0; i < WINDOW_BLOCKS; i += 1) {
+		total = total + peek(blocks, i);
+		if (peek(voiced, i) > 0) {
+			vsum = vsum + peek(blocks, i);
+			vcount = vcount + 1;
+		}
+	}
+	sl = clamp(LUFS_OFFSET + 10 * log10(max(total / WINDOW_BLOCKS, 1e-30)), FLOOR_LUFS, TOP_LUFS);
+	vl = FLOOR_LUFS;
+	if (vcount >= MIN_VOICED) {
+		vl = clamp(LUFS_OFFSET + 10 * log10(max(vsum / vcount, 1e-30)), FLOOR_LUFS, TOP_LUFS);
+	}
+	// Rounded to 0.1 here, so the patch's [change] passes only a new value.
+	s_short = floor(sl * 10 + 0.5) / 10;
+	s_voice = floor(vl * 10 + 0.5) / 10;
+}
+
+rate_seen = samplerate;
+pb0 = c_pb0; pb1 = c_pb1; pb2 = c_pb2; pa1 = c_pa1; pa2 = c_pa2;
+ra1 = c_ra1; ra2 = c_ra2; block_len = c_len; gate_sum = c_gate;
+lp1 = s_lp1; lp2 = s_lp2; lr1 = s_lr1; lr2 = s_lr2;
+rp1 = s_rp1; rp2 = s_rp2; rr1 = s_rr1; rr2 = s_rr2;
+filled = s_filled; acc = s_acc; head = s_head;
+short_term = s_short; voice = s_voice;
+
+out1 = 0;
+out2 = 0;
+out3 = s_short;
+out4 = s_voice;
