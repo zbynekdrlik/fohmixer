@@ -1,7 +1,7 @@
 """Run the real FohMixer script on SimLive, as a process.
 
     python3 sim/host.py --port P [--instance band] [--site sim/fixtures/test-site.json]
-                        [--meters-hz 30] [--log-dir DIR]
+                        [--meters-hz 30] [--log-dir DIR] [--lufs-port P]
 
 The process's main thread is SimLive's single Live main thread: it runs the
 script's timer, its scheduled messages and the optional meter animation.
@@ -64,6 +64,39 @@ WebSocket server is bound. Control lines on stdin (never over the WebSocket):
                                 or ``CLIP -1`` for a bad line or no such
                                 track or clip
 
+    maxdev <lufs|meter> <track|return|master> <index> <add|remove> [rack]
+                                a Max for Live device (#151, ``sim/maxdev.py``):
+                                ``FohMixer LUFS`` or ``FohMixer Meter`` added at
+                                the end of the track's chain (with ``rack``,
+                                inside a new rack ``LUFS``: an empty ``Dry``
+                                chain and a ``LUFS`` chain holding it, the
+                                owner's placement), or the newest one removed
+                                (its rack with it; the ``devices`` listener
+                                fires); its Max id counts from 1 per host, so
+                                two hosts collide on purpose; prints ``MAXDEV
+                                <devices of that kind on the track>``, or
+                                ``MAXDEV -1`` (no such track, nothing to remove,
+                                a bad line)
+    lufs <track|return|master> <index> <s_tenths> <v_tenths>
+    lufs <track|return|master> <index> off
+                                the newest LUFS device there sends ``S`` and
+                                ``V`` (tenths, -700..0) 10 times a second to
+                                ``--lufs-port`` on 127.0.0.1, or stops; its
+                                names are read at each send (a rename or a
+                                move changes its key); prints ``LUFS <devices
+                                sending>``, or ``LUFS -1`` (no such track or
+                                device, no port, a bad line)
+    level <track|return|master> <index> <l_tenths> <r_tenths>
+    level <track|return|master> <index> off
+                                the same for the newest meter device (L and R
+                                peaks, -700..120, 30 times a second); prints
+                                ``LEVEL <devices sending>`` or ``LEVEL -1``
+    flood <track|return|master> <index> <per_second>
+    flood <track|return|master> <index> off
+                                the newest LUFS device sends at that rate (the
+                                hub's bound's test); prints ``FLOOD <devices
+                                sending>`` or ``FLOOD -1``
+
 While Live plays, the song clock moves ``current_song_time`` at the tempo
 (``SongClock``, 30 Hz, as Live's playhead does between the script's ticks).
 
@@ -82,6 +115,7 @@ import threading
 import time
 
 import Live
+import maxdev
 import site_builder
 from c_instance import CInstance
 from main_thread import MainThread
@@ -102,6 +136,7 @@ def parse_args(argv):
     parser.add_argument("--site", default=DEFAULT_SITE)
     parser.add_argument("--meters-hz", type=float, default=0.0)
     parser.add_argument("--log-dir", default=None)
+    parser.add_argument("--lufs-port", type=int, default=None)
     return parser.parse_args(argv)
 
 
@@ -415,8 +450,28 @@ def param(song, path, verb, value):
     return obj.value
 
 
-def control(main_thread, song, line, held):
+def maxdev_answer(main_thread, song, line, maxdevs):
+    """A Max device line's answer (#151), or None for another line."""
+    words = line.split()
+    if not words or words[0] not in ("maxdev", "lufs", "level", "flood"):
+        return None
+    word = words[0].upper()
+    if words[0] == "maxdev":
+        parsed = maxdev.device_line(line)
+        if parsed is None or maxdevs is None:
+            return f"{word} -1"
+        return f"{word} {main_thread.call(lambda: maxdev.device_control(maxdevs, song, parsed))}"
+    parsed = maxdev.reading_line(line)
+    if parsed is None or maxdevs is None:
+        return f"{word} -1"
+    return f"{word} {main_thread.call(lambda: maxdev.reading_control(maxdevs, song, parsed))}"
+
+
+def control(main_thread, song, line, held, maxdevs=None):
     """One control line: the answer to print, or None."""
+    answer = maxdev_answer(main_thread, song, line, maxdevs)
+    if answer is not None:
+        return answer
     words = line.split(None, 2)
     if len(words) == 2 and words[0] == "stall" and words[1].isdigit():
         main_thread.stall(int(words[1]))
@@ -476,9 +531,9 @@ def control(main_thread, song, line, held):
     return None
 
 
-def read_controls(main_thread, song, held):
+def read_controls(main_thread, song, held, maxdevs):
     for line in sys.stdin:
-        answer = control(main_thread, song, line, held)
+        answer = control(main_thread, song, line, held, maxdevs)
         if answer is not None:
             print(answer, flush=True)
 
@@ -504,17 +559,22 @@ def main(argv=None):
         animation.start()
     song_clock = SongClock(song, SONG_CLOCK_HZ)
     song_clock.start()
+    maxdevs = maxdev.MaxDevices(song, args.lufs_port)
+    maxdevs.start()
 
     def on_stop():
         if animation is not None:
             animation.stop()
         song_clock.stop()
+        maxdevs.stop()
         surface.disconnect()
 
     signal.signal(signal.SIGTERM, lambda signum, frame: main_thread.request_stop())
     signal.signal(signal.SIGINT, lambda signum, frame: main_thread.request_stop())
     threading.Thread(target=announce_ready, args=(surface,), daemon=True).start()
-    threading.Thread(target=read_controls, args=(main_thread, song, held), daemon=True).start()
+    threading.Thread(
+        target=read_controls, args=(main_thread, song, held, maxdevs), daemon=True
+    ).start()
     main_thread.run_forever(on_stop=on_stop)
     main_thread.uninstall()
     if main_thread.errors:
