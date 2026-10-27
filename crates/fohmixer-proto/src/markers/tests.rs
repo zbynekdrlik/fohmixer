@@ -683,6 +683,7 @@ fn a_marker_without_a_label_shows_its_tracks_number_and_is_known_by_it() {
         reverb: false,
         fader_link: None,
         fader_follows: Vec::new(),
+        lufs: None,
     };
     assert!(has_placeholder_label(&bound(
         Anchor::TrackAt { index: 2 },
@@ -2073,4 +2074,143 @@ fn autotune_tags_without_a_control_fill_nothing() {
     // An autotune control and no tag: no targets.
     let composed = compose(&autotune_frame(), &[]);
     assert_eq!(autotune_controls(&composed.layout), vec![Vec::new(); 4]);
+}
+
+#[test]
+fn lufs_tag_with_a_target_is_an_input_point() {
+    let m = parse(r#""Vox 1" +G:VOCALS +LUFS:-25"#);
+    assert_eq!(m.lufs, Some(LufsSpec { target: Some(-25) }));
+    assert_eq!(m.lufs.map(|l| l.kind()), Some(crate::layout::LufsKind::In));
+    assert_eq!(m.problems, vec![]);
+}
+
+#[test]
+fn bare_lufs_tag_is_an_output_point() {
+    let m = parse(r#""Vocals" +G:VOCALS +LUFS"#);
+    assert_eq!(m.lufs, Some(LufsSpec { target: None }));
+    assert_eq!(m.lufs.map(|l| l.kind()), Some(crate::layout::LufsKind::Out));
+    assert_eq!(m.problems, vec![]);
+    assert_eq!(parse(r#""Vox 1" +G:VOCALS"#).lufs, None);
+}
+
+#[test]
+fn lufs_target_out_of_range_is_bad() {
+    for tag in [
+        "+LUFS:-5",
+        "+LUFS:-41",
+        "+LUFS:-9",
+        "+LUFS:x",
+        "+LUFS:",
+        "+LUFS:-25.0",
+        "+LUFS:-200",
+    ] {
+        let m = parse(&format!(r#""Vox 1" +G:VOCALS {tag}"#));
+        assert_eq!(m.lufs, None, "{tag}");
+        assert_eq!(
+            m.problems,
+            vec![TagProblem::BadLufs { tag: tag.into() }],
+            "{tag}"
+        );
+    }
+    for (tag, target) in [("+LUFS:-40", -40), ("+LUFS:-10", -10)] {
+        let m = parse(&format!(r#""Vox 1" +G:VOCALS {tag}"#));
+        assert_eq!(
+            m.lufs,
+            Some(LufsSpec {
+                target: Some(target)
+            }),
+            "{tag}"
+        );
+        assert_eq!(m.problems, vec![], "{tag}");
+    }
+}
+
+#[test]
+fn two_lufs_tags_are_a_problem() {
+    // The first counts.
+    let m = parse(r#""Vox 1" +G:VOCALS +LUFS +LUFS:-25"#);
+    assert_eq!(m.lufs, Some(LufsSpec { target: None }));
+    assert_eq!(
+        m.problems,
+        vec![TagProblem::DuplicateLufs {
+            tag: "+LUFS:-25".into()
+        }]
+    );
+    let m = parse(r#""Vox 1" +G:VOCALS +LUFS:-25 +LUFS"#);
+    assert_eq!(m.lufs, Some(LufsSpec { target: Some(-25) }));
+    assert_eq!(
+        m.problems,
+        vec![TagProblem::DuplicateLufs {
+            tag: "+LUFS".into()
+        }]
+    );
+}
+
+#[test]
+fn the_lufs_problems_say_bad_lufs_tag_and_serialize_with_their_codes() {
+    let problems = vec![
+        TagProblem::DuplicateLufs {
+            tag: "+LUFS".into(),
+        },
+        TagProblem::BadLufs {
+            tag: "+LUFS:-5".into(),
+        },
+    ];
+    assert_eq!(
+        serde_json::to_value(&problems).unwrap(),
+        json!([
+            {"code": "duplicate_lufs", "tag": "+LUFS"},
+            {"code": "bad_lufs", "tag": "+LUFS:-5"},
+        ])
+    );
+    for p in &problems {
+        assert_eq!(p.lufs_text(), Some("bad LUFS tag"));
+    }
+    assert_eq!(TagProblem::NoGroup.lufs_text(), None);
+}
+
+#[test]
+fn a_tuner_of_only_lufs_makes_a_strip() {
+    // A strip feature, not a link: its label and group count.
+    assert_eq!(
+        parse("+LUFS").problems,
+        vec![TagProblem::NoLabel, TagProblem::NoGroup]
+    );
+    assert_eq!(
+        parse("+MUTE:A +LUFS").problems,
+        vec![TagProblem::NoLabel, TagProblem::NoGroup]
+    );
+    assert_eq!(
+        parse("+MUTE:A +LUFS:-25").problems,
+        vec![TagProblem::NoLabel, TagProblem::NoGroup]
+    );
+    // Without it the link-only Tuner is spared, as before.
+    assert_eq!(parse("+MUTE:A").problems, vec![]);
+}
+
+#[test]
+fn compose_carries_lufs_to_the_strip() {
+    let composed = compose(
+        &frame(),
+        &[
+            found(
+                "band",
+                TrackKind::Track,
+                3,
+                r#""Vox 1" +G:VOCALS +LUFS:-25"#,
+            ),
+            found("band", TrackKind::Track, 4, r#""Vocals" +G:VOCALS +LUFS"#),
+            found("band", TrackKind::Track, 5, r#""Vox 2" +G:VOCALS"#),
+        ],
+    );
+    assert_eq!(
+        strip_in(&composed.layout, "vocals", "Vox 1").lufs,
+        Some(LufsSpec { target: Some(-25) })
+    );
+    assert_eq!(
+        strip_in(&composed.layout, "vocals", "Vocals").lufs,
+        Some(LufsSpec { target: None })
+    );
+    assert_eq!(strip_in(&composed.layout, "vocals", "Vox 2").lufs, None);
+    assert_eq!(composed.layout.validate(), vec![]);
 }

@@ -285,6 +285,51 @@ pub struct Strip {
     /// The fader links this strip is a partner of (#130): their leaders.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fader_follows: Vec<FaderFollow>,
+    /// A loudness point (#151): its Tuner marker's `+LUFS` or
+    /// `+LUFS:<target>`, or a frame strip's `"lufs"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lufs: Option<LufsSpec>,
+}
+
+/// The lowest target a `+LUFS:<target>` takes (#151, spec §5.1).
+pub const LUFS_TARGET_MIN: i8 = -40;
+/// The highest target a `+LUFS:<target>` takes.
+pub const LUFS_TARGET_MAX: i8 = -10;
+
+/// A strip's loudness point (#151, spec §3.1, §5.1): with a target an
+/// INPUT point (after the trim, its `Voice` judged against the target),
+/// without one an OUTPUT point (its plain short-term).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LufsSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<i8>,
+}
+
+/// Which loudness a point's number is (#151, the owner's FINDING of 27.10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LufsKind {
+    /// After the trim, judged against the target: `LUFS IN`.
+    In,
+    /// An output, plain: `LUFS OUT`.
+    Out,
+}
+
+impl LufsSpec {
+    /// `In` with a target, `Out` without (the kind comes from the tag
+    /// alone, never from the track's place).
+    pub fn kind(&self) -> LufsKind {
+        match self.target {
+            Some(_) => LufsKind::In,
+            None => LufsKind::Out,
+        }
+    }
+}
+
+/// Whether `target` is a target a loudness point takes.
+pub fn lufs_target_ok(target: i8) -> bool {
+    (LUFS_TARGET_MIN..=LUFS_TARGET_MAX).contains(&target)
 }
 
 /// A fader link's leader: its Live set and its `+ID` (#130, D18).
@@ -899,6 +944,14 @@ impl Validator {
                 }
                 for (i, link) in strip.mute_links.iter().enumerate() {
                     self.binding(&format!("{at}.mute_links[{i}]"), link);
+                }
+                if let Some(target) = strip.lufs.and_then(|l| l.target)
+                    && !lufs_target_ok(target)
+                {
+                    self.error(
+                        &format!("{at}.lufs"),
+                        format!("target {target} is not in {LUFS_TARGET_MIN}..={LUFS_TARGET_MAX}"),
+                    );
                 }
                 if let Some(link) = &strip.fader_link {
                     self.id_name(&format!("{at}.fader_link"), &link.id);

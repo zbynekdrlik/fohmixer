@@ -26,7 +26,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::layout::{
     Anchor, AutotuneTarget, Binding, Control, FaderFollow, FaderLink, Group, Layout, LayoutError,
-    LinkId, LinkPartner, Page, ParamTarget, Row, Scale, Section, Strip, StripKind, StripMark,
+    LinkId, LinkPartner, LufsSpec, Page, ParamTarget, Row, Scale, Section, Strip, StripKind,
+    StripMark, lufs_target_ok,
 };
 
 /// The `class_name` of Live's Tuner (only a Tuner can be a marker).
@@ -96,6 +97,8 @@ pub struct Marker {
     /// `+AUTOTUNE` / `+AUTOTUNE:0` (#104, D19): the track is one of the
     /// AUTOTUNE rule's, and where its autotune is on.
     pub autotune: Option<AutotuneOn>,
+    /// `+LUFS` / `+LUFS:<target>` (#151): the strip is a loudness point.
+    pub lufs: Option<LufsSpec>,
     pub problems: Vec<TagProblem>,
 }
 
@@ -111,6 +114,7 @@ impl Marker {
             && !self.pin
             && !self.mute_guard
             && !self.reverb
+            && self.lufs.is_none()
             && self.problems.first() == Some(&TagProblem::NoLabel)
     }
 }
@@ -170,6 +174,22 @@ pub enum TagProblem {
     /// (#140 PR 3b, spec §7): which singer it is is not known, so the track
     /// gets no autotune.
     TwoSingers,
+    /// A second `+LUFS` tag (the first counts; #151).
+    DuplicateLufs { tag: String },
+    /// A `+LUFS:` tag whose target is not an integer in
+    /// [`crate::layout::LUFS_TARGET_MIN`]..=[`crate::layout::LUFS_TARGET_MAX`] (#151).
+    BadLufs { tag: String },
+}
+
+impl TagProblem {
+    /// The words of a LUFS tag's problem (#151, spec §6.5): `bad LUFS tag`
+    /// for both; none for the other problems.
+    pub fn lufs_text(&self) -> Option<&'static str> {
+        match self {
+            TagProblem::DuplicateLufs { .. } | TagProblem::BadLufs { .. } => Some("bad LUFS tag"),
+            _ => None,
+        }
+    }
 }
 
 /// Whether a Tuner's name makes it a marker: a quote or a `+` token.
@@ -251,6 +271,7 @@ pub fn parse(name: &str) -> Marker {
             "MG" => marker.mute_guard = true,
             "REVERB" => marker.reverb = true,
             "AUTOTUNE" => autotune_tag(&mut marker, token, Some(AutotuneOn::Max)),
+            "LUFS" => lufs_tag(&mut marker, token, Some(LufsSpec { target: None })),
             _ => {
                 if let Some(arg) = tag.strip_prefix("G:") {
                     match group_tag(arg) {
@@ -276,6 +297,8 @@ pub fn parse(name: &str) -> Marker {
                     });
                 } else if let Some(arg) = tag.strip_prefix("AUTOTUNE:") {
                     autotune_tag(&mut marker, token, autotune_arg(arg));
+                } else if let Some(arg) = tag.strip_prefix("LUFS:") {
+                    lufs_tag(&mut marker, token, lufs_arg(arg));
                 } else {
                     marker.problems.push(TagProblem::UnknownTag {
                         tag: token.to_string(),
@@ -343,6 +366,30 @@ fn autotune_tag(marker: &mut Marker, token: &str, on: Option<AutotuneOn>) {
             tag: token.to_string(),
         }),
         Some(on) => marker.autotune = Some(on),
+    }
+}
+
+/// A `+LUFS:<target>` tag's argument (#151): an integer in
+/// [`crate::layout::LUFS_TARGET_MIN`]..=[`crate::layout::LUFS_TARGET_MAX`].
+fn lufs_arg(arg: &str) -> Option<LufsSpec> {
+    arg.parse::<i8>()
+        .ok()
+        .filter(|target| lufs_target_ok(*target))
+        .map(|target| LufsSpec {
+            target: Some(target),
+        })
+}
+
+/// A `+LUFS` tag (`token`; `spec` none: a bad target), once (#151).
+fn lufs_tag(marker: &mut Marker, token: &str, spec: Option<LufsSpec>) {
+    match spec {
+        None => marker.problems.push(TagProblem::BadLufs {
+            tag: token.to_string(),
+        }),
+        Some(_) if marker.lufs.is_some() => marker.problems.push(TagProblem::DuplicateLufs {
+            tag: token.to_string(),
+        }),
+        Some(spec) => marker.lufs = Some(spec),
     }
 }
 
@@ -700,6 +747,7 @@ impl Entry<'_> {
             reverb: self.marker.reverb && self.marker.label.is_some() && !self.conflict(),
             fader_link: self.leads.clone(),
             fader_follows: self.follows.clone(),
+            lufs: self.marker.lufs,
         }
     }
 }

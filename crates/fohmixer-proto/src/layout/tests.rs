@@ -1237,3 +1237,82 @@ fn the_autotune_targets_are_the_first_autotune_controls() {
             .is_empty()
     );
 }
+
+/// The FOH page's `Podklady #` strip (its first row's second group).
+fn podklady_strip(v: &mut Value) -> &mut Value {
+    &mut v["pages"][1]["rows"][0]["sections"][1]["controls"][0]
+}
+
+fn strip_of(layout: &Layout) -> &Strip {
+    let Section::Group(group) = &layout.pages[1].rows[0].sections[1] else {
+        panic!("a group")
+    };
+    match &group.controls[0] {
+        Control::Strip(strip) => strip.as_ref(),
+        _ => panic!("a strip"),
+    }
+}
+
+#[test]
+fn frame_strip_reads_lufs_field() {
+    // #151: an input point with its target, an output point without.
+    let mut v = sample();
+    podklady_strip(&mut v)["lufs"] = json!({"target": -25});
+    let layout = parse(v.clone());
+    assert_eq!(layout.validate(), vec![]);
+    let spec = strip_of(&layout).lufs.expect("a loudness point");
+    assert_eq!(spec, LufsSpec { target: Some(-25) });
+    assert_eq!(spec.kind(), LufsKind::In);
+    assert_eq!(serde_json::to_value(&layout).unwrap(), v);
+
+    let mut v = sample();
+    podklady_strip(&mut v)["lufs"] = json!({});
+    let layout = parse(v.clone());
+    assert_eq!(layout.validate(), vec![]);
+    let spec = strip_of(&layout).lufs.expect("a loudness point");
+    assert_eq!(spec, LufsSpec { target: None });
+    assert_eq!(spec.kind(), LufsKind::Out);
+    assert_eq!(serde_json::to_value(&layout).unwrap(), v);
+
+    // None by default, and left out when written.
+    assert_eq!(strip_of(&parse(sample())).lufs, None);
+}
+
+#[test]
+fn frame_strip_refuses_unknown_lufs_field() {
+    let mut v = sample();
+    podklady_strip(&mut v)["lufs"] = json!({"goal": 1});
+    assert!(serde_json::from_value::<Layout>(v).is_err());
+    let mut v = sample();
+    podklady_strip(&mut v)["lufs"] = json!({"target": -25.5});
+    assert!(serde_json::from_value::<Layout>(v).is_err());
+}
+
+#[test]
+fn frame_strip_target_out_of_range_is_invalid() {
+    for target in [-41, -9, 0, -128, 127] {
+        let mut v = sample();
+        podklady_strip(&mut v)["lufs"] = json!({"target": target});
+        assert_eq!(
+            errors(v),
+            vec![format!(
+                "pages[1].rows[0].sections[1].controls[0].lufs: target {target} is not in -40..=-10"
+            )],
+            "{target}"
+        );
+    }
+    for target in [-40, -10, -25] {
+        let mut v = sample();
+        podklady_strip(&mut v)["lufs"] = json!({"target": target});
+        assert_eq!(errors(v), Vec::<String>::new(), "{target}");
+    }
+}
+
+#[test]
+fn lufs_targets_are_minus_40_to_minus_10() {
+    assert_eq!((LUFS_TARGET_MIN, LUFS_TARGET_MAX), (-40, -10));
+    assert!(lufs_target_ok(-40));
+    assert!(lufs_target_ok(-10));
+    assert!(!lufs_target_ok(-41));
+    assert!(!lufs_target_ok(-9));
+}
