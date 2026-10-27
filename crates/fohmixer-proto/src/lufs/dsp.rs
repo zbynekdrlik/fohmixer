@@ -237,8 +237,8 @@ impl Meter {
     /// Takes one stereo sample; at the end of a sub-block gives the new
     /// readings.
     pub fn push(&mut self, left: f64, right: f64) -> Option<Readings> {
-        for (filters, x) in self.filters.iter_mut().zip([left, right]) {
-            let y = filters[1].process(filters[0].process(x));
+        for ([pre, rlb], x) in self.filters.iter_mut().zip([left, right]) {
+            let y = rlb.process(pre.process(x));
             self.sum += y * y;
         }
         self.filled += 1;
