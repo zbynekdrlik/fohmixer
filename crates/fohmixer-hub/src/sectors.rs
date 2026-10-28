@@ -236,9 +236,7 @@ impl SectorStore {
     /// Removes `sectors.json.prev` (an older version than the undo the
     /// store holds); a failure is logged.
     fn drop_prev_file(&self) {
-        if let Err(e) = std::fs::remove_file(self.path(PREV_FILE))
-            && e.kind() != io::ErrorKind::NotFound
-        {
+        if let Some(e) = removal_failed(std::fs::remove_file(self.path(PREV_FILE))) {
             tracing::warn!(error = %e, "cannot remove an older sectors.json.prev");
         }
     }
@@ -269,6 +267,14 @@ impl SectorStore {
         back.rev = self.doc.rev + 1;
         Ok(self.commit(back))
     }
+}
+
+/// A removal's failure worth a warning: none when it went or when the file
+/// was not there.
+fn removal_failed(removed: io::Result<()>) -> Option<io::Error> {
+    removed
+        .err()
+        .filter(|e| e.kind() != io::ErrorKind::NotFound)
 }
 
 #[cfg(test)]
@@ -590,5 +596,41 @@ mod tests {
         assert!(!store.has_prev());
         assert!(store.seed(doc(1, &["Vox 1"])).is_err());
         assert_eq!(store.doc(), &SectorsDoc::empty());
+    }
+    #[test]
+    fn a_removal_fails_only_for_another_reason_than_a_missing_file() {
+        assert!(removal_failed(Ok(())).is_none());
+        assert!(removal_failed(Err(io::Error::from(io::ErrorKind::NotFound))).is_none());
+        let failed = removal_failed(Err(io::Error::from(io::ErrorKind::PermissionDenied)));
+        assert_eq!(
+            failed.map(|e| e.kind()),
+            Some(io::ErrorKind::PermissionDenied)
+        );
+    }
+
+    /// A file that is there but cannot be read is never taken as removed:
+    /// nothing is written over it (the mutation gate's survivor of #148,
+    /// `poll`'s `NotFound` guard). Unix only: the read is refused by the
+    /// file's mode, which the test's own (non-root) user honours.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_refused_by_its_mode_is_unreadable_and_never_written_over() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), SECTORS_FILE, &doc(2, &["Vox 1"]));
+        let mut store = SectorStore::open(dir.path());
+        let path = dir.path().join(SECTORS_FILE);
+        let hand = serde_json::to_string(&doc(9, &["Vox 2"])).unwrap();
+        std::fs::write(&path, &hand).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let polled = store.poll();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(matches!(polled, Some(Polled::Unreadable(_))), "{polled:?}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            hand,
+            "not written over"
+        );
+        assert_eq!(store.doc(), &doc(2, &["Vox 1"]));
     }
 }
