@@ -1075,7 +1075,8 @@ RULES_LEGEND = (
     "AUT (flag, write of the stage mics' mute, a failed write), REVERB (every step: aut, "
     "tap, wait, lower with its glides or no fader, return, pending, skipped with why, a "
     "set's window opening or ending), the fader links' switches and AUTOTUNE's steps. At "
-    "one time the page's step comes first: the hub's records answer it. Failures are red."
+    "one time the page's step comes first: the hub's records answer it. Failures (what the "
+    "hub itself warns about) are red."
 )
 
 

@@ -472,6 +472,7 @@ class Stall(ReportCase):
                 "reverb_windows",
                 "stage_writes",
                 "transport_changes",
+                "transport_first",
                 "rule_failures",
                 "skipped_lines",
                 "notes",

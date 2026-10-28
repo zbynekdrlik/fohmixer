@@ -41,6 +41,7 @@ def counts(summary_pairs):
         "reverb_windows",
         "stage_writes",
         "transport_changes",
+        "transport_first",
         "rule_failures",
     )
     return {name: summary_pairs[name] for name in names}
@@ -82,6 +83,7 @@ class RulesSection(ReportCase):
                 "reverb_windows": "0",
                 "stage_writes": "1",
                 "transport_changes": "1",
+                "transport_first": "0",
                 "rule_failures": "2",
             },
         )
@@ -170,7 +172,8 @@ class RulesSection(ReportCase):
                 "reverb_windows": "1",
                 "stage_writes": "0",
                 "transport_changes": "0",
-                "rule_failures": "1",
+                "transport_first": "0",
+                "rule_failures": "2",
             },
         )
         found = page.of_class("rule")
@@ -194,6 +197,10 @@ class RulesSection(ReportCase):
         self.assertEqual(
             [a.get("data-step") for a in found if a["data-kind"] == "reverb"][3:8],
             ["window", "return", "pending", "window", "lower"],
+        )
+        self.assertEqual(
+            [a["data-what"] for a in found if a["data-failed"] == "true"],
+            ["skipped", "gave_up"],
         )
         self.assertEqual(found[0]["data-button"], "reverb")
         self.assertNotIn("data-key-hash", found[0], "REVERB's press writes no key")
@@ -221,8 +228,30 @@ class RulesSection(ReportCase):
         self.assertEqual(
             (summary_pairs["rule_rail_steps"], summary_pairs["rule_records"]), ("1", "1")
         )
-        self.assertEqual(summary_pairs["transport_changes"], "1")
+        # The first value heard is no change.
+        self.assertEqual(
+            (summary_pairs["transport_changes"], summary_pairs["transport_first"]), ("0", "1")
+        )
         self.assertIn("band: playing (before: not known)", page.text)
+
+    def test_a_rail_step_outside_the_window_is_no_row(self):
+        log = Log()
+        log.pings(7, BASE - 5000, BASE + 9000)
+        # A press in the lead, a second before ``--from``.
+        log.trace(BASE - 500, 7, [rail(BASE - 1000, "hold", "autotune")])
+        # One upload in the tail: a press in the window and one a second
+        # after ``--to``.
+        log.trace(
+            BASE + 12_000,
+            7,
+            [rail(BASE + 8000, "press", "stage"), rail(BASE + 10_000, "tap", "reverb")],
+        )
+        summary_pairs, page, _ = self.report(log, BASE, BASE + 9000)
+        self.assertEqual(summary_pairs["rule_rail_steps"], "1")
+        found = page.of_class("rule")
+        self.assertEqual(
+            [(a["data-what"], float(a["data-time"])) for a in found], [("press", BASE + 8000.0)]
+        )
 
     def test_no_step_and_no_record_says_so(self):
         log = Log()
@@ -269,21 +298,79 @@ class Pure(unittest.TestCase):
             "by n/a: n/a",
         )
 
-    def test_failures(self):
-        failed = [
-            hub_row(dict(r, ts=1)).failed
-            for r in (
-                {"ev": "stage_aut", "step": "failed"},
-                {"ev": "stage_aut", "step": "write"},
-                {"ev": "autotune", "step": "failed"},
-                {"ev": "autotune", "step": "gave_up"},
-                {"ev": "autotune", "step": "missing"},
-                {"ev": "reverb", "step": "failed"},
-                {"ev": "transport", "error": "x"},
-                {"ev": "transport", "playing": True},
-            )
-        ]
-        self.assertEqual(failed, [True, False, True, True, False, False, True, False])
+    def failed(self, ev, **fields):
+        return hub_row(dict(fields, ev=ev, ts=1)).failed
+
+    # A failure is what the hub's own warnings call one: ``router.rs`` for
+    # the transport and STAGE AUT, ``step_warn`` of ``rules/reverb.rs`` and
+    # ``rules/autotune.rs``; one test per case.
+    def test_a_transport_error_is_a_failure_and_a_value_is_not(self):
+        self.assertTrue(self.failed("transport", instance="band", error="closed"))
+        self.assertFalse(self.failed("transport", instance="band", playing=True, prev=False))
+
+    def test_a_stage_aut_failed_write_is_a_failure_and_its_other_steps_are_not(self):
+        self.assertTrue(self.failed("stage_aut", step="failed", target="Stage", problem="x"))
+        self.assertFalse(self.failed("stage_aut", step="write", instance="band", mute=True))
+        self.assertFalse(self.failed("stage_aut", step="flag", on=True))
+
+    def test_a_reverb_glide_stopped_is_a_failure(self):
+        self.assertTrue(self.failed("reverb", step="stopped", label="Vox 1", why="moved"))
+
+    def test_a_reverb_fader_skipped_is_a_failure(self):
+        self.assertTrue(self.failed("reverb", step="skipped", label="Vox 1", why="silent"))
+
+    def test_reverb_restored_faders_still_waiting_are_a_failure(self):
+        self.assertTrue(self.failed("reverb", step="restored", faders=2, waiting=1))
+        self.assertFalse(self.failed("reverb", step="restored", faders=2, waiting=0))
+        self.assertFalse(self.failed("reverb", step="restored", faders=2, waiting="1"))
+
+    def test_reverbs_other_steps_are_no_failure(self):
+        for step in ("aut", "tap", "wait", "lower", "return", "pending", "off", "window"):
+            self.assertFalse(self.failed("reverb", step=step), step)
+
+    def test_an_autotune_failed_write_is_a_failure(self):
+        self.assertTrue(self.failed("autotune", step="failed", target="Vox 1", problem="x"))
+
+    def test_an_autotune_missing_rack_is_a_failure(self):
+        self.assertTrue(self.failed("autotune", step="missing", target="Vox 1", problem="x"))
+
+    def test_autotune_walks_given_up_are_a_failure(self):
+        self.assertTrue(self.failed("autotune", step="gave_up", target="Vox 1", tries=3))
+
+    def test_an_autotune_missing_key_device_is_a_failure(self):
+        self.assertTrue(self.failed("autotune", step="key_missing", target="Vox 1", problem="x"))
+
+    def test_another_writer_on_an_autotune_key_is_a_failure(self):
+        self.assertTrue(self.failed("autotune", step="another_writer", target="Vox 1"))
+
+    def test_another_writer_on_an_autotune_selector_is_a_failure(self):
+        self.assertTrue(
+            self.failed("autotune", step="selector_writer", target="Vox 1", act="dry_again")
+        )
+
+    def test_an_autotune_dry_registration_with_a_problem_is_a_failure(self):
+        self.assertTrue(self.failed("autotune", step="safe", targets=2, problem="no script"))
+        self.assertFalse(self.failed("autotune", step="safe", targets=2, problem=None))
+
+    def test_an_autotune_readback_not_confirmed_is_a_failure(self):
+        for state in ("refused", "mismatch", "writing", "no_key", "another_writer"):
+            self.assertTrue(self.failed("autotune", step="readback", key="F#m", state=state), state)
+        self.assertFalse(self.failed("autotune", step="readback", key="F#m", state="confirmed"))
+        self.assertFalse(self.failed("autotune", step="readback", key="F#m", state=3))
+
+    def test_an_autotune_key_change_written_late_is_a_failure(self):
+        self.assertTrue(self.failed("autotune", step="late", song=3, ms=100.5))
+        self.assertFalse(self.failed("autotune", step="late", song=3, ms=100.0))
+        self.assertFalse(self.failed("autotune", step="late", song=3, ms=-20.0))
+
+    def test_autotunes_other_steps_are_no_failure(self):
+        for step in ("flag", "write", "found", "held", "key", "key_device", "key_write"):
+            self.assertFalse(self.failed("autotune", step=step), step)
+        for step in ("refused", "bar", "select", "singer"):
+            self.assertFalse(self.failed("autotune", step=step), step)
+
+    def test_a_fader_link_is_no_failure(self):
+        self.assertFalse(self.failed("fader_link", instance="band", id="REV", on=False))
 
     def test_the_generic_detail_never_shows_the_frame_or_the_address(self):
         self.assertEqual(
@@ -303,6 +390,22 @@ class Pure(unittest.TestCase):
             ),
             "ms=12.5 on=true song=3",
         )
+
+    def test_only_a_real_transport_change_counts(self):
+        def counted(*records):
+            pairs = dict(summary(rows([dict(r, ev="transport", ts=1) for r in records], [])))
+            return pairs["transport_changes"], pairs["transport_first"]
+
+        self.assertEqual(counted({"playing": True, "prev": False}), ("1", "0"))
+        self.assertEqual(counted({"playing": False, "prev": True}), ("1", "0"))
+        # The first value heard (a start, a reconnect, after an error).
+        self.assertEqual(counted({"playing": True, "prev": None}), ("0", "1"))
+        self.assertEqual(counted({"playing": False}), ("0", "1"))
+        # A prev of the wrong type is not known; an error is neither.
+        self.assertEqual(counted({"playing": True, "prev": "no"}), ("0", "1"))
+        self.assertEqual(counted({"error": "x"}), ("0", "0"))
+        # A value the same as before is no change (the hub never writes one).
+        self.assertEqual(counted({"playing": True, "prev": True}), ("0", "0"))
 
     def test_rows_put_a_page_step_before_the_hubs_records_and_keep_the_log_order(self):
         records = [
@@ -329,6 +432,7 @@ class Pure(unittest.TestCase):
                 {"ev": "reverb", "ts": 2, "step": "window", "open": False},
                 {"ev": "reverb", "ts": 3, "step": "lower", "faders": []},
                 {"ev": "transport", "ts": 4, "playing": False, "prev": None},
+                {"ev": "transport", "ts": 4, "playing": True, "prev": False},
                 {"ev": "transport", "ts": 5, "error": "x"},
                 {"ev": "stage_aut", "ts": 6, "step": "write", "mute": False},
             ],
@@ -338,11 +442,12 @@ class Pure(unittest.TestCase):
             dict(summary(found)),
             {
                 "rule_rail_steps": "1",
-                "rule_records": "6",
+                "rule_records": "7",
                 "reverb_lowerings": "1",
                 "reverb_windows": "1",
                 "stage_writes": "1",
                 "transport_changes": "1",
+                "transport_first": "1",
                 "rule_failures": "1",
             },
         )

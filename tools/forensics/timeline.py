@@ -85,10 +85,11 @@ summary table (the deck's: ``deck_presses``, ``deck_unsent``,
 ``ableset_probe_max_ms``, ``ableset_load_max_ms``; the rules':
 ``rule_rail_steps``, ``rule_records``, ``reverb_lowerings``,
 ``reverb_windows``, ``stage_writes``, ``transport_changes``,
-``rule_failures``). It never prints a key: a control is ``key#<the first
-10 hex of its SHA-256>``, so the numbers can go on a public ticket. Exit 0
-with a report also when the window holds nothing; exit 1 with one
-``timeline: ...`` line on stderr on a usage or input error.
+``transport_first``, ``rule_failures``). It never prints a key: a control
+is ``key#<the first 10 hex of its SHA-256>``, so the numbers can go on a
+public ticket. Exit 0 with a report also when the window holds nothing;
+exit 1 with one ``timeline: ...`` line on stderr on a usage or input
+error.
 
 This file is the command; beside it ``timeline_read.py`` (values, times, the
 logs read), ``timeline_model.py`` (the analysis and the summary),

@@ -20,9 +20,26 @@ PAGE_EVENTS = ("rail",)
 # The hub's rule records (all warn class, ``events.rs`` ``is_warn``: they
 # outlive a day file's cap).
 HUB_KINDS = ("transport", "stage_aut", "reverb", "fader_link", "autotune")
-# The steps that are a failure: a STAGE AUT write Live refused, an AUTOTUNE
-# write that failed or whose walks gave up (a transport ``error`` is one too).
-FAILED_STEPS = {"stage_aut": ("failed",), "autotune": ("failed", "gave_up")}
+# The steps that are always a failure, as the hub's own warnings call them:
+# a STAGE AUT write Live refused (``router.rs`` ``write_stage``), REVERB's
+# ``rules/reverb.rs`` ``step_warn`` and AUTOTUNE's ``rules/autotune.rs``
+# ``step_warn``. The failures that hang on a field are in ``_failed`` (a
+# transport ``error`` is one too).
+FAILED_STEPS = {
+    "stage_aut": ("failed",),
+    "reverb": ("stopped", "skipped"),
+    "autotune": (
+        "failed",
+        "missing",
+        "gave_up",
+        "key_missing",
+        "another_writer",
+        "selector_writer",
+    ),
+}
+# ``rules/autotune/keys.rs`` ``LATE_BOUND_MS``: a key change written later
+# than this after its clip's start is a warning.
+LATE_BOUND_MS = 100.0
 # Fields a hub record's detail never shows: the record's frame, the page's
 # socket number, and its address (``peer``: never in the report).
 FRAME_FIELDS = ("ev", "ts", "step", "client", "peer")
@@ -30,11 +47,26 @@ FRAME_FIELDS = ("ev", "ts", "step", "client", "peer")
 # ``source`` ``page`` or ``hub``; ``kind`` the page event's or the record's
 # ``ev``; ``what`` the rail step, the hub's ``step`` (a REVERB window's
 # ``open``/``end``), ``play``/``stop``/``error`` for a transport, ``on``/
-# ``off`` for a fader link (``?`` when it does not read); ``button`` (rail), ``step`` (a hub record's own ``step``),
-# ``keys`` and ``pointer`` (rail), ``detail`` (the table's text), ``failed``.
+# ``off`` for a fader link (``?`` when it does not read); ``button``
+# (rail), ``step`` (a hub record's own ``step``), ``keys`` and ``pointer``
+# (rail), ``detail`` (the table's text), ``failed``; ``before`` a
+# transport's ``prev`` (None: not known, the first value heard).
 RuleRow = collections.namedtuple(
     "RuleRow",
-    ("time", "source", "kind", "what", "button", "step", "keys", "pointer", "detail", "failed"),
+    (
+        "time",
+        "source",
+        "kind",
+        "what",
+        "button",
+        "step",
+        "keys",
+        "pointer",
+        "detail",
+        "failed",
+        "before",
+    ),
+    defaults=(None,),
 )
 
 
@@ -156,14 +188,42 @@ def _reverb(step, record):
     return generic_detail(record)
 
 
+def _failed(kind, step, record):
+    """Whether a ``stage_aut``, ``reverb`` or ``autotune`` record is a
+    failure: what the hub's own ``step_warn`` warns about. A REVERB
+    ``restored`` with faders still waiting for their strip, an AUTOTUNE
+    ``safe`` with a ``problem`` (the DRY writes not registered), a
+    ``readback`` whose ``state`` is not ``confirmed`` (``refused``,
+    ``mismatch``, ...) and a ``late`` key change past ``LATE_BOUND_MS``; a
+    field of the wrong type reads as missing (no failure)."""
+    if step in FAILED_STEPS.get(kind, ()):
+        return True
+    if kind == "reverb" and step == "restored":
+        waiting = number(record.get("waiting"))
+        return waiting is not None and waiting > 0
+    if kind != "autotune":
+        return False
+    if step == "safe":
+        return _text(record.get("problem")) is not None
+    if step == "readback":
+        state = _text(record.get("state"))
+        return state is not None and state != "confirmed"
+    if step == "late":
+        ms = number(record.get("ms"))
+        return ms is not None and ms > LATE_BOUND_MS
+    return False
+
+
 def hub_row(record):
     """The ``RuleRow`` of a hub rule record (``HUB_KINDS``). A field of the
     wrong type reads as missing (``step`` and ``what`` as ``?``)."""
     kind = record.get("ev")
     step = None
     failed = False
+    before = None
     if kind == "transport":
         what, detail, failed = _transport(record)
+        before = _bool(record.get("prev"))
     elif kind == "fader_link":
         on = _bool(record.get("on"))
         what = {True: "on", False: "off"}.get(on, "?")
@@ -172,7 +232,7 @@ def hub_row(record):
     else:
         step = _text(record.get("step")) or "?"
         what = step
-        failed = step in FAILED_STEPS.get(kind, ())
+        failed = _failed(kind, step, record)
         if kind == "reverb" and step == "window":
             # A window's own word: it opens or ends.
             what = {True: "open", False: "end"}.get(_bool(record.get("open")), "?")
@@ -182,7 +242,7 @@ def hub_row(record):
             detail = _reverb(step, record)
         else:
             detail = generic_detail(record)
-    return RuleRow(record["ts"], "hub", kind, what, None, step, (), None, detail, failed)
+    return RuleRow(record["ts"], "hub", kind, what, None, step, (), None, detail, failed, before)
 
 
 def rows(records, rails):
@@ -201,6 +261,14 @@ def summary(found):
     def count(test):
         return str(sum(1 for r in found if test(r)))
 
+    def heard(r):
+        return r.kind == "transport" and r.what in ("play", "stop")
+
+    def changed(r):
+        # A real change: the value before known and different (a first
+        # value after a start, a reconnect or an error is no change).
+        return heard(r) and r.before is not None and r.before != (r.what == "play")
+
     return [
         ("rule_rail_steps", count(lambda r: r.source == "page")),
         ("rule_records", count(lambda r: r.source == "hub")),
@@ -210,9 +278,7 @@ def summary(found):
             count(lambda r: r.kind == "reverb" and r.step == "window" and r.what == "open"),
         ),
         ("stage_writes", count(lambda r: r.kind == "stage_aut" and r.step == "write")),
-        (
-            "transport_changes",
-            count(lambda r: r.kind == "transport" and r.what in ("play", "stop")),
-        ),
+        ("transport_changes", count(changed)),
+        ("transport_first", count(lambda r: heard(r) and r.before is None)),
         ("rule_failures", count(lambda r: r.failed)),
     ]
