@@ -214,6 +214,27 @@ fn a_trace_with_ablesets_tab_opened_or_closed_outlives_the_cap() {
 }
 
 #[test]
+fn a_trace_with_a_rail_step_outlives_the_cap() {
+    // #130 PR 6 review: a rail button's steps explain the rules' records
+    // (`stage_aut`, `reverb`, `autotune`) that outlive a day file's cap;
+    // without them the forensics timeline shows the hub answering a press
+    // that is absent.
+    let trace = |events: Value| json!({"ev": "trace", "client": 3, "events": events});
+    for what in ["press", "tap", "hold", "refused"] {
+        let record = trace(json!([
+            {"ev": "ping", "t": 1.0, "n": 4},
+            {"ev": "rail", "t": 2.0, "what": what, "button": "stage", "keys": [], "pointer": 3}
+        ]));
+        assert!(is_warn(&record), "{what}");
+    }
+    assert!(!is_warn(&trace(json!([{"ev": "ping", "t": 1.0, "n": 4}]))));
+    // Another record holding one is not a page's trace.
+    assert!(!is_warn(
+        &json!({"ev": "set", "events": [{"ev": "rail", "what": "tap"}]})
+    ));
+}
+
+#[test]
 fn the_cap_is_crossed_by_a_line_past_it() {
     assert!(!over_cap(10, 5, 15));
     assert!(over_cap(10, 6, 15));
