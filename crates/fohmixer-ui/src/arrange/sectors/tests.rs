@@ -492,6 +492,32 @@ fn arrange_adds_no_cells_to_a_side_of_two_sectors_or_with_a_window() {
     let phone = arranging(&doc, &Picks::new(), Sides::both(200.0), TALL);
     assert!(phone.lines[0].left.shift.is_some());
     assert_eq!(labels(&phone.lines[0].left.cells), vox(&[1, 2, 3]));
+    // A window on a wider side (the phone's column closed): 264 px count 3
+    // cells at 64 px (4 need 268), and the page's strip, 64 × 400 / 264 =
+    // 96.97 px, fits a 4th on the 400 px side (4 × 96.97 + 12 = 399.9);
+    // the window keeps its cells all the same.
+    let wide = Sides {
+        count: 264.0,
+        width: 400.0,
+    };
+    let stretched = arranging(&doc, &Picks::new(), wide, TALL);
+    let left = &stretched.lines[0].left;
+    assert!(left.shift.is_some());
+    assert_eq!(labels(&left.cells), vox(&[1, 2, 3]));
+    assert_eq!(stretched.width, METRICS.min * stretch(wide));
+    assert_eq!(
+        with_spaces(
+            left.cells.clone(),
+            SectorId::Lu,
+            7,
+            stretched.width,
+            wide.width,
+            &METRICS
+        )
+        .len(),
+        4,
+        "an extra cell would fit: only the window keeps it out"
+    );
 }
 
 fn doc_of_seven() -> SectorsDoc {
