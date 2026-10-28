@@ -12,8 +12,15 @@
 //! side whose need does not fit at the narrowest strip (a phone) shows a
 //! window over its shown cells, keyed by its sectors, which the column's
 //! arrows move. This module is pure; `pages::sectors` measures and renders.
+//!
+//! A layout is a row of slots (1.24.0, the slot model): an empty slot is a
+//! blank cell one strip wide in its place, counted in the width like a
+//! strip. While ARRANGE is on, every further position a one-sector side can
+//! show at the page's strip width, up to [`SECTOR_UNITS`], is an empty cell
+//! too (`arranging`), so a strip can be dropped there; the width never
+//! depends on them.
 
-use fohmixer_proto::sectors::{Pooled, SectorId, SectorLayout, SectorsDoc, StripRef};
+use fohmixer_proto::sectors::{Pooled, SECTOR_UNITS, SectorId, SectorLayout, SectorsDoc, StripRef};
 
 use super::{Metrics, Shift, Sides, lines, stretch};
 use crate::binding::sectors::{Picks, picked};
@@ -21,31 +28,48 @@ use crate::binding::sectors::{Picks, picked};
 #[cfg(test)]
 mod tests;
 
-/// One strip of a sector on the page: its sector, its fader and its width
-/// in strips (a wide strip `Metrics::wide`).
+/// One cell of a sector on the page: its sector, its slot in the layout,
+/// its fader (none: an empty slot) and its width in strips (a wide strip
+/// `Metrics::wide`, an empty slot 1).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SectorCell {
     pub sector: SectorId,
-    pub strip: StripRef,
+    pub slot: usize,
+    pub strip: Option<StripRef>,
     pub units: f64,
 }
 
 impl SectorCell {
     /// Its key in the line's keyed list: its sector and its fader, so a
     /// strip that stays when its sector pages keeps its element, and the
-    /// same fader in two sectors is two elements.
+    /// same fader in two sectors is two elements; an empty slot by its
+    /// sector and its place (`lu:#3`).
     pub fn key(&self) -> String {
-        format!(
-            "{}:{}|{}",
-            self.sector.as_str(),
-            self.strip.instance,
-            self.strip.label
-        )
+        match &self.strip {
+            Some(strip) => format!(
+                "{}:{}|{}",
+                self.sector.as_str(),
+                strip.instance,
+                strip.label
+            ),
+            None => format!("{}:#{}", self.sector.as_str(), self.slot),
+        }
+    }
+
+    /// An empty cell of `sector` at `slot`.
+    pub fn empty(sector: SectorId, slot: usize) -> Self {
+        Self {
+            sector,
+            slot,
+            strip: None,
+            units: 1.0,
+        }
     }
 }
 
-/// A layout's cells in its order; a ref no pool control carries is left
-/// out (it shows nowhere and takes no room).
+/// A layout's cells in its slots' order, an empty slot an empty cell; a ref
+/// no pool control carries is left out (it shows nowhere and takes no
+/// room).
 pub fn layout_cells(
     sector: SectorId,
     layout: &SectorLayout,
@@ -55,17 +79,55 @@ pub fn layout_cells(
     layout
         .strips
         .iter()
-        .filter_map(|strip| pool.iter().find(|p| p.id == *strip))
-        .map(|p| SectorCell {
-            sector,
-            strip: p.id.clone(),
-            units: if p.strip().is_some_and(|s| s.wide) {
-                m.wide
-            } else {
-                1.0
-            },
+        .enumerate()
+        .filter_map(|(slot, strip)| match strip {
+            None => Some(SectorCell::empty(sector, slot)),
+            Some(strip) => pool.iter().find(|p| p.id == *strip).map(|p| SectorCell {
+                sector,
+                slot,
+                strip: Some(p.id.clone()),
+                units: if p.strip().is_some_and(|s| s.wide) {
+                    m.wide
+                } else {
+                    1.0
+                },
+            }),
         })
         .collect()
+}
+
+/// How far (px) a side's cells may pass its room and still fit at a strip
+/// width: float rounding only (the width is a quotient: six strips at it
+/// can sum a hair over), so an extra cell never overflows its side.
+pub const FIT_SLACK: f64 = 1e-6;
+
+/// Whether `cells` fit `side` px at strips `width` wide ([`FIT_SLACK`]).
+fn fits_at(cells: &[SectorCell], width: f64, side: f64, m: &Metrics) -> bool {
+    span(cells, width, m) <= side + FIT_SLACK
+}
+
+/// ARRANGE's cells of a one-sector side: its `cells`, then an empty cell
+/// for every further position that fits `side` px at `width` while the
+/// sector stays within [`SECTOR_UNITS`] (each empty one a unit), numbered
+/// after its layout's last slot (`slots`).
+pub fn with_spaces(
+    mut cells: Vec<SectorCell>,
+    sector: SectorId,
+    slots: usize,
+    width: f64,
+    side: f64,
+    m: &Metrics,
+) -> Vec<SectorCell> {
+    for slot in slots..slots + SECTOR_UNITS as usize {
+        let units: f64 = cells.iter().map(|c| c.units).sum();
+        let mut next = cells.clone();
+        next.push(SectorCell::empty(sector, slot));
+        if units + 1.0 > SECTOR_UNITS || !fits_at(&next, width, side, m) {
+            break;
+        }
+        cells = next;
+    }
+    cells
 }
 
 /// The px `cells` take side by side with strips `width` wide.
@@ -136,6 +198,17 @@ impl SectorArrangement {
             .flat_map(|line| [&line.left, &line.right])
             .find(|side| side.key == *key)
             .and_then(|side| side.shift)
+    }
+
+    /// The cell of line `line` kept by `key` (`SectorCell::key`): a kept
+    /// strip's element reads its slot now through it.
+    pub fn cell_of(&self, line: usize, key: &str) -> Option<&SectorCell> {
+        let line = self.lines.get(line)?;
+        line.left
+            .cells
+            .iter()
+            .chain(line.right.cells.iter())
+            .find(|cell| cell.key() == key)
     }
 
     /// The keys of the sides with a window, line by line, left first: the
@@ -244,7 +317,10 @@ fn arrange_side(
 /// The sectors page arranged on `sides` and `height`: its lines, each
 /// side's cells and window (at `offset(its key)`), and the one strip width,
 /// the narrowest any side allows, within `m.min`..`m.max` (a side with a
-/// window allows the narrowest strip, scaled to the side it fills).
+/// window allows the narrowest strip, scaled to the side it fills). While
+/// `arranging` (ARRANGE on), a one-sector side without a window shows its
+/// further positions as empty cells ([`with_spaces`]).
+#[allow(clippy::too_many_arguments)]
 pub fn arrange_sectors(
     doc: &SectorsDoc,
     pool: &[Pooled],
@@ -252,6 +328,7 @@ pub fn arrange_sectors(
     sides: Sides,
     height: f64,
     offset: impl Fn(&WindowKey) -> usize,
+    arranging: bool,
     m: &Metrics,
 ) -> SectorArrangement {
     let mut width = f64::INFINITY;
@@ -265,8 +342,42 @@ pub fn arrange_sectors(
             .fold(width, f64::min);
         out.push(SectorLine { left, right });
     }
-    SectorArrangement {
-        width: width.clamp(m.min, m.max),
-        lines: out,
+    let width = width.clamp(m.min, m.max);
+    if arranging {
+        for side in out.iter_mut().flat_map(|l| [&mut l.left, &mut l.right]) {
+            add_spaces(side, doc, picks, width, sides.width, m);
+        }
     }
+    SectorArrangement { width, lines: out }
+}
+
+/// ARRANGE's further positions of `side` ([`with_spaces`]): only a side of
+/// one sector with a layout that shows no window (a phone's sides keep
+/// their cells).
+fn add_spaces(
+    side: &mut SectorSide,
+    doc: &SectorsDoc,
+    picks: &Picks,
+    width: f64,
+    room: f64,
+    m: &Metrics,
+) {
+    let [sector] = side.key.sectors.as_slice() else {
+        return;
+    };
+    let Some(layout) = picked(doc, picks, *sector) else {
+        return;
+    };
+    if side.shift.is_some() {
+        return;
+    }
+    let slots = layout.strips.len();
+    side.cells = with_spaces(
+        std::mem::take(&mut side.cells),
+        *sector,
+        slots,
+        width,
+        room,
+        m,
+    );
 }

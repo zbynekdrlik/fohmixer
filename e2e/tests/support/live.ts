@@ -273,8 +273,12 @@ export async function groupLabelOf(page: Page, inner: Locator): Promise<Locator>
 
 /** A fader's identity in the fader sectors (#148): its Live set and its label (a frame strip: its anchor's name). */
 export type StripRef = { instance: string; label: string };
-/** One named layout of a sector (#148): a title of at most 8 characters, its faders in order. */
-export type SectorLayout = { id: string; title: string; strips: StripRef[] };
+/**
+ * One named layout of a sector (#148): a title of at most 8 characters, its
+ * slots in order, each a fader or null (an empty slot, the slot model of
+ * 1.24.0).
+ */
+export type SectorLayout = { id: string; title: string; strips: (StripRef | null)[] };
 /** `sectors.json` (#148): the sectors `lu`, `ld`, `ru`, `rd` and their layouts. */
 export type SectorsDoc = { rev: number; sectors: Partial<Record<"lu" | "ld" | "ru" | "rd", SectorLayout[]>> };
 

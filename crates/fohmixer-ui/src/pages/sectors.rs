@@ -12,12 +12,18 @@
 //! this device only), ARRANGE (the reorder mode, `behave::arrange_drag`:
 //! while it is on every strip lies under a cover with a ⠿ handle that owns
 //! its touches, the faders, MUTE, SEL and the column's other controls are
-//! dimmed and inert, a strip is dragged within its sector, and a second tap
-//! saves; nothing reaches Live) and ↶ (the hub's undo of the last change,
+//! dimmed and inert, every position a sector can show is a cell, the empty
+//! ones calm dashed outlines, a strip is dragged within its sector onto an
+//! empty cell (its old place left empty) or another strip (the two swap),
+//! and a second tap saves; nothing reaches Live) and ↶ (the hub's undo of
+//! the last change,
 //! dim while the hub holds no version before it), then the arrows of a side
-//! that does not fit, the rail and the global controls. The group's name on
-//! a strip's side is not drawn here; its instance tag follows the shown
-//! layout.
+//! that does not fit, the rail and the global controls. No strip draws its
+//! instance pill here (it costs 16 px of travel); a layout that mixes Live
+//! sets names each strip's set where the group's name sits on the classic
+//! page (`binding::sectors::sector_side`), following the shown layout. A
+//! layout's empty slot is a blank cell in its place (the slot model,
+//! 1.24.0), drawn only in ARRANGE.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -29,10 +35,10 @@ use leptos::prelude::*;
 
 use crate::arrange::sectors::{SectorArrangement, SectorCell, WindowKey, arrange_sectors};
 use crate::arrange::{Arrangement, LineKey, METRICS, Shift, Sides, narrow};
-use crate::behave::arrange_drag::{
-    Arrange, ArrangeEnd, Drag, NoteTimer, Tap, arrange_note, sector_refs,
+use crate::behave::arrange_drag::{Arrange, ArrangeEnd, Drag, Held, NoteTimer, Tap, arrange_note};
+use crate::binding::sectors::{
+    Picks, picked, pool_controls, sector_instances, sector_name, sector_side,
 };
-use crate::binding::sectors::{Picks, picked, pool_controls, sector_instances, sector_name};
 use crate::components::{ControlView, down_of, fail_flash, owns_touches};
 use crate::dom;
 use crate::pages::surface::{ColumnHead, Head, Nav, ThinStrip, measure_page};
@@ -43,7 +49,8 @@ const NOTE_MS: u64 = 4000;
 
 /// The sectors page's arrangement, a memo of what it depends on: the
 /// measured page (none before it is laid out), the hub's document (none
-/// while there is none), this device's picks and the sides' windows. Every
+/// while there is none), this device's picks, the sides' windows and
+/// whether ARRANGE is on (its further positions as empty cells). Every
 /// read tolerates a disposed value (`try_*`): a layout change disposes the
 /// page while its keyed lists' effects may still run once.
 pub(crate) fn sector_memo(
@@ -52,12 +59,14 @@ pub(crate) fn sector_memo(
     doc: Signal<Option<SectorsDoc>>,
     picks: Signal<Picks>,
     offsets: Signal<BTreeMap<WindowKey, usize>>,
+    arranging: Signal<bool>,
 ) -> Memo<Option<SectorArrangement>> {
     Memo::new(move |_| {
         let (sides, height) = measured.try_get()?;
         if !sides.measured() {
             return None;
         }
+        let arranging = arranging.try_get().unwrap_or(false);
         let pool = pool(&layout);
         doc.try_with(|doc| {
             let doc = doc.as_ref()?;
@@ -65,7 +74,9 @@ pub(crate) fn sector_memo(
                 .try_with(|picks| {
                     offsets.try_with(|offsets| {
                         let offset = |key: &WindowKey| offsets.get(key).copied().unwrap_or(0);
-                        arrange_sectors(doc, &pool, picks, sides, height, offset, &METRICS)
+                        arrange_sectors(
+                            doc, &pool, picks, sides, height, offset, arranging, &METRICS,
+                        )
                     })
                 })
                 .flatten()
@@ -74,11 +85,12 @@ pub(crate) fn sector_memo(
     })
 }
 
-/// Each sector's instance tag (`binding::sectors::sector_instances`): the
-/// Live set its shown layout's strips share, none when they differ. A memo
-/// of the hub's document and this device's picks, so a strip that stays
-/// mounted while its sector pages gets the new layout's tag; the pool is
-/// built once per change, never per strip.
+/// Each sector's shared Live set (`binding::sectors::sector_instances`):
+/// the set its shown layout's strips share, none when they differ (then
+/// each strip names its own set on its side, `sector_side`). A memo of the
+/// hub's document and this device's picks, so a strip that stays mounted
+/// while its sector pages follows the new layout; the pool is built once
+/// per change, never per strip.
 pub(crate) fn instances_memo(
     layout: Arc<Layout>,
     doc: Signal<Option<SectorsDoc>>,
@@ -181,18 +193,24 @@ impl Carrier {
     }
 }
 
-/// The centres (px, the viewport's x) of `sector`'s slots on `slot`'s
-/// line, in their order (the line's children: one keyed list).
-fn sector_centres(slot: &web_sys::Element, sector: SectorId) -> Vec<f64> {
+/// The cells of `sector` on `slot`'s line (the line's children: one keyed
+/// list), each its layout slot (`data-slot`) and its centre (px, the
+/// viewport's x).
+fn sector_spots(slot: &web_sys::Element, sector: SectorId) -> Vec<(usize, f64)> {
     let Some(line) = slot.parent_element() else {
         return Vec::new();
     };
     let mut out = Vec::new();
     let mut next = line.first_element_child();
     while let Some(el) = next {
-        if el.get_attribute("data-sector").as_deref() == Some(sector.as_str()) {
+        let index = el
+            .get_attribute("data-slot")
+            .and_then(|n| n.parse::<usize>().ok());
+        if let Some(index) = index
+            && el.get_attribute("data-sector").as_deref() == Some(sector.as_str())
+        {
             let rect = el.get_bounding_client_rect();
-            out.push(rect.left() + rect.width() / 2.0);
+            out.push((index, rect.left() + rect.width() / 2.0));
         }
         next = el.next_element_sibling();
     }
@@ -281,12 +299,14 @@ pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
     };
     // Each side's window, kept by its sectors (a phone, #148 call 14).
     let offsets = RwSignal::new(BTreeMap::<WindowKey, usize>::new());
+    let arranging_now = Memo::new(move |_| mode.try_with(Arrange::is_on).unwrap_or(false));
     let arranged = sector_memo(
         head.layout.clone(),
         measured.into(),
         shown_doc.into(),
         nav.picks.into(),
         offsets.into(),
+        arranging_now.into(),
     );
     let count = Memo::new(move |_| {
         arranged
@@ -487,10 +507,13 @@ fn SectorLineView(
     }
 }
 
-/// One strip of a sector: its pool control on its sector's side, with the
-/// instance tag of the layout its sector shows now (a memo of `instances`:
-/// a strip kept through a page takes the new layout's tag) and no group
-/// name; ARRANGE's cover over it (shown only in the mode).
+/// One cell of a sector: an empty slot's blank (`sectors.css` outlines it
+/// only in ARRANGE), else a strip's pool control on its sector's side, with
+/// no instance pill and, while the layout its sector shows now mixes Live
+/// sets, its own set as the side text (a memo of `instances`: a strip kept
+/// through a page follows the new layout); ARRANGE's cover over it (shown
+/// only in the mode). `data-slot` is its layout slot now (a kept strip's
+/// element moves between slots).
 #[component]
 fn SectorCellView(
     cell: SectorCell,
@@ -501,42 +524,81 @@ fn SectorCellView(
     instances: Memo<BTreeMap<SectorId, Option<String>>>,
 ) -> impl IntoView {
     let sector = cell.sector;
+    let side = if sector.left() { "left" } else { "right" };
+    let Some(strip) = cell.strip.clone() else {
+        return view! {
+            <div
+                class="slot sector-gap"
+                data-sector=sector.as_str()
+                data-side=side
+                data-slot=cell.slot.to_string()
+                data-testid="sector-gap"
+            ></div>
+        }
+        .into_any();
+    };
+    let key = cell.key();
+    let first_slot = cell.slot;
+    let slot_now = Memo::new(move |_| {
+        arranged
+            .try_with(|a| {
+                a.as_ref()
+                    .and_then(|a| a.cell_of(line, &key))
+                    .map(|c| c.slot)
+            })
+            .flatten()
+            .unwrap_or(first_slot)
+    });
     let control = controls
-        .try_with_value(|all| all.get(&cell.strip).cloned())
+        .try_with_value(|all| all.get(&strip).cloned())
         .flatten();
-    let shared = Memo::new(move |_| {
+    // The strip's own Live set as its `shared`: it never draws its
+    // instance pill here (1.24.0: 16 px of travel, a bright fill); a mixed
+    // layout names the set on its side instead (`sector_side`), a memo of
+    // `instances`, so a strip kept through a page follows the layout shown.
+    let own = match &control {
+        Some(Control::Strip(strip)) => Some(strip.binding.instance.clone()),
+        _ => None,
+    };
+    let own_side = own.clone().unwrap_or_default();
+    let shared = Signal::derive(move || own.clone());
+    let side_text = Memo::new(move |_| {
         instances
-            .try_with(|all| all.get(&sector).cloned().flatten())
+            .try_with(|all| sector_side(all.get(&sector).and_then(Option::as_deref), &own_side))
             .flatten()
     });
-    let side = if sector.left() { "left" } else { "right" };
-    let inner = control.map(|control| view! { <ControlView control=control shared=shared /> });
+    let inner = control.map(|control| {
+        view! { <ControlView control=control shared=shared group_name=side_text /> }
+    });
+    let slot_attr = move || slot_now.try_get().unwrap_or(first_slot).to_string();
     view! {
-        <div class="slot" data-sector=sector.as_str() data-side=side>
+        <div class="slot" data-sector=sector.as_str() data-side=side data-slot=slot_attr>
             {inner}
-            <ArrangeCover cell=cell line=line arranged=arranged carrier=carrier />
+            <ArrangeCover sector=sector strip=strip place=slot_now carrier=carrier />
         </div>
     }
+    .into_any()
 }
 
 /// ARRANGE's cover over a strip (`sectors.css` shows it only in the mode):
 /// it owns its touches and captures the pointer, so no touch reaches the
 /// strip's controls. A finger moved past the slop carries the strip (its
-/// slot follows the finger); the lift drops it among its sector's strips
-/// (`Arrange::dropped_in` over the centres read at the down). A cancel or a
-/// lost capture puts it back with nothing moved; a carry whose end never
-/// came ends at the next primary down of its type on a cover (#124).
+/// slot follows the finger); the lift drops it on the nearest cell of its
+/// sector, empty or a strip (`Arrange::dropped_in` over the cells read at
+/// the down). A cancel or a lost capture puts it back with nothing moved; a
+/// carry whose end never came ends at the next primary down of its type on
+/// a cover (#124).
 #[component]
 fn ArrangeCover(
-    cell: SectorCell,
-    line: usize,
-    arranged: Memo<Option<SectorArrangement>>,
+    sector: SectorId,
+    strip: StripRef,
+    place: Memo<usize>,
     carrier: Carrier,
 ) -> impl IntoView {
     let nav = expect_context::<Nav>();
     let store = nav.store;
     let mode = nav.arrange;
-    let cell = StoredValue::new(cell);
+    let strip = StoredValue::new(strip);
     let on_down = move |ev: web_sys::PointerEvent| {
         if !mode.try_with_untracked(Arrange::is_on).unwrap_or(false) {
             return;
@@ -545,21 +607,26 @@ fn ArrangeCover(
         let Some(el) = dom::current_element(&ev) else {
             return;
         };
-        let Some(slot) = el.closest(".slot").ok().flatten() else {
+        let Some(slot_el) = el.closest(".slot").ok().flatten() else {
             return;
         };
-        let Some((sector, strip)) = cell.try_with_value(|c| (c.sector, c.strip.clone())) else {
+        let (Some(strip), Some(from)) = (strip.try_get_value(), place.try_get_untracked()) else {
             return;
         };
-        let centres = sector_centres(&slot, sector);
+        let held = Held {
+            sector,
+            strip,
+            slot: from,
+            spots: sector_spots(&slot_el, sector),
+        };
         let x = f64::from(ev.client_x());
         let down = down_of(&ev);
         let took = carrier
             .drag
-            .try_update_value(|d| d.down(down, sector, strip, x, centres))
+            .try_update_value(|d| d.down(down, held, x))
             .unwrap_or(false);
         if took {
-            carrier.hold(slot);
+            carrier.hold(slot_el);
             let _ = el.set_pointer_capture(down.id);
         }
     };
@@ -583,10 +650,6 @@ fn ArrangeCover(
         let Some((carry, x)) = drop else {
             return;
         };
-        let shown = arranged
-            .try_with_untracked(|a| a.as_ref().map(|a| sector_refs(a, line, carry.sector)))
-            .flatten()
-            .unwrap_or_default();
         let picks = nav.picks.try_get_untracked().unwrap_or_default();
         let _ = store.sectors.try_with_untracked(|told| {
             let Some(layout) = told
@@ -596,7 +659,7 @@ fn ArrangeCover(
                 return;
             };
             change_mode(mode, |m| {
-                m.dropped_in(layout, &shown, &carry.centres, &carry.strip, x);
+                m.dropped_in(layout, &carry.spots, carry.slot, &carry.strip, x);
             });
         });
     };
@@ -890,9 +953,11 @@ mod tests {
             title: id.to_uppercase(),
             strips: strips
                 .iter()
-                .map(|label| StripRef {
-                    instance: "band".to_string(),
-                    label: label.to_string(),
+                .map(|label| {
+                    Some(StripRef {
+                        instance: "band".to_string(),
+                        label: label.to_string(),
+                    })
                 })
                 .collect(),
         }
@@ -932,12 +997,14 @@ mod tests {
         let shown = RwSignal::new(Some(doc));
         let picks = RwSignal::new(Picks::new());
         let offsets = RwSignal::new(BTreeMap::<WindowKey, usize>::new());
+        let arranging = RwSignal::new(false);
         let arranged = sector_memo(
             Arc::new(layout),
             measured.into(),
             shown.into(),
             picks.into(),
             offsets.into(),
+            arranging.into(),
         );
         // Not laid out yet: nothing arranged.
         assert_eq!(arranged.get_untracked(), None);
@@ -960,6 +1027,17 @@ mod tests {
         );
         assert_eq!(after.lines[0].left, before.lines[0].left);
         assert_eq!(after.lines[1], before.lines[1]);
+        // ARRANGE on: the further positions are empty cells, the width
+        // stays; off again: gone.
+        let _ = arranging.try_set(true);
+        let on = arranged.get_untracked().expect("arranged");
+        assert_eq!(on.width, before.width);
+        assert_eq!(
+            keys(&on.lines[0].right),
+            vec!["ru:band|S6", "ru:band|S7", "ru:band|S8", "ru:#3"]
+        );
+        let _ = arranging.try_set(false);
+        assert_eq!(arranged.get_untracked(), Some(after));
         // No document: nothing arranged.
         let _ = shown.try_set(None);
         assert_eq!(arranged.get_untracked(), None);
@@ -994,12 +1072,12 @@ mod tests {
                     SectorLayout {
                         id: "lu-1".to_string(),
                         title: "BAND".to_string(),
-                        strips: vec![at("band", "X"), at("band", "Y")],
+                        strips: vec![Some(at("band", "X")), Some(at("band", "Y"))],
                     },
                     SectorLayout {
                         id: "lu-2".to_string(),
                         title: "MIX".to_string(),
-                        strips: vec![at("band", "X"), at("master", "A-Reverb #")],
+                        strips: vec![Some(at("band", "X")), Some(at("master", "A-Reverb #"))],
                     },
                 ],
             )]

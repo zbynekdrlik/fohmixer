@@ -10,6 +10,13 @@
 //! every fader of the served layout that has one. Everything here is pure:
 //! the hub and the UI share it.
 //!
+//! A layout is a row of slots (1.24.0, the owner's report of 28.10: ARRANGE
+//! packed the strips against each other, so BAND could not sit at RU's right
+//! edge): `strips` holds a fader or `null`, an empty slot, drawn as empty
+//! space one strip wide where a strip would sit. An empty slot counts one
+//! unit toward [`SECTOR_UNITS`]; trailing empty slots are dropped
+//! ([`trim`]), so a file without `null` reads as before.
+//!
 //! An unknown field is an error, not ignored (the file is edited by hand,
 //! as the layout is).
 
@@ -83,13 +90,35 @@ pub struct StripRef {
     pub label: String,
 }
 
-/// A named layout of a sector: its faders in order.
+/// A layout's slot: a fader, or none (an empty slot, `null` in the file).
+pub type Slot = Option<StripRef>;
+
+/// A named layout of a sector: its slots in order, each a fader or empty.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SectorLayout {
     pub id: String,
     pub title: String,
-    pub strips: Vec<StripRef>,
+    pub strips: Vec<Slot>,
+}
+
+impl SectorLayout {
+    /// Its faders in their order, the empty slots left out.
+    pub fn refs(&self) -> impl Iterator<Item = &StripRef> {
+        self.strips.iter().flatten()
+    }
+
+    /// Whether it holds `strip`.
+    pub fn holds(&self, strip: &StripRef) -> bool {
+        self.refs().any(|s| s == strip)
+    }
+}
+
+/// `slots` without their trailing empty slots.
+pub fn trim(mut slots: Vec<Slot>) -> Vec<Slot> {
+    let kept = slots.len() - slots.iter().rev().take_while(|s| s.is_none()).count();
+    slots.truncate(kept);
+    slots
 }
 
 /// The document, `sectors.json`: the hub's revision and each sector's
@@ -101,12 +130,12 @@ pub struct SectorsDoc {
     pub sectors: BTreeMap<SectorId, Vec<SectorLayout>>,
 }
 
-/// One layout's new order (ARRANGE's save).
+/// One layout's new slots (ARRANGE's save), its empty slots `null`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SectorOrder {
     pub layout: String,
-    pub strips: Vec<StripRef>,
+    pub strips: Vec<Slot>,
 }
 
 impl SectorsDoc {
@@ -138,6 +167,15 @@ impl SectorsDoc {
         })
     }
 
+    /// The document with every layout's trailing empty slots dropped (a
+    /// hand edit's; the hub's own changes never keep one).
+    pub fn trimmed(mut self) -> Self {
+        for layout in self.sectors.values_mut().flatten() {
+            layout.strips = trim(std::mem::take(&mut layout.strips));
+        }
+        self
+    }
+
     fn find_mut(&mut self, id: &str) -> Option<&mut SectorLayout> {
         self.sectors
             .values_mut()
@@ -147,7 +185,7 @@ impl SectorsDoc {
 
     /// Every problem of the document (empty: valid): an id empty or on two
     /// layouts, a title empty or longer than [`TITLE_MAX`] characters, a
-    /// strip twice in one layout.
+    /// strip twice in one layout (empty slots are no strip).
     pub fn validate(&self) -> Vec<String> {
         let mut errors = Vec::new();
         let mut ids: BTreeMap<&str, usize> = BTreeMap::new();
@@ -165,8 +203,9 @@ impl SectorsDoc {
                     layout.id, layout.title
                 ));
             }
-            for (i, strip) in layout.strips.iter().enumerate() {
-                if layout.strips.iter().take(i).any(|s| s == strip) {
+            let refs: Vec<&StripRef> = layout.refs().collect();
+            for (i, strip) in refs.iter().enumerate() {
+                if refs.iter().take(i).any(|s| s == strip) {
                     errors.push(format!(
                         "layout {:?} holds {}|{} twice",
                         layout.id, strip.instance, strip.label
@@ -196,7 +235,7 @@ impl SectorsDoc {
         self.sectors
             .values()
             .flatten()
-            .flat_map(|layout| &layout.strips)
+            .flat_map(SectorLayout::refs)
             .collect()
     }
 }
@@ -211,10 +250,7 @@ pub struct Pooled<'a> {
 impl Pooled<'_> {
     /// Its units: a wide strip [`WIDE_UNITS`], anything else 1.
     pub fn units(&self) -> f64 {
-        match self.control {
-            Control::Strip(strip) if strip.wide => WIDE_UNITS,
-            _ => 1.0,
-        }
+        control_units(self.control)
     }
 
     /// Its strip, when it is one (a labelled parameter fader is not).
@@ -223,6 +259,15 @@ impl Pooled<'_> {
             Control::Strip(strip) => Some(strip),
             _ => None,
         }
+    }
+}
+
+/// A control's units in a sector: a wide strip [`WIDE_UNITS`], anything
+/// else 1.
+fn control_units(control: &Control) -> f64 {
+    match control {
+        Control::Strip(strip) if strip.wide => WIDE_UNITS,
+        _ => 1.0,
     }
 }
 
@@ -282,12 +327,15 @@ pub fn pool(layout: &Layout) -> Vec<Pooled<'_>> {
     out
 }
 
-/// The units of these faders: a ref no pool fader carries takes no room.
-pub fn units(strips: &[StripRef], pool: &[Pooled]) -> f64 {
-    strips
+/// The units of these slots: an empty slot 1, a fader its own; a ref no
+/// pool fader carries takes no room.
+pub fn units(slots: &[Slot], pool: &[Pooled]) -> f64 {
+    slots
         .iter()
-        .filter_map(|strip| pool.iter().find(|p| &p.id == strip))
-        .map(|p| p.units())
+        .filter_map(|slot| match slot {
+            None => Some(1.0),
+            Some(strip) => pool.iter().find(|p| &p.id == strip).map(Pooled::units),
+        })
         .sum()
 }
 
@@ -296,9 +344,31 @@ pub fn is_full(units: f64) -> bool {
     units > SECTOR_UNITS
 }
 
-/// Whether `strip` added to `layout` would make it full.
+/// `slots` with `strip` ticked in: into the first empty slot, else at the
+/// end.
+pub fn ticked_in(slots: &[Slot], strip: &StripRef) -> Vec<Slot> {
+    let mut out = slots.to_vec();
+    match out.iter_mut().find(|slot| slot.is_none()) {
+        Some(empty) => *empty = Some(strip.clone()),
+        None => out.push(Some(strip.clone())),
+    }
+    out
+}
+
+/// `slots` with `strip` ticked out: its slot left empty (the others keep
+/// their places), the trailing empty slots dropped.
+pub fn ticked_out(slots: &[Slot], strip: &StripRef) -> Vec<Slot> {
+    trim(
+        slots
+            .iter()
+            .map(|slot| slot.clone().filter(|s| s != strip))
+            .collect(),
+    )
+}
+
+/// Whether `strip` ticked into `layout` ([`ticked_in`]) would make it full.
 pub fn would_be_full(layout: &SectorLayout, strip: &StripRef, pool: &[Pooled]) -> bool {
-    is_full(units(&layout.strips, pool) + units(std::slice::from_ref(strip), pool))
+    is_full(units(&ticked_in(&layout.strips, strip), pool))
 }
 
 /// How many distinct refs of the document no pool fader carries (a track
@@ -338,9 +408,11 @@ impl Refusal {
     }
 }
 
-/// A tick of `strip` in `layout`: on appends it at the end (it must be in
-/// the pool and fit), off removes it (in the pool or not). A tick that
-/// changes nothing is `Ok(None)`; a change is the document at `rev + 1`.
+/// A tick of `strip` in `layout`: on puts it into the first empty slot,
+/// else at the end (it must be in the pool and fit, the empty slots
+/// counted), off leaves its slot empty (in the pool or not; [`ticked_out`]).
+/// A tick that changes nothing is `Ok(None)`; a change is the document at
+/// `rev + 1`.
 pub fn tick(
     doc: &SectorsDoc,
     layout: &str,
@@ -349,7 +421,7 @@ pub fn tick(
     pool: &[Pooled],
 ) -> Result<Option<SectorsDoc>, Refusal> {
     let (_, current) = doc.find(layout).ok_or(Refusal::UnknownLayout)?;
-    if current.strips.contains(strip) == on {
+    if current.holds(strip) == on {
         return Ok(None);
     }
     if on && !pool.iter().any(|p| &p.id == strip) {
@@ -361,30 +433,41 @@ pub fn tick(
     let mut next = doc.clone();
     next.rev += 1;
     if let Some(target) = next.find_mut(layout) {
-        if on {
-            target.strips.push(strip.clone());
+        target.strips = if on {
+            ticked_in(&target.strips, strip)
         } else {
-            target.strips.retain(|s| s != strip);
-        }
+            ticked_out(&target.strips, strip)
+        };
     }
     Ok(Some(next))
 }
 
-/// Whether `a` and `b` hold the same refs, each as often.
-fn same_set(a: &[StripRef], b: &[StripRef]) -> bool {
-    let mut a = a.to_vec();
-    let mut b = b.to_vec();
-    a.sort();
-    b.sort();
-    a == b
+/// Whether `a` and `b` hold the same refs, each as often (the empty slots
+/// not counted).
+fn same_set(a: &[Slot], b: &[Slot]) -> bool {
+    sorted_refs(a) == sorted_refs(b)
 }
 
-/// ARRANGE's save: each layout of `orders` takes its new order, as one
-/// change at `rev + 1`. It is `Empty` for no layout (nothing to change, no
-/// undo step taken), and `Stale` unless `rev` is the document's, each
-/// layout exists and is named once, and each order holds the layout's own
-/// refs.
-pub fn orders(doc: &SectorsDoc, orders: &[SectorOrder], rev: u64) -> Result<SectorsDoc, Refusal> {
+/// The refs of `slots`, sorted (the empty slots left out).
+fn sorted_refs(slots: &[Slot]) -> Vec<&StripRef> {
+    let mut refs: Vec<&StripRef> = slots.iter().flatten().collect();
+    refs.sort();
+    refs
+}
+
+/// ARRANGE's save: each layout of `orders` takes its new slots (trailing
+/// empty slots dropped), as one change at `rev + 1`. It is `Empty` for no
+/// layout (nothing to change, no undo step taken), `Stale` unless `rev` is
+/// the document's, each layout exists and is named once, and each order
+/// holds the layout's own refs (its gaps aside), and `Full` for an order
+/// past [`SECTOR_UNITS`] that holds more units than the layout did (a
+/// layout already past it by a hand edit can still be reordered).
+pub fn orders(
+    doc: &SectorsDoc,
+    orders: &[SectorOrder],
+    rev: u64,
+    pool: &[Pooled],
+) -> Result<SectorsDoc, Refusal> {
     if orders.is_empty() {
         return Err(Refusal::Empty);
     }
@@ -400,10 +483,20 @@ pub fn orders(doc: &SectorsDoc, orders: &[SectorOrder], rev: u64) -> Result<Sect
         if !same_set(&target.strips, &order.strips) {
             return Err(Refusal::Stale);
         }
-        target.strips = order.strips.clone();
+        let slots = trim(order.strips.clone());
+        if grows_past_full(units(&target.strips, pool), units(&slots, pool)) {
+            return Err(Refusal::Full);
+        }
+        target.strips = slots;
     }
     next.rev += 1;
     Ok(next)
+}
+
+/// Whether a layout of `before` units that becomes `after` units is
+/// refused FULL: past [`SECTOR_UNITS`] and larger than before.
+fn grows_past_full(before: f64, after: f64) -> bool {
+    is_full(after) && after > before
 }
 
 /// A seeded layout's title: the given one trimmed and cut to
@@ -418,24 +511,71 @@ fn seed_title(title: Option<&str>) -> String {
         .collect()
 }
 
-/// A seeded layout of these groups' faders, each once (its id set later).
-fn seed_layout<'a>(
-    title: Option<&str>,
-    groups: impl IntoIterator<Item = &'a Group>,
-) -> SectorLayout {
-    let mut strips: Vec<StripRef> = Vec::new();
+/// A seeded layout's faders: these groups' faders with their units, each
+/// once.
+type Seeded = Vec<(StripRef, f64)>;
+
+/// These groups' faders with their units, each once.
+fn seed_strips<'a>(groups: impl IntoIterator<Item = &'a Group>) -> Seeded {
+    let mut strips: Seeded = Vec::new();
     for control in groups.into_iter().flat_map(|g| &g.controls) {
         if let Some(id) = strip_ref(control)
-            && !strips.contains(&id)
+            && !strips.iter().any(|(s, _)| *s == id)
         {
-            strips.push(id);
+            strips.push((id, control_units(control)));
         }
     }
+    strips
+}
+
+/// Where a seeded layout of these faders ends: the most first faders that
+/// are not full (all of them when they fit).
+fn seed_fit(strips: &[(StripRef, f64)]) -> usize {
+    let mut used = 0.0_f64;
+    strips
+        .iter()
+        .position(|(_, units)| {
+            used += units;
+            is_full(used)
+        })
+        .unwrap_or(strips.len())
+}
+
+/// A seeded layout (its id set later).
+fn seed_layout(title: Option<&str>, strips: Seeded) -> SectorLayout {
     SectorLayout {
         id: String::new(),
         title: seed_title(title),
-        strips,
+        strips: strips.into_iter().map(|(id, _)| Some(id)).collect(),
     }
+}
+
+/// A row's right side: the left side's overflow first, then its own
+/// faders, each fader once (several sub-pages can overflow the same
+/// one), in layouts of at most [`SECTOR_UNITS`], each of the side's title;
+/// none when it holds no fader.
+fn seed_right(title: Option<&str>, overflow: Seeded, own: Seeded) -> Vec<SectorLayout> {
+    let mut strips: Seeded = Vec::new();
+    for (id, units) in overflow.into_iter().chain(own) {
+        if !strips.iter().any(|(s, _)| *s == id) {
+            strips.push((id, units));
+        }
+    }
+    let mut out = Vec::new();
+    while !strips.is_empty() {
+        // At least one fader a layout (no fader is past a sector alone), so
+        // the loop always ends.
+        let rest = strips.split_off(seed_fit(&strips).max(1));
+        out.push(seed_layout(title, std::mem::replace(&mut strips, rest)));
+    }
+    out
+}
+
+/// A left layout of these faders: what fits, the rest added to `overflow`.
+fn seed_left(title: Option<&str>, mut strips: Seeded, overflow: &mut Seeded) -> SectorLayout {
+    let rest = strips.split_off(seed_fit(&strips));
+    overflow.extend(rest);
+    seed_layout(title, strips)
 }
 
 /// Where a row with no pager is cut, as a count of groups on the left: the
@@ -454,8 +594,10 @@ fn seed_cut(counts: &[usize]) -> usize {
 }
 
 /// A row's left and right layouts: a pager's sub-pages on the left and the
-/// row's other groups as one right layout; a row with no pager cut at
-/// [`seed_cut`], one layout a side.
+/// row's other groups on the right; a row with no pager cut at
+/// [`seed_cut`], its left groups one layout. A left layout keeps at most
+/// [`SECTOR_UNITS`]: the faders past it go, in order, to the front of the
+/// right side ([`seed_right`]).
 fn seed_row(row: &Row) -> (Vec<SectorLayout>, Vec<SectorLayout>) {
     let groups: Vec<&Group> = row
         .sections
@@ -470,41 +612,48 @@ fn seed_row(row: &Row) -> (Vec<SectorLayout>, Vec<SectorLayout>) {
         Section::Pager(pager) => Some(pager),
         Section::Group(_) => None,
     });
+    let mut overflow: Seeded = Vec::new();
     if let Some(pager) = pager {
         let left = pager
             .pages
             .iter()
             .map(|sub| {
-                seed_layout(
+                seed_left(
                     Some(sub.title.as_str()),
-                    sub.sections.iter().flat_map(Section::groups),
+                    seed_strips(sub.sections.iter().flat_map(Section::groups)),
+                    &mut overflow,
                 )
             })
             .collect();
-        let right = seed_layout(first_title(&groups).as_deref(), groups.iter().copied());
-        return (left, vec![right]);
+        let right = seed_right(
+            first_title(&groups).as_deref(),
+            overflow,
+            seed_strips(groups.iter().copied()),
+        );
+        return (left, right);
     }
     let counts: Vec<usize> = groups
         .iter()
         .map(|g| g.controls.iter().filter(|c| strip_ref(c).is_some()).count())
         .collect();
     let (left, right) = groups.split_at(seed_cut(&counts));
-    (
-        vec![seed_layout(
-            first_title(left).as_deref(),
-            left.iter().copied(),
-        )],
-        vec![seed_layout(
-            first_title(right).as_deref(),
-            right.iter().copied(),
-        )],
-    )
+    let left = vec![seed_left(
+        first_title(left).as_deref(),
+        seed_strips(left.iter().copied()),
+        &mut overflow,
+    )];
+    let right = seed_right(
+        first_title(right).as_deref(),
+        overflow,
+        seed_strips(right.iter().copied()),
+    );
+    (left, right)
 }
 
 /// The first document, from the served layout's default page: row 0 up,
 /// row 1 down (the rest ignored); a sector left empty gets one empty
-/// [`SEED_TITLE`] layout; ids `<sector>-<n>` from 1; revision 1. FULL is
-/// not enforced here.
+/// [`SEED_TITLE`] layout; ids `<sector>-<n>` from 1; revision 1. Every
+/// layout holds at most [`SECTOR_UNITS`] (`seed_row`).
 pub fn seed(layout: &Layout) -> SectorsDoc {
     let mut sectors: BTreeMap<SectorId, Vec<SectorLayout>> = BTreeMap::new();
     if let Some(page) = layout.pages.iter().find(|p| p.id == layout.default_page) {
@@ -517,7 +666,7 @@ pub fn seed(layout: &Layout) -> SectorsDoc {
     for sector in SectorId::ALL {
         let list = sectors.entry(sector).or_default();
         if list.is_empty() {
-            list.push(seed_layout(None, std::iter::empty()));
+            list.push(seed_layout(None, Vec::new()));
         }
         for (n, layout) in list.iter_mut().enumerate() {
             layout.id = format!("{}-{}", sector.as_str(), n + 1);

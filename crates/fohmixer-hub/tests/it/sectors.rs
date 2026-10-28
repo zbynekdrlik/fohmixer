@@ -45,7 +45,10 @@ fn lu(rev: u64, labels: &[&str]) -> SectorsDoc {
             vec![SectorLayout {
                 id: "lu-1".into(),
                 title: "VOX".into(),
-                strips: labels.iter().map(|l| band(l)).collect(),
+                strips: labels
+                    .iter()
+                    .map(|l| (!l.is_empty()).then(|| band(l)))
+                    .collect(),
             }],
         )]
         .into_iter()
@@ -117,7 +120,10 @@ fn order(id: &str, labels: &[&str], rev: u64) -> ClientMsg {
         id: id.into(),
         orders: vec![SectorOrder {
             layout: "lu-1".into(),
-            strips: labels.iter().map(|l| band(l)).collect(),
+            strips: labels
+                .iter()
+                .map(|l| (!l.is_empty()).then(|| band(l)))
+                .collect(),
         }],
         rev,
     }

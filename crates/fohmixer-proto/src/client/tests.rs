@@ -1776,20 +1776,21 @@ fn sector_orders_and_undo_read_as_the_page_sends_them() {
             orders: vec![SectorOrder {
                 layout: "ru-1".into(),
                 strips: vec![
-                    StripRef {
+                    Some(StripRef {
                         instance: "band".into(),
                         label: "Bass".into(),
-                    },
-                    StripRef {
+                    }),
+                    None,
+                    Some(StripRef {
                         instance: "band".into(),
                         label: "Klavir".into(),
-                    },
+                    }),
                 ],
             }],
             rev: 4,
         },
         json!({"type": "sector_orders", "id": "s2", "rev": 4, "orders": [
-            {"layout": "ru-1", "strips": [{"instance": "band", "label": "Bass"},
+            {"layout": "ru-1", "strips": [{"instance": "band", "label": "Bass"}, null,
                                           {"instance": "band", "label": "Klavir"}]}]}),
     );
     round_trip_client(

@@ -217,7 +217,9 @@ impl Router {
         orders: &[SectorOrder],
         rev: u64,
     ) {
-        match model::orders(self.sectors.store.doc(), orders, rev) {
+        let served = self.sectors_layout();
+        let pool = served.as_deref().map(model::pool).unwrap_or_default();
+        match model::orders(self.sectors.store.doc(), orders, rev, &pool) {
             Err(refusal) => self.sectors_refuse(client, id, refusal),
             Ok(next) => {
                 let layouts: Vec<&str> = orders.iter().map(|o| o.layout.as_str()).collect();

@@ -71,10 +71,74 @@ const FULL_DOC: SectorsDoc = {
   },
 };
 
+/** ld mixes master and band strips; the other sectors hold one Live set each. */
+const MIXED_DOC: SectorsDoc = {
+  rev: 0,
+  sectors: {
+    lu: [{ id: "lu-1", title: "STAGE", strips: [VOCAL, KEYS] }],
+    ru: [{ id: "ru-1", title: "MAIN", strips: [band("B-Main repro #")] }],
+    ld: [
+      { id: "ld-1", title: "EFFECTS", strips: [master("Hand1 #"), band("A-Reverb #"), master("A-Reverb #")] },
+      { id: "ld-2", title: "FX", strips: [band("A-Reverb #")] },
+    ],
+    rd: [{ id: "rd-1", title: "MAIN", strips: [master("A-Echo")] }],
+  },
+};
+
+/**
+ * The slot model (1.24.0): lu holds 6 strips, so a side fits 6 strip widths,
+ * and ru 4 strips with room for 2 more: the owner's case, BAND to RU's right
+ * edge with empty space before it.
+ */
+const GAP_DOC: SectorsDoc = {
+  rev: 0,
+  sectors: {
+    lu: [
+      {
+        id: "lu-1",
+        title: "STAGE",
+        strips: [VOCAL, KEYS, band("A-Reverb #"), master("A-Reverb #"), master("Hand1 #"), master("Hand4 #")],
+      },
+    ],
+    ru: [{ id: "ru-1", title: "MAIN", strips: [master("Hand2 #"), VOCAL, KEYS, master("Hand4 #")] }],
+  },
+};
+
 const sectorsPage = (page: Page) => page.locator('[data-testid="page"][data-sectors="true"]');
 
 /** A sector's slots on the sectors page, in their order. */
 const slots = (page: Page, sector: string) => sectorsPage(page).locator(`.slot[data-sector="${sector}"]`);
+
+/** A sector's cells in their order: a strip as `<instance>|<track>`, an empty slot as `_`. */
+async function cellsOf(page: Page, sector: string): Promise<string[]> {
+  return slots(page, sector).evaluateAll((all) =>
+    all.map((slot) => {
+      const strip = slot.querySelector('[data-testid="strip"]');
+      return strip ? `${strip.getAttribute("data-instance")}|${strip.getAttribute("data-track")}` : "_";
+    }),
+  );
+}
+
+/**
+ * Carries a strip of `sector` in ARRANGE onto the cell at `to` (its index
+ * among the sector's cells): the moves and the lift dispatched on the
+ * strip's own cover (a dispatched pointer has no capture), past the slop
+ * first, the lift at the target cell's centre.
+ */
+async function carry(page: Page, sector: string, strip: string, to: number) {
+  const cover = slots(page, sector)
+    .filter({ has: page.locator(`[data-testid="strip"][data-track="${strip}"]`) })
+    .getByTestId("edit-cover");
+  await expect(cover).toBeVisible();
+  const from = await centre(cover);
+  const dx = (await centre(slots(page, sector).nth(to))).x - from.x;
+  await dispatchPointer(cover, [
+    { type: "pointerdown" },
+    { type: "pointermove", dx: Math.sign(dx) * 10, dy: 0 },
+    { type: "pointermove", dx, dy: 0 },
+    { type: "pointerup", dx, dy: 0 },
+  ]);
+}
 
 /** A sector's strips as `<instance>|<track>`, in their order. */
 async function stripsOf(page: Page, sector: string): Promise<string[]> {
@@ -153,22 +217,183 @@ test.describe("The fader sectors", () => {
   test.describe("at the iPad's size", () => {
     test.use({ viewport: { width: 1194, height: 834 } });
 
-    test("the fader travel is 322 px at 1194x834", async ({ page }) => {
-      await setSectors(DOC);
+    test("the fader travel is 322 px at 1194x834 in all four sectors, a mixed layout included", async ({ page }) => {
+      await setSectors(MIXED_DOC);
       await openSectors(page);
-      await expect.poll(async () => (await stripsOf(page, "rd")).length).toBe(1);
+      await expect.poll(async () => (await stripsOf(page, "ld")).length).toBe(3);
       await frames(page);
       const travels = await sectorsPage(page)
-        .locator('.slot [data-testid="strip"]')
+        .locator('.slot[data-sector] [data-testid="strip"]')
         .evaluateAll((all) =>
           all
-            .filter((s) => !s.querySelector('[data-testid="strip-instance"]') && s.querySelector('[data-testid="fader"]'))
-            .map((s) => ({ name: s.getAttribute("data-track"), h: s.querySelector('[data-testid="fader"]')!.getBoundingClientRect().height })),
+            .filter((s) => s.querySelector('[data-testid="fader"]'))
+            .map((s) => ({
+              sector: s.closest(".slot")!.getAttribute("data-sector"),
+              name: `${s.getAttribute("data-instance")}|${s.getAttribute("data-track")}`,
+              h: s.querySelector('[data-testid="fader"]')!.getBoundingClientRect().height,
+            })),
         );
-      // lu, ru, ld and rd: every strip shown, none with an instance tag (each layout holds one Live set).
-      expect(travels.length).toBe(6);
+      // Every strip of lu, ru, ld (band and master mixed) and rd.
+      expect(travels.length).toBe(7);
+      expect([...new Set(travels.map((t) => t.sector))].sort()).toEqual(["ld", "lu", "rd", "ru"]);
       console.log(`sectors travel (${test.info().project.name}): ${[...new Set(travels.map((t) => t.h.toFixed(2)))].join(", ")} px`);
-      for (const t of travels) expect(t.h, `${t.name}`).toBeGreaterThanOrEqual(322 - 0.5);
+      for (const t of travels) expect(t.h, `${t.sector} ${t.name}`).toBeGreaterThanOrEqual(322 - 0.5);
+    });
+
+    test("a mixed layout names each strip's Live set as calm side text, never a pill", async ({ page }) => {
+      await setSectors(MIXED_DOC);
+      await openSectors(page);
+      await expect.poll(() => stripsOf(page, "ld")).toEqual(["master|Hand1 #", "band|A-Reverb #", "master|A-Reverb #"]);
+      // No instance pill anywhere on the sectors page.
+      await expect(sectorsPage(page).locator('[data-testid="strip-instance"]')).toHaveCount(0);
+      // In the mixed ld each strip's info column names its own Live set.
+      const sides = await slots(page, "ld")
+        .locator('[data-testid="strip"]')
+        .evaluateAll((all) =>
+          all.map((s) => {
+            const side = s.querySelector('[data-testid="strip-col"] [data-testid="group-side"]') as HTMLElement | null;
+            return side
+              ? { text: side.textContent, color: getComputedStyle(side).color, events: getComputedStyle(side).pointerEvents }
+              : null;
+          }),
+        );
+      const faint = await page.evaluate(() => {
+        const probe = document.createElement("span");
+        probe.style.color = "var(--faint)";
+        document.body.append(probe);
+        const color = getComputedStyle(probe).color;
+        probe.remove();
+        return color;
+      });
+      expect(sides.map((s) => s?.text)).toEqual(["MASTER", "BAND", "MASTER"]);
+      for (const side of sides) {
+        expect(side!.color).toBe(faint);
+        expect(side!.events).toBe("none");
+      }
+      // A layout of one Live set shows no side text.
+      for (const sector of ["lu", "ru", "rd"]) {
+        await expect(slots(page, sector).locator('[data-testid="group-side"]'), sector).toHaveCount(0);
+      }
+      // Paging ld to a layout of one set takes the side text away, also
+      // from the band strip the page keeps (the same element, marked).
+      const reverb = slots(page, "ld").filter({
+        has: page.locator('[data-testid="strip"][data-track="A-Reverb #"][data-instance="band"]'),
+      });
+      await reverb.evaluate((slot) => slot.setAttribute("data-e2e-kept", "1"));
+      await page.locator('[data-testid="sector-tab"][data-layout="ld-2"]').click();
+      await expect.poll(() => stripsOf(page, "ld")).toEqual(["band|A-Reverb #"]);
+      await expect(reverb).toHaveAttribute("data-e2e-kept", "1");
+      await expect(slots(page, "ld").locator('[data-testid="group-side"]')).toHaveCount(0);
+    });
+  });
+
+  test.describe("ARRANGE with empty slots (the slot model)", () => {
+    test.use({ viewport: { width: 1194, height: 834 } });
+
+    test("ARRANGE puts a strip at the right edge with a gap", async ({ page, context }) => {
+      await setSectors(GAP_DOC);
+      await openSectors(page);
+      const ru = ["master|Hand2 #", name(VOCAL), name(KEYS), "master|Hand4 #"];
+      await expect.poll(() => cellsOf(page, "ru")).toEqual(ru);
+      // Outside ARRANGE no empty cell is drawn.
+      await expect(sectorsPage(page).getByTestId("sector-gap")).toHaveCount(0);
+      const live = await LiveClient.open();
+      try {
+        const HAND4_VOLUME = volume(track("Hand4 #"));
+        const volumeBefore = await live.get("master", HAND4_VOLUME, "value");
+        const revBefore = (await hubStatus()).sectors.rev;
+        const since = Date.now();
+        await frames(page);
+        const width = await stripWidth(page);
+
+        await page.getByTestId("arrange").click();
+        await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "true");
+        // Every position ru can show is a cell: its 4 strips and 2 empty
+        // ones, drawn as calm dashed outlines; lu is full, so none there.
+        await expect.poll(() => cellsOf(page, "ru")).toEqual([...ru, "_", "_"]);
+        await expect(slots(page, "lu").filter({ has: page.getByTestId("edit-cover") })).toHaveCount(6);
+        await expect(slots(page, "lu").and(page.getByTestId("sector-gap"))).toHaveCount(0);
+        const gap = slots(page, "ru").nth(5);
+        await expect(gap).toHaveAttribute("data-testid", "sector-gap");
+        const look = await gap.evaluate((e) => ({ style: getComputedStyle(e).outlineStyle, events: getComputedStyle(e).pointerEvents }));
+        expect(look).toEqual({ style: "dashed", events: "none" });
+        await frames(page);
+        expect(await stripWidth(page), "ARRANGE resizes nothing").toBe(width);
+
+        // Hand4 # to the sixth cell: its old place stays empty.
+        await carry(page, "ru", "Hand4 #", 5);
+        await expect.poll(() => cellsOf(page, "ru")).toEqual(["master|Hand2 #", name(VOCAL), name(KEYS), "_", "_", "master|Hand4 #"]);
+        expect((await hubStatus()).sectors.rev).toBe(revBefore);
+
+        // The second tap saves: the hub's document holds the gaps as null.
+        await page.getByTestId("arrange").click();
+        await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "false");
+        await until(async () => (await hubStatus()).sectors.rev, (rev) => rev > revBefore, "the hub taking the order");
+        const steps = await until(() => sectorSteps(since), (s) => s.includes("order"), "the hub's order record");
+        expect(steps).toEqual(["order"]);
+        await until(
+          async () => live.sectors?.doc?.sectors?.ru?.[0]?.strips,
+          (strips: any) => Array.isArray(strips) && strips.length === 6,
+          "the hub's document with ru's six slots",
+        );
+        expect(live.sectors.doc.sectors.ru[0].strips).toEqual([master("Hand2 #"), VOCAL, KEYS, null, null, master("Hand4 #")]);
+
+        // Nothing reached Live.
+        const sets = (await hubEvents()).filter((r: any) => r.ev === "set" && r.ts >= since);
+        expect(sets, JSON.stringify(sets)).toEqual([]);
+        expect(await live.get("master", HAND4_VOLUME, "value")).toBe(volumeBefore);
+
+        // A second page shows Hand4 # at ru's right edge (the line's), with
+        // two strip widths of empty space before it.
+        const other = await context.newPage();
+        await other.setViewportSize({ width: 1194, height: 834 });
+        const otherConsole = watchConsole(other);
+        await openSectors(other);
+        await expect.poll(() => cellsOf(other, "ru")).toEqual(["master|Hand2 #", name(VOCAL), name(KEYS), "_", "_", "master|Hand4 #"]);
+        await frames(other);
+        // Outside ARRANGE a saved gap is plain space: no outline, no border.
+        const otherGaps = sectorsPage(other).getByTestId("sector-gap");
+        await expect(otherGaps).toHaveCount(2);
+        const plain = await otherGaps.evaluateAll((all) =>
+          all.map((e) => ({ outline: getComputedStyle(e).outlineStyle, border: getComputedStyle(e).borderTopStyle })),
+        );
+        expect(plain).toEqual([
+          { outline: "none", border: "none" },
+          { outline: "none", border: "none" },
+        ]);
+        const placed =await sectorsPage(other).evaluate((body) => {
+          const slot = (track: string) =>
+            [...body.querySelectorAll('.slot[data-sector="ru"]')].find(
+              (s) => s.querySelector(`[data-testid="strip"][data-track="${track}"]`) != null,
+            )!.getBoundingClientRect();
+          const line = body.querySelector('.slot[data-sector="ru"]')!.closest(".line")!.getBoundingClientRect();
+          const strip = parseFloat((body as HTMLElement).style.getPropertyValue("--strip-w"));
+          return { lineRight: line.right, hand4: slot("Hand4 #"), keys: slot("Keys 1"), strip };
+        });
+        expect(Math.abs(placed.hand4.right - placed.lineRight), JSON.stringify(placed)).toBeLessThan(2);
+        expect(placed.hand4.left - placed.keys.right, JSON.stringify(placed)).toBeGreaterThanOrEqual(2 * placed.strip);
+        expect(otherConsole, "the second page's console").toEqual([]);
+        await other.close();
+      } finally {
+        live.close();
+      }
+    });
+
+    test("ARRANGE swaps a strip dropped on another", async ({ page }) => {
+      await setSectors(GAP_DOC);
+      await openSectors(page);
+      await expect.poll(() => cellsOf(page, "ru")).toEqual(["master|Hand2 #", name(VOCAL), name(KEYS), "master|Hand4 #"]);
+      const revBefore = (await hubStatus()).sectors.rev;
+      await page.getByTestId("arrange").click();
+      await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "true");
+      await expect.poll(async () => (await cellsOf(page, "ru")).length).toBe(6);
+      // Hand2 # dropped on Keys 1: the two swap, the others stay.
+      await carry(page, "ru", "Hand2 #", 2);
+      await expect.poll(() => cellsOf(page, "ru")).toEqual([name(KEYS), name(VOCAL), "master|Hand2 #", "master|Hand4 #", "_", "_"]);
+      await page.getByTestId("arrange").click();
+      await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "false");
+      await until(async () => (await hubStatus()).sectors.rev, (rev) => rev > revBefore, "the hub taking the order");
+      await expect.poll(() => cellsOf(page, "ru")).toEqual([name(KEYS), name(VOCAL), "master|Hand2 #", "master|Hand4 #"]);
     });
   });
 

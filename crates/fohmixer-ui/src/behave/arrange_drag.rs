@@ -8,17 +8,21 @@
 //! just leaves. A hide of the page, or a
 //! new document from the hub during the mode, ends it unsaved. Nothing here
 //! touches Live. The drag itself (`Drag`): a strip is carried once the
-//! finger moved past `DRAG_SLOP`; where it lands is counted from the
-//! centres of its sector's other strips, read once at the down; a carry
-//! whose end never came ends at the next primary down of its type (#124).
-//! All of it is pure; `pages::sectors` carries it out.
+//! finger moved past `DRAG_SLOP`; it lands on the cell of its sector whose
+//! centre is nearest the finger (the centres of every cell, strips and
+//! empty ones, read once at the down): an empty cell takes it and its old
+//! slot is left empty, another strip swaps places with it (the slot model,
+//! 1.24.0: the owner could not put BAND at RU's right edge); a carry whose
+//! end never came ends at the next primary down of its type (#124). All of
+//! it is pure; `pages::sectors` carries it out.
 
 use std::collections::BTreeMap;
 
-use fohmixer_proto::sectors::{SectorId, SectorLayout, SectorOrder, SectorsDoc, StripRef};
+use fohmixer_proto::sectors::{
+    SectorId, SectorLayout, SectorOrder, SectorsDoc, Slot, StripRef, trim,
+};
 
 use super::Down;
-use crate::arrange::sectors::SectorArrangement;
 use crate::diag::perf::Pointer;
 use crate::store::{CONNECTION_CLOSED, NOT_CONNECTED};
 
@@ -45,11 +49,11 @@ pub enum Arrange {
     Off,
     On {
         rev: u64,
-        edits: BTreeMap<String, Vec<StripRef>>,
+        edits: BTreeMap<String, Vec<Slot>>,
     },
     Saving {
         rev: u64,
-        edits: BTreeMap<String, Vec<StripRef>>,
+        edits: BTreeMap<String, Vec<Slot>>,
     },
 }
 
@@ -99,8 +103,8 @@ impl Arrange {
         }
     }
 
-    /// A drag gave `layout` this order (kept only while the mode is on).
-    pub fn moved(&mut self, layout: &str, order: Vec<StripRef>) {
+    /// A drag gave `layout` these slots (kept only while the mode is on).
+    pub fn moved(&mut self, layout: &str, order: Vec<Slot>) {
         if let Arrange::On { edits, .. } = self {
             edits.insert(layout.to_string(), order);
         }
@@ -156,8 +160,8 @@ impl Arrange {
         was.then_some(why)
     }
 
-    /// The order `layout` shows: its edit, else its own.
-    pub fn order_of<'a>(&'a self, layout: &'a SectorLayout) -> &'a [StripRef] {
+    /// The slots `layout` shows: its edit, else its own.
+    pub fn order_of<'a>(&'a self, layout: &'a SectorLayout) -> &'a [Slot] {
         match self {
             Arrange::On { edits, .. } | Arrange::Saving { edits, .. } => edits
                 .get(&layout.id)
@@ -193,14 +197,15 @@ impl Arrange {
         !matches!(self, Arrange::Off)
     }
 
-    /// The strip `held` of `layout`, shown among `shown` (its sector's
-    /// strips on screen, in order, at `centres`), dropped at `x`: the
-    /// layout's new order kept (only while the mode is on).
+    /// The strip `held` of `layout`, carried from its slot `from` and
+    /// dropped at `x` among its sector's cells on screen (`spots`: each
+    /// cell's slot and centre): the layout's new slots kept (only while the
+    /// mode is on).
     pub fn dropped_in(
         &mut self,
         layout: &SectorLayout,
-        shown: &[StripRef],
-        centres: &[f64],
+        spots: &[(usize, f64)],
+        from: usize,
         held: &StripRef,
         x: f64,
     ) {
@@ -208,7 +213,7 @@ impl Arrange {
             return;
         }
         let order = self.order_of(layout).to_vec();
-        if let Some(order) = dropped(&order, shown, centres, held, x) {
+        if let Some(order) = dropped(&order, spots, from, held, x) {
             self.moved(&layout.id, order);
         }
     }
@@ -246,9 +251,9 @@ pub fn arrange_note(on: bool, refused: Option<&'static str>) -> &'static str {
     refused.unwrap_or(if on { ARRANGE_NOTE } else { "" })
 }
 
-/// The save: each edited layout whose order differs from `doc`'s, as one
-/// order each (a layout gone from `doc` is left out).
-pub fn orders_of(edits: &BTreeMap<String, Vec<StripRef>>, doc: &SectorsDoc) -> Vec<SectorOrder> {
+/// The save: each edited layout whose slots differ from `doc`'s, as one
+/// order each with its empty slots (a layout gone from `doc` is left out).
+pub fn orders_of(edits: &BTreeMap<String, Vec<Slot>>, doc: &SectorsDoc) -> Vec<SectorOrder> {
     edits
         .iter()
         .filter(|(id, order)| {
@@ -262,28 +267,24 @@ pub fn orders_of(edits: &BTreeMap<String, Vec<StripRef>>, doc: &SectorsDoc) -> V
         .collect()
 }
 
-/// The dragged strip's new index: how many of the other strips' centres
-/// lie at or left of the finger (the strip goes before the first whose
-/// middle is right of it, as the mockup's drag).
-pub fn drop_index(centres: &[f64], from: usize, x: f64) -> usize {
-    centres
+/// The slot a strip dropped at `x` lands in: the cell (`spots`: each
+/// cell's slot and centre) whose centre is nearest, the first on a tie;
+/// none without a cell.
+pub fn drop_slot(spots: &[(usize, f64)], x: f64) -> Option<usize> {
+    spots
         .iter()
-        .enumerate()
-        .filter(|(i, centre)| *i != from && **centre <= x)
-        .count()
+        .min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs()))
+        .map(|spot| spot.0)
 }
 
-/// `order` with its item at `from` moved to `to` (clamped to the end);
-/// unchanged for a `from` past it.
-pub fn moved_to(order: &[StripRef], from: usize, to: usize) -> Vec<StripRef> {
+/// `order` with its slots `from` and `to` swapped (a slot past its end is
+/// empty, so a strip moved there leaves its old slot empty), the trailing
+/// empty slots dropped.
+pub fn swapped(order: &[Slot], from: usize, to: usize) -> Vec<Slot> {
     let mut out = order.to_vec();
-    if from >= out.len() {
-        return out;
-    }
-    let item = out.remove(from);
-    let to = to.min(out.len());
-    out.insert(to, item);
-    out
+    out.resize(out.len().max(from.max(to) + 1), None);
+    out.swap(from, to);
+    trim(out)
 }
 
 /// Whether a finger `x` px from where it went down carries the strip.
@@ -291,74 +292,46 @@ pub fn drags(start_x: f64, x: f64) -> bool {
     (x - start_x).abs() > DRAG_SLOP
 }
 
-/// `order` with the places of `shown`'s strips taken by `reordered` in
-/// turn: a strip not on screen (a ref no pool strip carries, one outside a
-/// window) keeps its place.
-pub fn placed_back(
-    order: &[StripRef],
-    shown: &[StripRef],
-    reordered: &[StripRef],
-) -> Vec<StripRef> {
-    let mut next = reordered.iter();
-    order
-        .iter()
-        .map(|strip| {
-            if shown.contains(strip) {
-                next.next().unwrap_or(strip).clone()
-            } else {
-                strip.clone()
-            }
-        })
-        .collect()
-}
-
-/// The layout's order after `held`, one of `shown` (its sector's strips on
-/// screen at `centres`), is dropped at `x`; none when `held` is not shown
-/// or the screen's strips are not those `shown` names.
+/// The layout's slots after `held`, carried from slot `from`, is dropped
+/// at `x` among `spots`; none when `from` no longer holds `held` (the
+/// order changed meanwhile), there is no cell, or it lands where it was.
 pub fn dropped(
-    order: &[StripRef],
-    shown: &[StripRef],
-    centres: &[f64],
+    order: &[Slot],
+    spots: &[(usize, f64)],
+    from: usize,
     held: &StripRef,
     x: f64,
-) -> Option<Vec<StripRef>> {
-    if shown.len() != centres.len() {
+) -> Option<Vec<Slot>> {
+    if order.get(from)?.as_ref() != Some(held) {
         return None;
     }
-    let from = shown.iter().position(|strip| strip == held)?;
-    let reordered = moved_to(shown, from, drop_index(centres, from, x));
-    Some(placed_back(order, shown, &reordered))
+    let to = drop_slot(spots, x)?;
+    (to != from).then(|| swapped(order, from, to))
 }
 
-/// `sector`'s strips on line `line`, in their order on screen.
-pub fn sector_refs(arranged: &SectorArrangement, line: usize, sector: SectorId) -> Vec<StripRef> {
-    arranged
-        .lines
-        .get(line)
-        .map(|l| {
-            l.left
-                .cells
-                .iter()
-                .chain(l.right.cells.iter())
-                .filter(|cell| cell.sector == sector)
-                .map(|cell| cell.strip.clone())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// A strip held under a pointer: the pointer and its type, the strip and
-/// its sector, where the finger went down, its sector's strips' centres
-/// then, and whether it is carried yet.
+/// A strip held under a pointer: the pointer and its type, the strip, its
+/// sector and its slot, where the finger went down, its sector's cells
+/// then (each cell's slot and centre), and whether it is carried yet.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Carry {
     pub pointer: i32,
     pub kind: Option<Pointer>,
     pub sector: SectorId,
     pub strip: StripRef,
+    pub slot: usize,
     pub start_x: f64,
-    pub centres: Vec<f64>,
+    pub spots: Vec<(usize, f64)>,
     pub dragging: bool,
+}
+
+/// What a down on a strip's cover holds: its sector, its strip and its
+/// slot, and its sector's cells (each cell's slot and centre).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Held {
+    pub sector: SectorId,
+    pub strip: StripRef,
+    pub slot: usize,
+    pub spots: Vec<(usize, f64)>,
 }
 
 /// The page's one drag at a time.
@@ -368,18 +341,12 @@ pub struct Drag {
 }
 
 impl Drag {
-    /// A pointer went down on `strip`'s cover at `x`, its sector's strips'
-    /// centres `centres`. Taken unless another pointer holds a strip; a
-    /// primary down of the held pointer's type (or that pointer again) ends
-    /// a carry whose end never came (#124) and takes this one.
-    pub fn down(
-        &mut self,
-        down: Down,
-        sector: SectorId,
-        strip: StripRef,
-        x: f64,
-        centres: Vec<f64>,
-    ) -> bool {
+    /// A pointer went down on a strip's cover at `x` (`held`: the strip,
+    /// its sector, its slot and its sector's cells). Taken unless another
+    /// pointer holds a strip; a primary down of the held pointer's type (or
+    /// that pointer again) ends a carry whose end never came (#124) and
+    /// takes this one.
+    pub fn down(&mut self, down: Down, held: Held, x: f64) -> bool {
         if let Some(held) = &self.held
             && held.pointer != down.id
             && !down.ends(held.kind)
@@ -389,10 +356,11 @@ impl Drag {
         self.held = Some(Carry {
             pointer: down.id,
             kind: down.kind,
-            sector,
-            strip,
+            sector: held.sector,
+            strip: held.strip,
+            slot: held.slot,
             start_x: x,
-            centres,
+            spots: held.spots,
             dragging: false,
         });
         true
@@ -442,8 +410,22 @@ mod tests {
         }
     }
 
-    fn refs(labels: &[&str]) -> Vec<StripRef> {
-        labels.iter().map(|l| r(l)).collect()
+    /// These labels as slots, `""` an empty slot.
+    fn refs(labels: &[&str]) -> Vec<Slot> {
+        labels
+            .iter()
+            .map(|l| (!l.is_empty()).then(|| r(l)))
+            .collect()
+    }
+
+    /// What a down on `label`'s cover in `sector`, slot `slot`, holds.
+    fn held(sector: SectorId, label: &str, slot: usize, spots: Vec<(usize, f64)>) -> Held {
+        Held {
+            sector,
+            strip: r(label),
+            slot,
+            spots,
+        }
     }
 
     fn sl(id: &str, labels: &[&str]) -> SectorLayout {
@@ -667,31 +649,6 @@ mod tests {
     }
 
     #[test]
-    fn the_drop_index_counts_the_other_centres_left_of_the_finger() {
-        let centres = [40.0, 124.0, 208.0, 292.0];
-        assert_eq!(drop_index(&centres, 0, 200.0), 1);
-        assert_eq!(drop_index(&centres, 0, 210.0), 2);
-        assert_eq!(drop_index(&centres, 0, 0.0), 0);
-        assert_eq!(drop_index(&centres, 0, 400.0), 3);
-        // A centre exactly under the finger counts; the float before not.
-        assert_eq!(drop_index(&centres, 0, 124.0), 1);
-        assert_eq!(drop_index(&centres, 0, 124.0_f64.next_down()), 0);
-        // Its own centre never counts.
-        assert_eq!(drop_index(&centres, 3, 400.0), 3);
-        assert_eq!(drop_index(&centres, 1, 130.0), 1);
-    }
-
-    #[test]
-    fn moved_to_keeps_every_ref_once() {
-        let order = refs(&["A", "B", "C", "D"]);
-        assert_eq!(moved_to(&order, 0, 2), refs(&["B", "C", "A", "D"]));
-        assert_eq!(moved_to(&order, 3, 0), refs(&["D", "A", "B", "C"]));
-        assert_eq!(moved_to(&order, 1, 1), order);
-        assert_eq!(moved_to(&order, 0, 9), refs(&["B", "C", "D", "A"]));
-        assert_eq!(moved_to(&order, 4, 0), order);
-    }
-
-    #[test]
     fn a_drag_starts_past_6_px() {
         assert_eq!(DRAG_SLOP, 6.0);
         assert!(!drags(0.0, 6.0));
@@ -700,57 +657,6 @@ mod tests {
         assert!(drags(0.0, -(6.0_f64.next_up())));
         assert!(!drags(100.0, 106.0));
         assert!(drags(100.0, 93.0));
-    }
-
-    #[test]
-    fn a_drop_reorders_the_shown_strips_and_keeps_the_others_in_place() {
-        // Gone 1 is no pool strip: it stays where it was.
-        let order = refs(&["Vox 1", "Gone 1", "Vox 2", "Bass"]);
-        let shown = refs(&["Vox 1", "Vox 2", "Bass"]);
-        let centres = [40.0, 124.0, 208.0];
-        assert_eq!(
-            dropped(&order, &shown, &centres, &r("Vox 1"), 210.0),
-            Some(refs(&["Vox 2", "Gone 1", "Bass", "Vox 1"]))
-        );
-        assert_eq!(
-            dropped(&order, &shown, &centres, &r("Bass"), 0.0),
-            Some(refs(&["Bass", "Gone 1", "Vox 1", "Vox 2"]))
-        );
-        // Not shown, or the screen holds other strips: nothing.
-        assert_eq!(dropped(&order, &shown, &centres, &r("Gone 1"), 0.0), None);
-        assert_eq!(
-            dropped(&order, &shown, &centres[..2], &r("Vox 1"), 210.0),
-            None
-        );
-        assert_eq!(
-            placed_back(&order, &shown, &refs(&["Bass"])),
-            refs(&["Bass", "Gone 1", "Vox 2", "Bass"])
-        );
-        // Into the mode: only while it is on, edited onto its own edit.
-        let layout = SectorLayout {
-            id: "lu-1".to_string(),
-            title: "VOX".to_string(),
-            strips: order.clone(),
-        };
-        let mut off = Arrange::Off;
-        off.dropped_in(&layout, &shown, &centres, &r("Vox 1"), 210.0);
-        assert_eq!(off, Arrange::Off);
-        let mut mode = on(3);
-        mode.dropped_in(&layout, &shown, &centres, &r("Vox 1"), 210.0);
-        let first = refs(&["Vox 2", "Gone 1", "Bass", "Vox 1"]);
-        assert_eq!(mode.order_of(&layout), first.as_slice());
-        let shown = refs(&["Vox 2", "Bass", "Vox 1"]);
-        mode.dropped_in(&layout, &shown, &centres, &r("Vox 1"), 0.0);
-        assert_eq!(
-            mode.order_of(&layout),
-            refs(&["Vox 1", "Gone 1", "Vox 2", "Bass"]).as_slice()
-        );
-        let mut saving = Arrange::Saving {
-            rev: 3,
-            edits: BTreeMap::new(),
-        };
-        saving.dropped_in(&layout, &shown, &centres, &r("Vox 1"), 210.0);
-        assert_eq!(saving.order_of(&layout), order.as_slice());
     }
 
     #[test]
@@ -777,38 +683,98 @@ mod tests {
     }
 
     #[test]
-    fn a_sectors_strips_on_a_line_are_its_cells_in_order() {
-        use crate::arrange::sectors::{SectorCell, SectorLine, SectorSide, WindowKey};
-        let cell = |sector, label: &str| SectorCell {
-            sector,
-            strip: r(label),
-            units: 1.0,
+    fn a_strip_lands_on_the_cell_whose_centre_is_nearest() {
+        let spots = [(0, 40.0), (1, 124.0), (2, 208.0), (5, 460.0)];
+        assert_eq!(drop_slot(&spots, 0.0), Some(0));
+        assert_eq!(drop_slot(&spots, 81.0), Some(0));
+        assert_eq!(drop_slot(&spots, 83.0), Some(1));
+        assert_eq!(drop_slot(&spots, 500.0), Some(5));
+        // Halfway: the first of the two.
+        assert_eq!(drop_slot(&spots, 82.0), Some(0));
+        assert_eq!(drop_slot(&spots, 82.0_f64.next_up()), Some(1));
+        assert_eq!(drop_slot(&[], 10.0), None);
+    }
+
+    #[test]
+    fn a_swap_or_a_move_into_an_empty_slot_keeps_every_strip_once() {
+        let order = refs(&["A", "B", "", "D"]);
+        // Onto another strip: the two swap.
+        assert_eq!(swapped(&order, 0, 3), refs(&["D", "B", "", "A"]));
+        // Into an empty slot: its old slot is left empty.
+        assert_eq!(swapped(&order, 0, 2), refs(&["", "B", "A", "D"]));
+        // Past the end: empty slots before it.
+        assert_eq!(swapped(&order, 1, 5), refs(&["A", "", "", "D", "", "B"]));
+        // The last strip moved left: the trailing empty slots are dropped.
+        assert_eq!(swapped(&order, 3, 2), refs(&["A", "B", "D"]));
+        assert_eq!(swapped(&refs(&["A"]), 0, 0), refs(&["A"]));
+    }
+
+    #[test]
+    fn a_drop_puts_the_strip_at_the_right_edge_with_gaps_before_it() {
+        // BAND's case: RU shows Klavir, Bass, Keys 1, PA and two empty
+        // cells after them in ARRANGE; PA goes to the sixth.
+        let order = refs(&["Klavir", "Bass", "Keys 1", "PA"]);
+        let spots = [
+            (0, 40.0),
+            (1, 124.0),
+            (2, 208.0),
+            (3, 292.0),
+            (4, 376.0),
+            (5, 460.0),
+        ];
+        assert_eq!(
+            dropped(&order, &spots, 3, &r("PA"), 455.0),
+            Some(refs(&["Klavir", "Bass", "Keys 1", "", "", "PA"]))
+        );
+        // Onto Klavir: a swap.
+        assert_eq!(
+            dropped(&order, &spots, 3, &r("PA"), 30.0),
+            Some(refs(&["PA", "Bass", "Keys 1", "Klavir"]))
+        );
+        // Where it was, a slot that no longer holds it, or no cell: nothing.
+        assert_eq!(dropped(&order, &spots, 3, &r("PA"), 300.0), None);
+        assert_eq!(dropped(&order, &spots, 2, &r("PA"), 30.0), None);
+        assert_eq!(dropped(&order, &spots, 9, &r("PA"), 30.0), None);
+        assert_eq!(dropped(&order, &[], 3, &r("PA"), 30.0), None);
+        // Into the mode: only while it is on, onto its own edit.
+        let layout = SectorLayout {
+            id: "ru-1".to_string(),
+            title: "BAND".to_string(),
+            strips: order.clone(),
         };
-        let side = |cells| SectorSide {
-            key: WindowKey {
-                sectors: vec![SectorId::Lu, SectorId::Ld],
-            },
-            cells,
-            shift: None,
-        };
-        let arranged = SectorArrangement {
-            width: 84.0,
-            lines: vec![SectorLine {
-                left: side(vec![
-                    cell(SectorId::Lu, "Vox 1"),
-                    cell(SectorId::Lu, "Vox 2"),
-                    cell(SectorId::Ld, "Bass"),
-                ]),
-                right: side(vec![cell(SectorId::Ru, "Keys 1")]),
-            }],
+        let mut off = Arrange::Off;
+        off.dropped_in(&layout, &spots, 3, &r("PA"), 455.0);
+        assert_eq!(off, Arrange::Off);
+        let mut mode = on(3);
+        mode.dropped_in(&layout, &spots, 3, &r("PA"), 455.0);
+        let first = refs(&["Klavir", "Bass", "Keys 1", "", "", "PA"]);
+        assert_eq!(mode.order_of(&layout), first.as_slice());
+        mode.dropped_in(&layout, &spots, 0, &r("Klavir"), 300.0);
+        assert_eq!(
+            mode.order_of(&layout),
+            refs(&["", "Bass", "Keys 1", "Klavir", "", "PA"]).as_slice()
+        );
+        // The save carries the empty slots.
+        let doc = SectorsDoc {
+            rev: 3,
+            sectors: [(SectorId::Ru, vec![layout.clone()])].into_iter().collect(),
         };
         assert_eq!(
-            sector_refs(&arranged, 0, SectorId::Lu),
-            refs(&["Vox 1", "Vox 2"])
+            mode.tap(&doc),
+            Some(Tap::Send(
+                vec![SectorOrder {
+                    layout: "ru-1".to_string(),
+                    strips: refs(&["", "Bass", "Keys 1", "Klavir", "", "PA"]),
+                }],
+                3
+            ))
         );
-        assert_eq!(sector_refs(&arranged, 0, SectorId::Ld), refs(&["Bass"]));
-        assert_eq!(sector_refs(&arranged, 0, SectorId::Ru), refs(&["Keys 1"]));
-        assert_eq!(sector_refs(&arranged, 1, SectorId::Lu), Vec::new());
+        let mut saving = Arrange::Saving {
+            rev: 3,
+            edits: BTreeMap::new(),
+        };
+        saving.dropped_in(&layout, &spots, 3, &r("PA"), 455.0);
+        assert_eq!(saving.order_of(&layout), order.as_slice());
     }
 
     fn touch(id: i32, primary: bool) -> Down {
@@ -820,13 +786,15 @@ mod tests {
         let mut drag = Drag::default();
         assert!(drag.down(
             touch(1, true),
-            SectorId::Lu,
-            r("Vox 1"),
-            100.0,
-            vec![40.0, 124.0]
+            held(SectorId::Lu, "Vox 1", 0, vec![(0, 40.0), (1, 124.0)]),
+            100.0
         ));
         // Another finger while one holds a strip: refused.
-        assert!(!drag.down(touch(2, false), SectorId::Lu, r("Vox 2"), 0.0, Vec::new()));
+        assert!(!drag.down(
+            touch(2, false),
+            held(SectorId::Lu, "Vox 2", 0, Vec::new()),
+            0.0
+        ));
         assert_eq!(drag.held().map(|c| c.pointer), Some(1));
         assert_eq!(drag.moved(2, 300.0), None);
         assert_eq!(drag.moved(1, 106.0), None, "within the slop");
@@ -837,43 +805,68 @@ mod tests {
         assert_eq!(x, 210.0);
         assert_eq!(carry.strip, r("Vox 1"));
         assert_eq!(carry.sector, SectorId::Lu);
-        assert_eq!(carry.centres, vec![40.0, 124.0]);
+        assert_eq!(carry.spots, vec![(0, 40.0), (1, 124.0)]);
+        assert_eq!(carry.slot, 0);
         assert!(carry.dragging);
         assert_eq!(drag, Drag::default());
         // A tap moves nothing; a lift past the slop with no move does.
-        assert!(drag.down(touch(3, true), SectorId::Lu, r("Vox 1"), 100.0, Vec::new()));
+        assert!(drag.down(
+            touch(3, true),
+            held(SectorId::Lu, "Vox 1", 0, Vec::new()),
+            100.0
+        ));
         assert_eq!(drag.up(3, 106.0), None);
         assert_eq!(drag.held(), None);
-        assert!(drag.down(touch(4, true), SectorId::Lu, r("Vox 1"), 100.0, Vec::new()));
+        assert!(drag.down(
+            touch(4, true),
+            held(SectorId::Lu, "Vox 1", 0, Vec::new()),
+            100.0
+        ));
         assert!(drag.up(4, 93.0).is_some());
     }
 
     #[test]
     fn a_carry_whose_end_never_came_ends_at_the_next_primary_down_of_its_type() {
         let mut drag = Drag::default();
-        assert!(drag.down(touch(1, true), SectorId::Lu, r("Vox 1"), 100.0, Vec::new()));
+        assert!(drag.down(
+            touch(1, true),
+            held(SectorId::Lu, "Vox 1", 0, Vec::new()),
+            100.0
+        ));
         // A mouse never ends a finger's carry.
         let mouse = Down {
             id: 9,
             kind: Some(Pointer::Mouse),
             primary: true,
         };
-        assert!(!drag.down(mouse, SectorId::Ru, r("Keys 1"), 0.0, Vec::new()));
+        assert!(!drag.down(mouse, held(SectorId::Ru, "Keys 1", 0, Vec::new()), 0.0));
         // The next primary finger takes over.
-        assert!(drag.down(touch(5, true), SectorId::Ru, r("Keys 1"), 50.0, Vec::new()));
+        assert!(drag.down(
+            touch(5, true),
+            held(SectorId::Ru, "Keys 1", 0, Vec::new()),
+            50.0
+        ));
         assert_eq!(
             drag.held().map(|c| (c.pointer, c.sector)),
             Some((5, SectorId::Ru))
         );
         assert_eq!(drag.held().map(|c| c.dragging), Some(false));
         // Its own pointer down again takes it too.
-        assert!(drag.down(touch(5, false), SectorId::Lu, r("Vox 1"), 10.0, Vec::new()));
+        assert!(drag.down(
+            touch(5, false),
+            held(SectorId::Lu, "Vox 1", 0, Vec::new()),
+            10.0
+        ));
         assert_eq!(drag.held().map(|c| c.start_x), Some(10.0));
         // A cancel ends only its own pointer's; a leave ends any.
         assert!(!drag.cancel(1));
         assert!(drag.cancel(5));
         assert!(!drag.cancel(5));
-        assert!(drag.down(touch(6, true), SectorId::Lu, r("Vox 1"), 10.0, Vec::new()));
+        assert!(drag.down(
+            touch(6, true),
+            held(SectorId::Lu, "Vox 1", 0, Vec::new()),
+            10.0
+        ));
         assert!(drag.leave());
         assert!(!drag.leave());
     }
