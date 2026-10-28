@@ -25,7 +25,7 @@ use crate::eq::{Area, EqItem, EqLock, EqState, Part, Touch};
 use crate::layout::{Binding, LinkId};
 use crate::lufs::{LufsProblem, LufsState};
 use crate::path::canonical_target;
-use crate::sectors::{SectorOrder, SectorsDoc, StripRef};
+use crate::sectors::{Sectors, SectorsDoc, StripRef};
 use crate::songmap::{Counts, Key, ProblemKind, SectionsState, Span};
 
 /// The client protocol this build speaks.
@@ -249,8 +249,9 @@ pub enum ClientMsg {
     /// sequence), so a picture's `shown` covers the undo and a down on a
     /// picture from before it is refused as stale.
     EqUndo { n: u32 },
-    /// A tick of a fader's layout in its channel detail (#148): `on` adds
-    /// the strip at the layout's end, off removes it. Answered by `result`
+    /// A tick of a fader's layout in its channel detail (#148): `on` puts
+    /// the strip into the layout's first empty slot, else at its end; off
+    /// leaves its slot empty. Answered by `result`
     /// with `id` when the hub takes it, `error` with `id` and the refusal's
     /// words (`fohmixer_proto::sectors::Refusal::text`) when it does not.
     SectorTick {
@@ -259,12 +260,14 @@ pub enum ClientMsg {
         strip: StripRef,
         on: bool,
     },
-    /// ARRANGE's save (#148): the changed layouts' new orders at the
-    /// document's revision `rev`, one change (one undo step). Answered as
+    /// ARRANGE's save (#148): every sector's layouts as the page edited
+    /// them (their slots, renamed, added and removed layouts) at the
+    /// document's revision `rev`, one change (one undo step;
+    /// `fohmixer_proto::sectors::edit`). Answered as
     /// [`ClientMsg::SectorTick`].
-    SectorOrders {
+    SectorEdit {
         id: String,
-        orders: Vec<SectorOrder>,
+        sectors: Sectors,
         rev: u64,
     },
     /// Undo the last change of the sectors (#148; a second undo redoes
