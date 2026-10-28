@@ -461,7 +461,7 @@ fn arrange_adds_only_what_fits_the_side_at_the_strip_width() {
     let fit = |side: f64| with_spaces(three.clone(), SectorId::Lu, 3, 100.0, side, &METRICS).len();
     assert_eq!(fit(412.0), 4);
     assert_eq!(fit(412.0 - 1e-6), 4);
-    assert_eq!(fit((412.0 - 1e-6).next_down()), 3);
+    assert_eq!(fit((412.0_f64 - 1e-6).next_down()), 3);
     assert_eq!(fit(412.0 - 0.25), 3);
     assert_eq!(FIT_SLACK, 1e-6);
     // Five units leave one; six none.
