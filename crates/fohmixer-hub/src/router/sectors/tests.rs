@@ -287,6 +287,34 @@ async fn an_order_with_an_old_rev_is_refused_stale() {
 }
 
 #[tokio::test]
+async fn an_order_of_no_layout_is_refused_empty_and_keeps_the_undo() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = doc(
+        4,
+        vec![(
+            SectorId::Lu,
+            vec![layout("lu-1", "VOX", &["Vox 1", "Vox 2"])],
+        )],
+    );
+    let (mut router, _own, rx) = served(dir.path(), Some(&first));
+    let a = attach(&mut router, 1);
+    router.handle(tick(1, "t1", "lu-1", "Bass", true));
+    a.take();
+    let _ = records(&rx);
+    let taken = router.sectors.store.doc().clone();
+    router.handle(RouterMsg::SectorOrders {
+        client: 1,
+        id: "o1".into(),
+        orders: Vec::new(),
+        rev: taken.rev,
+    });
+    assert_eq!(a.take().unwrap(), vec![error("o1", "EMPTY")]);
+    assert_eq!(router.sectors.store.doc(), &taken);
+    assert_eq!(on_disk(dir.path(), PREV_FILE), first, "the undo step kept");
+    assert_eq!(sector_records(&rx), Vec::<Value>::new());
+}
+
+#[tokio::test]
 async fn orders_of_two_layouts_are_one_change_and_one_undo_step() {
     let dir = tempfile::tempdir().unwrap();
     let first = doc(

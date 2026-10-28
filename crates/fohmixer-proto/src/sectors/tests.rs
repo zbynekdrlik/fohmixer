@@ -570,6 +570,18 @@ fn orders_are_stale_for_another_rev_another_set_a_layout_twice_or_an_unknown_lay
     );
 }
 
+#[test]
+fn orders_of_no_layout_are_refused_empty() {
+    let before = ordered();
+    assert_eq!(
+        orders(&before, &[], 7)
+            .map_err(Refusal::text)
+            .map(|d| d.rev),
+        Err("EMPTY"),
+        "nothing to change takes no revision and no undo step"
+    );
+}
+
 fn fixture() -> Layout {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
