@@ -734,3 +734,123 @@ fn the_seed_of_a_tagged_frame_uses_the_markers_labels() {
     assert_eq!(seeded.layouts(SectorId::Ru), &[sl("ru-1", "MAIN", vec![])]);
     assert_eq!(seeded.validate(), Vec::<String>::new());
 }
+
+/// A group of band strips with these names.
+fn band_group(id: &str, title: Option<&str>, names: &[&str]) -> Value {
+    let controls: Vec<Value> = names.iter().map(|n| strip("band", track(n))).collect();
+    group(id, title, Value::Array(controls))
+}
+
+fn bands(names: &[&str]) -> Vec<StripRef> {
+    names.iter().copied().map(band).collect()
+}
+
+fn names(prefix: &str, n: usize) -> Vec<String> {
+    (1..=n).map(|i| format!("{prefix} {i}")).collect()
+}
+
+fn as_strs(all: &[String]) -> Vec<&str> {
+    all.iter().map(String::as_str).collect()
+}
+
+#[test]
+fn the_seed_moves_a_layouts_overflow_to_the_front_of_its_rows_right_sector() {
+    // Row 0 as the real FOH page: a pager whose STAGE holds 6 singers and
+    // 2 pinned strips, then a group of 2; row 1 two groups of 8 and 4.
+    let singers = names("Vox", 6);
+    let effects = names("Fx", 8);
+    let hands = names("Hand", 4);
+    let pager = json!({"kind": "pager", "id": "pg", "default_page": "stage", "pages": [
+        {"id": "stage", "title": "STAGE", "sections": [
+            band_group("singers", Some("VOCALS"), &as_strs(&singers)),
+            band_group("pinned", None, &["Klavir", "Vocals"])]},
+        {"id": "band", "title": "BAND", "sections": [
+            band_group("band", None, &["Bass", "Klavir", "Vocals"])]}]});
+    let rows = json!([
+        {"sections": [pager, band_group("backing", Some("BACKING"), &["Backing", "Band"])]},
+        {"sections": [
+            band_group("effects", Some("EFFECTS"), &as_strs(&effects)),
+            band_group("hands", Some("HANDS"), &as_strs(&hands))]}
+    ]);
+    let layout = layout_of(rows, json!([]));
+    let seeded = seed(&layout);
+    assert_eq!(seeded.validate(), Vec::<String>::new());
+    assert_eq!(
+        seeded.layouts(SectorId::Lu),
+        &[
+            sl("lu-1", "STAGE", bands(&as_strs(&singers))),
+            sl("lu-2", "BAND", bands(&["Bass", "Klavir", "Vocals"])),
+        ]
+    );
+    assert_eq!(
+        seeded.layouts(SectorId::Ru),
+        &[sl(
+            "ru-1",
+            "BACKING",
+            bands(&["Klavir", "Vocals", "Backing", "Band"])
+        )]
+    );
+    assert_eq!(
+        seeded.layouts(SectorId::Ld),
+        &[sl("ld-1", "EFFECTS", bands(&as_strs(&effects[..6])))]
+    );
+    let mut rd = as_strs(&effects[6..]);
+    rd.extend(as_strs(&hands));
+    assert_eq!(
+        seeded.layouts(SectorId::Rd),
+        &[sl("rd-1", "HANDS", bands(&rd))]
+    );
+    let pool = pool(&layout);
+    for layout in seeded.sectors.values().flatten() {
+        assert!(!is_full(units(&layout.strips, &pool)), "{}", layout.id);
+    }
+}
+
+#[test]
+fn the_seed_counts_a_wide_strip_and_carries_a_full_right_side_into_more_layouts() {
+    // Left: 5 strips and a wide one (6.1 units): the wide one moves right,
+    // to the front of an empty right sector's new MAIN layout.
+    let mut controls: Vec<Value> = (1..=5)
+        .map(|n| strip("band", track(&format!("Vox {n}"))))
+        .collect();
+    let mut wide = strip("band", track("Klavir"));
+    wide["wide"] = json!(true);
+    controls.push(wide);
+    let pager = json!({"kind": "pager", "id": "pg", "default_page": "a", "pages": [
+        {"id": "a", "title": "STAGE", "sections": [group("g", None, Value::Array(controls))]}]});
+    let seeded = seed(&layout_of(json!([{"sections": [pager]}]), json!([])));
+    assert_eq!(
+        seeded.layouts(SectorId::Lu),
+        &[sl(
+            "lu-1",
+            "STAGE",
+            bands(&["Vox 1", "Vox 2", "Vox 3", "Vox 4", "Vox 5"])
+        )]
+    );
+    assert_eq!(
+        seeded.layouts(SectorId::Ru),
+        &[sl("ru-1", "MAIN", bands(&["Klavir"]))]
+    );
+    // Right: 3 overflowing strips before a group of 6 hold 9: the right
+    // sector gets 6, then a second layout of the same title with 3.
+    let left = names("Vox", 9);
+    let right = names("Fx", 6);
+    let rows = json!([{"sections": [
+        band_group("l", Some("STAGE"), &as_strs(&left)),
+        band_group("r", Some("EFFECTS"), &as_strs(&right))]}]);
+    let seeded = seed(&layout_of(rows, json!([])));
+    assert_eq!(
+        seeded.layouts(SectorId::Lu),
+        &[sl("lu-1", "STAGE", bands(&as_strs(&left[..6])))]
+    );
+    let mut first = as_strs(&left[6..]);
+    first.extend(as_strs(&right[..3]));
+    assert_eq!(
+        seeded.layouts(SectorId::Ru),
+        &[
+            sl("ru-1", "EFFECTS", bands(&first)),
+            sl("ru-2", "EFFECTS", bands(&as_strs(&right[3..]))),
+        ]
+    );
+    assert_eq!(seeded.validate(), Vec::<String>::new());
+}
