@@ -327,6 +327,25 @@ exclude_re = [
   # into the offsets' signal); column.spec.ts opens, closes and steps them
   # on both phone sizes.
   "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::select|Nav::show_extra|Nav::tap_view|Nav::open_column|step_window|remembered_pages)( |$)",
+  # The fader sectors' glue (#148), one function at a time. pages/surface.rs:
+  # Nav::pick (a sector's layout tab: the picks' signal, written only on a
+  # change, and localStorage under binding::sectors::PICKS_KEY),
+  # remembered_picks (that key read through the tested parse_picks) and
+  # measure_page (PageView's measuring effect, shared with the sectors page:
+  # the body's and the column's widths, the phone's thin strip and
+  # --count-col through the tested arrange::px_value). pages/sectors.rs:
+  # step_sector_window (a side's window moved through the tested
+  # Shift::moved into the offsets' signal). store/live/sectors.rs: the three
+  # requests onto the socket (sector_request: an id from the tested
+  # Conn::next_id, the pending map as cmd's; sector_tick, sector_orders,
+  # sector_undo build the message). The decisions are the tested
+  # binding::sectors (picks, picked, sectors_on, the wanted set, the ticks,
+  # the pool's steps), arrange::sectors (lines, width, windows),
+  # pages::sectors::sector_memo and store::on_refusal; sectors.spec.ts
+  # drives the glue in Chromium and WebKit (paging, the width kept, ↶, a
+  # tick's answer).
+  "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::pick|remembered_picks)( |$)",
+  "fohmixer-ui/src/store/live/sectors\\.rs.*(replace|in) LiveStore::(sector_request|sector_tick|sector_orders|sector_undo)( |$)",
   # pages/ableset.rs (#90): take_return (location.hash read through the
   # tested behave::ableset::returns_to_tab, then history.replaceState
   # without it); ableset.spec.ts's sign-in comes back to #ableset and finds

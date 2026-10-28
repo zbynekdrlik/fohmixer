@@ -15,6 +15,8 @@ use fohmixer_proto::layout::{
 };
 use fohmixer_proto::markers::has_placeholder_label;
 
+pub mod sectors;
+
 /// One subscription: an instance, a LOM target, a property and whether
 /// Live's display string comes with the value.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -368,15 +370,28 @@ pub fn visible_subs(layout: &Layout, path: &[usize]) -> Vec<SubSpec> {
 }
 
 /// Every subscription the surface wants (#71): the controls on screen
-/// ([`visible_subs`]) and, while a channel detail is open, its strip's
-/// ([`detail_subs`]: its pan with Live's display string), each key once.
-pub fn wanted_subs(layout: &Layout, path: &[usize], detail: Option<&Strip>) -> Vec<SubSpec> {
+/// ([`visible_controls`]; while the sectors replace the default page's rows,
+/// #148, its rail, the picked layouts' controls and the global controls:
+/// [`sectors::sectored_controls`]) and, while a channel detail is open, its
+/// strip's ([`detail_subs`]: its pan with Live's display string), each key
+/// once.
+pub fn wanted_subs(
+    layout: &Layout,
+    path: &[usize],
+    detail: Option<&Strip>,
+    sectors: Option<sectors::Sectored<'_>>,
+) -> Vec<SubSpec> {
     let source = layout.config.meter_source.unwrap_or_default();
+    let shown = match sectors.filter(|s| sectors::sectors_on(layout, path, Some(s.doc))) {
+        Some(sectored) => sectors::sectored_controls(layout, path, sectored),
+        None => visible_controls(layout, path),
+    };
     let detail = detail
         .map(|strip| detail_subs(strip, source).all())
         .unwrap_or_default();
-    let unique: BTreeMap<String, SubSpec> = visible_subs(layout, path)
+    let unique: BTreeMap<String, SubSpec> = shown
         .into_iter()
+        .flat_map(|c| control_subs(c, source))
         .chain(detail)
         .map(|s| (s.key(), s))
         .collect();

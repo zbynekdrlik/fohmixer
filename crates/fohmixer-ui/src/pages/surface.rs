@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use fohmixer_proto::layout::{Binding, Control, Layout, Page, Strip};
+use fohmixer_proto::sectors::SectorId;
 use leptos::html;
 use leptos::prelude::*;
 use serde_json::json;
@@ -31,6 +32,7 @@ use crate::arrange::{
 };
 use crate::behave::ableset::tab_dot;
 use crate::behave::solo::soloed;
+use crate::binding::sectors::{PICKS_KEY, Picks, Sectored, parse_picks};
 use crate::binding::{
     DetailChange, SubSpec, choose, detail_strip, detail_update, group_title, page_solos,
     selected_path, solo_sub, stored_pages, view_tap, wanted_subs,
@@ -67,12 +69,18 @@ enum Extra {
 
 /// The page selection (a context of the surface).
 #[derive(Clone, Copy)]
-struct Nav {
-    store: LiveStore,
+pub(crate) struct Nav {
+    pub(crate) store: LiveStore,
     /// The page shown, then its pager's sub-page.
-    path: RwSignal<Vec<usize>>,
+    pub(crate) path: RwSignal<Vec<usize>>,
     remembered: RwSignal<BTreeMap<String, String>>,
-    viewport: RwSignal<(f64, f64)>,
+    pub(crate) viewport: RwSignal<(f64, f64)>,
+    /// The layout each fader sector shows on this device (#148), as
+    /// stored under `PICKS_KEY`: a pick whose layout is gone stays until
+    /// the user pages that sector (`binding::sectors::picked` falls back).
+    pub(crate) picks: RwSignal<Picks>,
+    /// ARRANGE's reorder mode is on (#148; Task 8 drives it).
+    pub(crate) arrange: RwSignal<bool>,
     /// The extra tab shown (#52 the Stream Deck, #90 AbleSet); never
     /// remembered: a reload opens the last mixer page. Written only on a
     /// change: a `try_set` notifies even with the same value.
@@ -98,12 +106,12 @@ struct Nav {
     /// The column is open over the faders (#63: on a phone, ☰ in the thin
     /// strip opens it; the tablet's column is always there and this does
     /// nothing to it). Written only on a change.
-    column_open: RwSignal<bool>,
+    pub(crate) column_open: RwSignal<bool>,
 }
 
 impl Nav {
     /// The phone's column opens over the faders, or closes (#63).
-    fn open_column(self, open: bool) {
+    pub(crate) fn open_column(self, open: bool) {
         if self.column_open.try_get_untracked() == Some(!open) {
             let _ = self.column_open.try_set(open);
         }
@@ -157,6 +165,28 @@ impl Nav {
         self.select(0, target);
     }
 
+    /// A sector's layout tab was tapped (#148): that sector pages to it, on
+    /// this device only, and the picks are stored (written only on a
+    /// change).
+    pub(crate) fn pick(self, sector: SectorId, layout: &str) {
+        let same = self
+            .picks
+            .try_with_untracked(|picks| picks.get(&sector).map(String::as_str) == Some(layout))
+            .unwrap_or(true);
+        if same {
+            return;
+        }
+        let Some(picks) = self.picks.try_update(|picks| {
+            picks.insert(sector, layout.to_string());
+            picks.clone()
+        }) else {
+            return;
+        };
+        if let Ok(text) = serde_json::to_string(&picks) {
+            dom::storage_set(PICKS_KEY, &text);
+        }
+    }
+
     /// The Stream Deck's tab (#52) or AbleSet's (#90) was tapped.
     fn show_extra(self, extra: Extra) {
         self.open_column(false);
@@ -177,6 +207,14 @@ fn remembered_pages() -> BTreeMap<String, String> {
         .unwrap_or_default()
 }
 
+/// The device's stored sector picks (#148; none when none is stored or
+/// readable).
+fn remembered_picks() -> Picks {
+    dom::storage_get(PICKS_KEY)
+        .map(|text| parse_picks(&text))
+        .unwrap_or_default()
+}
+
 /// The surface of a logged-in device.
 #[component]
 pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoView {
@@ -189,6 +227,8 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
         path: RwSignal::new(Vec::new()),
         remembered: RwSignal::new(remembered_pages()),
         viewport,
+        picks: RwSignal::new(remembered_picks()),
+        arrange: RwSignal::new(false),
         extra,
         shown: Memo::new(move |_| extra.get()),
         before_view: RwSignal::new(None),
@@ -239,14 +279,21 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
         }
     });
     // The controls on screen are the ones subscribed, with an open
-    // detail's strip and its pan (#71).
+    // detail's strip and its pan (#71); on the sectors page (#148) the
+    // picked layouts' controls instead of the rows.
     Effect::new(move |_| {
         let Some(layout) = store.layout.get() else {
             return;
         };
         let path = nav.path.get();
         let detail = nav.detail.try_get().flatten();
-        store.set_wanted(wanted_subs(&layout, &path, detail.as_ref()));
+        let doc = store
+            .sectors
+            .try_with(|told| told.shown().map(|told| told.doc.clone()))
+            .flatten();
+        let picks = nav.picks.try_get().unwrap_or_default();
+        let sectored = doc.as_ref().map(|doc| Sectored { doc, picks: &picks });
+        store.set_wanted(wanted_subs(&layout, &path, detail.as_ref(), sectored));
     });
 
     let content = move || match store.layout.get() {
