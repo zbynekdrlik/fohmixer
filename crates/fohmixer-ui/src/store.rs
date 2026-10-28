@@ -35,6 +35,7 @@ use std::collections::BTreeMap;
 
 use fohmixer_proto::client::{AutotuneState, LufsItem, ReverbState};
 use fohmixer_proto::lufs::LufsProblem;
+use fohmixer_proto::sectors::SectorsDoc;
 use serde_json::{Value, json};
 
 use crate::binding::SubSpec;
@@ -374,6 +375,18 @@ pub type HubReverb = HubTold<ReverbState>;
 /// AUTOTUNE's state as the hub last told it (#104).
 pub type HubAutotune = HubTold<AutotuneState>;
 
+/// The fader sectors as the hub last told them (#148, `ServerMsg::Sectors`):
+/// the document and whether the hub holds a version to undo to (↶).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SectorsTold {
+    pub doc: SectorsDoc,
+    pub undo: bool,
+}
+
+/// The fader sectors (#148): kept through an outage (the page keeps its
+/// sectors), stale until the next connection's document.
+pub type HubSectors = HubTold<SectorsTold>;
+
 /// One loudness point as the hub last sent it (#151): its reading in
 /// tenths and its problem, none of either until the hub says.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -483,8 +496,24 @@ pub use fohmixer_proto::client::write_key_of as write_key;
 /// The key under which the engineer's token is stored.
 pub const TOKEN_KEY: &str = "fohmixer_token";
 
+/// Why a request never got the hub's answer: it was not sent (no socket).
+pub const NOT_CONNECTED: &str = "not connected to the hub";
+
+/// Why a request never got the hub's answer: its socket closed first.
+pub const CONNECTION_CLOSED: &str = "the hub connection closed";
+
 /// What hears a command's result slots (or why there are none).
 pub type ResultFn = Box<dyn FnOnce(Result<Vec<Value>, String>)>;
+
+/// A request's answer that only a refusal is heard of (#148: a sector
+/// request's `error` flashes its button; its `result` says nothing more).
+pub fn on_refusal(refused: Box<dyn FnOnce(String)>) -> ResultFn {
+    Box::new(move |outcome| {
+        if let Err(why) = outcome {
+            refused(why);
+        }
+    })
+}
 
 #[cfg(test)]
 mod tests;

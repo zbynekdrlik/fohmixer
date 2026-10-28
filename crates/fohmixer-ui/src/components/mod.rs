@@ -8,6 +8,7 @@
 mod autotune_panel;
 pub mod buttons;
 pub mod detail;
+mod detail_layouts;
 pub mod eq;
 pub mod fader;
 mod fader_link;
@@ -247,7 +248,7 @@ pub fn readiness_now(slots: &[RwSignal<Slot>]) -> Readiness {
 #[component]
 pub fn ControlView(
     control: Control,
-    #[prop(default = None)] shared: Option<String>,
+    #[prop(optional, into)] shared: Signal<Option<String>>,
     #[prop(optional, into)] group_name: Signal<Option<GroupLabel>>,
 ) -> impl IntoView {
     let settings = expect_context::<Settings>();

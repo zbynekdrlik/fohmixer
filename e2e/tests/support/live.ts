@@ -271,6 +271,52 @@ export async function groupLabelOf(page: Page, inner: Locator): Promise<Locator>
   return page.locator(`.slot[data-group="${id}"] [data-testid="group-side"]`).first();
 }
 
+/** A fader's identity in the fader sectors (#148): its Live set and its label (a frame strip: its anchor's name). */
+export type StripRef = { instance: string; label: string };
+/** One named layout of a sector (#148): a title of at most 8 characters, its faders in order. */
+export type SectorLayout = { id: string; title: string; strips: StripRef[] };
+/** `sectors.json` (#148): the sectors `lu`, `ld`, `ru`, `rd` and their layouts. */
+export type SectorsDoc = { rev: number; sectors: Partial<Record<"lu" | "ld" | "ru" | "rd", SectorLayout[]>> };
+
+/** How many layouts a sectors document holds. */
+function layoutCount(doc: SectorsDoc): number {
+  return Object.values(doc.sectors).reduce((n, list) => n + (list?.length ?? 0), 0);
+}
+
+/**
+ * Writes `doc` as the hub's `sectors.json` (#148, a hand edit) and returns
+ * once the hub serves it (`/api/status` `sectors`: a newer revision with its
+ * layouts and no error; the hub polls the file at the layout poll's tick).
+ * The spec puts the empty document back with `resetSectors` after each test.
+ */
+export async function setSectors(doc: SectorsDoc) {
+  const bearer = await token();
+  const before = (await hubStatus(bearer)).sectors;
+  await harness("/hub/sectors", { doc });
+  const layouts = layoutCount(doc);
+  await until(
+    async () => (await hubStatus(bearer)).sectors,
+    (s: any) => s.rev > before.rev && s.layouts === layouts && !s.error,
+    "the hub serving the sectors document",
+  );
+}
+
+/**
+ * The harness's empty `sectors.json` again (#148: sectors off, the FOH page
+ * as before), served by the hub when this returns. The hub keeps its undo
+ * version in memory, so a test never relies on ↶ being dim at its start.
+ */
+export async function resetSectors() {
+  const bearer = await token();
+  const before = (await hubStatus(bearer)).sectors;
+  await harness("/hub/sectors/reset");
+  await until(
+    async () => (await hubStatus(bearer)).sectors,
+    (s: any) => s.layouts === 0 && !s.error && (before.layouts === 0 || s.rev > before.rev),
+    "the hub serving the empty sectors document",
+  );
+}
+
 /** A control line on a host's stdin (`stall <ms>`, `rename "<a>" "<b>"`): its answer. */
 export async function hostLine(instance: string, line: string): Promise<string | null> {
   return (await harness(`/host/${instance}/line`, { line })).answer;
@@ -287,9 +333,9 @@ export async function token(): Promise<string> {
   return (await response.json()).token;
 }
 
-/** `GET /api/status`. */
-export async function hubStatus(): Promise<any> {
-  const response = await fetch(`${BASE}/api/status`, { headers: { authorization: `Bearer ${await token()}` } });
+/** `GET /api/status` (with `bearer`, a token taken once: every login hashes the PIN). */
+export async function hubStatus(bearer?: string): Promise<any> {
+  const response = await fetch(`${BASE}/api/status`, { headers: { authorization: `Bearer ${bearer ?? (await token())}` } });
   if (!response.ok) throw new Error(`status: ${response.status}`);
   return response.json();
 }
@@ -316,6 +362,8 @@ export class LiveClient {
   reverb: any = null;
   /** The hub's last AUTOTUNE state (#104: `ServerMsg::Autotune`, told to every client). */
   autotune: any = null;
+  /** The hub's last fader sectors (#148: `ServerMsg::Sectors`, `{doc, undo}`, told to every client). */
+  sectors: any = null;
 
   private constructor(ws: WebSocket) {
     this.ws = ws;
@@ -324,6 +372,7 @@ export class LiveClient {
       if (msg.type === "hub") this.hub.set(msg.key, msg.value);
       if (msg.type === "reverb") this.reverb = msg;
       if (msg.type === "autotune") this.autotune = msg;
+      if (msg.type === "sectors") this.sectors = msg;
       if ((msg.type === "result" || msg.type === "error") && msg.id && this.waiting.has(msg.id)) {
         this.waiting.get(msg.id)!(msg);
         this.waiting.delete(msg.id);
@@ -351,22 +400,31 @@ export class LiveClient {
     this.ws.close();
   }
 
-  /** A command batch on an instance: the script's result slots. */
-  async cmd(instance: string, commands: object[]): Promise<any[]> {
+  /**
+   * A request the hub answers by its `id` (a `cmd`, #148's `sector_tick`,
+   * `sector_orders`, `sector_undo`): `msg` with a fresh `id`, and the hub's
+   * `result` or `error` for it (an error is returned, not thrown).
+   */
+  async ask(msg: Record<string, unknown>): Promise<any> {
     if (this.ws.readyState !== WebSocket.OPEN) throw new Error("the test client's socket is not open");
     const id = `e2e${++this.next}`;
     const answer = new Promise<any>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.waiting.delete(id);
-        reject(new Error(`no answer to ${JSON.stringify(commands)} within ${CMD_TIMEOUT_MS} ms`));
+        reject(new Error(`no answer to ${JSON.stringify(msg)} within ${CMD_TIMEOUT_MS} ms`));
       }, CMD_TIMEOUT_MS);
-      this.waiting.set(id, (msg) => {
+      this.waiting.set(id, (reply) => {
         clearTimeout(timer);
-        resolve(msg);
+        resolve(reply);
       });
     });
-    this.ws.send(JSON.stringify({ type: "cmd", id, instance, commands }));
-    const msg = await answer;
+    this.ws.send(JSON.stringify({ ...msg, id }));
+    return answer;
+  }
+
+  /** A command batch on an instance: the script's result slots. */
+  async cmd(instance: string, commands: object[]): Promise<any[]> {
+    const msg = await this.ask({ type: "cmd", instance, commands });
     if (msg.type === "error") throw new Error(`cmd ${JSON.stringify(commands)}: ${msg.message}`);
     return msg.data;
   }

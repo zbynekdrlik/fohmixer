@@ -627,9 +627,9 @@ fn a_detail_adds_its_pan_with_lives_display_to_a_page_that_shows_its_strip() {
     let layout = sample();
     let page = visible_subs(&layout, &[1, 0]);
     // No detail: the controls on screen.
-    assert_eq!(wanted_subs(&layout, &[1, 0], None), page);
+    assert_eq!(wanted_subs(&layout, &[1, 0], None, None), page);
     // C is on screen: its detail adds exactly its pan with the display.
-    let wanted = wanted_subs(&layout, &[1, 0], Some(&held("C")));
+    let wanted = wanted_subs(&layout, &[1, 0], Some(&held("C")), None);
     let added: Vec<String> = keys(&wanted)
         .into_iter()
         .filter(|k| !keys(&page).contains(k))
@@ -648,7 +648,7 @@ fn a_detail_of_a_strip_on_no_page_shown_adds_all_its_subscriptions() {
     let layout = sample();
     // The cue page shows its toggle and TechAlert; B's detail adds B.
     let page = visible_subs(&layout, &[0]);
-    let wanted = wanted_subs(&layout, &[0], Some(&held("B")));
+    let wanted = wanted_subs(&layout, &[0], Some(&held("B")), None);
     assert_eq!(wanted.len(), page.len() + 5);
     for key in keys(&detail_subs(&held("B"), MeterSource::Level).all()) {
         assert!(keys(&wanted).contains(&key), "{key}");
@@ -659,7 +659,7 @@ fn a_detail_of_a_strip_on_no_page_shown_adds_all_its_subscriptions() {
     // The layout's meter source applies to the detail too.
     let mut lr = sample();
     lr.config.meter_source = Some(MeterSource::Lr);
-    let wanted = wanted_subs(&lr, &[0], Some(&held("B")));
+    let wanted = wanted_subs(&lr, &[0], Some(&held("B")), None);
     assert_eq!(wanted.len(), page.len() + 6);
     assert!(
         wanted

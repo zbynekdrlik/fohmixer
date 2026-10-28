@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use fohmixer_proto::layout::{Binding, Control, Layout, Page, Strip};
+use fohmixer_proto::sectors::SectorId;
 use leptos::html;
 use leptos::prelude::*;
 use serde_json::json;
@@ -30,7 +31,9 @@ use crate::arrange::{
     arrange_in, items, narrow, px_value, rooms, thin_line,
 };
 use crate::behave::ableset::tab_dot;
+use crate::behave::arrange_drag::Arrange;
 use crate::behave::solo::soloed;
+use crate::binding::sectors::{PICKS_KEY, Picks, Sectored, parse_picks, sectors_on};
 use crate::binding::{
     DetailChange, SubSpec, choose, detail_strip, detail_update, group_title, page_solos,
     selected_path, solo_sub, stored_pages, view_tap, wanted_subs,
@@ -43,6 +46,7 @@ use crate::flow::{is_column, shared_instance};
 use crate::manual::manual_parts;
 use crate::pages::ableset::{AbleSetView, take_return};
 use crate::pages::deck::DeckView;
+use crate::pages::sectors::SectorsView;
 use crate::store::{Badge, LiveStore, Slot};
 
 /// Where the selected pages are remembered (a JSON map: `""` for the pages,
@@ -67,12 +71,21 @@ enum Extra {
 
 /// The page selection (a context of the surface).
 #[derive(Clone, Copy)]
-struct Nav {
-    store: LiveStore,
+pub(crate) struct Nav {
+    pub(crate) store: LiveStore,
     /// The page shown, then its pager's sub-page.
-    path: RwSignal<Vec<usize>>,
+    pub(crate) path: RwSignal<Vec<usize>>,
     remembered: RwSignal<BTreeMap<String, String>>,
-    viewport: RwSignal<(f64, f64)>,
+    pub(crate) viewport: RwSignal<(f64, f64)>,
+    /// The layout each fader sector shows on this device (#148), as
+    /// stored under `PICKS_KEY`: a pick whose layout is gone stays until
+    /// the user pages that sector (`binding::sectors::picked` falls back).
+    pub(crate) picks: RwSignal<Picks>,
+    /// ARRANGE's reorder mode (#148, `behave::arrange_drag::Arrange`):
+    /// here, not on the sectors page, so a new layout's remount keeps an
+    /// arrangement in progress; the page's first look at the hub's
+    /// document ends one left from before.
+    pub(crate) arrange: RwSignal<Arrange>,
     /// The extra tab shown (#52 the Stream Deck, #90 AbleSet); never
     /// remembered: a reload opens the last mixer page. Written only on a
     /// change: a `try_set` notifies even with the same value.
@@ -98,12 +111,12 @@ struct Nav {
     /// The column is open over the faders (#63: on a phone, ☰ in the thin
     /// strip opens it; the tablet's column is always there and this does
     /// nothing to it). Written only on a change.
-    column_open: RwSignal<bool>,
+    pub(crate) column_open: RwSignal<bool>,
 }
 
 impl Nav {
     /// The phone's column opens over the faders, or closes (#63).
-    fn open_column(self, open: bool) {
+    pub(crate) fn open_column(self, open: bool) {
         if self.column_open.try_get_untracked() == Some(!open) {
             let _ = self.column_open.try_set(open);
         }
@@ -157,6 +170,28 @@ impl Nav {
         self.select(0, target);
     }
 
+    /// A sector's layout tab was tapped (#148): that sector pages to it, on
+    /// this device only, and the picks are stored (written only on a
+    /// change).
+    pub(crate) fn pick(self, sector: SectorId, layout: &str) {
+        let same = self
+            .picks
+            .try_with_untracked(|picks| picks.get(&sector).map(String::as_str) == Some(layout))
+            .unwrap_or(true);
+        if same {
+            return;
+        }
+        let Some(picks) = self.picks.try_update(|picks| {
+            picks.insert(sector, layout.to_string());
+            picks.clone()
+        }) else {
+            return;
+        };
+        if let Ok(text) = serde_json::to_string(&picks) {
+            dom::storage_set(PICKS_KEY, &text);
+        }
+    }
+
     /// The Stream Deck's tab (#52) or AbleSet's (#90) was tapped.
     fn show_extra(self, extra: Extra) {
         self.open_column(false);
@@ -177,6 +212,14 @@ fn remembered_pages() -> BTreeMap<String, String> {
         .unwrap_or_default()
 }
 
+/// The device's stored sector picks (#148; none when none is stored or
+/// readable).
+fn remembered_picks() -> Picks {
+    dom::storage_get(PICKS_KEY)
+        .map(|text| parse_picks(&text))
+        .unwrap_or_default()
+}
+
 /// The surface of a logged-in device.
 #[component]
 pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoView {
@@ -189,6 +232,8 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
         path: RwSignal::new(Vec::new()),
         remembered: RwSignal::new(remembered_pages()),
         viewport,
+        picks: RwSignal::new(remembered_picks()),
+        arrange: RwSignal::new(Arrange::Off),
         extra,
         shown: Memo::new(move |_| extra.get()),
         before_view: RwSignal::new(None),
@@ -239,14 +284,21 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
         }
     });
     // The controls on screen are the ones subscribed, with an open
-    // detail's strip and its pan (#71).
+    // detail's strip and its pan (#71); on the sectors page (#148) the
+    // picked layouts' controls instead of the rows.
     Effect::new(move |_| {
         let Some(layout) = store.layout.get() else {
             return;
         };
         let path = nav.path.get();
         let detail = nav.detail.try_get().flatten();
-        store.set_wanted(wanted_subs(&layout, &path, detail.as_ref()));
+        let doc = store
+            .sectors
+            .try_with(|told| told.shown().map(|told| told.doc.clone()))
+            .flatten();
+        let picks = nav.picks.try_get().unwrap_or_default();
+        let sectored = doc.as_ref().map(|doc| Sectored { doc, picks: &picks });
+        store.set_wanted(wanted_subs(&layout, &path, detail.as_ref(), sectored));
     });
 
     let content = move || match store.layout.get() {
@@ -298,10 +350,14 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
 /// What the column's head shows (a context of the layout's shell, read by
 /// every page's column).
 #[derive(Clone)]
-struct Head {
-    layout: Arc<Layout>,
+pub(crate) struct Head {
+    pub(crate) layout: Arc<Layout>,
     page: Memo<Option<usize>>,
     sub: Memo<Option<usize>>,
+    /// The page shown is the sectors page (#148, `binding::sectors::
+    /// sectors_on`): the column shows the LAYOUTS block, not the pager's
+    /// tabs.
+    pub(crate) sectored: Memo<bool>,
 }
 
 /// One layout: the selected page or the Stream Deck tab, and an open
@@ -316,10 +372,26 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
     });
     let page = Memo::new(move |_| nav.path.with(|p| p.first().copied()));
     let sub = Memo::new(move |_| nav.path.with(|p| p.get(1).copied()));
+    let sectored = {
+        let layout = layout.clone();
+        let sectors = nav.store.sectors;
+        Memo::new(move |_| {
+            nav.path
+                .try_with(|path| {
+                    sectors
+                        .try_with(|told| {
+                            sectors_on(&layout, path, told.shown().map(|told| &told.doc))
+                        })
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false)
+        })
+    };
     provide_context(Head {
         layout: layout.clone(),
         page,
         sub,
+        sectored,
     });
     let viewport = nav.viewport;
     // The channel detail (#71): the layout's strip that is the held one
@@ -393,6 +465,11 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
         let index = page.get()?;
         let shown = layout.pages.get(index)?.clone();
         let global = layout.global.clone();
+        // The default page with sectors (#148): the four sectors in place
+        // of its rows.
+        if sectored.get() {
+            return Some(view! { <SectorsView page=shown global=global /> }.into_any());
+        }
         Some(view! { <PageView page=shown global=global sub=sub /> }.into_any())
     };
     view! {
@@ -409,7 +486,12 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
 #[component]
 pub fn ColumnHead() -> impl IntoView {
     let nav = expect_context::<Nav>();
-    let Head { layout, page, sub } = expect_context::<Head>();
+    let Head {
+        layout,
+        page,
+        sub,
+        sectored,
+    } = expect_context::<Head>();
     // A view (#68) is no page tab: the column's VIEWS shows it.
     let tabs: Vec<(usize, String, String)> = layout
         .pages
@@ -423,9 +505,13 @@ pub fn ColumnHead() -> impl IntoView {
     // selection while the old column's effects may still run once.
     // While a view is shown (#68), the pager's tabs of the page before it
     // stay, dimmed.
+    // The sectors page (#148) has the LAYOUTS block in their place.
     let pager_tabs = move || {
         let index = page.try_get().flatten()?;
         if nav.shown.try_get().unwrap_or_default() != Extra::None {
+            return None;
+        }
+        if sectored.try_get().unwrap_or(false) {
             return None;
         }
         let shown = for_pager.pages.get(index)?;
@@ -725,33 +811,7 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
     let body_ref = NodeRef::<html::Div>::new();
     let column_ref = NodeRef::<html::Nav>::new();
     let thin_ref = NodeRef::<html::Div>::new();
-    // A side's widths and the lines' height: measured once laid out and on
-    // every resize. The middle is the column, or on a phone the thin strip
-    // (#63, shown there only), the strips then counted as with the column
-    // (`--count-col`, the phone's column width in `page.css`).
-    let measured = RwSignal::new((Sides::both(0.0), 0.0_f64));
-    Effect::new(move |_| {
-        let _ = nav.viewport.get();
-        if let (Some(body), Some(column)) = (body_ref.get(), column_ref.get()) {
-            let width = f64::from(body.client_width());
-            let thin = thin_ref
-                .get()
-                .map(|thin| f64::from(thin.offset_width()))
-                .filter(|thin| *thin > 0.0);
-            let middle = thin.unwrap_or_else(|| f64::from(column.offset_width()));
-            let counted = thin
-                .and_then(|_| dom::computed(&body, "--count-col"))
-                .and_then(|text| px_value(&text))
-                .unwrap_or(middle);
-            let side = |middle: f64| ((width - BODY_PAD - middle - 2.0 * BODY_GAP) / 2.0).max(0.0);
-            let sides = Sides {
-                count: side(counted),
-                width: side(middle),
-            };
-            let height = f64::from(body.client_height()) - BODY_PAD;
-            let _ = measured.try_set((sides, height.max(0.0)));
-        }
-    });
+    let measured = measure_page(nav.viewport, body_ref, column_ref, thin_ref);
     // Each line's window (a line that does not fit), from the column's
     // arrows, kept by the line's key (`PageModel::line_key`: its rows, and
     // the sub-page where the pager is): another sub-page, or a turned screen
@@ -908,6 +968,44 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
             </nav>
         </div>
     }
+}
+
+/// A page's measures (#63; the sectors page's too, #148): a side's widths
+/// and the lines' height, measured once laid out and on every resize.
+pub(crate) fn measure_page(
+    viewport: RwSignal<(f64, f64)>,
+    body_ref: NodeRef<html::Div>,
+    column_ref: NodeRef<html::Nav>,
+    thin_ref: NodeRef<html::Div>,
+) -> RwSignal<(Sides, f64)> {
+    let measured = RwSignal::new((Sides::both(0.0), 0.0_f64));
+    // A side's widths and the lines' height: measured once laid out and on
+    // every resize. The middle is the column, or on a phone the thin strip
+    // (#63, shown there only), the strips then counted as with the column
+    // (`--count-col`, the phone's column width in `page.css`).
+    Effect::new(move |_| {
+        let _ = viewport.get();
+        if let (Some(body), Some(column)) = (body_ref.get(), column_ref.get()) {
+            let width = f64::from(body.client_width());
+            let thin = thin_ref
+                .get()
+                .map(|thin| f64::from(thin.offset_width()))
+                .filter(|thin| *thin > 0.0);
+            let middle = thin.unwrap_or_else(|| f64::from(column.offset_width()));
+            let counted = thin
+                .and_then(|_| dom::computed(&body, "--count-col"))
+                .and_then(|text| px_value(&text))
+                .unwrap_or(middle);
+            let side = |middle: f64| ((width - BODY_PAD - middle - 2.0 * BODY_GAP) / 2.0).max(0.0);
+            let sides = Sides {
+                count: side(counted),
+                width: side(middle),
+            };
+            let height = f64::from(body.client_height()) - BODY_PAD;
+            let _ = measured.try_set((sides, height.max(0.0)));
+        }
+    });
+    measured
 }
 
 /// The page's arrangement and its lines' rooms (#127), each a memo of what
@@ -1243,7 +1341,7 @@ fn ShiftView(
 /// ◀ and ▶ for the first line with a window (`arrange::thin_line`; hidden
 /// while no line has one) and ☰, which opens the column over the faders.
 #[component]
-fn ThinStrip(
+pub(crate) fn ThinStrip(
     arranged: Memo<Option<Arrangement>>,
     offsets: RwSignal<BTreeMap<LineKey, usize>>,
     node: NodeRef<html::Div>,

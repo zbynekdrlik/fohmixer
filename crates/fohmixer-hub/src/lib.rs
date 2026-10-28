@@ -94,6 +94,7 @@ pub mod routes;
 pub mod rules;
 pub mod sealed;
 pub mod secrets;
+pub mod sectors;
 pub mod setter;
 #[cfg(test)]
 pub(crate) mod test_keys;
@@ -419,6 +420,7 @@ impl HubInner {
             remote: self.remote.snapshot(&self.config, https, now),
             companion: self.companion.as_ref().map(CompanionHandle::status),
             ableset,
+            sectors: router.sectors,
         }
     }
 }
@@ -647,7 +649,8 @@ fn remote_http() -> anyhow::Result<http_client::HttpClient> {
     http_client::HttpClient::new()
 }
 
-/// Checks the layout file every `period`; a new layout goes to the router.
+/// Checks the layout file every `period`; a new layout goes to the router,
+/// and the router reads `sectors.json` again (#148).
 async fn poll_layout(
     layout: Arc<LayoutStore>,
     router: mpsc::UnboundedSender<RouterMsg>,
@@ -665,6 +668,10 @@ async fn poll_layout(
             {
                 return;
             }
+        }
+        // The fader sectors' file rides the same tick (#148).
+        if router.send(RouterMsg::SectorsPoll).is_err() {
+            return;
         }
     }
 }

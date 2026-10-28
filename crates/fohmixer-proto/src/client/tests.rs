@@ -765,8 +765,20 @@ fn api_bodies_round_trip() {
                 problem: None,
             }],
         },
+        sectors: SectorsStatus {
+            rev: 3,
+            layouts: 2,
+            strips: 5,
+            unknown: 1,
+            undo: true,
+            error: None,
+        },
     };
     let json = serde_json::to_value(&status).unwrap();
+    assert_eq!(
+        json["sectors"],
+        json!({"rev": 3, "layouts": 2, "strips": 5, "unknown": 1, "undo": true})
+    );
     assert_eq!(
         json["lufs"]["strips"],
         json!([{"instance": "band", "target": "live_set tracks 1", "label": "Vox 1",
@@ -1720,4 +1732,136 @@ fn an_older_hubs_status_reads_with_no_lufs() {
         serde_json::from_value(json!({"addr": "127.0.0.1:39110", "taken": 3})).unwrap();
     assert_eq!(listener.addr.as_deref(), Some("127.0.0.1:39110"));
     assert_eq!((listener.taken, listener.dropped), (3, 0));
+}
+
+#[test]
+fn sectors_messages_round_trip() {
+    let doc: crate::sectors::SectorsDoc =
+        serde_json::from_value(json!({"rev": 2, "sectors": {"lu": [
+        {"id": "lu-1", "title": "VOX", "strips": [{"instance": "band", "label": "Vox 1"}]}]}}))
+        .unwrap();
+    round_trip_server(
+        ServerMsg::Sectors { doc, undo: true },
+        json!({"type": "sectors", "doc": {"rev": 2, "sectors": {"lu": [
+            {"id": "lu-1", "title": "VOX", "strips": [{"instance": "band", "label": "Vox 1"}]}]}},
+            "undo": true}),
+    );
+    // A document that does not parse is no message.
+    let bad = json!({"type": "sectors", "doc": {"rev": 2, "sectors": {"lx": []}}, "undo": false});
+    assert!(serde_json::from_value::<ServerMsg>(bad).is_err());
+}
+
+#[test]
+fn a_sector_tick_reads_as_the_page_sends_it() {
+    round_trip_client(
+        ClientMsg::SectorTick {
+            id: "s1".into(),
+            layout: "lu-1".into(),
+            strip: StripRef {
+                instance: "band".into(),
+                label: "Vox 1".into(),
+            },
+            on: true,
+        },
+        json!({"type": "sector_tick", "id": "s1", "layout": "lu-1",
+               "strip": {"instance": "band", "label": "Vox 1"}, "on": true}),
+    );
+}
+
+#[test]
+fn sector_orders_and_undo_read_as_the_page_sends_them() {
+    round_trip_client(
+        ClientMsg::SectorOrders {
+            id: "s2".into(),
+            orders: vec![SectorOrder {
+                layout: "ru-1".into(),
+                strips: vec![
+                    StripRef {
+                        instance: "band".into(),
+                        label: "Bass".into(),
+                    },
+                    StripRef {
+                        instance: "band".into(),
+                        label: "Klavir".into(),
+                    },
+                ],
+            }],
+            rev: 4,
+        },
+        json!({"type": "sector_orders", "id": "s2", "rev": 4, "orders": [
+            {"layout": "ru-1", "strips": [{"instance": "band", "label": "Bass"},
+                                          {"instance": "band", "label": "Klavir"}]}]}),
+    );
+    round_trip_client(
+        ClientMsg::SectorUndo { id: "s3".into() },
+        json!({"type": "sector_undo", "id": "s3"}),
+    );
+}
+
+#[test]
+fn an_older_hubs_status_reads_with_default_sectors() {
+    let status = HubStatus {
+        instances: vec![],
+        layout: LayoutStatus {
+            rev: 1,
+            error: None,
+            unresolved: vec![],
+            markers: MarkersStatus {
+                found: 0,
+                problems: vec![],
+                links: vec![],
+            },
+        },
+        stage_aut: StageAutStatus {
+            on: false,
+            writes: 0,
+        },
+        clients: 0,
+        remote: RemoteStatus::default(),
+        client_reports: vec![],
+        companion: None,
+        ableset: None,
+        reverb: ReverbStatus::default(),
+        fader_links: vec![],
+        autotune: AutotuneStatus::default(),
+        songmap: vec![],
+        lufs: LufsStatus::default(),
+        sectors: SectorsStatus {
+            rev: 9,
+            layouts: 1,
+            strips: 1,
+            unknown: 0,
+            undo: false,
+            error: Some("expected value at line 1 column 1".into()),
+        },
+    };
+    let mut json = serde_json::to_value(&status).unwrap();
+    assert_eq!(
+        json["sectors"],
+        json!({"rev": 9, "layouts": 1, "strips": 1, "unknown": 0, "undo": false,
+               "error": "expected value at line 1 column 1"})
+    );
+    assert_eq!(
+        serde_json::from_value::<HubStatus>(json.clone())
+            .unwrap()
+            .sectors,
+        status.sectors
+    );
+    json.as_object_mut().unwrap().remove("sectors");
+    let older: HubStatus = serde_json::from_value(json).unwrap();
+    assert_eq!(older.sectors, SectorsStatus::default());
+    // A status without `undo` and `error` reads them as their defaults.
+    let bare: SectorsStatus =
+        serde_json::from_value(json!({"rev": 1, "layouts": 0, "strips": 0, "unknown": 0})).unwrap();
+    assert_eq!(
+        bare,
+        SectorsStatus {
+            rev: 1,
+            layouts: 0,
+            strips: 0,
+            unknown: 0,
+            undo: false,
+            error: None,
+        }
+    );
 }

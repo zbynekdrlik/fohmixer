@@ -244,6 +244,9 @@ struct Instance {
     /// The instance went offline and has not connected since: a retry reads
     /// nothing (the connect reads).
     away: bool,
+    /// A whole read answered since the hub started (#148: the sectors' seed
+    /// waits for one of every instance).
+    read: bool,
 }
 
 /// The names of a list value's items (the script encodes a track as an
@@ -498,6 +501,13 @@ impl Keeper {
             .is_none_or(|state| state.pending.is_none() && !state.unsure)
     }
 
+    /// Whether a whole read of `instance` answered since the hub started
+    /// (#148: the sectors' seed waits for every instance's markers); none
+    /// for an instance the keeper does not follow.
+    pub fn has_read(&self, instance: &str) -> bool {
+        self.instances.get(instance).is_some_and(|state| state.read)
+    }
+
     /// A failed read's retry (`Action::Retry`): a read, unless the instance
     /// went offline since (its connect reads).
     pub fn retry(&mut self, instance: &str) -> Vec<Action> {
@@ -577,6 +587,7 @@ impl Keeper {
         // failing is tried again `CONNECT_RETRIES` times too.
         state.failures = 0;
         state.unsure = false;
+        state.read = true;
         state.devices = done.devices;
         state.tuners = tuners;
         let mut actions = self.resubscribe(instance, done.counts);

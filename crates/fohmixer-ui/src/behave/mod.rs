@@ -12,9 +12,11 @@
 //! fader link's marks and same-dB move (#130, `fader_link`), REVERB's
 //! button and the faders' marks (#130, `reverb`), AUTOTUNE's button
 //! (#104, D19, `autotune`), the strip's marks line (#151, `marks`) and
-//! its loudness reading (#151, `lufs`).
+//! its loudness reading (#151, `lufs`), and the sectors page's reorder
+//! mode, ARRANGE (#148, `arrange_drag`).
 
 pub mod ableset;
+pub mod arrange_drag;
 pub mod autotune;
 pub mod colour;
 pub mod db_text;

@@ -507,3 +507,39 @@ fn lufs_points_take_each_item_and_a_close_forgets_them() {
         LufsPoint::default()
     );
 }
+
+#[test]
+fn the_sectors_stay_through_a_close_stale_until_the_next_document() {
+    let mut told = HubSectors::default();
+    assert_eq!(told.shown(), None);
+    let first = SectorsTold {
+        doc: SectorsDoc::empty(),
+        undo: false,
+    };
+    told.put(first.clone());
+    assert_eq!(told.fresh(), Some(&first));
+    told.closed();
+    assert_eq!(told.shown(), Some(&first));
+    assert_eq!(told.fresh(), None);
+    let next = SectorsTold {
+        doc: SectorsDoc {
+            rev: 4,
+            sectors: std::collections::BTreeMap::new(),
+        },
+        undo: true,
+    };
+    told.put(next.clone());
+    assert_eq!(told.fresh(), Some(&next));
+}
+
+#[test]
+fn a_refusal_is_heard_and_a_result_is_not() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let heard: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = heard.clone();
+    on_refusal(Box::new(move |why| sink.borrow_mut().push(why)))(Err("FULL".to_string()));
+    let sink = heard.clone();
+    on_refusal(Box::new(move |why| sink.borrow_mut().push(why)))(Ok(Vec::new()));
+    assert_eq!(*heard.borrow(), vec!["FULL".to_string()]);
+}

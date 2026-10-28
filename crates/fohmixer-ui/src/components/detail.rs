@@ -16,6 +16,7 @@ use leptos::prelude::*;
 use serde_json::json;
 
 use super::buttons::{Corner, MuteView, Partner, anchor_name, colour_style};
+use super::detail_layouts::{DetailLayouts, DetailStep};
 use super::eq::EqCards;
 use super::fader::{FaderView, Law, Target};
 use super::fader_link::{FaderFollowView, FaderLinkView, link_parts};
@@ -29,6 +30,7 @@ use crate::behave::fader::UNITY;
 use crate::behave::hold::guard_left;
 use crate::behave::label::shown_label;
 use crate::behave::reverb::held_low;
+use crate::binding::sectors::Stepped;
 use crate::binding::{CLOSE_EXIT, SubSpec, detail_keys, detail_subs};
 use crate::dom;
 use crate::store::{LiveStore, Readiness, Slot};
@@ -53,6 +55,16 @@ impl DetailStrip {
         trace_detail("open", Some(why), &detail_keys(&strip), Some(pointer));
         let _ = self.opened_at.try_set_value(dom::now());
         let _ = self.strip.try_set(Some(strip));
+    }
+
+    /// The detail's ◀ ▶ opened the pool's strip beside the one shown
+    /// (#148, the tested `binding::sectors::stepped`), by pointer
+    /// `pointer`: recorded as an open with its `why` and keys. The opening
+    /// guard is not started again (it is for a second tap at SEL's spot),
+    /// so the arrows step at a finger's pace.
+    pub fn step(self, stepped: Stepped, pointer: i32) {
+        trace_detail("open", Some(stepped.why), &stepped.keys, Some(pointer));
+        let _ = self.strip.try_set(Some(stepped.strip));
     }
 
     /// The detail closes (`why`: `exit`, `layout`, `conflict`; `pointer`
@@ -159,6 +171,9 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
     let label_attr = label.clone();
     let cards_label = label.clone();
     let cards_strip = strip.clone();
+    // The fader sectors (#148): the LAYOUTS ticks and the bar's ◀ ▶.
+    let layouts_strip = strip.clone();
+    let step_strip = strip.clone();
     let instance = strip.binding.instance.clone();
     let ret = strip.strip_kind == StripKind::Return;
     let sub = bar_text(group.as_deref(), &instance, ret);
@@ -339,6 +354,7 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
                         {sub}
                     </span>
                 </div>
+                <DetailStep strip=step_strip />
             </div>
             <div class="detail-body">
                 <section class="detail-box detail-left" data-testid="detail-left">
@@ -368,6 +384,7 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
                     </div>
                     {centre}
                     {link_box}
+                    <DetailLayouts strip=layouts_strip />
                 </section>
             </div>
         </div>

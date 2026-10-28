@@ -265,7 +265,15 @@ exclude_re = [
   # trace::rail event with the page clock, into the recorder);
   # controls.spec.ts reads the steps back from the event log.
   "fohmixer-ui/src/components/mod\\.rs.*(replace|in) (trace_touch|trace_start|trace_move|intent_look|trace_detail|trace_rail)( |$)",
-  "fohmixer-ui/src/components/detail\\.rs.*(replace|in) DetailStrip::(open|close)( |$)",
+  "fohmixer-ui/src/components/detail\\.rs.*(replace|in) DetailStrip::(open|close|step)( |$)",
+  # #148: DetailStrip::step (the detail's ◀ ▶: the strip's signal written
+  # and the open recorded, both from the tested binding::sectors::stepped,
+  # its strip, why "step" and keys) and, in components/detail_layouts.rs,
+  # ticks_memo (the hub's document and the served layout read into the
+  # tested binding::sectors::detail_ticks). sectors.spec.ts ticks a layout,
+  # presses the detail's ▶ and ◀ and reads the neighbouring pool strip in
+  # the detail and the two "step" opens back from the event log.
+  "fohmixer-ui/src/components/detail_layouts\\.rs.*(replace|in) ticks_memo( |$)",
   # components/eq.rs (#71 PR E): EqNav::open and EqNav::close (the screen's
   # signal written, the step recorded with the tested trace::detail),
   # local_hh_mm (js_sys::Date's local hours and minutes into the tested
@@ -327,6 +335,37 @@ exclude_re = [
   # into the offsets' signal); column.spec.ts opens, closes and steps them
   # on both phone sizes.
   "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::select|Nav::show_extra|Nav::tap_view|Nav::open_column|step_window|remembered_pages)( |$)",
+  # The fader sectors' glue (#148), one function at a time. pages/surface.rs:
+  # Nav::pick (a sector's layout tab: the picks' signal, written only on a
+  # change, and localStorage under binding::sectors::PICKS_KEY),
+  # remembered_picks (that key read through the tested parse_picks) and
+  # measure_page (PageView's measuring effect, shared with the sectors page:
+  # the body's and the column's widths, the phone's thin strip and
+  # --count-col through the tested arrange::px_value). pages/sectors.rs:
+  # step_sector_window (a side's window moved through the tested
+  # Shift::moved into the offsets' signal). store/live/sectors.rs: the three
+  # requests onto the socket (sector_request: an id from the tested
+  # Conn::next_id, the pending map as cmd's; sector_tick, sector_orders,
+  # sector_undo build the message). The decisions are the tested
+  # binding::sectors (picks, picked, sectors_on, the wanted set, the ticks,
+  # the pool's steps), arrange::sectors (lines, width, windows),
+  # pages::sectors::sector_memo and store::on_refusal; sectors.spec.ts
+  # drives the glue in Chromium and WebKit (paging, the width kept, ↶, a
+  # tick's answer).
+  "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::pick|remembered_picks|measure_page)( |$)",
+  "fohmixer-ui/src/pages/sectors\\.rs.*(replace|in) step_sector_window( |$)",
+  # ARRANGE's glue (#148, pages/sectors.rs): change_mode (the mode's
+  # signal written only when the tested behave::arrange_drag::Arrange
+  # changed), Carrier (the drag's stored state and the carried slot's
+  # transform and data-carried written and removed on the element),
+  # sector_centres (the sector's slots' centres read from the DOM at the
+  # down) and flash_note (the refused save's note shown, then cleared by a
+  # timer while the tested NoteTimer says it is still its note). The
+  # decisions are the tested Arrange, Drag, NoteTimer, drop_index,
+  # moved_to, dropped, sector_refs and arrange_note; sectors.spec.ts drags a
+  # strip, saves, sees it on a second page and checks nothing reached Live.
+  "fohmixer-ui/src/pages/sectors\\.rs.*(replace|in) (change_mode|sector_centres|flash_note|Carrier::(new|show|lift|hold|settle|leave))( |$)",
+  "fohmixer-ui/src/store/live/sectors\\.rs.*(replace|in) LiveStore::(sector_request|sector_tick|sector_orders|sector_undo)( |$)",
   # pages/ableset.rs (#90): take_return (location.hash read through the
   # tested behave::ableset::returns_to_tab, then history.replaceState
   # without it); ableset.spec.ts's sign-in comes back to #ableset and finds

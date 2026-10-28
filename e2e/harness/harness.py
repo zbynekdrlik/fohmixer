@@ -29,6 +29,8 @@ what only the harness can do:
                                          so every token it issued is refused
     POST /hub/layout {"layout": {...}}   a new layout file (the hub picks it up)
     POST /hub/layout/reset               the original layout file back
+    POST /hub/sectors {"doc": {...}}     a new sectors.json (#148; the hub polls it)
+    POST /hub/sectors/reset              the empty sectors.json back (sectors off)
     GET  /hub/events                     {"events": [...]}: every record of the
                                          hub's event log (#43, ``logs/events-*.jsonl``
                                          in the data folder), oldest day first
@@ -577,6 +579,10 @@ class Hub:
         stop_process(self.proc, "the hub")
 
 
+# The sectors document the hub starts with (#148): no layout, sectors off.
+SECTORS_EMPTY = {"rev": 0, "sectors": {}}
+
+
 class Harness:
     """The hosts, the hub and the layout file the control API acts on."""
 
@@ -621,6 +627,7 @@ class Harness:
         self.ableset_on = self.ableset is not None
         self.write_config()
         self.reset_layout()
+        self.reset_sectors()
         # The proxy needs no hub to listen; it is up before the hub starts. A
         # process of its own (#43): as a thread of this one it shared the
         # interpreter's lock, and a GET /hub/events held every page's link.
@@ -675,6 +682,17 @@ class Harness:
         shutil.copyfile(self.layout, path + ".tmp")
         os.replace(path + ".tmp", path)
 
+    def write_sectors(self, doc):
+        """Replaces sectors.json whole (#148), as ``write_layout``."""
+        path = os.path.join(self.data, "sectors.json")
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(doc, f, indent=1)
+        os.replace(path + ".tmp", path)
+
+    def reset_sectors(self):
+        """The empty document: sectors off, so the hub seeds nothing (#148)."""
+        self.write_sectors(SECTORS_EMPTY)
+
     def handle(self, method, path, body):
         """One control request: (status, answer)."""
         parts = [p for p in path.split("/") if p]
@@ -707,6 +725,12 @@ class Harness:
             return 200, {"ok": True}
         if parts == ["hub", "layout"]:
             self.write_layout(body["layout"])
+            return 200, {"ok": True}
+        if parts == ["hub", "sectors"]:
+            self.write_sectors(body["doc"])
+            return 200, {"ok": True}
+        if parts == ["hub", "sectors", "reset"]:
+            self.reset_sectors()
             return 200, {"ok": True}
         if parts == ["sim", "eq", "clear"]:
             clear_sim_eq(self.data)

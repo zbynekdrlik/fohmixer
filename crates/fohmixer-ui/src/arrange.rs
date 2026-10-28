@@ -25,6 +25,7 @@ use fohmixer_proto::layout::{Control, Group, Page, Section};
 
 use crate::flow::{is_column, shared_instance};
 
+pub mod sectors;
 #[cfg(test)]
 mod tests;
 

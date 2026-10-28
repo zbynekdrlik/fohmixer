@@ -210,7 +210,7 @@ jobs:
       - name: AbleSet's proxy and WebSocket tunnel tests, and the listeners' logged socket, on Windows (#90; real listeners, plain and TLS)
         run: cargo test --locked -p fohmixer-hub --lib -- "ableset::" "accept::"
       - name: Hub API tests on Windows (the layout, auth, the installer's config check, the Stream Deck's Companion link, the eq-probe CLI; no Live host needed)
-        run: cargo test --locked -p fohmixer-hub --test it -- "layout::" "auth::" "config_cli::" "companion_client::" "deck::" "eq_probe_cli::" "lufs_listener::"
+        run: cargo test --locked -p fohmixer-hub --test it -- "layout::" "auth::" "config_cli::" "companion_client::" "deck::" "eq_probe_cli::" "lufs_listener::" "sectors::"
       - name: PC install self-test (Windows PowerShell 5.1 as on the PC; the debug hub started and stopped by Ctrl-Break, the debug tray started and ended by --exit)
         run: |
           cargo build --locked -p fohmixer-hub -p fohmixer-tray
