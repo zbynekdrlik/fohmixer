@@ -43,7 +43,16 @@ fn band(label: &str) -> StripRef {
     r("band", label)
 }
 
+/// These faders as slots, none empty.
+fn full(strips: Vec<StripRef>) -> Vec<Slot> {
+    strips.into_iter().map(Some).collect()
+}
+
 fn sl(id: &str, title: &str, strips: Vec<StripRef>) -> SectorLayout {
+    slotted(id, title, full(strips))
+}
+
+fn slotted(id: &str, title: &str, strips: Vec<Slot>) -> SectorLayout {
     SectorLayout {
         id: id.to_string(),
         title: title.to_string(),
@@ -311,11 +320,11 @@ fn the_pool_holds_each_ref_once_in_document_order() {
 fn units_count_a_wide_strip_1_1_and_full_is_past_6() {
     let layout = units_layout();
     let pooled = pool(&layout);
-    let six: Vec<StripRef> = (1..=6).map(|n| band(&format!("S{n}"))).collect();
+    let six: Vec<Slot> = (1..=6).map(|n| Some(band(&format!("S{n}")))).collect();
     assert_eq!(units(&six, &pooled), 6.0);
     assert!(!is_full(units(&six, &pooled)));
-    let mut wide: Vec<StripRef> = (1..=5).map(|n| band(&format!("S{n}"))).collect();
-    wide.push(band("W"));
+    let mut wide: Vec<Slot> = (1..=5).map(|n| Some(band(&format!("S{n}")))).collect();
+    wide.push(Some(band("W")));
     assert_eq!(units(&wide, &pooled), 6.1);
     assert!(is_full(units(&wide, &pooled)));
     assert!(!is_full(6.0));
@@ -335,7 +344,7 @@ fn a_ref_no_pool_strip_carries_takes_no_room_and_counts_unknown() {
     let pooled = pool(&layout);
     let mut strips: Vec<StripRef> = (1..=6).map(|n| band(&format!("S{n}"))).collect();
     strips.push(band("Renamed"));
-    assert_eq!(units(&strips, &pooled), 6.0);
+    assert_eq!(units(&full(strips.clone()), &pooled), 6.0);
     let held = doc(
         1,
         vec![
@@ -396,7 +405,7 @@ fn a_tick_on_appends_at_the_end_and_bumps_rev() {
 }
 
 #[test]
-fn a_tick_off_removes_even_a_ref_the_pool_lost() {
+fn a_tick_off_empties_its_slot_even_for_a_ref_the_pool_lost() {
     let (layout, mut before) = ticked();
     before.sectors.insert(
         SectorId::Rd,
@@ -407,10 +416,17 @@ fn a_tick_off_removes_even_a_ref_the_pool_lost() {
         .unwrap()
         .unwrap();
     assert_eq!(after.rev, 5);
+    // The slot model (1.24.0): the strip's slot stays, empty, so Bass keeps
+    // its place.
     assert_eq!(
         after.layouts(SectorId::Rd),
-        &[sl("rd-1", "B", vec![band("Bass")])]
+        &[slotted("rd-1", "B", vec![None, Some(band("Bass"))])]
     );
+    // The last strip ticked out leaves no trailing empty slot.
+    let last = tick(&after, "rd-1", &band("Bass"), false, &pooled)
+        .unwrap()
+        .unwrap();
+    assert_eq!(last.layouts(SectorId::Rd), &[slotted("rd-1", "B", vec![])]);
     assert_eq!(after.layouts(SectorId::Lu), before.layouts(SectorId::Lu));
 }
 
@@ -465,7 +481,18 @@ fn a_tick_is_refused_for_an_unknown_layout_a_strip_not_in_the_pool_or_a_full_lay
     let off = tick(&before, "lu-1", &band("Klavir"), false, &pooled)
         .unwrap()
         .unwrap();
-    assert_eq!(off.layouts(SectorId::Lu)[0].strips.len(), 5);
+    assert_eq!(off.layouts(SectorId::Lu)[0].refs().count(), 5);
+    // Klavir's slot stays empty: it counts a unit, so Bass still fits (it
+    // takes that slot) and a seventh after it does not.
+    assert_eq!(off.layouts(SectorId::Lu)[0].strips[4], None);
+    let back = tick(&off, "lu-1", &band("Bass"), true, &pooled)
+        .unwrap()
+        .unwrap();
+    assert_eq!(back.layouts(SectorId::Lu)[0].strips[4], Some(band("Bass")));
+    assert_eq!(
+        tick(&back, "lu-1", &band("Klavir"), true, &pooled),
+        Err(Refusal::Full)
+    );
 }
 
 #[test]
@@ -502,13 +529,41 @@ fn ordered() -> SectorsDoc {
 fn order(layout: &str, strips: &[&str]) -> SectorOrder {
     SectorOrder {
         layout: layout.to_string(),
-        strips: strips.iter().map(|s| band(s)).collect(),
+        strips: strips.iter().map(|s| Some(band(s))).collect(),
     }
+}
+
+/// The order of these slots, `""` an empty slot.
+fn gapped(layout: &str, strips: &[&str]) -> SectorOrder {
+    SectorOrder {
+        layout: layout.to_string(),
+        strips: strips
+            .iter()
+            .map(|s| (!s.is_empty()).then(|| band(s)))
+            .collect(),
+    }
+}
+
+/// The pool of `ordered`'s strips and a wide `Wide`.
+fn ordered_pool_layout() -> Layout {
+    let mut controls: Vec<Value> = ["Vox 1", "Vox 2", "Vox 3", "Klavir", "Bass"]
+        .iter()
+        .map(|n| strip("band", track(n)))
+        .collect();
+    let mut wide = strip("band", track("Wide"));
+    wide["wide"] = json!(true);
+    controls.push(wide);
+    layout_of(
+        json!([{"sections": [group("g", None, Value::Array(controls))]}]),
+        json!([]),
+    )
 }
 
 #[test]
 fn orders_take_the_same_set_at_the_documents_rev() {
     let before = ordered();
+    let layout = ordered_pool_layout();
+    let pooled = pool(&layout);
     let after = orders(
         &before,
         &[
@@ -516,6 +571,7 @@ fn orders_take_the_same_set_at_the_documents_rev() {
             order("ru-1", &["Bass", "Klavir"]),
         ],
         7,
+        &pooled,
     )
     .unwrap();
     assert_eq!(after.rev, 8);
@@ -531,7 +587,7 @@ fn orders_take_the_same_set_at_the_documents_rev() {
         after.layouts(SectorId::Ru),
         &[sl("ru-1", "BAND", vec![band("Bass"), band("Klavir")])]
     );
-    let one = orders(&before, &[order("ru-1", &["Bass", "Klavir"])], 7).unwrap();
+    let one = orders(&before, &[order("ru-1", &["Bass", "Klavir"])], 7, &pooled).unwrap();
     assert_eq!(one.layouts(SectorId::Lu), before.layouts(SectorId::Lu));
     assert_eq!(one.rev, 8);
 }
@@ -539,7 +595,9 @@ fn orders_take_the_same_set_at_the_documents_rev() {
 #[test]
 fn orders_are_stale_for_another_rev_another_set_a_layout_twice_or_an_unknown_layout() {
     let before = ordered();
-    let stale = |list: &[SectorOrder], rev: u64| orders(&before, list, rev);
+    let layout = ordered_pool_layout();
+    let pooled = pool(&layout);
+    let stale = |list: &[SectorOrder], rev: u64| orders(&before, list, rev, &pooled);
     let good = order("ru-1", &["Bass", "Klavir"]);
     assert_eq!(stale(std::slice::from_ref(&good), 6), Err(Refusal::Stale));
     assert_eq!(stale(std::slice::from_ref(&good), 8), Err(Refusal::Stale));
@@ -574,12 +632,233 @@ fn orders_are_stale_for_another_rev_another_set_a_layout_twice_or_an_unknown_lay
 fn orders_of_no_layout_are_refused_empty() {
     let before = ordered();
     assert_eq!(
-        orders(&before, &[], 7)
+        orders(&before, &[], 7, &[])
             .map_err(Refusal::text)
             .map(|d| d.rev),
         Err("EMPTY"),
         "nothing to change takes no revision and no undo step"
     );
+}
+
+#[test]
+fn an_order_puts_a_strip_at_the_sectors_right_edge_with_gaps_before_it() {
+    let before = ordered();
+    let layout = ordered_pool_layout();
+    let pooled = pool(&layout);
+    // BAND's case: Klavir stays first, Bass goes to the sixth slot.
+    let after = orders(
+        &before,
+        &[gapped("ru-1", &["Klavir", "", "", "", "", "Bass"])],
+        7,
+        &pooled,
+    )
+    .unwrap();
+    assert_eq!(after.rev, 8);
+    let bass = Some(band("Bass"));
+    let klavir = Some(band("Klavir"));
+    assert_eq!(
+        after.layouts(SectorId::Ru),
+        &[slotted(
+            "ru-1",
+            "BAND",
+            vec![klavir.clone(), None, None, None, None, bass.clone()]
+        )]
+    );
+    // The file says null for an empty slot.
+    let file = serde_json::to_value(&after).unwrap();
+    assert_eq!(
+        file["sectors"]["ru"][0]["strips"],
+        json!([{"instance": "band", "label": "Klavir"}, null, null, null, null,
+               {"instance": "band", "label": "Bass"}])
+    );
+    // Trailing empty slots are dropped; the gaps do not count for the set.
+    let trailing = orders(
+        &before,
+        &[gapped("ru-1", &["", "Bass", "Klavir", "", ""])],
+        7,
+        &pooled,
+    )
+    .unwrap();
+    assert_eq!(
+        trailing.layouts(SectorId::Ru)[0].strips,
+        vec![None, bass, klavir]
+    );
+    assert_eq!(
+        orders(
+            &before,
+            &[gapped("ru-1", &["Bass", "", "Vox 1"])],
+            7,
+            &pooled
+        ),
+        Err(Refusal::Stale),
+        "a gap never stands in for a strip"
+    );
+}
+
+#[test]
+fn an_order_past_6_units_is_full_unless_it_grows_nothing() {
+    let layout = ordered_pool_layout();
+    let pooled = pool(&layout);
+    let before = ordered();
+    // Six slots hold 6 units: taken; a seventh is FULL.
+    assert!(
+        orders(
+            &before,
+            &[gapped("ru-1", &["Klavir", "", "", "", "", "Bass"])],
+            7,
+            &pooled
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        orders(
+            &before,
+            &[gapped("ru-1", &["Klavir", "", "", "", "", "", "Bass"])],
+            7,
+            &pooled
+        ),
+        Err(Refusal::Full)
+    );
+    // A layout a hand edit put past 6 units can be reordered at its size,
+    // never grown.
+    let mut over = before.clone();
+    over.sectors.insert(
+        SectorId::Ru,
+        vec![slotted(
+            "ru-1",
+            "BAND",
+            vec![
+                Some(band("Klavir")),
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(band("Bass")),
+            ],
+        )],
+    );
+    assert!(
+        orders(
+            &over,
+            &[gapped("ru-1", &["Bass", "", "", "", "", "", "Klavir"])],
+            7,
+            &pooled
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        orders(
+            &over,
+            &[gapped("ru-1", &["Bass", "", "", "", "", "", "", "Klavir"])],
+            7,
+            &pooled
+        ),
+        Err(Refusal::Full)
+    );
+    assert!(grows_past_full(5.0, 6.0_f64.next_up()));
+    assert!(!grows_past_full(5.0, 6.0));
+    assert!(!grows_past_full(7.0, 7.0));
+    assert!(grows_past_full(7.0, 7.0_f64.next_up()));
+}
+
+#[test]
+fn an_empty_slot_counts_one_unit_and_a_tick_fills_the_first() {
+    let layout = units_layout();
+    let pooled = pool(&layout);
+    let gaps = vec![Some(band("S1")), None, Some(band("W")), None];
+    assert_eq!(units(&gaps, &pooled), 4.1);
+    assert_eq!(units(&[None], &pooled), 1.0);
+    assert_eq!(
+        ticked_in(&gaps, &band("S2")),
+        vec![Some(band("S1")), Some(band("S2")), Some(band("W")), None]
+    );
+    let packed = full(vec![band("S1")]);
+    assert_eq!(
+        ticked_in(&packed, &band("S2")),
+        full(vec![band("S1"), band("S2")])
+    );
+    assert_eq!(
+        ticked_out(&gaps, &band("W")),
+        vec![Some(band("S1"))],
+        "its slot and the empty one after it trimmed"
+    );
+    assert_eq!(
+        ticked_out(&gaps, &band("S1")),
+        vec![None, None, Some(band("W"))]
+    );
+    // FULL counts the empty slots: five strips and a gap hold 6 units, a
+    // tick fills the gap (6 units, fits); a wide one there would be 6.1.
+    let five_gap = slotted(
+        "lu-1",
+        "A",
+        vec![
+            Some(band("S1")),
+            None,
+            Some(band("S2")),
+            Some(band("S3")),
+            Some(band("S4")),
+            Some(band("S5")),
+        ],
+    );
+    assert!(!would_be_full(&five_gap, &band("S6"), &pooled));
+    assert!(would_be_full(&five_gap, &band("W"), &pooled));
+    let six_gaps = slotted("lu-1", "A", vec![None; 6]);
+    assert!(!would_be_full(&six_gaps, &band("S1"), &pooled));
+    let seven = slotted(
+        "lu-1",
+        "A",
+        full((1..=6).map(|n| band(&format!("S{n}"))).collect()),
+    );
+    assert!(would_be_full(&seven, &band("Bass"), &pooled));
+}
+
+#[test]
+fn a_file_with_null_slots_reads_and_a_strip_is_held_once_its_gaps_aside() {
+    let text = json!({"rev": 2, "sectors": {"ru": [{"id": "ru-1", "title": "BAND",
+        "strips": [{"instance": "band", "label": "Klavir"}, null, null,
+                   {"instance": "band", "label": "Bass"}, null]}]}});
+    let read: SectorsDoc = serde_json::from_value(text).unwrap();
+    assert_eq!(
+        read.validate(),
+        Vec::<String>::new(),
+        "two gaps are no strip twice"
+    );
+    let layout = &read.layouts(SectorId::Ru)[0];
+    assert!(layout.holds(&band("Bass")));
+    assert!(!layout.holds(&band("Vox 1")));
+    assert_eq!(
+        layout.refs().cloned().collect::<Vec<_>>(),
+        vec![band("Klavir"), band("Bass")]
+    );
+    assert_eq!(read.strip_count(), 2, "the gaps are no strips");
+    assert_eq!(read.layout_count(), 1);
+    let pooled = pool(&ordered_pool_layout());
+    assert_eq!(unknown(&read, &pooled), 0, "a gap is no unknown ref");
+    // A hand edit's trailing empty slots are dropped.
+    let trimmed = read.trimmed();
+    assert_eq!(trimmed.layouts(SectorId::Ru)[0].strips.len(), 4);
+    assert_eq!(trim(vec![None, None]), Vec::<Slot>::new());
+    assert_eq!(
+        trim(vec![None, Some(band("A"))]),
+        vec![None, Some(band("A"))]
+    );
+    // An old file without null reads as before.
+    let old: SectorsDoc = serde_json::from_value(json!({"rev": 1, "sectors": {"lu": [
+        {"id": "lu-1", "title": "VOX", "strips": [{"instance": "band", "label": "Vox 1"}]}]}}))
+    .unwrap();
+    assert_eq!(
+        old.layouts(SectorId::Lu),
+        &[sl("lu-1", "VOX", vec![band("Vox 1")])]
+    );
+}
+
+#[test]
+fn the_seed_never_makes_a_gap() {
+    let seeded = seed(&fixture());
+    for layout in seeded.sectors.values().flatten() {
+        assert!(layout.strips.iter().all(Option::is_some), "{}", layout.id);
+    }
 }
 
 fn fixture() -> Layout {

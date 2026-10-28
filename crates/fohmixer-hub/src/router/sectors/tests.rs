@@ -24,11 +24,16 @@ fn band(label: &str) -> StripRef {
     }
 }
 
+/// A slot: the band's strip `label`, `""` an empty slot.
+fn at(label: &str) -> Option<StripRef> {
+    (!label.is_empty()).then(|| band(label))
+}
+
 fn layout(id: &str, title: &str, labels: &[&str]) -> SectorLayout {
     SectorLayout {
         id: id.into(),
         title: title.into(),
-        strips: labels.iter().map(|l| band(l)).collect(),
+        strips: labels.iter().map(|l| at(l)).collect(),
     }
 }
 
@@ -258,7 +263,7 @@ async fn two_ticks_into_the_last_unit_take_one_and_refuse_the_other() {
     assert_eq!(answers(&b), vec![error("b1", "FULL")]);
     let strips = &router.sectors.store.doc().layouts(SectorId::Lu)[0].strips;
     assert_eq!(strips.len(), 6);
-    assert_eq!(strips.last(), Some(&band("Bass")));
+    assert_eq!(strips.last(), Some(&at("Bass")));
 }
 
 #[tokio::test]
@@ -280,7 +285,7 @@ async fn an_order_with_an_old_rev_is_refused_stale() {
         id: "o1".into(),
         orders: vec![SectorOrder {
             layout: "lu-1".into(),
-            strips: vec![band("Vox 2"), band("Vox 1")],
+            strips: vec![at("Vox 2"), at("Vox 1")],
         }],
         rev: 3,
     });
@@ -345,11 +350,11 @@ async fn orders_of_two_layouts_are_one_change_and_one_undo_step() {
         orders: vec![
             SectorOrder {
                 layout: "lu-1".into(),
-                strips: vec![band("Vox 2"), band("Vox 1")],
+                strips: vec![at("Vox 2"), at("Vox 1")],
             },
             SectorOrder {
                 layout: "ru-1".into(),
-                strips: vec![band("Bass"), band("Klavir")],
+                strips: vec![at("Bass"), at("Klavir")],
             },
         ],
         rev: 1,
@@ -724,4 +729,153 @@ async fn a_write_that_fails_is_an_error_to_the_asker_and_changes_nothing() {
     assert_eq!(sector_records(&rx), Vec::<Value>::new());
     assert_eq!(router.sectors.store.doc(), &taken);
     assert_eq!(on_disk(dir.path(), SECTORS_FILE), taken);
+}
+
+fn orders_msg(client: u64, id: &str, layout: &str, slots: &[&str], rev: u64) -> RouterMsg {
+    RouterMsg::SectorOrders {
+        client,
+        id: id.into(),
+        orders: vec![SectorOrder {
+            layout: layout.into(),
+            strips: slots.iter().map(|l| at(l)).collect(),
+        }],
+        rev,
+    }
+}
+
+#[tokio::test]
+async fn an_order_with_gaps_puts_a_strip_at_the_right_edge_and_is_written_with_nulls() {
+    // The owner's report of 28.10 (1.24.0, the slot model): BAND at RU's
+    // right edge with empty space between it and the strip before it.
+    let dir = tempfile::tempdir().unwrap();
+    let first = doc(
+        5,
+        vec![(
+            SectorId::Ru,
+            vec![layout(
+                "ru-1",
+                "BAND",
+                &["Klavir", "Bass", "Keys 1", "Vox 1"],
+            )],
+        )],
+    );
+    let (mut router, _own, rx) = served(dir.path(), Some(&first));
+    let a = attach(&mut router, 1);
+    let b = attach(&mut router, 2);
+    a.take();
+    b.take();
+    let _ = records(&rx);
+    router.handle(orders_msg(
+        1,
+        "o1",
+        "ru-1",
+        &["Klavir", "Bass", "Keys 1", "", "", "Vox 1"],
+        5,
+    ));
+    let arranged = doc(
+        6,
+        vec![(
+            SectorId::Ru,
+            vec![layout(
+                "ru-1",
+                "BAND",
+                &["Klavir", "Bass", "Keys 1", "", "", "Vox 1"],
+            )],
+        )],
+    );
+    assert_eq!(answers(&a), vec![result("o1")]);
+    assert_eq!(router.sectors.store.doc(), &arranged);
+    assert_eq!(told(&b), vec![(arranged.clone(), true)]);
+    assert_eq!(on_disk(dir.path(), SECTORS_FILE), arranged);
+    let text = std::fs::read_to_string(dir.path().join(SECTORS_FILE)).unwrap();
+    assert_eq!(text.matches("null").count(), 2, "{text}");
+    assert_eq!(sector_records(&rx).len(), 1);
+}
+
+#[tokio::test]
+async fn the_hubs_same_set_check_ignores_gaps_and_full_counts_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = doc(
+        5,
+        vec![(
+            SectorId::Ru,
+            vec![layout("ru-1", "BAND", &["Klavir", "Bass"])],
+        )],
+    );
+    let (mut router, _own, _rx) = served(dir.path(), Some(&first));
+    let a = attach(&mut router, 1);
+    a.take();
+    // A gap never stands in for a strip.
+    router.handle(orders_msg(1, "o1", "ru-1", &["Klavir", ""], 5));
+    assert_eq!(answers(&a), vec![error("o1", "stale")]);
+    // Seven slots are 7 units: FULL.
+    router.handle(orders_msg(
+        1,
+        "o2",
+        "ru-1",
+        &["Klavir", "", "", "", "", "", "Bass"],
+        5,
+    ));
+    assert_eq!(answers(&a), vec![error("o2", "FULL")]);
+    assert_eq!(router.sectors.store.doc(), &first);
+    // Trailing empty slots are dropped.
+    router.handle(orders_msg(
+        1,
+        "o3",
+        "ru-1",
+        &["", "Bass", "Klavir", "", ""],
+        5,
+    ));
+    assert_eq!(answers(&a), vec![result("o3")]);
+    assert_eq!(
+        router.sectors.store.doc().layouts(SectorId::Ru)[0].strips,
+        vec![None, at("Bass"), at("Klavir")]
+    );
+}
+
+#[tokio::test]
+async fn a_tick_fills_the_first_empty_slot_and_an_untick_leaves_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = doc(
+        1,
+        vec![(
+            SectorId::Lu,
+            vec![layout("lu-1", "VOX", &["Vox 1", "", "Vox 3"])],
+        )],
+    );
+    let (mut router, _own, _rx) = served(dir.path(), Some(&first));
+    let a = attach(&mut router, 1);
+    a.take();
+    router.handle(tick(1, "t1", "lu-1", "Bass", true));
+    assert_eq!(answers(&a), vec![result("t1")]);
+    assert_eq!(
+        router.sectors.store.doc().layouts(SectorId::Lu)[0].strips,
+        vec![at("Vox 1"), at("Bass"), at("Vox 3")]
+    );
+    router.handle(tick(1, "t2", "lu-1", "Vox 1", false));
+    assert_eq!(answers(&a), vec![result("t2")]);
+    assert_eq!(
+        router.sectors.store.doc().layouts(SectorId::Lu)[0].strips,
+        vec![None, at("Bass"), at("Vox 3")]
+    );
+    // A layout of five strips and a gap is 6 units: the gap takes one
+    // more, then FULL.
+    let gapped = doc(
+        3,
+        vec![(
+            SectorId::Lu,
+            vec![layout(
+                "lu-1",
+                "VOX",
+                &["Vox 1", "", "Vox 2", "Vox 3", "Vox 4", "Klavir"],
+            )],
+        )],
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, _own, _rx) = served(dir.path(), Some(&gapped));
+    let a = attach(&mut router, 1);
+    a.take();
+    router.handle(tick(1, "t3", "lu-1", "Bass", true));
+    router.handle(tick(1, "t4", "lu-1", "Keys 1", true));
+    assert_eq!(answers(&a), vec![result("t3"), error("t4", "FULL")]);
 }
