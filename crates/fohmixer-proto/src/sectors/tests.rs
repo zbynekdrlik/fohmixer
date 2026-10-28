@@ -177,6 +177,25 @@ fn validate_takes_8_characters_and_refuses_9() {
 }
 
 #[test]
+fn validate_refuses_a_sector_listed_with_no_layout() {
+    // A hand edit's `"rd": []` names a sector with nothing to show: every
+    // ARRANGE save would be refused `invalid` (a sector holds at least one
+    // layout), so the file itself is refused (#148 review).
+    let listed: SectorsDoc = serde_json::from_str(
+        r#"{"rev": 3, "sectors": {"lu": [{"id": "lu-1", "title": "VOX", "strips": []}], "rd": []}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        listed.validate(),
+        vec!["sector rd has no layout".to_string()]
+    );
+    // The empty document names no sector, so it is valid; so is a seed.
+    assert_eq!(SectorsDoc::empty().validate(), Vec::<String>::new());
+    let one = doc(1, vec![(SectorId::Rd, vec![sl("rd-1", "MAIN", vec![])])]);
+    assert_eq!(one.validate(), Vec::<String>::new());
+}
+
+#[test]
 fn validate_refuses_an_empty_id_or_title_and_a_strip_twice() {
     let empty_id = doc(1, vec![(SectorId::Lu, vec![sl(" ", "VOX", vec![])])]);
     assert_eq!(
