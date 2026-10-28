@@ -224,9 +224,15 @@ test.describe("The fader sectors", () => {
       for (const sector of ["lu", "ru", "rd"]) {
         await expect(slots(page, sector).locator('[data-testid="group-side"]'), sector).toHaveCount(0);
       }
-      // Paging ld to a layout of one set takes the side text away.
+      // Paging ld to a layout of one set takes the side text away, also
+      // from the band strip the page keeps (the same element, marked).
+      const reverb = slots(page, "ld").filter({
+        has: page.locator('[data-testid="strip"][data-track="A-Reverb #"][data-instance="band"]'),
+      });
+      await reverb.evaluate((slot) => slot.setAttribute("data-e2e-kept", "1"));
       await page.locator('[data-testid="sector-tab"][data-layout="ld-2"]').click();
       await expect.poll(() => stripsOf(page, "ld")).toEqual(["band|A-Reverb #"]);
+      await expect(reverb).toHaveAttribute("data-e2e-kept", "1");
       await expect(slots(page, "ld").locator('[data-testid="group-side"]')).toHaveCount(0);
     });
   });

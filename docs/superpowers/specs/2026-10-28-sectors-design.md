@@ -37,6 +37,7 @@ Status: the owner approved mockup `docs/mockups/sectors-v1.html` (commit `1d5e4d
   - row 0 is up and row 1 is down;
   - a pager's sub-pages become layouts of that row's left sector, titled with the sub-page's title;
   - the row's other groups become one layout of its right sector;
+  - *(1.24.0, found on the PC)* a seeded layout keeps at most `SECTOR_UNITS`: the faders past it go, in order, to the front of the same row's right sector, each fader once; a right side past 6 units continues in another layout of the same title;
   - a row with no pager cuts its groups where the strip count halves (groups whole), left and right, one layout each, titled with the first group's title, else `MAIN`;
   - a sector the seed leaves empty gets one empty layout `MAIN`.
   - The seed is a pure function with its own tests. After the seed, only the pages change the document.
