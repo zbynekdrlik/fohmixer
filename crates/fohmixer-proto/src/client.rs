@@ -25,6 +25,7 @@ use crate::eq::{Area, EqItem, EqLock, EqState, Part, Touch};
 use crate::layout::{Binding, LinkId};
 use crate::lufs::{LufsProblem, LufsState};
 use crate::path::canonical_target;
+use crate::sectors::{SectorOrder, SectorsDoc, StripRef};
 use crate::songmap::{Counts, Key, ProblemKind, SectionsState, Span};
 
 /// The client protocol this build speaks.
@@ -248,6 +249,27 @@ pub enum ClientMsg {
     /// sequence), so a picture's `shown` covers the undo and a down on a
     /// picture from before it is refused as stale.
     EqUndo { n: u32 },
+    /// A tick of a fader's layout in its channel detail (#148): `on` adds
+    /// the strip at the layout's end, off removes it. Answered by `result`
+    /// with `id` when the hub takes it, `error` with `id` and the refusal's
+    /// words (`fohmixer_proto::sectors::Refusal::text`) when it does not.
+    SectorTick {
+        id: String,
+        layout: String,
+        strip: StripRef,
+        on: bool,
+    },
+    /// ARRANGE's save (#148): the changed layouts' new orders at the
+    /// document's revision `rev`, one change (one undo step). Answered as
+    /// [`ClientMsg::SectorTick`].
+    SectorOrders {
+        id: String,
+        orders: Vec<SectorOrder>,
+        rev: u64,
+    },
+    /// Undo the last change of the sectors (#148; a second undo redoes
+    /// it). Answered as [`ClientMsg::SectorTick`].
+    SectorUndo { id: String },
 }
 
 /// One write's outcome (#43, an `ack` item): Live ran it (`value`: what
@@ -517,6 +539,10 @@ pub enum ServerMsg {
     /// The loudness points' readings (#151, spec §5.3): each changed
     /// strip's latest, paced with the meters (#51).
     Lufs { items: Vec<LufsItem> },
+    /// The fader sectors' document (#148), at attach and after every
+    /// change; `undo` while the hub holds the version before the last
+    /// change (the page's ↶).
+    Sectors { doc: SectorsDoc, undo: bool },
     /// A message of a newer hub that this page does not know (#90 B3): any
     /// other `type` reads as this, and the page ignores it, so a new
     /// message never breaks an older page.
@@ -1445,6 +1471,26 @@ pub struct HubStatus {
     /// answer.
     #[serde(default)]
     pub lufs: LufsStatus,
+    /// The fader sectors (#148); the defaults in an older hub's answer.
+    #[serde(default)]
+    pub sectors: SectorsStatus,
+}
+
+/// `/api/status` `sectors` (#148): the served document's revision, its
+/// layouts, its distinct faders and the refs no pool fader carries
+/// (`unknown`: a track renamed in Live), whether the hub holds the version
+/// before the last change (`undo`), and why the file on disk is not served
+/// (`error`: the last good document stays).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SectorsStatus {
+    pub rev: u64,
+    pub layouts: usize,
+    pub strips: usize,
+    pub unknown: usize,
+    #[serde(default)]
+    pub undo: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// One loudness point's reading (#151, spec §5.3): the strip by its

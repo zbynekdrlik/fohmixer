@@ -503,6 +503,15 @@ fn handle_text(hub: &Hub, conn: &mut Conn, text: &str) {
         Ok(ClientMsg::EqView { part }) => hub.route(RouterMsg::EqView { client, part }),
         Ok(ClientMsg::EqClose) => hub.route(RouterMsg::EqClose { client }),
         Ok(ClientMsg::EqUndo { n }) => hub.route(RouterMsg::EqUndo { client, n }),
+        // The fader sectors (#148): routed to the router in the next step.
+        Ok(
+            ClientMsg::SectorTick { id, .. }
+            | ClientMsg::SectorOrders { id, .. }
+            | ClientMsg::SectorUndo { id },
+        ) => outbox.reply(ServerMsg::Error {
+            id: Some(id),
+            message: "not yet".into(),
+        }),
         // Straight to the outbox (PR I): the writer's next frame may go.
         Ok(ClientMsg::EqFrameAck { session, seq }) => {
             outbox.frame_acked(session, seq, std::time::Instant::now());

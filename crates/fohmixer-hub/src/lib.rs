@@ -419,6 +419,7 @@ impl HubInner {
             remote: self.remote.snapshot(&self.config, https, now),
             companion: self.companion.as_ref().map(CompanionHandle::status),
             ableset,
+            sectors: fohmixer_proto::client::SectorsStatus::default(),
         }
     }
 }

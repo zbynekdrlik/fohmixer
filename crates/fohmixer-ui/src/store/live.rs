@@ -684,6 +684,8 @@ impl LiveStore {
                     lan,
                 }));
             }
+            // The fader sectors (#148): the page reads them in the next step.
+            ServerMsg::Sectors { .. } => {}
             // A newer hub's message (#90 B3): ignored, never an error.
             ServerMsg::Unknown => dom::log("a hub message this page does not know: ignored"),
         }
