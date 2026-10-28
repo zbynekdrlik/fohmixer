@@ -636,6 +636,52 @@ mod tests {
     }
 
     #[test]
+    fn a_refusal_names_its_word_in_the_note() {
+        assert_eq!(refusal_note("stale"), REFUSED_NOTE);
+        assert_eq!(refusal_note("FULL"), FULL_NOTE);
+        assert_eq!(refusal_note("invalid"), INVALID_NOTE);
+        assert_eq!(refusal_note(crate::store::NOT_CONNECTED), OFFLINE_NOTE);
+        assert_eq!(refusal_note(crate::store::CONNECTION_CLOSED), OFFLINE_NOTE);
+        assert_eq!(refusal_note("EMPTY"), NOT_SAVED_NOTE);
+        assert_eq!(refusal_note("cannot write sectors.json"), NOT_SAVED_NOTE);
+        assert_eq!(refusal_note(""), NOT_SAVED_NOTE);
+        // The words are the hub's, exactly: another case is another word.
+        assert_eq!(refusal_note("Stale"), NOT_SAVED_NOTE);
+        assert_eq!(refusal_note("full"), NOT_SAVED_NOTE);
+        assert_eq!(REFUSED_NOTE, "Not saved: the layouts changed");
+        assert_eq!(FULL_NOTE, "Not saved: a layout is full");
+        assert_eq!(INVALID_NOTE, "Not saved: the layouts are not valid");
+        assert_eq!(NOT_SAVED_NOTE, "Not saved");
+    }
+
+    #[test]
+    fn a_refused_save_ends_at_once_with_its_words_note() {
+        let doc = doc();
+        let saving = || {
+            let mut mode = Arrange::Off;
+            let _ = mode.tap(&doc);
+            moved(&mut mode, "lu-1", refs(&["Bass", "Vox 1", "Vox 2"]));
+            let _ = mode.tap(&doc);
+            mode
+        };
+        for (word, note) in [
+            ("stale", REFUSED_NOTE),
+            ("FULL", FULL_NOTE),
+            ("invalid", INVALID_NOTE),
+            ("EMPTY", NOT_SAVED_NOTE),
+            (crate::store::NOT_CONNECTED, OFFLINE_NOTE),
+        ] {
+            let mut mode = saving();
+            assert_eq!(
+                mode.heard(&Err::<(), _>(word.to_string())),
+                Some(note),
+                "{word}"
+            );
+            assert_eq!(mode, Arrange::Off, "{word}");
+        }
+    }
+
+    #[test]
     fn a_new_document_during_arrange_ends_it_unsaved() {
         let mut mode = on();
         moved(&mut mode, "lu-1", refs(&["Bass"]));
