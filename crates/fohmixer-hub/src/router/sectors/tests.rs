@@ -426,6 +426,37 @@ async fn a_hand_edit_is_told_to_every_page_and_recorded_file() {
     );
 }
 
+#[tokio::test]
+async fn a_removed_file_is_written_back_and_recorded_never_seeded() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = doc(
+        4,
+        vec![(SectorId::Lu, vec![layout("lu-1", "VOX", &["Vox 1"])])],
+    );
+    let (mut router, _own, rx) = served(dir.path(), Some(&first));
+    let a = attach(&mut router, 1);
+    router.handle(tick(1, "t1", "lu-1", "Bass", true));
+    a.take();
+    let _ = records(&rx);
+    let taken = router.sectors.store.doc().clone();
+    std::fs::remove_file(dir.path().join(SECTORS_FILE)).unwrap();
+    router.handle(RouterMsg::SectorsPoll);
+    assert_eq!(on_disk(dir.path(), SECTORS_FILE), taken);
+    assert_eq!(on_disk(dir.path(), PREV_FILE), first, "the undo kept");
+    assert_eq!(router.sectors.store.doc(), &taken);
+    assert!(!router.sectors.store.missing());
+    assert_eq!(told(&a), vec![], "the document did not change");
+    assert_eq!(
+        sector_records(&rx),
+        vec![
+            json!({"ev": "sectors", "what": "file", "client": null, "peer": null,
+                   "rev": 5, "why": "deleted"})
+        ]
+    );
+    router.handle(RouterMsg::SectorsPoll);
+    assert_eq!(sector_records(&rx), Vec::<Value>::new(), "once");
+}
+
 /// A frame of one page `p`: the tag group FX, then an untitled group of
 /// one band strip by name, Klavir.
 fn tagged_frame() -> Value {

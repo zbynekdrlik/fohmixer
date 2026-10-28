@@ -386,18 +386,34 @@ mod tests {
     }
 
     #[test]
-    fn a_file_removed_is_missing_and_a_new_one_is_taken() {
+    fn a_file_removed_is_written_back_from_the_served_document() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), SECTORS_FILE, &doc(2, &["Vox 1"]));
+        write(dir.path(), PREV_FILE, &doc(1, &[]));
         let mut store = SectorStore::open(dir.path());
         std::fs::remove_file(dir.path().join(SECTORS_FILE)).unwrap();
+        // After the seed only the pages change the document (spec §2): the
+        // one served goes back on disk, its undo kept, nothing seeded.
+        assert_eq!(store.poll(), Some(Polled::Restored));
+        assert!(!store.missing(), "no seed over the owner's arrangement");
+        assert_eq!(read(dir.path(), SECTORS_FILE), doc(2, &["Vox 1"]));
+        assert_eq!(store.doc(), &doc(2, &["Vox 1"]), "still served");
+        assert!(store.has_prev());
+        assert_eq!(read(dir.path(), PREV_FILE), doc(1, &[]));
+        assert_eq!(store.poll(), None, "its own write");
+        // A new file after it is a hand edit as any.
+        write(dir.path(), SECTORS_FILE, &doc(2, &["Bass"]));
+        assert_eq!(store.poll(), Some(Polled::Taken));
+        assert_eq!(store.doc(), &doc(3, &["Bass"]));
+    }
+
+    #[test]
+    fn a_file_missing_at_start_stays_missing_until_the_seed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = SectorStore::open(dir.path());
         assert_eq!(store.poll(), None);
         assert!(store.missing());
-        assert_eq!(store.doc(), &doc(2, &["Vox 1"]), "still served");
-        write(dir.path(), SECTORS_FILE, &doc(2, &["Vox 1"]));
-        assert_eq!(store.poll(), Some(Polled::Taken), "the same bytes, back");
-        assert!(!store.missing());
-        assert_eq!(store.doc(), &doc(3, &["Vox 1"]));
+        assert!(!dir.path().join(SECTORS_FILE).exists(), "nothing written");
     }
 
     #[test]
