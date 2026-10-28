@@ -26,6 +26,8 @@ pub enum Polled {
     Taken,
     Refused(String),
     Unreadable(String),
+    /// The file was removed and is written back from the document served.
+    Restored,
 }
 
 /// The document as served, the version before the last change, and what
@@ -35,7 +37,8 @@ pub struct SectorStore {
     dir: PathBuf,
     doc: SectorsDoc,
     prev: Option<SectorsDoc>,
-    /// No `sectors.json` on disk (the seed may write the first one).
+    /// No `sectors.json` on disk since the start (the seed may write the
+    /// first one); a file removed later is written back, never seeded.
     missing: bool,
     /// The file's bytes as last read or written: a poll that reads them
     /// again takes nothing (the store's own write, a rewrite in place).
@@ -131,18 +134,16 @@ impl SectorStore {
     /// Reads the file again: a new document (a hand edit) is taken at
     /// [`served_rev`] and the one before it kept as the previous version;
     /// a bad one is refused and the last good one stays. Bytes the store
-    /// already knows take nothing; a missing file only marks it missing. A
+    /// already knows take nothing. A file missing since the start waits for
+    /// the seed; one removed later is written back from the document served
+    /// ([`Polled::Restored`]: after the seed only the pages change it). A
     /// file that cannot be read (on the PC another program holding it)
     /// keeps the bytes known, so the same bytes read later are no change:
     /// [`Polled::Unreadable`] once, then nothing until a read succeeds.
     pub fn poll(&mut self) -> Option<Polled> {
         let bytes = match std::fs::read(self.path(SECTORS_FILE)) {
             Ok(bytes) => bytes,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                self.missing = true;
-                self.known = None;
-                return None;
-            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return self.gone(),
             Err(e) => return self.unreadable(e.to_string()),
         };
         self.failing = false;
@@ -169,6 +170,27 @@ impl SectorStore {
                 self.error = Some(why.clone());
                 Some(Polled::Refused(why))
             }
+        }
+    }
+
+    /// No `sectors.json`: missing since the start (nothing read or written
+    /// yet), it waits for the seed; removed since, the document served is
+    /// written back, its undo kept.
+    fn gone(&mut self) -> Option<Polled> {
+        if self.known.is_none() {
+            return None;
+        }
+        let written = text_of(&self.doc).and_then(|text| {
+            crate::atomic_write(&self.path(SECTORS_FILE), &text)?;
+            Ok(text)
+        });
+        match written {
+            Ok(text) => {
+                self.known = Some(text.into_bytes());
+                self.failing = false;
+                Some(Polled::Restored)
+            }
+            Err(e) => self.unreadable(e.to_string()),
         }
     }
 

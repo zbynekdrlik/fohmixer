@@ -63,6 +63,10 @@ pub(super) fn refused_line(why: &str) -> String {
     format!("sectors.json is refused, the last good document stays served: {why}")
 }
 
+/// The warn line of a `sectors.json` removed while the hub runs.
+pub(super) const RESTORED_LINE: &str =
+    "sectors.json was removed; it is written back from the document served";
+
 /// The warn line of a file the poll could not read.
 pub(super) fn unreadable_line(why: &str) -> String {
     format!(
@@ -226,7 +230,8 @@ impl Router {
 
     /// The file read again (the layout poll's tick): a hand edit is
     /// recorded and told; a bad one is logged and the last good document
-    /// stays. Then the seed, when it is due (a file removed).
+    /// stays; a removed one is written back and recorded (`file`, `why:
+    /// deleted`). Then the seed, when it is due (no file since the start).
     pub(super) fn sectors_poll(&mut self) {
         match self.sectors.store.poll() {
             Some(Polled::Taken) => {
@@ -235,6 +240,10 @@ impl Router {
             }
             Some(Polled::Refused(why)) => tracing::warn!("{}", refused_line(&why)),
             Some(Polled::Unreadable(why)) => tracing::warn!("{}", unreadable_line(&why)),
+            Some(Polled::Restored) => {
+                tracing::warn!("{}", RESTORED_LINE);
+                self.sectors_record("file", None, json!({"why": "deleted"}));
+            }
             None => {}
         }
         self.sectors_seed_if_due();
