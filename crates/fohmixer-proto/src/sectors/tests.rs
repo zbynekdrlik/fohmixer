@@ -177,6 +177,25 @@ fn validate_takes_8_characters_and_refuses_9() {
 }
 
 #[test]
+fn validate_refuses_a_sector_listed_with_no_layout() {
+    // A hand edit's `"rd": []` names a sector with nothing to show: every
+    // ARRANGE save would be refused `invalid` (a sector holds at least one
+    // layout), so the file itself is refused (#148 review).
+    let listed: SectorsDoc = serde_json::from_str(
+        r#"{"rev": 3, "sectors": {"lu": [{"id": "lu-1", "title": "VOX", "strips": []}], "rd": []}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        listed.validate(),
+        vec!["sector rd has no layout".to_string()]
+    );
+    // The empty document names no sector, so it is valid; so is a seed.
+    assert_eq!(SectorsDoc::empty().validate(), Vec::<String>::new());
+    let one = doc(1, vec![(SectorId::Rd, vec![sl("rd-1", "MAIN", vec![])])]);
+    assert_eq!(one.validate(), Vec::<String>::new());
+}
+
+#[test]
 fn validate_refuses_an_empty_id_or_title_and_a_strip_twice() {
     let empty_id = doc(1, vec![(SectorId::Lu, vec![sl(" ", "VOX", vec![])])]);
     assert_eq!(
@@ -526,22 +545,21 @@ fn ordered() -> SectorsDoc {
     )
 }
 
-fn order(layout: &str, strips: &[&str]) -> SectorOrder {
-    SectorOrder {
-        layout: layout.to_string(),
-        strips: strips.iter().map(|s| Some(band(s))).collect(),
+/// `before`'s sectors with these layouts' slots replaced, `""` an empty
+/// slot (ARRANGE's drags).
+fn reordered(before: &SectorsDoc, orders: &[(&str, Vec<&str>)]) -> Sectors {
+    let mut sectors = before.sectors.clone();
+    for (id, labels) in orders {
+        for layout in sectors.values_mut().flatten() {
+            if layout.id == *id {
+                layout.strips = labels
+                    .iter()
+                    .map(|s| (!s.is_empty()).then(|| band(s)))
+                    .collect();
+            }
+        }
     }
-}
-
-/// The order of these slots, `""` an empty slot.
-fn gapped(layout: &str, strips: &[&str]) -> SectorOrder {
-    SectorOrder {
-        layout: layout.to_string(),
-        strips: strips
-            .iter()
-            .map(|s| (!s.is_empty()).then(|| band(s)))
-            .collect(),
-    }
+    sectors
 }
 
 /// The pool of `ordered`'s strips and a wide `Wide`.
@@ -560,16 +578,19 @@ fn ordered_pool_layout() -> Layout {
 }
 
 #[test]
-fn orders_take_the_same_set_at_the_documents_rev() {
+fn an_edit_takes_the_same_set_at_the_documents_rev() {
     let before = ordered();
     let layout = ordered_pool_layout();
     let pooled = pool(&layout);
-    let after = orders(
+    let after = edit(
         &before,
-        &[
-            order("lu-1", &["Vox 3", "Vox 1", "Vox 2"]),
-            order("ru-1", &["Bass", "Klavir"]),
-        ],
+        &reordered(
+            &before,
+            &[
+                ("lu-1", vec!["Vox 3", "Vox 1", "Vox 2"]),
+                ("ru-1", vec!["Bass", "Klavir"]),
+            ],
+        ),
         7,
         &pooled,
     )
@@ -587,68 +608,97 @@ fn orders_take_the_same_set_at_the_documents_rev() {
         after.layouts(SectorId::Ru),
         &[sl("ru-1", "BAND", vec![band("Bass"), band("Klavir")])]
     );
-    let one = orders(&before, &[order("ru-1", &["Bass", "Klavir"])], 7, &pooled).unwrap();
+    let one = edit(
+        &before,
+        &reordered(&before, &[("ru-1", vec!["Bass", "Klavir"])]),
+        7,
+        &pooled,
+    )
+    .unwrap();
     assert_eq!(one.layouts(SectorId::Lu), before.layouts(SectorId::Lu));
     assert_eq!(one.rev, 8);
 }
 
 #[test]
-fn orders_are_stale_for_another_rev_another_set_a_layout_twice_or_an_unknown_layout() {
+fn an_edit_is_stale_for_another_rev_another_set_or_other_sectors() {
     let before = ordered();
     let layout = ordered_pool_layout();
     let pooled = pool(&layout);
-    let stale = |list: &[SectorOrder], rev: u64| orders(&before, list, rev, &pooled);
-    let good = order("ru-1", &["Bass", "Klavir"]);
-    assert_eq!(stale(std::slice::from_ref(&good), 6), Err(Refusal::Stale));
-    assert_eq!(stale(std::slice::from_ref(&good), 8), Err(Refusal::Stale));
+    let stale = |sectors: &Sectors, rev: u64| edit(&before, sectors, rev, &pooled);
+    let good = reordered(&before, &[("ru-1", vec!["Bass", "Klavir"])]);
+    assert_eq!(stale(&good, 6), Err(Refusal::Stale));
+    assert_eq!(stale(&good, 8), Err(Refusal::Stale));
+    assert!(stale(&good, 7).is_ok());
     assert_eq!(
-        stale(&[order("ru-1", &["Bass"])], 7),
+        stale(&reordered(&before, &[("ru-1", vec!["Bass"])]), 7),
         Err(Refusal::Stale),
         "one missing"
     );
     assert_eq!(
-        stale(&[order("ru-1", &["Bass", "Klavir", "Vox 1"])], 7),
+        stale(
+            &reordered(&before, &[("ru-1", vec!["Bass", "Klavir", "Vox 1"])]),
+            7
+        ),
         Err(Refusal::Stale),
         "one more"
     );
     assert_eq!(
-        stale(&[order("ru-1", &["Bass", "Bass"])], 7),
+        stale(&reordered(&before, &[("ru-1", vec!["Bass", "Bass"])]), 7),
         Err(Refusal::Stale),
         "the same length, another set"
     );
+    // A sector the document does not name, or one it names left out.
+    let mut more = good.clone();
+    more.insert(SectorId::Rd, vec![sl("rd-1", "NEW", Vec::new())]);
+    assert_eq!(stale(&more, 7), Err(Refusal::Stale), "a sector more");
+    let mut less = good.clone();
+    less.remove(&SectorId::Lu);
+    assert_eq!(stale(&less, 7), Err(Refusal::Stale), "a sector less");
+    // A layout moved to another sector.
+    let mut moved = good.clone();
+    let lu = moved.remove(&SectorId::Lu).unwrap();
+    moved.insert(SectorId::Lu, vec![sl("lu-9", "NEW", Vec::new())]);
+    moved.get_mut(&SectorId::Ru).unwrap().extend(lu);
+    assert_eq!(stale(&moved, 7), Err(Refusal::Stale), "lu-1 moved to ru");
+    // A new layout starts empty: one with a strip, even a gap before it,
+    // is no edit a page makes.
+    let mut filled = good.clone();
+    filled.get_mut(&SectorId::Lu).unwrap().push(slotted(
+        "lu-2",
+        "NEW",
+        vec![None, Some(band("Bass"))],
+    ));
     assert_eq!(
-        stale(&[good.clone(), order("ru-1", &["Klavir", "Bass"])], 7),
+        stale(&filled, 7),
         Err(Refusal::Stale),
-        "a layout twice"
-    );
-    assert_eq!(
-        stale(&[good, order("x", &[])], 7),
-        Err(Refusal::Stale),
-        "an unknown layout"
+        "a new layout filled"
     );
 }
 
 #[test]
-fn orders_of_no_layout_are_refused_empty() {
+fn an_edit_that_changes_nothing_is_refused_empty() {
     let before = ordered();
     assert_eq!(
-        orders(&before, &[], 7, &[])
+        edit(&before, &before.sectors, 7, &[])
             .map_err(Refusal::text)
             .map(|d| d.rev),
         Err("EMPTY"),
         "nothing to change takes no revision and no undo step"
     );
+    // Trailing empty slots change nothing either.
+    let trailing = reordered(&before, &[("ru-1", vec!["Klavir", "Bass", "", ""])]);
+    assert_eq!(edit(&before, &trailing, 7, &[]), Err(Refusal::Empty));
 }
 
 #[test]
-fn an_order_puts_a_strip_at_the_sectors_right_edge_with_gaps_before_it() {
+fn an_edit_puts_a_strip_at_the_sectors_right_edge_with_gaps_before_it() {
     let before = ordered();
     let layout = ordered_pool_layout();
     let pooled = pool(&layout);
     // BAND's case: Klavir stays first, Bass goes to the sixth slot.
-    let after = orders(
+    let after = edit(
         &before,
-        &[gapped("ru-1", &["Klavir", "", "", "", "", "Bass"])],
+        &reordered(&before, &[("ru-1", vec!["Klavir", "", "", "", "", "Bass"])]),
         7,
         &pooled,
     )
@@ -672,9 +722,9 @@ fn an_order_puts_a_strip_at_the_sectors_right_edge_with_gaps_before_it() {
                {"instance": "band", "label": "Bass"}])
     );
     // Trailing empty slots are dropped; the gaps do not count for the set.
-    let trailing = orders(
+    let trailing = edit(
         &before,
-        &[gapped("ru-1", &["", "Bass", "Klavir", "", ""])],
+        &reordered(&before, &[("ru-1", vec!["", "Bass", "Klavir", "", ""])]),
         7,
         &pooled,
     )
@@ -684,9 +734,9 @@ fn an_order_puts_a_strip_at_the_sectors_right_edge_with_gaps_before_it() {
         vec![None, bass, klavir]
     );
     assert_eq!(
-        orders(
+        edit(
             &before,
-            &[gapped("ru-1", &["Bass", "", "Vox 1"])],
+            &reordered(&before, &[("ru-1", vec!["Bass", "", "Vox 1"])]),
             7,
             &pooled
         ),
@@ -696,24 +746,27 @@ fn an_order_puts_a_strip_at_the_sectors_right_edge_with_gaps_before_it() {
 }
 
 #[test]
-fn an_order_past_6_units_is_full_unless_it_grows_nothing() {
+fn an_edit_past_6_units_is_full_unless_it_grows_nothing() {
     let layout = ordered_pool_layout();
     let pooled = pool(&layout);
     let before = ordered();
     // Six slots hold 6 units: taken; a seventh is FULL.
     assert!(
-        orders(
+        edit(
             &before,
-            &[gapped("ru-1", &["Klavir", "", "", "", "", "Bass"])],
+            &reordered(&before, &[("ru-1", vec!["Klavir", "", "", "", "", "Bass"])]),
             7,
             &pooled
         )
         .is_ok()
     );
     assert_eq!(
-        orders(
+        edit(
             &before,
-            &[gapped("ru-1", &["Klavir", "", "", "", "", "", "Bass"])],
+            &reordered(
+                &before,
+                &[("ru-1", vec!["Klavir", "", "", "", "", "", "Bass"])]
+            ),
             7,
             &pooled
         ),
@@ -739,18 +792,24 @@ fn an_order_past_6_units_is_full_unless_it_grows_nothing() {
         )],
     );
     assert!(
-        orders(
+        edit(
             &over,
-            &[gapped("ru-1", &["Bass", "", "", "", "", "", "Klavir"])],
+            &reordered(
+                &over,
+                &[("ru-1", vec!["Bass", "", "", "", "", "", "Klavir"])]
+            ),
             7,
             &pooled
         )
         .is_ok()
     );
     assert_eq!(
-        orders(
+        edit(
             &over,
-            &[gapped("ru-1", &["Bass", "", "", "", "", "", "", "Klavir"])],
+            &reordered(
+                &over,
+                &[("ru-1", vec!["Bass", "", "", "", "", "", "", "Klavir"])]
+            ),
             7,
             &pooled
         ),
@@ -760,6 +819,160 @@ fn an_order_past_6_units_is_full_unless_it_grows_nothing() {
     assert!(!grows_past_full(5.0, 6.0));
     assert!(!grows_past_full(7.0, 7.0));
     assert!(grows_past_full(7.0, 7.0_f64.next_up()));
+}
+
+#[test]
+fn an_edit_renames_adds_and_removes_layouts_as_one_change() {
+    let before = ordered();
+    let layout = ordered_pool_layout();
+    let pooled = pool(&layout);
+    // lu-1 renamed, lu-2 added (empty), ru-1 reordered: one revision.
+    let mut sectors = reordered(&before, &[("ru-1", vec!["Bass", "Klavir"])]);
+    let lu = sectors.get_mut(&SectorId::Lu).unwrap();
+    lu[0].title = "VOCALS".to_string();
+    lu.push(sl("lu-2", "NEW", Vec::new()));
+    let after = edit(&before, &sectors, 7, &pooled).unwrap();
+    assert_eq!(after.rev, 8);
+    assert_eq!(
+        after.layouts(SectorId::Lu),
+        &[
+            sl(
+                "lu-1",
+                "VOCALS",
+                vec![band("Vox 1"), band("Vox 2"), band("Vox 3")]
+            ),
+            sl("lu-2", "NEW", Vec::new()),
+        ]
+    );
+    assert_eq!(
+        edit_counts(&before, &after),
+        EditCounts {
+            added: 1,
+            removed: 0,
+            renamed: 1,
+            reordered: 1,
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(edit_counts(&before, &after)).unwrap(),
+        json!({"added": 1, "removed": 0, "renamed": 1, "reordered": 1})
+    );
+    // lu-1 removed (its strips simply leave it): lu-2 stays, alone.
+    let mut gone = after.sectors.clone();
+    gone.get_mut(&SectorId::Lu).unwrap().remove(0);
+    let removed = edit(&after, &gone, 8, &pooled).unwrap();
+    assert_eq!(removed.rev, 9);
+    assert_eq!(
+        removed.layouts(SectorId::Lu),
+        &[sl("lu-2", "NEW", Vec::new())]
+    );
+    assert_eq!(removed.strip_count(), 2, "Klavir and Bass");
+    assert_eq!(
+        edit_counts(&after, &removed),
+        EditCounts {
+            added: 0,
+            removed: 1,
+            renamed: 0,
+            reordered: 0,
+        }
+    );
+    // A new layout's gaps are trimmed away.
+    let mut gaps = before.sectors.clone();
+    gaps.get_mut(&SectorId::Ru)
+        .unwrap()
+        .push(slotted("ru-2", "NEW 2", vec![None, None]));
+    let added = edit(&before, &gaps, 7, &pooled).unwrap();
+    assert_eq!(
+        added.layouts(SectorId::Ru)[1],
+        sl("ru-2", "NEW 2", Vec::new())
+    );
+}
+
+#[test]
+fn a_new_or_changed_title_is_1_to_8_upper_case_characters() {
+    assert!(title_ok("MONITORS"));
+    assert!(title_ok("NEW 2"));
+    assert!(title_ok("A"));
+    assert!(title_ok("ŽIVÉ"));
+    assert!(!title_ok("MONITORS1"), "9 characters");
+    assert!(!title_ok(""));
+    assert!(!title_ok(" "));
+    assert!(!title_ok(" A"), "a space before");
+    assert!(!title_ok("A "), "a space after");
+    assert!(!title_ok("Vox"), "lower case");
+    assert!(!title_ok("A\u{7}"), "a control character");
+    let before = ordered();
+    let renamed = |title: &str| {
+        let mut sectors = before.sectors.clone();
+        sectors.get_mut(&SectorId::Lu).unwrap()[0].title = title.to_string();
+        edit(&before, &sectors, 7, &[])
+    };
+    assert!(renamed("MONITORS").is_ok());
+    assert_eq!(renamed("Vocals"), Err(Refusal::Invalid));
+    assert_eq!(renamed("MONITORS1"), Err(Refusal::Invalid));
+    assert_eq!(renamed(""), Err(Refusal::Invalid));
+    let added = |title: &str| {
+        let mut sectors = before.sectors.clone();
+        sectors
+            .get_mut(&SectorId::Lu)
+            .unwrap()
+            .push(sl("lu-2", title, Vec::new()));
+        edit(&before, &sectors, 7, &[])
+    };
+    assert!(added("NEW").is_ok());
+    assert_eq!(added("new"), Err(Refusal::Invalid));
+    // A title the edit leaves as it was (a seed's from a group) is kept
+    // whatever its case.
+    let mut seeded = before.clone();
+    seeded.sectors.get_mut(&SectorId::Ru).unwrap()[0].title = "Band".to_string();
+    assert!(
+        edit(
+            &seeded,
+            &reordered(&seeded, &[("ru-1", vec!["Bass", "Klavir"])]),
+            7,
+            &[]
+        )
+        .is_ok()
+    );
+    assert_eq!(Refusal::Invalid.text(), "invalid");
+}
+
+#[test]
+fn a_sector_keeps_1_to_4_layouts_and_every_id_once() {
+    assert_eq!(MAX_LAYOUTS, 4);
+    assert!(!layouts_fit(0, 1));
+    assert!(layouts_fit(1, 1));
+    assert!(layouts_fit(4, 1));
+    assert!(!layouts_fit(5, 1));
+    assert!(!layouts_fit(5, 4));
+    assert!(layouts_fit(5, 5), "a hand edit's five kept");
+    assert!(!layouts_fit(6, 5));
+    let before = ordered();
+    let with = |extra: Vec<SectorLayout>| {
+        let mut sectors = before.sectors.clone();
+        sectors.get_mut(&SectorId::Lu).unwrap().extend(extra);
+        edit(&before, &sectors, 7, &[])
+    };
+    let new = |id: &str| sl(id, "NEW", Vec::new());
+    assert!(with(vec![new("lu-2"), new("lu-3"), new("lu-4")]).is_ok());
+    assert_eq!(
+        with(vec![new("lu-2"), new("lu-3"), new("lu-4"), new("lu-5")]),
+        Err(Refusal::Invalid),
+        "a fifth layout"
+    );
+    assert_eq!(
+        with(vec![new("lu-2"), new("lu-2")]),
+        Err(Refusal::Invalid),
+        "an id twice"
+    );
+    assert_eq!(with(vec![new("")]), Err(Refusal::Invalid), "an empty id");
+    let mut none = before.sectors.clone();
+    none.insert(SectorId::Lu, Vec::new());
+    assert_eq!(
+        edit(&before, &none, 7, &[]),
+        Err(Refusal::Invalid),
+        "no layout left"
+    );
 }
 
 #[test]

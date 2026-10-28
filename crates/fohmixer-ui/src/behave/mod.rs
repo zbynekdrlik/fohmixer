@@ -17,6 +17,7 @@
 
 pub mod ableset;
 pub mod arrange_drag;
+pub mod arrange_edit;
 pub mod autotune;
 pub mod colour;
 pub mod db_text;

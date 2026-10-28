@@ -15,8 +15,10 @@
 //! dimmed and inert, every position a sector can show is a cell, the empty
 //! ones calm dashed outlines, a strip is dragged within its sector onto an
 //! empty cell (its old place left empty) or another strip (the two swap),
-//! and a second tap saves; nothing reaches Live) and ↶ (the hub's undo of
-//! the last change,
+//! and a second tap saves; nothing reaches Live; in the mode the LAYOUTS
+//! block stays live and renames, adds and removes layouts, mockup v2,
+//! `behave::arrange_edit`, saved with the same tap) and ↶ (the hub's undo
+//! of the last change,
 //! dim while the hub holds no version before it), then the arrows of a side
 //! that does not fit, the rail and the global controls. No strip draws its
 //! instance pill here (it costs 16 px of travel); a layout that mixes Live
@@ -32,10 +34,13 @@ use fohmixer_proto::layout::{Control, Layout, Page};
 use fohmixer_proto::sectors::{SectorId, SectorsDoc, StripRef, pool};
 use leptos::html;
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 
 use crate::arrange::sectors::{SectorArrangement, SectorCell, WindowKey, arrange_sectors};
 use crate::arrange::{Arrangement, LineKey, METRICS, Shift, Sides, narrow};
 use crate::behave::arrange_drag::{Arrange, ArrangeEnd, Drag, Held, NoteTimer, Tap, arrange_note};
+use crate::behave::arrange_edit::{REMOVE_ASK, TabRow, TabTap, field_text, tab_rows};
 use crate::binding::sectors::{
     Picks, picked, pool_controls, sector_instances, sector_name, sector_side,
 };
@@ -415,7 +420,7 @@ pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
                     "✕ CLOSE"
                 </button>
                 <ColumnHead />
-                <LayoutsBlock />
+                <LayoutsBlock shown=shown_doc />
                 <div class="sector-actions">
                     <ArrangeButton carrier=carrier refused=refused />
                     <UndoButton />
@@ -650,17 +655,24 @@ fn ArrangeCover(
         let Some((carry, x)) = drop else {
             return;
         };
+        // The layout its sector shows now: the edit's (a page in ARRANGE).
         let picks = nav.picks.try_get_untracked().unwrap_or_default();
-        let _ = store.sectors.try_with_untracked(|told| {
-            let Some(layout) = told
-                .shown()
-                .and_then(|told| picked(&told.doc, &picks, carry.sector))
-            else {
-                return;
-            };
-            change_mode(mode, |m| {
-                m.dropped_in(layout, &carry.spots, carry.slot, &carry.strip, x);
-            });
+        let shown = store
+            .sectors
+            .try_with_untracked(|told| {
+                told.shown()
+                    .and_then(|told| mode.try_with_untracked(|m| m.applied(&told.doc)))
+            })
+            .flatten();
+        let Some(layout) = shown
+            .as_ref()
+            .and_then(|doc| picked(doc, &picks, carry.sector))
+            .map(|layout| layout.id.clone())
+        else {
+            return;
+        };
+        let _ = change_mode(mode, |m| {
+            m.dropped_in(&layout, &carry.spots, carry.slot, &carry.strip, x);
         });
     };
     let on_cancel = move |ev: web_sys::PointerEvent| {
@@ -685,13 +697,76 @@ fn ArrangeCover(
     }
 }
 
+/// A pointer listener of the page (capture phase, removed with the block).
+type DownListener = Closure<dyn FnMut(web_sys::PointerEvent)>;
+
+/// Where a down keeps a pending REMOVE?: the asking tab and every ✕.
+const ASK_SPOT: &str = ".tab.confirm, [data-testid=\"remove\"]";
+
+/// Where a down keeps a rename going: its field.
+const FIELD_SPOT: &str = ".tab-input";
+
 /// The LAYOUTS block: the sectors' cells as the screen has them (`lu ru`
-/// over `ld rd`).
+/// over `ld rd`), from `shown` (the hub's document, ARRANGE's edit while
+/// the mode is on). In ARRANGE a down anywhere off the asking tab and the
+/// ✕ keys drops a pending REMOVE?, and one off the field ends a rename
+/// keeping its text (`Edit::outside_down`), before the down's own handler:
+/// a capture-phase listener on the window.
 #[component]
-fn LayoutsBlock() -> impl IntoView {
+fn LayoutsBlock(shown: Memo<Option<SectorsDoc>>) -> impl IntoView {
+    let nav = expect_context::<Nav>();
+    let mode = nav.arrange;
+    let listener = Closure::wrap(Box::new(move |ev: web_sys::PointerEvent| {
+        let pending = mode
+            .try_with_untracked(|m| {
+                m.edit_now()
+                    .is_some_and(|e| e.confirming.is_some() || e.renaming.is_some())
+            })
+            .unwrap_or(false);
+        if !pending {
+            return;
+        }
+        let target = ev
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok());
+        let within = |spot: &str| {
+            target
+                .as_ref()
+                .and_then(|t| t.closest(spot).ok().flatten())
+                .is_some()
+        };
+        let (on_ask, on_field) = (within(ASK_SPOT), within(FIELD_SPOT));
+        let _ = change_mode(mode, |m| {
+            if let Some(edit) = m.edit() {
+                edit.outside_down(on_ask, on_field);
+            }
+        });
+        if !on_field {
+            blur_field();
+        }
+    }) as Box<dyn FnMut(web_sys::PointerEvent)>);
+    if let Some(window) = web_sys::window() {
+        let _ = window.add_event_listener_with_callback_and_bool(
+            "pointerdown",
+            listener.as_ref().unchecked_ref(),
+            true,
+        );
+    }
+    let any_down = StoredValue::new_local(Some::<DownListener>(listener));
+    on_cleanup(move || {
+        if let (Some(Some(listener)), Some(window)) =
+            (any_down.try_update_value(Option::take), web_sys::window())
+        {
+            let _ = window.remove_event_listener_with_callback_and_bool(
+                "pointerdown",
+                listener.as_ref().unchecked_ref(),
+                true,
+            );
+        }
+    });
     let cells = [SectorId::Lu, SectorId::Ru, SectorId::Ld, SectorId::Rd]
         .into_iter()
-        .map(|sector| view! { <LayoutCell sector=sector /> })
+        .map(|sector| view! { <LayoutCell sector=sector shown=shown /> })
         .collect_view();
     view! {
         <div class="cap-title" data-testid="sector-layouts-title">"Layouts"</div>
@@ -701,80 +776,266 @@ fn LayoutsBlock() -> impl IntoView {
     }
 }
 
-/// A sector's cell of the block: a tab per layout, the shown one marked; a
-/// tap pages the sector to it (on `pointerdown`).
+/// A rename field that has the focus lets go of it (its rename ended
+/// elsewhere: the keyboard goes down).
+fn blur_field() {
+    let active = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.active_element());
+    if let Some(field) = active
+        .filter(|el| el.matches(FIELD_SPOT).unwrap_or(false))
+        .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok())
+    {
+        let _ = field.blur();
+    }
+}
+
+/// A sector's cell of the block: a tab per layout of `shown`, the shown one
+/// marked; a tap pages the sector to it (on `pointerdown`). In ARRANGE
+/// each tab carries ✎ and ✕ (none on the sector's last layout) and the
+/// cell a `+` while it holds fewer than four layouts (`TabRow`,
+/// `Edit::can_add`); a new layout is shown at once on this device.
 #[component]
-fn LayoutCell(sector: SectorId) -> impl IntoView {
+fn LayoutCell(sector: SectorId, shown: Memo<Option<SectorsDoc>>) -> impl IntoView {
     let nav = expect_context::<Nav>();
-    let store = nav.store;
-    let tabs = Memo::new(move |_| {
-        store
-            .sectors
-            .try_with(|told| {
-                told.shown()
-                    .map(|told| {
-                        told.doc
-                            .layouts(sector)
-                            .iter()
-                            .map(|l| (l.id.clone(), l.title.clone()))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default()
-            })
-            .unwrap_or_default()
-    });
-    let selected = Memo::new(move |_| {
-        store
-            .sectors
-            .try_with(|told| {
-                let told = told.shown()?;
+    let mode = nav.arrange;
+    let rows = Memo::new(move |_| {
+        shown
+            .try_with(|doc| {
+                let doc = doc.as_ref()?;
                 nav.picks
-                    .try_with(|picks| picked(&told.doc, picks, sector).map(|l| l.id.clone()))
+                    .try_with(|picks| mode.try_with(|m| tab_rows(doc, picks, sector, m.edit_now())))
                     .flatten()
             })
             .flatten()
+            .unwrap_or_default()
     });
-    let tab = move |(id, title): (String, String)| {
-        let lit = {
-            let id = id.clone();
-            move || selected.try_get().flatten().as_deref() == Some(id.as_str())
-        };
-        let pressed = lit.clone();
-        let tap = id.clone();
-        // A tab owns its touches (#43 PR G); it writes no key.
-        let no_keys: Vec<String> = Vec::new();
-        view! {
-            <button
-                type="button"
-                class="tab"
-                use:owns_touches=no_keys
-                class:selected=lit
-                data-testid="sector-tab"
-                data-layout=id
-                aria-pressed=move || pressed().to_string()
-                on:pointerdown=move |_| nav.pick(sector, &tap)
-            >
-                {title}
-            </button>
+    let ids = Memo::new(move |_| {
+        rows.try_with(|rows| rows.iter().map(|r| r.id.clone()).collect::<Vec<_>>())
+            .unwrap_or_default()
+    });
+    let can_add = Memo::new(move |_| {
+        mode.try_with(|m| m.edit_now().is_some_and(|e| e.can_add(sector)))
+            .unwrap_or(false)
+    });
+    let on_add = move |ev: web_sys::PointerEvent| {
+        ev.prevent_default();
+        let added = change_mode(mode, |m| m.edit().and_then(|e| e.add(sector))).flatten();
+        if let Some(id) = added {
+            nav.pick(sector, &id);
         }
     };
+    let add = move || {
+        can_add.try_get().unwrap_or(false).then(|| {
+            // It owns its touches (#43 PR G); it writes no key.
+            let no_keys: Vec<String> = Vec::new();
+            view! {
+                <button
+                    type="button"
+                    class="tab-add"
+                    use:owns_touches=no_keys
+                    data-testid="add-layout"
+                    aria-label="add a layout"
+                    on:pointerdown=on_add
+                >
+                    "+"
+                </button>
+            }
+        })
+    };
+    let tab = move |id: String| view! { <LayoutTab sector=sector layout=id rows=rows /> };
     view! {
         <div class="sec-cell" data-sector=sector.as_str() title=sector_name(sector)>
-            <For
-                each=move || tabs.try_get().unwrap_or_default()
-                key=|tab: &(String, String)| tab.clone()
-                children=tab
-            />
+            <For each=move || ids.try_get().unwrap_or_default() key=|id: &String| id.clone() children=tab />
+            {add}
         </div>
     }
 }
 
-/// ARRANGE (#148): a tap starts the reorder mode; the next one sends the
-/// changed layouts' orders as one `SectorOrders` and leaves once the hub's
-/// new document arrives (a refusal: at once, the hub's order shows again
-/// with a short note), or
-/// just leaves with nothing changed (`Arrange::tap`). Lit while on; it
-/// stays live while the rest of the column is inert.
+/// One layout's tab (keyed by its id, so a rename's field keeps its focus
+/// while its row changes): the tab (`REMOVE?` while its ✕ asks), its
+/// rename field (a real `<input>`: the iPad's keyboard; hidden until ✎,
+/// which fills it, focuses it and selects its text in the tap itself) and
+/// its ✎ ✕ keys (`sectors.css` shows them only in ARRANGE).
+#[component]
+fn LayoutTab(sector: SectorId, layout: String, rows: Memo<Vec<TabRow>>) -> impl IntoView {
+    let nav = expect_context::<Nav>();
+    let mode = nav.arrange;
+    let id_attr = layout.clone();
+    let tab_attr = layout.clone();
+    let id = StoredValue::new(layout);
+    let row = Memo::new(move |_| {
+        id.try_with_value(|id| {
+            rows.try_with(|rows| rows.iter().find(|r| r.id == *id).cloned())
+                .flatten()
+        })
+        .flatten()
+    });
+    let field = NodeRef::<html::Input>::new();
+    let flag = move |pick: fn(&TabRow) -> bool| {
+        row.try_with(|r| r.as_ref().is_some_and(pick))
+            .unwrap_or(false)
+    };
+    let asks = move || flag(|r| r.asks);
+    let lit = move || flag(|r| r.selected && !r.asks);
+    let renaming = move || flag(|r| r.renaming);
+    let removable = move || flag(|r| r.removable);
+    let text = move || {
+        row.try_with(|r| {
+            r.as_ref().map(|r| {
+                if r.asks {
+                    REMOVE_ASK.to_string()
+                } else {
+                    r.title.clone()
+                }
+            })
+        })
+        .flatten()
+        .unwrap_or_default()
+    };
+    let on_tab = move |ev: web_sys::PointerEvent| {
+        ev.prevent_default();
+        let Some(id) = id.try_get_value() else {
+            return;
+        };
+        let tapped = change_mode(mode, |m| m.edit().map(|e| e.tab_tapped(&id))).flatten();
+        if tapped != Some(TabTap::Removed) {
+            nav.pick(sector, &id);
+        }
+    };
+    let on_pen = move |ev: web_sys::PointerEvent| {
+        ev.prevent_default();
+        let Some(id) = id.try_get_value() else {
+            return;
+        };
+        let title = change_mode(mode, |m| m.edit().and_then(|e| e.rename_start(&id))).flatten();
+        if let (Some(title), Some(input)) = (title, field.try_get_untracked().flatten()) {
+            input.set_value(&title);
+            let _ = input.focus();
+            input.select();
+        }
+    };
+    let on_x = move |ev: web_sys::PointerEvent| {
+        ev.prevent_default();
+        let _ = id.try_with_value(|id| {
+            change_mode(mode, |m| {
+                if let Some(edit) = m.edit() {
+                    edit.ask_remove(id);
+                }
+            })
+        });
+    };
+    let on_input = move || {
+        let Some(input) = field.try_get_untracked().flatten() else {
+            return;
+        };
+        let value = input.value();
+        let shown = change_mode(mode, |m| m.edit().map(|e| e.typed(&value)))
+            .flatten()
+            .unwrap_or_else(|| field_text(&value));
+        if shown != value {
+            input.set_value(&shown);
+        }
+    };
+    let finish = move |keep: bool| {
+        let _ = id.try_with_value(|id| {
+            change_mode(mode, |m| {
+                if let Some(edit) = m.edit() {
+                    edit.rename_end_of(id, keep);
+                }
+            })
+        });
+    };
+    let on_key = move |ev: web_sys::KeyboardEvent| {
+        let keep = match ev.key().as_str() {
+            "Enter" => true,
+            "Escape" => false,
+            _ => return,
+        };
+        ev.prevent_default();
+        finish(keep);
+        if let Some(input) = field.try_get_untracked().flatten() {
+            let _ = input.blur();
+        }
+    };
+    let cross = move || {
+        removable().then(|| {
+            // It owns its touches (#43 PR G); it writes no key.
+            let no_keys: Vec<String> = Vec::new();
+            view! {
+                <button
+                    type="button"
+                    class="tool x"
+                    use:owns_touches=no_keys
+                    data-testid="remove"
+                    aria-label="remove the layout"
+                    on:pointerdown=on_x
+                >
+                    "✕"
+                </button>
+            }
+        })
+    };
+    // The tab and ✎ own their touches (#43 PR G); they write no key.
+    let tab_keys: Vec<String> = Vec::new();
+    let pen_keys: Vec<String> = Vec::new();
+    view! {
+        <div
+            class="lay-ed"
+            data-layout=id_attr
+            data-renaming=move || renaming().to_string()
+        >
+            <button
+                type="button"
+                class="tab"
+                use:owns_touches=tab_keys
+                class:selected=lit
+                class:confirm=asks
+                data-testid="sector-tab"
+                data-layout=tab_attr
+                aria-pressed=move || lit().to_string()
+                on:pointerdown=on_tab
+            >
+                {text}
+            </button>
+            <input
+                class="tab-input"
+                type="text"
+                node_ref=field
+                maxlength="8"
+                autocapitalize="characters"
+                autocomplete="off"
+                spellcheck="false"
+                enterkeyhint="done"
+                aria-label="layout name"
+                data-testid="rename-input"
+                on:input=move |_| on_input()
+                on:keydown=on_key
+                on:blur=move |_| finish(true)
+            />
+            <div class="lay-tools">
+                <button
+                    type="button"
+                    class="tool pen"
+                    use:owns_touches=pen_keys
+                    data-testid="rename"
+                    aria-label="rename the layout"
+                    on:pointerdown=on_pen
+                >
+                    "✎"
+                </button>
+                {cross}
+            </div>
+        </div>
+    }
+}
+
+/// ARRANGE (#148): a tap starts the edit mode; the next one sends every
+/// sector's layouts as one `SectorEdit` (a rename still in its field kept)
+/// and leaves once the hub's new document arrives (a refusal: at once, the
+/// hub's document shows again with a short note), or just leaves with
+/// nothing changed (`Arrange::tap`). Lit while on; it stays live, and so
+/// does the LAYOUTS block, while the rest of the column is inert.
 #[component]
 fn ArrangeButton(carrier: Carrier, refused: RwSignal<Option<&'static str>>) -> impl IntoView {
     let nav = expect_context::<Nav>();
@@ -794,14 +1055,14 @@ fn ArrangeButton(carrier: Carrier, refused: RwSignal<Option<&'static str>>) -> i
         let _ = refused.try_set(None);
         let tap = change_mode(mode, |m| m.tap(&doc)).flatten();
         carrier.leave();
-        if let Some(Tap::Send(orders, rev)) = tap {
+        if let Some(Tap::Send(sectors, rev)) = tap {
             let done: ResultFn = Box::new(move |outcome| {
                 let note = change_mode(mode, |m| m.heard(&outcome)).flatten();
                 if let Some(note) = note {
                     flash_note(refused, timer, note);
                 }
             });
-            store.sector_orders(orders, rev, Some(done));
+            store.sector_edit(sectors, rev, Some(done));
         }
     };
     let lit = move || on.try_get().unwrap_or(false);

@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use fohmixer_proto::client::{SectorsStatus, ServerMsg};
-use fohmixer_proto::sectors::{SectorId, SectorLayout, SectorOrder, SectorsDoc, StripRef};
+use fohmixer_proto::sectors::{SectorId, SectorLayout, Sectors, SectorsDoc, StripRef};
 use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -117,6 +117,29 @@ fn tick(client: u64, id: &str, layout: &str, label: &str, on: bool) -> RouterMsg
         layout: layout.into(),
         strip: band(label),
         on,
+    }
+}
+
+/// `before`'s sectors with these layouts' slots replaced, `""` an empty
+/// slot (ARRANGE's drags).
+fn reordered(before: &SectorsDoc, orders: &[(&str, Vec<&str>)]) -> Sectors {
+    let mut sectors = before.sectors.clone();
+    for (id, labels) in orders {
+        for layout in sectors.values_mut().flatten() {
+            if layout.id == *id {
+                layout.strips = labels.iter().map(|l| at(l)).collect();
+            }
+        }
+    }
+    sectors
+}
+
+fn edit_msg(client: u64, id: &str, sectors: Sectors, rev: u64) -> RouterMsg {
+    RouterMsg::SectorEdit {
+        client,
+        id: id.into(),
+        sectors,
+        rev,
     }
 }
 
@@ -268,7 +291,7 @@ async fn two_ticks_into_the_last_unit_take_one_and_refuse_the_other() {
 }
 
 #[tokio::test]
-async fn an_order_with_an_old_rev_is_refused_stale() {
+async fn an_edit_with_an_old_rev_is_refused_stale() {
     let dir = tempfile::tempdir().unwrap();
     let first = doc(
         4,
@@ -281,22 +304,19 @@ async fn an_order_with_an_old_rev_is_refused_stale() {
     let a = attach(&mut router, 1);
     a.take();
     let _ = records(&rx);
-    router.handle(RouterMsg::SectorOrders {
-        client: 1,
-        id: "o1".into(),
-        orders: vec![SectorOrder {
-            layout: "lu-1".into(),
-            strips: vec![at("Vox 2"), at("Vox 1")],
-        }],
-        rev: 3,
-    });
+    router.handle(edit_msg(
+        1,
+        "o1",
+        reordered(&first, &[("lu-1", vec!["Vox 2", "Vox 1"])]),
+        3,
+    ));
     assert_eq!(a.take().unwrap(), vec![error("o1", "stale")]);
     assert_eq!(router.sectors.store.doc(), &first);
     assert_eq!(sector_records(&rx), Vec::<Value>::new());
 }
 
 #[tokio::test]
-async fn an_order_of_no_layout_is_refused_empty_and_keeps_the_undo() {
+async fn an_edit_that_changes_nothing_is_refused_empty_and_keeps_the_undo() {
     let dir = tempfile::tempdir().unwrap();
     let first = doc(
         4,
@@ -311,12 +331,7 @@ async fn an_order_of_no_layout_is_refused_empty_and_keeps_the_undo() {
     a.take();
     let _ = records(&rx);
     let taken = router.sectors.store.doc().clone();
-    router.handle(RouterMsg::SectorOrders {
-        client: 1,
-        id: "o1".into(),
-        orders: Vec::new(),
-        rev: taken.rev,
-    });
+    router.handle(edit_msg(1, "o1", taken.sectors.clone(), taken.rev));
     assert_eq!(a.take().unwrap(), vec![error("o1", "EMPTY")]);
     assert_eq!(router.sectors.store.doc(), &taken);
     assert_eq!(on_disk(dir.path(), PREV_FILE), first, "the undo step kept");
@@ -324,7 +339,7 @@ async fn an_order_of_no_layout_is_refused_empty_and_keeps_the_undo() {
 }
 
 #[tokio::test]
-async fn orders_of_two_layouts_are_one_change_and_one_undo_step() {
+async fn an_edit_of_two_layouts_is_one_change_and_one_undo_step() {
     let dir = tempfile::tempdir().unwrap();
     let first = doc(
         1,
@@ -345,21 +360,18 @@ async fn orders_of_two_layouts_are_one_change_and_one_undo_step() {
     a.take();
     b.take();
     let _ = records(&rx);
-    router.handle(RouterMsg::SectorOrders {
-        client: 1,
-        id: "o1".into(),
-        orders: vec![
-            SectorOrder {
-                layout: "lu-1".into(),
-                strips: vec![at("Vox 2"), at("Vox 1")],
-            },
-            SectorOrder {
-                layout: "ru-1".into(),
-                strips: vec![at("Bass"), at("Klavir")],
-            },
-        ],
-        rev: 1,
-    });
+    router.handle(edit_msg(
+        1,
+        "o1",
+        reordered(
+            &first,
+            &[
+                ("lu-1", vec!["Vox 2", "Vox 1"]),
+                ("ru-1", vec!["Bass", "Klavir"]),
+            ],
+        ),
+        1,
+    ));
     let arranged = doc(
         2,
         vec![
@@ -396,8 +408,8 @@ async fn orders_of_two_layouts_are_one_change_and_one_undo_step() {
     assert_eq!(
         sector_records(&rx),
         vec![
-            json!({"ev": "sectors", "what": "order", "client": 1, "peer": "10.0.0.1",
-                   "rev": 2, "layouts": ["lu-1", "ru-1"]}),
+            json!({"ev": "sectors", "what": "edit", "client": 1, "peer": "10.0.0.1",
+                   "rev": 2, "added": 0, "removed": 0, "renamed": 0, "reordered": 2}),
             json!({"ev": "sectors", "what": "undo", "client": 2, "peer": "10.0.0.2",
                    "rev": 3}),
         ]
@@ -604,12 +616,12 @@ fn a_sectors_record_is_warn_class() {
 fn the_records_and_lines_read_as_written() {
     assert_eq!(
         sectors_fields(
-            "order",
+            "edit",
             Some(3),
             Some("10.0.0.3"),
-            json!({"rev": 7, "layouts": ["lu-1"]})
+            json!({"rev": 7, "added": 1})
         ),
-        json!({"what": "order", "client": 3, "peer": "10.0.0.3", "rev": 7, "layouts": ["lu-1"]})
+        json!({"what": "edit", "client": 3, "peer": "10.0.0.3", "rev": 7, "added": 1})
     );
     assert_eq!(
         sectors_fields("file", None, None, json!({"rev": 2})),
@@ -732,20 +744,24 @@ async fn a_write_that_fails_is_an_error_to_the_asker_and_changes_nothing() {
     assert_eq!(on_disk(dir.path(), SECTORS_FILE), taken);
 }
 
-fn orders_msg(client: u64, id: &str, layout: &str, slots: &[&str], rev: u64) -> RouterMsg {
-    RouterMsg::SectorOrders {
+fn orders_msg(
+    before: &SectorsDoc,
+    client: u64,
+    id: &str,
+    layout: &str,
+    slots: &[&str],
+    rev: u64,
+) -> RouterMsg {
+    edit_msg(
         client,
-        id: id.into(),
-        orders: vec![SectorOrder {
-            layout: layout.into(),
-            strips: slots.iter().map(|l| at(l)).collect(),
-        }],
+        id,
+        reordered(before, &[(layout, slots.to_vec())]),
         rev,
-    }
+    )
 }
 
 #[tokio::test]
-async fn an_order_with_gaps_puts_a_strip_at_the_right_edge_and_is_written_with_nulls() {
+async fn an_edit_with_gaps_puts_a_strip_at_the_right_edge_and_is_written_with_nulls() {
     // The owner's report of 28.10 (1.24.0, the slot model): BAND at RU's
     // right edge with empty space between it and the strip before it.
     let dir = tempfile::tempdir().unwrap();
@@ -767,6 +783,7 @@ async fn an_order_with_gaps_puts_a_strip_at_the_right_edge_and_is_written_with_n
     b.take();
     let _ = records(&rx);
     router.handle(orders_msg(
+        &first,
         1,
         "o1",
         "ru-1",
@@ -807,10 +824,11 @@ async fn the_hubs_same_set_check_ignores_gaps_and_full_counts_them() {
     let a = attach(&mut router, 1);
     a.take();
     // A gap never stands in for a strip.
-    router.handle(orders_msg(1, "o1", "ru-1", &["Klavir", ""], 5));
+    router.handle(orders_msg(&first, 1, "o1", "ru-1", &["Klavir", ""], 5));
     assert_eq!(answers(&a), vec![error("o1", "stale")]);
     // Seven slots are 7 units: FULL.
     router.handle(orders_msg(
+        &first,
         1,
         "o2",
         "ru-1",
@@ -821,6 +839,7 @@ async fn the_hubs_same_set_check_ignores_gaps_and_full_counts_them() {
     assert_eq!(router.sectors.store.doc(), &first);
     // Trailing empty slots are dropped.
     router.handle(orders_msg(
+        &first,
         1,
         "o3",
         "ru-1",
@@ -879,4 +898,97 @@ async fn a_tick_fills_the_first_empty_slot_and_an_untick_leaves_one() {
     router.handle(tick(1, "t3", "lu-1", "Bass", true));
     router.handle(tick(1, "t4", "lu-1", "Keys 1", true));
     assert_eq!(answers(&a), vec![result("t3"), error("t4", "FULL")]);
+}
+
+#[tokio::test]
+async fn an_edit_renames_adds_and_removes_layouts_in_one_change_and_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = doc(
+        1,
+        vec![
+            (
+                SectorId::Lu,
+                vec![
+                    layout("lu-1", "VOX", &["Vox 1", "Vox 2"]),
+                    layout("lu-2", "KEYS", &["Klavir"]),
+                ],
+            ),
+            (SectorId::Ru, vec![layout("ru-1", "BAND", &["Bass"])]),
+        ],
+    );
+    let (mut router, _own, rx) = served(dir.path(), Some(&first));
+    let a = attach(&mut router, 1);
+    let b = attach(&mut router, 2);
+    a.take();
+    b.take();
+    let _ = records(&rx);
+    // lu-1 renamed, lu-2 removed (Klavir simply leaves it), ru-2 added.
+    let mut sectors = first.sectors.clone();
+    let lu = sectors.get_mut(&SectorId::Lu).unwrap();
+    lu[0].title = "VOCALS".into();
+    lu.remove(1);
+    sectors
+        .get_mut(&SectorId::Ru)
+        .unwrap()
+        .push(layout("ru-2", "NEW", &[]));
+    router.handle(edit_msg(1, "e1", sectors, 1));
+    let edited = doc(
+        2,
+        vec![
+            (
+                SectorId::Lu,
+                vec![layout("lu-1", "VOCALS", &["Vox 1", "Vox 2"])],
+            ),
+            (
+                SectorId::Ru,
+                vec![
+                    layout("ru-1", "BAND", &["Bass"]),
+                    layout("ru-2", "NEW", &[]),
+                ],
+            ),
+        ],
+    );
+    assert_eq!(answers(&a), vec![result("e1")]);
+    assert_eq!(told(&b), vec![(edited.clone(), true)]);
+    assert_eq!(router.sectors.store.doc(), &edited);
+    assert_eq!(on_disk(dir.path(), SECTORS_FILE), edited);
+    assert_eq!(on_disk(dir.path(), PREV_FILE), first, "one undo step");
+    assert_eq!(
+        sector_records(&rx),
+        vec![
+            json!({"ev": "sectors", "what": "edit", "client": 1, "peer": "10.0.0.1",
+                    "rev": 2, "added": 1, "removed": 1, "renamed": 1, "reordered": 0})
+        ]
+    );
+    // One undo brings all of it back.
+    router.handle(RouterMsg::SectorUndo {
+        client: 2,
+        id: "u1".into(),
+    });
+    let mut back = first.clone();
+    back.rev = 3;
+    assert_eq!(answers(&b), vec![result("u1")]);
+    assert_eq!(router.sectors.store.doc(), &back);
+    let _ = records(&rx);
+    a.take();
+    // A lower-case title, a fifth layout: invalid, to the asker alone,
+    // nothing recorded or told.
+    let mut lower = back.sectors.clone();
+    lower.get_mut(&SectorId::Lu).unwrap()[0].title = "vocals".into();
+    router.handle(edit_msg(1, "e2", lower, 3));
+    let mut five = back.sectors.clone();
+    five.get_mut(&SectorId::Ru).unwrap().extend([
+        layout("ru-2", "NEW", &[]),
+        layout("ru-3", "NEW 2", &[]),
+        layout("ru-4", "NEW 3", &[]),
+        layout("ru-5", "NEW 4", &[]),
+    ]);
+    router.handle(edit_msg(1, "e3", five, 3));
+    assert_eq!(
+        a.take().unwrap(),
+        vec![error("e2", "invalid"), error("e3", "invalid")]
+    );
+    assert_eq!(b.take().unwrap(), vec![], "nothing told");
+    assert_eq!(sector_records(&rx), Vec::<Value>::new());
+    assert_eq!(router.sectors.store.doc(), &back);
 }

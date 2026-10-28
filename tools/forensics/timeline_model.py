@@ -1,8 +1,8 @@
 """The forensics timeline's analysis (#43): page time on the hub's clock,
 gestures and gaps, busy episodes, the control lanes, confirmations, the
 volume jumps with their cause, the touches of single volume faders
-(``timeline_touch.py``, PR D), the system's gestures (PR G), the Stream Deck's presses (#52), the channel detail's steps (#71), AbleSet's tab (#90) and the summary. Pure: it reads nothing. One of
-the five files of ``timeline.py`` (see its docstring), copied to the Ableton
+(``timeline_touch.py``, PR D), the system's gestures (PR G), the Stream Deck's presses (#52), the channel detail's steps (#71), AbleSet's tab (#90), the rules (#130) and the summary. Pure: it reads nothing. One of
+the eight files of ``timeline.py`` (see its docstring), copied to the Ableton
 PC together with it.
 """
 
@@ -14,6 +14,7 @@ import math
 
 import timeline_ableset
 import timeline_eq
+import timeline_rules
 import timeline_touch
 from timeline_read import (
     HEAD_KINDS,
@@ -344,7 +345,8 @@ class Timeline:
                 "and were skipped"
             )
         kinds = collections.defaultdict(list)
-        for record in sorted(records, key=lambda r: r["ts"]):
+        ordered = sorted(records, key=lambda r: r["ts"])
+        for record in ordered:
             first = -math.inf if record.get("ev") in HEAD_KINDS else lead
             last = end + TRACE_TAIL_MS if record.get("ev") in TAIL_KINDS else end
             if first <= record["ts"] <= last:
@@ -462,6 +464,21 @@ class Timeline:
             for e in self.page
             if e.ev in timeline_ableset.PAGE_EVENTS and self.in_window(e.hub)
         ]
+        # The rules (#130 PR 6): the page's rail steps and the hub's rule
+        # records in time order, whatever the key filter; the records in
+        # the log's own order (a transport before the write it caused).
+        self.rules = timeline_rules.rows(
+            [
+                r
+                for r in ordered
+                if r.get("ev") in timeline_rules.HUB_KINDS and self.in_window(r["ts"])
+            ],
+            [
+                (e.hub, e.data)
+                for e in self.page
+                if e.ev in timeline_rules.PAGE_EVENTS and self.in_window(e.hub)
+            ],
+        )
 
     # The window's parts.
 
@@ -1013,6 +1030,7 @@ def summary(timeline):
         ("ableset_probes_failed", str(sum(s.what == "probe" and s.ok is False for s in steps))),
         ("ableset_probe_max_ms", ms_text(max(probe_ms, default=None))),
         ("ableset_load_max_ms", ms_text(max(load_ms, default=None))),
+        *timeline_rules.summary(timeline.rules),
         ("skipped_lines", str(timeline.skipped)),
         ("notes", str(len(timeline.notes))),
     ]

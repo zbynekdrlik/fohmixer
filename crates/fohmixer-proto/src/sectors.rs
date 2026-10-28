@@ -36,6 +36,9 @@ pub const WIDE_UNITS: f64 = 1.1;
 pub const TITLE_MAX: usize = 8;
 /// The title of a seeded layout whose group has none, and of an empty one.
 pub const SEED_TITLE: &str = "MAIN";
+/// A sector's most layouts an edit makes (the column's LAYOUTS block in
+/// ARRANGE holds four with their keys).
+pub const MAX_LAYOUTS: usize = 4;
 
 /// A sector: left up, left down, right up, right down.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -127,16 +130,11 @@ pub fn trim(mut slots: Vec<Slot>) -> Vec<Slot> {
 #[serde(deny_unknown_fields)]
 pub struct SectorsDoc {
     pub rev: u64,
-    pub sectors: BTreeMap<SectorId, Vec<SectorLayout>>,
+    pub sectors: Sectors,
 }
 
-/// One layout's new slots (ARRANGE's save), its empty slots `null`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SectorOrder {
-    pub layout: String,
-    pub strips: Vec<Slot>,
-}
+/// Every sector's layouts: a document's, or ARRANGE's whole edit of them.
+pub type Sectors = BTreeMap<SectorId, Vec<SectorLayout>>;
 
 impl SectorsDoc {
     /// The empty document: revision 0, no layout (sectors off).
@@ -183,11 +181,18 @@ impl SectorsDoc {
             .find(|layout| layout.id == id)
     }
 
-    /// Every problem of the document (empty: valid): an id empty or on two
-    /// layouts, a title empty or longer than [`TITLE_MAX`] characters, a
-    /// strip twice in one layout (empty slots are no strip).
+    /// Every problem of the document (empty: valid): a sector it names with
+    /// no layout (a page's edit could never keep it; the empty document
+    /// names none), an id empty or on two layouts, a title empty or longer
+    /// than [`TITLE_MAX`] characters, a strip twice in one layout (empty
+    /// slots are no strip).
     pub fn validate(&self) -> Vec<String> {
-        let mut errors = Vec::new();
+        let mut errors: Vec<String> = self
+            .sectors
+            .iter()
+            .filter(|(_, layouts)| layouts.is_empty())
+            .map(|(sector, _)| format!("sector {} has no layout", sector.as_str()))
+            .collect();
         let mut ids: BTreeMap<&str, usize> = BTreeMap::new();
         for layout in self.sectors.values().flatten() {
             *ids.entry(layout.id.as_str()).or_default() += 1;
@@ -389,8 +394,11 @@ pub enum Refusal {
     Stale,
     NothingToUndo,
     NoLayout,
-    /// An ARRANGE save of no layout: nothing to change.
+    /// An ARRANGE save that changes nothing.
     Empty,
+    /// An ARRANGE save whose titles, ids or layout counts break the rules
+    /// ([`edit`]).
+    Invalid,
 }
 
 impl Refusal {
@@ -404,6 +412,7 @@ impl Refusal {
             Refusal::NothingToUndo => "nothing to undo",
             Refusal::NoLayout => "no layout served",
             Refusal::Empty => "EMPTY",
+            Refusal::Invalid => "invalid",
         }
     }
 }
@@ -455,42 +464,135 @@ fn sorted_refs(slots: &[Slot]) -> Vec<&StripRef> {
     refs
 }
 
-/// ARRANGE's save: each layout of `orders` takes its new slots (trailing
-/// empty slots dropped), as one change at `rev + 1`. It is `Empty` for no
-/// layout (nothing to change, no undo step taken), `Stale` unless `rev` is
-/// the document's, each layout exists and is named once, and each order
-/// holds the layout's own refs (its gaps aside), and `Full` for an order
-/// past [`SECTOR_UNITS`] that holds more units than the layout did (a
-/// layout already past it by a hand edit can still be reordered).
-pub fn orders(
+/// ARRANGE's save (#148, the approved mockup `docs/mockups/sectors-v2.html`):
+/// the whole edited `sectors` replace the document's as one change at
+/// `rev + 1` (one undo step), each layout's trailing empty slots dropped.
+/// It is `Stale` unless `rev` is the document's, it names the document's
+/// sectors, a layout the document holds keeps its sector and its refs (its
+/// gaps aside) and a new layout starts empty; `Full` for a layout past
+/// [`SECTOR_UNITS`] that holds more units than it did (a layout already
+/// past it by a hand edit can still be reordered); `Invalid` for a sector
+/// with no layout or more than [`MAX_LAYOUTS`] (unless it had as many), a
+/// new or changed title that is no [`title_ok`] one, or a document that no
+/// longer validates (an id empty or twice); `Empty` when nothing changes
+/// (no revision, no undo step). A removed layout's strips simply leave it.
+pub fn edit(
     doc: &SectorsDoc,
-    orders: &[SectorOrder],
+    sectors: &Sectors,
     rev: u64,
     pool: &[Pooled],
 ) -> Result<SectorsDoc, Refusal> {
-    if orders.is_empty() {
-        return Err(Refusal::Empty);
-    }
-    if rev != doc.rev {
+    if rev != doc.rev || !sectors.keys().eq(doc.sectors.keys()) {
         return Err(Refusal::Stale);
     }
-    let mut next = doc.clone();
-    for (i, order) in orders.iter().enumerate() {
-        if orders.iter().take(i).any(|o| o.layout == order.layout) {
-            return Err(Refusal::Stale);
+    let mut next = SectorsDoc {
+        rev: doc.rev + 1,
+        sectors: Sectors::new(),
+    };
+    for (sector, layouts) in sectors {
+        let before = doc.layouts(*sector);
+        if !layouts_fit(layouts.len(), before.len()) {
+            return Err(Refusal::Invalid);
         }
-        let target = next.find_mut(&order.layout).ok_or(Refusal::Stale)?;
-        if !same_set(&target.strips, &order.strips) {
-            return Err(Refusal::Stale);
+        let mut kept = Vec::with_capacity(layouts.len());
+        for layout in layouts {
+            kept.push(edited(doc, before, layout, pool)?);
         }
-        let slots = trim(order.strips.clone());
-        if grows_past_full(units(&target.strips, pool), units(&slots, pool)) {
-            return Err(Refusal::Full);
-        }
-        target.strips = slots;
+        next.sectors.insert(*sector, kept);
     }
-    next.rev += 1;
+    if !next.validate().is_empty() {
+        return Err(Refusal::Invalid);
+    }
+    if next.sectors == doc.sectors {
+        return Err(Refusal::Empty);
+    }
     Ok(next)
+}
+
+/// One layout of an edit, checked against its sector's layouts `before`
+/// (see [`edit`]), its trailing empty slots dropped.
+fn edited(
+    doc: &SectorsDoc,
+    before: &[SectorLayout],
+    layout: &SectorLayout,
+    pool: &[Pooled],
+) -> Result<SectorLayout, Refusal> {
+    let slots = trim(layout.strips.clone());
+    match before.iter().find(|old| old.id == layout.id) {
+        Some(old) => {
+            if !same_set(&old.strips, &slots) {
+                return Err(Refusal::Stale);
+            }
+            if grows_past_full(units(&old.strips, pool), units(&slots, pool)) {
+                return Err(Refusal::Full);
+            }
+            if layout.title != old.title && !title_ok(&layout.title) {
+                return Err(Refusal::Invalid);
+            }
+        }
+        None => {
+            if doc.find(&layout.id).is_some() || !slots.is_empty() {
+                return Err(Refusal::Stale);
+            }
+            if !title_ok(&layout.title) {
+                return Err(Refusal::Invalid);
+            }
+        }
+    }
+    Ok(SectorLayout {
+        id: layout.id.clone(),
+        title: layout.title.clone(),
+        strips: slots,
+    })
+}
+
+/// Whether a sector that had `before` layouts may hold `after`: at least
+/// one, at most [`MAX_LAYOUTS`] or as many as it had (a hand edit's).
+fn layouts_fit(after: usize, before: usize) -> bool {
+    after >= 1 && after <= MAX_LAYOUTS.max(before)
+}
+
+/// Whether `title` is one a page may set (a new layout's, a rename's): 1 to
+/// [`TITLE_MAX`] characters, upper case, no space at either end, no
+/// control character.
+pub fn title_ok(title: &str) -> bool {
+    !title.is_empty()
+        && title.trim() == title
+        && title.chars().count() <= TITLE_MAX
+        && title.to_uppercase() == title
+        && !title.chars().any(char::is_control)
+}
+
+/// What an edit changed, for its record: the layouts added, removed,
+/// renamed and with new slots.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct EditCounts {
+    pub added: usize,
+    pub removed: usize,
+    pub renamed: usize,
+    pub reordered: usize,
+}
+
+/// What `after` changed from `before` ([`EditCounts`]; a layout is known by
+/// its id).
+pub fn edit_counts(before: &SectorsDoc, after: &SectorsDoc) -> EditCounts {
+    let mut counts = EditCounts::default();
+    for layout in after.sectors.values().flatten() {
+        match before.find(&layout.id) {
+            None => counts.added += 1,
+            Some((_, was)) => {
+                counts.renamed += usize::from(was.title != layout.title);
+                counts.reordered += usize::from(was.strips != layout.strips);
+            }
+        }
+    }
+    counts.removed = before
+        .sectors
+        .values()
+        .flatten()
+        .filter(|l| after.find(&l.id).is_none())
+        .count();
+    counts
 }
 
 /// Whether a layout of `before` units that becomes `after` units is

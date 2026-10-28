@@ -10,7 +10,7 @@ use crate::support::{Client, TestHub, runtime, serial};
 use fohmixer_hub::config::InstanceCfg;
 use fohmixer_hub::sectors::{PREV_FILE, SECTORS_FILE, parse};
 use fohmixer_proto::client::{ClientMsg, ServerMsg};
-use fohmixer_proto::sectors::{SectorId, SectorLayout, SectorOrder, SectorsDoc, StripRef};
+use fohmixer_proto::sectors::{SectorId, SectorLayout, SectorsDoc, StripRef};
 use serde_json::{Value, json};
 
 const SECS_3: Duration = Duration::from_secs(3);
@@ -115,16 +115,11 @@ fn tick(id: &str, label: &str, on: bool) -> ClientMsg {
     }
 }
 
+/// ARRANGE's save of lu-1's slots (`""` an empty slot) at `rev`.
 fn order(id: &str, labels: &[&str], rev: u64) -> ClientMsg {
-    ClientMsg::SectorOrders {
+    ClientMsg::SectorEdit {
         id: id.into(),
-        orders: vec![SectorOrder {
-            layout: "lu-1".into(),
-            strips: labels
-                .iter()
-                .map(|l| (!l.is_empty()).then(|| band(l)))
-                .collect(),
-        }],
+        sectors: lu(rev, labels).sectors,
         rev,
     }
 }
@@ -199,7 +194,7 @@ fn a_full_layout_is_refused_full() {
 }
 
 #[test]
-fn orders_and_undo_end_to_end() {
+fn edits_and_undo_end_to_end() {
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -285,7 +280,7 @@ fn the_records_name_what_and_who() {
             whats,
             [
                 &json!("tick"),
-                &json!("order"),
+                &json!("edit"),
                 &json!("undo"),
                 &json!("file")
             ]
@@ -299,7 +294,8 @@ fn the_records_name_what_and_who() {
         );
         assert_eq!(got[0]["on"], json!(true));
         assert_eq!(got[0]["rev"], json!(2));
-        assert_eq!(got[1]["layouts"], json!(["lu-1"]));
+        assert_eq!(got[1]["reordered"], json!(1));
+        assert_eq!(got[1]["added"], json!(0));
         assert_eq!(got[1]["client"], got[0]["client"]);
         assert_eq!(got[2]["rev"], json!(4));
         assert_eq!(got[3]["client"], Value::Null);

@@ -1,4 +1,5 @@
 use super::*;
+use crate::sectors::{SectorId, SectorLayout};
 use serde_json::json;
 
 fn round_trip_client(msg: ClientMsg, wire: Value) {
@@ -1769,29 +1770,38 @@ fn a_sector_tick_reads_as_the_page_sends_it() {
 }
 
 #[test]
-fn sector_orders_and_undo_read_as_the_page_sends_them() {
+fn sector_edit_and_undo_read_as_the_page_sends_them() {
+    let strip = |label: &str| StripRef {
+        instance: "band".into(),
+        label: label.into(),
+    };
     round_trip_client(
-        ClientMsg::SectorOrders {
+        ClientMsg::SectorEdit {
             id: "s2".into(),
-            orders: vec![SectorOrder {
-                layout: "ru-1".into(),
-                strips: vec![
-                    Some(StripRef {
-                        instance: "band".into(),
-                        label: "Bass".into(),
-                    }),
-                    None,
-                    Some(StripRef {
-                        instance: "band".into(),
-                        label: "Klavir".into(),
-                    }),
+            sectors: [(
+                SectorId::Ru,
+                vec![
+                    SectorLayout {
+                        id: "ru-1".into(),
+                        title: "BAND".into(),
+                        strips: vec![Some(strip("Bass")), None, Some(strip("Klavir"))],
+                    },
+                    SectorLayout {
+                        id: "ru-2".into(),
+                        title: "NEW".into(),
+                        strips: Vec::new(),
+                    },
                 ],
-            }],
+            )]
+            .into_iter()
+            .collect(),
             rev: 4,
         },
-        json!({"type": "sector_orders", "id": "s2", "rev": 4, "orders": [
-            {"layout": "ru-1", "strips": [{"instance": "band", "label": "Bass"}, null,
-                                          {"instance": "band", "label": "Klavir"}]}]}),
+        json!({"type": "sector_edit", "id": "s2", "rev": 4, "sectors": {"ru": [
+            {"id": "ru-1", "title": "BAND",
+             "strips": [{"instance": "band", "label": "Bass"}, null,
+                        {"instance": "band", "label": "Klavir"}]},
+            {"id": "ru-2", "title": "NEW", "strips": []}]}}),
     );
     round_trip_client(
         ClientMsg::SectorUndo { id: "s3".into() },

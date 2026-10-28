@@ -406,6 +406,16 @@ mod tests {
     }
 
     #[test]
+    fn a_hand_edit_with_a_sector_of_no_layout_is_refused() {
+        // `"rd": []` would refuse every ARRANGE save `invalid`: the file is
+        // refused instead, its error shown, the last good document kept.
+        assert_eq!(
+            parse(br#"{"rev": 2, "sectors": {"lu": [{"id": "lu-1", "title": "VOX", "strips": []}], "rd": []}}"#),
+            Err("sector rd has no layout".to_string())
+        );
+    }
+
+    #[test]
     fn parse_reads_past_one_leading_utf8_bom() {
         // Windows PowerShell 5's `Set-Content -Encoding UTF8` writes one.
         let text = serde_json::to_string(&doc(2, &["Vox 1"])).unwrap();

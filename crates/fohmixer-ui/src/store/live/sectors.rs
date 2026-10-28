@@ -1,13 +1,14 @@
 //! The fader sectors' requests (#148): a tick of a strip in a layout, an
-//! ARRANGE save and the undo. Each carries an id from the pending-request
-//! counter `cmd` uses, so the hub's `result` or `error` reaches its `done`
+//! ARRANGE save (one edit of every sector's layouts) and the undo. Each
+//! carries an id from the pending-request counter `cmd` uses, so the hub's
+//! `result` or `error` reaches its `done`
 //! through `finish` (a socket close answers it "the hub connection closed",
 //! as a command). A request sent while the hub is not connected is not
 //! queued: `done` hears "not connected to the hub" at once. The document
 //! itself only ever comes from the hub (`ServerMsg::Sectors`).
 
 use fohmixer_proto::client::ClientMsg;
-use fohmixer_proto::sectors::{SectorOrder, StripRef};
+use fohmixer_proto::sectors::{Sectors, StripRef};
 use leptos::prelude::*;
 
 use super::{LiveStore, ResultFn};
@@ -53,10 +54,11 @@ impl LiveStore {
         )
     }
 
-    /// ARRANGE's save: the changed layouts' new orders, at the document's
-    /// revision `rev`.
-    pub fn sector_orders(self, orders: Vec<SectorOrder>, rev: u64, done: Option<ResultFn>) -> bool {
-        self.sector_request(|id| ClientMsg::SectorOrders { id, orders, rev }, done)
+    /// ARRANGE's save: every sector's layouts as edited (their slots, the
+    /// renamed, added and removed layouts), at the document's revision
+    /// `rev`, one change.
+    pub fn sector_edit(self, sectors: Sectors, rev: u64, done: Option<ResultFn>) -> bool {
+        self.sector_request(|id| ClientMsg::SectorEdit { id, sectors, rev }, done)
     }
 
     /// ↶: the hub swaps in the version before its last change.

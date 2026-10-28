@@ -357,7 +357,7 @@
 				"box": {
 					"id": "obj-pack",
 					"maxclass": "newobj",
-					"text": "pack /fohmixer/lufs 1 0 v1.24.0 - - - - -700 -700",
+					"text": "pack /fohmixer/lufs 1 0 v1.25.0 - - - - -700 -700",
 					"numinlets": 10,
 					"numoutlets": 1,
 					"outlettype": [
@@ -674,7 +674,7 @@
 						60.0,
 						16.0
 					],
-					"text": "v1.24.0",
+					"text": "v1.25.0",
 					"varname": "version",
 					"fontsize": 9.0
 				}

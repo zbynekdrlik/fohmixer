@@ -406,7 +406,7 @@ export class LiveClient {
 
   /**
    * A request the hub answers by its `id` (a `cmd`, #148's `sector_tick`,
-   * `sector_orders`, `sector_undo`): `msg` with a fresh `id`, and the hub's
+   * `sector_edit`, `sector_undo`): `msg` with a fresh `id`, and the hub's
    * `result` or `error` for it (an error is returned, not thrown).
    */
   async ask(msg: Record<string, unknown>): Promise<any> {

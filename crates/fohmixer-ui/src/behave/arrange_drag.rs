@@ -1,11 +1,12 @@
-//! ARRANGE, the sectors page's reorder mode (#148; spec
+//! ARRANGE, the sectors page's edit mode (#148; spec
 //! `docs/superpowers/specs/2026-10-28-sectors-design.md` §4, the owner's
-//! approved mockup `docs/mockups/sectors-v1.html`): a tap on ARRANGE starts
-//! it, the strips are dragged within their sector's shown layout and the
-//! page keeps the edited orders, and a second tap sends the changed layouts
-//! as ONE `SectorOrders` (one change, one undo step) and leaves once the
-//! hub's new document arrives (a refusal: at once); with nothing changed it
-//! just leaves. A hide of the page, or a
+//! approved mockups `docs/mockups/sectors-v1.html` and `sectors-v2.html`):
+//! a tap on ARRANGE starts it, the strips are dragged within their sector's
+//! shown layout and the layouts renamed, added and removed
+//! (`behave::arrange_edit::Edit`, the page shows the edit), and a second
+//! tap sends every sector as ONE `SectorEdit` (one change, one undo step)
+//! and leaves once the hub's new document arrives (a refusal: at once);
+//! with nothing changed it just leaves. A hide of the page, or a
 //! new document from the hub during the mode, ends it unsaved. Nothing here
 //! touches Live. The drag itself (`Drag`): a strip is carried once the
 //! finger moved past `DRAG_SLOP`; it lands on the cell of its sector whose
@@ -16,44 +17,50 @@
 //! end never came ends at the next primary down of its type (#124). All of
 //! it is pure; `pages::sectors` carries it out.
 
-use std::collections::BTreeMap;
-
-use fohmixer_proto::sectors::{
-    SectorId, SectorLayout, SectorOrder, SectorsDoc, Slot, StripRef, trim,
-};
+use fohmixer_proto::sectors::{Refusal, SectorId, Sectors, SectorsDoc, Slot, StripRef, trim};
 
 use super::Down;
+use super::arrange_edit::Edit;
 use crate::diag::perf::Pointer;
 use crate::store::{CONNECTION_CLOSED, NOT_CONNECTED};
 
 /// How far (px) a finger moves before the strip under it is carried.
 pub const DRAG_SLOP: f64 = 6.0;
 
-/// The note under ARRANGE while the mode is on.
-pub const ARRANGE_NOTE: &str = "drag to reorder · tap to save";
+/// The note under ARRANGE while the mode is on (the mockup v2's).
+pub const ARRANGE_NOTE: &str = "drag · ✎ ✕ + · tap to save";
 
-/// The note under ARRANGE when the hub refused the save (it shows its own
-/// order again).
+/// The note under ARRANGE when the hub refused the save as `stale` (it
+/// shows its own order again).
 pub const REFUSED_NOTE: &str = "Not saved: the layouts changed";
+
+/// The note under ARRANGE when the hub refused the save as `FULL`.
+pub const FULL_NOTE: &str = "Not saved: a layout is full";
+
+/// The note under ARRANGE when the hub refused the save as `invalid`.
+pub const INVALID_NOTE: &str = "Not saved: the layouts are not valid";
+
+/// The note under ARRANGE for any other failure of the save.
+pub const NOT_SAVED_NOTE: &str = "Not saved";
 
 /// The note under ARRANGE when the save never reached the hub (no socket,
 /// or it closed before the answer).
 pub const OFFLINE_NOTE: &str = "Not saved: the hub is not connected";
 
-/// The mode: off; on since the document of revision `rev`, with the
-/// orders edited so far (by layout id); saving them at `rev` (the edits
-/// stay shown until the hub's answer or its new document).
+/// The mode: off; on since the document of revision `rev`, with its edit
+/// so far; saving these sectors at `rev` (the edit stays shown until the
+/// hub's answer or its new document).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum Arrange {
     #[default]
     Off,
     On {
         rev: u64,
-        edits: BTreeMap<String, Vec<Slot>>,
+        edit: Edit,
     },
     Saving {
         rev: u64,
-        edits: BTreeMap<String, Vec<Slot>>,
+        sectors: Sectors,
     },
 }
 
@@ -71,47 +78,61 @@ pub enum ArrangeEnd {
 pub enum Tap {
     /// The mode starts.
     Start,
-    /// The changed layouts' orders go to the hub at this revision.
-    Send(Vec<SectorOrder>, u64),
+    /// Every sector's layouts go to the hub as one edit at this revision.
+    Send(Sectors, u64),
     /// The mode ends with nothing to save.
     Leave,
 }
 
 impl Arrange {
     /// A tap on ARRANGE with `doc` shown. None while a save is on its way.
+    /// A rename still in its field is kept first, an ask dropped.
     pub fn tap(&mut self, doc: &SectorsDoc) -> Option<Tap> {
         match self {
             Arrange::Off => {
                 *self = Arrange::On {
                     rev: doc.rev,
-                    edits: BTreeMap::new(),
+                    edit: Edit::of(doc),
                 };
                 Some(Tap::Start)
             }
-            Arrange::On { rev, edits } => {
-                let (rev, edits) = (*rev, std::mem::take(edits));
-                let orders = orders_of(&edits, doc);
-                if orders.is_empty() {
+            Arrange::On { rev, edit } => {
+                edit.outside_down(false, false);
+                let rev = *rev;
+                if edit.changed(doc) {
+                    let sectors = std::mem::take(&mut edit.sectors);
+                    *self = Arrange::Saving {
+                        rev,
+                        sectors: sectors.clone(),
+                    };
+                    Some(Tap::Send(sectors, rev))
+                } else {
                     *self = Arrange::Off;
                     Some(Tap::Leave)
-                } else {
-                    *self = Arrange::Saving { rev, edits };
-                    Some(Tap::Send(orders, rev))
                 }
             }
             Arrange::Saving { .. } => None,
         }
     }
 
-    /// A drag gave `layout` these slots (kept only while the mode is on).
-    pub fn moved(&mut self, layout: &str, order: Vec<Slot>) {
-        if let Arrange::On { edits, .. } = self {
-            edits.insert(layout.to_string(), order);
+    /// The edit, while the mode is on (never while saving).
+    pub fn edit(&mut self) -> Option<&mut Edit> {
+        match self {
+            Arrange::On { edit, .. } => Some(edit),
+            _ => None,
+        }
+    }
+
+    /// The edit as it stands, while the mode is on.
+    pub fn edit_now(&self) -> Option<&Edit> {
+        match self {
+            Arrange::On { edit, .. } => Some(edit),
+            _ => None,
         }
     }
 
     /// The hub answered the save (`ok`: taken). A refusal ends the mode at
-    /// once, with its note; a taken save stays saving, its edits shown,
+    /// once, with its note; a taken save stays saving, its edit shown,
     /// until the hub's new document arrives (`doc_arrived`: the hub sends
     /// its result first, the document after it).
     pub fn answered(&mut self, ok: bool) -> Option<&'static str> {
@@ -124,19 +145,17 @@ impl Arrange {
         Some(REFUSED_NOTE)
     }
 
-    /// What the save's request heard: the hub's answer (`answered`), or a
-    /// failure the hub never gave (`never_reached`), which ends a save at
-    /// once with its own note.
+    /// What the save's request heard: the hub's answer (`answered`); a
+    /// failure, the hub's refusal or one the hub never gave
+    /// (`never_reached`), ends a save at once with its word's note
+    /// ([`refusal_note`]).
     pub fn heard<T>(&mut self, outcome: &Result<T, String>) -> Option<&'static str> {
         match outcome {
             Ok(_) => self.answered(true),
-            Err(why) if never_reached(why) => {
-                if matches!(self, Arrange::Saving { .. }) {
-                    *self = Arrange::Off;
-                }
-                Some(OFFLINE_NOTE)
+            Err(why) => {
+                let _ = self.answered(false);
+                Some(refusal_note(why))
             }
-            Err(_) => self.answered(false),
         }
     }
 
@@ -160,35 +179,17 @@ impl Arrange {
         was.then_some(why)
     }
 
-    /// The slots `layout` shows: its edit, else its own.
-    pub fn order_of<'a>(&'a self, layout: &'a SectorLayout) -> &'a [Slot] {
-        match self {
-            Arrange::On { edits, .. } | Arrange::Saving { edits, .. } => edits
-                .get(&layout.id)
-                .map_or(layout.strips.as_slice(), Vec::as_slice),
-            Arrange::Off => &layout.strips,
-        }
-    }
-
-    /// `doc` as the page shows it: every layout in its `order_of`.
+    /// `doc` as the page shows it: the edit (its revision `doc`'s) while
+    /// the mode is on or saving, else `doc`.
     pub fn applied(&self, doc: &SectorsDoc) -> SectorsDoc {
+        let sectors = match self {
+            Arrange::Off => &doc.sectors,
+            Arrange::On { edit, .. } => &edit.sectors,
+            Arrange::Saving { sectors, .. } => sectors,
+        };
         SectorsDoc {
             rev: doc.rev,
-            sectors: doc
-                .sectors
-                .iter()
-                .map(|(sector, layouts)| {
-                    let layouts = layouts
-                        .iter()
-                        .map(|layout| SectorLayout {
-                            id: layout.id.clone(),
-                            title: layout.title.clone(),
-                            strips: self.order_of(layout).to_vec(),
-                        })
-                        .collect();
-                    (*sector, layouts)
-                })
-                .collect(),
+            sectors: sectors.clone(),
         }
     }
 
@@ -199,22 +200,22 @@ impl Arrange {
 
     /// The strip `held` of `layout`, carried from its slot `from` and
     /// dropped at `x` among its sector's cells on screen (`spots`: each
-    /// cell's slot and centre): the layout's new slots kept (only while the
-    /// mode is on).
+    /// cell's slot and centre): the layout's new slots kept in the edit
+    /// (only while the mode is on).
     pub fn dropped_in(
         &mut self,
-        layout: &SectorLayout,
+        layout: &str,
         spots: &[(usize, f64)],
         from: usize,
         held: &StripRef,
         x: f64,
     ) {
-        if !matches!(self, Arrange::On { .. }) {
+        let Some(edit) = self.edit() else {
             return;
-        }
-        let order = self.order_of(layout).to_vec();
-        if let Some(order) = dropped(&order, spots, from, held, x) {
-            self.moved(&layout.id, order);
+        };
+        let order = edit.slots_of(layout).map(<[Slot]>::to_vec);
+        if let Some(order) = order.and_then(|o| dropped(&o, spots, from, held, x)) {
+            edit.moved(layout, order);
         }
     }
 }
@@ -246,25 +247,26 @@ pub fn never_reached(why: &str) -> bool {
     why == NOT_CONNECTED || why == CONNECTION_CLOSED
 }
 
+/// The note for a save that failed with `why`: the hub's refusal word
+/// (`stale`, `FULL`, `invalid`; any other, such as `EMPTY` or a write that
+/// failed, plain "Not saved"), or the page's own not connected.
+pub fn refusal_note(why: &str) -> &'static str {
+    if never_reached(why) {
+        OFFLINE_NOTE
+    } else if why == Refusal::Stale.text() {
+        REFUSED_NOTE
+    } else if why == Refusal::Full.text() {
+        FULL_NOTE
+    } else if why == Refusal::Invalid.text() {
+        INVALID_NOTE
+    } else {
+        NOT_SAVED_NOTE
+    }
+}
+
 /// The note under ARRANGE: a refusal's while it shows, else the mode's.
 pub fn arrange_note(on: bool, refused: Option<&'static str>) -> &'static str {
     refused.unwrap_or(if on { ARRANGE_NOTE } else { "" })
-}
-
-/// The save: each edited layout whose slots differ from `doc`'s, as one
-/// order each with its empty slots (a layout gone from `doc` is left out).
-pub fn orders_of(edits: &BTreeMap<String, Vec<Slot>>, doc: &SectorsDoc) -> Vec<SectorOrder> {
-    edits
-        .iter()
-        .filter(|(id, order)| {
-            doc.find(id)
-                .is_some_and(|(_, layout)| layout.strips != **order)
-        })
-        .map(|(id, order)| SectorOrder {
-            layout: id.clone(),
-            strips: order.clone(),
-        })
-        .collect()
 }
 
 /// The slot a strip dropped at `x` lands in: the cell (`spots`: each
@@ -402,6 +404,8 @@ impl Drag {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::behave::arrange_edit::TabTap;
+    use fohmixer_proto::sectors::SectorLayout;
 
     fn r(label: &str) -> StripRef {
         StripRef {
@@ -449,10 +453,37 @@ mod tests {
         }
     }
 
-    fn on(rev: u64) -> Arrange {
+    /// The mode on since `doc()`, nothing edited yet.
+    fn on() -> Arrange {
         Arrange::On {
+            rev: 3,
+            edit: Edit::of(&doc()),
+        }
+    }
+
+    /// The mode saving these sectors at revision `rev`.
+    fn saving_at(rev: u64) -> Arrange {
+        Arrange::Saving {
             rev,
-            edits: BTreeMap::new(),
+            sectors: doc().sectors,
+        }
+    }
+
+    /// `doc()`'s sectors with `layout`'s slots replaced.
+    fn with_slots(layout: &str, slots: Vec<Slot>) -> Sectors {
+        let mut sectors = doc().sectors;
+        for l in sectors.values_mut().flatten() {
+            if l.id == layout {
+                l.strips = slots.clone();
+            }
+        }
+        sectors
+    }
+
+    /// A drag gave `layout` these slots (only while the mode is on).
+    fn moved(mode: &mut Arrange, layout: &str, slots: Vec<Slot>) {
+        if let Some(edit) = mode.edit() {
+            edit.moved(layout, slots);
         }
     }
 
@@ -462,48 +493,94 @@ mod tests {
         let mut mode = Arrange::Off;
         assert!(!mode.is_on());
         assert_eq!(mode.tap(&doc), Some(Tap::Start));
-        assert_eq!(mode, on(3));
+        assert_eq!(mode, on());
         assert!(mode.is_on());
         assert_eq!(mode.tap(&doc), Some(Tap::Leave));
         assert_eq!(mode, Arrange::Off);
         // An edit back to the layout's own order is no change.
         let _ = mode.tap(&doc);
-        mode.moved("lu-1", refs(&["Vox 1", "Vox 2", "Bass"]));
+        moved(&mut mode, "lu-1", refs(&["Vox 1", "Vox 2", "Bass"]));
         assert_eq!(mode.tap(&doc), Some(Tap::Leave));
         assert_eq!(mode, Arrange::Off);
+        // So is a layout added and removed again.
+        let _ = mode.tap(&doc);
+        let added = mode.edit().and_then(|e| e.add(SectorId::Ru));
+        assert_eq!(added.as_deref(), Some("ru-r4-1"));
+        if let Some(edit) = mode.edit() {
+            edit.ask_remove("ru-r4-1");
+            assert_eq!(edit.tab_tapped("ru-r4-1"), TabTap::Removed);
+        }
+        assert_eq!(mode.tap(&doc), Some(Tap::Leave));
+        // Off, there is nothing to edit.
+        assert_eq!(mode.edit(), None);
+        assert_eq!(mode.edit_now(), None);
     }
 
     #[test]
-    fn a_second_tap_with_changes_sends_one_orders_message_of_the_changed_layouts_only() {
+    fn a_second_tap_with_changes_sends_every_sector_as_one_edit() {
         let doc = doc();
         let mut mode = Arrange::Off;
         let _ = mode.tap(&doc);
-        mode.moved("lu-1", refs(&["Vox 2", "Vox 1", "Bass"]));
-        mode.moved("ru-1", refs(&["Keys 1", "Klavir"]));
-        // A layout gone from the document is left out.
-        mode.moved("gone", refs(&["Vox 1"]));
+        moved(&mut mode, "lu-1", refs(&["Vox 2", "Vox 1", "Bass"]));
+        assert!(mode.edit_now().is_some());
         let sent = mode.tap(&doc);
         assert_eq!(
             sent,
             Some(Tap::Send(
-                vec![SectorOrder {
-                    layout: "lu-1".to_string(),
-                    strips: refs(&["Vox 2", "Vox 1", "Bass"]),
-                }],
+                with_slots("lu-1", refs(&["Vox 2", "Vox 1", "Bass"])),
                 3
             ))
         );
         assert!(mode.is_on(), "saving keeps the page inert");
-        // The edits stay shown while saving; a tap meanwhile does nothing,
-        // and so does a move.
+        // The edit stays shown while saving; a tap meanwhile does nothing,
+        // and nothing can be edited.
         assert_eq!(
-            mode.order_of(&doc.sectors[&SectorId::Lu][0]),
-            refs(&["Vox 2", "Vox 1", "Bass"]).as_slice()
+            mode.applied(&doc).sectors[&SectorId::Lu][0].strips,
+            refs(&["Vox 2", "Vox 1", "Bass"])
         );
         assert_eq!(mode.tap(&doc), None);
-        let before = mode.clone();
-        mode.moved("lu-1", refs(&["Bass", "Vox 1", "Vox 2"]));
-        assert_eq!(mode, before);
+        assert_eq!(mode.edit(), None);
+        assert_eq!(mode.edit_now(), None);
+    }
+
+    #[test]
+    fn a_rename_an_add_and_a_remove_go_in_the_one_save() {
+        let doc = doc();
+        let mut mode = Arrange::Off;
+        let _ = mode.tap(&doc);
+        let edit = mode.edit().expect("on");
+        assert_eq!(edit.add(SectorId::Lu), Some("lu-r4-1".to_string()));
+        edit.ask_remove("lu-1");
+        assert_eq!(edit.tab_tapped("lu-1"), TabTap::Removed);
+        // A rename still in its field is taken by the tap that saves.
+        let _ = edit.rename_start("ru-1");
+        let _ = edit.typed("keys");
+        let Some(Tap::Send(sectors, rev)) = mode.tap(&doc) else {
+            panic!("a save");
+        };
+        assert_eq!(rev, 3);
+        assert_eq!(
+            sectors[&SectorId::Lu],
+            vec![SectorLayout {
+                id: "lu-r4-1".to_string(),
+                title: "NEW".to_string(),
+                strips: Vec::new(),
+            }]
+        );
+        assert_eq!(sectors[&SectorId::Ru][0].title, "KEYS");
+        assert_eq!(
+            sectors[&SectorId::Ru][0].strips,
+            refs(&["Keys 1", "Klavir"])
+        );
+        // A rename alone is a change too.
+        let mut mode = Arrange::Off;
+        let _ = mode.tap(&doc);
+        if let Some(edit) = mode.edit() {
+            let _ = edit.rename_start("lu-1");
+            let _ = edit.typed("vocals");
+            edit.rename_end(true);
+        }
+        assert!(matches!(mode.tap(&doc), Some(Tap::Send(..))));
     }
 
     #[test]
@@ -512,7 +589,7 @@ mod tests {
         let saving = || {
             let mut mode = Arrange::Off;
             let _ = mode.tap(&doc);
-            mode.moved("lu-1", refs(&["Bass", "Vox 1", "Vox 2"]));
+            moved(&mut mode, "lu-1", refs(&["Bass", "Vox 1", "Vox 2"]));
             let _ = mode.tap(&doc);
             mode
         };
@@ -521,10 +598,6 @@ mod tests {
         let mut taken = saving();
         assert_eq!(taken.answered(true), None);
         assert!(taken.is_on(), "still saving");
-        assert_eq!(
-            taken.order_of(&doc.sectors[&SectorId::Lu][0]),
-            refs(&["Bass", "Vox 1", "Vox 2"]).as_slice()
-        );
         assert_eq!(
             taken.applied(&doc).sectors[&SectorId::Lu][0].strips,
             refs(&["Bass", "Vox 1", "Vox 2"])
@@ -539,11 +612,11 @@ mod tests {
         assert_eq!(refused, Arrange::Off);
         assert_eq!(REFUSED_NOTE, "Not saved: the layouts changed");
         // An answer while on (a stale one) leaves the mode on.
-        let mut mode = on(3);
+        let mut mode = on();
         assert_eq!(mode.answered(true), None);
-        assert_eq!(mode, on(3));
+        assert_eq!(mode, on());
         assert_eq!(mode.answered(false), Some(REFUSED_NOTE));
-        assert_eq!(mode, on(3));
+        assert_eq!(mode, on());
     }
 
     #[test]
@@ -552,7 +625,7 @@ mod tests {
         let saving = || {
             let mut mode = Arrange::Off;
             let _ = mode.tap(&doc);
-            mode.moved("lu-1", refs(&["Bass", "Vox 1", "Vox 2"]));
+            moved(&mut mode, "lu-1", refs(&["Bass", "Vox 1", "Vox 2"]));
             let _ = mode.tap(&doc);
             mode
         };
@@ -578,34 +651,76 @@ mod tests {
         assert_eq!(mode.heard(&Ok::<(), String>(())), None);
         assert!(mode.is_on());
         // Heard while on (a stale answer): the mode stays.
-        let mut mode = on(3);
+        let mut mode = on();
         assert_eq!(
             mode.heard(&Err::<(), _>(crate::store::NOT_CONNECTED.to_string())),
             Some(OFFLINE_NOTE)
         );
-        assert_eq!(mode, on(3));
+        assert_eq!(mode, on());
+    }
+
+    #[test]
+    fn a_refusal_names_its_word_in_the_note() {
+        assert_eq!(refusal_note("stale"), REFUSED_NOTE);
+        assert_eq!(refusal_note("FULL"), FULL_NOTE);
+        assert_eq!(refusal_note("invalid"), INVALID_NOTE);
+        assert_eq!(refusal_note(crate::store::NOT_CONNECTED), OFFLINE_NOTE);
+        assert_eq!(refusal_note(crate::store::CONNECTION_CLOSED), OFFLINE_NOTE);
+        assert_eq!(refusal_note("EMPTY"), NOT_SAVED_NOTE);
+        assert_eq!(refusal_note("cannot write sectors.json"), NOT_SAVED_NOTE);
+        assert_eq!(refusal_note(""), NOT_SAVED_NOTE);
+        // The words are the hub's, exactly: another case is another word.
+        assert_eq!(refusal_note("Stale"), NOT_SAVED_NOTE);
+        assert_eq!(refusal_note("full"), NOT_SAVED_NOTE);
+        assert_eq!(REFUSED_NOTE, "Not saved: the layouts changed");
+        assert_eq!(FULL_NOTE, "Not saved: a layout is full");
+        assert_eq!(INVALID_NOTE, "Not saved: the layouts are not valid");
+        assert_eq!(NOT_SAVED_NOTE, "Not saved");
+    }
+
+    #[test]
+    fn a_refused_save_ends_at_once_with_its_words_note() {
+        let doc = doc();
+        let saving = || {
+            let mut mode = Arrange::Off;
+            let _ = mode.tap(&doc);
+            moved(&mut mode, "lu-1", refs(&["Bass", "Vox 1", "Vox 2"]));
+            let _ = mode.tap(&doc);
+            mode
+        };
+        for (word, note) in [
+            ("stale", REFUSED_NOTE),
+            ("FULL", FULL_NOTE),
+            ("invalid", INVALID_NOTE),
+            ("EMPTY", NOT_SAVED_NOTE),
+            (crate::store::NOT_CONNECTED, OFFLINE_NOTE),
+        ] {
+            let mut mode = saving();
+            assert_eq!(
+                mode.heard(&Err::<(), _>(word.to_string())),
+                Some(note),
+                "{word}"
+            );
+            assert_eq!(mode, Arrange::Off, "{word}");
+        }
     }
 
     #[test]
     fn a_new_document_during_arrange_ends_it_unsaved() {
-        let mut mode = on(3);
-        mode.moved("lu-1", refs(&["Bass"]));
+        let mut mode = on();
+        moved(&mut mode, "lu-1", refs(&["Bass"]));
         let kept = mode.clone();
         mode.doc_arrived(3);
         assert_eq!(mode, kept, "the same revision (a reconnect) keeps it");
         mode.doc_arrived(4);
         assert_eq!(mode, Arrange::Off);
-        let mut older = on(3);
+        let mut older = on();
         older.doc_arrived(2);
         assert_eq!(older, Arrange::Off);
         // Saving at 3: its own answer's document is 4; 3 again keeps it.
-        let saving = |rev| Arrange::Saving {
-            rev,
-            edits: BTreeMap::new(),
-        };
-        let mut mode = saving(3);
+        let mut mode = saving_at(3);
         mode.doc_arrived(3);
-        assert_eq!(mode, saving(3));
+        assert_eq!(mode, saving_at(3));
         mode.doc_arrived(4);
         assert_eq!(mode, Arrange::Off);
         let mut off = Arrange::Off;
@@ -615,15 +730,12 @@ mod tests {
 
     #[test]
     fn a_hide_ends_it_unsaved() {
-        let mut mode = on(3);
-        mode.moved("lu-1", refs(&["Bass"]));
+        let mut mode = on();
+        moved(&mut mode, "lu-1", refs(&["Bass"]));
         assert_eq!(mode.ended_by(ArrangeEnd::Hidden), Some(ArrangeEnd::Hidden));
         assert_eq!(mode, Arrange::Off);
         assert_eq!(mode.ended_by(ArrangeEnd::Hidden), None);
-        let mut saving = Arrange::Saving {
-            rev: 3,
-            edits: BTreeMap::new(),
-        };
+        let mut saving = saving_at(3);
         assert_eq!(
             saving.ended_by(ArrangeEnd::NewDoc),
             Some(ArrangeEnd::NewDoc)
@@ -632,12 +744,14 @@ mod tests {
     }
 
     #[test]
-    fn the_page_shows_the_edited_orders() {
+    fn the_page_shows_the_edit() {
         let doc = doc();
         let mut mode = Arrange::Off;
         assert_eq!(mode.applied(&doc), doc);
         let _ = mode.tap(&doc);
-        mode.moved("ru-1", refs(&["Klavir", "Keys 1"]));
+        moved(&mut mode, "ru-1", refs(&["Klavir", "Keys 1"]));
+        let added = mode.edit().and_then(|e| e.add(SectorId::Ru));
+        assert_eq!(added.as_deref(), Some("ru-r4-1"));
         let shown = mode.applied(&doc);
         assert_eq!(shown.rev, 3);
         assert_eq!(
@@ -645,6 +759,7 @@ mod tests {
             refs(&["Klavir", "Keys 1"])
         );
         assert_eq!(shown.sectors[&SectorId::Ru][0].title, "RU-1");
+        assert_eq!(shown.sectors[&SectorId::Ru][1].title, "NEW");
         assert_eq!(shown.sectors[&SectorId::Lu], doc.sectors[&SectorId::Lu]);
     }
 
@@ -679,7 +794,7 @@ mod tests {
         assert_eq!(arrange_note(true, None), ARRANGE_NOTE);
         assert_eq!(arrange_note(false, Some(REFUSED_NOTE)), REFUSED_NOTE);
         assert_eq!(arrange_note(true, Some(REFUSED_NOTE)), REFUSED_NOTE);
-        assert_eq!(ARRANGE_NOTE, "drag to reorder · tap to save");
+        assert_eq!(ARRANGE_NOTE, "drag · ✎ ✕ + · tap to save");
     }
 
     #[test]
@@ -742,39 +857,35 @@ mod tests {
             title: "BAND".to_string(),
             strips: order.clone(),
         };
-        let mut off = Arrange::Off;
-        off.dropped_in(&layout, &spots, 3, &r("PA"), 455.0);
-        assert_eq!(off, Arrange::Off);
-        let mut mode = on(3);
-        mode.dropped_in(&layout, &spots, 3, &r("PA"), 455.0);
-        let first = refs(&["Klavir", "Bass", "Keys 1", "", "", "PA"]);
-        assert_eq!(mode.order_of(&layout), first.as_slice());
-        mode.dropped_in(&layout, &spots, 0, &r("Klavir"), 300.0);
-        assert_eq!(
-            mode.order_of(&layout),
-            refs(&["", "Bass", "Keys 1", "Klavir", "", "PA"]).as_slice()
-        );
-        // The save carries the empty slots.
         let doc = SectorsDoc {
             rev: 3,
             sectors: [(SectorId::Ru, vec![layout.clone()])].into_iter().collect(),
         };
-        assert_eq!(
-            mode.tap(&doc),
-            Some(Tap::Send(
-                vec![SectorOrder {
-                    layout: "ru-1".to_string(),
-                    strips: refs(&["", "Bass", "Keys 1", "Klavir", "", "PA"]),
-                }],
-                3
-            ))
-        );
+        let mut off = Arrange::Off;
+        off.dropped_in("ru-1", &spots, 3, &r("PA"), 455.0);
+        assert_eq!(off, Arrange::Off);
+        let mut mode = Arrange::Off;
+        let _ = mode.tap(&doc);
+        mode.dropped_in("ru-1", &spots, 3, &r("PA"), 455.0);
+        let first = refs(&["Klavir", "Bass", "Keys 1", "", "", "PA"]);
+        assert_eq!(mode.applied(&doc).sectors[&SectorId::Ru][0].strips, first);
+        mode.dropped_in("ru-1", &spots, 0, &r("Klavir"), 300.0);
+        let second = refs(&["", "Bass", "Keys 1", "Klavir", "", "PA"]);
+        assert_eq!(mode.applied(&doc).sectors[&SectorId::Ru][0].strips, second);
+        // A layout the edit does not hold takes nothing.
+        let before = mode.clone();
+        mode.dropped_in("gone", &spots, 0, &r("Klavir"), 300.0);
+        assert_eq!(mode, before);
+        // The save carries the empty slots.
+        let mut sent = doc.sectors.clone();
+        sent.get_mut(&SectorId::Ru).unwrap()[0].strips = second;
+        assert_eq!(mode.tap(&doc), Some(Tap::Send(sent, 3)));
         let mut saving = Arrange::Saving {
             rev: 3,
-            edits: BTreeMap::new(),
+            sectors: doc.sectors.clone(),
         };
-        saving.dropped_in(&layout, &spots, 3, &r("PA"), 455.0);
-        assert_eq!(saving.order_of(&layout), order.as_slice());
+        saving.dropped_in("ru-1", &spots, 3, &r("PA"), 455.0);
+        assert_eq!(saving.applied(&doc), doc);
     }
 
     fn touch(id: i32, primary: bool) -> Down {

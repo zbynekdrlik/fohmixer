@@ -183,7 +183,9 @@ pub fn expired(file: NaiveDate, today: NaiveDate, keep_days: i64) -> bool {
 /// only the outage outlives the cap, so no client fills the warn class. Its link's changes (`ableset_link`, #90 B3: at
 /// most one per 5 s read, they explain a page's AbleSet tab) do too, and
 /// so does a page's `trace` that holds its AbleSet tab opened or closed
-/// (`ableset_view`, #90 design §6: a few per open, beside the dropouts).
+/// (`ableset_view`, #90 design §6: a few per open, beside the dropouts),
+/// and one that holds a rail button's step (`rail`, #130 PR 6: a few per
+/// press, the press the rules' records below answer).
 /// The rules' records (#104, #130, D18): every instance's `transport`
 /// change, STAGE AUT's `stage_aut` (its flag, its writes and their
 /// failures), REVERB's `reverb` steps, each fader link's switch
@@ -233,8 +235,8 @@ fn problems_changed(record: &Value) -> bool {
     record.get("problems_changed").and_then(Value::as_bool) == Some(true)
 }
 
-/// Whether a page's `trace` holds a dropout, a reset of its counter or its
-/// AbleSet tab opened or closed.
+/// Whether a page's `trace` holds a dropout, a reset of its counter, its
+/// AbleSet tab opened or closed, or a rail button's step.
 fn holds_warn_event(record: &Value) -> bool {
     record
         .get("events")
@@ -243,7 +245,7 @@ fn holds_warn_event(record: &Value) -> bool {
             events.iter().any(|e| {
                 matches!(
                     e.get("ev").and_then(Value::as_str),
-                    Some("dropout" | "reset" | "ableset_view")
+                    Some("dropout" | "reset" | "ableset_view" | "rail")
                 )
             })
         })
