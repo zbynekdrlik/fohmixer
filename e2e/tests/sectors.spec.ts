@@ -71,6 +71,20 @@ const FULL_DOC: SectorsDoc = {
   },
 };
 
+/** ld mixes master and band strips; the other sectors hold one Live set each. */
+const MIXED_DOC: SectorsDoc = {
+  rev: 0,
+  sectors: {
+    lu: [{ id: "lu-1", title: "STAGE", strips: [VOCAL, KEYS] }],
+    ru: [{ id: "ru-1", title: "MAIN", strips: [band("B-Main repro #")] }],
+    ld: [
+      { id: "ld-1", title: "EFFECTS", strips: [master("Hand1 #"), band("A-Reverb #"), master("A-Reverb #")] },
+      { id: "ld-2", title: "FX", strips: [band("A-Reverb #")] },
+    ],
+    rd: [{ id: "rd-1", title: "MAIN", strips: [master("A-Echo")] }],
+  },
+};
+
 const sectorsPage = (page: Page) => page.locator('[data-testid="page"][data-sectors="true"]');
 
 /** A sector's slots on the sectors page, in their order. */
@@ -153,22 +167,67 @@ test.describe("The fader sectors", () => {
   test.describe("at the iPad's size", () => {
     test.use({ viewport: { width: 1194, height: 834 } });
 
-    test("the fader travel is 322 px at 1194x834", async ({ page }) => {
-      await setSectors(DOC);
+    test("the fader travel is 322 px at 1194x834 in all four sectors, a mixed layout included", async ({ page }) => {
+      await setSectors(MIXED_DOC);
       await openSectors(page);
-      await expect.poll(async () => (await stripsOf(page, "rd")).length).toBe(1);
+      await expect.poll(async () => (await stripsOf(page, "ld")).length).toBe(3);
       await frames(page);
       const travels = await sectorsPage(page)
-        .locator('.slot [data-testid="strip"]')
+        .locator('.slot[data-sector] [data-testid="strip"]')
         .evaluateAll((all) =>
           all
-            .filter((s) => !s.querySelector('[data-testid="strip-instance"]') && s.querySelector('[data-testid="fader"]'))
-            .map((s) => ({ name: s.getAttribute("data-track"), h: s.querySelector('[data-testid="fader"]')!.getBoundingClientRect().height })),
+            .filter((s) => s.querySelector('[data-testid="fader"]'))
+            .map((s) => ({
+              sector: s.closest(".slot")!.getAttribute("data-sector"),
+              name: `${s.getAttribute("data-instance")}|${s.getAttribute("data-track")}`,
+              h: s.querySelector('[data-testid="fader"]')!.getBoundingClientRect().height,
+            })),
         );
-      // lu, ru, ld and rd: every strip shown, none with an instance tag (each layout holds one Live set).
-      expect(travels.length).toBe(6);
+      // Every strip of lu, ru, ld (band and master mixed) and rd.
+      expect(travels.length).toBe(7);
+      expect([...new Set(travels.map((t) => t.sector))].sort()).toEqual(["ld", "lu", "rd", "ru"]);
       console.log(`sectors travel (${test.info().project.name}): ${[...new Set(travels.map((t) => t.h.toFixed(2)))].join(", ")} px`);
-      for (const t of travels) expect(t.h, `${t.name}`).toBeGreaterThanOrEqual(322 - 0.5);
+      for (const t of travels) expect(t.h, `${t.sector} ${t.name}`).toBeGreaterThanOrEqual(322 - 0.5);
+    });
+
+    test("a mixed layout names each strip's Live set as calm side text, never a pill", async ({ page }) => {
+      await setSectors(MIXED_DOC);
+      await openSectors(page);
+      await expect.poll(() => stripsOf(page, "ld")).toEqual(["master|Hand1 #", "band|A-Reverb #", "master|A-Reverb #"]);
+      // No instance pill anywhere on the sectors page.
+      await expect(sectorsPage(page).locator('[data-testid="strip-instance"]')).toHaveCount(0);
+      // In the mixed ld each strip's info column names its own Live set.
+      const sides = await slots(page, "ld")
+        .locator('[data-testid="strip"]')
+        .evaluateAll((all) =>
+          all.map((s) => {
+            const side = s.querySelector('[data-testid="strip-col"] [data-testid="group-side"]') as HTMLElement | null;
+            return side
+              ? { text: side.textContent, color: getComputedStyle(side).color, events: getComputedStyle(side).pointerEvents }
+              : null;
+          }),
+        );
+      const faint = await page.evaluate(() => {
+        const probe = document.createElement("span");
+        probe.style.color = "var(--faint)";
+        document.body.append(probe);
+        const color = getComputedStyle(probe).color;
+        probe.remove();
+        return color;
+      });
+      expect(sides.map((s) => s?.text)).toEqual(["MASTER", "BAND", "MASTER"]);
+      for (const side of sides) {
+        expect(side!.color).toBe(faint);
+        expect(side!.events).toBe("none");
+      }
+      // A layout of one Live set shows no side text.
+      for (const sector of ["lu", "ru", "rd"]) {
+        await expect(slots(page, sector).locator('[data-testid="group-side"]'), sector).toHaveCount(0);
+      }
+      // Paging ld to a layout of one set takes the side text away.
+      await page.locator('[data-testid="sector-tab"][data-layout="ld-2"]').click();
+      await expect.poll(() => stripsOf(page, "ld")).toEqual(["band|A-Reverb #"]);
+      await expect(slots(page, "ld").locator('[data-testid="group-side"]')).toHaveCount(0);
     });
   });
 
