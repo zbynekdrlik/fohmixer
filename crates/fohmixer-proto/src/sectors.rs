@@ -445,12 +445,14 @@ pub fn tick(
 /// Whether `a` and `b` hold the same refs, each as often (the empty slots
 /// not counted).
 fn same_set(a: &[Slot], b: &[Slot]) -> bool {
-    let sorted = |slots: &[Slot]| {
-        let mut refs: Vec<&StripRef> = slots.iter().flatten().collect();
-        refs.sort();
-        refs
-    };
-    sorted(a) == sorted(b)
+    sorted_refs(a) == sorted_refs(b)
+}
+
+/// The refs of `slots`, sorted (the empty slots left out).
+fn sorted_refs(slots: &[Slot]) -> Vec<&StripRef> {
+    let mut refs: Vec<&StripRef> = slots.iter().flatten().collect();
+    refs.sort();
+    refs
 }
 
 /// ARRANGE's save: each layout of `orders` takes its new slots (trailing
