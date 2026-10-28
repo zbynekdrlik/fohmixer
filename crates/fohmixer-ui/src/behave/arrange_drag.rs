@@ -17,7 +17,7 @@
 //! end never came ends at the next primary down of its type (#124). All of
 //! it is pure; `pages::sectors` carries it out.
 
-use fohmixer_proto::sectors::{SectorId, Sectors, SectorsDoc, Slot, StripRef, trim};
+use fohmixer_proto::sectors::{Refusal, SectorId, Sectors, SectorsDoc, Slot, StripRef, trim};
 
 use super::Down;
 use super::arrange_edit::Edit;
@@ -30,9 +30,18 @@ pub const DRAG_SLOP: f64 = 6.0;
 /// The note under ARRANGE while the mode is on (the mockup v2's).
 pub const ARRANGE_NOTE: &str = "drag · ✎ ✕ + · tap to save";
 
-/// The note under ARRANGE when the hub refused the save (it shows its own
-/// order again).
+/// The note under ARRANGE when the hub refused the save as `stale` (it
+/// shows its own order again).
 pub const REFUSED_NOTE: &str = "Not saved: the layouts changed";
+
+/// The note under ARRANGE when the hub refused the save as `FULL`.
+pub const FULL_NOTE: &str = "Not saved: a layout is full";
+
+/// The note under ARRANGE when the hub refused the save as `invalid`.
+pub const INVALID_NOTE: &str = "Not saved: the layouts are not valid";
+
+/// The note under ARRANGE for any other failure of the save.
+pub const NOT_SAVED_NOTE: &str = "Not saved";
 
 /// The note under ARRANGE when the save never reached the hub (no socket,
 /// or it closed before the answer).
@@ -136,19 +145,17 @@ impl Arrange {
         Some(REFUSED_NOTE)
     }
 
-    /// What the save's request heard: the hub's answer (`answered`), or a
-    /// failure the hub never gave (`never_reached`), which ends a save at
-    /// once with its own note.
+    /// What the save's request heard: the hub's answer (`answered`); a
+    /// failure, the hub's refusal or one the hub never gave
+    /// (`never_reached`), ends a save at once with its word's note
+    /// ([`refusal_note`]).
     pub fn heard<T>(&mut self, outcome: &Result<T, String>) -> Option<&'static str> {
         match outcome {
             Ok(_) => self.answered(true),
-            Err(why) if never_reached(why) => {
-                if matches!(self, Arrange::Saving { .. }) {
-                    *self = Arrange::Off;
-                }
-                Some(OFFLINE_NOTE)
+            Err(why) => {
+                let _ = self.answered(false);
+                Some(refusal_note(why))
             }
-            Err(_) => self.answered(false),
         }
     }
 
@@ -238,6 +245,23 @@ impl NoteTimer {
 /// socket closed before the answer), never the hub's refusal.
 pub fn never_reached(why: &str) -> bool {
     why == NOT_CONNECTED || why == CONNECTION_CLOSED
+}
+
+/// The note for a save that failed with `why`: the hub's refusal word
+/// (`stale`, `FULL`, `invalid`; any other, such as `EMPTY` or a write that
+/// failed, plain "Not saved"), or the page's own not connected.
+pub fn refusal_note(why: &str) -> &'static str {
+    if never_reached(why) {
+        OFFLINE_NOTE
+    } else if why == Refusal::Stale.text() {
+        REFUSED_NOTE
+    } else if why == Refusal::Full.text() {
+        FULL_NOTE
+    } else if why == Refusal::Invalid.text() {
+        INVALID_NOTE
+    } else {
+        NOT_SAVED_NOTE
+    }
 }
 
 /// The note under ARRANGE: a refusal's while it shows, else the mode's.
