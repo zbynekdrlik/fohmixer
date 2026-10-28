@@ -833,7 +833,8 @@ fn a_file_with_null_slots_reads_and_a_strip_is_held_once_its_gaps_aside() {
     );
     assert_eq!(read.strip_count(), 2, "the gaps are no strips");
     assert_eq!(read.layout_count(), 1);
-    let pooled = pool(&ordered_pool_layout());
+    let pool_layout = ordered_pool_layout();
+    let pooled = pool(&pool_layout);
     assert_eq!(unknown(&read, &pooled), 0, "a gap is no unknown ref");
     // A hand edit's trailing empty slots are dropped.
     let trimmed = read.trimmed();
