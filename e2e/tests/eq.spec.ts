@@ -1771,9 +1771,15 @@ test.describe("The Pro-Q 4 screen on a slow link", () => {
    * could wait past the next ping).
    */
   const DOWN_RATE = 300_000;
-  /** The bounds of the latency on that link, until the real iPad's numbers set them (#71). */
-  const LAT_MEDIAN_MAX = 400;
-  const LAT_P95_MAX = 800;
+  /**
+   * The bounds of the latency on that link, set from the real iPad (#71): the
+   * owner's session over the site Wi-Fi measured p50 80 ms and p95 118 ms, and
+   * six CI runs on this link measured medians of 87-104 ms and p95s of
+   * 124-147 ms. Each bound is about twice CI's worst, so a regression that
+   * doubles the latency fails while the shared runners' spread passes.
+   */
+  const LAT_MEDIAN_MAX = 200;
+  const LAT_P95_MAX = 300;
 
   test("a drag at 3× is numbered and measured, no pong waits behind frames, and a finger on a picture behind its last input is refused", async ({ page }) => {
     const sent: any[] = [];
