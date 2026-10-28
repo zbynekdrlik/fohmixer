@@ -464,11 +464,12 @@ fn seed_layout(title: Option<&str>, strips: Seeded) -> SectorLayout {
 }
 
 /// A row's right side: the left side's overflow first, then its own
-/// faders (each once), in layouts of at most [`SECTOR_UNITS`], each of the
-/// side's title; none when it holds no fader.
+/// faders, each fader once (several sub-pages can overflow the same
+/// one), in layouts of at most [`SECTOR_UNITS`], each of the side's title;
+/// none when it holds no fader.
 fn seed_right(title: Option<&str>, overflow: Seeded, own: Seeded) -> Vec<SectorLayout> {
-    let mut strips = overflow;
-    for (id, units) in own {
+    let mut strips: Seeded = Vec::new();
+    for (id, units) in overflow.into_iter().chain(own) {
         if !strips.iter().any(|(s, _)| *s == id) {
             strips.push((id, units));
         }
