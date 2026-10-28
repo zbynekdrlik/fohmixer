@@ -471,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn saving_leaves_once_answered_either_way() {
+    fn a_taken_save_keeps_its_edits_shown_until_its_document_arrives() {
         let doc = doc();
         let saving = || {
             let mut mode = Arrange::Off;
@@ -480,9 +480,24 @@ mod tests {
             let _ = mode.tap(&doc);
             mode
         };
+        // The hub sends its result before the new document: between the
+        // two the page must still show the edits, never the old order.
         let mut taken = saving();
         assert_eq!(taken.answered(true), None);
-        assert_eq!(taken, Arrange::Off);
+        assert!(taken.is_on(), "still saving");
+        assert_eq!(
+            taken.order_of(&doc.sectors[&SectorId::Lu][0]),
+            refs(&["Bass", "Vox 1", "Vox 2"]).as_slice()
+        );
+        assert_eq!(
+            taken.applied(&doc).sectors[&SectorId::Lu][0].strips,
+            refs(&["Bass", "Vox 1", "Vox 2"])
+        );
+        taken.doc_arrived(3);
+        assert!(taken.is_on(), "the same revision is not the save's");
+        taken.doc_arrived(4);
+        assert_eq!(taken, Arrange::Off, "its document ends it");
+        // A refusal ends it at once with its note.
         let mut refused = saving();
         assert_eq!(refused.answered(false), Some(REFUSED_NOTE));
         assert_eq!(refused, Arrange::Off);
@@ -490,6 +505,8 @@ mod tests {
         // An answer while on (a stale one) leaves the mode on.
         let mut mode = on(3);
         assert_eq!(mode.answered(true), None);
+        assert_eq!(mode, on(3));
+        assert_eq!(mode.answered(false), Some(REFUSED_NOTE));
         assert_eq!(mode, on(3));
     }
 
