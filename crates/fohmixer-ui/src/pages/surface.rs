@@ -31,6 +31,7 @@ use crate::arrange::{
     arrange_in, items, narrow, px_value, rooms, thin_line,
 };
 use crate::behave::ableset::tab_dot;
+use crate::behave::arrange_drag::Arrange;
 use crate::behave::solo::soloed;
 use crate::binding::sectors::{PICKS_KEY, Picks, Sectored, parse_picks, sectors_on};
 use crate::binding::{
@@ -80,8 +81,11 @@ pub(crate) struct Nav {
     /// stored under `PICKS_KEY`: a pick whose layout is gone stays until
     /// the user pages that sector (`binding::sectors::picked` falls back).
     pub(crate) picks: RwSignal<Picks>,
-    /// ARRANGE's reorder mode is on (#148; Task 8 drives it).
-    pub(crate) arrange: RwSignal<bool>,
+    /// ARRANGE's reorder mode (#148, `behave::arrange_drag::Arrange`):
+    /// here, not on the sectors page, so a new layout's remount keeps an
+    /// arrangement in progress; the page's first look at the hub's
+    /// document ends one left from before.
+    pub(crate) arrange: RwSignal<Arrange>,
     /// The extra tab shown (#52 the Stream Deck, #90 AbleSet); never
     /// remembered: a reload opens the last mixer page. Written only on a
     /// change: a `try_set` notifies even with the same value.
@@ -229,7 +233,7 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
         remembered: RwSignal::new(remembered_pages()),
         viewport,
         picks: RwSignal::new(remembered_picks()),
-        arrange: RwSignal::new(false),
+        arrange: RwSignal::new(Arrange::Off),
         extra,
         shown: Memo::new(move |_| extra.get()),
         before_view: RwSignal::new(None),

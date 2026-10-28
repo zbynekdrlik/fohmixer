@@ -235,3 +235,88 @@
 .detail-step.end {
     opacity: 0.35;
 }
+
+/* ARRANGE (#148, mockup v1), the reorder mode: what talks to Live goes
+   inert. The column's head (the pages' tabs, the counter), the layout
+   tabs, ↶ and the rail dim and take no touches; ARRANGE stays live. Every
+   strip carries a cover over its whole face (its name button, its fader,
+   its SEL) that owns the touches, and nothing under it takes one (the
+   fader cap's own `auto` included): nothing in this mode can change a
+   value in Live. */
+.saved-note {
+    flex: none;
+    min-height: 11px;
+    margin-top: -4px;
+    color: var(--muted);
+    font: 600 9px/11px var(--ui);
+    letter-spacing: 0.04em;
+    text-align: center;
+}
+
+.body[data-arrange="true"] :is(.column-head > *, .sectors, .cap-title, .undo-btn, .rail) {
+    opacity: 0.3;
+    pointer-events: none;
+}
+
+.body[data-sectors="true"] .slot {
+    position: relative;
+}
+
+.edit-cover {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    display: none;
+    border-radius: 9px;
+    box-shadow: inset 0 0 0 1.5px rgba(154, 154, 180, 0.55);
+    cursor: grab;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+.body[data-arrange="true"] .edit-cover {
+    display: block;
+}
+
+.body[data-arrange="true"] .slot > :not(.edit-cover) {
+    opacity: 0.45;
+}
+
+.body[data-arrange="true"] .slot > :not(.edit-cover),
+.body[data-arrange="true"] .slot > :not(.edit-cover) * {
+    pointer-events: none !important;
+}
+
+/* The handle: a grip in the middle of the strip (the fader itself does not
+   move). */
+.grip {
+    position: absolute;
+    top: 46%;
+    left: 50%;
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 54px;
+    margin: -27px 0 0 -20px;
+    border-radius: 9px;
+    background: #1d1d2c;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--muted);
+    font: 700 20px/24px var(--ui);
+}
+
+.grip small {
+    display: block;
+    margin-top: -6px;
+    font: 700 7.5px/9px var(--ui);
+    letter-spacing: 0.1em;
+}
+
+/* A strip carried under the finger: its slot follows it (the drag's
+   transform), above its neighbours, ringed. */
+.slot[data-carried="true"] {
+    z-index: 6;
+    border-radius: 9px;
+    box-shadow: 0 0 0 1.5px var(--solo);
+}
