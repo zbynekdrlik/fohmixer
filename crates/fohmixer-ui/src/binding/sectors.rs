@@ -289,6 +289,30 @@ impl Steps {
     }
 }
 
+/// The `why` of a detail opened by its ◀ ▶ (the flight recorder's `open`).
+pub const STEP_WHY: &str = "step";
+
+/// What a step of the detail's ◀ ▶ opens: the strip, the open's `why`
+/// ([`STEP_WHY`]) and the keys the recorder names it by.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Stepped {
+    pub strip: Strip,
+    pub why: &'static str,
+    pub keys: Vec<String>,
+}
+
+/// The step `forward` (else back) from the detail's `steps`: none without
+/// steps or at that end.
+pub fn stepped(steps: Option<&Steps>, forward: bool) -> Option<Stepped> {
+    let strip = steps?.to(forward)?.clone();
+    let keys = super::detail_keys(&strip);
+    Some(Stepped {
+        strip,
+        why: STEP_WHY,
+        keys,
+    })
+}
+
 /// The detail's ◀ ▶ for `strip`: none while the document places no fader
 /// (the bar as today); either end none at the pool's ends and for a strip
 /// with no identity.
@@ -754,5 +778,29 @@ mod tests {
                 next: None
             }
         );
+    }
+
+    #[test]
+    fn a_step_opens_the_pools_neighbour_recorded_as_step() {
+        let layout = layout();
+        let doc = sample();
+        let bass = strip_of(strip("Bass"));
+        let steps = detail_steps(Some(&doc), &layout, &bass);
+        let next = stepped(steps.as_ref(), true).expect("a next strip");
+        assert_eq!(Some(&next.strip), steps.as_ref().and_then(|s| s.to(true)));
+        assert_eq!(next.why, "step");
+        assert_eq!(STEP_WHY, "step");
+        assert_eq!(next.keys, super::super::detail_keys(&next.strip));
+        assert!(!next.keys.is_empty());
+        let back = stepped(steps.as_ref(), false).expect("a strip before");
+        assert_eq!(Some(&back.strip), steps.as_ref().and_then(|s| s.to(false)));
+        assert_ne!(back.strip, next.strip);
+        assert_eq!(back.keys, super::super::detail_keys(&back.strip));
+        // At an end, or with no steps: nothing.
+        let vox = strip_of(strip("Vox 1"));
+        let first = detail_steps(Some(&doc), &layout, &vox);
+        assert_eq!(stepped(first.as_ref(), false), None);
+        assert!(stepped(first.as_ref(), true).is_some());
+        assert_eq!(stepped(None, true), None);
     }
 }

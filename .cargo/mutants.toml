@@ -266,11 +266,13 @@ exclude_re = [
   # controls.spec.ts reads the steps back from the event log.
   "fohmixer-ui/src/components/mod\\.rs.*(replace|in) (trace_touch|trace_start|trace_move|intent_look|trace_detail|trace_rail)( |$)",
   "fohmixer-ui/src/components/detail\\.rs.*(replace|in) DetailStrip::(open|close|step)( |$)",
-  # #148: DetailStrip::step (the detail's ◀ ▶: the strip's signal written,
-  # the open recorded with why "step" and the tested binding::detail_keys)
-  # and, in components/detail_layouts.rs, ticks_memo (the hub's document
-  # and the served layout read into the tested binding::sectors::
-  # detail_ticks). sectors.spec.ts ticks a layout and steps with ◀ ▶.
+  # #148: DetailStrip::step (the detail's ◀ ▶: the strip's signal written
+  # and the open recorded, both from the tested binding::sectors::stepped,
+  # its strip, why "step" and keys) and, in components/detail_layouts.rs,
+  # ticks_memo (the hub's document and the served layout read into the
+  # tested binding::sectors::detail_ticks). sectors.spec.ts ticks a layout,
+  # presses the detail's ▶ and ◀ and reads the neighbouring pool strip in
+  # the detail and the two "step" opens back from the event log.
   "fohmixer-ui/src/components/detail_layouts\\.rs.*(replace|in) ticks_memo( |$)",
   # components/eq.rs (#71 PR E): EqNav::open and EqNav::close (the screen's
   # signal written, the step recorded with the tested trace::detail),

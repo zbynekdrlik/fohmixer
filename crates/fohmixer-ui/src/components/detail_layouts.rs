@@ -16,7 +16,9 @@ use leptos::prelude::*;
 
 use super::detail::DetailStrip;
 use super::{fail_flash, owns_touches};
-use crate::binding::sectors::{DetailTicks, TickRow, detail_steps, detail_ticks, sector_name};
+use crate::binding::sectors::{
+    DetailTicks, TickRow, detail_steps, detail_ticks, sector_name, stepped,
+};
 use crate::store::{LiveStore, on_refusal};
 
 /// The section's ticks for the strip shown: the hub's document as last
@@ -166,8 +168,8 @@ fn TickButton(ticks: Memo<DetailTicks>, row: TickRow) -> impl IntoView {
 
 /// The bar's ◀ ▶: the pool's strip before and after this one (the
 /// parameter faders skipped, no wrap; `.end` at either end). A step opens
-/// that strip's detail (`DetailStrip::step`, recorded as an open with
-/// `why: "step"`).
+/// that strip's detail (`DetailStrip::step` with the tested
+/// `binding::sectors::stepped`, recorded as an open with `why: "step"`).
 #[component]
 pub fn DetailStep(strip: Strip) -> impl IntoView {
     let store = expect_context::<LiveStore>();
@@ -188,7 +190,7 @@ pub fn DetailStep(strip: Strip) -> impl IntoView {
     let go = move |ev: web_sys::PointerEvent, forward: bool| {
         ev.prevent_default();
         let next = steps
-            .try_with_untracked(|s| s.as_ref().and_then(|s| s.to(forward).cloned()))
+            .try_with_untracked(|s| stepped(s.as_ref(), forward))
             .flatten();
         if let (Some(next), Some(detail)) = (next, shown) {
             detail.step(next, ev.pointer_id());

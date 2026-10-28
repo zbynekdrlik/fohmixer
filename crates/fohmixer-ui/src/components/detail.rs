@@ -30,6 +30,7 @@ use crate::behave::fader::UNITY;
 use crate::behave::hold::guard_left;
 use crate::behave::label::shown_label;
 use crate::behave::reverb::held_low;
+use crate::binding::sectors::Stepped;
 use crate::binding::{CLOSE_EXIT, SubSpec, detail_keys, detail_subs};
 use crate::dom;
 use crate::store::{LiveStore, Readiness, Slot};
@@ -56,13 +57,14 @@ impl DetailStrip {
         let _ = self.strip.try_set(Some(strip));
     }
 
-    /// The detail's ◀ ▶ opened `strip`, the pool's strip beside the one
-    /// shown (#148), by pointer `pointer`: recorded as an open with `why:
-    /// "step"`. The opening guard is not started again (it is for a second
-    /// tap at SEL's spot), so the arrows step at a finger's pace.
-    pub fn step(self, strip: Strip, pointer: i32) {
-        trace_detail("open", Some("step"), &detail_keys(&strip), Some(pointer));
-        let _ = self.strip.try_set(Some(strip));
+    /// The detail's ◀ ▶ opened the pool's strip beside the one shown
+    /// (#148, the tested `binding::sectors::stepped`), by pointer
+    /// `pointer`: recorded as an open with its `why` and keys. The opening
+    /// guard is not started again (it is for a second tap at SEL's spot),
+    /// so the arrows step at a finger's pace.
+    pub fn step(self, stepped: Stepped, pointer: i32) {
+        trace_detail("open", Some(stepped.why), &stepped.keys, Some(pointer));
+        let _ = self.strip.try_set(Some(stepped.strip));
     }
 
     /// The detail closes (`why`: `exit`, `layout`, `conflict`; `pointer`
