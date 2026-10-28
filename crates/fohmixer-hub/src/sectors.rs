@@ -56,13 +56,14 @@ pub struct SectorStore {
 const BOM: &[u8] = b"\xEF\xBB\xBF";
 
 /// A document's text: one leading [`BOM`] skipped, serde, then its checks
-/// (`SectorsDoc::validate`) joined with `; `.
+/// (`SectorsDoc::validate`) joined with `; `; a layout's trailing empty
+/// slots are dropped (`SectorsDoc::trimmed`).
 pub fn parse(text: &[u8]) -> Result<SectorsDoc, String> {
     let text = text.strip_prefix(BOM).unwrap_or(text);
     let doc: SectorsDoc = serde_json::from_slice(text).map_err(|e| e.to_string())?;
     let errors = doc.validate();
     if errors.is_empty() {
-        Ok(doc)
+        Ok(doc.trimmed())
     } else {
         Err(errors.join("; "))
     }
@@ -319,9 +320,11 @@ mod tests {
                     title: "VOX".into(),
                     strips: labels
                         .iter()
-                        .map(|l| StripRef {
-                            instance: "band".into(),
-                            label: (*l).into(),
+                        .map(|l| {
+                            Some(StripRef {
+                                instance: "band".into(),
+                                label: (*l).into(),
+                            })
                         })
                         .collect(),
                 }],
@@ -419,6 +422,18 @@ mod tests {
         let store = SectorStore::open(dir.path());
         assert_eq!(store.doc(), &doc(2, &["Vox 1"]));
         assert_eq!(store.error(), None);
+    }
+
+    #[test]
+    fn parse_keeps_a_hand_edits_gaps_and_drops_its_trailing_empty_slots() {
+        let text = br#"{"rev": 3, "sectors": {"ru": [{"id": "ru-1", "title": "BAND",
+            "strips": [{"instance": "band", "label": "Klavir"}, null,
+                       {"instance": "band", "label": "Bass"}, null, null]}]}}"#;
+        let read = parse(text).unwrap();
+        let strips = &read.layouts(SectorId::Ru)[0].strips;
+        assert_eq!(strips.len(), 3);
+        assert_eq!(strips[1], None);
+        assert_eq!(strips[2].as_ref().map(|s| s.label.as_str()), Some("Bass"));
     }
 
     #[test]

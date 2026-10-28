@@ -10,6 +10,13 @@
 //! every fader of the served layout that has one. Everything here is pure:
 //! the hub and the UI share it.
 //!
+//! A layout is a row of slots (1.24.0, the owner's report of 28.10: ARRANGE
+//! packed the strips against each other, so BAND could not sit at RU's right
+//! edge): `strips` holds a fader or `null`, an empty slot, drawn as empty
+//! space one strip wide where a strip would sit. An empty slot counts one
+//! unit toward [`SECTOR_UNITS`]; trailing empty slots are dropped
+//! ([`trim`]), so a file without `null` reads as before.
+//!
 //! An unknown field is an error, not ignored (the file is edited by hand,
 //! as the layout is).
 
@@ -83,13 +90,35 @@ pub struct StripRef {
     pub label: String,
 }
 
-/// A named layout of a sector: its faders in order.
+/// A layout's slot: a fader, or none (an empty slot, `null` in the file).
+pub type Slot = Option<StripRef>;
+
+/// A named layout of a sector: its slots in order, each a fader or empty.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SectorLayout {
     pub id: String,
     pub title: String,
-    pub strips: Vec<StripRef>,
+    pub strips: Vec<Slot>,
+}
+
+impl SectorLayout {
+    /// Its faders in their order, the empty slots left out.
+    pub fn refs(&self) -> impl Iterator<Item = &StripRef> {
+        self.strips.iter().flatten()
+    }
+
+    /// Whether it holds `strip`.
+    pub fn holds(&self, strip: &StripRef) -> bool {
+        self.refs().any(|s| s == strip)
+    }
+}
+
+/// `slots` without their trailing empty slots.
+pub fn trim(mut slots: Vec<Slot>) -> Vec<Slot> {
+    let kept = slots.len() - slots.iter().rev().take_while(|s| s.is_none()).count();
+    slots.truncate(kept);
+    slots
 }
 
 /// The document, `sectors.json`: the hub's revision and each sector's
@@ -101,12 +130,12 @@ pub struct SectorsDoc {
     pub sectors: BTreeMap<SectorId, Vec<SectorLayout>>,
 }
 
-/// One layout's new order (ARRANGE's save).
+/// One layout's new slots (ARRANGE's save), its empty slots `null`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SectorOrder {
     pub layout: String,
-    pub strips: Vec<StripRef>,
+    pub strips: Vec<Slot>,
 }
 
 impl SectorsDoc {
@@ -138,6 +167,15 @@ impl SectorsDoc {
         })
     }
 
+    /// The document with every layout's trailing empty slots dropped (a
+    /// hand edit's; the hub's own changes never keep one).
+    pub fn trimmed(mut self) -> Self {
+        for layout in self.sectors.values_mut().flatten() {
+            layout.strips = trim(std::mem::take(&mut layout.strips));
+        }
+        self
+    }
+
     fn find_mut(&mut self, id: &str) -> Option<&mut SectorLayout> {
         self.sectors
             .values_mut()
@@ -147,7 +185,7 @@ impl SectorsDoc {
 
     /// Every problem of the document (empty: valid): an id empty or on two
     /// layouts, a title empty or longer than [`TITLE_MAX`] characters, a
-    /// strip twice in one layout.
+    /// strip twice in one layout (empty slots are no strip).
     pub fn validate(&self) -> Vec<String> {
         let mut errors = Vec::new();
         let mut ids: BTreeMap<&str, usize> = BTreeMap::new();
@@ -165,8 +203,9 @@ impl SectorsDoc {
                     layout.id, layout.title
                 ));
             }
-            for (i, strip) in layout.strips.iter().enumerate() {
-                if layout.strips.iter().take(i).any(|s| s == strip) {
+            let refs: Vec<&StripRef> = layout.refs().collect();
+            for (i, strip) in refs.iter().enumerate() {
+                if refs.iter().take(i).any(|s| s == strip) {
                     errors.push(format!(
                         "layout {:?} holds {}|{} twice",
                         layout.id, strip.instance, strip.label
@@ -196,7 +235,7 @@ impl SectorsDoc {
         self.sectors
             .values()
             .flatten()
-            .flat_map(|layout| &layout.strips)
+            .flat_map(SectorLayout::refs)
             .collect()
     }
 }
@@ -288,12 +327,15 @@ pub fn pool(layout: &Layout) -> Vec<Pooled<'_>> {
     out
 }
 
-/// The units of these faders: a ref no pool fader carries takes no room.
-pub fn units(strips: &[StripRef], pool: &[Pooled]) -> f64 {
-    strips
+/// The units of these slots: an empty slot 1, a fader its own; a ref no
+/// pool fader carries takes no room.
+pub fn units(slots: &[Slot], pool: &[Pooled]) -> f64 {
+    slots
         .iter()
-        .filter_map(|strip| pool.iter().find(|p| &p.id == strip))
-        .map(|p| p.units())
+        .filter_map(|slot| match slot {
+            None => Some(1.0),
+            Some(strip) => pool.iter().find(|p| &p.id == strip).map(Pooled::units),
+        })
         .sum()
 }
 
@@ -302,9 +344,31 @@ pub fn is_full(units: f64) -> bool {
     units > SECTOR_UNITS
 }
 
-/// Whether `strip` added to `layout` would make it full.
+/// `slots` with `strip` ticked in: into the first empty slot, else at the
+/// end.
+pub fn ticked_in(slots: &[Slot], strip: &StripRef) -> Vec<Slot> {
+    let mut out = slots.to_vec();
+    match out.iter_mut().find(|slot| slot.is_none()) {
+        Some(empty) => *empty = Some(strip.clone()),
+        None => out.push(Some(strip.clone())),
+    }
+    out
+}
+
+/// `slots` with `strip` ticked out: its slot left empty (the others keep
+/// their places), the trailing empty slots dropped.
+pub fn ticked_out(slots: &[Slot], strip: &StripRef) -> Vec<Slot> {
+    trim(
+        slots
+            .iter()
+            .map(|slot| slot.clone().filter(|s| s != strip))
+            .collect(),
+    )
+}
+
+/// Whether `strip` ticked into `layout` ([`ticked_in`]) would make it full.
 pub fn would_be_full(layout: &SectorLayout, strip: &StripRef, pool: &[Pooled]) -> bool {
-    is_full(units(&layout.strips, pool) + units(std::slice::from_ref(strip), pool))
+    is_full(units(&ticked_in(&layout.strips, strip), pool))
 }
 
 /// How many distinct refs of the document no pool fader carries (a track
@@ -344,9 +408,11 @@ impl Refusal {
     }
 }
 
-/// A tick of `strip` in `layout`: on appends it at the end (it must be in
-/// the pool and fit), off removes it (in the pool or not). A tick that
-/// changes nothing is `Ok(None)`; a change is the document at `rev + 1`.
+/// A tick of `strip` in `layout`: on puts it into the first empty slot,
+/// else at the end (it must be in the pool and fit, the empty slots
+/// counted), off leaves its slot empty (in the pool or not; [`ticked_out`]).
+/// A tick that changes nothing is `Ok(None)`; a change is the document at
+/// `rev + 1`.
 pub fn tick(
     doc: &SectorsDoc,
     layout: &str,
@@ -355,7 +421,7 @@ pub fn tick(
     pool: &[Pooled],
 ) -> Result<Option<SectorsDoc>, Refusal> {
     let (_, current) = doc.find(layout).ok_or(Refusal::UnknownLayout)?;
-    if current.strips.contains(strip) == on {
+    if current.holds(strip) == on {
         return Ok(None);
     }
     if on && !pool.iter().any(|p| &p.id == strip) {
@@ -367,30 +433,39 @@ pub fn tick(
     let mut next = doc.clone();
     next.rev += 1;
     if let Some(target) = next.find_mut(layout) {
-        if on {
-            target.strips.push(strip.clone());
+        target.strips = if on {
+            ticked_in(&target.strips, strip)
         } else {
-            target.strips.retain(|s| s != strip);
-        }
+            ticked_out(&target.strips, strip)
+        };
     }
     Ok(Some(next))
 }
 
-/// Whether `a` and `b` hold the same refs, each as often.
-fn same_set(a: &[StripRef], b: &[StripRef]) -> bool {
-    let mut a = a.to_vec();
-    let mut b = b.to_vec();
-    a.sort();
-    b.sort();
-    a == b
+/// Whether `a` and `b` hold the same refs, each as often (the empty slots
+/// not counted).
+fn same_set(a: &[Slot], b: &[Slot]) -> bool {
+    let sorted = |slots: &[Slot]| {
+        let mut refs: Vec<&StripRef> = slots.iter().flatten().collect();
+        refs.sort();
+        refs
+    };
+    sorted(a) == sorted(b)
 }
 
-/// ARRANGE's save: each layout of `orders` takes its new order, as one
-/// change at `rev + 1`. It is `Empty` for no layout (nothing to change, no
-/// undo step taken), and `Stale` unless `rev` is the document's, each
-/// layout exists and is named once, and each order holds the layout's own
-/// refs.
-pub fn orders(doc: &SectorsDoc, orders: &[SectorOrder], rev: u64) -> Result<SectorsDoc, Refusal> {
+/// ARRANGE's save: each layout of `orders` takes its new slots (trailing
+/// empty slots dropped), as one change at `rev + 1`. It is `Empty` for no
+/// layout (nothing to change, no undo step taken), `Stale` unless `rev` is
+/// the document's, each layout exists and is named once, and each order
+/// holds the layout's own refs (its gaps aside), and `Full` for an order
+/// past [`SECTOR_UNITS`] that holds more units than the layout did (a
+/// layout already past it by a hand edit can still be reordered).
+pub fn orders(
+    doc: &SectorsDoc,
+    orders: &[SectorOrder],
+    rev: u64,
+    pool: &[Pooled],
+) -> Result<SectorsDoc, Refusal> {
     if orders.is_empty() {
         return Err(Refusal::Empty);
     }
@@ -406,10 +481,20 @@ pub fn orders(doc: &SectorsDoc, orders: &[SectorOrder], rev: u64) -> Result<Sect
         if !same_set(&target.strips, &order.strips) {
             return Err(Refusal::Stale);
         }
-        target.strips = order.strips.clone();
+        let slots = trim(order.strips.clone());
+        if grows_past_full(units(&target.strips, pool), units(&slots, pool)) {
+            return Err(Refusal::Full);
+        }
+        target.strips = slots;
     }
     next.rev += 1;
     Ok(next)
+}
+
+/// Whether a layout of `before` units that becomes `after` units is
+/// refused FULL: past [`SECTOR_UNITS`] and larger than before.
+fn grows_past_full(before: f64, after: f64) -> bool {
+    is_full(after) && after > before
 }
 
 /// A seeded layout's title: the given one trimmed and cut to
@@ -459,7 +544,7 @@ fn seed_layout(title: Option<&str>, strips: Seeded) -> SectorLayout {
     SectorLayout {
         id: String::new(),
         title: seed_title(title),
-        strips: strips.into_iter().map(|(id, _)| id).collect(),
+        strips: strips.into_iter().map(|(id, _)| Some(id)).collect(),
     }
 }
 
