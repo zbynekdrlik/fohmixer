@@ -211,10 +211,7 @@ pub struct Pooled<'a> {
 impl Pooled<'_> {
     /// Its units: a wide strip [`WIDE_UNITS`], anything else 1.
     pub fn units(&self) -> f64 {
-        match self.control {
-            Control::Strip(strip) if strip.wide => WIDE_UNITS,
-            _ => 1.0,
-        }
+        control_units(self.control)
     }
 
     /// Its strip, when it is one (a labelled parameter fader is not).
@@ -223,6 +220,15 @@ impl Pooled<'_> {
             Control::Strip(strip) => Some(strip),
             _ => None,
         }
+    }
+}
+
+/// A control's units in a sector: a wide strip [`WIDE_UNITS`], anything
+/// else 1.
+fn control_units(control: &Control) -> f64 {
+    match control {
+        Control::Strip(strip) if strip.wide => WIDE_UNITS,
+        _ => 1.0,
     }
 }
 
@@ -418,24 +424,70 @@ fn seed_title(title: Option<&str>) -> String {
         .collect()
 }
 
-/// A seeded layout of these groups' faders, each once (its id set later).
-fn seed_layout<'a>(
-    title: Option<&str>,
-    groups: impl IntoIterator<Item = &'a Group>,
-) -> SectorLayout {
-    let mut strips: Vec<StripRef> = Vec::new();
+/// A seeded layout's faders: these groups' faders with their units, each
+/// once.
+type Seeded = Vec<(StripRef, f64)>;
+
+/// These groups' faders with their units, each once.
+fn seed_strips<'a>(groups: impl IntoIterator<Item = &'a Group>) -> Seeded {
+    let mut strips: Seeded = Vec::new();
     for control in groups.into_iter().flat_map(|g| &g.controls) {
         if let Some(id) = strip_ref(control)
-            && !strips.contains(&id)
+            && !strips.iter().any(|(s, _)| *s == id)
         {
-            strips.push(id);
+            strips.push((id, control_units(control)));
         }
     }
+    strips
+}
+
+/// Where a seeded layout of these faders ends: the most first faders that
+/// are not full (all of them when they fit).
+fn seed_fit(strips: &[(StripRef, f64)]) -> usize {
+    let mut used = 0.0_f64;
+    strips
+        .iter()
+        .position(|(_, units)| {
+            used += units;
+            is_full(used)
+        })
+        .unwrap_or(strips.len())
+}
+
+/// A seeded layout (its id set later).
+fn seed_layout(title: Option<&str>, strips: Seeded) -> SectorLayout {
     SectorLayout {
         id: String::new(),
         title: seed_title(title),
-        strips,
+        strips: strips.into_iter().map(|(id, _)| id).collect(),
     }
+}
+
+/// A row's right side: the left side's overflow first, then its own
+/// faders (each once), in layouts of at most [`SECTOR_UNITS`], each of the
+/// side's title; none when it holds no fader.
+fn seed_right(title: Option<&str>, overflow: Seeded, own: Seeded) -> Vec<SectorLayout> {
+    let mut strips = overflow;
+    for (id, units) in own {
+        if !strips.iter().any(|(s, _)| *s == id) {
+            strips.push((id, units));
+        }
+    }
+    let mut out = Vec::new();
+    while !strips.is_empty() {
+        // At least one fader a layout (no fader is past a sector alone), so
+        // the loop always ends.
+        let rest = strips.split_off(seed_fit(&strips).max(1));
+        out.push(seed_layout(title, std::mem::replace(&mut strips, rest)));
+    }
+    out
+}
+
+/// A left layout of these faders: what fits, the rest added to `overflow`.
+fn seed_left(title: Option<&str>, mut strips: Seeded, overflow: &mut Seeded) -> SectorLayout {
+    let rest = strips.split_off(seed_fit(&strips));
+    overflow.extend(rest);
+    seed_layout(title, strips)
 }
 
 /// Where a row with no pager is cut, as a count of groups on the left: the
@@ -454,8 +506,10 @@ fn seed_cut(counts: &[usize]) -> usize {
 }
 
 /// A row's left and right layouts: a pager's sub-pages on the left and the
-/// row's other groups as one right layout; a row with no pager cut at
-/// [`seed_cut`], one layout a side.
+/// row's other groups on the right; a row with no pager cut at
+/// [`seed_cut`], its left groups one layout. A left layout keeps at most
+/// [`SECTOR_UNITS`]: the faders past it go, in order, to the front of the
+/// right side ([`seed_right`]).
 fn seed_row(row: &Row) -> (Vec<SectorLayout>, Vec<SectorLayout>) {
     let groups: Vec<&Group> = row
         .sections
@@ -470,41 +524,48 @@ fn seed_row(row: &Row) -> (Vec<SectorLayout>, Vec<SectorLayout>) {
         Section::Pager(pager) => Some(pager),
         Section::Group(_) => None,
     });
+    let mut overflow: Seeded = Vec::new();
     if let Some(pager) = pager {
         let left = pager
             .pages
             .iter()
             .map(|sub| {
-                seed_layout(
+                seed_left(
                     Some(sub.title.as_str()),
-                    sub.sections.iter().flat_map(Section::groups),
+                    seed_strips(sub.sections.iter().flat_map(Section::groups)),
+                    &mut overflow,
                 )
             })
             .collect();
-        let right = seed_layout(first_title(&groups).as_deref(), groups.iter().copied());
-        return (left, vec![right]);
+        let right = seed_right(
+            first_title(&groups).as_deref(),
+            overflow,
+            seed_strips(groups.iter().copied()),
+        );
+        return (left, right);
     }
     let counts: Vec<usize> = groups
         .iter()
         .map(|g| g.controls.iter().filter(|c| strip_ref(c).is_some()).count())
         .collect();
     let (left, right) = groups.split_at(seed_cut(&counts));
-    (
-        vec![seed_layout(
-            first_title(left).as_deref(),
-            left.iter().copied(),
-        )],
-        vec![seed_layout(
-            first_title(right).as_deref(),
-            right.iter().copied(),
-        )],
-    )
+    let left = vec![seed_left(
+        first_title(left).as_deref(),
+        seed_strips(left.iter().copied()),
+        &mut overflow,
+    )];
+    let right = seed_right(
+        first_title(right).as_deref(),
+        overflow,
+        seed_strips(right.iter().copied()),
+    );
+    (left, right)
 }
 
 /// The first document, from the served layout's default page: row 0 up,
 /// row 1 down (the rest ignored); a sector left empty gets one empty
-/// [`SEED_TITLE`] layout; ids `<sector>-<n>` from 1; revision 1. FULL is
-/// not enforced here.
+/// [`SEED_TITLE`] layout; ids `<sector>-<n>` from 1; revision 1. Every
+/// layout holds at most [`SECTOR_UNITS`] (`seed_row`).
 pub fn seed(layout: &Layout) -> SectorsDoc {
     let mut sectors: BTreeMap<SectorId, Vec<SectorLayout>> = BTreeMap::new();
     if let Some(page) = layout.pages.iter().find(|p| p.id == layout.default_page) {
@@ -517,7 +578,7 @@ pub fn seed(layout: &Layout) -> SectorsDoc {
     for sector in SectorId::ALL {
         let list = sectors.entry(sector).or_default();
         if list.is_empty() {
-            list.push(seed_layout(None, std::iter::empty()));
+            list.push(seed_layout(None, Vec::new()));
         }
         for (n, layout) in list.iter_mut().enumerate() {
             layout.id = format!("{}-{}", sector.as_str(), n + 1);
