@@ -158,10 +158,16 @@ fn a_new_title_and_id_count_from_what_is_taken() {
     assert_eq!(new(&["NEW", "NEW 2", "NEW 3"]), "NEW 4");
     assert_eq!(new(&["NEW 2", "NEW"]), "NEW 3");
     assert_eq!(new(&["NEW 2"]), "NEW");
-    assert_eq!(new_id(SectorId::Lu, ["lu-1", "lu-3", "ru-9"]), "lu-4");
-    assert_eq!(new_id(SectorId::Ru, ["lu-1", "lu-3", "ru-9"]), "ru-10");
-    assert_eq!(new_id(SectorId::Ld, ["lu-1", "ld-x", "ld"]), "ld-1");
-    assert_eq!(new_id(SectorId::Rd, Vec::<&str>::new()), "rd-1");
+    assert_eq!(new(&["NEW", "NEW 2", "NEW 3", "NEW 4"]), "NEW 5");
+    assert_eq!(
+        new(&["NEW", "NEW 2", "NEW 3", "NEW 4", "NEW 5"]),
+        "NEW",
+        "none free (a hand edit's five): NEW again"
+    );
+    assert_eq!(new_id(SectorId::Lu, &["lu-1", "lu-3", "ru-9"]), "lu-4");
+    assert_eq!(new_id(SectorId::Ru, &["lu-1", "lu-3", "ru-9"]), "ru-10");
+    assert_eq!(new_id(SectorId::Ld, &["lu-1", "ld-x", "ld"]), "ld-1");
+    assert_eq!(new_id(SectorId::Rd, &[]), "rd-1");
 }
 
 #[test]
@@ -205,6 +211,27 @@ fn a_cross_asks_first_and_the_tab_then_removes_but_never_the_last() {
     // An unknown id asks nothing.
     edit.ask_remove("gone");
     assert_eq!(edit.confirming, None);
+}
+
+#[test]
+fn a_field_ends_only_its_own_rename() {
+    let doc = doc();
+    let mut edit = Edit::of(&doc);
+    let _ = edit.rename_start("lu-1");
+    let _ = edit.typed("lead");
+    // lu-3's field losing focus ends nothing of lu-1's.
+    edit.rename_end_of("lu-3", true);
+    assert_eq!(
+        edit.renaming,
+        Some(("lu-1".to_string(), "LEAD".to_string()))
+    );
+    edit.rename_end_of("lu-1", false);
+    assert_eq!(edit.renaming, None);
+    assert_eq!(titles(&edit, SectorId::Lu), ["VOX", "KEYS"]);
+    let _ = edit.rename_start("lu-1");
+    let _ = edit.typed("lead");
+    edit.rename_end_of("lu-1", true);
+    assert_eq!(titles(&edit, SectorId::Lu), ["LEAD", "KEYS"]);
 }
 
 #[test]

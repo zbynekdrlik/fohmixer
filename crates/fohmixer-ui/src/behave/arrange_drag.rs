@@ -1,11 +1,12 @@
-//! ARRANGE, the sectors page's reorder mode (#148; spec
+//! ARRANGE, the sectors page's edit mode (#148; spec
 //! `docs/superpowers/specs/2026-10-28-sectors-design.md` §4, the owner's
-//! approved mockup `docs/mockups/sectors-v1.html`): a tap on ARRANGE starts
-//! it, the strips are dragged within their sector's shown layout and the
-//! page keeps the edited orders, and a second tap sends the changed layouts
-//! as ONE `SectorOrders` (one change, one undo step) and leaves once the
-//! hub's new document arrives (a refusal: at once); with nothing changed it
-//! just leaves. A hide of the page, or a
+//! approved mockups `docs/mockups/sectors-v1.html` and `sectors-v2.html`):
+//! a tap on ARRANGE starts it, the strips are dragged within their sector's
+//! shown layout and the layouts renamed, added and removed
+//! (`behave::arrange_edit::Edit`, the page shows the edit), and a second
+//! tap sends every sector as ONE `SectorEdit` (one change, one undo step)
+//! and leaves once the hub's new document arrives (a refusal: at once);
+//! with nothing changed it just leaves. A hide of the page, or a
 //! new document from the hub during the mode, ends it unsaved. Nothing here
 //! touches Live. The drag itself (`Drag`): a strip is carried once the
 //! finger moved past `DRAG_SLOP`; it lands on the cell of its sector whose
@@ -16,21 +17,18 @@
 //! end never came ends at the next primary down of its type (#124). All of
 //! it is pure; `pages::sectors` carries it out.
 
-use std::collections::BTreeMap;
-
-use fohmixer_proto::sectors::{
-    SectorId, SectorLayout, SectorOrder, SectorsDoc, Slot, StripRef, trim,
-};
+use fohmixer_proto::sectors::{SectorId, Sectors, SectorsDoc, Slot, StripRef, trim};
 
 use super::Down;
+use super::arrange_edit::Edit;
 use crate::diag::perf::Pointer;
 use crate::store::{CONNECTION_CLOSED, NOT_CONNECTED};
 
 /// How far (px) a finger moves before the strip under it is carried.
 pub const DRAG_SLOP: f64 = 6.0;
 
-/// The note under ARRANGE while the mode is on.
-pub const ARRANGE_NOTE: &str = "drag to reorder · tap to save";
+/// The note under ARRANGE while the mode is on (the mockup v2's).
+pub const ARRANGE_NOTE: &str = "drag · ✎ ✕ + · tap to save";
 
 /// The note under ARRANGE when the hub refused the save (it shows its own
 /// order again).
@@ -40,20 +38,20 @@ pub const REFUSED_NOTE: &str = "Not saved: the layouts changed";
 /// or it closed before the answer).
 pub const OFFLINE_NOTE: &str = "Not saved: the hub is not connected";
 
-/// The mode: off; on since the document of revision `rev`, with the
-/// orders edited so far (by layout id); saving them at `rev` (the edits
-/// stay shown until the hub's answer or its new document).
+/// The mode: off; on since the document of revision `rev`, with its edit
+/// so far; saving these sectors at `rev` (the edit stays shown until the
+/// hub's answer or its new document).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum Arrange {
     #[default]
     Off,
     On {
         rev: u64,
-        edits: BTreeMap<String, Vec<Slot>>,
+        edit: Edit,
     },
     Saving {
         rev: u64,
-        edits: BTreeMap<String, Vec<Slot>>,
+        sectors: Sectors,
     },
 }
 
@@ -71,47 +69,61 @@ pub enum ArrangeEnd {
 pub enum Tap {
     /// The mode starts.
     Start,
-    /// The changed layouts' orders go to the hub at this revision.
-    Send(Vec<SectorOrder>, u64),
+    /// Every sector's layouts go to the hub as one edit at this revision.
+    Send(Sectors, u64),
     /// The mode ends with nothing to save.
     Leave,
 }
 
 impl Arrange {
     /// A tap on ARRANGE with `doc` shown. None while a save is on its way.
+    /// A rename still in its field is kept first, an ask dropped.
     pub fn tap(&mut self, doc: &SectorsDoc) -> Option<Tap> {
         match self {
             Arrange::Off => {
                 *self = Arrange::On {
                     rev: doc.rev,
-                    edits: BTreeMap::new(),
+                    edit: Edit::of(doc),
                 };
                 Some(Tap::Start)
             }
-            Arrange::On { rev, edits } => {
-                let (rev, edits) = (*rev, std::mem::take(edits));
-                let orders = orders_of(&edits, doc);
-                if orders.is_empty() {
+            Arrange::On { rev, edit } => {
+                edit.outside_down(false, false);
+                let rev = *rev;
+                if edit.changed(doc) {
+                    let sectors = std::mem::take(&mut edit.sectors);
+                    *self = Arrange::Saving {
+                        rev,
+                        sectors: sectors.clone(),
+                    };
+                    Some(Tap::Send(sectors, rev))
+                } else {
                     *self = Arrange::Off;
                     Some(Tap::Leave)
-                } else {
-                    *self = Arrange::Saving { rev, edits };
-                    Some(Tap::Send(orders, rev))
                 }
             }
             Arrange::Saving { .. } => None,
         }
     }
 
-    /// A drag gave `layout` these slots (kept only while the mode is on).
-    pub fn moved(&mut self, layout: &str, order: Vec<Slot>) {
-        if let Arrange::On { edits, .. } = self {
-            edits.insert(layout.to_string(), order);
+    /// The edit, while the mode is on (never while saving).
+    pub fn edit(&mut self) -> Option<&mut Edit> {
+        match self {
+            Arrange::On { edit, .. } => Some(edit),
+            _ => None,
+        }
+    }
+
+    /// The edit as it stands, while the mode is on.
+    pub fn edit_now(&self) -> Option<&Edit> {
+        match self {
+            Arrange::On { edit, .. } => Some(edit),
+            _ => None,
         }
     }
 
     /// The hub answered the save (`ok`: taken). A refusal ends the mode at
-    /// once, with its note; a taken save stays saving, its edits shown,
+    /// once, with its note; a taken save stays saving, its edit shown,
     /// until the hub's new document arrives (`doc_arrived`: the hub sends
     /// its result first, the document after it).
     pub fn answered(&mut self, ok: bool) -> Option<&'static str> {
@@ -160,35 +172,17 @@ impl Arrange {
         was.then_some(why)
     }
 
-    /// The slots `layout` shows: its edit, else its own.
-    pub fn order_of<'a>(&'a self, layout: &'a SectorLayout) -> &'a [Slot] {
-        match self {
-            Arrange::On { edits, .. } | Arrange::Saving { edits, .. } => edits
-                .get(&layout.id)
-                .map_or(layout.strips.as_slice(), Vec::as_slice),
-            Arrange::Off => &layout.strips,
-        }
-    }
-
-    /// `doc` as the page shows it: every layout in its `order_of`.
+    /// `doc` as the page shows it: the edit (its revision `doc`'s) while
+    /// the mode is on or saving, else `doc`.
     pub fn applied(&self, doc: &SectorsDoc) -> SectorsDoc {
+        let sectors = match self {
+            Arrange::Off => &doc.sectors,
+            Arrange::On { edit, .. } => &edit.sectors,
+            Arrange::Saving { sectors, .. } => sectors,
+        };
         SectorsDoc {
             rev: doc.rev,
-            sectors: doc
-                .sectors
-                .iter()
-                .map(|(sector, layouts)| {
-                    let layouts = layouts
-                        .iter()
-                        .map(|layout| SectorLayout {
-                            id: layout.id.clone(),
-                            title: layout.title.clone(),
-                            strips: self.order_of(layout).to_vec(),
-                        })
-                        .collect();
-                    (*sector, layouts)
-                })
-                .collect(),
+            sectors: sectors.clone(),
         }
     }
 
@@ -199,22 +193,22 @@ impl Arrange {
 
     /// The strip `held` of `layout`, carried from its slot `from` and
     /// dropped at `x` among its sector's cells on screen (`spots`: each
-    /// cell's slot and centre): the layout's new slots kept (only while the
-    /// mode is on).
+    /// cell's slot and centre): the layout's new slots kept in the edit
+    /// (only while the mode is on).
     pub fn dropped_in(
         &mut self,
-        layout: &SectorLayout,
+        layout: &str,
         spots: &[(usize, f64)],
         from: usize,
         held: &StripRef,
         x: f64,
     ) {
-        if !matches!(self, Arrange::On { .. }) {
+        let Some(edit) = self.edit() else {
             return;
-        }
-        let order = self.order_of(layout).to_vec();
-        if let Some(order) = dropped(&order, spots, from, held, x) {
-            self.moved(&layout.id, order);
+        };
+        let order = edit.slots_of(layout).map(<[Slot]>::to_vec);
+        if let Some(order) = order.and_then(|o| dropped(&o, spots, from, held, x)) {
+            edit.moved(layout, order);
         }
     }
 }
@@ -249,22 +243,6 @@ pub fn never_reached(why: &str) -> bool {
 /// The note under ARRANGE: a refusal's while it shows, else the mode's.
 pub fn arrange_note(on: bool, refused: Option<&'static str>) -> &'static str {
     refused.unwrap_or(if on { ARRANGE_NOTE } else { "" })
-}
-
-/// The save: each edited layout whose slots differ from `doc`'s, as one
-/// order each with its empty slots (a layout gone from `doc` is left out).
-pub fn orders_of(edits: &BTreeMap<String, Vec<Slot>>, doc: &SectorsDoc) -> Vec<SectorOrder> {
-    edits
-        .iter()
-        .filter(|(id, order)| {
-            doc.find(id)
-                .is_some_and(|(_, layout)| layout.strips != **order)
-        })
-        .map(|(id, order)| SectorOrder {
-            layout: id.clone(),
-            strips: order.clone(),
-        })
-        .collect()
 }
 
 /// The slot a strip dropped at `x` lands in: the cell (`spots`: each
@@ -403,6 +381,7 @@ impl Drag {
 mod tests {
     use super::*;
     use crate::behave::arrange_edit::TabTap;
+    use fohmixer_proto::sectors::SectorLayout;
 
     fn r(label: &str) -> StripRef {
         StripRef {

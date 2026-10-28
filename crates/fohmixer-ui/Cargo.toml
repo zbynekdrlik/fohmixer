@@ -30,13 +30,15 @@ console_error_panic_hook = "0.1"
 # controls' active touchstart listener and the visual viewport's zoom (#43
 # PR G); the Pro-Q 4 screen's binary frames, decoded into a canvas, and a
 # card's last picture as a blob URL (#71 PR E), its picture area's size
-# watched (#71, the review of PR #74)
+# watched (#71, the review of PR #74); a sector layout's rename field
+# (#148)
 web-sys = { version = "0.3", features = [
     "Window",
     "Document",
     "Element",
     "HtmlElement",
     "HtmlDivElement",
+    "HtmlInputElement",
     "Location",
     "History",
     "Navigator",

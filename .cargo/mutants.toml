@@ -345,7 +345,7 @@ exclude_re = [
   # step_sector_window (a side's window moved through the tested
   # Shift::moved into the offsets' signal). store/live/sectors.rs: the three
   # requests onto the socket (sector_request: an id from the tested
-  # Conn::next_id, the pending map as cmd's; sector_tick, sector_orders,
+  # Conn::next_id, the pending map as cmd's; sector_tick, sector_edit,
   # sector_undo build the message). The decisions are the tested
   # binding::sectors (picks, picked, sectors_on, the wanted set, the ticks,
   # the pool's steps), arrange::sectors (lines, width, windows),
@@ -365,8 +365,11 @@ exclude_re = [
   # swapped, dropped, SectorArrangement::cell_of and arrange_note;
   # sectors.spec.ts drags a strip onto an empty cell and onto another strip,
   # saves, sees it on a second page and checks nothing reached Live.
-  "fohmixer-ui/src/pages/sectors\\.rs.*(replace|in) (change_mode|sector_spots|flash_note|Carrier::(new|show|lift|hold|settle|leave))( |$)",
-  "fohmixer-ui/src/store/live/sectors\\.rs.*(replace|in) LiveStore::(sector_request|sector_tick|sector_orders|sector_undo)( |$)",
+  # blur_field (#148, sectors v2: the focused rename field, found by its
+  # class, lets go of the focus once the tested Edit::outside_down ended
+  # its rename; sectors.spec.ts renames on Enter and on a tap elsewhere).
+  "fohmixer-ui/src/pages/sectors\\.rs.*(replace|in) (change_mode|sector_spots|flash_note|blur_field|Carrier::(new|show|lift|hold|settle|leave))( |$)",
+  "fohmixer-ui/src/store/live/sectors\\.rs.*(replace|in) LiveStore::(sector_request|sector_tick|sector_edit|sector_undo)( |$)",
   # pages/ableset.rs (#90): take_return (location.hash read through the
   # tested behave::ableset::returns_to_tab, then history.replaceState
   # without it); ableset.spec.ts's sign-in comes back to #ableset and finds

@@ -236,9 +236,10 @@
     opacity: 0.35;
 }
 
-/* ARRANGE (#148, mockup v1), the reorder mode: what talks to Live goes
-   inert. The column's head (the pages' tabs, the counter), the layout
-   tabs, ↶ and the rail dim and take no touches; ARRANGE stays live. Every
+/* ARRANGE (#148, mockups v1 and v2), the edit mode: what talks to Live
+   goes inert. The column's head (the pages' tabs, the counter), ↶ and the
+   rail dim and take no touches; ARRANGE and the LAYOUTS block (paging,
+   ✎ ✕ +, below) stay live. Every
    strip carries a cover over its whole face (its name button, its fader,
    its SEL) that owns the touches, and nothing under it takes one (the
    fader cap's own `auto` included): nothing in this mode can change a
@@ -253,7 +254,7 @@
     text-align: center;
 }
 
-.body[data-arrange="true"] :is(.column-head > *, .sectors, .cap-title, .undo-btn, .rail) {
+.body[data-arrange="true"] :is(.column-head > *, .undo-btn, .rail) {
     opacity: 0.3;
     pointer-events: none;
 }
@@ -336,4 +337,113 @@
     box-shadow: none;
     outline: 1.5px dashed rgba(154, 154, 180, 0.35);
     outline-offset: -1.5px;
+}
+
+/* The LAYOUTS block in ARRANGE (#148, the owner's approved mockup
+   docs/mockups/sectors-v2.html): under each tab a line of two small keys,
+   ✎ rename and ✕ remove (none on a sector's last layout), dim text; then
+   the cell's + (up to four layouts). Nothing is filled. Outside ARRANGE
+   the block only pages: the keys, the + and the field are not drawn. The
+   tabs are a little lower in the mode, so four layouts with their keys
+   still fit the column. */
+.column .lay-ed {
+    position: relative;
+    display: grid;
+    gap: 1px;
+    min-width: 0;
+}
+
+.column .lay-tools,
+.column .tab-add,
+.column .tab-input {
+    display: none;
+}
+
+.body[data-arrange="true"] .column .lay-tools {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+    gap: 2px;
+}
+
+.column .tool,
+.column .tab-add {
+    min-width: 0;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    box-shadow: inset 0 0 0 1px var(--line-soft);
+    color: var(--faint);
+    font: 700 12px/1 var(--ui);
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.body[data-arrange="true"] .column .tab-add {
+    display: block;
+    margin-top: 2px;
+    box-shadow: none;
+    outline: 1px dashed var(--line);
+    outline-offset: -1px;
+    font-size: 15px;
+}
+
+.body[data-arrange="true"] .column .sec-cell .tab {
+    padding: 6px 1px;
+}
+
+/* Remove, first tap: the tab itself asks; red text and a thin red edge,
+   no fill. */
+.column .sec-cell .tab.confirm {
+    background: none;
+    box-shadow: inset 0 0 0 1px rgba(230, 57, 70, 0.6);
+    color: #ff5a67;
+    font-size: 10px;
+    letter-spacing: 0;
+}
+
+.column .lay-ed:has(.tab.confirm) .tool.x {
+    color: #ff5a67;
+}
+
+/* Rename: the field lies over the tab, unseen and untouchable until ✎
+   (which focuses it in its own tap: the iPad's keyboard comes up only for
+   a field focused within a touch); then it is the tab, and the keys step
+   aside. It is the one text on the surface a finger may select. */
+.body[data-arrange="true"] .column .tab-input {
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 100%;
+    min-width: 0;
+    padding: 0;
+    border: 1px solid var(--accent);
+    border-radius: 7px;
+    outline: none;
+    background: var(--page);
+    color: var(--text);
+    font: 700 10px/1 var(--ui);
+    letter-spacing: 0;
+    text-align: center;
+    text-transform: uppercase;
+    opacity: 0;
+    pointer-events: none;
+    -webkit-user-select: text;
+    user-select: text;
+}
+
+.body[data-arrange="true"] .column .lay-ed[data-renaming="true"] .tab-input {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.body[data-arrange="true"] .column .lay-ed[data-renaming="true"] .tab {
+    visibility: hidden;
+}
+
+.body[data-arrange="true"] .column .lay-ed[data-renaming="true"] .lay-tools {
+    display: none;
 }
