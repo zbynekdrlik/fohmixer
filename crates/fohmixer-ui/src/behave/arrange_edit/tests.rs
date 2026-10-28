@@ -275,7 +275,10 @@ fn the_tabs_show_the_edit_the_pick_the_ask_and_the_field() {
             ..row("ru-1", "BAND", true)
         }]
     );
-    assert_eq!(tab_rows(&doc, &picks, SectorId::Rd, None), Vec::new());
+    assert_eq!(
+        tab_rows(&doc, &picks, SectorId::Rd, None),
+        Vec::<TabRow>::new()
+    );
     // In ARRANGE: the ask and the field show on their tab.
     edit.ask_remove("lu-1");
     let shown = SectorsDoc {
