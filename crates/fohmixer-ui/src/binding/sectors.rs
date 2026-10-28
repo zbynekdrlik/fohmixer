@@ -65,7 +65,7 @@ pub fn sector_controls<'a>(
     SectorId::ALL
         .iter()
         .filter_map(|sector| picked(doc, picks, *sector))
-        .flat_map(|shown| shown.strips.iter())
+        .flat_map(SectorLayout::refs)
         .filter_map(|strip| pool.iter().find(|p| p.id == *strip).map(|p| p.control))
         .collect()
 }
@@ -83,8 +83,7 @@ pub fn shown_instance(
     let shown = picked(doc, picks, sector)?;
     shared_instance_of(
         shown
-            .strips
-            .iter()
+            .refs()
             .filter_map(|strip| pool.iter().find(|p| p.id == *strip))
             .map(|p| p.control),
     )
@@ -191,7 +190,7 @@ pub fn tick_rows(doc: &SectorsDoc, pool: &[Pooled], strip: &StripRef) -> Vec<Tic
                 .layouts(sector)
                 .iter()
                 .map(|layout| {
-                    let on = layout.strips.contains(strip);
+                    let on = layout.holds(strip);
                     TickRow {
                         layout: layout.id.clone(),
                         title: layout.title.clone(),
@@ -396,7 +395,7 @@ mod tests {
         SectorLayout {
             id: id.to_string(),
             title: title.to_string(),
-            strips: strips.iter().map(|s| band(s)).collect(),
+            strips: strips.iter().map(|s| Some(band(s))).collect(),
         }
     }
 
@@ -609,6 +608,25 @@ mod tests {
                 row("lu-2", "FIVE", false, false)
             ]
         );
+        // The slot model (1.24.0): a strip after an empty slot is on, and a
+        // tick into a layout of five strips and a gap fills the gap (6
+        // units: not FULL).
+        let mut gapped = sl(
+            "lu-3",
+            "GAP",
+            &["Vox 1", "Bass", "Podklady", "Drums", "Keys 1"],
+        );
+        gapped.strips.insert(1, None);
+        let mut with_gap = doc.clone();
+        with_gap.sectors.insert(SectorId::Lu, vec![gapped]);
+        assert_eq!(
+            tick_rows(&with_gap, &pool, &band("Keys 2"))[0].rows,
+            vec![row("lu-3", "GAP", false, false)]
+        );
+        assert_eq!(
+            tick_rows(&with_gap, &pool, &band("Keys 1"))[0].rows,
+            vec![row("lu-3", "GAP", true, false)]
+        );
     }
 
     #[test]
@@ -662,7 +680,7 @@ mod tests {
             label: "Hand1".to_string(),
         };
         let mut mixed = sl("ld-2", "MIXED", &["Vox 1"]);
-        mixed.strips.push(hand);
+        mixed.strips.push(Some(hand));
         let doc = doc(vec![(
             SectorId::Ld,
             vec![sl("ld-1", "VOX", &["Vox 1", "Bass"]), mixed],

@@ -320,3 +320,20 @@
     border-radius: 9px;
     box-shadow: 0 0 0 1.5px var(--solo);
 }
+
+/* An empty slot of a layout (the slot model, 1.24.0): a blank one strip
+   wide in its place, nothing drawn outside ARRANGE. In ARRANGE every
+   position a sector can show is a cell: the empty ones a calm dashed
+   outline, where a carried strip can land. No touch: the strips' covers
+   take them. */
+.slot.sector-gap {
+    width: var(--strip-w, 76px);
+    pointer-events: none;
+}
+
+.body[data-arrange="true"] .slot.sector-gap {
+    border-radius: 9px;
+    box-shadow: none;
+    outline: 1.5px dashed rgba(154, 154, 180, 0.35);
+    outline-offset: -1.5px;
+}

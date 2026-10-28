@@ -358,13 +358,14 @@ exclude_re = [
   # signal written only when the tested behave::arrange_drag::Arrange
   # changed), Carrier (the drag's stored state and the carried slot's
   # transform and data-carried written and removed on the element),
-  # sector_centres (the sector's slots' centres read from the DOM at the
-  # down) and flash_note (the refused save's note shown, then cleared by a
-  # timer while the tested NoteTimer says it is still its note). The
-  # decisions are the tested Arrange, Drag, NoteTimer, drop_index,
-  # moved_to, dropped, sector_refs and arrange_note; sectors.spec.ts drags a
-  # strip, saves, sees it on a second page and checks nothing reached Live.
-  "fohmixer-ui/src/pages/sectors\\.rs.*(replace|in) (change_mode|sector_centres|flash_note|Carrier::(new|show|lift|hold|settle|leave))( |$)",
+  # sector_spots (the sector's cells' slots and centres read from the DOM
+  # at the down) and flash_note (the refused save's note shown, then
+  # cleared by a timer while the tested NoteTimer says it is still its
+  # note). The decisions are the tested Arrange, Drag, NoteTimer, drop_slot,
+  # swapped, dropped, SectorArrangement::cell_of and arrange_note;
+  # sectors.spec.ts drags a strip onto an empty cell and onto another strip,
+  # saves, sees it on a second page and checks nothing reached Live.
+  "fohmixer-ui/src/pages/sectors\\.rs.*(replace|in) (change_mode|sector_spots|flash_note|Carrier::(new|show|lift|hold|settle|leave))( |$)",
   "fohmixer-ui/src/store/live/sectors\\.rs.*(replace|in) LiveStore::(sector_request|sector_tick|sector_orders|sector_undo)( |$)",
   # pages/ableset.rs (#90): take_return (location.hash read through the
   # tested behave::ableset::returns_to_tab, then history.replaceState
