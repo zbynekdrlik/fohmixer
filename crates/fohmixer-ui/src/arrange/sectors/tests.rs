@@ -454,12 +454,16 @@ fn arrange_adds_only_what_fits_the_side_at_the_strip_width() {
         names(&["Vox 1", "Vox 2", "", ""])
     );
     // with_spaces at the boundary: 3 strips of 100 px and 2 gaps of 4 =
-    // 308; one more is 412: fits 412 + 0.5, not a hair less.
+    // 308; one more is 412: fits a side of 412 less the float slack
+    // (1e-6 px), not the next float below, and never a side a quarter
+    // pixel short (the cell would overflow it).
     let three: Vec<SectorCell> = (0..3).map(|n| SectorCell::empty(SectorId::Lu, n)).collect();
     let fit = |side: f64| with_spaces(three.clone(), SectorId::Lu, 3, 100.0, side, &METRICS).len();
-    assert_eq!(fit(412.0 - FIT_SLACK), 4);
-    assert_eq!(fit((412.0 - FIT_SLACK).next_down()), 3);
-    assert_eq!(FIT_SLACK, 0.5);
+    assert_eq!(fit(412.0), 4);
+    assert_eq!(fit(412.0 - 1e-6), 4);
+    assert_eq!(fit((412.0 - 1e-6).next_down()), 3);
+    assert_eq!(fit(412.0 - 0.25), 3);
+    assert_eq!(FIT_SLACK, 1e-6);
     // Five units leave one; six none.
     let five: Vec<SectorCell> = (0..5).map(|n| SectorCell::empty(SectorId::Lu, n)).collect();
     assert_eq!(
