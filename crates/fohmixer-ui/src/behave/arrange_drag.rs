@@ -517,6 +517,46 @@ mod tests {
     }
 
     #[test]
+    fn a_save_that_never_reached_the_hub_ends_at_once_saying_so() {
+        let doc = doc();
+        let saving = || {
+            let mut mode = Arrange::Off;
+            let _ = mode.tap(&doc);
+            mode.moved("lu-1", refs(&["Bass", "Vox 1", "Vox 2"]));
+            let _ = mode.tap(&doc);
+            mode
+        };
+        let not_sent: Result<(), String> = Err(crate::store::NOT_CONNECTED.to_string());
+        let closed: Result<(), String> = Err(crate::store::CONNECTION_CLOSED.to_string());
+        for outcome in [not_sent, closed] {
+            let mut mode = saving();
+            assert_eq!(mode.heard(&outcome), Some(OFFLINE_NOTE), "{outcome:?}");
+            assert_eq!(mode, Arrange::Off);
+        }
+        assert_eq!(OFFLINE_NOTE, "Not saved: the hub is not connected");
+        assert_eq!(crate::store::NOT_CONNECTED, "not connected to the hub");
+        assert_eq!(crate::store::CONNECTION_CLOSED, "the hub connection closed");
+        // The hub's own refusal says the layouts changed.
+        let mut mode = saving();
+        assert_eq!(
+            mode.heard(&Err::<(), _>("stale".to_string())),
+            Some(REFUSED_NOTE)
+        );
+        assert_eq!(mode, Arrange::Off);
+        // Taken: still saving until its document.
+        let mut mode = saving();
+        assert_eq!(mode.heard(&Ok::<(), String>(())), None);
+        assert!(mode.is_on());
+        // Heard while on (a stale answer): the mode stays.
+        let mut mode = on(3);
+        assert_eq!(
+            mode.heard(&Err::<(), _>(crate::store::NOT_CONNECTED.to_string())),
+            Some(OFFLINE_NOTE)
+        );
+        assert_eq!(mode, on(3));
+    }
+
+    #[test]
     fn a_new_document_during_arrange_ends_it_unsaved() {
         let mut mode = on(3);
         mode.moved("lu-1", refs(&["Bass"]));
