@@ -1,5 +1,5 @@
 """The forensics timeline's report (#43): one self-contained HTML file,
-inline CSS and SVG, no script. One of the five files of ``timeline.py`` (see
+inline CSS and SVG, no script. One of the eight files of ``timeline.py`` (see
 its docstring), copied to the Ableton PC together with it.
 """
 
@@ -58,7 +58,7 @@ CSS = """
 body { font: 13px/1.4 system-ui, sans-serif; margin: 16px; color: #222; background: #fff; }
 h1 { font-size: 18px; margin: 0 0 8px; }
 table { border-collapse: collapse; margin: 8px 0 16px; }
-tr.deck-unsent td, tr.deck-release td, tr.ableset-link.down td { color: #a00; }
+tr.deck-unsent td, tr.deck-release td, tr.ableset-link.down td, tr.rule.failed td { color: #a00; }
 th, td { border: 1px solid #ccc; padding: 2px 8px; text-align: left; vertical-align: top; }
 td { font-variant-numeric: tabular-nums; }
 .notes li { color: #8a4b00; }
@@ -1067,6 +1067,54 @@ def _ableset_table(t):
     return f"<p>{esc(ABLESET_LEGEND)}</p>{head_line}{table}{outage_list}"
 
 
+RULES_LEGEND = (
+    "The rules (#130): each step of a rail button as the page recorded it (press, tap, the "
+    "full mark at 1 s, hold: the lift that acted, refused: nothing sent, slid, lost, cancel; "
+    "AUTOTUNE's panel: close, singer) with the keys it writes, and the hub's rule records in "
+    "time order: the transport (play, stop, or the error that left the rules blind), STAGE "
+    "AUT (flag, write of the stage mics' mute, a failed write), REVERB (every step: aut, "
+    "tap, wait, lower with its glides or no fader, return, pending, skipped with why, a "
+    "set's window opening or ending), the fader links' switches and AUTOTUNE's steps. At "
+    "one time the page's step comes first: the hub's records answer it. Failures are red."
+)
+
+
+def _rules_table(t):
+    if not t.rules:
+        return "<p>No rail step and no rule record in the window.</p>"
+    head = "".join(
+        f"<th>{h}</th>" for h in ("time (local)", "from", "rule", "step", "button", "detail")
+    )
+    rows = []
+    for r in t.rules:
+        cells = (
+            local_text(r.time),
+            r.source,
+            r.kind,
+            r.what,
+            r.button or "",
+            r.detail,
+        )
+        rows.append(
+            tag(
+                "tr",
+                "".join(f"<td>{esc(c)}</td>" for c in cells),
+                class_="rule failed" if r.failed else "rule",
+                data_time=num(r.time),
+                data_source=r.source,
+                data_kind=r.kind,
+                data_what=r.what,
+                data_button=r.button,
+                data_step=r.step,
+                data_key_hash=key_hash(r.keys[0]) if r.keys else None,
+                data_pointer=None if r.pointer is None else str(r.pointer),
+                data_failed=_flag(r.failed),
+            )
+        )
+    table = f'<table class="rules"><tr>{head}</tr>{"".join(rows)}</table>'
+    return f"<p>{esc(RULES_LEGEND)}</p>{table}"
+
+
 def render(t, pairs, files):
     """The whole report: the window, ``files`` (the names read), the notes,
     the summary ``pairs``, the lanes and the jumps."""
@@ -1101,5 +1149,6 @@ def render(t, pairs, files):
         f"<h2>Pro-Q 4 screen</h2>{_eq_table(t)}"
         f"<h2>Stream Deck</h2>{_deck_table(t)}"
         f"<h2>AbleSet</h2>{_ableset_table(t)}"
+        f"<h2>Rules</h2>{_rules_table(t)}"
         "</body></html>\n"
     )
