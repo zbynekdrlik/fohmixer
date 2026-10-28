@@ -66,6 +66,13 @@ pub fn served_rev(file_rev: u64, served_rev: u64) -> u64 {
     file_rev.max(served_rev + 1)
 }
 
+/// The warn line of a previous version that could not be written.
+pub fn prev_problem(error: &io::Error) -> String {
+    format!(
+        "cannot write sectors.json.prev, the change is taken with no undo until the next one: {error}"
+    )
+}
+
 /// A document as the files hold it.
 fn text_of(doc: &SectorsDoc) -> io::Result<String> {
     serde_json::to_string_pretty(doc).map_err(io::Error::other)
@@ -202,18 +209,40 @@ impl SectorStore {
         first.then_some(Polled::Unreadable(why))
     }
 
-    /// A change: the document served now becomes the previous version
-    /// (written first), then `next` is written and served.
+    /// A change: `next` is written and served, then the document served
+    /// before it is kept as the previous version (the undo). A failed write
+    /// of `next` changes nothing; a failed write of the previous version
+    /// leaves the change taken with no undo until the next change (none in
+    /// memory, and no older `sectors.json.prev` left that a restart would
+    /// offer as one).
     pub fn commit(&mut self, next: SectorsDoc) -> io::Result<()> {
         let before = text_of(&self.doc)?;
         let text = text_of(&next)?;
-        crate::atomic_write(&self.path(PREV_FILE), &before)?;
         crate::atomic_write(&self.path(SECTORS_FILE), &text)?;
-        self.prev = Some(std::mem::replace(&mut self.doc, next));
+        let before_doc = std::mem::replace(&mut self.doc, next);
         self.known = Some(text.into_bytes());
         self.missing = false;
+        self.failing = false;
         self.error = None;
+        self.prev = match crate::atomic_write(&self.path(PREV_FILE), &before) {
+            Ok(()) => Some(before_doc),
+            Err(e) => {
+                tracing::warn!("{}", prev_problem(&e));
+                self.drop_prev_file();
+                None
+            }
+        };
         Ok(())
+    }
+
+    /// Removes `sectors.json.prev` (an older version than the undo the
+    /// store holds); a failure is logged.
+    fn drop_prev_file(&self) {
+        if let Err(e) = std::fs::remove_file(self.path(PREV_FILE))
+            && e.kind() != io::ErrorKind::NotFound
+        {
+            tracing::warn!(error = %e, "cannot remove an older sectors.json.prev");
+        }
     }
 
     /// The first document: written and served, with no previous version
@@ -519,6 +548,14 @@ mod tests {
         let mut store = SectorStore::open(dir.path());
         assert!(matches!(store.undo(), Err(Refusal::NothingToUndo)));
         assert!(!dir.path().join(SECTORS_FILE).exists());
+    }
+
+    #[test]
+    fn the_prev_problem_reads_as_written() {
+        assert_eq!(
+            prev_problem(&io::Error::other("disk full")),
+            "cannot write sectors.json.prev, the change is taken with no undo until the next one: disk full"
+        );
     }
 
     #[test]
