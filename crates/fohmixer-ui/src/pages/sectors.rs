@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use fohmixer_proto::layout::{Control, Layout, Page};
-use fohmixer_proto::sectors::{SectorId, SectorsDoc, pool};
+use fohmixer_proto::sectors::{SectorId, SectorsDoc, StripRef, pool};
 use leptos::html;
 use leptos::prelude::*;
 
@@ -32,7 +32,7 @@ use crate::arrange::{Arrangement, LineKey, METRICS, Shift, Sides, narrow};
 use crate::behave::arrange_drag::{
     Arrange, ArrangeEnd, Drag, NoteTimer, Tap, arrange_note, sector_refs,
 };
-use crate::binding::sectors::{Picks, picked, sector_name, shown_instance};
+use crate::binding::sectors::{Picks, picked, pool_controls, sector_instances, sector_name};
 use crate::components::{ControlView, down_of, fail_flash, owns_touches};
 use crate::dom;
 use crate::pages::surface::{ColumnHead, Head, Nav, ThinStrip, measure_page};
@@ -71,6 +71,27 @@ pub(crate) fn sector_memo(
                 .flatten()
         })
         .flatten()
+    })
+}
+
+/// Each sector's instance tag (`binding::sectors::sector_instances`): the
+/// Live set its shown layout's strips share, none when they differ. A memo
+/// of the hub's document and this device's picks, so a strip that stays
+/// mounted while its sector pages gets the new layout's tag; the pool is
+/// built once per change, never per strip.
+pub(crate) fn instances_memo(
+    layout: Arc<Layout>,
+    doc: Signal<Option<SectorsDoc>>,
+    picks: Signal<Picks>,
+) -> Memo<BTreeMap<SectorId, Option<String>>> {
+    Memo::new(move |_| {
+        let pool = pool(&layout);
+        doc.try_with(|doc| {
+            doc.as_ref()
+                .and_then(|doc| picks.try_with(|picks| sector_instances(doc, picks, &pool)))
+        })
+        .flatten()
+        .unwrap_or_default()
     })
 }
 
@@ -229,6 +250,10 @@ pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
             .map(|doc| mode.try_with(|m| m.applied(&doc)).unwrap_or(doc))
     });
     let rev = Memo::new(move |_| doc.try_with(|d| d.as_ref().map(|d| d.rev)).flatten());
+    // The pool's controls, once for the page (a layout change mounts it
+    // anew), and each sector's instance tag.
+    let controls = StoredValue::new(pool_controls(&head.layout));
+    let instances = instances_memo(head.layout.clone(), doc.into(), nav.picks.into());
     Effect::new(move |_| {
         let Some(rev) = rev.try_get().flatten() else {
             return;
@@ -305,7 +330,15 @@ pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
         .map(|control| view! { <ControlView control=control /> })
         .collect_view();
     let line_view = move |line: usize| {
-        view! { <SectorLineView arranged=arranged line=line carrier=carrier /> }
+        view! {
+            <SectorLineView
+                arranged=arranged
+                line=line
+                carrier=carrier
+                controls=controls
+                instances=instances
+            />
+        }
     };
     let shift_view = move |key: WindowKey| {
         view! { <SectorShiftView arranged=arranged offsets=offsets key=key /> }
@@ -392,6 +425,8 @@ fn SectorLineView(
     arranged: Memo<Option<SectorArrangement>>,
     line: usize,
     carrier: Carrier,
+    controls: StoredValue<BTreeMap<StripRef, Control>>,
+    instances: Memo<BTreeMap<SectorId, Option<String>>>,
 ) -> impl IntoView {
     let list = Memo::new(move |_| {
         arranged
@@ -427,7 +462,16 @@ fn SectorLineView(
         format!("grid-row:{};--l-units:{units};--l-cells:{cells};", line + 1)
     };
     let cell = move |cell: SectorCell| {
-        view! { <SectorCellView cell=cell line=line arranged=arranged carrier=carrier /> }
+        view! {
+            <SectorCellView
+                cell=cell
+                line=line
+                arranged=arranged
+                carrier=carrier
+                controls=controls
+                instances=instances
+            />
+        }
     };
     view! {
         <div
@@ -444,34 +488,29 @@ fn SectorLineView(
 }
 
 /// One strip of a sector: its pool control on its sector's side, with the
-/// instance tag of the layout its sector shows when it was mounted and no
-/// group name; ARRANGE's cover over it (shown only in the mode).
+/// instance tag of the layout its sector shows now (a memo of `instances`:
+/// a strip kept through a page takes the new layout's tag) and no group
+/// name; ARRANGE's cover over it (shown only in the mode).
 #[component]
 fn SectorCellView(
     cell: SectorCell,
     line: usize,
     arranged: Memo<Option<SectorArrangement>>,
     carrier: Carrier,
+    controls: StoredValue<BTreeMap<StripRef, Control>>,
+    instances: Memo<BTreeMap<SectorId, Option<String>>>,
 ) -> impl IntoView {
-    let nav = expect_context::<Nav>();
-    let head = expect_context::<Head>();
-    let pool = pool(&head.layout);
-    let control = pool
-        .iter()
-        .find(|p| p.id == cell.strip)
-        .map(|p| p.control.clone());
-    let picks = nav.picks.try_get_untracked().unwrap_or_default();
-    let shared = nav
-        .store
-        .sectors
-        .try_with_untracked(|told| {
-            told.shown()
-                .and_then(|told| shown_instance(&told.doc, &picks, cell.sector, &pool))
-        })
-        .flatten();
-    let side = if cell.sector.left() { "left" } else { "right" };
-    let inner = control.map(|control| view! { <ControlView control=control shared=shared /> });
     let sector = cell.sector;
+    let control = controls
+        .try_with_value(|all| all.get(&cell.strip).cloned())
+        .flatten();
+    let shared = Memo::new(move |_| {
+        instances
+            .try_with(|all| all.get(&sector).cloned().flatten())
+            .flatten()
+    });
+    let side = if sector.left() { "left" } else { "right" };
+    let inner = control.map(|control| view! { <ControlView control=control shared=shared /> });
     view! {
         <div class="slot" data-sector=sector.as_str() data-side=side>
             {inner}

@@ -288,7 +288,7 @@ fn DetailKey(strip: Strip) -> impl IntoView {
 pub fn StripView(
     strip: Strip,
     settings: Settings,
-    shared: Option<String>,
+    #[prop(optional, into)] shared: Signal<Option<String>>,
     #[prop(optional, into)] group_name: Signal<Option<GroupLabel>>,
 ) -> impl IntoView {
     let store = expect_context::<LiveStore>();
@@ -349,8 +349,17 @@ pub fn StripView(
             />
         }
     });
-    // The instance tag only where the group does not name it (#63).
-    let tagged = shared.as_deref() != Some(instance.as_str());
+    // The instance tag only where the group does not name it (#63); read
+    // reactively, so a strip kept through a sector's page follows the
+    // layout shown (#148).
+    let tagged = {
+        let instance = instance.clone();
+        move || {
+            shared
+                .try_with(|s| s.as_deref() != Some(instance.as_str()))
+                .unwrap_or(true)
+        }
+    };
     // A marker problem (#68): a conflict disables the strip, any other
     // problem marks it; the word replaces Live's dB on the readout line.
     let look = mark_look(strip.mark);
@@ -405,15 +414,18 @@ pub fn StripView(
     });
     let db = volume.map(|slot| view! { <DbView state=slot /> });
     // The instance alone, a return's too (#151: no RET on a strip).
-    let tag = tagged.then(|| {
-        let text = instance.clone();
-        let tag_instance = instance.clone();
-        view! {
-            <span class="strip-tag" data-testid="strip-instance" data-instance=tag_instance>
-                {text}
-            </span>
-        }
-    });
+    let tag_of = instance.clone();
+    let tag = move || {
+        tagged().then(|| {
+            let text = tag_of.clone();
+            let tag_instance = tag_of.clone();
+            view! {
+                <span class="strip-tag" data-testid="strip-instance" data-instance=tag_instance>
+                    {text}
+                </span>
+            }
+        })
+    };
     let mark_word = look.map(|(_, word)| {
         view! { <span class="strip-mark" data-testid="strip-mark">{word}</span> }
     });

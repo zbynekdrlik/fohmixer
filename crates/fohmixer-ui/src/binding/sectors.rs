@@ -14,7 +14,7 @@ use fohmixer_proto::sectors::{
     Pooled, SectorId, SectorLayout, SectorsDoc, StripRef, pool, strip_ref, would_be_full,
 };
 
-use crate::flow::shared_instance;
+use crate::flow::shared_instance_of;
 
 /// Where the device keeps its picks (a JSON map: sector id → layout id).
 pub const PICKS_KEY: &str = "fohmixer_sectors";
@@ -79,13 +79,35 @@ pub fn shown_instance(
     pool: &[Pooled],
 ) -> Option<String> {
     let shown = picked(doc, picks, sector)?;
-    let controls: Vec<Control> = shown
-        .strips
-        .iter()
-        .filter_map(|strip| pool.iter().find(|p| p.id == *strip))
-        .map(|p| p.control.clone())
-        .collect();
-    shared_instance(&controls)
+    shared_instance_of(
+        shown
+            .strips
+            .iter()
+            .filter_map(|strip| pool.iter().find(|p| p.id == *strip))
+            .map(|p| p.control),
+    )
+}
+
+/// Every sector's [`shown_instance`] (all four, none for a sector without
+/// layouts): what each of its strips' instance tag follows.
+pub fn sector_instances(
+    doc: &SectorsDoc,
+    picks: &Picks,
+    pool: &[Pooled],
+) -> BTreeMap<SectorId, Option<String>> {
+    SectorId::ALL
+        .into_iter()
+        .map(|sector| (sector, shown_instance(doc, picks, sector, pool)))
+        .collect()
+}
+
+/// The pool's controls by their identity (the sectors page builds it once
+/// per layout; each strip finds its control there).
+pub fn pool_controls(layout: &Layout) -> BTreeMap<StripRef, Control> {
+    pool(layout)
+        .into_iter()
+        .map(|p| (p.id, p.control.clone()))
+        .collect()
 }
 
 /// The sectors as the surface reads them: the document and this device's

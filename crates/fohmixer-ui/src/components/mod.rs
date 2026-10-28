@@ -248,7 +248,7 @@ pub fn readiness_now(slots: &[RwSignal<Slot>]) -> Readiness {
 #[component]
 pub fn ControlView(
     control: Control,
-    #[prop(default = None)] shared: Option<String>,
+    #[prop(optional, into)] shared: Signal<Option<String>>,
     #[prop(optional, into)] group_name: Signal<Option<GroupLabel>>,
 ) -> impl IntoView {
     let settings = expect_context::<Settings>();

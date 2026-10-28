@@ -16,7 +16,13 @@ pub fn is_column(control: &Control) -> bool {
 /// once instead of each strip); none when the group holds no strip or its
 /// strips differ. The other controls do not count.
 pub fn shared_instance(controls: &[Control]) -> Option<String> {
-    let mut instances = controls.iter().filter_map(|c| match c {
+    shared_instance_of(controls)
+}
+
+/// [`shared_instance`] of controls by reference (no copy of them: the
+/// sectors page's shown layout, #148).
+pub fn shared_instance_of<'a>(controls: impl IntoIterator<Item = &'a Control>) -> Option<String> {
+    let mut instances = controls.into_iter().filter_map(|c| match c {
         Control::Strip(strip) => Some(strip.binding.instance.as_str()),
         _ => None,
     });
