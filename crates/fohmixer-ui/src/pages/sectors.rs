@@ -925,4 +925,83 @@ mod tests {
         let _ = shown.try_set(None);
         assert_eq!(arranged.get_untracked(), None);
     }
+
+    fn strip_of(instance: &str, name: &str) -> Value {
+        json!({"kind": "strip", "binding": {"instance": instance, "anchor": {"kind": "track", "name": name}},
+               "strip_kind": "standard"})
+    }
+
+    #[test]
+    fn a_kept_strips_instance_tag_follows_its_sectors_page() {
+        // band X stays mounted while lu pages from [band X, band Y] (one
+        // set: no tag) to [band X, master A-Reverb #] (mixed: tags).
+        let layout: Layout = serde_json::from_value(json!({
+            "schema": 2, "default_page": "foh",
+            "pages": [{"id": "foh", "title": "FOH",
+                       "rows": [{"sections": [{"kind": "group", "id": "g", "controls": [
+                           strip_of("band", "X"), strip_of("band", "Y"),
+                           strip_of("master", "A-Reverb #"), strip_of("band", "A-Reverb #")]}]}]}]
+        }))
+        .expect("a layout");
+        let at = |instance: &str, label: &str| StripRef {
+            instance: instance.to_string(),
+            label: label.to_string(),
+        };
+        let doc = SectorsDoc {
+            rev: 1,
+            sectors: [(
+                SectorId::Lu,
+                vec![
+                    SectorLayout {
+                        id: "lu-1".to_string(),
+                        title: "BAND".to_string(),
+                        strips: vec![at("band", "X"), at("band", "Y")],
+                    },
+                    SectorLayout {
+                        id: "lu-2".to_string(),
+                        title: "MIX".to_string(),
+                        strips: vec![at("band", "X"), at("master", "A-Reverb #")],
+                    },
+                ],
+            )]
+            .into_iter()
+            .collect(),
+        };
+        let owner = Owner::new();
+        owner.set();
+        let shown = RwSignal::new(Some(doc));
+        let picks = RwSignal::new(Picks::new());
+        let instances = instances_memo(Arc::new(layout.clone()), shown.into(), picks.into());
+        let lu = move || {
+            instances
+                .get_untracked()
+                .get(&SectorId::Lu)
+                .cloned()
+                .flatten()
+        };
+        assert_eq!(lu().as_deref(), Some("band"));
+        let _ = picks.try_update(|p| {
+            p.insert(SectorId::Lu, "lu-2".to_string());
+        });
+        assert_eq!(
+            lu(),
+            None,
+            "a mixed layout tags every strip, the kept one too"
+        );
+        let _ = picks.try_update(|p| {
+            p.insert(SectorId::Lu, "lu-1".to_string());
+        });
+        assert_eq!(lu().as_deref(), Some("band"));
+        assert_eq!(instances.get_untracked().get(&SectorId::Ru), Some(&None));
+        // The pool's controls, built once for the page, by identity.
+        let controls = pool_controls(&layout);
+        assert_eq!(controls.len(), 4);
+        assert!(matches!(
+            controls.get(&at("master", "A-Reverb #")),
+            Some(Control::Strip(strip)) if strip.binding.instance == "master"
+        ));
+        assert_eq!(controls.get(&at("band", "Gone")), None);
+        let _ = shown.try_set(None);
+        assert!(instances.get_untracked().values().all(Option::is_none));
+    }
 }
