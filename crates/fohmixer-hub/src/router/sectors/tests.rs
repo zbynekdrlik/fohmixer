@@ -207,7 +207,7 @@ async fn a_tick_is_answered_recorded_and_told_to_every_page() {
     router.handle(tick(1, "t3", "lu-1", "Bass", true));
     assert_eq!(a.take().unwrap(), vec![result("t3")]);
     assert_eq!(told(&b), vec![]);
-    assert_eq!(sector_records(&rx), vec![]);
+    assert_eq!(sector_records(&rx), Vec::<Value>::new());
     assert_eq!(router.sectors.store.doc().rev, 3);
 }
 
@@ -234,7 +234,7 @@ async fn each_refusal_answers_the_asker_alone_and_records_nothing() {
         ]
     );
     assert_eq!(b.take().unwrap(), vec![]);
-    assert_eq!(sector_records(&rx), vec![]);
+    assert_eq!(sector_records(&rx), Vec::<Value>::new());
     assert_eq!(router.sectors.store.doc(), &first);
     assert!(!dir.path().join(PREV_FILE).exists(), "nothing written");
 }
@@ -283,7 +283,7 @@ async fn an_order_with_an_old_rev_is_refused_stale() {
     });
     assert_eq!(a.take().unwrap(), vec![error("o1", "stale")]);
     assert_eq!(router.sectors.store.doc(), &first);
-    assert_eq!(sector_records(&rx), vec![]);
+    assert_eq!(sector_records(&rx), Vec::<Value>::new());
 }
 
 #[tokio::test]
@@ -380,7 +380,7 @@ async fn undo_without_prev_is_refused_nothing_to_undo() {
         id: "u1".into(),
     });
     assert_eq!(a.take().unwrap(), vec![error("u1", "nothing to undo")]);
-    assert_eq!(sector_records(&rx), vec![]);
+    assert_eq!(sector_records(&rx), Vec::<Value>::new());
 }
 
 #[tokio::test]
@@ -416,7 +416,7 @@ async fn a_hand_edit_is_told_to_every_page_and_recorded_file() {
     std::fs::write(dir.path().join(SECTORS_FILE), "{").unwrap();
     router.handle(RouterMsg::SectorsPoll);
     assert_eq!(told(&a), vec![]);
-    assert_eq!(sector_records(&rx), vec![]);
+    assert_eq!(sector_records(&rx), Vec::<Value>::new());
     let now = status(&mut router).sectors;
     assert_eq!(now.rev, 5);
     assert_eq!(
@@ -506,7 +506,7 @@ async fn the_seed_waits_for_every_instances_marker_read() {
     );
     // Seeded once: a later layout seeds nothing.
     router.handle(RouterMsg::SectorsPoll);
-    assert_eq!(sector_records(&rx), vec![]);
+    assert_eq!(sector_records(&rx), Vec::<Value>::new());
 }
 
 #[test]
@@ -643,7 +643,7 @@ async fn a_write_that_fails_is_an_error_to_the_asker_and_changes_nothing() {
         );
     }
     assert_eq!(b.take().unwrap(), vec![], "nothing told");
-    assert_eq!(sector_records(&rx), vec![]);
+    assert_eq!(sector_records(&rx), Vec::<Value>::new());
     assert_eq!(router.sectors.store.doc(), &taken);
     assert_eq!(on_disk(dir.path(), SECTORS_FILE), taken);
 }

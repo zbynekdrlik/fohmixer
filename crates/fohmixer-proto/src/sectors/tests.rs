@@ -541,8 +541,8 @@ fn orders_are_stale_for_another_rev_another_set_a_layout_twice_or_an_unknown_lay
     let before = ordered();
     let stale = |list: &[SectorOrder], rev: u64| orders(&before, list, rev);
     let good = order("ru-1", &["Bass", "Klavir"]);
-    assert_eq!(stale(&[good.clone()], 6), Err(Refusal::Stale));
-    assert_eq!(stale(&[good.clone()], 8), Err(Refusal::Stale));
+    assert_eq!(stale(std::slice::from_ref(&good), 6), Err(Refusal::Stale));
+    assert_eq!(stale(std::slice::from_ref(&good), 8), Err(Refusal::Stale));
     assert_eq!(
         stale(&[order("ru-1", &["Bass"])], 7),
         Err(Refusal::Stale),
