@@ -6,12 +6,10 @@
 //! tab into a red [`REMOVE_ASK`], a tap on it removes the layout, a tap
 //! elsewhere drops the ask; a sector's last layout has no ✕), and each
 //! sector's cell a `+` that adds an empty [`NEW_TITLE`] layout with an id
-//! the sector never used, up to [`MAX_LAYOUTS`]. A tap on a tab still
+//! no revision ever used ([`new_id`]), up to [`MAX_LAYOUTS`]. A tap on a tab still
 //! pages its sector. [`Edit`] is the whole edited set the mode shows; the
 //! second tap on ARRANGE sends it as one change (`behave::arrange_drag`).
 //! Nothing here touches Live, and nothing is sent before that tap.
-
-use std::collections::BTreeSet;
 
 use fohmixer_proto::sectors::{
     MAX_LAYOUTS, SectorId, SectorLayout, Sectors, SectorsDoc, Slot, TITLE_MAX, trim,
@@ -27,15 +25,17 @@ pub const REMOVE_ASK: &str = "REMOVE?";
 
 /// ARRANGE's edit: every sector's layouts as the page shows them (their
 /// slots, titles, the added and removed layouts), the rename in its field
-/// (the layout and the text typed), the layout whose ✕ asks, and every id
-/// the document or the edit ever held (an added layout never takes one: a
-/// device whose pick named a removed layout must not show another).
+/// (the layout and the text typed), the layout whose ✕ asks, the revision
+/// the save will make and the layouts added in this edit so far (an added
+/// layout's id names both, [`new_id`]: a device whose pick named a removed
+/// layout must never show another).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Edit {
     pub sectors: Sectors,
     pub renaming: Option<(String, String)>,
     pub confirming: Option<String>,
-    taken: BTreeSet<String>,
+    next_rev: u64,
+    adds: usize,
 }
 
 /// What a tap on a layout's tab did in ARRANGE.
@@ -54,12 +54,8 @@ impl Edit {
             sectors: doc.sectors.clone(),
             renaming: None,
             confirming: None,
-            taken: doc
-                .sectors
-                .values()
-                .flatten()
-                .map(|l| l.id.clone())
-                .collect(),
+            next_rev: doc.rev.saturating_add(1),
+            adds: 0,
         }
     }
 
@@ -161,16 +157,15 @@ impl Edit {
         if !self.can_add(sector) {
             return None;
         }
-        let taken: Vec<&str> = self.taken.iter().map(String::as_str).collect();
-        let id = new_id(sector, &taken);
         let layouts = self.sectors.get_mut(&sector)?;
+        self.adds += 1;
+        let id = new_id(sector, self.next_rev, self.adds);
         let title = new_title(layouts);
         layouts.push(SectorLayout {
             id: id.clone(),
             title,
             strips: Vec::new(),
         });
-        self.taken.insert(id.clone());
         Some(id)
     }
 
@@ -263,16 +258,13 @@ pub fn new_title(layouts: &[SectorLayout]) -> String {
         .unwrap_or_else(|| NEW_TITLE.to_string())
 }
 
-/// An added layout's id in `sector`: `<sector>-<n>`, one past the highest
-/// `n` of `taken` in that sector (1 when none), so no id is used again.
-pub fn new_id(sector: SectorId, taken: &[&str]) -> String {
-    let prefix = format!("{}-", sector.as_str());
-    let n = taken
-        .iter()
-        .filter_map(|id| id.strip_prefix(prefix.as_str())?.parse::<usize>().ok())
-        .max()
-        .map_or(1, |n| n.saturating_add(1));
-    format!("{prefix}{n}")
+/// An added layout's id in `sector`: `<sector>-r<rev>-<n>`, `rev` the
+/// revision its save makes and `n` the edit's `n`-th add. Revisions only
+/// grow (an undo and a hand edit make new ones too) and only one save
+/// makes each, so no id is ever used again, also after its layout was
+/// removed or undone (#148 review).
+pub fn new_id(sector: SectorId, rev: u64, n: usize) -> String {
+    format!("{}-r{rev}-{n}", sector.as_str())
 }
 
 /// One tab of a sector's cell in the LAYOUTS block: its layout and title,
