@@ -85,10 +85,60 @@ const MIXED_DOC: SectorsDoc = {
   },
 };
 
+/**
+ * The slot model (1.24.0): lu holds 6 strips, so a side fits 6 strip widths,
+ * and ru 4 strips with room for 2 more: the owner's case, BAND to RU's right
+ * edge with empty space before it.
+ */
+const GAP_DOC: SectorsDoc = {
+  rev: 0,
+  sectors: {
+    lu: [
+      {
+        id: "lu-1",
+        title: "STAGE",
+        strips: [VOCAL, KEYS, band("A-Reverb #"), master("A-Reverb #"), master("Hand1 #"), master("Hand4 #")],
+      },
+    ],
+    ru: [{ id: "ru-1", title: "MAIN", strips: [master("Hand2 #"), VOCAL, KEYS, master("Hand4 #")] }],
+  },
+};
+
 const sectorsPage = (page: Page) => page.locator('[data-testid="page"][data-sectors="true"]');
 
 /** A sector's slots on the sectors page, in their order. */
 const slots = (page: Page, sector: string) => sectorsPage(page).locator(`.slot[data-sector="${sector}"]`);
+
+/** A sector's cells in their order: a strip as `<instance>|<track>`, an empty slot as `_`. */
+async function cellsOf(page: Page, sector: string): Promise<string[]> {
+  return slots(page, sector).evaluateAll((all) =>
+    all.map((slot) => {
+      const strip = slot.querySelector('[data-testid="strip"]');
+      return strip ? `${strip.getAttribute("data-instance")}|${strip.getAttribute("data-track")}` : "_";
+    }),
+  );
+}
+
+/**
+ * Carries a strip of `sector` in ARRANGE onto the cell at `to` (its index
+ * among the sector's cells): the moves and the lift dispatched on the
+ * strip's own cover (a dispatched pointer has no capture), past the slop
+ * first, the lift at the target cell's centre.
+ */
+async function carry(page: Page, sector: string, strip: string, to: number) {
+  const cover = slots(page, sector)
+    .filter({ has: page.locator(`[data-testid="strip"][data-track="${strip}"]`) })
+    .getByTestId("edit-cover");
+  await expect(cover).toBeVisible();
+  const from = await centre(cover);
+  const dx = (await centre(slots(page, sector).nth(to))).x - from.x;
+  await dispatchPointer(cover, [
+    { type: "pointerdown" },
+    { type: "pointermove", dx: Math.sign(dx) * 10, dy: 0 },
+    { type: "pointermove", dx, dy: 0 },
+    { type: "pointerup", dx, dy: 0 },
+  ]);
+}
 
 /** A sector's strips as `<instance>|<track>`, in their order. */
 async function stripsOf(page: Page, sector: string): Promise<string[]> {
@@ -234,6 +284,106 @@ test.describe("The fader sectors", () => {
       await expect.poll(() => stripsOf(page, "ld")).toEqual(["band|A-Reverb #"]);
       await expect(reverb).toHaveAttribute("data-e2e-kept", "1");
       await expect(slots(page, "ld").locator('[data-testid="group-side"]')).toHaveCount(0);
+    });
+  });
+
+  test.describe("ARRANGE with empty slots (the slot model)", () => {
+    test.use({ viewport: { width: 1194, height: 834 } });
+
+    test("ARRANGE puts a strip at the right edge with a gap", async ({ page, context }) => {
+      await setSectors(GAP_DOC);
+      await openSectors(page);
+      const ru = ["master|Hand2 #", name(VOCAL), name(KEYS), "master|Hand4 #"];
+      await expect.poll(() => cellsOf(page, "ru")).toEqual(ru);
+      // Outside ARRANGE no empty cell is drawn.
+      await expect(sectorsPage(page).getByTestId("sector-gap")).toHaveCount(0);
+      const live = await LiveClient.open();
+      try {
+        const HAND4_VOLUME = volume(track("Hand4 #"));
+        const volumeBefore = await live.get("master", HAND4_VOLUME, "value");
+        const revBefore = (await hubStatus()).sectors.rev;
+        const since = Date.now();
+        await frames(page);
+        const width = await stripWidth(page);
+
+        await page.getByTestId("arrange").click();
+        await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "true");
+        // Every position ru can show is a cell: its 4 strips and 2 empty
+        // ones, drawn as calm dashed outlines; lu is full, so none there.
+        await expect.poll(() => cellsOf(page, "ru")).toEqual([...ru, "_", "_"]);
+        await expect(slots(page, "lu").filter({ has: page.getByTestId("edit-cover") })).toHaveCount(6);
+        await expect(slots(page, "lu").and(page.getByTestId("sector-gap"))).toHaveCount(0);
+        const gap = slots(page, "ru").nth(5);
+        await expect(gap).toHaveAttribute("data-testid", "sector-gap");
+        const look = await gap.evaluate((e) => ({ style: getComputedStyle(e).outlineStyle, events: getComputedStyle(e).pointerEvents }));
+        expect(look).toEqual({ style: "dashed", events: "none" });
+        await frames(page);
+        expect(await stripWidth(page), "ARRANGE resizes nothing").toBe(width);
+
+        // Hand4 # to the sixth cell: its old place stays empty.
+        await carry(page, "ru", "Hand4 #", 5);
+        await expect.poll(() => cellsOf(page, "ru")).toEqual(["master|Hand2 #", name(VOCAL), name(KEYS), "_", "_", "master|Hand4 #"]);
+        expect((await hubStatus()).sectors.rev).toBe(revBefore);
+
+        // The second tap saves: the hub's document holds the gaps as null.
+        await page.getByTestId("arrange").click();
+        await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "false");
+        await until(async () => (await hubStatus()).sectors.rev, (rev) => rev > revBefore, "the hub taking the order");
+        const steps = await until(() => sectorSteps(since), (s) => s.includes("order"), "the hub's order record");
+        expect(steps).toEqual(["order"]);
+        await until(
+          async () => live.sectors?.doc?.sectors?.ru?.[0]?.strips,
+          (strips: any) => Array.isArray(strips) && strips.length === 6,
+          "the hub's document with ru's six slots",
+        );
+        expect(live.sectors.doc.sectors.ru[0].strips).toEqual([master("Hand2 #"), VOCAL, KEYS, null, null, master("Hand4 #")]);
+
+        // Nothing reached Live.
+        const sets = (await hubEvents()).filter((r: any) => r.ev === "set" && r.ts >= since);
+        expect(sets, JSON.stringify(sets)).toEqual([]);
+        expect(await live.get("master", HAND4_VOLUME, "value")).toBe(volumeBefore);
+
+        // A second page shows Hand4 # at ru's right edge (the line's), with
+        // two strip widths of empty space before it.
+        const other = await context.newPage();
+        await other.setViewportSize({ width: 1194, height: 834 });
+        const otherConsole = watchConsole(other);
+        await openSectors(other);
+        await expect.poll(() => cellsOf(other, "ru")).toEqual(["master|Hand2 #", name(VOCAL), name(KEYS), "_", "_", "master|Hand4 #"]);
+        await frames(other);
+        const placed = await sectorsPage(other).evaluate((body) => {
+          const slot = (track: string) =>
+            [...body.querySelectorAll('.slot[data-sector="ru"]')].find(
+              (s) => s.querySelector(`[data-testid="strip"][data-track="${track}"]`) != null,
+            )!.getBoundingClientRect();
+          const line = body.querySelector('.slot[data-sector="ru"]')!.closest(".line")!.getBoundingClientRect();
+          const strip = parseFloat((body as HTMLElement).style.getPropertyValue("--strip-w"));
+          return { lineRight: line.right, hand4: slot("Hand4 #"), keys: slot("Keys 1"), strip };
+        });
+        expect(Math.abs(placed.hand4.right - placed.lineRight), JSON.stringify(placed)).toBeLessThan(2);
+        expect(placed.hand4.left - placed.keys.right, JSON.stringify(placed)).toBeGreaterThanOrEqual(2 * placed.strip);
+        expect(otherConsole, "the second page's console").toEqual([]);
+        await other.close();
+      } finally {
+        live.close();
+      }
+    });
+
+    test("ARRANGE swaps a strip dropped on another", async ({ page }) => {
+      await setSectors(GAP_DOC);
+      await openSectors(page);
+      await expect.poll(() => cellsOf(page, "ru")).toEqual(["master|Hand2 #", name(VOCAL), name(KEYS), "master|Hand4 #"]);
+      const revBefore = (await hubStatus()).sectors.rev;
+      await page.getByTestId("arrange").click();
+      await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "true");
+      await expect.poll(async () => (await cellsOf(page, "ru")).length).toBe(6);
+      // Hand2 # dropped on Keys 1: the two swap, the others stay.
+      await carry(page, "ru", "Hand2 #", 2);
+      await expect.poll(() => cellsOf(page, "ru")).toEqual([name(KEYS), name(VOCAL), "master|Hand2 #", "master|Hand4 #", "_", "_"]);
+      await page.getByTestId("arrange").click();
+      await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "false");
+      await until(async () => (await hubStatus()).sectors.rev, (rev) => rev > revBefore, "the hub taking the order");
+      await expect.poll(() => cellsOf(page, "ru")).toEqual([name(KEYS), name(VOCAL), "master|Hand2 #", "master|Hand4 #"]);
     });
   });
 
