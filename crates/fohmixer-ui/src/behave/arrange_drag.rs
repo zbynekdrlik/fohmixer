@@ -733,6 +733,20 @@ mod tests {
     }
 
     #[test]
+    fn an_older_notes_timer_never_clears_a_newer_note() {
+        let mut notes = NoteTimer::default();
+        let first = notes.show();
+        assert!(notes.expires(first), "alone, its timer clears it");
+        let second = notes.show();
+        assert_ne!(first, second);
+        assert!(!notes.expires(first), "the first refusal's timer, 4 s on");
+        assert!(notes.expires(second));
+        let third = notes.show();
+        assert!(!notes.expires(second));
+        assert!(notes.expires(third));
+    }
+
+    #[test]
     fn the_note_says_the_mode_or_the_refusal() {
         assert_eq!(arrange_note(false, None), "");
         assert_eq!(arrange_note(true, None), ARRANGE_NOTE);
