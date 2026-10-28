@@ -97,8 +97,9 @@ pub fn layout_cells(
 }
 
 /// How far (px) a side's cells may pass its room and still fit at a strip
-/// width (the width is a quotient: six strips at it can sum a hair over).
-pub const FIT_SLACK: f64 = 0.5;
+/// width: float rounding only (the width is a quotient: six strips at it
+/// can sum a hair over), so an extra cell never overflows its side.
+pub const FIT_SLACK: f64 = 1e-6;
 
 /// Whether `cells` fit `side` px at strips `width` wide ([`FIT_SLACK`]).
 fn fits_at(cells: &[SectorCell], width: f64, side: f64, m: &Metrics) -> bool {
