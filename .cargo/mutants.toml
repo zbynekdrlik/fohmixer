@@ -344,7 +344,8 @@ exclude_re = [
   # pages::sectors::sector_memo and store::on_refusal; sectors.spec.ts
   # drives the glue in Chromium and WebKit (paging, the width kept, ↶, a
   # tick's answer).
-  "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::pick|remembered_picks)( |$)",
+  "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::pick|remembered_picks|measure_page)( |$)",
+  "fohmixer-ui/src/pages/sectors\\.rs.*(replace|in) step_sector_window( |$)",
   "fohmixer-ui/src/store/live/sectors\\.rs.*(replace|in) LiveStore::(sector_request|sector_tick|sector_orders|sector_undo)( |$)",
   # pages/ableset.rs (#90): take_return (location.hash read through the
   # tested behave::ableset::returns_to_tab, then history.replaceState

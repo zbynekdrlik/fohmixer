@@ -1,0 +1,89 @@
+/* fohmixer: the fader sectors on the FOH page (#148, the owner's approved
+   mockup docs/mockups/sectors-v1.html; linked after group.css). The page
+   itself is page.css's lines (pages/sectors.rs SectorsView): each line's
+   left sector fills from the screen's left edge, its right sector from the
+   column. Here: the column's LAYOUTS block, ARRANGE and ↶. */
+
+/* The LAYOUTS block: a 2 x 2 grid that mirrors the screen, the top row
+   the upper line's two sectors, the bottom row the lower line's. In each
+   cell its sector's layouts, one tab each; the shown one is marked as the
+   pager marked its sub-page (the panel's lighter ground and a yellow
+   underline), the others are dim text, one tap away. A faint cross of
+   1 px parts the cells. Nothing lights while idle. */
+.column .sectors {
+    display: grid;
+    flex: none;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 1px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--line);
+}
+
+.column .sec-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    padding: 3px;
+    background: var(--track);
+}
+
+.column .sec-cell .tab {
+    min-width: 0;
+    padding: 8px 1px;
+    overflow: hidden;
+    font-size: 10.5px;
+    letter-spacing: 0.2px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.column .sec-cell .tab.selected {
+    box-shadow: inset 0 -2px 0 var(--solo);
+}
+
+/* ARRANGE (the reorder mode, #148) and ↶ (the undo of the last change),
+   one row under the block. */
+.column .sector-actions {
+    display: grid;
+    flex: none;
+    grid-template-columns: minmax(0, 1fr) 40px;
+    gap: 4px;
+}
+
+.column .arrange-btn {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.column .arrange-btn .tab {
+    width: 100%;
+}
+
+.column .arrange-btn .tab.selected {
+    box-shadow: inset 0 -2px 0 var(--solo);
+}
+
+.column .undo-btn {
+    min-width: 0;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--track);
+    color: var(--text);
+    font: 700 16px/1 var(--ui);
+    cursor: pointer;
+    touch-action: manipulation;
+}
+
+/* No previous version on the hub: dim, and a tap does nothing. */
+.column .undo-btn[aria-disabled="true"] {
+    color: var(--faint);
+    cursor: default;
+}
+
+.column .undo-btn.failed {
+    border-color: var(--mute);
+    color: var(--mute);
+}
