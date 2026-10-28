@@ -94,6 +94,7 @@ pub mod routes;
 pub mod rules;
 pub mod sealed;
 pub mod secrets;
+pub mod sectors;
 pub mod setter;
 #[cfg(test)]
 pub(crate) mod test_keys;
