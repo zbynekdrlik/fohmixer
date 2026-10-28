@@ -807,6 +807,28 @@ fn the_seed_moves_a_layouts_overflow_to_the_front_of_its_rows_right_sector() {
 }
 
 #[test]
+fn the_seed_puts_a_fader_two_sub_pages_overflow_into_the_right_sector_once() {
+    // Klavir and Vocals pinned on both sub-pages, each full with 6 others:
+    // both overflow twice, and the right sector holds each once.
+    let singers = names("Vox", 6);
+    let players = names("Bass", 6);
+    let pager = json!({"kind": "pager", "id": "pg", "default_page": "stage", "pages": [
+        {"id": "stage", "title": "STAGE", "sections": [
+            band_group("singers", None, &as_strs(&singers)),
+            band_group("pin1", None, &["Klavir", "Vocals"])]},
+        {"id": "band", "title": "BAND", "sections": [
+            band_group("players", None, &as_strs(&players)),
+            band_group("pin2", None, &["Klavir", "Vocals"])]}]});
+    let rows = json!([{"sections": [pager, band_group("main", Some("MAIN"), &["Band"])]}]);
+    let seeded = seed(&layout_of(rows, json!([])));
+    assert_eq!(seeded.validate(), Vec::<String>::new());
+    assert_eq!(
+        seeded.layouts(SectorId::Ru),
+        &[sl("ru-1", "MAIN", bands(&["Klavir", "Vocals", "Band"]))]
+    );
+}
+
+#[test]
 fn the_seed_counts_a_wide_strip_and_carries_a_full_right_side_into_more_layouts() {
     // Left: 5 strips and a wide one (6.1 units): the wide one moves right,
     // to the front of an empty right sector's new MAIN layout.
