@@ -15,9 +15,10 @@
 //! dimmed and inert, a strip is dragged within its sector, and a second tap
 //! saves; nothing reaches Live) and ↶ (the hub's undo of the last change,
 //! dim while the hub holds no version before it), then the arrows of a side
-//! that does not fit, the rail and the global controls. The group's name on
-//! a strip's side is not drawn here; its instance tag follows the shown
-//! layout.
+//! that does not fit, the rail and the global controls. No strip draws its
+//! instance pill here (it costs 16 px of travel); a layout that mixes Live
+//! sets names each strip's set where the group's name sits on the classic
+//! page (`binding::sectors::sector_side`), following the shown layout.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -32,7 +33,9 @@ use crate::arrange::{Arrangement, LineKey, METRICS, Shift, Sides, narrow};
 use crate::behave::arrange_drag::{
     Arrange, ArrangeEnd, Drag, NoteTimer, Tap, arrange_note, sector_refs,
 };
-use crate::binding::sectors::{Picks, picked, pool_controls, sector_instances, sector_name};
+use crate::binding::sectors::{
+    Picks, picked, pool_controls, sector_instances, sector_name, sector_side,
+};
 use crate::components::{ControlView, down_of, fail_flash, owns_touches};
 use crate::dom;
 use crate::pages::surface::{ColumnHead, Head, Nav, ThinStrip, measure_page};
@@ -74,11 +77,12 @@ pub(crate) fn sector_memo(
     })
 }
 
-/// Each sector's instance tag (`binding::sectors::sector_instances`): the
-/// Live set its shown layout's strips share, none when they differ. A memo
-/// of the hub's document and this device's picks, so a strip that stays
-/// mounted while its sector pages gets the new layout's tag; the pool is
-/// built once per change, never per strip.
+/// Each sector's shared Live set (`binding::sectors::sector_instances`):
+/// the set its shown layout's strips share, none when they differ (then
+/// each strip names its own set on its side, `sector_side`). A memo of the
+/// hub's document and this device's picks, so a strip that stays mounted
+/// while its sector pages follows the new layout; the pool is built once
+/// per change, never per strip.
 pub(crate) fn instances_memo(
     layout: Arc<Layout>,
     doc: Signal<Option<SectorsDoc>>,
@@ -487,10 +491,11 @@ fn SectorLineView(
     }
 }
 
-/// One strip of a sector: its pool control on its sector's side, with the
-/// instance tag of the layout its sector shows now (a memo of `instances`:
-/// a strip kept through a page takes the new layout's tag) and no group
-/// name; ARRANGE's cover over it (shown only in the mode).
+/// One strip of a sector: its pool control on its sector's side, with no
+/// instance pill and, while the layout its sector shows now mixes Live
+/// sets, its own set as the side text (a memo of `instances`: a strip kept
+/// through a page follows the new layout); ARRANGE's cover over it (shown
+/// only in the mode).
 #[component]
 fn SectorCellView(
     cell: SectorCell,
@@ -504,13 +509,25 @@ fn SectorCellView(
     let control = controls
         .try_with_value(|all| all.get(&cell.strip).cloned())
         .flatten();
-    let shared = Memo::new(move |_| {
+    // The strip's own Live set as its `shared`: it never draws its
+    // instance pill here (1.24.0: 16 px of travel, a bright fill); a mixed
+    // layout names the set on its side instead (`sector_side`), a memo of
+    // `instances`, so a strip kept through a page follows the layout shown.
+    let own = match &control {
+        Some(Control::Strip(strip)) => Some(strip.binding.instance.clone()),
+        _ => None,
+    };
+    let own_side = own.clone().unwrap_or_default();
+    let shared = Signal::derive(move || own.clone());
+    let side_text = Memo::new(move |_| {
         instances
-            .try_with(|all| all.get(&sector).cloned().flatten())
+            .try_with(|all| sector_side(all.get(&sector).and_then(Option::as_deref), &own_side))
             .flatten()
     });
     let side = if sector.left() { "left" } else { "right" };
-    let inner = control.map(|control| view! { <ControlView control=control shared=shared /> });
+    let inner = control.map(|control| {
+        view! { <ControlView control=control shared=shared group_name=side_text /> }
+    });
     view! {
         <div class="slot" data-sector=sector.as_str() data-side=side>
             {inner}

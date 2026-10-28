@@ -14,6 +14,7 @@ use fohmixer_proto::sectors::{
     Pooled, SectorId, SectorLayout, SectorsDoc, StripRef, pool, strip_ref, would_be_full,
 };
 
+use crate::arrange::GroupLabel;
 use crate::flow::shared_instance_of;
 
 /// Where the device keeps its picks (a JSON map: sector id → layout id).
@@ -69,9 +70,10 @@ pub fn sector_controls<'a>(
         .collect()
 }
 
-/// The Live set every strip of `sector`'s shown layout shares (#148: the
-/// instance tag on its strips, `flow::shared_instance` over that layout's
-/// pool controls); none when they differ or it holds no strip.
+/// The Live set every strip of `sector`'s shown layout shares (#148,
+/// `flow::shared_instance` over that layout's pool controls); none when
+/// they differ or it holds no strip (then [`sector_side`] names each
+/// strip's own set).
 pub fn shown_instance(
     doc: &SectorsDoc,
     picks: &Picks,
@@ -89,7 +91,7 @@ pub fn shown_instance(
 }
 
 /// Every sector's [`shown_instance`] (all four, none for a sector without
-/// layouts): what each of its strips' instance tag follows.
+/// layouts): what each of its strips' side text follows.
 pub fn sector_instances(
     doc: &SectorsDoc,
     picks: &Picks,
@@ -99,6 +101,20 @@ pub fn sector_instances(
         .into_iter()
         .map(|sector| (sector, shown_instance(doc, picks, sector, pool)))
         .collect()
+}
+
+/// A strip's side text on the sectors page (#148, 1.24.0): `shared` is
+/// the Live set its sector's shown layout shares ([`shown_instance`]). A
+/// layout of one set names nothing; a mixed one names each strip's own set
+/// in capitals (`BAND`, `MASTER`, as `arrange::group_label` names an
+/// untitled group's), drawn where the group's name sits on the classic page.
+/// The strip itself never draws its instance pill there: it would take
+/// 16 px of fader travel.
+pub fn sector_side(shared: Option<&str>, instance: &str) -> Option<GroupLabel> {
+    shared.is_none().then(|| GroupLabel {
+        text: instance.to_uppercase(),
+        instance: Some(instance.to_string()),
+    })
 }
 
 /// The pool's controls by their identity (the sectors page builds it once
@@ -659,6 +675,22 @@ mod tests {
         picks.insert(SectorId::Ld, "ld-2".to_string());
         assert_eq!(shown_instance(&doc, &picks, SectorId::Ld, &pool), None);
         assert_eq!(shown_instance(&doc, &picks, SectorId::Lu, &pool), None);
+    }
+
+    #[test]
+    fn a_mixed_layout_names_each_strips_set_on_its_side() {
+        assert_eq!(sector_side(Some("band"), "band"), None);
+        assert_eq!(
+            sector_side(None, "master"),
+            Some(GroupLabel {
+                text: "MASTER".to_string(),
+                instance: Some("master".to_string()),
+            })
+        );
+        assert_eq!(
+            sector_side(None, "band").map(|l| l.text).as_deref(),
+            Some("BAND")
+        );
     }
 
     #[test]
