@@ -1,0 +1,3195 @@
+<!doctype html>
+<!-- fohmixer #148: mockup v2 of the sectors, for the owner's approval; not
+     part of the app. Built on the approved v1 (sectors-v1.html); only two
+     things change. (1) Slots with gaps (decided 28.10, being built in
+     1.24.0): a layout is a row of slots, a slot may be empty. In ARRANGE
+     every position a sector can show at the page's strip width is a cell,
+     the empty ones calm dashed outlines; a strip dropped on an empty cell
+     moves there and leaves its old place empty, dropped on another strip
+     the two swap. Outside ARRANGE an empty slot is plain empty space, so a
+     strip can sit at a sector's far edge (RU's MAIN: BAND at the right
+     edge, two empty slots before it). (2) The proposal (#148, 28.10):
+     rename, add and remove layouts in ARRANGE. Each layout tab there gets
+     a small pencil (rename: an inline field, at most 8 characters, upper
+     case) and a cross (remove: the first tap turns the tab into a red
+     REMOVE? confirm, the second removes; a sector's last layout has no
+     cross); each sector cell gets a + that adds an empty layout NEW, shown
+     at once. Outside ARRANGE the block only pages, as v1. Everything saves
+     with the second tap on ARRANGE as one change, one undo step (the
+     column's undo key beside ARRANGE, as shipped). Plain JS, pointer events
+     (mouse and touch). The fonts are the app's own files, loaded by
+     relative path. The page measures itself. Invented names and values,
+     no site data. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fohmixer sectors v2</title>
+<style>
+/* The app's fonts (crates/fohmixer-ui/fonts, SIL OFL 1.1), by relative
+   path; style.css's faces and ranges. */
+@font-face {
+    font-family: "Barlow Condensed";
+    font-weight: 700;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-700-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "Barlow Condensed";
+    font-weight: 700;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-ext-700-normal.woff2") format("woff2");
+    unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 600;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-600-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 600;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-ext-600-normal.woff2") format("woff2");
+    unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 700;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-700-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 700;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-ext-700-normal.woff2") format("woff2");
+    unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+    font-family: "JetBrains Mono";
+    font-weight: 500;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "JetBrains Mono";
+    font-weight: 600;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-600-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+
+/* --- the app's tokens (style.css) --- */
+:root {
+    color-scheme: dark;
+    --bg: #07070c;
+    --page: #0b0b12;
+    --bar: #11111b;
+    --section: #151522;
+    --panel: #1a1a28;
+    --panel-mute: #12121b;
+    --panel-hi: #20203a;
+    --track: #0a0a14;
+    --line: #2a2a44;
+    --line-soft: rgba(255, 255, 255, 0.06);
+    --accent: #4ecdc4;
+    --accent-dim: rgba(78, 205, 196, 0.28);
+    --mute: #e63946;
+    --solo: #f4d35e;
+    --band: #4ecdc4;
+    --master: #8b7dff;
+    --text: #eaeaf0;
+    --muted: #9a9ab4;
+    --faint: #5c5c78;
+    --m-green: #36d67a;
+    --m-yellow: #f5d547;
+    --m-red: #ff4757;
+    --danger: #ff3b30;
+    --warn: #f5a623;
+    --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+    --ui: "Barlow", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    /* NEW (#151): the loudness states. Fine, warn and far are the meter's
+       own zone colours (the team knows them from the meters); plain is the
+       output's neutral pill. */
+    --l-fine: var(--m-green);
+    --l-warn: var(--m-yellow);
+    --l-far: var(--m-red);
+    --l-plain: #34344e;
+    /* v5: the LUFS text tints (no fills any more). */
+    --l-quiet: #6e6e88;
+    --l-amber: #a8894a;
+    --l-red: #b0585f;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--ui);
+    -webkit-text-size-adjust: 100%;
+}
+
+body {
+    padding: 16px;
+}
+
+/* --- strip.css (v1.17.0), the parts a strip draws --- */
+.strip {
+    --head-w: calc(var(--strip-w, 76px) - 10px);
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 3px;
+    flex: none;
+    width: var(--strip-w, 76px);
+    min-height: 0;
+    padding: 5px 4px 4px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: var(--panel);
+}
+
+.strip.wide {
+    --head-w: calc(var(--strip-w, 76px) * 1.1 - 10px);
+    width: calc(var(--strip-w, 76px) * 1.1);
+}
+
+.strip::before,
+.strip::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 8px;
+    pointer-events: none;
+}
+
+.strip::before {
+    border-top: 3px solid var(--gc, var(--accent));
+    opacity: 0.9;
+}
+
+.strip:has(.fader[data-held="true"])::after {
+    border: 2px solid var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-dim);
+}
+
+.strip:has(.fader[data-held="true"]) .strip-readout {
+    background: var(--accent);
+    opacity: 1;
+}
+
+.strip:has(.fader[data-held="true"]) .strip-readout .db {
+    color: #07131a;
+}
+
+.strip-fz {
+    position: relative;
+    display: grid;
+    grid-template-columns: 17px 11px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 3px;
+    min-height: 0;
+    padding: 8px 0 10px;
+}
+
+.strip-fz .scale { grid-area: 1 / 1; }
+.strip-fz .meter { grid-area: 1 / 2; }
+.strip-fz .fader {
+    grid-area: 1 / 1 / 2 / 4;
+    --x: calc(50% + 17px);
+}
+
+.scale { position: relative; }
+
+.tick {
+    position: absolute;
+    right: 0;
+    transform: translateY(-50%);
+    color: var(--faint);
+    font: 500 8.5px/1 var(--mono);
+    white-space: nowrap;
+}
+
+.tick.unity { color: var(--muted); }
+
+.meter { position: relative; }
+
+.meter-bars {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    grid-auto-columns: 1fr;
+    grid-auto-flow: column;
+    gap: 1px;
+}
+
+.meter-clip {
+    position: absolute;
+    z-index: 2;
+    top: -9px;
+    left: -3px;
+    right: -3px;
+    height: 9px;
+}
+
+.meter-clip::before {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 3px;
+    right: 3px;
+    height: 4px;
+    border-radius: 2px;
+    background: #2a1016;
+}
+
+.meter-peak {
+    position: absolute;
+    inset: 0;
+    transform: translateY(calc((1 - var(--pk, 0)) * 100%));
+}
+
+.meter-peak::before {
+    content: "";
+    position: absolute;
+    top: -1px;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: #ffffff;
+}
+
+.meter-bar {
+    position: relative;
+    overflow: hidden;
+    background: #0e0e18;
+}
+
+.meter-zones {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+        to top,
+        var(--m-green) 0 var(--yellow, 31%),
+        var(--m-yellow) var(--yellow, 31%) var(--red, 61%),
+        var(--m-red) var(--red, 61%) 100%
+    );
+}
+
+.meter-cover {
+    position: absolute;
+    inset: 0;
+    background: #0e0e18;
+    transform-origin: top;
+}
+
+.fader {
+    position: relative;
+}
+
+.fader::after {
+    content: "";
+    position: absolute;
+    top: calc((1 - var(--u, 0.7294)) * 100%);
+    left: calc(var(--x, 50%) - 16px);
+    right: 2px;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.28);
+}
+
+.fader-groove,
+.fader-fill {
+    position: absolute;
+    left: var(--x, 50%);
+    width: 6px;
+    margin-left: -3px;
+    border-radius: 3px;
+}
+
+.fader-groove {
+    top: 0;
+    bottom: 0;
+    background: var(--track);
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.fader-fill {
+    bottom: 0;
+    height: 100%;
+    transform-origin: bottom;
+    transform: scaleY(var(--p, 0));
+    background: linear-gradient(to top, rgba(78, 205, 196, 0.25), var(--accent));
+}
+
+.fader-rail {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    transform: translateY(calc(var(--p, 0) * -100%));
+}
+
+.fader-cap {
+    --cap-w: min(32px, calc(var(--strip-w, 76px) - 38px));
+    position: absolute;
+    top: 100%;
+    left: var(--x, 50%);
+    width: var(--cap-w);
+    height: 22px;
+    margin: -11px 0 0 calc(var(--cap-w) / -2);
+    border: 1px solid #4a4a66;
+    border-bottom-color: #15151f;
+    border-radius: 6px;
+    background: linear-gradient(#3a3a52, #262638);
+}
+
+.fader[data-held="true"] .fader-cap {
+    border-color: var(--accent);
+}
+
+.fader-cap::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 6px;
+    right: 6px;
+    height: 2px;
+    margin-top: -1px;
+    border-radius: 1px;
+    background: var(--text);
+}
+
+.strip-head {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 30px 22px;
+    row-gap: 2px;
+    min-width: 0;
+}
+
+.strip-info {
+    --menu-w: clamp(18px, calc(var(--strip-w, 76px) * 0.25), 22px);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    min-width: 0;
+    height: 22px;
+    margin: 0 -2px;
+}
+
+.strip-readout {
+    display: flex;
+    justify-self: center;
+    align-items: center;
+    gap: 2px;
+    max-width: 100%;
+    min-width: 0;
+    padding: 0 2px;
+    border-radius: 5px;
+    pointer-events: none;
+}
+
+.strip-readout .db {
+    font-size: clamp(7px, calc((var(--strip-w, 76px) - 18px - var(--menu-w)) / 3.3), 12px);
+    line-height: 17px;
+}
+
+.db {
+    color: #9be7a8;
+    font: 600 12px/1.4 var(--mono);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.db.unity { color: #ffffff; }
+
+.strip-menu {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: var(--menu-w);
+    height: 20px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: #141420;
+    color: var(--muted);
+    font: 700 12px/1 var(--ui);
+}
+
+.mute {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    height: 34px;
+    padding: 0 4px;
+    border-radius: 7px;
+    background: #1f1f2e;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--faint);
+    font: 700 clamp(11px, calc(var(--strip-w, 76px) * 0.2), 15px) / 1 var(--display);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+.mute.lit {
+    background: var(--tc, var(--accent));
+    box-shadow: none;
+    color: var(--tt, #10101a);
+}
+
+.strip-head > .mute {
+    height: 30px;
+    padding: 9px 3px 0;
+}
+
+.strip-label {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    font-size: clamp(
+        9px,
+        calc((var(--strip-w, 76px) - 18px - var(--n, 5) * 0.5px) / (var(--n, 5) * 0.5)),
+        17px
+    );
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.strip-corner {
+    position: absolute;
+    top: 1.5px;
+    right: 3px;
+    left: 3px;
+    display: flex;
+    gap: 16px 3px;
+    height: 13.5px;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+.strip-ret {
+    flex: none;
+    margin-top: 1.5px;
+    padding: 0 2px;
+    border-radius: 3px;
+    background: rgba(7, 7, 12, 0.6);
+    color: var(--muted);
+    font: 800 7.5px/1.4 var(--ui);
+    letter-spacing: 0.6px;
+}
+
+/* states.css: a problem's `!` */
+.strip-flag {
+    flex: none;
+    margin-top: 1.5px;
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    background: var(--warn);
+    color: #0b0b12;
+    font: 800 10px/12px var(--ui);
+    text-align: center;
+}
+/* --- the device's screen (simplified around the app's strips) --- */
+.device {
+    position: relative;
+    flex: none;
+    overflow: hidden;
+    border-radius: 14px;
+    background: var(--page);
+    box-shadow: 0 0 0 2px #000, 0 0 0 4px #24243a;
+}
+
+.ipad { width: 1194px; height: 834px; }
+.phone-side { width: 844px; height: 390px; }
+.phone-up { width: 390px; height: 844px; }
+
+.bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    height: 34px;
+    padding: 0 12px;
+    background: var(--bar);
+    color: var(--muted);
+    font: 700 11px/1 var(--ui);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.bar .tab {
+    padding: 5px 9px;
+    border-radius: 6px;
+}
+
+.bar .tab.on {
+    background: var(--panel-hi);
+    color: var(--text);
+}
+
+.bar .ver {
+    margin-left: auto;
+    color: var(--faint);
+    font: 600 10px/1 var(--mono);
+    letter-spacing: 0;
+    text-transform: none;
+}
+
+.body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 132px minmax(0, 1fr);
+    gap: 6px;
+    height: calc(100% - 34px);
+    padding: 6px;
+}
+
+.side {
+    display: flex;
+    gap: 4px;
+    min-width: 0;
+    min-height: 0;
+}
+
+.side.right { justify-content: flex-end; }
+
+.column {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 6px;
+    border-radius: 10px;
+    background: #10101a;
+}
+
+.rbtn {
+    display: grid;
+    place-items: center;
+    height: 44px;
+    border-radius: 9px;
+    background: #1d1d2c;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--muted);
+    font: 700 15px/1 var(--display);
+    letter-spacing: 0.04em;
+}
+
+/* A phone (#63, phone-burger-v1): the column behind ☰. */
+.pbody {
+    position: relative;
+    display: grid;
+    gap: 6px;
+    height: calc(100% - 34px);
+    padding: 6px;
+}
+
+.pline {
+    display: flex;
+    gap: 4px;
+    min-height: 0;
+}
+
+.burger {
+    position: absolute;
+    z-index: 3;
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 9px;
+    background: #1d1d2c;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--muted);
+    font: 700 16px/1 var(--ui);
+}
+
+/* --- the mockup's own page --- */
+.sheet {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-width: 1230px;
+    margin: 0 auto 40px;
+}
+
+.wrap {
+    overflow-x: auto;
+    padding: 6px;
+}
+
+.overline {
+    color: var(--muted);
+    font: 700 10px/1.2 var(--ui);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+h1, h2 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    font: 700 24px/1.1 var(--display);
+    letter-spacing: 0.03em;
+}
+
+h2 { font-size: 19px; }
+
+.vletter {
+    display: grid;
+    flex: none;
+    place-items: center;
+    min-width: 26px;
+    height: 26px;
+    padding: 0 6px;
+    border-radius: 7px;
+    background: var(--solo);
+    color: #10101a;
+    font: 700 18px/1 var(--display);
+}
+
+p, li {
+    max-width: 1000px;
+    color: var(--muted);
+    font: 600 14px/1.5 var(--ui);
+}
+
+p b, li b { color: var(--text); }
+
+code {
+    color: var(--accent);
+    font: 600 12.5px/1.4 var(--mono);
+}
+
+.num {
+    color: var(--solo);
+    font: 600 13px/1.4 var(--mono);
+}
+
+.row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 22px;
+}
+
+.box {
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: var(--section);
+}
+
+.samples {
+    display: flex;
+    gap: 6px;
+    height: 300px;
+    padding: 6px;
+    border-radius: 10px;
+    background: var(--page);
+}
+
+.sample-cap {
+    width: var(--strip-w);
+    color: var(--muted);
+    font: 600 11px/1.3 var(--ui);
+    text-align: center;
+}
+
+.sample-caps {
+    display: flex;
+    gap: 6px;
+    padding: 0 6px;
+}
+
+table.legend {
+    border-collapse: collapse;
+}
+
+table.legend td, table.legend th {
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--line);
+    color: var(--muted);
+    font: 600 13.5px/1.4 var(--ui);
+    text-align: left;
+    vertical-align: middle;
+}
+
+table.legend th {
+    color: var(--text);
+    font-weight: 700;
+}
+
+.chip {
+    display: inline-block;
+    min-width: 40px;
+    padding: 0 6px;
+    border-radius: 5px;
+    color: #0b0b12;
+    font: 600 12px/20px var(--mono);
+    text-align: center;
+}
+
+.chip { background: none; font-weight: 500; }
+.chip:is([data-l="fine"], [data-l="plain"]) { color: var(--l-quiet); }
+.chip[data-l="warn"] { color: var(--l-amber); }
+.chip[data-l="far"] { color: var(--l-red); }
+.chip:is([data-l="silent"], [data-l="none"]) { color: var(--faint); font-style: italic; }
+
+.measure {
+    color: var(--text);
+    font: 600 13px/1.5 var(--mono);
+}
+
+.ok { color: var(--m-green); }
+.bad { color: var(--m-red); }
+
+.q {
+    padding: 12px 14px;
+    border-left: 3px solid var(--solo);
+    border-radius: 6px;
+    background: var(--section);
+}
+
+/* --- NEW in v2 (#151): the fader zone the LV1 way; v3: no PEAK, no clip --- */
+
+/* The zone keeps today's height: the strip's head (name button 30 px,
+   readout line 22 px) and the zone's padding (8 px top, 10 px bottom) are
+   unchanged, so the travel is today's. Inside it, right to left: the dB
+   scale (17 px, right edge), 2 px, the fader's track (12 px) holding the
+   stereo meter, the cap centred on the track, and left of the cap's widest
+   reach the information column. The whole zone stays the fader's touch
+   target, as today. */
+.fz2 {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
+    min-height: 0;
+    padding: 8px 0 10px;
+}
+
+.zone {
+    --cap-w: min(32px, calc(var(--strip-w, 76px) - 38px));
+    --x: calc(100% - 25px);
+    position: relative;
+    min-height: 0;
+}
+
+/* The unity mark: 4 px either side of the track (under the track). */
+.zone .unity {
+    position: absolute;
+    top: calc((1 - var(--u, 0.85)) * 100%);
+    left: calc(var(--x) - 10px);
+    width: 20px;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.4);
+}
+
+/* The track: two bars, L and R, 4 px each, 2 px apart, on the fader's own
+   dB scale (green, yellow from -12 dB, red from -3 dB, as today). */
+.track {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: calc(var(--x) - 6px);
+    width: 12px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px;
+    padding: 1px;
+    border-radius: 3px;
+    background: #08080f;
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.bar2 {
+    position: relative;
+    overflow: hidden;
+    background: #0e0e18;
+}
+
+.bar2 .meter-zones,
+.bar2 .meter-cover {
+    position: absolute;
+    inset: 0;
+}
+
+.bar2 .meter-cover {
+    background: #0e0e18;
+    transform-origin: top;
+}
+
+.bar2 .meter-peak {
+    opacity: 0.85;
+}
+
+/* The scale on the right, its labels left-aligned beside the track (LV1).
+   The cap overhangs the labels' first 8 px as it passes. */
+.scale2 {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: 0;
+    width: 17px;
+}
+
+.scale2 .t2 {
+    position: absolute;
+    left: 0;
+    transform: translateY(-50%);
+    color: var(--muted);
+    font: 500 8.5px/1 var(--mono);
+    white-space: nowrap;
+}
+
+.scale2 .t2.unity-t {
+    color: #c4c4d6;
+}
+
+/* The cap rides a track-tall layer moved up by --p (today's mechanism).
+   Opaque, with a 1 px dark ring (no blur): the bars run under it and the
+   cap's white line stays readable over them. */
+.rail2 {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    transform: translateY(calc(var(--p, 0) * -100%));
+}
+
+.cap2 {
+    position: absolute;
+    top: 100%;
+    left: var(--x);
+    width: var(--cap-w);
+    height: 22px;
+    margin: -11px 0 0 calc(var(--cap-w) / -2);
+    border: 1px solid #4a4a66;
+    border-bottom-color: #15151f;
+    border-radius: 6px;
+    background: linear-gradient(#3a3a52, #262638);
+    box-shadow: 0 0 0 1px #07070c;
+}
+
+.cap2::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 6px;
+    right: 6px;
+    height: 2px;
+    margin-top: -1px;
+    border-radius: 1px;
+    background: var(--text);
+}
+
+.zone[data-held="true"] .cap2 {
+    border-color: var(--accent);
+}
+
+.strip:has(.zone[data-held="true"])::after {
+    border: 2px solid var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-dim);
+}
+
+.strip:has(.zone[data-held="true"]) .strip-readout {
+    background: var(--accent);
+}
+
+.strip:has(.zone[data-held="true"]) .strip-readout .db {
+    color: #07131a;
+}
+
+/* The information column: left of the cap's widest reach, the zone's
+   height: the LUFS (only on a +LUFS strip, else the row stays empty),
+   then the group's name. No PEAK, no clip (v3: Live mixes in 32-bit
+   float, a track cannot clip inside Live). */
+.info {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: calc(100% - 28px - var(--cap-w) / 2);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.cap-kind {
+    margin-top: -2px;
+}
+
+.cap-lbl {
+    overflow: hidden;
+    color: var(--faint);
+    font: 700 7.5px/9px var(--ui);
+    letter-spacing: 0.08em;
+    text-align: center;
+    white-space: nowrap;
+}
+
+.lpill {
+    align-self: center;
+    width: min(100%, 40px);
+}
+
+.lpill {
+    height: 16px;
+    overflow: hidden;
+    font: 500 10.5px/16px var(--mono);
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    white-space: nowrap;
+}
+
+/* v5 (the owner, #151, 26.10): quiet text, never a shape: no fill, no
+   box, no border, no glow. In range (and the output's number) dim grey;
+   out of range only the text is tinted, muted; silent or no value: nothing
+   at all (the caption goes too). Quieter than Live's dB (12 px, 600,
+   #9be7a8) in size, weight and contrast; the page checks it. */
+.lpill:is([data-l="fine"], [data-l="plain"]) { color: var(--l-quiet); }
+.lpill[data-l="warn"] { color: var(--l-amber); }
+.lpill[data-l="far"] { color: var(--l-red); }
+.lpill:is([data-l="silent"], [data-l="none"]) { visibility: hidden; }
+
+.lpill.empty,
+.cap-lbl.empty {
+    visibility: hidden;
+}
+
+/* The group's name (#127) moves from the scale column into the info
+   column, under the LUFS, read bottom to top as today. v6: calm grey text,
+   no group colour (one colour per strip, the track's own). */
+.gside {
+    position: absolute;
+    top: 40px;
+    left: 0;
+    width: 11px;
+    height: 96px;
+    overflow: hidden;
+    color: var(--faint);
+    font: 600 9.5px/11px var(--ui);
+    letter-spacing: 0.1em;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+}
+
+/* v6: one colour per strip, the Live track's own (the name's 4 px edge):
+   the layout group's 3 px top edge (#127, --gc) is not drawn. */
+.strip.one::before {
+    display: none;
+}
+
+/* A narrow strip (under 78 px: the phones; the app knows the width from
+   arrange.rs and marks the strip, nothing measures text): the column is
+   13-24 px, so the LUFS stands upright, digit under digit, and the caption
+   leaves. */
+.strip[data-narrow="true"] .cap-lbl {
+    display: none;
+}
+
+.strip[data-narrow="true"] .lpill {
+    height: auto;
+    padding: 3px 0;
+    font: 500 9.5px/12px var(--mono);
+    letter-spacing: -1px;
+    text-orientation: upright;
+    writing-mode: vertical-rl;
+}
+
+.strip[data-narrow="true"] .lpill:is(.empty, [data-l="silent"], [data-l="none"]) {
+    display: none;
+}
+
+.strip[data-narrow="true"] .gside {
+    top: 44px;
+}
+
+/* A muted strip steps back, as today. */
+.strip.muted {
+    background: var(--panel-mute);
+}
+
+.strip.muted::before {
+    opacity: 0.3;
+}
+
+.strip.muted :is(.cap2, .track, .strip-readout, .info) {
+    opacity: 0.4;
+}
+
+.strip-corner .mmark {
+    /* v7: today's red mute mark (strip.css .mute-mark), the word MUTED. */
+    flex: none;
+    margin: 0.5px 0 0 auto;
+    color: var(--mute);
+    font: 800 7.5px/1 var(--ui);
+    letter-spacing: 0.6px;
+}
+
+/* --- the screens --- */
+.body2 {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 132px minmax(0, 1fr);
+    grid-template-rows: repeat(var(--lines, 2), minmax(0, 1fr));
+    gap: 6px;
+    height: 100%;
+    padding: 6px;
+}
+
+.body2.phone {
+    grid-template-columns: minmax(0, 1fr) 34px minmax(0, 1fr);
+}
+
+.body2 > .column {
+    grid-column: 2;
+    grid-row: 1 / -1;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.body2 > .side {
+    min-height: 0;
+}
+
+.body2 > .side.left { grid-column: 1; }
+.body2 > .side.right { grid-column: 3; }
+
+.ministatus {
+    color: var(--faint);
+    font: 600 10px/1.4 var(--mono);
+    text-align: center;
+}
+
+.thin2 {
+    grid-column: 2;
+    grid-row: 1 / -1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding-top: 8px;
+    border-radius: 10px;
+    background: var(--bar);
+}
+
+.thin2 .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--m-green);
+}
+
+.thin2 .tb {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
+    background: #1d1d2c;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--muted);
+    font: 700 14px/1 var(--ui);
+}
+
+/* --- NEW in v4: the channel detail's key, bottom left (no ☰ in the
+   readout line any more). Its touch box runs from the strip's inner edge
+   (over the strip's 4 px padding) to the cap's widest reach, and from the
+   zone's foot (into its 10 px bottom padding) up: 36 x 36 px on an 83 px
+   iPad strip (36 px from 83 px up; a narrower strip gets the column's
+   room), so it never meets the cap, even at -inf. The drawn key is 2 px
+   inside it. A strip under 78 px: the column's room wide, 44 px high. It takes its own touches; the rest of the
+   zone stays the fader's. */
+.strip-info.nomenu {
+    --menu-w: 0px;
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.selbtn {
+    position: absolute;
+    z-index: 2;
+    left: -4px;
+    bottom: -10px;
+    width: min(36px, calc(100% - 21px - var(--cap-w) / 2));
+    height: 36px;
+    display: grid;
+    place-items: center;
+}
+
+.selkey {
+    width: calc(100% - 4px);
+    height: calc(100% - 4px);
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    border-radius: 6px;
+    background: #1f1f2e;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--muted);
+}
+
+.selkey .pa {
+    font: 700 12px/1 var(--display);
+    letter-spacing: 0.08em;
+    white-space: nowrap;
+}
+
+.strip[data-narrow="true"] .selbtn {
+    height: 44px;
+}
+
+.strip[data-narrow="true"] .selkey .pa {
+    font-size: 9.5px;
+    letter-spacing: 0.02em;
+}
+
+.strip.muted .selbtn {
+    opacity: 0.6;
+}
+
+/* --- NEW in v5: the calm name button (the owner, #151, 26.10). The
+   button keeps its size and its tap (MUTE, as today); unmuted it is the
+   strip's dark ground with the name in light, large text and the track's
+   colour only as a 4 px bar on its left edge (the group's colour stays on
+   the strip's top edge). v6 (the owner on v5's red muted look, #151,
+   26.10: what is switched off must not be the most striking thing):
+   muted, the strip RECEDES as today's surface does (strip.css: the
+   darker --panel-mute, the top edge at 0.3, the cap, the meter and the
+   readout at 0.4); the button goes darker than an unmuted one, its name
+   grey and of low contrast, its colour edge faded; only today's small MUTE
+   word in its corner, in grey; no fill colour, no badge, no strike. */
+.strip-head > .mute.calm {
+    background: #15151f;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--text);
+}
+
+.strip-head > .mute.calm::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 4px;
+    border-radius: 7px 0 0 7px;
+    background: var(--tc);
+}
+
+.strip-head > .mute.calm.muted {
+    background: #101018;
+    box-shadow: inset 0 0 0 1px var(--line-soft);
+    color: #55556e;
+}
+
+.strip-head > .mute.calm.muted::after {
+    opacity: 0.3;
+}
+
+.strip.muted .mute.calm {
+    opacity: 1;
+}
+
+/* --- NEW in v8: the head (the owner, #151, 26.10). The name button is
+   the strip's top edge: no padding above it (the strip's 5 px top padding
+   is gone), the strip's whole width (it reaches over the 4 px side
+   padding to the strip's 1 px edge), 37 px high, its top corners the
+   strip's. Read top-down: the NAME first, at the top, centred, large and
+   calm; under it, toward the button's bottom edge, ONE line of the
+   secondary marks, left to right: a problem's !, the linked mute's chain
+   and count, the fader link's mark, and the red MUTED word at the right
+   end. The readout line under the button is 20 px (the dB's 17 px line
+   fits). Head: 37 + 2 + 20 = 59 px, from the strip's top edge as today's
+   5 + 54. On a narrow strip the marks take their compact forms. */
+.strip.v8 {
+    padding-top: 0;
+}
+
+.strip.v8 .strip-head {
+    grid-template-rows: 37px 20px;
+}
+
+.strip.v8 .strip-info {
+    height: 20px;
+}
+
+.strip.v8 .strip-head > .mute.calm {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: space-between;
+    height: 37px;
+    margin: 0 -4px;
+    padding: 3px 3px 3px 7px;
+    border-radius: 8px 8px 5px 5px;
+}
+
+.strip.v8 .strip-head > .mute.calm::after {
+    width: 3px;
+    border-radius: 8px 0 0 5px;
+}
+
+.strip.v8 .strip-label {
+    height: 20px;
+    line-height: 20px;
+    text-align: center;
+}
+
+.marks {
+    display: flex;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    align-items: center;
+    gap: 16px 3px;
+    height: 10px;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+.marks .strip-flag {
+    width: 10px;
+    height: 10px;
+    margin: 0;
+    border-radius: 2px;
+    font: 800 8.5px/10px var(--ui);
+}
+
+.marks .mmark {
+    /* v8 (the owner: v7's red was still too loud): a muted, darker red of
+       lower contrast on the dimmed button, still read as red; 7 px, not
+       7.5 px. Text only. */
+    flex: none;
+    margin: 0 0 0 auto;
+    color: #a8474f;
+    font: 800 7px/10px var(--ui);
+    letter-spacing: 0.5px;
+}
+
+/* link.css (#127, #130), as today, on the marks line. */
+.link-mark {
+    --chain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='M6.4 9.6l3.2-3.2'/%3E%3Cpath d='M7.2 4.6l1.1-1.1a2.9 2.9 0 0 1 4.1 4.1l-1.1 1.1'/%3E%3Cpath d='M8.8 11.4l-1.1 1.1a2.9 2.9 0 0 1-4.1-4.1l1.1-1.1'/%3E%3C/svg%3E");
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 1px;
+    height: 10px;
+    padding: 0 3px 0 2px;
+    border-radius: 3px;
+    background: rgba(7, 7, 12, 0.66);
+    color: #b8b8c8;
+    font: 800 8.5px/10px var(--ui);
+    letter-spacing: 0.2px;
+}
+
+.link-mark::before {
+    content: "";
+    flex: none;
+    width: 8.5px;
+    height: 8.5px;
+    background: currentColor;
+    -webkit-mask: var(--chain) center / contain no-repeat;
+    mask: var(--chain) center / contain no-repeat;
+}
+
+.link-mark[data-state="muted"] { color: #ff5a67; }
+.link-mark[data-state="mixed"] { color: var(--warn); }
+.link-mark.flink { color: var(--accent); text-transform: none; }
+.link-mark.flink.follow { color: #d6d6e2; box-shadow: inset 0 0 0 1px var(--accent); }
+
+/* Narrow (under 78 px): the compact forms, as today's corner line. */
+.strip[data-narrow="true"] .link-mark {
+    gap: 0.5px;
+    padding: 0 2px 0 1.5px;
+    font-size: 7.5px;
+    letter-spacing: 0;
+}
+
+.strip[data-narrow="true"] .link-mark::before {
+    width: 7.5px;
+    height: 7.5px;
+}
+
+.strip[data-narrow="true"] .link-mark.flink .link-n {
+    display: none;
+}
+
+.strip[data-narrow="true"] .marks,
+.marks.crowd {
+    gap: 16px 2px;
+}
+
+.link-mark.bare .link-n {
+    display: none;
+}
+
+.link-mark.bare {
+    padding: 0 2px;
+}
+
+.strip[data-narrow="true"] .link-mark.flink.yield {
+    display: none;
+}
+
+.strip[data-narrow="true"] .marks .mmark {
+    letter-spacing: 0.3px;
+}
+
+.anat {
+    display: flex;
+    gap: 26px;
+    align-items: flex-start;
+}
+
+.anat-pair {
+    display: flex;
+    gap: 22px;
+    flex: none;
+    width: calc((83.16px * 2 + 22px) * 1.5);
+    height: calc(432px * 1.5);
+}
+
+.anat-scale {
+    display: flex;
+    gap: 22px;
+    height: 408px;
+    transform: scale(1.5);
+    transform-origin: 0 0;
+}
+
+.anat-col {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.anat-cap {
+    color: var(--muted);
+    font: 700 10px/1.2 var(--ui);
+    letter-spacing: 0.1em;
+    text-align: center;
+    text-transform: uppercase;
+}
+
+.anat ol {
+    margin: 0;
+    padding-left: 22px;
+}
+
+.samples2 {
+    display: flex;
+    gap: 6px;
+    height: 408px;
+    padding: 6px;
+    overflow-x: auto;
+    border-radius: 10px;
+    background: var(--page);
+}
+
+.caps2 {
+    display: flex;
+    gap: 6px;
+    padding: 0 6px;
+}
+
+.caps2 .sample-cap {
+    flex: none;
+}
+
+table.mtable td {
+    font-family: var(--mono);
+    font-size: 12.5px;
+}
+
+/* ===================== NEW in sectors v1 (#148) ===================== */
+
+/* The LUFS as released in 1.20.0 (strip.css `.lufs`): one decimal, sized
+   to fit `−25.9` in the info column at every strip width; calm grey, an
+   input within ±1 LU of its target in trueLevel's green; `−∞` in silence. */
+.lpill.r120 {
+    color: #6e6e88;
+    font-size: clamp(6.5px, calc((var(--strip-w, 76px) - 38px - var(--cap-w) / 2) / 3.4), 10.5px);
+}
+
+.lpill.r120[data-l="in"] {
+    color: #2fc79a;
+}
+
+.lpill.r120[data-l="none"] {
+    visibility: hidden;
+}
+
+/* The app's tabs (style.css `.seg`, `.tab`; page.css `.column .seg`). */
+.seg {
+    display: grid;
+    flex: none;
+    gap: 2px;
+    padding: 3px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--track);
+}
+
+.tab {
+    padding: 7px 3px;
+    border: 0;
+    border-radius: 7px;
+    background: none;
+    color: var(--muted);
+    font: 700 11px/1 var(--ui);
+    letter-spacing: 0.4px;
+    text-align: center;
+    text-transform: uppercase;
+    white-space: nowrap;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.tab.selected {
+    background: var(--panel-hi);
+    color: var(--text);
+    box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.seg.pages {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+/* The column (page.css `.column`), the app's 132 px. */
+.body2 > .column.app {
+    position: relative;
+    z-index: 10;
+    gap: 8px;
+    padding: 8px 6px;
+    background: var(--bar);
+    border: 1px solid var(--line-soft);
+    border-radius: 12px;
+}
+
+.status {
+    display: flex;
+    flex: none;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 4px 8px;
+    color: var(--muted);
+    font: 600 11px/1 var(--ui);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.status .drop {
+    min-width: 24px;
+    padding: 4px 6px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--track);
+    font: 600 12px/1 var(--mono);
+    letter-spacing: 0;
+    text-align: center;
+}
+
+.status .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.status .badge::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--m-green);
+}
+
+.status .ver {
+    color: var(--faint);
+    font: 500 10px/1.2 var(--mono);
+    letter-spacing: 0;
+    text-transform: none;
+}
+
+/* NEW: the sectors' switch. A 2 x 2 block that mirrors the screen: the
+   top-left cell pages the left-up sector, the top-right the right-up one,
+   the bottom row the lower line's two sectors. In each cell the sector's
+   layouts, one tab each; the shown one is marked as today's pager marks
+   its sub-page (the panel's lighter ground and a yellow underline), the
+   others are dim text, one tap away. A faint cross of 1 px parts the
+   cells. Nothing lights while idle. */
+.cap-title {
+    flex: none;
+    margin-bottom: -4px;
+    color: var(--faint);
+    font: 700 9px/11px var(--ui);
+    letter-spacing: 0.12em;
+    text-align: center;
+    text-transform: uppercase;
+}
+
+.sectors {
+    display: grid;
+    flex: none;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 1px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--line);
+}
+
+.sec-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    padding: 3px;
+    background: var(--track);
+}
+
+.sec-cell .tab {
+    padding: 8px 1px;
+    font-size: 10.5px;
+    letter-spacing: 0.2px;
+}
+
+.sec-cell .tab.selected {
+    box-shadow: inset 0 -2px 0 var(--solo);
+}
+
+/* The rail (page.css `.rail`, buttons.css `.btn`, rule.css). */
+.rail {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 0;
+}
+
+.rail-main {
+    display: grid;
+    flex: 1;
+    grid-template-columns: minmax(0, 1fr);
+    grid-auto-rows: minmax(24px, 44px);
+    align-content: start;
+    gap: 4px;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.btn {
+    --c: var(--accent);
+    position: relative;
+    display: grid;
+    align-content: center;
+    gap: 2px;
+    min-height: 0;
+    padding: 4px 4px 4px 14px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+    color: var(--muted);
+    font: 700 11.5px/1.15 var(--ui);
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.btn::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 5px;
+    width: 6px;
+    height: 6px;
+    margin-top: -3px;
+    border-radius: 50%;
+    background: var(--faint);
+}
+
+.btn.on {
+    border-color: color-mix(in srgb, var(--c) 55%, transparent);
+    background: color-mix(in srgb, var(--c) 18%, var(--panel));
+    color: var(--text);
+}
+
+.btn.on::before {
+    background: var(--c);
+    box-shadow: 0 0 8px var(--c);
+}
+
+.btn.aut { --c: #6d86ff; }
+
+.btn-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+}
+
+.aut-badge {
+    flex: none;
+    margin-left: auto;
+    padding: 0 4px;
+    border-radius: 4px;
+    background: var(--text);
+    color: #0b0b12;
+    font: 800 9.5px/13px var(--ui);
+    letter-spacing: 0.6px;
+}
+
+.btn-sub {
+    overflow: hidden;
+    color: var(--muted);
+    font: 600 9.5px/12px var(--ui);
+    letter-spacing: 0.2px;
+    text-overflow: ellipsis;
+    text-transform: none;
+}
+
+.btn.on .btn-sub { color: var(--text); }
+
+.rail-foot .btn {
+    min-height: 36px;
+}
+
+/* A sector: its strips from the screen's edge on the left (as today's
+   line starts), from the column on the right; one strip width for the
+   whole page, so paging never resizes anything. */
+.body2 > .side.sector {
+    justify-content: flex-start;
+}
+
+/* The sector just paged: a short, faint outline (mockup only, so the
+   reader sees what moved; the app would not draw it). */
+.sector.paged {
+    animation: paged 0.9s ease-out;
+}
+
+@keyframes paged {
+    from { box-shadow: 0 0 0 2px rgba(244, 211, 94, 0.45); }
+    to { box-shadow: 0 0 0 2px rgba(244, 211, 94, 0); }
+}
+
+.sector {
+    border-radius: 9px;
+}
+
+
+/* --- NEW (#148, the owner's refinement of 27.10): the sound engineer
+   arranges the faders himself on the tablet. WHICH layouts show a fader:
+   ticks in its channel detail (hold SEL). Their ORDER: ARRANGE in the
+   column, a reorder mode; tapped again, it ends and saves. --- */
+
+.arrange-btn {
+    flex: none;
+}
+
+.arrange-btn .tab {
+    width: 100%;
+}
+
+.arrange-btn .tab.selected {
+    box-shadow: inset 0 -2px 0 var(--solo);
+}
+
+.saved-note {
+    flex: none;
+    min-height: 11px;
+    margin-top: -4px;
+    color: var(--muted);
+    font: 600 9px/11px var(--ui);
+    letter-spacing: 0.04em;
+    text-align: center;
+}
+
+/* Reorder mode: what talks to Live goes inert. The page tabs, the layout
+   tabs and the rail dim and take no touches; every strip carries a layer
+   over its whole face (its name button, its fader, its SEL), so no touch
+   reaches a control: nothing in this mode can change a value in Live. */
+/* v2: the LAYOUTS block stays live in ARRANGE (it pages and edits
+   there); the page tabs, the undo key and the rail go inert. */
+.body2[data-arrange="true"] :is(.seg.pages, .rail, .undo-btn) {
+    opacity: 0.3;
+    pointer-events: none;
+}
+
+.body2[data-arrange="true"] .zone {
+    pointer-events: none;
+}
+
+.edit-cover {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    display: none;
+    border-radius: 9px;
+    box-shadow: inset 0 0 0 1.5px rgba(154, 154, 180, 0.55);
+    cursor: grab;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+.body2[data-arrange="true"] .edit-cover {
+    display: block;
+}
+
+.body2[data-arrange="true"] .strip > :not(.edit-cover) {
+    opacity: 0.45;
+}
+
+/* The handle: a grip in the middle of the fader zone (the fader itself
+   does not move). */
+.grip {
+    position: absolute;
+    top: 46%;
+    left: 50%;
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 54px;
+    margin: -27px 0 0 -20px;
+    border-radius: 9px;
+    background: #1d1d2c;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--muted);
+    font: 700 20px/1 var(--ui);
+}
+
+.grip small {
+    display: block;
+    margin-top: -6px;
+    font: 700 7.5px/1 var(--ui);
+    letter-spacing: 0.1em;
+}
+
+/* While a strip is carried: its place shows as an empty slot, the copy
+   under the finger follows it. */
+.strip.carried {
+    outline: 1.5px dashed var(--muted);
+    outline-offset: -2px;
+}
+
+.strip.carried > * {
+    visibility: hidden;
+}
+
+.ghost {
+    position: fixed;
+    z-index: 100;
+    pointer-events: none;
+    opacity: 0.9;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6), 0 0 0 1.5px var(--solo);
+}
+
+/* SEL (detail.css `.strip-sel`): a hold of 0.5 s fills the key and opens
+   the channel detail; a tap shows the hint. */
+.selbtn {
+    cursor: pointer;
+    touch-action: none;
+}
+
+.selkey {
+    position: relative;
+}
+
+.selkey::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 6px;
+    background: var(--accent);
+    opacity: 0.55;
+    transform: scaleY(0);
+    transform-origin: bottom;
+    pointer-events: none;
+}
+
+.selbtn[data-holding="true"] .selkey::before {
+    transform: scaleY(1);
+    transition: transform 500ms linear;
+}
+
+.selkey .pa {
+    position: relative;
+}
+
+.selbtn[data-hint="true"]::after {
+    content: "hold SEL\A for detail";
+    position: absolute;
+    left: 0;
+    bottom: calc(100% + 4px);
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--head-w);
+    height: 37px;
+    border-radius: 7px;
+    background: var(--accent);
+    color: #0b0b12;
+    font: 700 11px/1.15 var(--ui);
+    text-align: center;
+    white-space: pre;
+    pointer-events: none;
+}
+
+/* --- The channel detail (detail.css, the approved channel-detail-v2):
+   over the whole screen; the bar, the fader on the left, the EQ in the
+   middle, the pan on the right, and under the pan the NEW section
+   LAYOUTS: every sector's layouts, a tick each. --- */
+.detail {
+    --bar-h: 52px;
+    --chl: 230px;
+    --chr: 300px;
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--page);
+}
+
+.detail-bar {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 10px;
+    height: var(--bar-h);
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bar);
+}
+
+.detail-exit {
+    flex: none;
+    height: 100%;
+    padding: 0 14px;
+    border: 1px solid rgba(78, 205, 196, 0.55);
+    border-radius: 10px;
+    background: var(--panel);
+    color: var(--accent);
+    font: 700 15px/1.2 var(--display);
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.detail-name {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    min-width: 0;
+    padding-right: 140px;
+}
+
+.detail-chip {
+    flex: none;
+    max-width: 60%;
+    padding: 3px 12px;
+    overflow: hidden;
+    border-radius: 6px;
+    background: var(--tc, var(--accent));
+    color: var(--tt, #10101a);
+    font: 700 18px/1.3 var(--display);
+    letter-spacing: 0.03em;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.detail-sub {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--muted);
+    font: 600 12px/1.4 var(--mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.detail-body {
+    display: grid;
+    flex: 1;
+    grid-template-columns: var(--chl) minmax(0, 1fr) var(--chr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 10px;
+    min-height: 0;
+    padding: 10px;
+}
+
+.detail-box {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+    min-height: 0;
+    padding: 10px;
+    border-radius: 12px;
+    background: var(--panel);
+}
+
+.detail-left .dmute {
+    display: grid;
+    flex: none;
+    place-items: center;
+    height: 52px;
+    border-radius: 9px;
+    background: #181826;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--text);
+    font: 700 20px/1 var(--display);
+    letter-spacing: 0.08em;
+}
+
+.detail-left .dmute[data-muted="true"] {
+    background: var(--mute);
+    box-shadow: none;
+    color: #ffffff;
+}
+
+.detail-readout {
+    display: flex;
+    flex: none;
+    justify-content: center;
+}
+
+.detail-readout .db {
+    font-size: 26px;
+    line-height: 36px;
+}
+
+.detail-fz {
+    display: grid;
+    flex: 1;
+    grid-template-columns: 26px 10px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 6px;
+    min-height: 0;
+    padding: 18px 0 20px;
+}
+
+.detail-fz .scale { grid-area: 1 / 1; }
+.detail-fz .meter { grid-area: 1 / 2; }
+
+.detail-fz .fader {
+    grid-area: 1 / 1 / 2 / 4;
+    --x: calc(50% + 24px);
+}
+
+.detail-fz .tick {
+    font-size: 11px;
+    line-height: 14px;
+}
+
+.detail-fz .fader-groove,
+.detail-fz .fader-fill {
+    width: 8px;
+    margin-left: -4px;
+}
+
+.detail-fz .fader-cap {
+    --cap-w: 60px;
+    height: 34px;
+    margin: -17px 0 0 calc(var(--cap-w) / -2);
+    border-radius: 8px;
+}
+
+.detail-fz .fader-cap::before {
+    left: 12px;
+    right: 12px;
+}
+
+.detail-title {
+    margin: 0;
+    color: var(--faint);
+    font: 700 12px/1.3 var(--display);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.eq-ph {
+    display: grid;
+    flex: 1;
+    place-items: center;
+    border: 1px dashed var(--line);
+    border-radius: 10px;
+    color: var(--faint);
+    font: 600 12px/1.4 var(--ui);
+    text-align: center;
+}
+
+.pan {
+    --dot: 48px;
+    position: relative;
+    flex: none;
+    height: 64px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--track);
+}
+
+.pan-track {
+    position: absolute;
+    top: 10px;
+    bottom: 10px;
+    left: 50%;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--faint);
+}
+
+.pan-dot {
+    position: absolute;
+    top: 7px;
+    left: calc(0.5 * (100% - var(--dot)));
+    width: var(--dot);
+    height: var(--dot);
+    border-radius: 10px;
+    background: #8a8aa0;
+}
+
+.detail-pan-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    color: var(--muted);
+    font: 600 12px/1.4 var(--mono);
+    white-space: nowrap;
+}
+
+.detail-pan-value {
+    color: var(--text);
+    font: 600 20px/1.3 var(--mono);
+}
+
+.detail-centre {
+    flex: none;
+    min-height: 44px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #181826;
+    color: var(--text);
+    font: 700 15px/1.2 var(--display);
+    letter-spacing: 0.08em;
+}
+
+/* NEW: the layouts this fader shows in. A line per sector, in the
+   column's 2 x 2 order; a tick per layout; ticked: the panel's lighter
+   ground, the box filled in the accent; unticked: dim text. A layout with
+   no room (six faders on the iPad) cannot be ticked: FULL. */
+.lay-sec {
+    margin-top: 6px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+}
+
+.lay-group {
+    display: grid;
+    gap: 4px;
+}
+
+.lay-where {
+    color: var(--muted);
+    font: 700 10px/1.2 var(--ui);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.lay-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+}
+
+.tick-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    min-height: 40px;
+    padding: 0 6px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #181826;
+    color: var(--muted);
+    font: 700 11px/1 var(--ui);
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.tick-btn .box {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: 1.5px solid var(--faint);
+    border-radius: 4px;
+    background: none;
+    color: #07131a;
+    font: 800 12px/1 var(--ui);
+}
+
+.tick-btn .tname {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tick-btn[aria-checked="true"] {
+    background: var(--panel-hi);
+    color: var(--text);
+}
+
+.tick-btn[aria-checked="true"] .box {
+    border-color: var(--accent);
+    background: var(--accent);
+}
+
+.tick-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.tick-btn .tcol {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+}
+
+.tick-btn small {
+    overflow: hidden;
+    color: var(--faint);
+    font: 700 8px/1 var(--ui);
+    letter-spacing: 0.04em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.lay-note {
+    color: var(--faint);
+    font: 600 10.5px/1.35 var(--ui);
+}
+
+/* ===================== NEW in sectors v2 (#148) ===================== */
+
+/* ARRANGE and the undo key share a row (as shipped, sectors.css). */
+.sector-actions {
+    display: grid;
+    flex: none;
+    grid-template-columns: minmax(0, 1fr) 40px;
+    gap: 4px;
+}
+
+.undo-btn {
+    min-width: 0;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--track);
+    color: var(--text);
+    font: 700 16px/1 var(--ui);
+    cursor: pointer;
+    touch-action: manipulation;
+}
+
+.undo-btn[aria-disabled="true"] {
+    color: var(--faint);
+    cursor: default;
+}
+
+/* Slots: an empty slot is a strip's width of empty space. Only in ARRANGE
+   it is drawn, as a calm dashed outline; the trailing cells up to the
+   sector's room appear there too. */
+.slot-gap {
+    flex: none;
+    width: var(--strip-w, 76px);
+    border-radius: 9px;
+}
+
+.body2[data-arrange="true"] .slot-gap {
+    outline: 1.5px dashed rgba(154, 154, 180, 0.3);
+    outline-offset: -2px;
+}
+
+/* Where the carried strip lands (only while dragging). */
+.sector > .drop-target {
+    outline: 2px solid rgba(244, 211, 94, 0.7);
+    outline-offset: -2px;
+}
+
+/* The LAYOUTS block in ARRANGE: under each tab a line of two small keys,
+   pencil and cross, dim text; then the cell's + . Nothing is filled. */
+.lay-ed {
+    display: grid;
+    gap: 1px;
+}
+
+.lay-tools {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+    gap: 2px;
+}
+
+.tool,
+.tab-add {
+    min-width: 0;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    box-shadow: inset 0 0 0 1px var(--line-soft);
+    color: var(--faint);
+    font: 700 12px/1 var(--ui);
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.tab-add {
+    margin-top: 2px;
+    box-shadow: none;
+    outline: 1px dashed var(--line);
+    outline-offset: -1px;
+    font-size: 15px;
+}
+
+/* Remove, first tap: the tab itself asks; red text and a thin red edge,
+   no fill. */
+.sec-cell .tab.confirm {
+    background: none;
+    box-shadow: inset 0 0 0 1px rgba(230, 57, 70, 0.6);
+    color: #ff5a67;
+    font-size: 10px;
+    letter-spacing: 0;
+}
+
+.sec-cell .tab.confirm + .lay-tools .tool.x {
+    color: #ff5a67;
+}
+
+/* Rename: the tab becomes a text field (the iPad's keyboard comes up). */
+.tab-input {
+    width: 100%;
+    min-width: 0;
+    height: 22px;
+    padding: 0;
+    border: 1px solid var(--accent);
+    border-radius: 7px;
+    outline: none;
+    background: var(--page);
+    color: var(--text);
+    font: 700 10px/1 var(--ui);
+    letter-spacing: 0;
+    text-align: center;
+    text-transform: uppercase;
+}
+
+/* In ARRANGE the tabs are a little lower, so four layouts with their keys
+   still fit the column. */
+.body2[data-arrange="true"] .sec-cell .tab {
+    padding: 6px 1px;
+}
+</style>
+</head>
+<body>
+<div class="sheet">
+    <div class="overline">fohmixer #148 · sektory: voľné miesta v rozložení, premenovanie / pridanie / zmazanie rozložení · návrh v2 na schválenie</div>
+    <h1>Sektory v2: miesta s medzerami a úprava rozložení v ARRANGE</h1>
+    <p><b>Čo skúsiť:</b> ťukni na <code>ARRANGE</code>. Každý sektor ukáže všetky svoje miesta, prázdne ako tiché čiarkované rámiky. <b>Potiahni pás na prázdne miesto</b>: presunie sa tam a po ňom ostane medzera. <b>Pusti ho na iný pás</b>: vymenia sa. Vpravo hore (MAIN) je <code>Band</code> úplne pri pravom okraji a pred ním dve voľné miesta. V bloku LAYOUTS má v ARRANGE každé rozloženie pod sebou <b>✎</b> (premenovať: políčko na text, najviac 8 znakov, veľké písmená, Enter alebo ťuk vedľa potvrdí) a <b>✕</b> (zmazať: prvý ťuk zmení záložku na červené <code>REMOVE?</code>, druhý ťuk na ňu ho zmaže, ťuk inam to zruší). Posledné rozloženie sektora ✕ nemá. <b>+</b> v bunke pridá prázdne rozloženie <code>NEW</code> a hneď ho ukáže. Ťuk na meno rozloženia aj v ARRANGE prepne sektor, aby si mohol upraviť každé rozloženie. Druhý ťuk na ARRANGE všetko uloží naraz a <b>↶</b> vedľa neho to celé vráti jedným krokom (ďalší ↶ zmenu vráti späť). Funguje myšou aj dotykom.</p>
+    <p class="measure" id="measure-top"></p>
+
+    <h2>1 · iPad Pro 11 na šírku (1194 × 834, 1 : 1), stránka FOH — skús ARRANGE, ťahaj, ✎ ✕ +</h2>
+    <div class="wrap"><div class="device ipad" id="ipad"></div></div>
+
+    <h2>Čo sa zmenilo oproti v1</h2>
+    <div class="box">
+        <ul>
+            <li><b>Rozloženie je rad miest</b> a miesto môže byť prázdne. Mimo ARRANGE je prázdne miesto len voľný priestor (nič sa nekreslí), takže pás môže stáť kdekoľvek v sektore, aj pri jeho vzdialenom okraji. Prázdne miesto sa počíta ako jeden pás do plného sektora (6).</li>
+            <li><b>ARRANGE:</b> pás sa už neradí medzi ostatné, ale padne <b>presne na miesto</b>, kam ho pustíš (prázdne: presun, iný pás: výmena).</li>
+            <li><b>Blok LAYOUTS v ARRANGE nie je stlmený</b>: prepína sektory a má ✎, ✕ a +. Mimo ARRANGE iba listuje, presne ako vo v1.</li>
+            <li><b>Zaškrtnutie v detaile kanála</b> dá pás na prvé prázdne miesto rozloženia, inak na koniec.</li>
+            <li>Vedľa ARRANGE je <b>↶</b> ako v aplikácii (1.23.0); jedno uloženie ARRANGE (poradie aj mená, nové aj zmazané rozloženia) je jeden krok.</li>
+            <li>Ostáva: nad fadrami nič, dráha <b>322 px</b>, tichý vzhľad (vedľajšie veci tlmený text, nič vyplnené), vybrané rozloženie označené ako doteraz.</li>
+        </ul>
+    </div>
+
+    <h2>Otvorené detaily</h2>
+    <div class="box">
+        <ul>
+            <li><b>Zmazané rozloženie</b> nič neskryje ani nezmení v Live; jeho pásy ostávajú v ostatných rozloženiach, kde sú zaškrtnuté.</li>
+            <li><b>Najviac 4 rozloženia na sektor</b> (potom + zmizne), aby sa blok v ARRANGE zmestil do stĺpca; dnes ich máš najviac 3.</li>
+            <li><b>Prázdne miesta na konci</b> sa pri uložení zahodia (nič nemenia). Rovnaké meno dvoch rozložení v jednom sektore stránka dovolí; ak chceš, zakážem ho.</li>
+            <li>✎ a ✕ sú malé (24 px vysoké), aby blok ostal tichý; ak sa ti budú zle trafiť, zväčším ich.</li>
+        </ul>
+        <table class="legend mtable" id="measure"></table>
+    </div>
+
+    <h2>Otázka na schválenie</h2>
+    <div class="q">
+        <p><b>Je úprava rozložení v ARRANGE takto (✎ premenovať, ✕ s potvrdením zmazať, + pridať NEW, všetko uložené druhým ťukom na ARRANGE ako jeden krok ↶) v poriadku?</b></p>
+    </div>
+</div>
+
+<script>
+"use strict";
+// Live's volume taper (behave/fader.rs value2db) and the position of `db`.
+function value2db(v) {
+    if (v > 1) return 0;
+    if (v >= 0.4) return 40 * v - 34;
+    if (v >= 0.15) return -((399.751894 * v - 201.871345) ** 2 + 12630.61132) / 799.503788;
+    const db = 118.426374 * v ** (5567 / 7504) - 70;
+    return db <= -70 ? -Infinity : db;
+}
+function posOf(db) {
+    if (db === -Infinity || db <= -70) return 0;
+    let low = 0, high = 1;
+    for (let i = 0; i < 14; i++) {
+        const mid = (low + high) / 2;
+        if (value2db(mid) < db) low = mid; else high = mid;
+    }
+    return (low + high) / 2;
+}
+const UNITY = 0.85;
+const TODAY_IPAD = 322; // the deployed FOH page's fader travel (#127)
+const STRIP_W = 83.16; // the app's strip width on the iPad's FOH page
+const GAP = 4; // arrange.rs METRICS.gap
+const NARROW_BELOW = 78;
+const HOLD_MS = 500; // SEL's hold, as today
+const TICKS = [6, 0, -6, -12, -18, -24, -30, -40, -60];
+const tickLabel = (db) => (db > 0 ? "+" + db : db < 0 ? "−" + -db : "0");
+const dbText = (db) => (db === -Infinity ? "−∞" : db === 0 ? "0.0" : (db < 0 ? "−" + (-db).toFixed(1) : db.toFixed(1)));
+const ZONES = `--yellow:${(posOf(-12) * 100).toFixed(2)}%;--red:${(posOf(-3) * 100).toFixed(2)}%;`;
+
+// 1.20.0 (the owner, 27.10 evening, like trueLevel): one decimal, `−∞` in
+// silence; an input within ±1 LU of its target green, else calm grey.
+function judge(v, target) {
+    if (v === null) return { l: "none", text: "" };
+    if (v <= -70) return { l: "plain", text: "−∞" };
+    const t = (v < 0 ? "−" : "") + Math.abs(v).toFixed(1);
+    if (target != null && Math.abs(v - target) <= 1) return { l: "in", text: t };
+    return { l: "plain", text: t };
+}
+
+function textOn(hex) {
+    const lin = (c) => { c /= 255; return c <= 10 / 255 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+    const n = parseInt(hex.slice(1), 16);
+    const l = 0.2126 * lin((n >> 16) & 255) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
+    return l > 0.179 ? "#10101a" : "#f4f4fa";
+}
+
+function el(tag, cls, attrs = {}) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    for (const [k, v] of Object.entries(attrs)) {
+        if (k === "text") e.textContent = v; else e.setAttribute(k, v);
+    }
+    return e;
+}
+
+function linkMark(cls, state, n) {
+    const k = el("span", cls, state ? { "data-state": state } : {});
+    k.append(el("span", "link-n", { text: n }));
+    return k;
+}
+
+// v9's name button (v8's head): the name, then one line of marks.
+function muteButton(m) {
+    const b = el("div", m.muted ? "mute calm muted" : "mute calm", { style: `--tc:${m.tc};` });
+    b.append(el("span", "strip-label", { text: m.name, style: `--n:${[...m.name].length};` }));
+    const count = [m.flag, m.link, m.flink, m.muted].filter(Boolean).length;
+    const line = el("span", count >= 4 ? "marks crowd" : "marks");
+    if (m.flag) line.append(el("span", "strip-flag", { text: "!" }));
+    if (m.link) line.append(linkMark(m.muted ? "link-mark bare" : "link-mark", m.link[0], m.link[1]));
+    if (m.flink) {
+        const fc = ["link-mark", "flink"];
+        if (m.flink === "follow") fc.push("follow");
+        if (count >= 3) fc.push("bare");
+        line.append(linkMark(fc.join(" "), null, "dB"));
+    }
+    if (m.muted) line.append(el("span", "mmark", { text: "MUTED" }));
+    b.append(line);
+    return b;
+}
+
+function stripHead(m) {
+    const h = el("div", "strip-head");
+    const info = el("div", "strip-info nomenu");
+    const readout = el("div", "strip-readout");
+    readout.append(el("span", m.db === 0 ? "db unity" : "db", { text: dbText(m.db) }));
+    info.append(readout);
+    h.append(muteButton(m), info);
+    return h;
+}
+
+function bar2(db, pk) {
+    const b = el("div", "bar2");
+    const cover = el("div", "meter-cover", { style: `transform:scaleY(${(1 - posOf(db)).toFixed(4)});` });
+    cover.dataset.db = String(db);
+    b.append(el("div", "meter-zones", { style: ZONES }), cover);
+    if (pk > -70) b.append(el("div", "meter-peak", { style: `--pk:${posOf(pk).toFixed(4)};` }));
+    return b;
+}
+
+// SEL: a hold of 0.5 s opens the channel detail (F27); a tap shows the
+// hint for a moment.
+function selButton(name) {
+    const b = el("div", "selbtn", { "data-testid": "sel" });
+    const k = el("div", "selkey");
+    k.append(el("span", "pa", { text: "SEL" }));
+    b.append(k);
+    let timer = null;
+    const stop = () => { clearTimeout(timer); timer = null; b.dataset.holding = "false"; };
+    b.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        b.setPointerCapture(e.pointerId);
+        b.dataset.holding = "true";
+        timer = setTimeout(() => { stop(); openDetail(name); }, HOLD_MS);
+    });
+    b.addEventListener("pointerup", () => {
+        if (!timer) return;
+        stop();
+        b.dataset.hint = "true";
+        setTimeout(() => { b.dataset.hint = "false"; }, 1200);
+    });
+    b.addEventListener("pointercancel", stop);
+    return b;
+}
+
+// v9's fader zone with 1.20.0's LUFS; no group name on the side (#148: a
+// sector layout is a list of faders, its name is in the column).
+function zone(m) {
+    const fz = el("div", "fz2");
+    const z = el("div", "zone", { style: `--p:${posOf(m.db).toFixed(4)};--u:${UNITY};`, "data-held": "false" });
+    const info = el("div", "info");
+    const has = "lufs" in m;
+    const j = has ? judge(m.lufs, m.target) : null;
+    const shown = has && j.l !== "none";
+    info.append(el("div", shown ? "cap-lbl" : "cap-lbl empty", { text: "LUFS" }));
+    info.append(el("div", shown ? "cap-lbl cap-kind" : "cap-lbl cap-kind empty", { text: has && m.target == null ? "OUT" : "IN" }));
+    info.append(has ? el("div", "lpill r120", { "data-l": j.l, text: j.text }) : el("div", "lpill r120 empty", { text: "−25.0" }));
+    const scale = el("div", "scale2");
+    for (const db of TICKS) {
+        scale.append(el("span", db === 0 ? "t2 unity-t" : "t2", { text: tickLabel(db), style: `top:${((1 - posOf(db)) * 100).toFixed(3)}%;` }));
+    }
+    const track = el("div", "track");
+    const pkOf = (lvl) => (m.pk >= lvl ? Math.min(m.pk, lvl + 4) : lvl);
+    track.append(bar2(m.L, pkOf(m.L)), bar2(m.R, pkOf(m.R)));
+    const rail = el("div", "rail2");
+    rail.append(el("div", "cap2"));
+    z.append(el("div", "unity"), info, scale, track, rail, selButton(m.name));
+    fz.append(z);
+    return fz;
+}
+
+// --- The tracks (invented, no site data) ---
+// db: the fader; L/R: the meter (dB); pk: the peak line; lufs/target: a
+// +LUFS strip (a target: IN, none: OUT).
+const TRACKS = {};
+function T(name, tc, db, L, R, pk, more = {}) {
+    TRACKS[name] = { name, tc, db, L, R, pk, ...more };
+}
+const VOXC = ["#FF94A6", "#FFA529", "#F7F47C", "#BFFB00", "#87FF67", "#3DC300"];
+[[-25.4, 0, -14, { link: ["play", "2"] }], [-21.3, -1.5, -10, { link: ["play", "2"] }], [-32.9, -3, -24], [-70, -2, -62], [-24.3, -4.5, -15], [-27.8, -6, -19]]
+    .forEach(([lufs, db, lvl, more = {}], i) => T("Vox " + (i + 1), VOXC[i], db, lvl, lvl, lvl + 5, { lufs, target: -25, ...more }));
+T("Choir S", "#D86CE4", -6, -22, -22, -17); T("Choir A", "#D86CE4", -6, -24, -24, -19);
+T("Choir T", "#B677C6", -8, -26, -26, -20); T("Choir B", "#B677C6", -8, -25, -25, -20);
+T("Vocals", "#FFA529", -2, -11, -12, -6, { lufs: -18.4, target: null });
+T("Backing", "#E553A0", -5, -16, -15, -11, { lufs: -22.0, target: null });
+T("Lectern", "#C4C4C4", -3, -16, -16, -11, { lufs: -24.6, target: -25 });
+T("Hand 1", "#FFF034", -6, -30, -30, -24); T("Hand 2", "#FFF034", -Infinity, -70, -70, -70);
+T("Headset", "#FFF034", -4, -70, -70, -70, { muted: true });
+T("Klavir", "#5ECBF1", -12.8, -20, -21, -14, { muted: true }); T("Keys", "#5ECBF1", -8, -10, -27, -7);
+T("Pad", "#D86CE4", -12, -28, -27, -22); T("Organ", "#8BC5FF", -10, -24, -23, -18);
+T("Reverb PA", "#8BC5FF", -9, -26, -24, -19); T("Reverb Str", "#8BC5FF", -9.8, -27, -26, -20, { flink: "follow" });
+T("Delay", "#8BC5FF", -14, -33, -31, -26); T("Plate", "#8BC5FF", -12, -30, -29, -24); T("Doubler", "#5ECBF1", -16, -36, -35, -30);
+T("Drums", "#FF9B5E", 0, -1, -0.5, -0.5); T("Bass", "#5ECBF1", -4, -12, -12, -8);
+T("Gtr 1", "#8BC5FF", -10, -25, -14, -12); T("Gtr 2", "#8BC5FF", -10, -16, -24, -12);
+T("Tracks", "#E553A0", -6, -15, -15, -10); T("Click", "#C4C4C4", -20, -70, -70, -70, { muted: true, link: ["muted", "2"] });
+T("Kick", "#FF9B5E", -3, -6, -6, -2); T("Snare", "#FF9B5E", -5, -9, -9, -4); T("Hi-Hat", "#FFA529", -12, -24, -24, -18);
+T("Tom 1", "#FF9B5E", -8, -40, -40, -30); T("Tom 2", "#FF9B5E", -8, -45, -45, -33); T("OH", "#FFA529", -9, -18, -17, -12);
+T("Claps", "#A6BE00", -10, -22, -22, -15); T("Riser", "#A6BE00", -12, -70, -70, -70); T("Media", "#E553A0", -12, -22, -21, -15);
+T("Talk", "#C4C4C4", -8, -70, -70, -70, { muted: true, flag: true }); T("FX Send", "#8BC5FF", -6, -30, -30, -24);
+T("Sub", "#A6BE00", -4, -14, -14, -9); T("Fill L", "#A6BE00", -6, -16, -70, -11); T("Fill R", "#A6BE00", -6, -70, -16, -11);
+T("Band", "#FF9B5E", -3, -10, -10, -6);
+T("Stream", "#8BC5FF", -3, -13, -14, -8, { flink: "lead" }); T("PA Out", "#C4C4C4", 0, -8, -9, -4, { lufs: -17.8, target: null, wide: true });
+
+// --- The sectors: each a list of named layouts (a layout: the faders'
+// names, in order) and which one this iPad shows. Column order: lu, ru /
+// ld, rd. The layouts are what the hub would keep; the shown one is this
+// device's own. ---
+const ORDER = ["lu", "ru", "ld", "rd"];
+const META = {
+    lu: { name: "left up", row: 1, side: "left" },
+    ru: { name: "right up", row: 1, side: "right" },
+    ld: { name: "left down", row: 2, side: "left" },
+    rd: { name: "right down", row: 2, side: "right" },
+};
+const state = {
+    lu: { show: 0, layouts: [
+        { name: "VOCALS", list: ["Vox 1", "Vox 2", "Vox 3", "Vox 4", "Vox 5", "Vox 6"] },
+        { name: "CHOIR", list: ["Choir S", "Choir A", "Choir T", "Choir B", "Vocals", "Backing"] },
+        { name: "SPEECH", list: ["Lectern", "Hand 1", "Hand 2", "Headset"] },
+    ] },
+    ru: { show: 0, layouts: [
+        // v2: a row of slots; null is an empty slot (BAND at the right edge).
+        { name: "MAIN", list: ["Keys", "Pad", "Tracks", null, null, "Band"] },
+        { name: "RETURNS", list: ["Reverb PA", "Reverb Str", "Delay", "Plate", "Doubler"] },
+    ] },
+    ld: { show: 0, layouts: [
+        { name: "BAND", list: ["Drums", "Bass", "Gtr 1", "Gtr 2", "Tracks", "Click"] },
+        { name: "DRUMS", list: ["Kick", "Snare", "Hi-Hat", "Tom 1", "Tom 2", "OH"] },
+    ] },
+    rd: { show: 1, layouts: [
+        { name: "FX", list: ["Claps", "Riser", "Media", "Talk", "FX Send"] },
+        { name: "OUTPUTS", list: ["Sub", "Fill L", "Fill R", "Stream", "PA Out"] },
+    ] },
+};
+const cur = (id) => state[id].layouts[state[id].show];
+
+// The room of a sector (px) and what a list of faders takes of it.
+let SIDE_W = 519;
+// An empty slot (null) takes a strip's width (one unit toward FULL).
+const widthOf = (list) => list.reduce((w, n) => w + (n && TRACKS[n].wide ? STRIP_W * 1.1 : STRIP_W), 0) + Math.max(0, list.length - 1) * GAP;
+const MAX_LAYOUTS = 4;
+const NAME_MAX = 8;
+// The cells a sector shows in ARRANGE: its slots, then empty cells while
+// another strip's width still fits.
+function cellsOf(list) {
+    const cells = [...list];
+    while (fitsIn([...cells, null])) cells.push(null);
+    return cells;
+}
+const trimmed = (list) => { const l = [...list]; while (l.length && l[l.length - 1] === null) l.pop(); return l; };
+const fitsIn = (list) => widthOf(list) <= SIDE_W + 0.5;
+
+// --- Rendering ---
+function strip(name) {
+    const m = TRACKS[name];
+    const cls = ["strip", "one", "v8"];
+    if (m.wide) cls.push("wide");
+    if (m.muted) cls.push("muted");
+    const s = el("div", cls.join(" "), { "data-name": m.name });
+    if ("lufs" in m) s.dataset.lufs = "true";
+    s.dataset.narrow = STRIP_W < NARROW_BELOW ? "true" : "false";
+    const cover = el("div", "edit-cover", { "data-testid": "edit-cover" });
+    const grip = el("div", "grip");
+    grip.append("⠿", el("small", "", { text: "DRAG" }));
+    cover.append(grip);
+    cover.addEventListener("pointerdown", (e) => startCarry(e, s));
+    s.append(stripHead(m), zone(m), cover);
+    return s;
+}
+
+function renderSector(id, flash = false) {
+    const box = document.querySelector(`.sector[data-sector="${id}"]`);
+    const list = arranging ? cellsOf(cur(id).list) : cur(id).list;
+    box.replaceChildren(...list.map((n) => (n === null ? el("div", "slot-gap", { "data-testid": "slot-gap" }) : strip(n))));
+    box.dataset.layout = cur(id).name;
+    if (flash) {
+        box.classList.remove("paged");
+        void box.offsetWidth;
+        box.classList.add("paged");
+    }
+}
+
+// Outside ARRANGE a cell only pages (v1). In ARRANGE each tab gets ✎ and
+// ✕ under it (no ✕ on a sector's last layout) and the cell a + .
+let editing = null, confirming = null; // { id, i }
+const isAt = (x, id, i) => x && x.id === id && x.i === i;
+function renderCell(id) {
+    const cell = document.querySelector(`.sec-cell[data-sector="${id}"]`);
+    const ls = state[id].layouts;
+    const tabs = ls.map((l, i) => {
+        const on = i === state[id].show;
+        if (arranging && isAt(editing, id, i)) {
+            const inp = el("input", "tab-input", { type: "text", maxlength: String(NAME_MAX), value: l.name, "data-testid": "rename-input", "aria-label": "layout name", autocapitalize: "characters", spellcheck: "false" });
+            inp.addEventListener("input", () => {
+                const v = inp.value.toUpperCase().slice(0, NAME_MAX);
+                if (v !== inp.value) inp.value = v;
+            });
+            let done = false;
+            const finish = (keep) => {
+                if (done) return;
+                done = true;
+                const v = inp.value.trim().toUpperCase().slice(0, NAME_MAX);
+                if (keep && v) l.name = v;
+                editing = null;
+                renderCell(id);
+                renderSector(id);
+            };
+            inp.addEventListener("keydown", (e) => { if (e.key === "Enter") finish(true); if (e.key === "Escape") finish(false); });
+            inp.addEventListener("blur", () => finish(true));
+            const w = el("div", "lay-ed");
+            w.append(inp);
+            return w;
+        }
+        const ask = arranging && isAt(confirming, id, i);
+        const t = el("button", ask ? "tab confirm" : on ? "tab selected" : "tab", { "data-layout": l.name, "data-i": String(i), type: "button", text: ask ? "REMOVE?" : l.name, "aria-pressed": on ? "true" : "false" });
+        t.addEventListener("click", () => {
+            if (ask) { removeLayout(id, i); return; }
+            confirming = null;
+            page(id, i, true);
+        });
+        if (!arranging) return t;
+        const w = el("div", "lay-ed");
+        const tools = el("div", "lay-tools");
+        const pen = el("button", "tool pen", { type: "button", text: "✎", "aria-label": "rename " + l.name, "data-testid": "rename" });
+        pen.addEventListener("click", () => { confirming = null; editing = { id, i }; renderAllCells(); const f = cell.querySelector(".tab-input"); f.focus(); f.select(); });
+        tools.append(pen);
+        if (ls.length > 1) {
+            const x = el("button", "tool x", { type: "button", text: "✕", "aria-label": "remove " + l.name, "data-testid": "remove" });
+            x.addEventListener("click", () => { confirming = ask ? null : { id, i }; renderAllCells(); });
+            tools.append(x);
+        }
+        w.append(t, tools);
+        return w;
+    });
+    if (arranging && ls.length < MAX_LAYOUTS) {
+        const add = el("button", "tab-add", { type: "button", text: "+", "aria-label": "add a layout", "data-testid": "add-layout" });
+        add.addEventListener("click", () => addLayout(id));
+        tabs.push(add);
+    }
+    cell.replaceChildren(...tabs);
+}
+const renderAllCells = () => { for (const id of ORDER) renderCell(id); };
+
+function newName(id) {
+    const taken = new Set(state[id].layouts.map((l) => l.name));
+    if (!taken.has("NEW")) return "NEW";
+    let k = 2;
+    while (taken.has("NEW " + k)) k++;
+    return "NEW " + k;
+}
+
+function addLayout(id) {
+    confirming = null;
+    state[id].layouts.push({ name: newName(id), list: [] });
+    page(id, state[id].layouts.length - 1, true);
+}
+
+function removeLayout(id, i) {
+    const s = state[id];
+    if (s.layouts.length <= 1) return;
+    s.layouts.splice(i, 1);
+    if (s.show > i || s.show >= s.layouts.length) s.show = Math.max(0, s.show - 1);
+    confirming = null;
+    page(id, s.show, true);
+}
+
+// A tap anywhere else drops a pending REMOVE?.
+addEventListener("pointerdown", (e) => {
+    if (!confirming || e.target.closest(".tab.confirm, .tool.x")) return;
+    confirming = null;
+    renderAllCells();
+}, true);
+
+// Paging a sector rebuilds THAT sector's strips and THAT cell's tabs;
+// nothing else is touched.
+function page(id, i, flash = false) {
+    state[id].show = i;
+    renderCell(id);
+    renderSector(id, flash);
+}
+
+// --- ARRANGE: the slots, and the layouts' names, added and removed ---
+let arranging = false, before = null, bodyEl, arrBtn, noteEl, undoBtn;
+// The hub's one step back: the version before the last saved change (a
+// second ↶ swaps it back, as shipped).
+let undoTo = null;
+function setArrange(on) {
+    if (on === arranging) return;
+    arranging = on;
+    editing = null;
+    confirming = null;
+    bodyEl.dataset.arrange = on ? "true" : "false";
+    arrBtn.classList.toggle("selected", on);
+    arrBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    if (on) {
+        before = JSON.stringify(state);
+        noteEl.textContent = "drag · ✎ ✕ + · tap to save";
+    } else {
+        for (const id of ORDER) for (const l of state[id].layouts) l.list = trimmed(l.list);
+        const changed = JSON.stringify(state) !== before;
+        if (changed) undoTo = before;
+        before = null;
+        noteEl.textContent = changed ? "saved · one ↶ step" : "";
+        if (changed) setTimeout(() => { if (!arranging) noteEl.textContent = ""; }, 4000);
+        setUndo();
+    }
+    for (const id of ORDER) { renderCell(id); renderSector(id); }
+}
+
+function setUndo() {
+    undoBtn.setAttribute("aria-disabled", undoTo ? "false" : "true");
+}
+
+function undo() {
+    if (!undoTo || arranging) return;
+    const now = JSON.stringify(state);
+    const back = JSON.parse(undoTo);
+    for (const id of ORDER) {
+        const show = Math.min(state[id].show, back[id].layouts.length - 1);
+        state[id] = { ...back[id], show };
+    }
+    undoTo = now;
+    noteEl.textContent = "";
+    for (const id of ORDER) { renderCell(id); renderSector(id, true); }
+}
+
+// A strip from cell i onto cell j of its sector: an empty cell takes it and
+// i is left empty; a strip there swaps with it.
+function moveSlot(id, i, j) {
+    const cells = cellsOf(cur(id).list);
+    [cells[i], cells[j]] = [cells[j], cells[i]];
+    cur(id).list = cells;
+    renderSector(id);
+}
+
+// Dragging a strip onto a cell of its sector (pointer events: mouse, pen,
+// touch). The strip stays put; the cell under the finger is marked; the
+// drop moves or swaps.
+let carry = null;
+function startCarry(e, s) {
+    if (!arranging || e.button > 0) return;
+    e.preventDefault();
+    const r = s.getBoundingClientRect();
+    carry = { s, box: s.parentElement, id: e.pointerId, x0: e.clientX, y0: e.clientY, dx: e.clientX - r.left, dy: e.clientY - r.top, ghost: null, target: null };
+    addEventListener("pointermove", moveCarry);
+    addEventListener("pointerup", endCarry);
+    addEventListener("pointercancel", endCarry);
+}
+
+function cellAt(box, x) {
+    return [...box.children].find((c) => { const r = c.getBoundingClientRect(); return x >= r.left - GAP / 2 && x < r.right + GAP / 2; }) || null;
+}
+
+function moveCarry(e) {
+    if (!carry || e.pointerId !== carry.id) return;
+    if (!carry.ghost) {
+        if (Math.hypot(e.clientX - carry.x0, e.clientY - carry.y0) < 6) return;
+        const r = carry.s.getBoundingClientRect();
+        const g = carry.s.cloneNode(true);
+        g.classList.add("ghost");
+        g.style.width = r.width + "px";
+        g.style.height = r.height + "px";
+        g.style.setProperty("--strip-w", STRIP_W + "px");
+        document.body.append(g);
+        carry.ghost = g;
+        carry.s.classList.add("carried");
+    }
+    carry.ghost.style.left = e.clientX - carry.dx + "px";
+    carry.ghost.style.top = e.clientY - carry.dy + "px";
+    const b = carry.box.getBoundingClientRect();
+    const inBox = e.clientY >= b.top && e.clientY <= b.bottom;
+    const t = inBox ? cellAt(carry.box, e.clientX) : null;
+    const next = t && t !== carry.s ? t : null;
+    if (next !== carry.target) {
+        if (carry.target) carry.target.classList.remove("drop-target");
+        if (next) next.classList.add("drop-target");
+        carry.target = next;
+    }
+}
+
+function endCarry(e) {
+    if (!carry || e.pointerId !== carry.id) return;
+    const c = carry;
+    carry = null;
+    removeEventListener("pointermove", moveCarry);
+    removeEventListener("pointerup", endCarry);
+    removeEventListener("pointercancel", endCarry);
+    if (!c.ghost) return; // a tap, not a drag
+    c.ghost.remove();
+    c.s.classList.remove("carried");
+    if (!c.target) return;
+    const kids = [...c.box.children];
+    moveSlot(c.box.dataset.sector, kids.indexOf(c.s), kids.indexOf(c.target));
+}
+
+// --- The channel detail (hold SEL), with the new LAYOUTS section ---
+function detailFader(m) {
+    const fz = el("div", "detail-fz", { style: `--u:${UNITY};` });
+    const scale = el("div", "scale");
+    for (const db of TICKS) scale.append(el("span", db === 0 ? "tick unity" : "tick", { text: tickLabel(db), style: `top:${((1 - posOf(db)) * 100).toFixed(3)}%;` }));
+    const meter = el("div", "meter", { style: ZONES });
+    const bars = el("div", "meter-bars");
+    for (const lvl of [m.L, m.R]) {
+        const bar = el("div", "meter-bar");
+        bar.append(el("div", "meter-zones"), el("div", "meter-cover", { style: `transform:scaleY(${(1 - posOf(lvl)).toFixed(4)});` }));
+        bars.append(bar);
+    }
+    meter.append(bars);
+    const fader = el("div", "fader", { style: `--p:${posOf(m.db).toFixed(4)};` });
+    const rail = el("div", "fader-rail");
+    rail.append(el("div", "fader-cap"));
+    fader.append(el("div", "fader-groove"), el("div", "fader-fill"), rail);
+    fz.append(scale, meter, fader);
+    return fz;
+}
+
+const whereText = (name) => {
+    const at = ORDER.flatMap((id) => state[id].layouts.filter((l) => l.list.includes(name)).map((l) => l.name));
+    return at.length ? "in " + at.join(" · ") : "in no layout";
+};
+
+function layoutsSection(name, sub) {
+    const sec = el("div", "lay-sec", { "data-testid": "detail-layouts" });
+    sec.append(el("h4", "detail-title", { text: "Layouts" }));
+    const groups = el("div", "", { style: "display:grid;gap:8px;" });
+    for (const id of ORDER) {
+        const g = el("div", "lay-group", { "data-sector": id });
+        g.append(el("div", "lay-where", { text: META[id].name }));
+        const row = el("div", "lay-row");
+        state[id].layouts.forEach((l, i) => {
+            const on = l.list.includes(name);
+            const room = on || l.list.includes(null) || fitsIn([...l.list, name]);
+            const b = el("button", "tick-btn", { type: "button", role: "checkbox", "aria-checked": on ? "true" : "false", "data-layout": l.name });
+            const words = el("span", "tcol");
+            words.append(el("span", "tname", { text: l.name }));
+            if (!room) words.append(el("small", "", { text: "FULL" }));
+            b.append(el("span", "box", { text: on ? "✓" : "" }), words);
+            b.disabled = !room;
+            b.addEventListener("click", () => {
+                if (l.list.includes(name)) l.list = l.list.filter((n) => n !== name);
+                else if (l.list.includes(null)) l.list[l.list.indexOf(null)] = name; // the first empty slot
+                else l.list.push(name);
+                if (cur(id) === l) renderSector(id);
+                sub.textContent = whereText(name);
+                sec.replaceWith(layoutsSection(name, sub));
+            });
+            row.append(b);
+        });
+        g.append(row);
+        groups.append(g);
+    }
+    sec.append(groups, el("div", "lay-note", { text: "The fader shows in every ticked layout; a new one joins at its end (ARRANGE moves it)." }));
+    return sec;
+}
+
+function openDetail(name) {
+    closeDetail();
+    const m = TRACKS[name];
+    const d = el("div", "detail", { "data-testid": "detail", "data-name": name });
+    const bar = el("div", "detail-bar");
+    const exit = el("button", "detail-exit", { type: "button", text: "← BACK TO MIX" });
+    exit.addEventListener("click", closeDetail);
+    const nm = el("div", "detail-name");
+    const sub = el("span", "detail-sub", { text: whereText(name) });
+    nm.append(el("span", "detail-chip", { text: m.name, style: `--tc:${m.tc};--tt:${textOn(m.tc)};` }), sub);
+    bar.append(exit, nm);
+    const body = el("div", "detail-body");
+    const left = el("div", "detail-box detail-left");
+    const ro = el("div", "detail-readout");
+    ro.append(el("span", m.db === 0 ? "db unity" : "db", { text: dbText(m.db) }));
+    left.append(el("div", "dmute", { text: m.muted ? "MUTED" : "MUTE", "data-muted": m.muted ? "true" : "false" }), ro, detailFader(m));
+    const mid = el("div", "detail-box detail-middle");
+    mid.append(el("h4", "detail-title", { text: "EQ" }), el("div", "eq-ph", { text: "Pro-Q 4, as today" }));
+    const right = el("div", "detail-box detail-right");
+    const pan = el("div", "pan");
+    pan.append(el("div", "pan-track"), el("div", "pan-dot"));
+    const prow = el("div", "detail-pan-row");
+    prow.append(el("span", "", { text: "L 50" }), el("span", "detail-pan-value", { text: "C" }), el("span", "", { text: "R 50" }));
+    right.append(el("h4", "detail-title", { text: "Pan" }), pan, prow, el("div", "detail-centre", { text: "CENTER", style: "display:grid;place-items:center;" }), layoutsSection(name, sub));
+    body.append(left, mid, right);
+    d.append(bar, body);
+    document.getElementById("ipad").append(d);
+}
+
+function closeDetail() {
+    for (const d of document.querySelectorAll(".detail")) d.remove();
+}
+
+// --- The column ---
+function column() {
+    const col = el("div", "column app");
+    const st = el("div", "status");
+    st.append(el("span", "drop", { text: "0" }), el("span", "badge", { text: "Band" }), el("span", "badge", { text: "Master" }), el("span", "ver", { text: "v1.25.0" }));
+    const pages = el("div", "seg pages");
+    pages.append(el("div", "tab selected", { text: "FOH" }), el("div", "tab", { text: "STREAM DECK" }), el("div", "tab", { text: "ABLESET" }));
+    const sec = el("div", "sectors", { role: "group", "aria-label": "sector layouts" });
+    for (const id of ORDER) sec.append(el("div", "sec-cell", { "data-sector": id, title: META[id].name }));
+    const arr = el("div", "seg arrange-btn");
+    arrBtn = el("button", "tab", { type: "button", text: "ARRANGE", "data-testid": "arrange", "aria-pressed": "false" });
+    arrBtn.addEventListener("click", () => setArrange(!arranging));
+    arr.append(arrBtn);
+    undoBtn = el("button", "undo-btn", { type: "button", text: "↶", "data-testid": "sector-undo", "aria-label": "Undo the last layout change", "aria-disabled": "true" });
+    undoBtn.addEventListener("click", undo);
+    const actions = el("div", "sector-actions");
+    actions.append(arr, undoBtn);
+    noteEl = el("div", "saved-note");
+    const rail = el("div", "rail");
+    const main = el("div", "rail-main");
+    const rule = (label, sub, on) => {
+        const b = el("div", on ? "btn aut on" : "btn aut");
+        const row = el("div", "btn-row");
+        row.append(el("span", "btn-text", { text: label }), el("span", "aut-badge", { text: "AUTO" }));
+        b.append(row, el("div", "btn-sub", { text: sub }));
+        return b;
+    };
+    main.append(rule("STAGE", "PLAY · muted", false), rule("REVERB", "PLAY · normal", true), el("div", "btn", { text: "SOLO VOCALS" }), el("div", "btn", { text: "SOLO BACKING" }));
+    const at = el("div", "btn");
+    at.append(el("span", "", { text: "AUTOTUNE" }), el("div", "btn-sub", { text: "off · Eb" }));
+    main.append(at, el("div", "btn", { text: "TALKBACK" }), el("div", "btn", { text: "TB TO PA" }));
+    const foot = el("div", "rail-foot");
+    foot.append(el("div", "btn", { text: "TECHALERT" }));
+    rail.append(main, foot);
+    col.append(st, pages, el("div", "cap-title", { text: "Layouts" }), sec, actions, noteEl, rail);
+    return col;
+}
+
+function ipad() {
+    const d = document.getElementById("ipad");
+    d.style.setProperty("--strip-w", STRIP_W + "px");
+    bodyEl = el("div", "body2", { style: "--lines:2;", "data-arrange": "false" });
+    bodyEl.append(column());
+    for (const id of ORDER) bodyEl.append(el("div", `side ${META[id].side} sector`, { "data-sector": id, style: `grid-row:${META[id].row};` }));
+    d.append(bodyEl);
+    SIDE_W = bodyEl.querySelector(".sector").getBoundingClientRect().width;
+    for (const id of ORDER) { renderCell(id); renderSector(id); }
+}
+
+ipad();
+
+// The bars move a little (not for a reader who asked for less motion).
+if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    let last = 0;
+    const step = (now) => {
+        if (now - last > 80) {
+            last = now;
+            for (const c of document.querySelectorAll(".sector .bar2 .meter-cover")) {
+                const db = Number(c.dataset.db);
+                if (db <= -70) continue;
+                const shown = Math.min(0, db + (Math.random() - 0.5) * 3);
+                c.style.transform = `scaleY(${(1 - posOf(shown)).toFixed(4)})`;
+            }
+        }
+        requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+}
+
+// --- The page measures itself, for every layout of every sector ---
+const fits = (e) => e.scrollWidth <= e.clientWidth + 0.5 && e.scrollHeight <= e.clientHeight + 0.5;
+const yes = (b) => `<span class="${b ? "ok" : "bad"}">${b ? "yes" : "NO"}</span>`;
+const inside = (a, b) => a.left >= b.left - 0.01 && a.right <= b.right + 0.01 && a.top >= b.top - 0.01 && a.bottom <= b.bottom + 0.01;
+const overlap = (a, b) => a.left < b.right - 0.01 && b.left < a.right - 0.01 && a.top < b.bottom - 0.01 && b.top < a.bottom - 0.01;
+const stripsOf = (id) => [...document.querySelectorAll(`.sector[data-sector="${id}"] > .strip`)];
+
+// One sector showing one layout: its travel, nothing above its faders,
+// every strip whole inside the sector and the screen and clear of the
+// column, every name, LUFS and scale label whole, the width unchanged.
+function sectorChecks(id) {
+    const box = document.querySelector(`.sector[data-sector="${id}"]`);
+    const dev = document.getElementById("ipad").getBoundingClientRect();
+    const col = document.querySelector(".column.app").getBoundingClientRect();
+    const br = box.getBoundingClientRect();
+    let travel = Infinity, clip = true, texts = true, above = true, width = true;
+    const strips = stripsOf(id);
+    for (const st of strips) {
+        const r = st.getBoundingClientRect();
+        if (Math.abs(r.top - br.top) > 0.5) above = false;
+        if (!inside(r, br) || !inside(r, dev) || overlap(r, col)) clip = false;
+        const want = st.classList.contains("wide") ? STRIP_W * 1.1 : STRIP_W;
+        if (Math.abs(r.width - want) > 0.05) width = false;
+        travel = Math.min(travel, st.querySelector(".zone").getBoundingClientRect().height);
+        const lab = st.querySelector(".strip-label");
+        if (lab.scrollWidth > lab.clientWidth + 0.5) texts = false;
+        for (const e of st.querySelectorAll(".lpill:not(.empty), .cap-lbl:not(.empty)")) if (!fits(e)) texts = false;
+        for (const t of st.querySelectorAll(".t2")) if (t.getBoundingClientRect().right > r.right + 0.01) clip = false;
+    }
+    return { n: strips.length, travel, clip, texts, above, width };
+}
+
+function restore(snap) {
+    const back = JSON.parse(snap);
+    for (const id of ORDER) state[id] = back[id];
+    for (const id of ORDER) { renderCell(id); renderSector(id); }
+    for (const x of document.querySelectorAll(".sector.paged")) x.classList.remove("paged");
+}
+
+// The column in its current mode: every word whole (tabs, keys, ✎ ✕ +),
+// nothing overflows, the LAYOUTS block whole, TECHALERT on screen.
+function columnFits() {
+    const colEl = document.querySelector(".column.app");
+    let words = true;
+    for (const t of colEl.querySelectorAll(".tab, .btn, .tool, .tab-add")) if (t.scrollWidth > t.clientWidth + 0.5) words = false;
+    const sec = colEl.querySelector(".sectors");
+    const foot = colEl.querySelector(".rail-foot").getBoundingClientRect();
+    const ok = words && fits(sec) && colEl.scrollHeight <= colEl.clientHeight + 0.5 && fits(colEl.querySelector(".rail-main")) && foot.bottom <= colEl.getBoundingClientRect().bottom + 0.01;
+    return { ok, h: sec.getBoundingClientRect().height };
+}
+
+// RU's MAIN: Band's right edge on the sector's right edge, two empty
+// slots before it (drawn only in ARRANGE).
+function bandEdge() {
+    const box = document.querySelector('.sector[data-sector="ru"]');
+    const band = box.querySelector('.strip[data-name="Band"]');
+    if (!band) return false;
+    const gaps = [...box.children].slice(3, 5).every((c) => c.classList.contains("slot-gap"));
+    return gaps && Math.abs(band.getBoundingClientRect().right - box.getBoundingClientRect().right) <= 0.6;
+}
+
+// ARRANGE: every strip's whole face under its layer, the faders, page
+// tabs, undo and rail inert, the LAYOUTS block live; every sector shows
+// all its cells inside it, the empty ones dashed; the column fits with
+// 3 and with 4 layouts in a sector; the editing works on the model.
+function arrangeChecks() {
+    const snap = JSON.stringify(state);
+    const edgeNormal = bandEdge();
+    setArrange(true);
+    let covered = true, inert = true, cells = true;
+    for (const id of ORDER) {
+        const box = document.querySelector(`.sector[data-sector="${id}"]`);
+        const br = box.getBoundingClientRect();
+        const kids = [...box.children];
+        if (kids.length !== cellsOf(cur(id).list).length) cells = false;
+        for (const k of kids) {
+            if (!inside(k.getBoundingClientRect(), br)) cells = false;
+            if (k.classList.contains("slot-gap") && getComputedStyle(k).outlineStyle !== "dashed") cells = false;
+        }
+        for (const st of stripsOf(id)) {
+            const c = st.querySelector(".edit-cover");
+            const r = c.getBoundingClientRect();
+            if (getComputedStyle(c).display === "none" || Math.abs(r.width - st.clientWidth) > 0.5 || Math.abs(r.height - st.clientHeight) > 0.5) covered = false;
+            if (getComputedStyle(st.querySelector(".zone")).pointerEvents !== "none") inert = false;
+        }
+        const n = state[id].layouts.length;
+        const xs = document.querySelectorAll(`.sec-cell[data-sector="${id}"] .tool.x`).length;
+        if (xs !== (n > 1 ? n : 0)) cells = false;
+    }
+    for (const e of document.querySelectorAll(".column.app :is(.seg.pages, .rail, .undo-btn)")) if (getComputedStyle(e).pointerEvents !== "none") inert = false;
+    const live = getComputedStyle(document.querySelector(".sectors")).pointerEvents !== "none";
+    const edgeArr = bandEdge();
+    const three = Math.max(...ORDER.map((id) => state[id].layouts.length));
+    const col3 = columnFits();
+    // A 4th layout in the left-up sector (the most): + adds NEW, shown.
+    document.querySelector('.sec-cell[data-sector="lu"] .tab-add').click();
+    const added = state.lu.layouts.length === 4 && cur("lu").name === "NEW" && document.querySelector('.sec-cell[data-sector="lu"] .tab.selected').textContent === "NEW" && !document.querySelector('.sec-cell[data-sector="lu"] .tab-add');
+    const col4 = columnFits();
+    // Rename: the field holds 8 capitals whole.
+    document.querySelector('.sec-cell[data-sector="lu"] .lay-ed:nth-child(4) .tool.pen').click();
+    const inp = document.querySelector(".tab-input");
+    inp.value = "monitors";
+    inp.dispatchEvent(new Event("input"));
+    const field = inp.value === "MONITORS" && inp.scrollWidth <= inp.clientWidth + 0.5 && inp.maxLength === NAME_MAX;
+    inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    const renamed = cur("lu").name === "MONITORS";
+    // Remove: the first tap asks, the second removes.
+    document.querySelector('.sec-cell[data-sector="lu"] .lay-ed:nth-child(4) .tool.x').click();
+    const confirmTab = document.querySelector(".sec-cell .tab.confirm");
+    const asks = !!confirmTab && confirmTab.textContent === "REMOVE?" && confirmTab.scrollWidth <= confirmTab.clientWidth + 0.5 && state.lu.layouts.length === 4;
+    if (confirmTab) confirmTab.click();
+    const removed = state.lu.layouts.length === 3 && !state.lu.layouts.some((l) => l.name === "MONITORS");
+    // Slots: Band onto the empty cell 3 (moves, leaves 5 empty), then Keys
+    // onto Band (swap).
+    moveSlot("ru", 5, 3);
+    const moved = JSON.stringify(trimmed(cur("ru").list)) === JSON.stringify(["Keys", "Pad", "Tracks", "Band"]);
+    moveSlot("ru", 0, 3);
+    const swapped = JSON.stringify(trimmed(cur("ru").list)) === JSON.stringify(["Band", "Pad", "Tracks", "Keys"]);
+    // Everything above saves as ONE change; one ↶ brings all of it back,
+    // a second one redoes it.
+    setArrange(false);
+    const edited = JSON.stringify(state);
+    const saved = undoBtn.getAttribute("aria-disabled") === "false";
+    const layoutsOf = (j) => JSON.stringify(ORDER.map((id) => JSON.parse(j)[id].layouts));
+    undo();
+    const back = layoutsOf(JSON.stringify(state)) === layoutsOf(snap);
+    undo();
+    const redo = layoutsOf(JSON.stringify(state)) === layoutsOf(edited);
+    restore(snap);
+    undoTo = null;
+    setUndo();
+    const model = added && field && renamed && asks && removed && moved && swapped && saved && back && redo;
+    return { covered, inert: inert && live, cells, edge: edgeNormal && edgeArr, three, col3, col4, model, parts: { added, field, renamed, asks, removed, moved, swapped, saved, back, redo } };
+}
+
+// The detail of a strip: its LAYOUTS section fits the right box, a tick
+// per layout, every word whole.
+function detailChecks() {
+    openDetail("Vox 6");
+    const d = document.querySelector(".detail");
+    const right = d.querySelector(".detail-right"), sec = d.querySelector(".lay-sec");
+    const rr = right.getBoundingClientRect(), sr = sec.getBoundingClientRect();
+    const n = ORDER.reduce((k, id) => k + state[id].layouts.length, 0);
+    let words = true;
+    for (const t of sec.querySelectorAll(".tname")) if (t.scrollWidth > t.clientWidth + 0.5) words = false;
+    const ok = inside(sr, rr) && right.scrollHeight <= right.clientHeight + 0.5 && sec.querySelectorAll(".tick-btn").length === n && words;
+    const free = rr.bottom - sr.bottom;
+    closeDetail();
+    return { ok, free };
+}
+
+function measure() {
+    const start = Object.fromEntries(ORDER.map((id) => [id, state[id].show]));
+    const rows = ["<tr><th>sector</th><th>layout</th><th>faders</th><th>travel</th><th>≥ 322 px</th><th>nothing above</th><th>nothing clipped</th><th>texts whole</th><th>width 83.16 px</th><th>other 3 sectors untouched</th></tr>"];
+    let all = true, minTravel = Infinity, combos = 0;
+    for (const id of ORDER) {
+        state[id].layouts.forEach((l, i) => {
+            const was = Object.fromEntries(ORDER.filter((o) => o !== id).map((o) => [o, { nodes: stripsOf(o), tab: document.querySelector(`.sec-cell[data-sector="${o}"] .tab.selected`).dataset.layout }]));
+            document.querySelector(`.sec-cell[data-sector="${id}"] .tab[data-i="${i}"]`).click();
+            let kept = true;
+            for (const [o, w] of Object.entries(was)) {
+                const now = stripsOf(o);
+                const tab = document.querySelector(`.sec-cell[data-sector="${o}"] .tab.selected`).dataset.layout;
+                if (now.length !== w.nodes.length || now.some((n, k) => n !== w.nodes[k]) || tab !== w.tab) kept = false;
+            }
+            const c = sectorChecks(id);
+            const okT = c.travel >= TODAY_IPAD - 0.01;
+            minTravel = Math.min(minTravel, c.travel);
+            combos++;
+            all = all && okT && c.above && c.clip && c.texts && c.width && kept;
+            rows.push(`<tr><td>${META[id].name}</td><td>${l.name}</td><td>${c.n}</td><td>${c.travel.toFixed(1)} px</td><td>${yes(okT)}</td><td>${yes(c.above)}</td><td>${yes(c.clip)}</td><td>${yes(c.texts)}</td><td>${yes(c.width)}</td><td>${yes(kept)}</td></tr>`);
+        });
+    }
+    for (const id of ORDER) page(id, start[id], false);
+    for (const x of document.querySelectorAll(".sector.paged")) x.classList.remove("paged");
+    const colOk = columnFits().ok;
+    const ar = arrangeChecks();
+    const dt = detailChecks();
+    const cell = document.querySelector(".sec-cell").getBoundingClientRect();
+    all = all && colOk && ar.covered && ar.inert && ar.cells && ar.edge && ar.col3.ok && ar.col4.ok && ar.model && dt.ok;
+    const bad = Object.entries(ar.parts).filter(([, v]) => !v).map(([k]) => k).join(", ");
+    rows.push(`<tr><td>column</td><td colspan="2">cell ${cell.width.toFixed(0)} px</td><td colspan="7">words whole, no overflow, TECHALERT on screen: ${yes(colOk)}</td></tr>`);
+    rows.push(`<tr><td>ARRANGE</td><td colspan="4">every strip under its layer (name, fader, SEL take no touch): ${yes(ar.covered)}</td><td colspan="5">faders, page tabs, ↶ and rail inert, LAYOUTS live: ${yes(ar.inert)}</td></tr>`);
+    rows.push(`<tr><td>slots</td><td colspan="4">every sector shows all its cells, inside it, empty ones dashed, ✕ only where &gt; 1 layout: ${yes(ar.cells)}</td><td colspan="5">RU MAIN: Band at the right edge, 2 empty slots before it (normal and ARRANGE): ${yes(ar.edge)}</td></tr>`);
+    rows.push(`<tr><td>ARRANGE column</td><td colspan="4">${ar.three} layouts in a sector, ✎ ✕ +: block ${ar.col3.h.toFixed(0)} px, all fits: ${yes(ar.col3.ok)}</td><td colspan="5">4 layouts (the most, + gone): block ${ar.col4.h.toFixed(0)} px, all fits: ${yes(ar.col4.ok)}</td></tr>`);
+    rows.push(`<tr><td>editing</td><td colspan="9">+ adds NEW shown at once, the field holds MONITORS whole (8 capitals), REMOVE? on the 1st tap and gone on the 2nd, drop on empty moves, on a strip swaps, all of it one save and one ↶ (a 2nd ↶ redoes): ${yes(ar.model)}${bad ? " (" + bad + ")" : ""}</td></tr>`);
+    rows.push(`<tr><td>detail</td><td colspan="9">LAYOUTS fits the right box under the pan, a tick per layout, words whole: ${yes(dt.ok)} (${dt.free.toFixed(0)} px free below it)</td></tr>`);
+    document.getElementById("measure").innerHTML = rows.join("");
+    document.getElementById("measure-top").innerHTML = `Merané v tejto stránke (všetkých ${combos} rozložení vo všetkých štyroch sektoroch): najkratšia dráha fadra <b>${minTravel.toFixed(1)} px</b> (dnes ${TODAY_IPAD} px); nad fadrami nič, nič orezané, Band pri pravom okraji, v ARRANGE všetky miesta v sektore, stĺpec sa zmestí aj s ✎ ✕ + pri 3 a 4 rozloženiach, úpravy sa uložia ako jeden krok ↶: ${yes(all)} (podrobne v Otvorených detailoch).`;
+    noteEl.textContent = "";
+    document.body.dataset.measured = JSON.stringify({ all, minTravel, combos, colOk, ...ar, detail: dt.ok });
+}
+document.fonts.ready.then(measure);
+</script>
+</body>
+</html>
