@@ -20,11 +20,12 @@ import {
 } from "./support/live";
 
 // The fader sectors (#148; spec docs/superpowers/specs/2026-10-28-sectors-design.md,
-// the approved look docs/mockups/sectors-v1.html): with a sectors document
-// that places faders, the FOH page is four sectors around the column (lu ru
-// over ld rd), each paging through its own layouts in the column's LAYOUTS
-// block; a strip's channel detail ticks the layouts it is in, ARRANGE
-// reorders a sector's strips, ↶ undoes the last change. The hub owns
+// the approved looks docs/mockups/sectors-v1.html and sectors-v2.html): with
+// a sectors document that places faders, the FOH page is four sectors around
+// the column (lu ru over ld rd), each paging through its own layouts in the
+// column's LAYOUTS block; a strip's channel detail ticks the layouts it is
+// in, ARRANGE reorders a sector's strips and renames, adds and removes its
+// layouts (saved as one change), ↶ undoes the last change. The hub owns
 // sectors.json; the harness starts it empty (sectors off) and each test puts
 // the empty document back.
 //
@@ -103,6 +104,9 @@ const GAP_DOC: SectorsDoc = {
     ru: [{ id: "ru-1", title: "MAIN", strips: [master("Hand2 #"), VOCAL, KEYS, master("Hand4 #")] }],
   },
 };
+
+/** The note under ARRANGE while it is on (the approved mockup v2's). */
+const ARRANGE_NOTE = "drag · ✎ ✕ + · tap to save";
 
 const sectorsPage = (page: Page) => page.locator('[data-testid="page"][data-sectors="true"]');
 
@@ -329,8 +333,8 @@ test.describe("The fader sectors", () => {
         await page.getByTestId("arrange").click();
         await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "false");
         await until(async () => (await hubStatus()).sectors.rev, (rev) => rev > revBefore, "the hub taking the order");
-        const steps = await until(() => sectorSteps(since), (s) => s.includes("order"), "the hub's order record");
-        expect(steps).toEqual(["order"]);
+        const steps = await until(() => sectorSteps(since), (s) => s.includes("edit"), "the hub's edit record");
+        expect(steps).toEqual(["edit"]);
         await until(
           async () => live.sectors?.doc?.sectors?.ru?.[0]?.strips,
           (strips: any) => Array.isArray(strips) && strips.length === 6,
@@ -394,6 +398,237 @@ test.describe("The fader sectors", () => {
       await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "false");
       await until(async () => (await hubStatus()).sectors.rev, (rev) => rev > revBefore, "the hub taking the order");
       await expect.poll(() => cellsOf(page, "ru")).toEqual([name(KEYS), name(VOCAL), "master|Hand2 #", "master|Hand4 #"]);
+    });
+  });
+
+  test.describe("ARRANGE edits the layouts (mockup v2)", () => {
+    test.use({ viewport: { width: 1194, height: 834 } });
+
+    /** A sector's cell in the LAYOUTS block. */
+    const cell = (page: Page, sector: string) => page.locator(`.sec-cell[data-sector="${sector}"]`);
+    /** A layout's tab, its field and its keys. */
+    const row = (page: Page, id: string) => page.locator(`.lay-ed[data-layout="${id}"]`);
+    const tabOf = (page: Page, id: string) => row(page, id).getByTestId("sector-tab");
+    /** A sector's tabs' texts, in their order. */
+    const titles = (page: Page, sector: string) => cell(page, sector).getByTestId("sector-tab").allTextContents();
+
+    /** Whether `locator`'s text fits its box (nothing cut). */
+    const whole = (locator: Locator) => locator.evaluate((e) => e.scrollWidth <= e.clientWidth + 0.5);
+
+    test("rename, add and remove save as one change, a second page sees it, ↶ restores it, nothing reaches Live", async ({
+      page,
+      context,
+    }) => {
+      await setSectors(DOC);
+      await openSectors(page);
+      await expect.poll(() => titles(page, "lu")).toEqual(["STAGE", "ALT"]);
+      const live = await LiveClient.open();
+      try {
+        const VOCAL_VOLUME = volume(track("Vocal 1 repro#"));
+        const volumeBefore = await live.get("band", VOCAL_VOLUME, "value");
+        const revBefore = (await hubStatus()).sectors.rev;
+        const since = Date.now();
+
+        // Outside ARRANGE the block only pages: no ✎, ✕ or +.
+        await expect(page.getByTestId("add-layout")).toHaveCount(0);
+        await expect(row(page, "lu-1").getByTestId("rename")).toBeHidden();
+        await expect(row(page, "lu-1").getByTestId("remove")).toBeHidden();
+
+        await page.getByTestId("arrange").click();
+        await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "true");
+        await expect(page.getByTestId("arrange-note")).toHaveText(ARRANGE_NOTE);
+        // ✎ on every tab; ✕ only where a sector has more than one layout.
+        await expect(page.getByTestId("rename")).toHaveCount(6);
+        for (const id of ["lu-1", "lu-2", "ld-1", "ld-2"]) await expect(row(page, id).getByTestId("remove")).toBeVisible();
+        for (const id of ["ru-1", "rd-1"]) await expect(row(page, id).getByTestId("remove"), id).toHaveCount(0);
+        await expect(page.getByTestId("add-layout")).toHaveCount(4);
+
+        // Rename lu-1 in its field: 8 capitals at most, Enter keeps it.
+        await row(page, "lu-1").getByTestId("rename").click();
+        await expect(row(page, "lu-1")).toHaveAttribute("data-renaming", "true");
+        const field = row(page, "lu-1").getByTestId("rename-input");
+        await expect(field).toBeFocused();
+        await expect(field).toHaveValue("STAGE");
+        await field.fill("monitors2");
+        await expect(field).toHaveValue("MONITORS");
+        expect(await whole(field), "the field holds 8 capitals whole").toBe(true);
+        await field.press("Enter");
+        await expect(row(page, "lu-1")).toHaveAttribute("data-renaming", "false");
+        await expect(field).not.toBeFocused();
+        await expect.poll(() => titles(page, "lu")).toEqual(["MONITORS", "ALT"]);
+
+        // Rename ld-2, kept by a tap elsewhere.
+        await row(page, "ld-2").getByTestId("rename").click();
+        const fx = row(page, "ld-2").getByTestId("rename-input");
+        await expect(fx).toBeFocused();
+        await fx.fill("effects");
+        await page.getByTestId("sector-layouts-title").click();
+        await expect(row(page, "ld-2")).toHaveAttribute("data-renaming", "false");
+        await expect.poll(() => titles(page, "ld")).toEqual(["HANDS", "EFFECTS"]);
+
+        // + adds NEW, shown at once (empty); at 4 layouts the + is gone.
+        await cell(page, "lu").getByTestId("add-layout").click();
+        await expect.poll(() => titles(page, "lu")).toEqual(["MONITORS", "ALT", "NEW"]);
+        await expect(tabOf(page, "lu-3")).toHaveAttribute("aria-pressed", "true");
+        await expect.poll(() => stripsOf(page, "lu")).toEqual([]);
+        await cell(page, "lu").getByTestId("add-layout").click();
+        await expect.poll(() => titles(page, "lu")).toEqual(["MONITORS", "ALT", "NEW", "NEW 2"]);
+        await expect(tabOf(page, "lu-4")).toHaveAttribute("aria-pressed", "true");
+        await expect(cell(page, "lu").getByTestId("add-layout")).toHaveCount(0);
+
+        // Four layouts with their keys fit the column: the block whole, the
+        // rows in their order inside the column, the rail's first button
+        // whole, and the faders keep their 322 px.
+        await frames(page);
+        const fit = await page.getByTestId("column").evaluate((column) => {
+          const box = (e: Element | null) => e!.getBoundingClientRect();
+          const col = box(column);
+          const block = column.querySelector('[data-testid="sector-layouts"]') as HTMLElement;
+          const order = [
+            block,
+            column.querySelector(".sector-actions"),
+            column.querySelector('[data-testid="arrange-note"]'),
+            column.querySelector('[data-testid="rail"]'),
+          ].map(box);
+          const inBlock = [...block.querySelectorAll(".tab, .tool, .tab-add")]
+            .filter((e) => (e as HTMLElement).offsetParent !== null)
+            .map(box)
+            .every((r) => r.top >= box(block).top - 0.5 && r.bottom <= box(block).bottom + 0.5);
+          const railMain = column.querySelector(".rail-main")!;
+          const firstButton = railMain.firstElementChild;
+          return {
+            blockWhole: block.scrollHeight <= block.clientHeight + 0.5,
+            inBlock,
+            ordered: order.every((r, i) => i === 0 || r.top >= order[i - 1].bottom - 0.5),
+            inColumn: order.every((r) => r.top >= col.top - 0.5 && r.bottom <= col.bottom + 0.5),
+            railButton: firstButton == null || box(firstButton).bottom <= box(railMain).bottom + 0.5,
+            blockHeight: box(block).height,
+          };
+        });
+        console.log(`sectors ARRANGE block at 4 layouts (${test.info().project.name}): ${fit.blockHeight.toFixed(1)} px`);
+        expect(fit).toEqual({ ...fit, blockWhole: true, inBlock: true, ordered: true, inColumn: true, railButton: true });
+        const travels = await sectorsPage(page)
+          .locator('.slot[data-sector] [data-testid="fader"]')
+          .evaluateAll((all) => all.map((f) => f.getBoundingClientRect().height));
+        expect(travels.length).toBeGreaterThan(0);
+        for (const h of travels) expect(h).toBeGreaterThanOrEqual(322 - 0.5);
+
+        // ✕ asks on its tab, a tap elsewhere takes the question back.
+        await row(page, "lu-2").getByTestId("remove").click();
+        await expect(tabOf(page, "lu-2")).toHaveText("REMOVE?");
+        await expect(tabOf(page, "lu-2")).toHaveClass(/confirm/);
+        expect(await whole(tabOf(page, "lu-2")), "REMOVE? whole").toBe(true);
+        await page.getByTestId("sector-layouts-title").click();
+        await expect(tabOf(page, "lu-2")).toHaveText("ALT");
+        // Asked again, the tab's second tap removes it; the + is back.
+        await row(page, "lu-2").getByTestId("remove").click();
+        await expect(tabOf(page, "lu-2")).toHaveText("REMOVE?");
+        await tabOf(page, "lu-2").click();
+        await expect(row(page, "lu-2")).toHaveCount(0);
+        await expect.poll(() => titles(page, "lu")).toEqual(["MONITORS", "NEW", "NEW 2"]);
+        await expect(cell(page, "lu").getByTestId("add-layout")).toHaveCount(1);
+
+        // Nothing is saved before the second tap.
+        expect((await hubStatus()).sectors.rev).toBe(revBefore);
+
+        // The second tap saves all of it as one change.
+        await page.getByTestId("arrange").click();
+        await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "false");
+        await until(async () => (await hubStatus()).sectors.rev, (rev) => rev > revBefore, "the hub taking the edit");
+        const steps = await until(() => sectorSteps(since), (s) => s.includes("edit"), "the hub's edit record");
+        expect(steps).toEqual(["edit"]);
+        const record = (await hubEvents()).find((r: any) => r.ev === "sectors" && r.what === "edit" && r.ts >= since);
+        expect({ added: record.added, removed: record.removed, renamed: record.renamed, reordered: record.reordered }).toEqual({
+          added: 2,
+          removed: 1,
+          renamed: 2,
+          reordered: 0,
+        });
+        await until(
+          async () => live.sectors?.doc?.sectors?.lu?.map((l: any) => l.title),
+          (lu: any) => Array.isArray(lu) && lu.length === 3,
+          "the hub's document with lu's three layouts",
+        );
+        expect(live.sectors.doc.sectors.lu.map((l: any) => [l.id, l.title, l.strips])).toEqual([
+          ["lu-1", "MONITORS", [VOCAL, KEYS]],
+          ["lu-3", "NEW", []],
+          ["lu-4", "NEW 2", []],
+        ]);
+        expect(live.sectors.doc.sectors.ld.map((l: any) => l.title)).toEqual(["HANDS", "EFFECTS"]);
+        // Outside ARRANGE again: the new names, no keys.
+        await expect.poll(() => titles(page, "lu")).toEqual(["MONITORS", "NEW", "NEW 2"]);
+        await expect(page.getByTestId("add-layout")).toHaveCount(0);
+        await expect(row(page, "lu-1").getByTestId("rename")).toBeHidden();
+
+        // Nothing reached Live.
+        const sets = (await hubEvents()).filter((r: any) => r.ev === "set" && r.ts >= since);
+        expect(sets, JSON.stringify(sets)).toEqual([]);
+        expect(await live.get("band", VOCAL_VOLUME, "value")).toBe(volumeBefore);
+
+        // A second page sees the new layouts (this browser's picks are
+        // shared: its lu shows NEW 2, empty, as this page does).
+        const other = await context.newPage();
+        await other.setViewportSize({ width: 1194, height: 834 });
+        const otherConsole = watchConsole(other);
+        await openSectors(other);
+        await expect.poll(() => titles(other, "lu")).toEqual(["MONITORS", "NEW", "NEW 2"]);
+        await expect.poll(() => titles(other, "ld")).toEqual(["HANDS", "EFFECTS"]);
+        await expect(tabOf(other, "lu-4")).toHaveAttribute("aria-pressed", "true");
+        await expect.poll(() => stripsOf(other, "lu")).toEqual([]);
+        expect(otherConsole, "the second page's console").toEqual([]);
+        await other.close();
+
+        // One ↶ brings all of it back; the page's pick of a gone layout
+        // falls back to its sector's first.
+        const undo = page.getByTestId("sector-undo");
+        await expect(undo).toHaveAttribute("aria-disabled", "false");
+        await undo.click();
+        await expect.poll(() => titles(page, "lu")).toEqual(["STAGE", "ALT"]);
+        await expect.poll(() => titles(page, "ld")).toEqual(["HANDS", "FX"]);
+        await expect.poll(() => stripsOf(page, "lu")).toEqual([name(VOCAL), name(KEYS)]);
+        await expect(tabOf(page, "lu-1")).toHaveAttribute("aria-pressed", "true");
+        const all = await until(
+          () => sectorSteps(since),
+          (s) => s.includes("undo"),
+          "the hub's undo record",
+        );
+        expect(all).toEqual(["edit", "undo"]);
+      } finally {
+        live.close();
+      }
+    });
+
+    test("a sector's last layout has no ✕ and a removed layout another device shows falls back to its first", async ({
+      page,
+      context,
+    }) => {
+      await setSectors(DOC);
+      // A second page shows lu's ALT.
+      const other = await context.newPage();
+      await other.setViewportSize({ width: 1194, height: 834 });
+      const otherConsole = watchConsole(other);
+      await openSectors(other);
+      await tabOf(other, "lu-2").click();
+      await expect.poll(() => stripsOf(other, "lu")).toEqual(["band|Hand2 #"]);
+
+      await openSectors(page);
+      await page.getByTestId("arrange").click();
+      await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "true");
+      // lu-2 removed: lu-1 is lu's last, so its ✕ goes.
+      await expect(row(page, "lu-1").getByTestId("remove")).toBeVisible();
+      await row(page, "lu-2").getByTestId("remove").click();
+      await tabOf(page, "lu-2").click();
+      await expect(row(page, "lu-2")).toHaveCount(0);
+      await expect(row(page, "lu-1").getByTestId("remove")).toHaveCount(0);
+      await page.getByTestId("arrange").click();
+      await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "false");
+
+      // The other page's lu shows its first layout now; its pick is gone.
+      await expect.poll(() => titles(other, "lu")).toEqual(["STAGE"]);
+      await expect.poll(() => stripsOf(other, "lu")).toEqual([name(VOCAL), name(KEYS)]);
+      await expect(tabOf(other, "lu-1")).toHaveAttribute("aria-pressed", "true");
+      expect(otherConsole, "the second page's console").toEqual([]);
+      await other.close();
     });
   });
 
@@ -476,7 +711,7 @@ test.describe("The fader sectors", () => {
       await arrange.click();
       await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "true");
       await expect(arrange).toHaveAttribute("aria-pressed", "true");
-      await expect(page.getByTestId("arrange-note")).toHaveText("drag to reorder · tap to save");
+      await expect(page.getByTestId("arrange-note")).toHaveText(ARRANGE_NOTE);
 
       // Every strip lies under its cover: a real, hit-tested gesture on
       // Vocal 1 repro#'s fader cap and on its SEL meets the cover, moves no
@@ -539,8 +774,8 @@ test.describe("The fader sectors", () => {
       await arrange.click();
       await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "false");
       await until(async () => (await hubStatus()).sectors.rev, (rev) => rev > revBefore, "the hub taking the order");
-      const steps = await until(() => sectorSteps(since), (s) => s.includes("order"), "the hub's order record");
-      expect(steps).toEqual(["order"]);
+      const steps = await until(() => sectorSteps(since), (s) => s.includes("edit"), "the hub's edit record");
+      expect(steps).toEqual(["edit"]);
       await expect.poll(() => stripsOf(page, "lu")).toEqual([name(KEYS), name(VOCAL)]);
       await expect(page.getByTestId("arrange-note")).toHaveText("");
 
