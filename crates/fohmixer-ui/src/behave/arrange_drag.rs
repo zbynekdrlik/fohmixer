@@ -214,6 +214,27 @@ impl Arrange {
     }
 }
 
+/// The refusal note's showings, numbered: a note's timer clears it only
+/// while that note is still the one shown (a second refusal within the
+/// note's time keeps its full time).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NoteTimer {
+    shown: u64,
+}
+
+impl NoteTimer {
+    /// A note shows: its number, for its timer.
+    pub fn show(&mut self) -> u64 {
+        self.shown += 1;
+        self.shown
+    }
+
+    /// Whether the timer of note `mine` clears what shows: only its own.
+    pub fn expires(&self, mine: u64) -> bool {
+        self.shown == mine
+    }
+}
+
 /// Whether a request's failure `why` is the page's own (not sent, or its
 /// socket closed before the answer), never the hub's refusal.
 pub fn never_reached(why: &str) -> bool {

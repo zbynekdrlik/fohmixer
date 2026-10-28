@@ -358,7 +358,8 @@ exclude_re = [
   # transform and data-carried written and removed on the element),
   # sector_centres (the sector's slots' centres read from the DOM at the
   # down) and flash_note (the refused save's note shown, then cleared by a
-  # timer). The decisions are the tested Arrange, Drag, drop_index,
+  # timer while the tested NoteTimer says it is still its note). The
+  # decisions are the tested Arrange, Drag, NoteTimer, drop_index,
   # moved_to, dropped, sector_refs and arrange_note; sectors.spec.ts drags a
   # strip, saves, sees it on a second page and checks nothing reached Live.
   "fohmixer-ui/src/pages/sectors\\.rs.*(replace|in) (change_mode|sector_centres|flash_note|Carrier::(new|show|lift|hold|settle|leave))( |$)",

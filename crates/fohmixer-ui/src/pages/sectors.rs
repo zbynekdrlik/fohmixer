@@ -29,7 +29,9 @@ use leptos::prelude::*;
 
 use crate::arrange::sectors::{SectorArrangement, SectorCell, WindowKey, arrange_sectors};
 use crate::arrange::{Arrangement, LineKey, METRICS, Shift, Sides, narrow};
-use crate::behave::arrange_drag::{Arrange, ArrangeEnd, Drag, Tap, arrange_note, sector_refs};
+use crate::behave::arrange_drag::{
+    Arrange, ArrangeEnd, Drag, NoteTimer, Tap, arrange_note, sector_refs,
+};
 use crate::binding::sectors::{Picks, picked, sector_name, shown_instance};
 use crate::components::{ControlView, down_of, fail_flash, owns_touches};
 use crate::dom;
@@ -176,12 +178,22 @@ fn sector_centres(slot: &web_sys::Element, sector: SectorId) -> Vec<f64> {
     out
 }
 
-/// The refused save's note shows for `NOTE_MS`.
-fn flash_note(note: RwSignal<Option<&'static str>>, text: &'static str) {
+/// The refused save's note shows for `NOTE_MS`; its timer clears it only
+/// while no newer note replaced it (`NoteTimer`).
+fn flash_note(
+    note: RwSignal<Option<&'static str>>,
+    timer: StoredValue<NoteTimer>,
+    text: &'static str,
+) {
+    let Some(mine) = timer.try_update_value(NoteTimer::show) else {
+        return;
+    };
     let _ = note.try_set(Some(text));
     set_timeout(
         move || {
-            let _ = note.try_set(None);
+            if timer.try_with_value(|t| t.expires(mine)).unwrap_or(false) {
+                let _ = note.try_set(None);
+            }
         },
         std::time::Duration::from_millis(NOTE_MS),
     );
@@ -664,6 +676,7 @@ fn LayoutCell(sector: SectorId) -> impl IntoView {
 #[component]
 fn ArrangeButton(carrier: Carrier, refused: RwSignal<Option<&'static str>>) -> impl IntoView {
     let nav = expect_context::<Nav>();
+    let timer = StoredValue::new(NoteTimer::default());
     let store = nav.store;
     let mode = nav.arrange;
     let on = Memo::new(move |_| mode.try_with(Arrange::is_on).unwrap_or(false));
@@ -683,7 +696,7 @@ fn ArrangeButton(carrier: Carrier, refused: RwSignal<Option<&'static str>>) -> i
             let done: ResultFn = Box::new(move |outcome| {
                 let note = change_mode(mode, |m| m.heard(&outcome)).flatten();
                 if let Some(note) = note {
-                    flash_note(refused, note);
+                    flash_note(refused, timer, note);
                 }
             });
             store.sector_orders(orders, rev, Some(done));
