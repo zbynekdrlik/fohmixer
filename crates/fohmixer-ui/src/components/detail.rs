@@ -16,6 +16,7 @@ use leptos::prelude::*;
 use serde_json::json;
 
 use super::buttons::{Corner, MuteView, Partner, anchor_name, colour_style};
+use super::detail_layouts::{DetailLayouts, DetailStep};
 use super::eq::EqCards;
 use super::fader::{FaderView, Law, Target};
 use super::fader_link::{FaderFollowView, FaderLinkView, link_parts};
@@ -52,6 +53,15 @@ impl DetailStrip {
     pub fn open(self, strip: Strip, why: &str, pointer: i32) {
         trace_detail("open", Some(why), &detail_keys(&strip), Some(pointer));
         let _ = self.opened_at.try_set_value(dom::now());
+        let _ = self.strip.try_set(Some(strip));
+    }
+
+    /// The detail's ◀ ▶ opened `strip`, the pool's strip beside the one
+    /// shown (#148), by pointer `pointer`: recorded as an open with `why:
+    /// "step"`. The opening guard is not started again (it is for a second
+    /// tap at SEL's spot), so the arrows step at a finger's pace.
+    pub fn step(self, strip: Strip, pointer: i32) {
+        trace_detail("open", Some("step"), &detail_keys(&strip), Some(pointer));
         let _ = self.strip.try_set(Some(strip));
     }
 
@@ -159,6 +169,9 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
     let label_attr = label.clone();
     let cards_label = label.clone();
     let cards_strip = strip.clone();
+    // The fader sectors (#148): the LAYOUTS ticks and the bar's ◀ ▶.
+    let layouts_strip = strip.clone();
+    let step_strip = strip.clone();
     let instance = strip.binding.instance.clone();
     let ret = strip.strip_kind == StripKind::Return;
     let sub = bar_text(group.as_deref(), &instance, ret);
@@ -339,6 +352,7 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
                         {sub}
                     </span>
                 </div>
+                <DetailStep strip=step_strip />
             </div>
             <div class="detail-body">
                 <section class="detail-box detail-left" data-testid="detail-left">
@@ -368,6 +382,7 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
                     </div>
                     {centre}
                     {link_box}
+                    <DetailLayouts strip=layouts_strip />
                 </section>
             </div>
         </div>
