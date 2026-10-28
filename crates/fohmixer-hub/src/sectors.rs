@@ -184,9 +184,7 @@ impl SectorStore {
     /// yet), it waits for the seed; removed since, the document served is
     /// written back, its undo kept.
     fn gone(&mut self) -> Option<Polled> {
-        if self.known.is_none() {
-            return None;
-        }
+        self.known.as_ref()?;
         let written = text_of(&self.doc).and_then(|text| {
             crate::atomic_write(&self.path(SECTORS_FILE), &text)?;
             Ok(text)
