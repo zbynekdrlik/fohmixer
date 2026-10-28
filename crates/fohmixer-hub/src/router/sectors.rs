@@ -74,6 +74,13 @@ pub(super) fn unreadable_line(why: &str) -> String {
     )
 }
 
+/// The warn line of a removed file the hub could not write back.
+pub(super) fn unwritable_line(why: &str) -> String {
+    format!(
+        "sectors.json was removed and cannot be written back, the document stays served and is written again at the next poll: {why}"
+    )
+}
+
 impl Router {
     /// The served layout (the pool's), when a store serves one.
     fn sectors_layout(&self) -> Option<Arc<Layout>> {
@@ -240,6 +247,7 @@ impl Router {
             }
             Some(Polled::Refused(why)) => tracing::warn!("{}", refused_line(&why)),
             Some(Polled::Unreadable(why)) => tracing::warn!("{}", unreadable_line(&why)),
+            Some(Polled::Unwritable(why)) => tracing::warn!("{}", unwritable_line(&why)),
             Some(Polled::Restored) => {
                 tracing::warn!("{}", RESTORED_LINE);
                 self.sectors_record("file", None, json!({"why": "deleted"}));

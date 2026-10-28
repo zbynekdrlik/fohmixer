@@ -26,6 +26,9 @@ pub enum Polled {
     Taken,
     Refused(String),
     Unreadable(String),
+    /// The file was removed and could not be written back (why; said once
+    /// while it lasts).
+    Unwritable(String),
     /// The file was removed and is written back from the document served.
     Restored,
 }
@@ -185,6 +188,13 @@ impl SectorStore {
     /// written back, its undo kept.
     fn gone(&mut self) -> Option<Polled> {
         self.known.as_ref()?;
+        if never_good(self.error.is_some(), &self.doc) {
+            // Nothing good was ever read: the removal is a missing file,
+            // which the seed may fill.
+            self.known = None;
+            self.missing = true;
+            return None;
+        }
         let written = text_of(&self.doc).and_then(|text| {
             crate::atomic_write(&self.path(SECTORS_FILE), &text)?;
             Ok(text)
@@ -195,16 +205,21 @@ impl SectorStore {
                 self.failing = false;
                 Some(Polled::Restored)
             }
-            Err(e) => self.unreadable(e.to_string()),
+            Err(e) => self.once(Polled::Unwritable(e.to_string())),
         }
     }
 
     /// A read or write of the file failed (`why`): said only when the
     /// last poll did not fail too.
     fn unreadable(&mut self, why: String) -> Option<Polled> {
+        self.once(Polled::Unreadable(why))
+    }
+
+    /// A failure (`polled`), said only when the last poll did not fail too.
+    fn once(&mut self, polled: Polled) -> Option<Polled> {
         let first = !self.failing;
         self.failing = true;
-        first.then_some(Polled::Unreadable(why))
+        first.then_some(polled)
     }
 
     /// A change: `next` is written and served, then the document served
@@ -267,6 +282,12 @@ impl SectorStore {
         back.rev = self.doc.rev + 1;
         Ok(self.commit(back))
     }
+}
+
+/// Whether the store never served a good document from disk: the file
+/// it read was refused (`refused`) and the empty document stands in.
+fn never_good(refused: bool, served: &SectorsDoc) -> bool {
+    refused && *served == SectorsDoc::empty()
 }
 
 /// A removal's failure worth a warning: none when it went or when the file
@@ -632,5 +653,38 @@ mod tests {
             "not written over"
         );
         assert_eq!(store.doc(), &doc(2, &["Vox 1"]));
+    }
+    #[test]
+    fn a_bad_file_at_start_then_removed_is_missing_and_never_written_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SECTORS_FILE);
+        std::fs::write(&path, "{").unwrap();
+        let mut store = SectorStore::open(dir.path());
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(store.poll(), None);
+        assert!(store.missing(), "the seed may fill it");
+        assert!(!path.exists(), "the empty stand-in is not written back");
+    }
+
+    #[test]
+    fn never_good_only_when_refused_and_serving_the_empty_document() {
+        assert!(never_good(true, &SectorsDoc::empty()));
+        assert!(!never_good(false, &SectorsDoc::empty()));
+        assert!(!never_good(true, &doc(2, &["Vox 1"])));
+    }
+
+    #[test]
+    fn a_removed_file_that_cannot_be_written_back_is_unwritable_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SECTORS_FILE);
+        write(dir.path(), SECTORS_FILE, &doc(2, &["Vox 1"]));
+        let mut store = SectorStore::open(dir.path());
+        // The write back needs the folder: gone, every write fails.
+        std::fs::remove_file(&path).unwrap();
+        let folder = dir.path().to_path_buf();
+        drop(dir);
+        assert!(!folder.exists());
+        assert!(matches!(store.poll(), Some(Polled::Unwritable(_))));
+        assert_eq!(store.poll(), None, "said once");
     }
 }
