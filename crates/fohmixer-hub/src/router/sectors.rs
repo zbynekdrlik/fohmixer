@@ -63,6 +63,13 @@ pub(super) fn refused_line(why: &str) -> String {
     format!("sectors.json is refused, the last good document stays served: {why}")
 }
 
+/// The warn line of a file the poll could not read.
+pub(super) fn unreadable_line(why: &str) -> String {
+    format!(
+        "cannot read sectors.json, the document stays served and is read again at the next poll: {why}"
+    )
+}
+
 impl Router {
     /// The served layout (the pool's), when a store serves one.
     fn sectors_layout(&self) -> Option<Arc<Layout>> {
@@ -227,6 +234,7 @@ impl Router {
                 self.sectors_tell();
             }
             Some(Polled::Refused(why)) => tracing::warn!("{}", refused_line(&why)),
+            Some(Polled::Unreadable(why)) => tracing::warn!("{}", unreadable_line(&why)),
             None => {}
         }
         self.sectors_seed_if_due();

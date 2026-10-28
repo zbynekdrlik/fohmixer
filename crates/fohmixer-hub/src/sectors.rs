@@ -19,11 +19,13 @@ pub const SECTORS_FILE: &str = "sectors.json";
 /// The version before the last change.
 pub const PREV_FILE: &str = "sectors.json.prev";
 
-/// What a poll found: a new document taken, or a file refused (why).
+/// What a poll found: a new document taken, a file refused (why), or a
+/// file that could not be read (why; said once while it lasts).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Polled {
     Taken,
     Refused(String),
+    Unreadable(String),
 }
 
 /// The document as served, the version before the last change, and what
@@ -39,6 +41,8 @@ pub struct SectorStore {
     /// again takes nothing (the store's own write, a rewrite in place).
     known: Option<Vec<u8>>,
     error: Option<String>,
+    /// The last poll could not read the file (its failure was said).
+    failing: bool,
 }
 
 /// A document's text: serde, then its checks (`SectorsDoc::validate`)
@@ -77,6 +81,7 @@ impl SectorStore {
             missing: false,
             known: None,
             error: None,
+            failing: false,
         };
         store.prev = std::fs::read(store.path(PREV_FILE))
             .ok()
@@ -126,16 +131,21 @@ impl SectorStore {
     /// Reads the file again: a new document (a hand edit) is taken at
     /// [`served_rev`] and the one before it kept as the previous version;
     /// a bad one is refused and the last good one stays. Bytes the store
-    /// already knows take nothing; a missing file only marks it missing.
+    /// already knows take nothing; a missing file only marks it missing. A
+    /// file that cannot be read (on the PC another program holding it)
+    /// keeps the bytes known, so the same bytes read later are no change:
+    /// [`Polled::Unreadable`] once, then nothing until a read succeeds.
     pub fn poll(&mut self) -> Option<Polled> {
         let bytes = match std::fs::read(self.path(SECTORS_FILE)) {
             Ok(bytes) => bytes,
-            Err(e) => {
-                self.missing = e.kind() == io::ErrorKind::NotFound;
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                self.missing = true;
                 self.known = None;
                 return None;
             }
+            Err(e) => return self.unreadable(e.to_string()),
         };
+        self.failing = false;
         self.missing = false;
         if self.known.as_deref() == Some(bytes.as_slice()) {
             return None;
@@ -160,6 +170,14 @@ impl SectorStore {
                 Some(Polled::Refused(why))
             }
         }
+    }
+
+    /// A read or write of the file failed (`why`): said only when the
+    /// last poll did not fail too.
+    fn unreadable(&mut self, why: String) -> Option<Polled> {
+        let first = !self.failing;
+        self.failing = true;
+        first.then_some(Polled::Unreadable(why))
     }
 
     /// A change: the document served now becomes the previous version

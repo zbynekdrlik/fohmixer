@@ -9,7 +9,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use super::super::reverb::tests::{answer, next_read, read_answered, settle, slot};
 use super::super::tests::{attach, offline_router, records, status};
 use super::super::{Router, RouterMsg};
-use super::{refused_line, sectors_fields, sectors_line, seed_due, write_problem};
+use super::{refused_line, sectors_fields, sectors_line, seed_due, unreadable_line, write_problem};
 use crate::events::{is_warn, stamp};
 use crate::outbox::Outbox;
 use crate::sectors::{PREV_FILE, SECTORS_FILE};
@@ -558,6 +558,14 @@ fn the_records_and_lines_read_as_written() {
     assert_eq!(
         write_problem(&std::io::Error::other("disk full")),
         "cannot write the fader sectors (sectors.json): disk full"
+    );
+}
+
+#[test]
+fn the_unreadable_line_reads_as_written() {
+    assert_eq!(
+        unreadable_line("Is a directory"),
+        "cannot read sectors.json, the document stays served and is read again at the next poll: Is a directory"
     );
 }
 
