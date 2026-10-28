@@ -30,6 +30,7 @@ mod pin_cli;
 mod ping;
 mod remote;
 mod reverb;
+mod sectors;
 mod serve_until;
 mod setter;
 mod songmap;

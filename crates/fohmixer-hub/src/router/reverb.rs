@@ -395,4 +395,4 @@ impl Router {
 
 #[cfg(test)]
 #[path = "reverb/tests.rs"]
-mod tests;
+pub(super) mod tests;

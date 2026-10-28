@@ -70,7 +70,7 @@ fn set_hub(router: &mut Router, key: &str, value: Value) {
 
 /// Live's answer to each pending listener of the band (the table online):
 /// `answer(target, prop)` the slot.
-fn answer(router: &mut Router, answer: impl Fn(&str, &str) -> Value) {
+pub(in crate::router) fn answer(router: &mut Router, answer: impl Fn(&str, &str) -> Value) {
     for o in router.subs.drain_outgoing() {
         let slots: Vec<Value> = o
             .commands
@@ -87,7 +87,7 @@ fn answer(router: &mut Router, answer: impl Fn(&str, &str) -> Value) {
 }
 
 /// A listener's answer: Live's key for it and its value.
-fn slot(key: &str, value: Value) -> Value {
+pub(in crate::router) fn slot(key: &str, value: Value) -> Value {
     json!({"ok": true, "data": {"key": key, "value": value}})
 }
 
@@ -1035,7 +1035,9 @@ fn ok(data: Value) -> Value {
 
 /// The marker keeper's next read: its number and batch, from the offline
 /// answer its task sent the router (left unhandled: the read stays open).
-async fn next_read(own: &mut UnboundedReceiver<RouterMsg>) -> (u64, markers::Step) {
+pub(in crate::router) async fn next_read(
+    own: &mut UnboundedReceiver<RouterMsg>,
+) -> (u64, markers::Step) {
     let read = next_of(own, "a read", |m| {
         matches!(m, RouterMsg::MarkersRead { .. })
     })
@@ -1049,7 +1051,7 @@ async fn next_read(own: &mut UnboundedReceiver<RouterMsg>) -> (u64, markers::Ste
 /// Live's answer to the keeper's read `seq` of `n` band tracks, a Tuner
 /// named `name` alone on each `(index, name)` track: both batches, handled
 /// as the read's tasks send them.
-async fn read_answered(
+pub(in crate::router) async fn read_answered(
     router: &mut Router,
     own: &mut UnboundedReceiver<RouterMsg>,
     seq: u64,
@@ -1084,7 +1086,7 @@ async fn read_answered(
 }
 
 /// The markers' quiet time ends: its message handled.
-async fn settle(router: &mut Router, own: &mut UnboundedReceiver<RouterMsg>) {
+pub(in crate::router) async fn settle(router: &mut Router, own: &mut UnboundedReceiver<RouterMsg>) {
     let msg = next_of(own, "the quiet time", |m| {
         matches!(m, RouterMsg::MarkersSettle { .. })
     })

@@ -221,6 +221,7 @@ pub fn is_warn(record: &Value) -> bool {
                 | "reverb"
                 | "fader_link"
                 | "autotune"
+                | "sectors"
         )
         || (ev == "trace" && holds_warn_event(record))
         || (ev == "songmap" && problems_changed(record))

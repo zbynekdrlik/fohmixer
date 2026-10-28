@@ -51,6 +51,7 @@ use fohmixer_proto::client::{
     SongMapReport, SongMapStatus, StageAutStatus, Unresolved, ValueItem,
 };
 use fohmixer_proto::layout::{AutotuneTarget, Binding, Layout, LinkId, RuleFader};
+use fohmixer_proto::sectors::{SectorOrder, StripRef};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
@@ -82,6 +83,8 @@ mod markers_io;
 mod retries;
 #[path = "router/reverb.rs"]
 mod reverb;
+#[path = "router/sectors.rs"]
+mod sectors;
 #[path = "router/songmap.rs"]
 mod songmap;
 mod unfold;
@@ -473,6 +476,28 @@ pub enum RouterMsg {
         instance: String,
         read: u64,
     },
+    /// A page's tick of a fader's layout (#148, `sector_tick`).
+    SectorTick {
+        client: ClientId,
+        id: String,
+        layout: String,
+        strip: StripRef,
+        on: bool,
+    },
+    /// A page's ARRANGE save (#148, `sector_orders`).
+    SectorOrders {
+        client: ClientId,
+        id: String,
+        orders: Vec<SectorOrder>,
+        rev: u64,
+    },
+    /// A page's undo of the sectors' last change (#148, `sector_undo`).
+    SectorUndo {
+        client: ClientId,
+        id: String,
+    },
+    /// The layout poll's tick (#148): `sectors.json` is read again.
+    SectorsPoll,
     /// The hub stops: the Stream Deck's held keys released and its task
     /// told to stop (#52), then every client closed.
     Stop,
@@ -500,6 +525,8 @@ pub struct RouterStatus {
     /// The LUFS devices and points (#151; the listener's part is the
     /// hub's).
     pub lufs: fohmixer_proto::client::LufsStatus,
+    /// The fader sectors (#148).
+    pub sectors: fohmixer_proto::client::SectorsStatus,
     pub clients: usize,
     pub unresolved: Vec<Unresolved>,
 }
@@ -576,6 +603,8 @@ pub struct Router {
     songmap: songmap::SongMapIo,
     /// LUFS (#151): the rule, the points, their faders, the set names.
     lufs: lufs::LufsIo,
+    /// The fader sectors (#148): `sectors.json`.
+    sectors: sectors::SectorsIo,
     /// Every instance's transport (#104, D18), by instance.
     transport: BTreeMap<String, TransportWatch>,
     layout_rev: u64,
@@ -655,6 +684,9 @@ impl Router {
                     })
             })
             .collect();
+        let sectors = sectors::SectorsIo {
+            store: crate::sectors::SectorStore::open(&data_dir),
+        };
         Self {
             subs,
             names: NameCheck::default(),
@@ -678,6 +710,7 @@ impl Router {
             autotune: autotune::AutotuneIo::new(state.autotune_aut, state.autotune_off.clone()),
             songmap: songmap::SongMapIo::default(),
             lufs: lufs::LufsIo::default(),
+            sectors,
             state,
             transport,
             layout_rev: 0,
@@ -744,6 +777,7 @@ impl Router {
                 self.autotune_attach(&outbox);
                 self.lufs_attach(&outbox);
                 self.links_attach(&outbox);
+                self.sectors_attach(&outbox);
                 if self.layout_rev > 0 {
                     outbox.layout(self.layout_rev);
                 }
@@ -867,6 +901,8 @@ impl Router {
                     self.reverb_tracks_known(&instance);
                 }
                 self.autotune_release(&instance, "settled");
+                // The sectors' seed waits for every instance's read (#148).
+                self.sectors_seed_if_due();
             }
             RouterMsg::MarkersRetry { instance } => self.markers_retried(instance),
             RouterMsg::MarkersSettle { generation } => self.markers_settled(generation),
@@ -922,6 +958,9 @@ impl Router {
                 for name in online {
                     self.names.start(&name);
                 }
+                // The sectors' first document comes from a served layout
+                // (#148).
+                self.sectors_seed_if_due();
             }
             RouterMsg::Migration { apply, reply } => self.markers_migration(apply, reply),
             RouterMsg::MigrationLists {
@@ -975,6 +1014,7 @@ impl Router {
                     autotune: self.autotune.status(),
                     songmap: self.songmap.status(),
                     lufs: self.lufs_status(),
+                    sectors: self.sectors_status(),
                     clients: self.clients.len(),
                     unresolved: self.names.unresolved(),
                 });
@@ -1121,6 +1161,21 @@ impl Router {
                 outcome,
             } => self.lufs_named(&instance, read, outcome),
             RouterMsg::LufsNamesRetry { instance, read } => self.lufs_names_retry(&instance, read),
+            RouterMsg::SectorTick {
+                client,
+                id,
+                layout,
+                strip,
+                on,
+            } => self.sectors_tick(client, id, &layout, &strip, on),
+            RouterMsg::SectorOrders {
+                client,
+                id,
+                orders,
+                rev,
+            } => self.sectors_orders(client, id, &orders, rev),
+            RouterMsg::SectorUndo { client, id } => self.sectors_undo(client, id),
+            RouterMsg::SectorsPoll => self.sectors_poll(),
             RouterMsg::Stop => return false,
         }
         true
@@ -2558,13 +2613,17 @@ mod tests {
             vec![
                 ServerMsg::Reverb(router.reverb.rule.state()),
                 ServerMsg::Autotune(router.autotune.state()),
+                ServerMsg::Sectors {
+                    doc: fohmixer_proto::sectors::SectorsDoc::empty(),
+                    undo: false
+                },
                 ServerMsg::Hub {
                     key: HUB_STAGE_AUT.into(),
                     value: json!(false)
                 }
             ],
-            "no layout yet: no revision (REVERB's state, #130, and AUTOTUNE's, \
-             #104, are replies)"
+            "no layout yet: no revision (REVERB's state, #130, AUTOTUNE's, #104, \
+             and the sectors' document, #148, are replies)"
         );
         router.handle(RouterMsg::Layout {
             rev: 1,

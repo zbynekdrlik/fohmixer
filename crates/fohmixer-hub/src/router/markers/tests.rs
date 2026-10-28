@@ -1013,3 +1013,30 @@ fn a_read_answered_after_a_disconnect_settles_nothing() {
     apply(&mut k, actions);
     assert!(k.settled("band"));
 }
+
+#[test]
+fn has_read_holds_once_a_whole_read_answered_and_stays_through_a_disconnect() {
+    // #148: the sectors' seed waits for one whole read of every instance.
+    let mut k = keeper();
+    assert!(!k.has_read("band"), "nothing read yet");
+    assert!(!k.has_read("nobody"), "an instance it does not follow");
+    let actions = k.value(&tracks_key("band"), Some(&list(1)));
+    let mut applied = apply(&mut k, actions);
+    let (_, seq, _, _) = applied.reads.pop().expect("a read");
+    let actions = k.read_done(
+        "band",
+        seq,
+        Step::Devices,
+        &Err(LiveError::Timeout.to_string()),
+    );
+    apply(&mut k, actions);
+    assert!(!k.has_read("band"), "a failed read is no read");
+    let actions = k.retry("band");
+    let mut applied = apply(&mut k, actions);
+    let (_, seq, _, _) = applied.reads.pop().expect("the retry's read");
+    let actions = k.read_done("band", seq, Step::Devices, &Ok(vec![ok(json!([]))]));
+    apply(&mut k, actions);
+    assert!(k.has_read("band"));
+    k.disconnected("band");
+    assert!(k.has_read("band"), "since the hub started");
+}

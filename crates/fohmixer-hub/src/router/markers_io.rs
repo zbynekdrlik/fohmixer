@@ -271,5 +271,7 @@ impl Router {
             }
             self.autotune_release(&name, "settled");
         }
+        // No composition waits now: the sectors' seed may be due (#148).
+        self.sectors_seed_if_due();
     }
 }
