@@ -656,8 +656,9 @@ fn LayoutCell(sector: SectorId) -> impl IntoView {
 }
 
 /// ARRANGE (#148): a tap starts the reorder mode; the next one sends the
-/// changed layouts' orders as one `SectorOrders` and leaves once the hub
-/// answers (a refusal: the hub's order shows again with a short note), or
+/// changed layouts' orders as one `SectorOrders` and leaves once the hub's
+/// new document arrives (a refusal: at once, the hub's order shows again
+/// with a short note), or
 /// just leaves with nothing changed (`Arrange::tap`). Lit while on; it
 /// stays live while the rest of the column is inert.
 #[component]

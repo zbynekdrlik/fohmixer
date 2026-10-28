@@ -3,8 +3,9 @@
 //! approved mockup `docs/mockups/sectors-v1.html`): a tap on ARRANGE starts
 //! it, the strips are dragged within their sector's shown layout and the
 //! page keeps the edited orders, and a second tap sends the changed layouts
-//! as ONE `SectorOrders` (one change, one undo step) and leaves once the hub
-//! answers; with nothing changed it just leaves. A hide of the page, or a
+//! as ONE `SectorOrders` (one change, one undo step) and leaves once the
+//! hub's new document arrives (a refusal: at once); with nothing changed it
+//! just leaves. A hide of the page, or a
 //! new document from the hub during the mode, ends it unsaved. Nothing here
 //! touches Live. The drag itself (`Drag`): a strip is carried once the
 //! finger moved past `DRAG_SLOP`; where it lands is counted from the
@@ -100,13 +101,18 @@ impl Arrange {
         }
     }
 
-    /// The hub answered the save (`ok`: taken). The mode ends either way;
-    /// the note for a refusal.
+    /// The hub answered the save (`ok`: taken). A refusal ends the mode at
+    /// once, with its note; a taken save stays saving, its edits shown,
+    /// until the hub's new document arrives (`doc_arrived`: the hub sends
+    /// its result first, the document after it).
     pub fn answered(&mut self, ok: bool) -> Option<&'static str> {
+        if ok {
+            return None;
+        }
         if matches!(self, Arrange::Saving { .. }) {
             *self = Arrange::Off;
         }
-        (!ok).then_some(REFUSED_NOTE)
+        Some(REFUSED_NOTE)
     }
 
     /// The hub's document of revision `rev` arrived: another revision ends
