@@ -351,7 +351,17 @@ test.describe("The fader sectors", () => {
         await openSectors(other);
         await expect.poll(() => cellsOf(other, "ru")).toEqual(["master|Hand2 #", name(VOCAL), name(KEYS), "_", "_", "master|Hand4 #"]);
         await frames(other);
-        const placed = await sectorsPage(other).evaluate((body) => {
+        // Outside ARRANGE a saved gap is plain space: no outline, no border.
+        const otherGaps = sectorsPage(other).getByTestId("sector-gap");
+        await expect(otherGaps).toHaveCount(2);
+        const plain = await otherGaps.evaluateAll((all) =>
+          all.map((e) => ({ outline: getComputedStyle(e).outlineStyle, border: getComputedStyle(e).borderTopStyle })),
+        );
+        expect(plain).toEqual([
+          { outline: "none", border: "none" },
+          { outline: "none", border: "none" },
+        ]);
+        const placed =await sectorsPage(other).evaluate((body) => {
           const slot = (track: string) =>
             [...body.querySelectorAll('.slot[data-sector="ru"]')].find(
               (s) => s.querySelector(`[data-testid="strip"][data-track="${track}"]`) != null,
