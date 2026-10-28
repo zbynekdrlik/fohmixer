@@ -383,6 +383,37 @@ mod tests {
     }
 
     #[test]
+    fn a_file_that_cannot_be_read_keeps_its_bytes_known_and_says_so_once() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), SECTORS_FILE, &doc(2, &["Vox 1"]));
+        write(dir.path(), PREV_FILE, &doc(1, &[]));
+        let mut store = SectorStore::open(dir.path());
+        let path = dir.path().join(SECTORS_FILE);
+        let bytes = std::fs::read(&path).unwrap();
+        // A read that fails for another reason than a missing file (on the
+        // PC an editor or the antivirus holding it): here a folder at its
+        // path, which no read takes.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(
+            matches!(store.poll(), Some(Polled::Unreadable(_))),
+            "said once"
+        );
+        assert_eq!(store.poll(), None, "and not again while it lasts");
+        assert!(!store.missing());
+        // The same bytes back are no change: no new revision, no undo step.
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(store.poll(), None);
+        assert_eq!(store.doc(), &doc(2, &["Vox 1"]));
+        assert_eq!(read(dir.path(), PREV_FILE), doc(1, &[]), "the undo kept");
+        // A failure after a good read is said again.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(matches!(store.poll(), Some(Polled::Unreadable(_))));
+    }
+
+    #[test]
     fn undo_swaps_and_a_second_undo_redoes() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), SECTORS_FILE, &doc(1, &["Vox 1"]));
