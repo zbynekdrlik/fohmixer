@@ -3,7 +3,7 @@
 //! file's hand edits (polled with the layout), the first document (the
 //! seed), the records and `/api/status`.
 //!
-//! The decisions are `fohmixer_proto::sectors`' (`tick`, `orders`, `seed`)
+//! The decisions are `fohmixer_proto::sectors`' (`tick`, `edit`, `seed`)
 //! and the store's (`crate::sectors`); this is the glue. A taken change is
 //! one `sectors` record (warn class) and one info line, the asker's
 //! `result`, then the document to every page; a refusal is an `error` to
@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use fohmixer_proto::client::{SectorsStatus, ServerMsg};
 use fohmixer_proto::layout::Layout;
-use fohmixer_proto::sectors::{self as model, Refusal, SectorOrder, SectorsDoc, StripRef};
+use fohmixer_proto::sectors::{self as model, Refusal, Sectors, SectorsDoc, StripRef};
 use serde_json::{Value, json};
 
 use super::Router;
@@ -33,7 +33,7 @@ pub(super) fn seed_due(missing: bool, pool_len: usize, every_read: bool) -> bool
     missing && pool_len > 0 && every_read
 }
 
-/// A `sectors` record's fields: `what` (`tick`, `order`, `undo`, `seed`,
+/// A `sectors` record's fields: `what` (`tick`, `edit`, `undo`, `seed`,
 /// `file`), the page and its peer (none for the hub's own), then `extra`'s.
 pub(super) fn sectors_fields(
     what: &str,
@@ -209,21 +209,23 @@ impl Router {
         }
     }
 
-    /// A page's ARRANGE save.
-    pub(super) fn sectors_orders(
+    /// A page's ARRANGE save: the whole edited sectors as one change
+    /// (`model::edit`), recorded `edit` with what it changed.
+    pub(super) fn sectors_edit(
         &mut self,
         client: ClientId,
         id: String,
-        orders: &[SectorOrder],
+        sectors: &Sectors,
         rev: u64,
     ) {
         let served = self.sectors_layout();
         let pool = served.as_deref().map(model::pool).unwrap_or_default();
-        match model::orders(self.sectors.store.doc(), orders, rev, &pool) {
+        let before = self.sectors.store.doc();
+        match model::edit(before, sectors, rev, &pool) {
             Err(refusal) => self.sectors_refuse(client, id, refusal),
             Ok(next) => {
-                let layouts: Vec<&str> = orders.iter().map(|o| o.layout.as_str()).collect();
-                self.sectors_commit(client, id, next, "order", json!({"layouts": layouts}));
+                let counts = json!(model::edit_counts(before, &next));
+                self.sectors_commit(client, id, next, "edit", counts);
             }
         }
     }

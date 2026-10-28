@@ -517,10 +517,10 @@ fn handle_text(hub: &Hub, conn: &mut Conn, text: &str) {
             strip,
             on,
         }),
-        Ok(ClientMsg::SectorOrders { id, orders, rev }) => hub.route(RouterMsg::SectorOrders {
+        Ok(ClientMsg::SectorEdit { id, sectors, rev }) => hub.route(RouterMsg::SectorEdit {
             client,
             id,
-            orders,
+            sectors,
             rev,
         }),
         Ok(ClientMsg::SectorUndo { id }) => hub.route(RouterMsg::SectorUndo { client, id }),

@@ -51,7 +51,7 @@ use fohmixer_proto::client::{
     SongMapReport, SongMapStatus, StageAutStatus, Unresolved, ValueItem,
 };
 use fohmixer_proto::layout::{AutotuneTarget, Binding, Layout, LinkId, RuleFader};
-use fohmixer_proto::sectors::{SectorOrder, StripRef};
+use fohmixer_proto::sectors::{Sectors, StripRef};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
@@ -484,11 +484,12 @@ pub enum RouterMsg {
         strip: StripRef,
         on: bool,
     },
-    /// A page's ARRANGE save (#148, `sector_orders`).
-    SectorOrders {
+    /// A page's ARRANGE save (#148, `sector_edit`): every sector's layouts
+    /// as edited.
+    SectorEdit {
         client: ClientId,
         id: String,
-        orders: Vec<SectorOrder>,
+        sectors: Sectors,
         rev: u64,
     },
     /// A page's undo of the sectors' last change (#148, `sector_undo`).
@@ -1168,12 +1169,12 @@ impl Router {
                 strip,
                 on,
             } => self.sectors_tick(client, id, &layout, &strip, on),
-            RouterMsg::SectorOrders {
+            RouterMsg::SectorEdit {
                 client,
                 id,
-                orders,
+                sectors,
                 rev,
-            } => self.sectors_orders(client, id, &orders, rev),
+            } => self.sectors_edit(client, id, &sectors, rev),
             RouterMsg::SectorUndo { client, id } => self.sectors_undo(client, id),
             RouterMsg::SectorsPoll => self.sectors_poll(),
             RouterMsg::Stop => return false,
