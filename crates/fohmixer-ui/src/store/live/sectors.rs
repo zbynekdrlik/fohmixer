@@ -28,7 +28,7 @@ impl LiveStore {
             (true, Some(done)) => {
                 let _ = self.inner.try_update_value(|i| i.pending.insert(id, done));
             }
-            (false, Some(done)) => done(Err("not connected to the hub".to_string())),
+            (false, Some(done)) => done(Err(crate::store::NOT_CONNECTED.to_string())),
             (_, None) => {}
         }
         sent

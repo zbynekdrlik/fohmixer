@@ -20,6 +20,7 @@ use fohmixer_proto::sectors::{SectorId, SectorLayout, SectorOrder, SectorsDoc, S
 use super::Down;
 use crate::arrange::sectors::SectorArrangement;
 use crate::diag::perf::Pointer;
+use crate::store::{CONNECTION_CLOSED, NOT_CONNECTED};
 
 /// How far (px) a finger moves before the strip under it is carried.
 pub const DRAG_SLOP: f64 = 6.0;
@@ -30,6 +31,10 @@ pub const ARRANGE_NOTE: &str = "drag to reorder · tap to save";
 /// The note under ARRANGE when the hub refused the save (it shows its own
 /// order again).
 pub const REFUSED_NOTE: &str = "Not saved: the layouts changed";
+
+/// The note under ARRANGE when the save never reached the hub (no socket,
+/// or it closed before the answer).
+pub const OFFLINE_NOTE: &str = "Not saved: the hub is not connected";
 
 /// The mode: off; on since the document of revision `rev`, with the
 /// orders edited so far (by layout id); saving them at `rev` (the edits
@@ -115,6 +120,22 @@ impl Arrange {
         Some(REFUSED_NOTE)
     }
 
+    /// What the save's request heard: the hub's answer (`answered`), or a
+    /// failure the hub never gave (`never_reached`), which ends a save at
+    /// once with its own note.
+    pub fn heard<T>(&mut self, outcome: &Result<T, String>) -> Option<&'static str> {
+        match outcome {
+            Ok(_) => self.answered(true),
+            Err(why) if never_reached(why) => {
+                if matches!(self, Arrange::Saving { .. }) {
+                    *self = Arrange::Off;
+                }
+                Some(OFFLINE_NOTE)
+            }
+            Err(_) => self.answered(false),
+        }
+    }
+
     /// The hub's document of revision `rev` arrived: another revision ends
     /// the mode unsaved; while saving, only a newer one (the save's own).
     pub fn doc_arrived(&mut self, rev: u64) {
@@ -191,6 +212,12 @@ impl Arrange {
             self.moved(&layout.id, order);
         }
     }
+}
+
+/// Whether a request's failure `why` is the page's own (not sent, or its
+/// socket closed before the answer), never the hub's refusal.
+pub fn never_reached(why: &str) -> bool {
+    why == NOT_CONNECTED || why == CONNECTION_CLOSED
 }
 
 /// The note under ARRANGE: a refusal's while it shows, else the mode's.

@@ -681,7 +681,7 @@ fn ArrangeButton(carrier: Carrier, refused: RwSignal<Option<&'static str>>) -> i
         carrier.leave();
         if let Some(Tap::Send(orders, rev)) = tap {
             let done: ResultFn = Box::new(move |outcome| {
-                let note = change_mode(mode, |m| m.answered(outcome.is_ok())).flatten();
+                let note = change_mode(mode, |m| m.heard(&outcome)).flatten();
                 if let Some(note) = note {
                     flash_note(refused, note);
                 }

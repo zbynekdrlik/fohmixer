@@ -496,6 +496,12 @@ pub use fohmixer_proto::client::write_key_of as write_key;
 /// The key under which the engineer's token is stored.
 pub const TOKEN_KEY: &str = "fohmixer_token";
 
+/// Why a request never got the hub's answer: it was not sent (no socket).
+pub const NOT_CONNECTED: &str = "not connected to the hub";
+
+/// Why a request never got the hub's answer: its socket closed first.
+pub const CONNECTION_CLOSED: &str = "the hub connection closed";
+
 /// What hears a command's result slots (or why there are none).
 pub type ResultFn = Box<dyn FnOnce(Result<Vec<Value>, String>)>;
 

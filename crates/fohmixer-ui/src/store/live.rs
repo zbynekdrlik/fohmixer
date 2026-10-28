@@ -504,7 +504,7 @@ impl LiveStore {
         // The controls keep Live's last values, stale, and take touches (L2).
         self.mark_stale();
         for done in pending.into_values() {
-            done(Err("the hub connection closed".to_string()));
+            done(Err(super::CONNECTION_CLOSED.to_string()));
         }
         if code == Some(CLOSE_RELOAD) {
             let now = dom::wall_now();
@@ -977,7 +977,7 @@ impl LiveStore {
             (true, Some(done)) => {
                 let _ = self.inner.try_update_value(|i| i.pending.insert(id, done));
             }
-            (false, Some(done)) => done(Err("not connected to the hub".to_string())),
+            (false, Some(done)) => done(Err(super::NOT_CONNECTED.to_string())),
             (_, None) => {}
         }
     }
