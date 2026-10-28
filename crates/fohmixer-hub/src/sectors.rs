@@ -51,9 +51,14 @@ pub struct SectorStore {
     failing: bool,
 }
 
-/// A document's text: serde, then its checks (`SectorsDoc::validate`)
-/// joined with `; `.
+/// The UTF-8 byte order mark a Windows editor may write first (Windows
+/// PowerShell 5's `Set-Content -Encoding UTF8` does).
+const BOM: &[u8] = b"\xEF\xBB\xBF";
+
+/// A document's text: one leading [`BOM`] skipped, serde, then its checks
+/// (`SectorsDoc::validate`) joined with `; `.
 pub fn parse(text: &[u8]) -> Result<SectorsDoc, String> {
+    let text = text.strip_prefix(BOM).unwrap_or(text);
     let doc: SectorsDoc = serde_json::from_slice(text).map_err(|e| e.to_string())?;
     let errors = doc.validate();
     if errors.is_empty() {
