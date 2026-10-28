@@ -428,10 +428,13 @@ test.describe("The fader sectors", () => {
         const volumeBefore = await live.get("band", VOCAL_VOLUME, "value");
         const revBefore = (await hubStatus()).sectors.rev;
         const since = Date.now();
+        // An added layout's id names the revision its save makes and the
+        // edit's add count, so no id is ever used again (#148 review).
+        const [firstAdd, secondAdd] = [1, 2].map((n) => `lu-r${revBefore + 1}-${n}`);
 
         // Outside ARRANGE the block only pages: no ✎, ✕ or +.
         await expect(page.getByTestId("add-layout")).toHaveCount(0);
-        await expect(row(page, "lu-1").getByTestId("rename")).toBeHidden();
+        for (const id of ["lu-1", "lu-2", "ru-1", "ld-1", "ld-2", "rd-1"]) await expect(row(page, id).getByTestId("rename"), id).toBeHidden();
         await expect(row(page, "lu-1").getByTestId("remove")).toBeHidden();
 
         await page.getByTestId("arrange").click();
@@ -439,6 +442,7 @@ test.describe("The fader sectors", () => {
         await expect(page.getByTestId("arrange-note")).toHaveText(ARRANGE_NOTE);
         // ✎ on every tab; ✕ only where a sector has more than one layout.
         await expect(page.getByTestId("rename")).toHaveCount(6);
+        for (const id of ["lu-1", "lu-2", "ru-1", "ld-1", "ld-2", "rd-1"]) await expect(row(page, id).getByTestId("rename"), id).toBeVisible();
         for (const id of ["lu-1", "lu-2", "ld-1", "ld-2"]) await expect(row(page, id).getByTestId("remove")).toBeVisible();
         for (const id of ["ru-1", "rd-1"]) await expect(row(page, id).getByTestId("remove"), id).toHaveCount(0);
         await expect(page.getByTestId("add-layout")).toHaveCount(4);
@@ -469,11 +473,11 @@ test.describe("The fader sectors", () => {
         // + adds NEW, shown at once (empty); at 4 layouts the + is gone.
         await cell(page, "lu").getByTestId("add-layout").click();
         await expect.poll(() => titles(page, "lu")).toEqual(["MONITORS", "ALT", "NEW"]);
-        await expect(tabOf(page, "lu-3")).toHaveAttribute("aria-pressed", "true");
+        await expect(tabOf(page, firstAdd)).toHaveAttribute("aria-pressed", "true");
         await expect.poll(() => stripsOf(page, "lu")).toEqual([]);
         await cell(page, "lu").getByTestId("add-layout").click();
         await expect.poll(() => titles(page, "lu")).toEqual(["MONITORS", "ALT", "NEW", "NEW 2"]);
-        await expect(tabOf(page, "lu-4")).toHaveAttribute("aria-pressed", "true");
+        await expect(tabOf(page, secondAdd)).toHaveAttribute("aria-pressed", "true");
         await expect(cell(page, "lu").getByTestId("add-layout")).toHaveCount(0);
 
         // Four layouts with their keys fit the column: the block whole, the
@@ -551,14 +555,14 @@ test.describe("The fader sectors", () => {
         );
         expect(live.sectors.doc.sectors.lu.map((l: any) => [l.id, l.title, l.strips])).toEqual([
           ["lu-1", "MONITORS", [VOCAL, KEYS]],
-          ["lu-3", "NEW", []],
-          ["lu-4", "NEW 2", []],
+          [firstAdd, "NEW", []],
+          [secondAdd, "NEW 2", []],
         ]);
         expect(live.sectors.doc.sectors.ld.map((l: any) => l.title)).toEqual(["HANDS", "EFFECTS"]);
         // Outside ARRANGE again: the new names, no keys.
         await expect.poll(() => titles(page, "lu")).toEqual(["MONITORS", "NEW", "NEW 2"]);
         await expect(page.getByTestId("add-layout")).toHaveCount(0);
-        await expect(row(page, "lu-1").getByTestId("rename")).toBeHidden();
+        for (const id of ["lu-1", firstAdd, secondAdd, "ru-1", "ld-1", "ld-2", "rd-1"]) await expect(row(page, id).getByTestId("rename"), id).toBeHidden();
 
         // Nothing reached Live.
         const sets = (await hubEvents()).filter((r: any) => r.ev === "set" && r.ts >= since);
@@ -573,7 +577,7 @@ test.describe("The fader sectors", () => {
         await openSectors(other);
         await expect.poll(() => titles(other, "lu")).toEqual(["MONITORS", "NEW", "NEW 2"]);
         await expect.poll(() => titles(other, "ld")).toEqual(["HANDS", "EFFECTS"]);
-        await expect(tabOf(other, "lu-4")).toHaveAttribute("aria-pressed", "true");
+        await expect(tabOf(other, secondAdd)).toHaveAttribute("aria-pressed", "true");
         await expect.poll(() => stripsOf(other, "lu")).toEqual([]);
         expect(otherConsole, "the second page's console").toEqual([]);
         await other.close();
