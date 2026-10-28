@@ -17,7 +17,8 @@ fn sl(id: &str, title: &str, labels: &[&str]) -> SectorLayout {
 }
 
 /// lu: lu-1 VOX [Vox 1, Vox 2], lu-3 KEYS [Klavir]; ru: ru-1 BAND [Bass]
-/// at revision 5 (lu-2 removed before, so new ids go on from lu-4).
+/// at revision 5 (lu-2 removed before; new ids carry the next revision,
+/// 6).
 fn doc() -> SectorsDoc {
     SectorsDoc {
         rev: 5,
@@ -118,10 +119,10 @@ fn a_plus_adds_new_with_an_id_never_used_up_to_4_layouts() {
     let doc = doc();
     let mut edit = Edit::of(&doc);
     assert!(edit.can_add(SectorId::Lu));
-    assert_eq!(edit.add(SectorId::Lu), Some("lu-4".to_string()));
+    assert_eq!(edit.add(SectorId::Lu), Some("lu-r6-1".to_string()));
     assert_eq!(titles(&edit, SectorId::Lu), ["VOX", "KEYS", "NEW"]);
     assert_eq!(edit.sectors[&SectorId::Lu][2].strips, Vec::<Slot>::new());
-    assert_eq!(edit.add(SectorId::Lu), Some("lu-5".to_string()));
+    assert_eq!(edit.add(SectorId::Lu), Some("lu-r6-2".to_string()));
     assert_eq!(titles(&edit, SectorId::Lu), ["VOX", "KEYS", "NEW", "NEW 2"]);
     assert!(!edit.can_add(SectorId::Lu), "4 layouts: the + is gone");
     assert_eq!(edit.add(SectorId::Lu), None);
@@ -130,20 +131,20 @@ fn a_plus_adds_new_with_an_id_never_used_up_to_4_layouts() {
     assert!(!edit.can_add(SectorId::Rd));
     assert_eq!(edit.add(SectorId::Rd), None);
     // An id removed in this edit is not used again.
-    edit.ask_remove("lu-5");
-    assert_eq!(edit.tab_tapped("lu-5"), TabTap::Removed);
-    assert_eq!(edit.add(SectorId::Lu), Some("lu-6".to_string()));
+    edit.ask_remove("lu-r6-2");
+    assert_eq!(edit.tab_tapped("lu-r6-2"), TabTap::Removed);
+    assert_eq!(edit.add(SectorId::Lu), Some("lu-r6-3".to_string()));
     assert_eq!(titles(&edit, SectorId::Lu), ["VOX", "KEYS", "NEW", "NEW 2"]);
     // An add drops a pending REMOVE?.
     let mut ru = Edit::of(&doc);
     ru.add(SectorId::Ru);
     ru.ask_remove("ru-1");
-    assert_eq!(ru.add(SectorId::Ru), Some("ru-3".to_string()));
+    assert_eq!(ru.add(SectorId::Ru), Some("ru-r6-2".to_string()));
     assert_eq!(ru.confirming, None);
 }
 
 #[test]
-fn a_new_title_and_id_count_from_what_is_taken() {
+fn a_new_title_counts_from_what_is_taken_and_an_id_carries_its_revision() {
     let new = |titles: &[&str]| {
         new_title(
             &titles
@@ -164,10 +165,68 @@ fn a_new_title_and_id_count_from_what_is_taken() {
         "NEW",
         "none free (a hand edit's five): NEW again"
     );
-    assert_eq!(new_id(SectorId::Lu, &["lu-1", "lu-3", "ru-9"]), "lu-4");
-    assert_eq!(new_id(SectorId::Ru, &["lu-1", "lu-3", "ru-9"]), "ru-10");
-    assert_eq!(new_id(SectorId::Ld, &["lu-1", "ld-x", "ld"]), "ld-1");
-    assert_eq!(new_id(SectorId::Rd, &[]), "rd-1");
+    assert_eq!(new_id(SectorId::Lu, 6, 1), "lu-r6-1");
+    assert_eq!(new_id(SectorId::Ru, 6, 2), "ru-r6-2");
+    assert_eq!(new_id(SectorId::Rd, 12, 10), "rd-r12-10");
+}
+
+/// `doc` with `id` (an empty NEW layout) added to lu, one revision on: the
+/// hub's document after a save of that add.
+fn saved_with(doc: &SectorsDoc, id: &str) -> SectorsDoc {
+    let mut next = doc.clone();
+    next.rev += 1;
+    if let Some(lu) = next.sectors.get_mut(&SectorId::Lu) {
+        lu.push(sl(id, "NEW", &[]));
+    }
+    next
+}
+
+/// `doc` without the layout `id`, one revision on (a save of its removal,
+/// or the undo of its add).
+fn saved_without(doc: &SectorsDoc, id: &str) -> SectorsDoc {
+    let mut next = doc.clone();
+    next.rev += 1;
+    for layouts in next.sectors.values_mut() {
+        layouts.retain(|l| l.id != id);
+    }
+    next
+}
+
+#[test]
+fn an_id_removed_in_an_earlier_revision_is_never_used_again() {
+    // Added and saved (revision 6), removed and saved (7), then a later
+    // session adds: never the removed id.
+    let first = doc();
+    let added = Edit::of(&first).add(SectorId::Lu).expect("an id");
+    let with = saved_with(&first, &added);
+    let removed = saved_without(&with, &added);
+    assert_eq!(removed.rev, 7);
+    let again = Edit::of(&removed).add(SectorId::Lu).expect("an id");
+    assert_ne!(again, added);
+    assert_eq!(again, "lu-r8-1");
+    // The review's case: a layout of the document (lu-3) removed and saved,
+    // then a new session's add: not lu-3 again.
+    let gone = saved_without(&first, "lu-3");
+    let next = Edit::of(&gone).add(SectorId::Lu).expect("an id");
+    assert_ne!(next, "lu-3");
+    assert_eq!(next, "lu-r7-1");
+}
+
+#[test]
+fn an_undo_then_an_add_never_uses_the_undone_id_again() {
+    // The add saved at revision 6; ↶ brings back revision 5's layouts at
+    // revision 7 (the hub's undo is a change of its own).
+    let first = doc();
+    let added = Edit::of(&first).add(SectorId::Lu).expect("an id");
+    assert_eq!(added, "lu-r6-1");
+    let with = saved_with(&first, &added);
+    let undone = SectorsDoc {
+        rev: with.rev + 1,
+        sectors: first.sectors.clone(),
+    };
+    let again = Edit::of(&undone).add(SectorId::Lu).expect("an id");
+    assert_ne!(again, added);
+    assert_eq!(again, "lu-r8-1");
 }
 
 #[test]

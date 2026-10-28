@@ -481,10 +481,10 @@ mod tests {
         // So is a layout added and removed again.
         let _ = mode.tap(&doc);
         let added = mode.edit().and_then(|e| e.add(SectorId::Ru));
-        assert_eq!(added.as_deref(), Some("ru-2"));
+        assert_eq!(added.as_deref(), Some("ru-r4-1"));
         if let Some(edit) = mode.edit() {
-            edit.ask_remove("ru-2");
-            assert_eq!(edit.tab_tapped("ru-2"), TabTap::Removed);
+            edit.ask_remove("ru-r4-1");
+            assert_eq!(edit.tab_tapped("ru-r4-1"), TabTap::Removed);
         }
         assert_eq!(mode.tap(&doc), Some(Tap::Leave));
         // Off, there is nothing to edit.
@@ -525,7 +525,7 @@ mod tests {
         let mut mode = Arrange::Off;
         let _ = mode.tap(&doc);
         let edit = mode.edit().expect("on");
-        assert_eq!(edit.add(SectorId::Lu), Some("lu-2".to_string()));
+        assert_eq!(edit.add(SectorId::Lu), Some("lu-r4-1".to_string()));
         edit.ask_remove("lu-1");
         assert_eq!(edit.tab_tapped("lu-1"), TabTap::Removed);
         // A rename still in its field is taken by the tap that saves.
@@ -538,7 +538,7 @@ mod tests {
         assert_eq!(
             sectors[&SectorId::Lu],
             vec![SectorLayout {
-                id: "lu-2".to_string(),
+                id: "lu-r4-1".to_string(),
                 title: "NEW".to_string(),
                 strips: Vec::new(),
             }]
@@ -681,7 +681,7 @@ mod tests {
         let _ = mode.tap(&doc);
         moved(&mut mode, "ru-1", refs(&["Klavir", "Keys 1"]));
         let added = mode.edit().and_then(|e| e.add(SectorId::Ru));
-        assert_eq!(added.as_deref(), Some("ru-2"));
+        assert_eq!(added.as_deref(), Some("ru-r4-1"));
         let shown = mode.applied(&doc);
         assert_eq!(shown.rev, 3);
         assert_eq!(
