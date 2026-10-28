@@ -19,6 +19,7 @@ pub mod lufs;
 pub mod markers;
 pub mod meter;
 pub mod path;
+pub mod sectors;
 pub mod songmap;
 pub mod volume;
 
