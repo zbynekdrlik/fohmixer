@@ -181,11 +181,18 @@ impl SectorsDoc {
             .find(|layout| layout.id == id)
     }
 
-    /// Every problem of the document (empty: valid): an id empty or on two
-    /// layouts, a title empty or longer than [`TITLE_MAX`] characters, a
-    /// strip twice in one layout (empty slots are no strip).
+    /// Every problem of the document (empty: valid): a sector it names with
+    /// no layout (a page's edit could never keep it; the empty document
+    /// names none), an id empty or on two layouts, a title empty or longer
+    /// than [`TITLE_MAX`] characters, a strip twice in one layout (empty
+    /// slots are no strip).
     pub fn validate(&self) -> Vec<String> {
-        let mut errors = Vec::new();
+        let mut errors: Vec<String> = self
+            .sectors
+            .iter()
+            .filter(|(_, layouts)| layouts.is_empty())
+            .map(|(sector, _)| format!("sector {} has no layout", sector.as_str()))
+            .collect();
         let mut ids: BTreeMap<&str, usize> = BTreeMap::new();
         for layout in self.sectors.values().flatten() {
             *ids.entry(layout.id.as_str()).or_default() += 1;
