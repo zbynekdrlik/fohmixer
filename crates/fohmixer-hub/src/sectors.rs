@@ -398,6 +398,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_reads_past_one_leading_utf8_bom() {
+        // Windows PowerShell 5's `Set-Content -Encoding UTF8` writes one.
+        let text = serde_json::to_string(&doc(2, &["Vox 1"])).unwrap();
+        let mut bommed = b"\xEF\xBB\xBF".to_vec();
+        bommed.extend_from_slice(text.as_bytes());
+        assert_eq!(parse(&bommed), Ok(doc(2, &["Vox 1"])));
+        // Only one: a second is no JSON.
+        let mut twice = b"\xEF\xBB\xBF".to_vec();
+        twice.extend_from_slice(&bommed);
+        assert!(parse(&twice).is_err());
+        // A file with a BOM opens as the document it holds.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(SECTORS_FILE), &bommed).unwrap();
+        let store = SectorStore::open(dir.path());
+        assert_eq!(store.doc(), &doc(2, &["Vox 1"]));
+        assert_eq!(store.error(), None);
+    }
+
+    #[test]
     fn commit_keeps_the_version_before_as_prev_on_disk() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), SECTORS_FILE, &doc(1, &["Vox 1"]));
