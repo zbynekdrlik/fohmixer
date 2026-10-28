@@ -197,7 +197,8 @@ async fn a_tick_is_answered_recorded_and_told_to_every_page() {
                     "strip": {"instance": "band", "label": "Bass"}, "on": true})
         ]
     );
-    // Off again: the strip goes.
+    // Off again: the strip goes and leaves its slot empty, so Bass keeps
+    // its place (the slot model of 28.10).
     router.handle(tick(2, "t2", "lu-1", "Vox 1", false));
     assert_eq!(answers(&b), vec![result("t2")]);
     assert_eq!(
@@ -205,7 +206,7 @@ async fn a_tick_is_answered_recorded_and_told_to_every_page() {
         vec![(
             doc(
                 3,
-                vec![(SectorId::Lu, vec![layout("lu-1", "VOX", &["Bass"])])]
+                vec![(SectorId::Lu, vec![layout("lu-1", "VOX", &["", "Bass"])])]
             ),
             true
         )]
