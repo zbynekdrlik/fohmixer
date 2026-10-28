@@ -319,6 +319,8 @@ pub enum Refusal {
     Stale,
     NothingToUndo,
     NoLayout,
+    /// An ARRANGE save of no layout: nothing to change.
+    Empty,
 }
 
 impl Refusal {
@@ -331,6 +333,7 @@ impl Refusal {
             Refusal::Stale => "stale",
             Refusal::NothingToUndo => "nothing to undo",
             Refusal::NoLayout => "no layout served",
+            Refusal::Empty => "EMPTY",
         }
     }
 }
@@ -377,10 +380,14 @@ fn same_set(a: &[StripRef], b: &[StripRef]) -> bool {
 }
 
 /// ARRANGE's save: each layout of `orders` takes its new order, as one
-/// change at `rev + 1`. It is `Stale` unless `rev` is the document's, each
+/// change at `rev + 1`. It is `Empty` for no layout (nothing to change, no
+/// undo step taken), and `Stale` unless `rev` is the document's, each
 /// layout exists and is named once, and each order holds the layout's own
 /// refs.
 pub fn orders(doc: &SectorsDoc, orders: &[SectorOrder], rev: u64) -> Result<SectorsDoc, Refusal> {
+    if orders.is_empty() {
+        return Err(Refusal::Empty);
+    }
     if rev != doc.rev {
         return Err(Refusal::Stale);
     }
