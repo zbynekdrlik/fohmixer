@@ -9,6 +9,7 @@ import {
   hubStatus,
   openDetail,
   openSurface,
+  pageEvents,
   resetSectors,
   setSectors,
   track,
@@ -235,7 +236,7 @@ test.describe("The fader sectors", () => {
     }
   });
 
-  test("ARRANGE reorders, saves, a second page sees it, and nothing reaches Live", async ({ page, context }) => {
+  test("ARRANGE reorders, saves, a second page sees it, and nothing reaches Live", async ({ page, context, browserName }) => {
     await setSectors(DOC);
     await openSectors(page);
     await expect.poll(() => stripsOf(page, "lu")).toEqual([name(VOCAL), name(KEYS)]);
@@ -251,6 +252,45 @@ test.describe("The fader sectors", () => {
       await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "true");
       await expect(arrange).toHaveAttribute("aria-pressed", "true");
       await expect(page.getByTestId("arrange-note")).toHaveText("drag to reorder · tap to save");
+
+      // Every strip lies under its cover: a real, hit-tested gesture on
+      // Vocal 1 repro#'s fader cap and on its SEL meets the cover, moves no
+      // fader and opens no detail (a mouse drag down the cap and a hold on
+      // SEL in Chromium, a finger's tap on each on the iPad).
+      const vocalSlot = slots(page, "lu").nth(0);
+      const cap = await centre(vocalSlot.getByTestId("fader-cap"));
+      const sel = await centre(vocalSlot.getByTestId("detail-key"));
+      for (const [what, at] of [["the cap", cap], ["SEL", sel]] as const) {
+        const hit = await page.evaluate(({ x, y }) => {
+          const el = document.elementFromPoint(x, y);
+          return {
+            cover: el?.closest('[data-testid="edit-cover"]') != null,
+            track: el?.closest(".slot")?.querySelector('[data-testid="strip"]')?.getAttribute("data-track") ?? null,
+          };
+        }, at);
+        expect(hit, `what is under ${what}`).toEqual({ cover: true, track: "Vocal 1 repro#" });
+      }
+      if (browserName === "chromium") {
+        await page.mouse.move(cap.x, cap.y);
+        await page.mouse.down();
+        await page.mouse.move(cap.x, cap.y + 20, { steps: 4 });
+        await page.mouse.move(cap.x, cap.y + 40, { steps: 4 });
+        await page.mouse.up();
+        await page.mouse.move(sel.x, sel.y);
+        await page.mouse.down();
+        await page.waitForTimeout(700);
+        await page.mouse.up();
+      } else {
+        await page.touchscreen.tap(cap.x, cap.y);
+        await page.touchscreen.tap(sel.x, sel.y);
+      }
+      await frames(page);
+      await expect(page.getByTestId("detail")).toHaveCount(0);
+      await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "true");
+      expect(await stripsOf(page, "lu"), "a vertical gesture moves no strip").toEqual([name(VOCAL), name(KEYS)]);
+      const touched = (await hubEvents()).filter((r: any) => r.ev === "set" && r.ts >= since);
+      expect(touched, JSON.stringify(touched)).toEqual([]);
+      expect(await live.get("band", VOCAL_VOLUME, "value")).toBe(volumeBefore);
 
       // Vocal 1 repro#'s cover carried past Keys 1's centre (the moves and
       // the lift on the same cover: a dispatched pointer has no capture).
@@ -294,6 +334,38 @@ test.describe("The fader sectors", () => {
     } finally {
       live.close();
     }
+  });
+
+  test("the detail's ◀ ▶ step to the pool's neighbouring strips", async ({ page }) => {
+    await setSectors(DOC);
+    await openSectors(page);
+    const since = await page.evaluate(() => performance.timeOrigin + performance.now());
+    // The fixture's pool in document order: … band Keys 1, master Hand1 #
+    // (the FOH page's OTHERS sub-page), band B-Main repro # (a return) …
+    const detail = await openDetail(page, "Hand1 #", "master");
+    await expect(detail.getByTestId("detail-steps")).toBeVisible();
+    await detail.getByTestId("detail-next").click();
+    await expect(detail).toHaveAttribute("data-track", "B-Main repro #");
+    await expect(detail).toHaveAttribute("data-instance", "band");
+    await detail.getByTestId("detail-prev").click();
+    await expect(detail).toHaveAttribute("data-track", "Hand1 #");
+    await expect(detail).toHaveAttribute("data-instance", "master");
+    // Each step is an open recorded with why "step" and the strip's keys.
+    const steps = await until(
+      async () =>
+        pageEvents(await hubEvents())
+          .filter((e: any) => e.ev === "detail" && e.what === "open" && e.why === "step" && e.t >= since)
+          .sort((a: any, b: any) => a.t - b.t),
+      (all) => all.length >= 2,
+      "the two steps in the event log",
+      15_000,
+    );
+    expect(steps.length).toBe(2);
+    const names = (e: any, instance: string, track: string) =>
+      (e.keys as string[]).some((k) => k.startsWith(`${instance}|`) && k.includes(track));
+    expect(names(steps[0], "band", "B-Main repro #"), JSON.stringify(steps[0])).toBe(true);
+    expect(names(steps[1], "master", "Hand1 #"), JSON.stringify(steps[1])).toBe(true);
+    expect(typeof steps[0].pointer).toBe("number");
   });
 
   test("undo restores the last change and a second undo redoes it", async ({ page }) => {
