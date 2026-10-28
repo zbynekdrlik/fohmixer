@@ -358,6 +358,35 @@ mod tests {
     }
 
     #[test]
+    fn a_prev_that_cannot_be_written_leaves_the_change_taken_with_no_undo() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), SECTORS_FILE, &doc(1, &["Vox 1"]));
+        write(dir.path(), PREV_FILE, &doc(0, &[]));
+        let mut store = SectorStore::open(dir.path());
+        assert!(store.has_prev());
+        // sectors.json.prev's temporary name is a folder holding a file:
+        // its write fails, sectors.json's does not.
+        let blocked = dir.path().join("sectors.json.tmp");
+        std::fs::create_dir(&blocked).unwrap();
+        std::fs::write(blocked.join("x"), "x").unwrap();
+        store.commit(doc(2, &["Vox 1", "Bass"])).unwrap();
+        assert_eq!(read(dir.path(), SECTORS_FILE), doc(2, &["Vox 1", "Bass"]));
+        assert_eq!(store.doc(), &doc(2, &["Vox 1", "Bass"]));
+        // No undo until the next change: none in memory, and no older
+        // version left on disk that a restart would offer as one.
+        assert!(!store.has_prev());
+        assert!(!dir.path().join(PREV_FILE).exists());
+        assert!(!SectorStore::open(dir.path()).has_prev());
+        assert!(matches!(store.undo(), Err(Refusal::NothingToUndo)));
+        assert_eq!(store.poll(), None, "its own write");
+        // The next change that can write it has its undo again.
+        std::fs::remove_dir_all(&blocked).unwrap();
+        store.commit(doc(3, &["Bass"])).unwrap();
+        assert!(store.has_prev());
+        assert_eq!(read(dir.path(), PREV_FILE), doc(2, &["Vox 1", "Bass"]));
+    }
+
+    #[test]
     fn the_stores_own_write_is_not_polled_as_a_change() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), SECTORS_FILE, &doc(1, &["Vox 1"]));
