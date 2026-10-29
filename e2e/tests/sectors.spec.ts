@@ -9,10 +9,12 @@ import {
   harness,
   hubEvents,
   hubStatus,
+  openDeck,
   openDetail,
   openSurface,
   pageEvents,
   resetSectors,
+  ret,
   servedLayout,
   setSectors,
   track,
@@ -224,6 +226,56 @@ test.describe("The fader sectors", () => {
 
   test.describe("at the iPad's size", () => {
     test.use({ viewport: { width: 1194, height: 834 } });
+
+    test("STREAM DECK opens in the left sectors: the column stays in the middle and RU and RD stay live (#148)", async ({ page }) => {
+      // The owner (29.10.2026): the deck and AbleSet in the left sectors, the
+      // column never moving right; the right sectors keep working.
+      await setSectors(DOC);
+      await openSectors(page);
+      const before = (await page.getByTestId("column").boundingBox())!;
+      await openDeck(page);
+      await expect(sectorsPage(page)).toHaveAttribute("data-extra", "deck");
+      const viewport = page.viewportSize()!;
+      const column = (await page.getByTestId("column").boundingBox())!;
+      expect(Math.abs(column.x + column.width / 2 - viewport.width / 2), "the column's centre (px off the screen's)").toBeLessThan(1);
+      expect(Math.abs(column.x - before.x), "the column did not move").toBeLessThan(0.5);
+      // Every key left of the column, none right of it.
+      const keys = await page.getByTestId("deck-key").evaluateAll((all) => all.map((k) => k.getBoundingClientRect().right));
+      expect(keys).toHaveLength(32);
+      for (const right of keys) expect(right, "a key right of the column").toBeLessThanOrEqual(column.x + 0.5);
+      // RU and RD shown, LU and LD under the deck.
+      for (const sector of ["ru", "rd"]) await expect(slots(page, sector).getByTestId("strip").first(), sector).toBeVisible();
+      for (const sector of ["lu", "ld"]) await expect(slots(page, sector).getByTestId("strip").first(), sector).toBeHidden();
+      // A fader in RU still moves: a dispatched drag of B-Main repro #'s cap
+      // reaches the hub as a set and Live's volume follows.
+      const live = await LiveClient.open();
+      const target = volume(ret("B-Main repro #"));
+      const start = await live.get("band", target, "value");
+      try {
+        await live.set("band", target, "value", 0.5);
+        const strip = slots(page, "ru").getByTestId("strip").first();
+        await expect.poll(async () => Number(await strip.getByTestId("fader").getAttribute("data-value"))).toBeCloseTo(0.5, 2);
+        const since = Date.now();
+        await dispatchPointer(strip.getByTestId("fader-cap"), [
+          { type: "pointerdown" },
+          { type: "pointermove", dy: 0 },
+          { type: "pointermove", dy: 20 },
+          { type: "pointermove", dy: 40 },
+          { type: "pointerup", dy: 40 },
+        ]);
+        const sets = await until(
+          async () => (await hubEvents()).filter((r: any) => r.ev === "set" && r.ts >= since),
+          (all) => all.length > 0,
+          "the drag's set at the hub",
+        );
+        expect(sets.every((r: any) => String(r.key).includes("B-Main repro #")), JSON.stringify(sets)).toBe(true);
+        await until(() => live.get("band", target, "value"), (v) => typeof v === "number" && v > 0.5, "Live's volume raised");
+        await expect(page.getByTestId("deck-key")).toHaveCount(32);
+      } finally {
+        await live.set("band", target, "value", start);
+        live.close();
+      }
+    });
 
     test("the column's head: FOH a centred row of its own above STREAM DECK and ABLESET, the status at its foot, nothing overflowing (#148)", async ({ page }) => {
       // The site's column (the owner's report of 29.10.2026): the LAYOUTS

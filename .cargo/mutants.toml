@@ -385,11 +385,12 @@ exclude_re = [
   # the cleanup must not write the page's own signal) and leave_keys (the
   # same when the page is hidden, then the outline) and lift_missed (the
   # tested Presses::missed_ups' ups through carry, then the outline: from
-  # the page root's capture-phase pointerdown listener and a key's down).
+  # the window's capture-phase pointerdown listener and a key's down).
   # deck.spec.ts drives them in Chromium and WebKit (down and up on
   # pointerup, pointercancel and leaving the tab, with the page's deck
   # events and their whys in the event log; the outline; the red flash with
-  # no later send). half_keys and half_vars (each half's keys and size, #63) are tested.
+  # no later send). deck_keys and deck_vars (the one grid over the page's
+  # left half, #148) are tested.
   # in_column_head (#63): whether a down's target lies in the column's head
   # (web_sys Element::closest); deck.spec.ts proves it: a tap of a layout
   # tab or of the open deck tab leaves a held key held (its up says "tab",

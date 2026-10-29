@@ -57,9 +57,12 @@ const BODY_PAD: f64 = 12.0;
 /// Between a side and the column (`.body`'s gap).
 const BODY_GAP: f64 = 6.0;
 
-/// A tab after the layout's pages, shown instead of them (#52, #90).
+/// A tab after the layout's pages (#52, #90), shown in the left half of
+/// the page shown (#148: the left sectors, or the rows' left halves; the
+/// right half and the column stay the page's; on a phone the whole screen
+/// but the thin strip).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum Extra {
+pub(crate) enum Extra {
     /// None: the layout's page.
     #[default]
     None,
@@ -67,6 +70,17 @@ enum Extra {
     Deck,
     /// AbleSet's own page (#90).
     AbleSet,
+}
+
+impl Extra {
+    /// The page's `data-extra`.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Extra::None => "none",
+            Extra::Deck => "deck",
+            Extra::AbleSet => "ableset",
+        }
+    }
 }
 
 /// The page selection (a context of the surface).
@@ -393,7 +407,6 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
         sub,
         sectored,
     });
-    let viewport = nav.viewport;
     // The channel detail (#71): the layout's strip that is the held one
     // (`binding::detail_strip`: a marker strip follows its marker to any
     // index; its binding, label, guard and mark this layout's), over the
@@ -443,25 +456,10 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
             view! { <DetailView strip=strip group=group /> }
         })
     };
+    // The page shown; an extra tab (#148) lies over its left half
+    // (`ExtraPane`, inside the page), so the right half and the column stay
+    // the page's and a tab's change mounts no page.
     let body = move || {
-        match nav.shown.get() {
-            Extra::Deck => {
-                let global = layout.global.clone();
-                return Some(view! { <DeckView global=global viewport=viewport /> }.into_any());
-            }
-            // AbleSet's page keeps the column of the page it was opened
-            // from: its rail and the global controls (#90, variant A).
-            Extra::AbleSet => {
-                let rail = page
-                    .get()
-                    .and_then(|index| layout.pages.get(index))
-                    .map(|opened_from| opened_from.rail.clone())
-                    .unwrap_or_default();
-                let global = layout.global.clone();
-                return Some(view! { <AbleSetView rail=rail global=global /> }.into_any());
-            }
-            Extra::None => {}
-        }
         let index = page.get()?;
         let shown = layout.pages.get(index)?.clone();
         let global = layout.global.clone();
@@ -651,6 +649,27 @@ fn TabBar(
             {extra_tabs}
         </div>
     }
+}
+
+/// An extra tab's content over the left half of the page shown (#148, the
+/// owner's ruling of 29.10.2026: STREAM DECK and ABLESET open in the left
+/// sectors; the column stays in the screen's middle and the right half
+/// keeps working): the deck's keys or AbleSet's frame. One `nav.shown`
+/// memo: a tap on the open tab or the pager mounts nothing again.
+#[component]
+pub(crate) fn ExtraPane() -> impl IntoView {
+    let nav = expect_context::<Nav>();
+    let viewport = nav.viewport;
+    move || match nav.shown.try_get().unwrap_or_default() {
+        Extra::None => None,
+        Extra::Deck => Some(view! { <DeckView viewport=viewport /> }.into_any()),
+        Extra::AbleSet => Some(view! { <AbleSetView /> }.into_any()),
+    }
+}
+
+/// The page's `data-extra` (#148): the extra tab over its left half.
+pub(crate) fn extra_attr(nav: Nav) -> impl Fn() -> &'static str + Copy {
+    move || nav.shown.try_get().unwrap_or_default().name()
 }
 
 /// The column's foot (#148, the owner's ruling of 29.10.2026): the status
@@ -948,12 +967,14 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
             data-testid="page"
             data-page=page.id
             data-column-open=move || open().to_string()
+            data-extra=extra_attr(nav)
             node_ref=body_ref
             style=body_style
             data-narrow=narrow_attr
             data-narrow-wide=narrow_wide_attr
         >
             <For each=move || 0..count.try_get().unwrap_or(0) key=|line| *line children=line_view />
+            <ExtraPane />
             <ThinStrip arranged=arranged offsets=offsets node=thin_ref />
             {shade}
             <nav class="column" data-testid="column" node_ref=column_ref>
@@ -1567,6 +1588,15 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+
+    #[test]
+    fn the_pages_data_extra_names_the_extra_tab() {
+        // #148: page.css hides the left half under any extra tab but "none".
+        assert_eq!(Extra::None.name(), "none");
+        assert_eq!(Extra::Deck.name(), "deck");
+        assert_eq!(Extra::AbleSet.name(), "ableset");
+        assert_eq!(Extra::default().name(), "none");
+    }
 
     fn strip(name: &str) -> serde_json::Value {
         json!({"kind": "strip", "binding": {"instance": "band", "anchor": {"kind": "track", "name": name}},

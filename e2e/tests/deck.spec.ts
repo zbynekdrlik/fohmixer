@@ -286,7 +286,7 @@ test.describe("The Stream Deck tab", () => {
     await companion.reset();
   });
 
-  test("shows 8 × 4 square keys in key order around the column, and only the global controls on the rail", async ({ page }) => {
+  test("shows 8 × 4 square keys in key order left of the column, the page's own column and right half beside them", async ({ page }) => {
     await openSurface(page);
     await openDeck(page);
     const boxes = await page.getByTestId("deck-key").evaluateAll((els) =>
@@ -295,14 +295,14 @@ test.describe("The Stream Deck tab", () => {
         return { key: Number(e.getAttribute("data-key")), x: r.x, y: r.y, w: r.width, h: r.height };
       }),
     );
-    // #63: the left half's keys (columns 0–3 of each row), then the right's.
-    expect(boxes.map((b) => b.key)).toEqual([0, 1, 2, 3, 8, 9, 10, 11, 16, 17, 18, 19, 24, 25, 26, 27, 4, 5, 6, 7, 12, 13, 14, 15, 20, 21, 22, 23, 28, 29, 30, 31]);
-    boxes.sort((a, b) => a.key - b.key);
+    // #148 (the owner's ruling of 29.10.2026): one grid in key order over
+    // the page's left half (#63's two halves around the column are gone).
+    expect(boxes.map((b) => b.key)).toEqual([...Array(32).keys()]);
     const viewport = page.viewportSize()!;
     for (const b of boxes) {
       expect(Math.abs(b.w - b.h), `key ${b.key} is square`).toBeLessThanOrEqual(1);
       expect(b.w, `key ${b.key} is large`).toBeGreaterThan(40);
-      expect(b.x + b.w).toBeLessThanOrEqual(viewport.width);
+      expect(b.x).toBeGreaterThanOrEqual(0);
       expect(b.y + b.h).toBeLessThanOrEqual(viewport.height);
     }
     for (let key = 1; key < 32; key++) {
@@ -315,12 +315,16 @@ test.describe("The Stream Deck tab", () => {
         expect(Math.abs(boxes[key].x - boxes[key - 8].x)).toBeLessThanOrEqual(1);
       }
     }
-    // The column sits between keys 3 and 4.
-    const column = (await page.locator('[data-testid="deck"] [data-testid="column"]').boundingBox())!;
-    expect(boxes[3].x + boxes[3].w).toBeLessThanOrEqual(column.x + 0.5);
-    expect(boxes[4].x).toBeGreaterThanOrEqual(column.x + column.width - 0.5);
-    await expect(page.locator('[data-testid="deck"] .rail-main > *')).toHaveCount(0);
-    await expect(page.locator('[data-testid="deck"] .rail-foot > *').first()).toBeVisible();
+    // The page's own column, in the screen's middle, every key left of it;
+    // the page's rail and global controls in it; its right half's strips shown.
+    const column = (await page.getByTestId("column").boundingBox())!;
+    expect(Math.abs(column.x + column.width / 2 - viewport.width / 2), "the column's centre (px off the screen's)").toBeLessThan(1);
+    for (const b of boxes) expect(b.x + b.w, `key ${b.key} left of the column`).toBeLessThanOrEqual(column.x + 0.5);
+    await expect(page.getByTestId("page")).toHaveAttribute("data-extra", "deck");
+    await expect(page.locator('.rail-main > *').first()).toBeVisible();
+    await expect(page.locator('.rail-foot > *').first()).toBeVisible();
+    await expect(page.locator('.slot[data-side="right"] [data-testid="strip"]').first()).toBeVisible();
+    await expect(page.locator('.slot[data-side="left"] [data-testid="strip"]').first()).toBeHidden();
     await expect(page.getByTestId("deck-tab")).toHaveAttribute("data-offline", "false");
     await expect(page.getByTestId("deck-dot")).toHaveCount(0);
     // The layout's tabs are not lit while the deck is shown, and the pages'

@@ -45,7 +45,9 @@ use crate::binding::sectors::{
 };
 use crate::components::{ControlView, down_of, owns_touches};
 use crate::dom;
-use crate::pages::surface::{ColumnFoot, ColumnHead, Head, Nav, ThinStrip, measure_page};
+use crate::pages::surface::{
+    ColumnFoot, ColumnHead, ExtraPane, Head, Nav, ThinStrip, extra_attr, measure_page,
+};
 use crate::store::ResultFn;
 
 /// How long the refused save's note shows under ARRANGE (ms).
@@ -400,12 +402,14 @@ pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
             data-sectors="true"
             data-arrange=arranging
             data-column-open=move || open().to_string()
+            data-extra=extra_attr(nav)
             node_ref=body_ref
             style=body_style
             data-narrow=narrow_attr
             data-narrow-wide=narrow_wide_attr
         >
             <For each=move || 0..count.try_get().unwrap_or(0) key=|line| *line children=line_view />
+            <ExtraPane />
             <ThinStrip arranged=no_lines offsets=no_offsets node=thin_ref />
             {shade}
             <nav class="column" data-testid="column" node_ref=column_ref>

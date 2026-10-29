@@ -23,8 +23,9 @@ import { HTTPS } from "./support/pwa";
 
 // AbleSet's tab (#90 PR C; the owner's variant A of
 // docs/mockups/ableset-tab-v1.html): ABLESET is the last tab, right after
-// STREAM DECK; its page puts the column at the right edge and AbleSet's own
-// page, framed from AbleSet's name through the hub, in the rest. The e2e
+// STREAM DECK; AbleSet's own page, framed from AbleSet's name through the
+// hub, lies over the page's left half, the column staying in the screen's
+// middle (#148, the owner's ruling of 29.10.2026). The e2e
 // job's harness runs the fake AbleSet (e2e/harness/fake_ableset.py) behind
 // the hub's `[ableset]` (`ableset.e2e.test`, a sibling of `foh.e2e.test`):
 // its page keeps a `browserId` in localStorage, opens a Socket.IO-like
@@ -244,13 +245,17 @@ test.describe("AbleSet's tab (the LAN path, fohmixer's own https page)", () => {
     await expect(frame).toHaveAttribute("referrerpolicy", "no-referrer");
     await expect(frame).toHaveAttribute("allow", "");
     await ablesetLoaded(page);
-    // Variant A: the column at the right edge, AbleSet left of it.
+    // #148: the column stays in the screen's middle (its right-edge place of
+    // variant A is gone), AbleSet fills the left half up to it, and the
+    // page's right half is shown beside.
     const viewport = page.viewportSize()!;
-    const column = (await area.getByTestId("column").boundingBox())!;
+    const column = (await page.getByTestId("column").boundingBox())!;
     const framed = (await frame.boundingBox())!;
-    expect(column.x + column.width).toBeGreaterThan(viewport.width - 12);
-    expect(framed.x + framed.width).toBeLessThanOrEqual(column.x);
-    expect(framed.width).toBeGreaterThan(viewport.width - column.width - 40);
+    expect(Math.abs(column.x + column.width / 2 - viewport.width / 2), "the column's centre (px off the screen's)").toBeLessThan(1);
+    expect(framed.x + framed.width).toBeLessThanOrEqual(column.x + 0.5);
+    expect(framed.width).toBeGreaterThan((viewport.width - column.width) / 2 - 30);
+    await expect(page.getByTestId("page")).toHaveAttribute("data-extra", "ableset");
+    await expect(page.locator('.slot[data-side="right"] [data-testid="strip"]').first()).toBeVisible();
     // AbleSet's socket goes through the hub, and a press inside the frame reaches AbleSet.
     await until(() => ablesetStatus(bearer), (s) => s.sockets >= 1, "AbleSet's socket counted");
     // The hub's record of that socket opening (design §6): the frame's own
