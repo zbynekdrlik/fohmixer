@@ -99,6 +99,11 @@
     gap: 4px;
 }
 
+/* The badges' box is no box on a tablet: they wrap with the status. */
+.status-cluster .badges {
+    display: contents;
+}
+
 .column .status-cluster .badge-dot {
     width: 6px;
     height: 6px;
@@ -435,7 +440,7 @@
     .column .status-cluster {
         display: grid;
         grid-template-columns: repeat(4, auto);
-        grid-template-rows: 9px 9px;
+        grid-template-rows: minmax(9px, auto) 9px;
         justify-content: center;
         align-items: center;
         gap: 0 3px;
@@ -450,8 +455,20 @@
         line-height: 16px;
     }
 
-    .column .status-cluster .badge {
+    /* The badges share the middle columns over the version and wrap
+       there (a third Live set's badge goes under the others, the row
+       grows): never an implicit column past the counter and TAGS. */
+    .column .status-cluster .badges {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
         grid-row: 1;
+        grid-column: 2 / 4;
+        gap: 0 3px;
+        min-width: 0;
+    }
+
+    .column .status-cluster .badge {
         gap: 3px;
         line-height: 9px;
     }

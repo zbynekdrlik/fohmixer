@@ -1574,7 +1574,10 @@ fn StatusCluster() -> impl IntoView {
     view! {
         <div class="status-cluster">
             <DropoutCounter />
-            {badges}
+            // The badges in a box of their own (no box on a tablet:
+            // `display: contents`), so a low phone's foot wraps a third
+            // instance's badge under the others (#148 review).
+            <span class="badges">{badges}</span>
             <span class="version" data-testid="version">{version_text()}</span>
             <ManualChip />
         </div>
