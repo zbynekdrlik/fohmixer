@@ -291,17 +291,25 @@ mod tests {
         assert_eq!(full_text(true), "lift: mute");
         assert_eq!(full_text(false), "lift: unmute");
         assert_eq!(HOLD_HINT, "hold");
-        let line = |fill, to, hint| hold_line(fill, to, hint);
-        assert_eq!(line(Fill::Filling, Some(true), false), Some("hold… mute"));
-        assert_eq!(line(Fill::Filling, Some(false), true), Some("hold… unmute"));
-        assert_eq!(line(Fill::Full, Some(true), false), Some("lift: mute"));
-        assert_eq!(line(Fill::Full, Some(false), true), Some("lift: unmute"));
-        assert_eq!(line(Fill::None, Some(true), true), Some("hold"));
-        assert_eq!(line(Fill::None, None, true), Some("hold"));
-        assert_eq!(line(Fill::None, Some(true), false), None);
-        assert_eq!(line(Fill::None, None, false), None);
-        assert_eq!(line(Fill::Full, None, false), None);
-        assert_eq!(line(Fill::Filling, None, true), None);
+        assert_eq!(
+            hold_line(Fill::Filling, Some(true), false),
+            Some("hold… mute")
+        );
+        assert_eq!(
+            hold_line(Fill::Filling, Some(false), true),
+            Some("hold… unmute")
+        );
+        assert_eq!(hold_line(Fill::Full, Some(true), false), Some("lift: mute"));
+        assert_eq!(
+            hold_line(Fill::Full, Some(false), true),
+            Some("lift: unmute")
+        );
+        assert_eq!(hold_line(Fill::None, Some(true), true), Some("hold"));
+        assert_eq!(hold_line(Fill::None, None, true), Some("hold"));
+        assert_eq!(hold_line(Fill::None, Some(true), false), None);
+        assert_eq!(hold_line(Fill::None, None, false), None);
+        assert_eq!(hold_line(Fill::Full, None, false), None);
+        assert_eq!(hold_line(Fill::Filling, None, true), None);
     }
 
     #[test]
