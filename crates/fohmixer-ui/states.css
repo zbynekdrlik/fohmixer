@@ -102,7 +102,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .mute.armed,
     .btn.armed {
         animation: none;
     }

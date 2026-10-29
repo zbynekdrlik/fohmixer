@@ -1,14 +1,77 @@
 //! The mute button's protection (spec F12; TouchOSC `mute_button.lua`
-//! 2.7.2): a strip listed in `double_click_mute` changes its mute only on a
-//! second tap within 500 ms. The first tap arms (the button pulses) and
-//! changes nothing; a tap after the window arms again.
+//! 2.7.2's `double_click_mute`, the layout's `mute_guard`).
+//!
+//! A guarded strip's mute (its name button and the channel detail's MUTE)
+//! acts by a hold (#162, the owner's request of 2026-10-29: nobody knew a
+//! double tap was needed): the press is `behave::hold::Hold` in its lift
+//! mode, the rail buttons' `RAIL_HOLD_MS` of 1000 ms ([`mute_press`]). The
+//! fill grows across the button while held; at full the line says what the
+//! lift will do ([`full_text`]) and the lift mutes or unmutes, the only
+//! write. A lift before full shows a short hint ([`HOLD_HINT`]) and writes
+//! nothing; a slide, a cancel, a lost capture, a hidden page or a stale
+//! press write nothing either. An unguarded mute stays one tap.
+//!
+//! A guarded TechAlert keeps the double tap ([`MuteGuard`]): the first tap
+//! arms (the button pulses) and changes nothing, a second within 500 ms
+//! applies; a tap after the window arms again.
 //!
 //! The linked mute (#127, the owner's design on #127, mockup v3 variant A):
 //! a strip's mute writes its own track and every partner track ([`Linked`]:
 //! all playing, all muted, or m of N muted by hand in Live). A plain mute is
 //! a link of one.
 
-/// The window for the confirming second tap.
+use super::hold::Hold;
+use super::rail::{Fill, RAIL_HOLD_MS};
+
+/// A guarded mute's press (#162): full at `RAIL_HOLD_MS` (1000 ms), acting
+/// at its lift, as a rail button's.
+pub fn mute_press() -> Hold {
+    Hold::lifted(RAIL_HOLD_MS)
+}
+
+/// The hint a lift before full shows (#162): the mute must be held.
+pub const HOLD_HINT: &str = "hold";
+
+/// The line while a hold fills a guarded mute: what it will do (`mute`:
+/// the lift mutes; else it unmutes).
+pub fn hold_text(mute: bool) -> &'static str {
+    if mute {
+        "hold… mute"
+    } else {
+        "hold… unmute"
+    }
+}
+
+/// The line while a guarded mute's press is full: what its lift does.
+pub fn full_text(mute: bool) -> &'static str {
+    if mute { "lift: mute" } else { "lift: unmute" }
+}
+
+/// The fill of a guarded mute's press `filling` (down, before its hold) or
+/// `full` (past it): only a press that can act shows one, `to` the mute
+/// its lift would write (none: the strip's own track has no value).
+pub fn mute_fill(filling: bool, full: bool, to: Option<bool>) -> Fill {
+    match (to, full, filling) {
+        (None, _, _) => Fill::None,
+        (Some(_), true, _) => Fill::Full,
+        (Some(_), false, true) => Fill::Filling,
+        (Some(_), false, false) => Fill::None,
+    }
+}
+
+/// The guarded mute's line (#162; on a strip it takes the marks line's
+/// place, on the detail's MUTE the label's): the hold's words while it
+/// fills or is full, the hint after a lift before full (`hint`), else
+/// none.
+pub fn hold_line(fill: Fill, to: Option<bool>, hint: bool) -> Option<&'static str> {
+    match fill {
+        Fill::Full => to.map(full_text),
+        Fill::Filling => to.map(hold_text),
+        Fill::None => hint.then_some(HOLD_HINT),
+    }
+}
+
+/// The window for a guarded TechAlert's confirming second tap.
 pub const GUARD_MS: f64 = 500.0;
 
 /// What a tap on a mute button does.
@@ -20,7 +83,8 @@ pub enum GuardAction {
     Arm,
 }
 
-/// The guard of one mute button.
+/// The double-tap guard of a guarded TechAlert (#162: a strip's guarded
+/// mute holds instead, [`mute_press`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct MuteGuard {
     armed_at: Option<f64>,
@@ -187,6 +251,68 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_guarded_mute_is_full_at_exactly_1000_ms_and_acts_at_its_lift() {
+        use super::super::hold::Lift;
+        let mut h = mute_press();
+        assert!(h.down(1, true, 0.0));
+        assert!(!h.open(1000.0_f64.next_down()), "a hair before");
+        assert!(h.holding() && !h.full(), "filling");
+        assert!(h.open(1000.0));
+        assert!(h.full());
+        assert_eq!(h.up(1, 1100.0), Lift::Open, "the lift acts");
+        // A lift a hair before full is the hint's, never a write.
+        assert!(h.down(2, true, 0.0));
+        assert_eq!(h.up(2, 1000.0_f64.next_down()), Lift::Tap);
+        // One that no check saw, at exactly 1000 ms, acts.
+        assert!(h.down(3, true, 0.0));
+        assert_eq!(h.up(3, 1000.0), Lift::Open);
+        assert_eq!(mute_press(), Hold::lifted(1000.0));
+        assert_eq!(RAIL_HOLD_MS, 1000.0);
+    }
+
+    #[test]
+    fn a_guarded_mute_fills_only_while_its_lift_can_write() {
+        for to in [Some(true), Some(false)] {
+            assert_eq!(mute_fill(false, false, to), Fill::None, "no press");
+            assert_eq!(mute_fill(true, false, to), Fill::Filling);
+            assert_eq!(mute_fill(false, true, to), Fill::Full);
+            assert_eq!(mute_fill(true, true, to), Fill::Full);
+        }
+        // The strip's own track without a value: no fill, however pressed.
+        for (filling, full) in [(false, false), (true, false), (false, true), (true, true)] {
+            assert_eq!(mute_fill(filling, full, None), Fill::None);
+        }
+    }
+
+    #[test]
+    fn a_guarded_mutes_line_says_the_hold_the_lift_or_the_hint() {
+        assert_eq!(hold_text(true), "hold… mute");
+        assert_eq!(hold_text(false), "hold… unmute");
+        assert_eq!(full_text(true), "lift: mute");
+        assert_eq!(full_text(false), "lift: unmute");
+        assert_eq!(HOLD_HINT, "hold");
+        assert_eq!(
+            hold_line(Fill::Filling, Some(true), false),
+            Some("hold… mute")
+        );
+        assert_eq!(
+            hold_line(Fill::Filling, Some(false), true),
+            Some("hold… unmute")
+        );
+        assert_eq!(hold_line(Fill::Full, Some(true), false), Some("lift: mute"));
+        assert_eq!(
+            hold_line(Fill::Full, Some(false), true),
+            Some("lift: unmute")
+        );
+        assert_eq!(hold_line(Fill::None, Some(true), true), Some("hold"));
+        assert_eq!(hold_line(Fill::None, None, true), Some("hold"));
+        assert_eq!(hold_line(Fill::None, Some(true), false), None);
+        assert_eq!(hold_line(Fill::None, None, false), None);
+        assert_eq!(hold_line(Fill::Full, None, false), None);
+        assert_eq!(hold_line(Fill::Filling, None, true), None);
+    }
+
+    #[test]
     fn an_unguarded_tap_applies_at_once() {
         let mut g = MuteGuard::default();
         assert_eq!(g.on_tap(false, 0.0), GuardAction::Apply);
@@ -195,7 +321,7 @@ mod tests {
     }
 
     #[test]
-    fn a_guarded_mute_needs_a_second_tap_within_500_ms() {
+    fn a_guarded_techalert_needs_a_second_tap_within_500_ms() {
         let mut g = MuteGuard::default();
         assert_eq!(g.on_tap(true, 1000.0), GuardAction::Arm);
         assert!(g.armed(1000.0) && g.armed(1500.0) && !g.armed(1501.0));

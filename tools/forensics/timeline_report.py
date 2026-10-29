@@ -1068,10 +1068,11 @@ def _ableset_table(t):
 
 
 RULES_LEGEND = (
-    "The rules (#130): each step of a rail button as the page recorded it (press, tap, the "
-    "full mark at 1 s, hold: the lift that acted, refused: nothing sent, slid, lost, cancel; "
-    "AUTOTUNE's panel: close, singer) with the keys it writes, and the hub's rule records in "
-    "time order: the transport (play, stop, or the error that left the rules blind), STAGE "
+    "The rules (#130): each step of a rail button or a guarded mute (button mute, #162) as "
+    "the page recorded it (press, tap, the full mark at 1 s, hold: the lift that acted, "
+    "hint: a mute lifted before full, nothing sent, refused: nothing sent, slid, lost, "
+    "cancel; AUTOTUNE's panel: close, singer) with the keys it writes, and the hub's rule "
+    "records in time order: the transport (play, stop, or the error that left the rules blind), STAGE "
     "AUT (flag, write of the stage mics' mute, a failed write), REVERB (every step: aut, "
     "tap, wait, lower with its glides or no fader, return, pending, skipped with why, a "
     "set's window opening or ending), the fader links' switches and AUTOTUNE's steps. At "

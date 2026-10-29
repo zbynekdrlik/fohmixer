@@ -172,6 +172,26 @@
     display: none;
 }
 
+/* A guarded MUTE's hold line (#162) takes the label's place while it
+   says something. */
+.detail-left .mute[data-says="true"] > .strip-label {
+    display: none;
+}
+
+.detail-left .mute > .mute-hold {
+    font: 700 15px/1 var(--display);
+    letter-spacing: 0.04em;
+}
+
+/* Beside a linked MUTE's chain (top left, link.css) the line sits 8 px
+   lower, under the chain: on a phone the longest line is wider than the
+   room right of the chain (measured in both engines at 844 x 390 and
+   390 x 844), and on the low phone's 40 px MUTE a centred line's top met
+   the chain's bottom (mute-hold.spec.ts sweeps it). */
+.detail-left .mute > .link-mark ~ .mute-hold {
+    margin-top: 8px;
+}
+
 /* The status light and Live's dB, large. */
 .detail-readout {
     display: flex;
@@ -341,7 +361,7 @@
 .detail-right .fader-link {
     --c: var(--accent);
     flex: none;
-    margin-top: 6px;
+    margin-top: 8px;
 }
 
 .fader-follow {
@@ -349,7 +369,7 @@
     flex: none;
     gap: 3px;
     min-height: 44px;
-    margin-top: 6px;
+    margin-top: 8px;
     padding: 8px 10px;
     border: 1px dashed var(--line);
     border-radius: 10px;

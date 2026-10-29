@@ -17,6 +17,10 @@ import { openSurface } from "./support/live";
 // at its bottom left, 3 px clear of the cap at −∞ (the main session's
 // ruling on #151).
 //
+// A guarded mute's hold (#162): its fill a layer of the button's box and
+// each of its lines in the marks line's place, seen whole beside the
+// colour edge at every width.
+//
 // A static render of the strip as StripView, MuteView, InfoColumn,
 // FaderView/TrackMeter and DetailKey draw it, in the surface's own
 // stylesheets and bundled fonts, swept over the strip widths: the mockup's
@@ -120,6 +124,8 @@ async function sweep(list: Case[]): Promise<Result> {
     return { chainBare: chain && muted, flinkBare: flink && n >= 3, crowd: n >= 4, flinkYield: flink && flag && chain };
   };
   const ticks = [6, 0, -6, -12, -18, -24, -30, -40, -60];
+  /** A guarded mute's hold lines (#162, behave::mute: hold_text, full_text, HOLD_HINT). */
+  const HOLD_LINES = ["hold… mute", "hold… unmute", "lift: mute", "lift: unmute", "hold"];
   const strips = list.map((c) => {
     const muted = c.link ? c.link.state === "muted" : c.muted;
     const attr = c.link ? { all: "false", mixed: "mixed", muted: "true" }[c.link.state] : String(c.muted);
@@ -148,9 +154,10 @@ async function sweep(list: Case[]): Promise<Result> {
     s.setAttribute("data-flink", c.fader);
     s.innerHTML =
       `<div class="strip-head">` +
-      `<div class="mute${muted ? "" : " lit"}" data-testid="mute" data-muted="${attr}" data-binding="ready" aria-disabled="false" style="--tc:#FFA529;--tt:#10101a;">` +
+      `<div class="mute${muted ? "" : " lit"}" data-testid="mute" data-muted="${attr}" data-binding="ready" aria-disabled="false" style="--tc:#FFA529;--tt:#10101a;--hold-ms:1000ms;">` +
       `<span class="strip-label" data-testid="strip-label" style="--n:${[...c.label].length};">${c.label}</span>` +
       `<span class="strip-marks${l.crowd ? " crowd" : ""}" data-testid="strip-marks">${flag}${chain}${fader}<span class="mute-mark" data-testid="mute-mark" aria-hidden="true">MUTED</span></span>` +
+      `<span class="hold" aria-hidden="true"></span>` +
       `</div>` +
       `<div class="strip-info"><div class="strip-readout" data-testid="strip-readout"><div class="status"></div>` +
       `<span class="db" data-testid="db">−69.9</span>${word ? `<span class="strip-mark" data-testid="strip-mark">${word}</span>` : ""}</div></div>` +
@@ -300,18 +307,52 @@ async function sweep(list: Case[]): Promise<Result> {
       const clippedLayer = el.classList.contains("fader-rail") || (!!el.closest(".meter-bar") && !el.classList.contains("meter-bar"));
       if ((r.width > 0 || r.height > 0) && r.bottom > strip.bottom + 0.5 && !clippedLayer) fail(`.${(el as HTMLElement).className} ends ${at(r.bottom - strip.bottom)} px under the strip`);
     }
-    // The armed guard's and an open write's outline stay inside the button
-    // (it is the strip's top edge: an outline outside it would be cut).
+    // An open write's outline stays inside the button (it is the strip's
+    // top edge: an outline outside it would be cut).
     const mute = s.querySelector(".strip-head > .mute") as HTMLElement;
-    for (const look of [["armed", null], [null, "unconfirmed"], [null, "not_sent"]] as const) {
-      if (look[0]) mute.classList.add(look[0]);
-      if (look[1]) mute.setAttribute("data-intent", look[1]);
+    for (const intent of ["unconfirmed", "not_sent"]) {
+      mute.setAttribute("data-intent", intent);
       const cs = getComputedStyle(mute);
       const reach = parseFloat(cs.outlineOffset) + parseFloat(cs.outlineWidth);
-      if (cs.outlineStyle === "none" || reach > 0.01) fail(`the ${look[0] ?? look[1]} outline reaches ${at(reach)} px out of the button`);
-      if (look[0]) mute.classList.remove(look[0]);
-      if (look[1]) mute.removeAttribute("data-intent");
+      if (cs.outlineStyle === "none" || reach > 0.01) fail(`the ${intent} outline reaches ${at(reach)} px out of the button`);
+      mute.removeAttribute("data-intent");
     }
+    // A guarded mute's hold (#162; #151 had the double tap's pulse here):
+    // the fill a layer of the button's own box, full at `data-holding`; the
+    // hold's line (each of its texts, behave::mute's hold_text, full_text,
+    // HOLD_HINT) in the marks line's place, seen whole and unclipped inside
+    // the button beside its colour edge, the name unclipped above it.
+    // Checked once per width and label (a plain strip): the hold line takes
+    // the marks line's place, so the marks a case carries change nothing,
+    // and checking every link state made the sweep outgrow its test's time.
+    const plain = !c.link && !c.flag && !c.fader && !c.muted && !c.conflict;
+    const fill = mute.querySelector(".hold") as HTMLElement;
+    const fb = fill.getBoundingClientRect();
+    if (Math.abs(fb.left - button.left) > 0.5 || Math.abs(fb.right - button.right) > 0.5 || Math.abs(fb.top - button.top) > 0.5 || Math.abs(fb.bottom - button.bottom) > 0.5)
+      fail(`the fill's box ${at(fb.left - button.left)}..${at(fb.right - button.left)} x ${at(fb.top - button.top)}..${at(fb.bottom - button.top)} is not the button's`);
+    if (getComputedStyle(fill).pointerEvents !== "none") fail("the fill takes touches");
+    mute.setAttribute("data-holding", "true");
+    if (getComputedStyle(fill).transitionDuration !== "1s") fail(`the fill grows over ${getComputedStyle(fill).transitionDuration}`);
+    for (const text of plain ? HOLD_LINES : []) {
+      mute.setAttribute("data-says", "true");
+      const said = document.createElement("span");
+      said.className = "mute-hold";
+      said.textContent = text;
+      mute.insertBefore(said, mute.querySelector(".strip-marks"));
+      const b = seenBox(said, s)!;
+      const lb2 = label.getBoundingClientRect();
+      if (!b.seen) fail(`the hold line "${text}" is not seen whole (${at(b.left - button.left)}..${at(b.right - button.left)}, ${at(b.top - button.top)}..${at(b.bottom - button.top)})`);
+      if (clips(said)) fail(`the hold line "${text}" is clipped (${said.scrollWidth} > ${said.clientWidth})`);
+      if (b.left < button.left + 3.99) fail(`the hold line "${text}" starts on the colour edge`);
+      if (b.right > button.right + 0.01 || b.bottom > button.bottom + 0.01) fail(`the hold line "${text}" passes the button`);
+      if (clips(label)) fail(`the label is clipped beside the hold line "${text}"`);
+      if (lb2.bottom > b.top + 0.01) fail(`the label's foot is under the hold line "${text}"`);
+      if (getComputedStyle(s.querySelector(".strip-marks")!).display !== "none") fail("the marks line shows beside the hold line");
+      if (Math.abs(button.height - mute.getBoundingClientRect().height) > 0.01) fail(`the hold line "${text}" changes the button's height`);
+      said.remove();
+      mute.removeAttribute("data-says");
+    }
+    mute.removeAttribute("data-holding");
   });
   host.remove();
   return { faces, problems, yielded, measures };

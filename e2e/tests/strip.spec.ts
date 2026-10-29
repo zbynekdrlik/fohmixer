@@ -299,33 +299,6 @@ test.describe("A strip", () => {
     await until(() => live.get("band", HAND2, "mute"), (v) => v === false, "audible again");
   });
 
-  test("a guarded mute needs a second tap within 500 ms", async ({ page }) => {
-    const hand1 = track("Hand1 #");
-    await live.set("master", hand1, "mute", false);
-    await openSurface(page);
-    await selectPage(page, "others");
-    const mute = strip(page, "Hand1 #", "master").getByTestId("mute");
-    await ready(mute);
-    await mute.click();
-    await expect(mute).toHaveClass(/\barmed\b/);
-    // #151 (PR #153's review M5): the armed outline is drawn inside the name
-    // button, the strip's top edge, so no line's top can cut it.
-    const reach = await mute.evaluate((el) => {
-      const cs = getComputedStyle(el);
-      return { style: cs.outlineStyle, reach: parseFloat(cs.outlineOffset) + parseFloat(cs.outlineWidth) };
-    });
-    expect(reach.style).not.toBe("none");
-    expect(reach.reach, "the armed outline inside the button").toBeLessThanOrEqual(0.01);
-    await page.waitForTimeout(700);
-    expect(await live.get("master", hand1, "mute")).toBe(false);
-    await expect(mute).not.toHaveClass(/\barmed\b/);
-    await doubleTap(mute, 150);
-    await until(() => live.get("master", hand1, "mute"), (v) => v === true, "muted after the confirming tap");
-    // The band's track of the same name is another instance's (spec F2, X4).
-    expect(await live.get("band", hand1, "mute")).toBe(false);
-    await live.set("master", hand1, "mute", false);
-  });
-
   test("the name button is calm, the track's colour only as its 3 px edge, and follows Live's colour", async ({ page }) => {
     // #151, mockup v8: one colour per strip, the Live track's own, as a thin
     // edge at the name button's left (SimLive's Hand2 #: 0xFF3636); the

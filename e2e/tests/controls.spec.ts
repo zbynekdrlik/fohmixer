@@ -472,8 +472,9 @@ test.describe("TechAlert", () => {
 });
 
 test.describe("A guarded TechAlert", () => {
-  test("needs a second tap within 500 ms, as a guarded mute", async ({ page }) => {
-    // #21 review: a TechAlert strip in double_click_mute keeps its guard.
+  test("needs a second tap within 500 ms", async ({ page }) => {
+    // #21 review: a TechAlert strip in double_click_mute keeps its guard,
+    // the double tap (a strip's guarded mute holds instead, #162).
     const alert = track("TechAlert #");
     await live.set("band", alert, "mute", true);
     const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
