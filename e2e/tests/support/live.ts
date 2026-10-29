@@ -578,7 +578,7 @@ export async function centre(control: Locator): Promise<{ x: number; y: number }
  * of the control's look (`dispatchSnapped`).
  */
 export type PointerStep =
-  | { type: "pointerdown" | "pointermove" | "pointerup" | "pointercancel"; dx?: number; dy?: number }
+  | { type: "pointerdown" | "pointermove" | "pointerup" | "pointercancel" | "lostpointercapture"; dx?: number; dy?: number }
   | { wait: number }
   | { snap: true };
 
