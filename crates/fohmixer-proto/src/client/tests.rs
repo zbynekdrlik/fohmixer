@@ -773,6 +773,11 @@ fn api_bodies_round_trip() {
             unknown: 1,
             error: None,
         },
+        colors: ColorsStatus {
+            strips: 4,
+            unknown: 1,
+            error: None,
+        },
     };
     let json = serde_json::to_value(&status).unwrap();
     assert_eq!(
@@ -1849,6 +1854,7 @@ fn an_older_hubs_status_reads_with_default_sectors() {
             unknown: 0,
             error: Some("expected value at line 1 column 1".into()),
         },
+        colors: ColorsStatus::default(),
     };
     let mut json = serde_json::to_value(&status).unwrap();
     assert_eq!(
@@ -1880,5 +1886,75 @@ fn an_older_hubs_status_reads_with_default_sectors() {
             unknown: 0,
             error: None,
         }
+    );
+}
+
+#[test]
+fn a_set_color_reads_as_the_page_sends_it() {
+    let strip = StripRef {
+        instance: "band".into(),
+        label: "Vox 1".into(),
+    };
+    round_trip_client(
+        ClientMsg::SetColor {
+            id: "c1".into(),
+            strip: strip.clone(),
+            color: Some(crate::colors::ColorKey::Pink),
+        },
+        json!({"type": "set_color", "id": "c1",
+               "strip": {"instance": "band", "label": "Vox 1"}, "color": "pink"}),
+    );
+    // NONE is `null`.
+    round_trip_client(
+        ClientMsg::SetColor {
+            id: "c2".into(),
+            strip,
+            color: None,
+        },
+        json!({"type": "set_color", "id": "c2",
+               "strip": {"instance": "band", "label": "Vox 1"}, "color": null}),
+    );
+    // A key the palette does not hold is no message.
+    let bad = json!({"type": "set_color", "id": "c3",
+                     "strip": {"instance": "band", "label": "Vox 1"}, "color": "gold"});
+    assert!(serde_json::from_value::<ClientMsg>(bad).is_err());
+}
+
+#[test]
+fn the_colors_message_carries_the_document() {
+    let doc = crate::colors::ColorsDoc::empty().with(
+        &StripRef {
+            instance: "band".into(),
+            label: "Vox 1".into(),
+        },
+        Some(crate::colors::ColorKey::Teal),
+    );
+    let msg = ServerMsg::Colors { doc };
+    let json = serde_json::to_value(&msg).unwrap();
+    assert_eq!(
+        json,
+        json!({"type": "colors", "doc": {"colors": {"band": {"Vox 1": "teal"}}}})
+    );
+    assert_eq!(serde_json::from_value::<ServerMsg>(json).unwrap(), msg);
+}
+
+#[test]
+fn the_colors_status_reads_as_written_and_defaults_for_an_older_hub() {
+    let status = ColorsStatus {
+        strips: 3,
+        unknown: 1,
+        error: Some("bad".into()),
+    };
+    let json = serde_json::to_value(&status).unwrap();
+    assert_eq!(json, json!({"strips": 3, "unknown": 1, "error": "bad"}));
+    assert_eq!(
+        serde_json::from_value::<ColorsStatus>(json).unwrap(),
+        status
+    );
+    let bare: ColorsStatus = serde_json::from_value(json!({"strips": 0, "unknown": 0})).unwrap();
+    assert_eq!(bare, ColorsStatus::default());
+    assert_eq!(
+        serde_json::to_value(ColorsStatus::default()).unwrap(),
+        json!({"strips": 0, "unknown": 0})
     );
 }

@@ -85,6 +85,9 @@ mod retries;
 mod reverb;
 #[path = "router/sectors.rs"]
 mod sectors;
+
+#[path = "router/colors.rs"]
+mod colors;
 #[path = "router/songmap.rs"]
 mod songmap;
 mod unfold;
@@ -494,6 +497,15 @@ pub enum RouterMsg {
     },
     /// The layout poll's tick (#148): `sectors.json` is read again.
     SectorsPoll,
+    /// A page's choice of a strip's colour (#164, `set_color`).
+    SetColor {
+        client: ClientId,
+        id: String,
+        strip: StripRef,
+        color: Option<fohmixer_proto::colors::ColorKey>,
+    },
+    /// The layout poll's tick (#164): `colors.json` is read again.
+    ColorsPoll,
     /// The hub stops: the Stream Deck's held keys released and its task
     /// told to stop (#52), then every client closed.
     Stop,
@@ -523,6 +535,8 @@ pub struct RouterStatus {
     pub lufs: fohmixer_proto::client::LufsStatus,
     /// The fader sectors (#148).
     pub sectors: fohmixer_proto::client::SectorsStatus,
+    /// The strips' colours (#164).
+    pub colors: fohmixer_proto::client::ColorsStatus,
     pub clients: usize,
     pub unresolved: Vec<Unresolved>,
 }
@@ -601,6 +615,8 @@ pub struct Router {
     lufs: lufs::LufsIo,
     /// The fader sectors (#148): `sectors.json`.
     sectors: sectors::SectorsIo,
+    /// The strips' colours (#164): `colors.json`.
+    colors: colors::ColorsIo,
     /// Every instance's transport (#104, D18), by instance.
     transport: BTreeMap<String, TransportWatch>,
     layout_rev: u64,
@@ -683,6 +699,9 @@ impl Router {
         let sectors = sectors::SectorsIo {
             store: crate::sectors::SectorStore::open(&data_dir),
         };
+        let colors = colors::ColorsIo {
+            store: crate::colors::ColorStore::open(&data_dir),
+        };
         Self {
             subs,
             names: NameCheck::default(),
@@ -707,6 +726,7 @@ impl Router {
             songmap: songmap::SongMapIo::default(),
             lufs: lufs::LufsIo::default(),
             sectors,
+            colors,
             state,
             transport,
             layout_rev: 0,
@@ -774,6 +794,7 @@ impl Router {
                 self.lufs_attach(&outbox);
                 self.links_attach(&outbox);
                 self.sectors_attach(&outbox);
+                self.colors_attach(&outbox);
                 if self.layout_rev > 0 {
                     outbox.layout(self.layout_rev);
                 }
@@ -1011,6 +1032,7 @@ impl Router {
                     songmap: self.songmap.status(),
                     lufs: self.lufs_status(),
                     sectors: self.sectors_status(),
+                    colors: self.colors_status(),
                     clients: self.clients.len(),
                     unresolved: self.names.unresolved(),
                 });
@@ -1171,6 +1193,13 @@ impl Router {
                 rev,
             } => self.sectors_edit(client, id, &sectors, rev),
             RouterMsg::SectorsPoll => self.sectors_poll(),
+            RouterMsg::SetColor {
+                client,
+                id,
+                strip,
+                color,
+            } => self.colors_set(client, id, &strip, color),
+            RouterMsg::ColorsPoll => self.colors_poll(),
             RouterMsg::Stop => return false,
         }
         true
@@ -2611,13 +2640,16 @@ mod tests {
                 ServerMsg::Sectors {
                     doc: fohmixer_proto::sectors::SectorsDoc::empty(),
                 },
+                ServerMsg::Colors {
+                    doc: fohmixer_proto::colors::ColorsDoc::empty(),
+                },
                 ServerMsg::Hub {
                     key: HUB_STAGE_AUT.into(),
                     value: json!(false)
                 }
             ],
             "no layout yet: no revision (REVERB's state, #130, AUTOTUNE's, #104, \
-             and the sectors' document, #148, are replies)"
+             the sectors' document, #148, and the colours', #164, are replies)"
         );
         router.handle(RouterMsg::Layout {
             rev: 1,

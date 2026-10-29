@@ -21,6 +21,7 @@ use std::time::Duration;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
+use crate::colors::{ColorKey, ColorsDoc};
 use crate::eq::{Area, EqItem, EqLock, EqState, Part, Touch};
 use crate::layout::{Binding, LinkId};
 use crate::lufs::{LufsProblem, LufsState};
@@ -269,6 +270,15 @@ pub enum ClientMsg {
         id: String,
         sectors: Sectors,
         rev: u64,
+    },
+    /// A strip's colour chosen in its channel detail (#164): `color` a
+    /// palette key, none for NONE. Answered as [`ClientMsg::SectorTick`]
+    /// (`result`, or `error` with `not in the pool` for a colour of a
+    /// fader the served layout does not carry). Nothing reaches Live.
+    SetColor {
+        id: String,
+        strip: StripRef,
+        color: Option<ColorKey>,
     },
 }
 
@@ -542,6 +552,8 @@ pub enum ServerMsg {
     /// The fader sectors' document (#148), at attach and after every
     /// change. (An older hub also sent `undo`, which a page ignores.)
     Sectors { doc: SectorsDoc },
+    /// The strips' colours (#164), at attach and after every change.
+    Colors { doc: ColorsDoc },
     /// A message of a newer hub that this page does not know (#90 B3): any
     /// other `type` reads as this, and the page ignores it, so a new
     /// message never breaks an older page.
@@ -1473,6 +1485,21 @@ pub struct HubStatus {
     /// The fader sectors (#148); the defaults in an older hub's answer.
     #[serde(default)]
     pub sectors: SectorsStatus,
+    /// The strips' colours (#164); the defaults in an older hub's answer.
+    #[serde(default)]
+    pub colors: ColorsStatus,
+}
+
+/// `/api/status` `colors` (#164): how many faders have a colour, how many
+/// of those no pool fader carries (`unknown`: a track renamed in Live), and
+/// why the file on disk is not served (`error`: the last good document
+/// stays).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ColorsStatus {
+    pub strips: usize,
+    pub unknown: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// `/api/status` `sectors` (#148): the served document's revision, its

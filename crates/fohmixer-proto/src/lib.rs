@@ -8,11 +8,13 @@
 //! note §3.1), Live's volume law in dB ([`volume`], #130) and the song map
 //! of a set's locators and Sections key clips ([`songmap`], #140), the
 //! loudness readings of the LUFS devices ([`lufs`], #151) and Live's meter
-//! scale and pan law ([`meter`], #151).
+//! scale and pan law ([`meter`], #151), and the strips' colours chosen on
+//! the tablet ([`colors`], #164).
 
 use serde::{Deserialize, Serialize};
 
 pub mod client;
+pub mod colors;
 pub mod eq;
 pub mod layout;
 pub mod lufs;
