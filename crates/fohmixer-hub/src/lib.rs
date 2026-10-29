@@ -72,6 +72,7 @@ pub mod colors;
 pub mod companion;
 pub mod config;
 pub mod deck;
+pub mod doc_store;
 #[cfg(windows)]
 mod dpapi;
 pub mod eq;
