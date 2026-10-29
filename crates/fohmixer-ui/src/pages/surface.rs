@@ -308,7 +308,7 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
         let detail = nav.detail.try_get().flatten();
         let doc = store
             .sectors
-            .try_with(|told| told.shown().map(|told| told.doc.clone()))
+            .try_with(|told| told.shown().cloned())
             .flatten();
         let picks = nav.picks.try_get().unwrap_or_default();
         let sectored = doc.as_ref().map(|doc| Sectored { doc, picks: &picks });
@@ -393,9 +393,7 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
             nav.path
                 .try_with(|path| {
                     sectors
-                        .try_with(|told| {
-                            sectors_on(&layout, path, told.shown().map(|told| &told.doc))
-                        })
+                        .try_with(|told| sectors_on(&layout, path, told.shown()))
                         .unwrap_or(false)
                 })
                 .unwrap_or(false)

@@ -260,7 +260,7 @@ pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
     let doc = Memo::new(move |_| {
         store
             .sectors
-            .try_with(|told| told.shown().map(|told| told.doc.clone()))
+            .try_with(|told| told.shown().cloned())
             .flatten()
     });
     // ARRANGE (#148): the page shows the edited orders; a new document from
@@ -664,7 +664,7 @@ fn ArrangeCover(
             .sectors
             .try_with_untracked(|told| {
                 told.shown()
-                    .and_then(|told| mode.try_with_untracked(|m| m.applied(&told.doc)))
+                    .and_then(|doc| mode.try_with_untracked(|m| m.applied(doc)))
             })
             .flatten();
         let Some(layout) = shown
@@ -1050,7 +1050,7 @@ fn ArrangeButton(carrier: Carrier, refused: RwSignal<Option<&'static str>>) -> i
         ev.prevent_default();
         let Some(doc) = store
             .sectors
-            .try_with_untracked(|told| told.shown().map(|told| told.doc.clone()))
+            .try_with_untracked(|told| told.shown().cloned())
             .flatten()
         else {
             return;

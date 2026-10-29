@@ -31,11 +31,7 @@ fn ticks_memo(store: LiveStore, strip: StoredValue<Strip>) -> Memo<DetailTicks> 
         };
         store
             .sectors
-            .try_with(|told| {
-                strip.try_with_value(|s| {
-                    detail_ticks(told.shown().map(|told| &told.doc), &layout, s)
-                })
-            })
+            .try_with(|told| strip.try_with_value(|s| detail_ticks(told.shown(), &layout, s)))
             .flatten()
             .unwrap_or(DetailTicks::Off)
     })
@@ -179,11 +175,7 @@ pub fn DetailStep(strip: Strip) -> impl IntoView {
         let layout = store.layout.try_get().flatten()?;
         store
             .sectors
-            .try_with(|told| {
-                strip.try_with_value(|s| {
-                    detail_steps(told.shown().map(|told| &told.doc), &layout, s)
-                })
-            })
+            .try_with(|told| strip.try_with_value(|s| detail_steps(told.shown(), &layout, s)))
             .flatten()
             .flatten()
     });

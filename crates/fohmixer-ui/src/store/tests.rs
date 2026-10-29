@@ -512,19 +512,15 @@ fn lufs_points_take_each_item_and_a_close_forgets_them() {
 fn the_sectors_stay_through_a_close_stale_until_the_next_document() {
     let mut told = HubSectors::default();
     assert_eq!(told.shown(), None);
-    let first = SectorsTold {
-        doc: SectorsDoc::empty(),
-    };
+    let first = SectorsDoc::empty();
     told.put(first.clone());
     assert_eq!(told.fresh(), Some(&first));
     told.closed();
     assert_eq!(told.shown(), Some(&first));
     assert_eq!(told.fresh(), None);
-    let next = SectorsTold {
-        doc: SectorsDoc {
-            rev: 4,
-            sectors: std::collections::BTreeMap::new(),
-        },
+    let next = SectorsDoc {
+        rev: 4,
+        sectors: std::collections::BTreeMap::new(),
     };
     told.put(next.clone());
     assert_eq!(told.fresh(), Some(&next));

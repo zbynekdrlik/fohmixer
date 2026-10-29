@@ -30,7 +30,7 @@ use super::eq::{EqListView, EqView};
 use super::intent::Intents;
 use super::{
     HubAutotune, HubColors, HubLufs, HubReverb, HubSectors, HubValues, InstanceView, ResultFn,
-    SectorsTold, Slot, TOKEN_KEY, next_range,
+    Slot, TOKEN_KEY, next_range,
 };
 use crate::behave::ableset::AbleSetInfo;
 use crate::behave::idle::IdleWatch;
@@ -700,9 +700,7 @@ impl LiveStore {
             // The fader sectors (#148): the sectors page, the LAYOUTS block,
             // and the detail's ticks read them.
             ServerMsg::Sectors { doc } => {
-                let _ = self
-                    .sectors
-                    .try_update(|sectors| sectors.put(SectorsTold { doc }));
+                let _ = self.sectors.try_update(|sectors| sectors.put(doc));
             }
             // The strips' colours (#164): every strip's edge, the detail's
             // chip and its COLOR read them.

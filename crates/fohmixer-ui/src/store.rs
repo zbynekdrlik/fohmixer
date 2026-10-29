@@ -375,16 +375,10 @@ pub type HubReverb = HubTold<ReverbState>;
 /// AUTOTUNE's state as the hub last told it (#104).
 pub type HubAutotune = HubTold<AutotuneState>;
 
-/// The fader sectors as the hub last told them (#148, `ServerMsg::Sectors`):
-/// the document.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SectorsTold {
-    pub doc: SectorsDoc,
-}
-
-/// The fader sectors (#148): kept through an outage (the page keeps its
+/// The fader sectors as the hub last told them (#148,
+/// `ServerMsg::Sectors`): kept through an outage (the page keeps its
 /// sectors), stale until the next connection's document.
-pub type HubSectors = HubTold<SectorsTold>;
+pub type HubSectors = HubTold<SectorsDoc>;
 
 /// The strips' colours as the hub last told them (#164,
 /// `ServerMsg::Colors`): kept through an outage (the strips keep their
