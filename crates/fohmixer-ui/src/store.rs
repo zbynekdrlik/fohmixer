@@ -386,6 +386,11 @@ pub struct SectorsTold {
 /// sectors), stale until the next connection's document.
 pub type HubSectors = HubTold<SectorsTold>;
 
+/// The strips' colours as the hub last told them (#164,
+/// `ServerMsg::Colors`): kept through an outage (the strips keep their
+/// colours), stale until the next connection's document.
+pub type HubColors = HubTold<fohmixer_proto::colors::ColorsDoc>;
+
 /// One loudness point as the hub last sent it (#151): its reading in
 /// tenths and its problem, none of either until the hub says.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

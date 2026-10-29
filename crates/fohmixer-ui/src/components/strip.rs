@@ -1,7 +1,7 @@
 //! A mixer strip (spec F2–F5, F8–F13; the redesign, #21; held in the hands,
 //! #63; the owner's mockup v8, #151): at the top the name button, the mute,
-//! as the strip's top edge (37 px, calm: the track's Live colour only as a
-//! 3 px edge), the name first and one marks line under it, with the status
+//! as the strip's top edge (37 px, calm: the strip's colour, chosen in the
+//! channel detail's COLOR since #164, only as a 3 px edge), the name first and one marks line under it, with the status
 //! light and Live's dB readout on the line under it (a hand holding the
 //! tablet covers the bottom of the screen, so nothing to read sits there);
 //! then the instance tag when the group's strips differ and the fader
@@ -20,6 +20,7 @@ use leptos::prelude::*;
 
 use super::buttons::{Corner, MuteView, Partner, anchor_name};
 use super::detail::DetailStrip;
+use super::detail_color::strip_colour;
 use super::fader::{FaderView, Law, Target};
 use super::fader_link::link_parts;
 use super::meter::StatusView;
@@ -66,7 +67,7 @@ pub fn ScaleView(law: VolumeLaw) -> impl IntoView {
 /// no reading, a problem or a strip without `+LUFS` show nothing, their
 /// rows kept), and on the first
 /// strip of a group's run `group_name`, the group's name read bottom to
-/// top, in grey (#127; one colour per strip, the track's own). It takes no
+/// top, in grey (#127; one colour per strip, its own). It takes no
 /// touch: the fader under it gets it.
 #[component]
 fn InfoColumn(
@@ -307,10 +308,11 @@ pub fn StripView(
     let parts = link_parts(store, &strip, &subs, settings.law);
     let volume = subs.volume.as_ref().map(|s| store.slot(s));
     let mute = subs.mute.as_ref().map(|s| store.slot(s));
-    let color = subs.color.as_ref().map(|s| store.slot(s));
+    // The strip's colour, chosen on the tablet (#164): its edge only.
+    let color = Some(strip_colour(store, &strip));
     let meters: Vec<RwSignal<Slot>> = subs.meters.iter().map(|s| store.slot(s)).collect();
-    // The status light: every value the strip shows (the colour never
-    // gates it); it never blinks with them (#151).
+    // The status light: every value the strip shows; it never blinks with
+    // them (#151).
     let all: Vec<RwSignal<Slot>> = [volume, mute]
         .into_iter()
         .flatten()

@@ -29,8 +29,8 @@ use super::eq::inputs::Inputs;
 use super::eq::{EqListView, EqView};
 use super::intent::Intents;
 use super::{
-    HubAutotune, HubLufs, HubReverb, HubSectors, HubValues, InstanceView, ResultFn, SectorsTold,
-    Slot, TOKEN_KEY, next_range,
+    HubAutotune, HubColors, HubLufs, HubReverb, HubSectors, HubValues, InstanceView, ResultFn,
+    SectorsTold, Slot, TOKEN_KEY, next_range,
 };
 use crate::behave::ableset::AbleSetInfo;
 use crate::behave::idle::IdleWatch;
@@ -41,6 +41,7 @@ use crate::diag::{self, trace};
 use crate::dom;
 use crate::net::{self, Decision, LayoutFetch};
 
+mod colors;
 mod deck;
 mod eq;
 mod idle;
@@ -175,6 +176,9 @@ pub struct LiveStore {
     /// The fader sectors (#148): the hub's last document,
     /// kept through a reconnect, stale until the hub's next (`HubSectors`).
     pub sectors: RwSignal<HubSectors>,
+    /// The strips' colours (#164): the hub's last document, kept through a
+    /// reconnect, stale until the hub's next (`HubColors`).
+    pub colors: RwSignal<HubColors>,
     /// The loudness points' readings (#151): forgotten at a close, every
     /// point sent again at the next attach.
     pub lufs: RwSignal<HubLufs>,
@@ -217,6 +221,7 @@ impl LiveStore {
             reverb: RwSignal::new(HubReverb::default()),
             autotune: RwSignal::new(HubAutotune::default()),
             sectors: RwSignal::new(HubSectors::default()),
+            colors: RwSignal::new(HubColors::default()),
             lufs: RwSignal::new(HubLufs::default()),
             connected: RwSignal::new(false),
             subscribed: RwSignal::new(0),
@@ -492,6 +497,7 @@ impl LiveStore {
         let _ = self.reverb.try_update(HubReverb::closed);
         let _ = self.autotune.try_update(HubAutotune::closed);
         let _ = self.sectors.try_update(HubSectors::closed);
+        let _ = self.colors.try_update(HubColors::closed);
         let _ = self.lufs.try_update(HubLufs::closed);
         let _ = self.instances.try_update(|all| {
             for view in all.values_mut() {
@@ -697,6 +703,11 @@ impl LiveStore {
                 let _ = self
                     .sectors
                     .try_update(|sectors| sectors.put(SectorsTold { doc }));
+            }
+            // The strips' colours (#164): every strip's edge, the detail's
+            // chip and its COLOR read them.
+            ServerMsg::Colors { doc } => {
+                let _ = self.colors.try_update(|colors| colors.put(doc));
             }
             // A newer hub's message (#90 B3): ignored, never an error.
             ServerMsg::Unknown => dom::log("a hub message this page does not know: ignored"),

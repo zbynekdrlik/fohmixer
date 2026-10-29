@@ -5,7 +5,7 @@
    run keeps the group's title over it when there is one to show (a title,
    or the Live set its strips share). The group's colour is on every
    block's 3 px top edge (a group of buttons, `.block::before` below) and
-   on its title; a strip carries one colour, its track's own (#151, v8:
+   on its title; a strip carries one colour, its own (#151, v8; #164:
    the name button's edge), so a strip shows no group colour. */
 
 /* A line keeps the titles' 16 px at its top only while it shows a title

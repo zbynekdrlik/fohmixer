@@ -15,8 +15,9 @@ use super::{LiveStore, ResultFn};
 
 impl LiveStore {
     /// Sends the message `make` builds with a fresh request id; `done` gets
-    /// the hub's answer. Whether the socket took it.
-    fn sector_request(
+    /// the hub's answer. Whether the socket took it. (The strips' colours,
+    /// #164, ask the same way.)
+    pub(super) fn sector_request(
         self,
         make: impl FnOnce(String) -> ClientMsg,
         done: Option<ResultFn>,

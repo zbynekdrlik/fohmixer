@@ -370,6 +370,15 @@ exclude_re = [
   # its rename; sectors.spec.ts renames on Enter and on a tap elsewhere).
   "fohmixer-ui/src/pages/sectors\\.rs.*(replace|in) (change_mode|sector_spots|flash_note|blur_field|Carrier::(new|show|lift|hold|settle|leave))( |$)",
   "fohmixer-ui/src/store/live/sectors\\.rs.*(replace|in) LiveStore::(sector_request|sector_tick|sector_edit)( |$)",
+  # store/live/colors.rs (#164): set_color, the strips' colours' request
+  # through sector_request (the socket); strip-color.spec.ts picks a colour
+  # in the detail and reads it on the strip and a second page.
+  "fohmixer-ui/src/store/live/colors\\.rs.*(replace|in) LiveStore::set_color( |$)",
+  # components/detail_color.rs (#164): strip_colour, the hub's document
+  # and the strip's identity read into a memo of the tested
+  # behave::colour::colour_of and binding::sectors::detail_ref;
+  # strip-color.spec.ts reads the strip's edge and the detail's chip.
+  "fohmixer-ui/src/components/detail_color\\.rs.*(replace|in) strip_colour( |$)",
   # pages/ableset.rs (#90): take_return (location.hash read through the
   # tested behave::ableset::returns_to_tab, then history.replaceState
   # without it); ableset.spec.ts's sign-in comes back to #ableset and finds

@@ -1,7 +1,8 @@
 //! The channel detail (spec F27, D17; #71 PR D; the approved mockup
 //! `docs/mockups/channel-detail-v2.html`): a hold on a strip's SEL opens that
 //! channel over the whole screen, focused work on it alone. A bar (back to
-//! the mix, the name chip in the track's colour, its group and instance),
+//! the mix, the name chip in the strip's colour (#164), its group and
+//! instance),
 //! then on the left (the left thumb) the mute, Live's dB and a tall fader
 //! with its scale and meter, on the right (the right thumb) the pan with
 //! Live's display string and CENTER; in the middle the channel's Pro-Q 4
@@ -11,11 +12,13 @@
 
 use std::time::Duration;
 
+use fohmixer_proto::colors::ColorKey;
 use fohmixer_proto::layout::{Strip, StripKind};
 use leptos::prelude::*;
 use serde_json::json;
 
-use super::buttons::{Corner, MuteView, Partner, anchor_name, colour_style};
+use super::buttons::{Corner, MuteView, Partner, anchor_name};
+use super::detail_color::{DetailColor, strip_colour};
 use super::detail_layouts::{DetailLayouts, DetailStep};
 use super::eq::EqCards;
 use super::fader::{FaderView, Law, Target};
@@ -26,6 +29,7 @@ use super::strip::{DbView, ScaleView};
 use super::{
     Settings, fail_flash, key_of, owns_touches, readiness, readiness_now, trace_detail, trace_touch,
 };
+use crate::behave::colour::colour_style;
 use crate::behave::fader::UNITY;
 use crate::behave::hold::guard_left;
 use crate::behave::label::shown_label;
@@ -157,10 +161,12 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
     let volume = subs.volume.as_ref().map(|s| store.slot(s));
     let pan = subs.pan.as_ref().map(|s| store.slot(s));
     let mute = subs.mute.as_ref().map(|s| store.slot(s));
-    let color = subs.color.as_ref().map(|s| store.slot(s));
+    // The strip's colour chosen on the tablet (#164): the chip and COLOR.
+    let color = strip_colour(store, &strip);
+    let colour_strip = strip.clone();
     let meters: Vec<RwSignal<Slot>> = subs.meters.iter().map(|s| store.slot(s)).collect();
-    // The status light: every value the detail shows (the pan too; the
-    // colour never gates it); it never blinks with them (#151).
+    // The status light: every value the detail shows (the pan too); it
+    // never blinks with them (#151).
     let all: Vec<RwSignal<Slot>> = [volume, pan, mute]
         .into_iter()
         .flatten()
@@ -216,12 +222,12 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
     };
     // Its two labels: a phone upright shows the short one (`detail.css`).
     let exit_keys: Vec<String> = Vec::new();
-    // The name chip in the track's colour, as the strip's name button.
-    let chip = move || colour_style(color.and_then(|c| c.try_with(Slot::number).flatten()));
+    // The name chip in the strip's colour (#164), as the strip's edge.
+    let chip = move || colour_style(color.try_get().flatten());
     // The mute with the strip's guard, its look the detail's (dark while
     // the channel sounds, red while muted: `detail.css`).
     let mute_label = "MUTE".to_string();
-    let no_colour: Option<RwSignal<Slot>> = None;
+    let no_colour: Option<Signal<Option<ColorKey>>> = None;
     // A linked mute (#127) writes its partners here too, its chain on the
     // button (no marks line: that is the strip's).
     let no_corner: Option<Corner> = None;
@@ -385,6 +391,7 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
                     {centre}
                     {link_box}
                     <DetailLayouts strip=layouts_strip />
+                    <DetailColor strip=colour_strip colour=color />
                 </section>
             </div>
         </div>

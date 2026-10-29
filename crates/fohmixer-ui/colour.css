@@ -1,0 +1,99 @@
+/* The strips' colours (#164; the owner's approved mockup
+   docs/mockups/strip-color-v1.html): the channel detail's COLOR, a section
+   of the right box under LAYOUTS (components/detail_color.rs). A 7 x 2
+   grid: NONE over two cells, then the twelve colours. Each key is dark (the
+   tick keys' ground and ring) with its colour as a small square (`--sw`);
+   the chosen key is drawn like a selected tab (style.css `.tab.selected`:
+   the lighter ground, the accent line at its foot) and its square gets a
+   light ring. Nothing else is filled. The strip's colour itself is its
+   name button's 3 px edge (strip.css, `--tc`) and the detail's chip
+   (detail.css). */
+
+/* The right box scrolls rather than clip COLOR (a FADER switch and the
+   sectors' LAYOUTS above it). */
+.detail-right:has(.col-sec) {
+    overflow-y: auto;
+}
+
+.col-sec {
+    flex: none;
+    margin-top: 6px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+}
+
+.col-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.col-now {
+    color: var(--muted);
+    font: 700 10px/12px var(--ui);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.col-grid {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.col-key {
+    display: grid;
+    place-items: center;
+    min-width: 0;
+    height: 40px;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #181826;
+    color: var(--muted);
+    font: 700 11px/14px var(--ui);
+    letter-spacing: 0.3px;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.col-key.none {
+    grid-column: span 2;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    justify-content: center;
+}
+
+.col-key .sw {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    background: var(--sw);
+}
+
+.col-key[aria-pressed="true"] {
+    background: var(--panel-hi);
+    color: var(--text);
+    box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.col-key[aria-pressed="true"] .sw {
+    box-shadow: 0 0 0 2px var(--panel-hi), 0 0 0 3.5px var(--text);
+}
+
+/* A choice the hub refused (or one that could not be sent). */
+.col-key[data-refused="true"] {
+    border-color: var(--mute);
+}
+
+/* Phones: the grid wraps into more rows, the keys at least 34 px wide. */
+@media (max-width: 520px), (max-height: 520px) {
+    .col-grid {
+        grid-template-columns: repeat(auto-fill, minmax(34px, 1fr));
+    }
+}

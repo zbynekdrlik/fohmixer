@@ -8,6 +8,7 @@
 mod autotune_panel;
 pub mod buttons;
 pub mod detail;
+mod detail_color;
 mod detail_layouts;
 pub mod eq;
 pub mod fader;
