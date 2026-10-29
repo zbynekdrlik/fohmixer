@@ -25,7 +25,8 @@ import {
 // the column (lu ru over ld rd), each paging through its own layouts in the
 // column's LAYOUTS block; a strip's channel detail ticks the layouts it is
 // in, ARRANGE reorders a sector's strips and renames, adds and removes its
-// layouts (saved as one change), ↶ undoes the last change. The hub owns
+// layouts (saved as one change); there is no undo (the owner's ruling of
+// 29.10.2026: the ↶ beside ARRANGE is gone, ARRANGE takes its row alone). The hub owns
 // sectors.json; the harness starts it empty (sectors off) and each test puts
 // the empty document back.
 //
@@ -581,22 +582,6 @@ test.describe("The fader sectors", () => {
         await expect.poll(() => stripsOf(other, "lu")).toEqual([]);
         expect(otherConsole, "the second page's console").toEqual([]);
         await other.close();
-
-        // One ↶ brings all of it back; the page's pick of a gone layout
-        // falls back to its sector's first.
-        const undo = page.getByTestId("sector-undo");
-        await expect(undo).toHaveAttribute("aria-disabled", "false");
-        await undo.click();
-        await expect.poll(() => titles(page, "lu")).toEqual(["STAGE", "ALT"]);
-        await expect.poll(() => titles(page, "ld")).toEqual(["HANDS", "FX"]);
-        await expect.poll(() => stripsOf(page, "lu")).toEqual([name(VOCAL), name(KEYS)]);
-        await expect(tabOf(page, "lu-1")).toHaveAttribute("aria-pressed", "true");
-        const all = await until(
-          () => sectorSteps(since),
-          (s) => s.includes("undo"),
-          "the hub's undo record",
-        );
-        expect(all).toEqual(["edit", "undo"]);
       } finally {
         live.close();
       }
@@ -832,39 +817,6 @@ test.describe("The fader sectors", () => {
     expect(typeof steps[0].pointer).toBe("number");
   });
 
-  test("undo restores the last change and a second undo redoes it", async ({ page }) => {
-    await setSectors(DOC);
-    await openSectors(page);
-    await expect.poll(() => stripsOf(page, "lu")).toEqual([name(VOCAL), name(KEYS)]);
-    const live = await LiveClient.open();
-    try {
-      const since = Date.now();
-      // A change from another client: master Hand4 # into STAGE.
-      const answer = await live.ask({ type: "sector_tick", layout: "lu-1", strip: master("Hand4 #"), on: true });
-      expect(answer.type, JSON.stringify(answer)).toBe("result");
-      const ticked = [name(VOCAL), name(KEYS), "master|Hand4 #"];
-      await expect.poll(() => stripsOf(page, "lu")).toEqual(ticked);
-
-      const undo = page.getByTestId("sector-undo");
-      await expect(undo).toHaveAttribute("aria-disabled", "false");
-      await undo.click();
-      await expect.poll(() => stripsOf(page, "lu")).toEqual([name(VOCAL), name(KEYS)]);
-      // The second ↶ redoes it.
-      await expect(undo).toHaveAttribute("aria-disabled", "false");
-      await undo.click();
-      await expect.poll(() => stripsOf(page, "lu")).toEqual(ticked);
-      await expect(undo).not.toHaveClass(/failed/);
-      const steps = await until(
-        () => sectorSteps(since),
-        (s) => s.filter((w) => w === "undo").length === 2,
-        "the hub's two undo records",
-      );
-      expect(steps).toEqual(["tick", "undo", "undo"]);
-    } finally {
-      live.close();
-    }
-  });
-
   test("the existing FOH page is unchanged with the empty document", async ({ page }) => {
     await setSectors(DOC);
     await openSectors(page);
@@ -875,7 +827,6 @@ test.describe("The fader sectors", () => {
     await expect(page.getByTestId("page")).toHaveAttribute("data-page", "foh");
     await expect(page.getByTestId("sector-layouts")).toHaveCount(0);
     await expect(page.getByTestId("arrange")).toHaveCount(0);
-    await expect(page.getByTestId("sector-undo")).toHaveCount(0);
     const pager = page.locator('[data-testid="tabbar"][data-level="1"]');
     await expect(pager).toBeVisible();
     await expect(pager.locator('[data-testid="tab"][data-page="stage"]')).toBeVisible();

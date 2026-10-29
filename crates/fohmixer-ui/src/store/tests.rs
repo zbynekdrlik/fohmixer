@@ -514,7 +514,6 @@ fn the_sectors_stay_through_a_close_stale_until_the_next_document() {
     assert_eq!(told.shown(), None);
     let first = SectorsTold {
         doc: SectorsDoc::empty(),
-        undo: false,
     };
     told.put(first.clone());
     assert_eq!(told.fresh(), Some(&first));
@@ -526,7 +525,6 @@ fn the_sectors_stay_through_a_close_stale_until_the_next_document() {
             rev: 4,
             sectors: std::collections::BTreeMap::new(),
         },
-        undo: true,
     };
     told.put(next.clone());
     assert_eq!(told.fresh(), Some(&next));

@@ -492,11 +492,6 @@ pub enum RouterMsg {
         sectors: Sectors,
         rev: u64,
     },
-    /// A page's undo of the sectors' last change (#148, `sector_undo`).
-    SectorUndo {
-        client: ClientId,
-        id: String,
-    },
     /// The layout poll's tick (#148): `sectors.json` is read again.
     SectorsPoll,
     /// The hub stops: the Stream Deck's held keys released and its task
@@ -1175,7 +1170,6 @@ impl Router {
                 sectors,
                 rev,
             } => self.sectors_edit(client, id, &sectors, rev),
-            RouterMsg::SectorUndo { client, id } => self.sectors_undo(client, id),
             RouterMsg::SectorsPoll => self.sectors_poll(),
             RouterMsg::Stop => return false,
         }
@@ -2616,7 +2610,6 @@ mod tests {
                 ServerMsg::Autotune(router.autotune.state()),
                 ServerMsg::Sectors {
                     doc: fohmixer_proto::sectors::SectorsDoc::empty(),
-                    undo: false
                 },
                 ServerMsg::Hub {
                     key: HUB_STAGE_AUT.into(),

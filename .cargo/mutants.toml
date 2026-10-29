@@ -345,12 +345,12 @@ exclude_re = [
   # step_sector_window (a side's window moved through the tested
   # Shift::moved into the offsets' signal). store/live/sectors.rs: the three
   # requests onto the socket (sector_request: an id from the tested
-  # Conn::next_id, the pending map as cmd's; sector_tick, sector_edit,
-  # sector_undo build the message). The decisions are the tested
+  # Conn::next_id, the pending map as cmd's; sector_tick and sector_edit
+  # build the message). The decisions are the tested
   # binding::sectors (picks, picked, sectors_on, the wanted set, the ticks,
   # the pool's steps), arrange::sectors (lines, width, windows),
   # pages::sectors::sector_memo and store::on_refusal; sectors.spec.ts
-  # drives the glue in Chromium and WebKit (paging, the width kept, ↶, a
+  # drives the glue in Chromium and WebKit (paging, the width kept, a
   # tick's answer).
   "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::pick|remembered_picks|measure_page)( |$)",
   "fohmixer-ui/src/pages/sectors\\.rs.*(replace|in) step_sector_window( |$)",
@@ -369,7 +369,7 @@ exclude_re = [
   # class, lets go of the focus once the tested Edit::outside_down ended
   # its rename; sectors.spec.ts renames on Enter and on a tap elsewhere).
   "fohmixer-ui/src/pages/sectors\\.rs.*(replace|in) (change_mode|sector_spots|flash_note|blur_field|Carrier::(new|show|lift|hold|settle|leave))( |$)",
-  "fohmixer-ui/src/store/live/sectors\\.rs.*(replace|in) LiveStore::(sector_request|sector_tick|sector_edit|sector_undo)( |$)",
+  "fohmixer-ui/src/store/live/sectors\\.rs.*(replace|in) LiveStore::(sector_request|sector_tick|sector_edit)( |$)",
   # pages/ableset.rs (#90): take_return (location.hash read through the
   # tested behave::ableset::returns_to_tab, then history.replaceState
   # without it); ableset.spec.ts's sign-in comes back to #ableset and finds

@@ -1,5 +1,5 @@
 //! The fader sectors end to end (#148): the document at a page's attach,
-//! a tick, FULL, ARRANGE's save and the undo, a hand edit of
+//! a tick, FULL, ARRANGE's save, a hand edit of
 //! `sectors.json`, the records and `/api/status`. No Live host (the
 //! instances are unreachable, so no seed runs): these run on Windows too.
 
@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::support::{Client, TestHub, runtime, serial};
 use fohmixer_hub::config::InstanceCfg;
-use fohmixer_hub::sectors::{PREV_FILE, SECTORS_FILE, parse};
+use fohmixer_hub::sectors::{OLD_PREV_FILE, SECTORS_FILE, parse};
 use fohmixer_proto::client::{ClientMsg, ServerMsg};
 use fohmixer_proto::sectors::{SectorId, SectorLayout, SectorsDoc, StripRef};
 use serde_json::{Value, json};
@@ -79,13 +79,10 @@ async fn start(dir: &Path, doc: Option<&SectorsDoc>) -> TestHub {
 }
 
 /// The first `sectors` message `check` takes.
-async fn sectors_where(
-    client: &mut Client,
-    check: impl Fn(&SectorsDoc, bool) -> bool,
-) -> (SectorsDoc, bool) {
+async fn sectors_where(client: &mut Client, check: impl Fn(&SectorsDoc) -> bool) -> SectorsDoc {
     client
         .wait(SECS_3, |m| match m {
-            ServerMsg::Sectors { doc, undo } if check(doc, *undo) => Some((doc.clone(), *undo)),
+            ServerMsg::Sectors { doc } if check(doc) => Some(doc.clone()),
             _ => None,
         })
         .await
@@ -131,14 +128,12 @@ fn a_page_gets_the_document_at_attach_and_after_a_hand_edit() {
         let dir = tempfile::tempdir().unwrap();
         let hub = start(dir.path(), Some(&lu(3, &["Vox 1"]))).await;
         let mut page = hub.client().await;
-        let (doc, undo) = sectors_where(&mut page, |_, _| true).await;
+        let doc = sectors_where(&mut page, |_| true).await;
         assert_eq!(doc, lu(3, &["Vox 1"]));
-        assert!(!undo);
         // A hand edit at an older revision: served one past the served.
         write_doc(dir.path(), &lu(1, &["Klavir", "Bass"]));
-        let (doc, undo) = sectors_where(&mut page, |d, _| d.rev == 4).await;
+        let doc = sectors_where(&mut page, |d| d.rev == 4).await;
         assert_eq!(doc, lu(4, &["Klavir", "Bass"]));
-        assert!(undo, "the version before it is the undo");
         assert_eq!(
             on_disk(dir.path()),
             lu(1, &["Klavir", "Bass"]),
@@ -146,7 +141,7 @@ fn a_page_gets_the_document_at_attach_and_after_a_hand_edit() {
         );
         // A page attached now gets it too.
         let mut later = hub.client().await;
-        let (doc, _) = sectors_where(&mut later, |_, _| true).await;
+        let doc = sectors_where(&mut later, |_| true).await;
         assert_eq!(doc.rev, 4);
         hub.stop().await;
     });
@@ -160,13 +155,12 @@ fn a_tick_reaches_a_second_page_and_the_file() {
         let hub = start(dir.path(), Some(&lu(1, &["Vox 1"]))).await;
         let mut a = hub.client().await;
         let mut b = hub.client().await;
-        sectors_where(&mut a, |d, _| d.rev == 1).await;
-        sectors_where(&mut b, |d, _| d.rev == 1).await;
+        sectors_where(&mut a, |d| d.rev == 1).await;
+        sectors_where(&mut b, |d| d.rev == 1).await;
         a.send(&tick("t1", "Bass", true)).await;
         assert_eq!(answer(&mut a, "t1").await, Ok(()));
-        let (doc, undo) = sectors_where(&mut b, |d, _| d.rev == 2).await;
+        let doc = sectors_where(&mut b, |d| d.rev == 2).await;
         assert_eq!(doc, lu(2, &["Vox 1", "Bass"]));
-        assert!(undo);
         assert_eq!(on_disk(dir.path()), lu(2, &["Vox 1", "Bass"]));
         assert_eq!(hub.status().await.sectors.strips, 2, "the status counts it");
         hub.stop().await;
@@ -194,7 +188,7 @@ fn a_full_layout_is_refused_full() {
 }
 
 #[test]
-fn edits_and_undo_end_to_end() {
+fn edits_end_to_end() {
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -203,23 +197,22 @@ fn edits_and_undo_end_to_end() {
         page.send(&order("o1", &["Vox 3", "Vox 1", "Vox 2"], 1))
             .await;
         assert_eq!(answer(&mut page, "o1").await, Ok(()));
-        let (doc, _) = sectors_where(&mut page, |d, _| d.rev == 2).await;
+        let doc = sectors_where(&mut page, |d| d.rev == 2).await;
         assert_eq!(doc, lu(2, &["Vox 3", "Vox 1", "Vox 2"]));
         page.send(&order("o2", &["Vox 1", "Vox 2", "Vox 3"], 1))
             .await;
         assert_eq!(answer(&mut page, "o2").await, Err("stale".to_string()));
-        page.send(&ClientMsg::SectorUndo { id: "u1".into() }).await;
-        assert_eq!(answer(&mut page, "u1").await, Ok(()));
-        let (doc, undo) = sectors_where(&mut page, |d, _| d.rev == 3).await;
-        assert_eq!(doc, lu(3, &["Vox 1", "Vox 2", "Vox 3"]));
-        assert!(undo);
-        page.send(&ClientMsg::SectorUndo { id: "u2".into() }).await;
-        assert_eq!(answer(&mut page, "u2").await, Ok(()));
-        let (doc, _) = sectors_where(&mut page, |d, _| d.rev == 4).await;
-        assert_eq!(doc, lu(4, &["Vox 3", "Vox 1", "Vox 2"]), "redone");
-        let prev: SectorsDoc =
-            serde_json::from_slice(&std::fs::read(dir.path().join(PREV_FILE)).unwrap()).unwrap();
-        assert_eq!(prev, lu(3, &["Vox 1", "Vox 2", "Vox 3"]));
+        assert_eq!(on_disk(dir.path()), lu(2, &["Vox 3", "Vox 1", "Vox 2"]));
+        assert!(!dir.path().join(OLD_PREV_FILE).exists(), "no undo file");
+        // An older page's undo is an unreadable message: answered, nothing
+        // changes, and the hub goes on.
+        page.send_text(r#"{"type": "sector_undo", "id": "u1"}"#)
+            .await;
+        page.send(&order("o3", &["Vox 1", "Vox 3", "Vox 2"], 2))
+            .await;
+        assert_eq!(answer(&mut page, "o3").await, Ok(()));
+        let doc = sectors_where(&mut page, |d| d.rev == 3).await;
+        assert_eq!(doc, lu(3, &["Vox 1", "Vox 3", "Vox 2"]));
         hub.stop().await;
     });
 }
@@ -231,7 +224,7 @@ fn a_bad_hand_edit_keeps_the_document_and_the_status_says_why() {
         let dir = tempfile::tempdir().unwrap();
         let hub = start(dir.path(), Some(&lu(2, &["Vox 1"]))).await;
         let mut page = hub.client().await;
-        sectors_where(&mut page, |d, _| d.rev == 2).await;
+        sectors_where(&mut page, |d| d.rev == 2).await;
         let bad = br#"{"rev": 1, "sectors": {"lx": []}}"#;
         std::fs::write(dir.path().join(SECTORS_FILE), bad).unwrap();
         let why = parse(bad).unwrap_err();
@@ -263,8 +256,6 @@ fn the_records_name_what_and_who() {
         assert_eq!(answer(&mut page, "t1").await, Ok(()));
         page.send(&order("o1", &["Bass", "Vox 1"], 2)).await;
         assert_eq!(answer(&mut page, "o1").await, Ok(()));
-        page.send(&ClientMsg::SectorUndo { id: "u1".into() }).await;
-        assert_eq!(answer(&mut page, "u1").await, Ok(()));
         write_doc(dir.path(), &lu(1, &["Klavir"]));
         let sectors = |records: &[Value]| -> Vec<Value> {
             records
@@ -273,18 +264,10 @@ fn the_records_name_what_and_who() {
                 .cloned()
                 .collect()
         };
-        let records = hub.events_until(SECS_3, |r| sectors(r).len() >= 4).await;
+        let records = hub.events_until(SECS_3, |r| sectors(r).len() >= 3).await;
         let got = sectors(&records);
         let whats: Vec<&Value> = got.iter().map(|r| &r["what"]).collect();
-        assert_eq!(
-            whats,
-            [
-                &json!("tick"),
-                &json!("edit"),
-                &json!("undo"),
-                &json!("file")
-            ]
-        );
+        assert_eq!(whats, [&json!("tick"), &json!("edit"), &json!("file")]);
         assert!(got[0]["client"].is_u64());
         assert_eq!(got[0]["peer"], json!("127.0.0.1"));
         assert_eq!(got[0]["layout"], json!("lu-1"));
@@ -297,10 +280,9 @@ fn the_records_name_what_and_who() {
         assert_eq!(got[1]["reordered"], json!(1));
         assert_eq!(got[1]["added"], json!(0));
         assert_eq!(got[1]["client"], got[0]["client"]);
+        assert_eq!(got[2]["client"], Value::Null);
+        assert_eq!(got[2]["peer"], Value::Null);
         assert_eq!(got[2]["rev"], json!(4));
-        assert_eq!(got[3]["client"], Value::Null);
-        assert_eq!(got[3]["peer"], Value::Null);
-        assert_eq!(got[3]["rev"], json!(5));
         hub.stop().await;
     });
 }
@@ -312,9 +294,8 @@ fn no_seed_runs_while_no_instance_was_read() {
         let dir = tempfile::tempdir().unwrap();
         let hub = start(dir.path(), None).await;
         let mut page = hub.client().await;
-        let (doc, undo) = sectors_where(&mut page, |_, _| true).await;
+        let doc = sectors_where(&mut page, |_| true).await;
         assert_eq!(doc, SectorsDoc::empty());
-        assert!(!undo);
         tokio::time::sleep(Duration::from_secs(1)).await;
         assert!(!dir.path().join(SECTORS_FILE).exists());
         let status = hub.status().await;

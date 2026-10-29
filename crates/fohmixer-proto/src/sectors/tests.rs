@@ -520,7 +520,6 @@ fn the_refusals_read_as_the_hub_sends_them() {
     assert_eq!(Refusal::NotInPool.text(), "not in the pool");
     assert_eq!(Refusal::Full.text(), "FULL");
     assert_eq!(Refusal::Stale.text(), "stale");
-    assert_eq!(Refusal::NothingToUndo.text(), "nothing to undo");
     assert_eq!(Refusal::NoLayout.text(), "no layout served");
 }
 
@@ -683,7 +682,7 @@ fn an_edit_that_changes_nothing_is_refused_empty() {
             .map_err(Refusal::text)
             .map(|d| d.rev),
         Err("EMPTY"),
-        "nothing to change takes no revision and no undo step"
+        "nothing to change takes no revision"
     );
     // Trailing empty slots change nothing either.
     let trailing = reordered(&before, &[("ru-1", vec!["Klavir", "Bass", "", ""])]);

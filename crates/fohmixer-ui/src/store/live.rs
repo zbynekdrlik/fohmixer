@@ -172,7 +172,7 @@ pub struct LiveStore {
     /// AUTOTUNE (#104): the hub's last state, kept through a reconnect,
     /// stale until the hub's next (`HubAutotune`).
     pub autotune: RwSignal<HubAutotune>,
-    /// The fader sectors (#148): the hub's last document and its undo flag,
+    /// The fader sectors (#148): the hub's last document,
     /// kept through a reconnect, stale until the hub's next (`HubSectors`).
     pub sectors: RwSignal<HubSectors>,
     /// The loudness points' readings (#151): forgotten at a close, every
@@ -692,11 +692,11 @@ impl LiveStore {
                 }));
             }
             // The fader sectors (#148): the sectors page, the LAYOUTS block,
-            // ↶ and the detail's ticks read them.
-            ServerMsg::Sectors { doc, undo } => {
+            // and the detail's ticks read them.
+            ServerMsg::Sectors { doc } => {
                 let _ = self
                     .sectors
-                    .try_update(|sectors| sectors.put(SectorsTold { doc, undo }));
+                    .try_update(|sectors| sectors.put(SectorsTold { doc }));
             }
             // A newer hub's message (#90 B3): ignored, never an error.
             ServerMsg::Unknown => dom::log("a hub message this page does not know: ignored"),

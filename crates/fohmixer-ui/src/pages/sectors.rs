@@ -17,9 +17,8 @@
 //! empty cell (its old place left empty) or another strip (the two swap),
 //! and a second tap saves; nothing reaches Live; in the mode the LAYOUTS
 //! block stays live and renames, adds and removes layouts, mockup v2,
-//! `behave::arrange_edit`, saved with the same tap) and ↶ (the hub's undo
-//! of the last change,
-//! dim while the hub holds no version before it), then the arrows of a side
+//! `behave::arrange_edit`, saved with the same tap; no undo, the owner's
+//! ruling of 29.10.2026), then the arrows of a side
 //! that does not fit, the rail and the global controls. No strip draws its
 //! instance pill here (it costs 16 px of travel); a layout that mixes Live
 //! sets names each strip's set where the group's name sits on the classic
@@ -44,10 +43,10 @@ use crate::behave::arrange_edit::{REMOVE_ASK, TabRow, TabTap, field_text, tab_ro
 use crate::binding::sectors::{
     Picks, picked, pool_controls, sector_instances, sector_name, sector_side,
 };
-use crate::components::{ControlView, down_of, fail_flash, owns_touches};
+use crate::components::{ControlView, down_of, owns_touches};
 use crate::dom;
 use crate::pages::surface::{ColumnHead, Head, Nav, ThinStrip, measure_page};
-use crate::store::{LiveStore, ResultFn, on_refusal};
+use crate::store::ResultFn;
 
 /// How long the refused save's note shows under ARRANGE (ms).
 const NOTE_MS: u64 = 4000;
@@ -423,7 +422,6 @@ pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
                 <LayoutsBlock shown=shown_doc />
                 <div class="sector-actions">
                     <ArrangeButton carrier=carrier refused=refused />
-                    <UndoButton />
                 </div>
                 <div class="saved-note" data-testid="arrange-note">{note}</div>
                 <div class="shifts">
@@ -1082,48 +1080,6 @@ fn ArrangeButton(carrier: Carrier, refused: RwSignal<Option<&'static str>>) -> i
                 "ARRANGE"
             </button>
         </div>
-    }
-}
-
-/// ↶: the hub's undo of the last change (a tick or an ARRANGE save; a
-/// second ↶ redoes it). Dim (`aria-disabled`) while the hub holds no
-/// version before it; a tap sends the undo only while the hub's document is
-/// fresh and says it holds one, and a refusal flashes the button.
-#[component]
-fn UndoButton() -> impl IntoView {
-    let store = expect_context::<LiveStore>();
-    let undo = Memo::new(move |_| {
-        store
-            .sectors
-            .try_with(|told| told.shown().is_some_and(|told| told.undo))
-            .unwrap_or(false)
-    });
-    let failed = RwSignal::new(false);
-    let on_down = move |ev: web_sys::PointerEvent| {
-        ev.prevent_default();
-        let can = store
-            .sectors
-            .try_with_untracked(|told| told.fresh().is_some_and(|told| told.undo))
-            .unwrap_or(false);
-        if can {
-            store.sector_undo(Some(on_refusal(fail_flash(failed))));
-        }
-    };
-    // It owns its touches (#43 PR G); it writes no Live key.
-    let no_keys: Vec<String> = Vec::new();
-    view! {
-        <button
-            type="button"
-            class="undo-btn"
-            use:owns_touches=no_keys
-            class:failed=move || failed.try_get().unwrap_or(false)
-            data-testid="sector-undo"
-            aria-label="Undo the last layout change"
-            aria-disabled=move || (!undo.try_get().unwrap_or(false)).to_string()
-            on:pointerdown=on_down
-        >
-            "↶"
-        </button>
     }
 }
 

@@ -262,17 +262,14 @@ pub enum ClientMsg {
     },
     /// ARRANGE's save (#148): every sector's layouts as the page edited
     /// them (their slots, renamed, added and removed layouts) at the
-    /// document's revision `rev`, one change (one undo step;
-    /// `fohmixer_proto::sectors::edit`). Answered as
+    /// document's revision `rev`, one change
+    /// (`fohmixer_proto::sectors::edit`). Answered as
     /// [`ClientMsg::SectorTick`].
     SectorEdit {
         id: String,
         sectors: Sectors,
         rev: u64,
     },
-    /// Undo the last change of the sectors (#148; a second undo redoes
-    /// it). Answered as [`ClientMsg::SectorTick`].
-    SectorUndo { id: String },
 }
 
 /// One write's outcome (#43, an `ack` item): Live ran it (`value`: what
@@ -543,9 +540,8 @@ pub enum ServerMsg {
     /// strip's latest, paced with the meters (#51).
     Lufs { items: Vec<LufsItem> },
     /// The fader sectors' document (#148), at attach and after every
-    /// change; `undo` while the hub holds the version before the last
-    /// change (the page's ↶).
-    Sectors { doc: SectorsDoc, undo: bool },
+    /// change. (An older hub also sent `undo`, which a page ignores.)
+    Sectors { doc: SectorsDoc },
     /// A message of a newer hub that this page does not know (#90 B3): any
     /// other `type` reads as this, and the page ignores it, so a new
     /// message never breaks an older page.
@@ -1481,17 +1477,15 @@ pub struct HubStatus {
 
 /// `/api/status` `sectors` (#148): the served document's revision, its
 /// layouts, its distinct faders and the refs no pool fader carries
-/// (`unknown`: a track renamed in Live), whether the hub holds the version
-/// before the last change (`undo`), and why the file on disk is not served
-/// (`error`: the last good document stays).
+/// (`unknown`: a track renamed in Live), and why the file on disk is not
+/// served (`error`: the last good document stays). An older hub's `undo`
+/// field is ignored.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SectorsStatus {
     pub rev: u64,
     pub layouts: usize,
     pub strips: usize,
     pub unknown: usize,
-    #[serde(default)]
-    pub undo: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }

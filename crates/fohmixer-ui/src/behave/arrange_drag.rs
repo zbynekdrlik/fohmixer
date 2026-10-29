@@ -4,7 +4,7 @@
 //! a tap on ARRANGE starts it, the strips are dragged within their sector's
 //! shown layout and the layouts renamed, added and removed
 //! (`behave::arrange_edit::Edit`, the page shows the edit), and a second
-//! tap sends every sector as ONE `SectorEdit` (one change, one undo step)
+//! tap sends every sector as ONE `SectorEdit` (one change)
 //! and leaves once the hub's new document arrives (a refusal: at once);
 //! with nothing changed it just leaves. A hide of the page, or a
 //! new document from the hub during the mode, ends it unsaved. Nothing here

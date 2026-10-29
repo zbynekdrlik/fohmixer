@@ -376,11 +376,10 @@ pub type HubReverb = HubTold<ReverbState>;
 pub type HubAutotune = HubTold<AutotuneState>;
 
 /// The fader sectors as the hub last told them (#148, `ServerMsg::Sectors`):
-/// the document and whether the hub holds a version to undo to (↶).
+/// the document.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SectorsTold {
     pub doc: SectorsDoc,
-    pub undo: bool,
 }
 
 /// The fader sectors (#148): kept through an outage (the page keeps its

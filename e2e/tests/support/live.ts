@@ -307,8 +307,7 @@ export async function setSectors(doc: SectorsDoc) {
 
 /**
  * The harness's empty `sectors.json` again (#148: sectors off, the FOH page
- * as before), served by the hub when this returns. The hub keeps its undo
- * version in memory, so a test never relies on ↶ being dim at its start.
+ * as before), served by the hub when this returns.
  */
 export async function resetSectors() {
   const bearer = await token();
@@ -366,7 +365,7 @@ export class LiveClient {
   reverb: any = null;
   /** The hub's last AUTOTUNE state (#104: `ServerMsg::Autotune`, told to every client). */
   autotune: any = null;
-  /** The hub's last fader sectors (#148: `ServerMsg::Sectors`, `{doc, undo}`, told to every client). */
+  /** The hub's last fader sectors (#148: `ServerMsg::Sectors`, `{doc}`, told to every client). */
   sectors: any = null;
 
   private constructor(ws: WebSocket) {
@@ -406,7 +405,7 @@ export class LiveClient {
 
   /**
    * A request the hub answers by its `id` (a `cmd`, #148's `sector_tick`,
-   * `sector_edit`, `sector_undo`): `msg` with a fresh `id`, and the hub's
+   * `sector_edit`): `msg` with a fresh `id`, and the hub's
    * `result` or `error` for it (an error is returned, not thrown).
    */
   async ask(msg: Record<string, unknown>): Promise<any> {
