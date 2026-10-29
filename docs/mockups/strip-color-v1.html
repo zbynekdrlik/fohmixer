@@ -1,0 +1,2461 @@
+<!doctype html>
+<!-- fohmixer #164: mockup v1 of the strip colours, for the owner's
+     approval; not part of the app. The owner (29.10.2026): a strip's colour
+     is set in its SEL detail and is no longer tied to the Ableton track's
+     colour. Shown: (1) the iPad's FOH page at 1194 x 834 with the strips of
+     the approved v9 head (lufs-v9.html), each strip's only colour mark the
+     3 px edge at the left of its name button (`--tc`), now the colour
+     chosen on the tablet; a strip with none shows the neutral calm grey;
+     (2) the channel detail (hold SEL; here a click on SEL) with the new
+     COLOR section in the right box under LAYOUTS: twelve calm colours and
+     NONE, the chosen key marked like a selected tab (the lighter ground,
+     the accent line at its foot); one tap sets it, and the strip's edge and
+     the bar's chip follow at once. Everything else is the shipped detail
+     (channel-detail-v2.html, the sectors' LAYOUTS and the bar's ◀ ▶ of
+     sectors-v2.html). Plain JS, pointer events (mouse and touch). The fonts
+     are the app's own files, loaded by relative path. The page measures
+     itself. Invented names and values, no site data. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fohmixer strip colour v1</title>
+<style>
+/* The app's fonts (crates/fohmixer-ui/fonts, SIL OFL 1.1), by relative
+   path; style.css's faces and ranges. */
+@font-face {
+    font-family: "Barlow Condensed";
+    font-weight: 700;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-700-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "Barlow Condensed";
+    font-weight: 700;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-ext-700-normal.woff2") format("woff2");
+    unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 600;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-600-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 600;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-ext-600-normal.woff2") format("woff2");
+    unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 700;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-700-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 700;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-ext-700-normal.woff2") format("woff2");
+    unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+    font-family: "JetBrains Mono";
+    font-weight: 500;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+@font-face {
+    font-family: "JetBrains Mono";
+    font-weight: 600;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-600-normal.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2212, U+221E;
+}
+
+/* --- the app's tokens (style.css) --- */
+:root {
+    color-scheme: dark;
+    --bg: #07070c;
+    --page: #0b0b12;
+    --bar: #11111b;
+    --section: #151522;
+    --panel: #1a1a28;
+    --panel-mute: #12121b;
+    --panel-hi: #20203a;
+    --track: #0a0a14;
+    --line: #2a2a44;
+    --line-soft: rgba(255, 255, 255, 0.06);
+    --accent: #4ecdc4;
+    --accent-dim: rgba(78, 205, 196, 0.28);
+    --mute: #e63946;
+    --solo: #f4d35e;
+    --band: #4ecdc4;
+    --master: #8b7dff;
+    --text: #eaeaf0;
+    --muted: #9a9ab4;
+    --faint: #5c5c78;
+    --m-green: #36d67a;
+    --m-yellow: #f5d547;
+    --m-red: #ff4757;
+    --danger: #ff3b30;
+    --warn: #f5a623;
+    --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+    --ui: "Barlow", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    /* NEW (#151): the loudness states. Fine, warn and far are the meter's
+       own zone colours (the team knows them from the meters); plain is the
+       output's neutral pill. */
+    --l-fine: var(--m-green);
+    --l-warn: var(--m-yellow);
+    --l-far: var(--m-red);
+    --l-plain: #34344e;
+    /* v5: the LUFS text tints (no fills any more). */
+    --l-quiet: #6e6e88;
+    --l-amber: #a8894a;
+    --l-red: #b0585f;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--ui);
+    -webkit-text-size-adjust: 100%;
+}
+
+body {
+    padding: 16px;
+}
+
+/* --- strip.css (v1.17.0), the parts a strip draws --- */
+.strip {
+    --head-w: calc(var(--strip-w, 76px) - 10px);
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 3px;
+    flex: none;
+    width: var(--strip-w, 76px);
+    min-height: 0;
+    padding: 5px 4px 4px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: var(--panel);
+}
+
+.strip.wide {
+    --head-w: calc(var(--strip-w, 76px) * 1.1 - 10px);
+    width: calc(var(--strip-w, 76px) * 1.1);
+}
+
+.strip::before,
+.strip::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 8px;
+    pointer-events: none;
+}
+
+.strip::before {
+    border-top: 3px solid var(--gc, var(--accent));
+    opacity: 0.9;
+}
+
+.strip:has(.fader[data-held="true"])::after {
+    border: 2px solid var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-dim);
+}
+
+.strip:has(.fader[data-held="true"]) .strip-readout {
+    background: var(--accent);
+    opacity: 1;
+}
+
+.strip:has(.fader[data-held="true"]) .strip-readout .db {
+    color: #07131a;
+}
+
+.strip-fz {
+    position: relative;
+    display: grid;
+    grid-template-columns: 17px 11px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 3px;
+    min-height: 0;
+    padding: 8px 0 10px;
+}
+
+.strip-fz .scale { grid-area: 1 / 1; }
+.strip-fz .meter { grid-area: 1 / 2; }
+.strip-fz .fader {
+    grid-area: 1 / 1 / 2 / 4;
+    --x: calc(50% + 17px);
+}
+
+.scale { position: relative; }
+
+.tick {
+    position: absolute;
+    right: 0;
+    transform: translateY(-50%);
+    color: var(--faint);
+    font: 500 8.5px/1 var(--mono);
+    white-space: nowrap;
+}
+
+.tick.unity { color: var(--muted); }
+
+.meter { position: relative; }
+
+.meter-bars {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    grid-auto-columns: 1fr;
+    grid-auto-flow: column;
+    gap: 1px;
+}
+
+.meter-clip {
+    position: absolute;
+    z-index: 2;
+    top: -9px;
+    left: -3px;
+    right: -3px;
+    height: 9px;
+}
+
+.meter-clip::before {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 3px;
+    right: 3px;
+    height: 4px;
+    border-radius: 2px;
+    background: #2a1016;
+}
+
+.meter-peak {
+    position: absolute;
+    inset: 0;
+    transform: translateY(calc((1 - var(--pk, 0)) * 100%));
+}
+
+.meter-peak::before {
+    content: "";
+    position: absolute;
+    top: -1px;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: #ffffff;
+}
+
+.meter-bar {
+    position: relative;
+    overflow: hidden;
+    background: #0e0e18;
+}
+
+.meter-zones {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+        to top,
+        var(--m-green) 0 var(--yellow, 31%),
+        var(--m-yellow) var(--yellow, 31%) var(--red, 61%),
+        var(--m-red) var(--red, 61%) 100%
+    );
+}
+
+.meter-cover {
+    position: absolute;
+    inset: 0;
+    background: #0e0e18;
+    transform-origin: top;
+}
+
+.fader {
+    position: relative;
+}
+
+.fader::after {
+    content: "";
+    position: absolute;
+    top: calc((1 - var(--u, 0.7294)) * 100%);
+    left: calc(var(--x, 50%) - 16px);
+    right: 2px;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.28);
+}
+
+.fader-groove,
+.fader-fill {
+    position: absolute;
+    left: var(--x, 50%);
+    width: 6px;
+    margin-left: -3px;
+    border-radius: 3px;
+}
+
+.fader-groove {
+    top: 0;
+    bottom: 0;
+    background: var(--track);
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.fader-fill {
+    bottom: 0;
+    height: 100%;
+    transform-origin: bottom;
+    transform: scaleY(var(--p, 0));
+    background: linear-gradient(to top, rgba(78, 205, 196, 0.25), var(--accent));
+}
+
+.fader-rail {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    transform: translateY(calc(var(--p, 0) * -100%));
+}
+
+.fader-cap {
+    --cap-w: min(32px, calc(var(--strip-w, 76px) - 38px));
+    position: absolute;
+    top: 100%;
+    left: var(--x, 50%);
+    width: var(--cap-w);
+    height: 22px;
+    margin: -11px 0 0 calc(var(--cap-w) / -2);
+    border: 1px solid #4a4a66;
+    border-bottom-color: #15151f;
+    border-radius: 6px;
+    background: linear-gradient(#3a3a52, #262638);
+}
+
+.fader[data-held="true"] .fader-cap {
+    border-color: var(--accent);
+}
+
+.fader-cap::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 6px;
+    right: 6px;
+    height: 2px;
+    margin-top: -1px;
+    border-radius: 1px;
+    background: var(--text);
+}
+
+.strip-head {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 30px 22px;
+    row-gap: 2px;
+    min-width: 0;
+}
+
+.strip-info {
+    --menu-w: clamp(18px, calc(var(--strip-w, 76px) * 0.25), 22px);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    min-width: 0;
+    height: 22px;
+    margin: 0 -2px;
+}
+
+.strip-readout {
+    display: flex;
+    justify-self: center;
+    align-items: center;
+    gap: 2px;
+    max-width: 100%;
+    min-width: 0;
+    padding: 0 2px;
+    border-radius: 5px;
+    pointer-events: none;
+}
+
+.strip-readout .db {
+    font-size: clamp(7px, calc((var(--strip-w, 76px) - 18px - var(--menu-w)) / 3.3), 12px);
+    line-height: 17px;
+}
+
+.db {
+    color: #9be7a8;
+    font: 600 12px/1.4 var(--mono);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.db.unity { color: #ffffff; }
+
+.strip-menu {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: var(--menu-w);
+    height: 20px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: #141420;
+    color: var(--muted);
+    font: 700 12px/1 var(--ui);
+}
+
+.mute {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    height: 34px;
+    padding: 0 4px;
+    border-radius: 7px;
+    background: #1f1f2e;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--faint);
+    font: 700 clamp(11px, calc(var(--strip-w, 76px) * 0.2), 15px) / 1 var(--display);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+.mute.lit {
+    background: var(--tc, var(--accent));
+    box-shadow: none;
+    color: var(--tt, #10101a);
+}
+
+.strip-head > .mute {
+    height: 30px;
+    padding: 9px 3px 0;
+}
+
+.strip-label {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    font-size: clamp(
+        9px,
+        calc((var(--strip-w, 76px) - 18px - var(--n, 5) * 0.5px) / (var(--n, 5) * 0.5)),
+        17px
+    );
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.strip-corner {
+    position: absolute;
+    top: 1.5px;
+    right: 3px;
+    left: 3px;
+    display: flex;
+    gap: 16px 3px;
+    height: 13.5px;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+.strip-ret {
+    flex: none;
+    margin-top: 1.5px;
+    padding: 0 2px;
+    border-radius: 3px;
+    background: rgba(7, 7, 12, 0.6);
+    color: var(--muted);
+    font: 800 7.5px/1.4 var(--ui);
+    letter-spacing: 0.6px;
+}
+
+/* states.css: a problem's `!` */
+.strip-flag {
+    flex: none;
+    margin-top: 1.5px;
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    background: var(--warn);
+    color: #0b0b12;
+    font: 800 10px/12px var(--ui);
+    text-align: center;
+}
+/* --- the device's screen (simplified around the app's strips) --- */
+.device {
+    position: relative;
+    flex: none;
+    overflow: hidden;
+    border-radius: 14px;
+    background: var(--page);
+    box-shadow: 0 0 0 2px #000, 0 0 0 4px #24243a;
+}
+
+.ipad { width: 1194px; height: 834px; }
+.phone-side { width: 844px; height: 390px; }
+.phone-up { width: 390px; height: 844px; }
+
+.bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    height: 34px;
+    padding: 0 12px;
+    background: var(--bar);
+    color: var(--muted);
+    font: 700 11px/1 var(--ui);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.bar .tab {
+    padding: 5px 9px;
+    border-radius: 6px;
+}
+
+.bar .tab.on {
+    background: var(--panel-hi);
+    color: var(--text);
+}
+
+.bar .ver {
+    margin-left: auto;
+    color: var(--faint);
+    font: 600 10px/1 var(--mono);
+    letter-spacing: 0;
+    text-transform: none;
+}
+
+.body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 132px minmax(0, 1fr);
+    gap: 6px;
+    height: calc(100% - 34px);
+    padding: 6px;
+}
+
+.side {
+    display: flex;
+    gap: 4px;
+    min-width: 0;
+    min-height: 0;
+}
+
+.side.right { justify-content: flex-end; }
+
+.column {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 6px;
+    border-radius: 10px;
+    background: #10101a;
+}
+
+.rbtn {
+    display: grid;
+    place-items: center;
+    height: 44px;
+    border-radius: 9px;
+    background: #1d1d2c;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--muted);
+    font: 700 15px/1 var(--display);
+    letter-spacing: 0.04em;
+}
+
+/* A phone (#63, phone-burger-v1): the column behind ☰. */
+.pbody {
+    position: relative;
+    display: grid;
+    gap: 6px;
+    height: calc(100% - 34px);
+    padding: 6px;
+}
+
+.pline {
+    display: flex;
+    gap: 4px;
+    min-height: 0;
+}
+
+.burger {
+    position: absolute;
+    z-index: 3;
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 9px;
+    background: #1d1d2c;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--muted);
+    font: 700 16px/1 var(--ui);
+}
+
+/* --- the mockup's own page --- */
+.sheet {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-width: 1230px;
+    margin: 0 auto 40px;
+}
+
+.wrap {
+    overflow-x: auto;
+    padding: 6px;
+}
+
+.overline {
+    color: var(--muted);
+    font: 700 10px/1.2 var(--ui);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+h1, h2 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    font: 700 24px/1.1 var(--display);
+    letter-spacing: 0.03em;
+}
+
+h2 { font-size: 19px; }
+
+.vletter {
+    display: grid;
+    flex: none;
+    place-items: center;
+    min-width: 26px;
+    height: 26px;
+    padding: 0 6px;
+    border-radius: 7px;
+    background: var(--solo);
+    color: #10101a;
+    font: 700 18px/1 var(--display);
+}
+
+p, li {
+    max-width: 1000px;
+    color: var(--muted);
+    font: 600 14px/1.5 var(--ui);
+}
+
+p b, li b { color: var(--text); }
+
+code {
+    color: var(--accent);
+    font: 600 12.5px/1.4 var(--mono);
+}
+
+.num {
+    color: var(--solo);
+    font: 600 13px/1.4 var(--mono);
+}
+
+.row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 22px;
+}
+
+.box {
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: var(--section);
+}
+
+.samples {
+    display: flex;
+    gap: 6px;
+    height: 300px;
+    padding: 6px;
+    border-radius: 10px;
+    background: var(--page);
+}
+
+.sample-cap {
+    width: var(--strip-w);
+    color: var(--muted);
+    font: 600 11px/1.3 var(--ui);
+    text-align: center;
+}
+
+.sample-caps {
+    display: flex;
+    gap: 6px;
+    padding: 0 6px;
+}
+
+table.legend {
+    border-collapse: collapse;
+}
+
+table.legend td, table.legend th {
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--line);
+    color: var(--muted);
+    font: 600 13.5px/1.4 var(--ui);
+    text-align: left;
+    vertical-align: middle;
+}
+
+table.legend th {
+    color: var(--text);
+    font-weight: 700;
+}
+
+.chip {
+    display: inline-block;
+    min-width: 40px;
+    padding: 0 6px;
+    border-radius: 5px;
+    color: #0b0b12;
+    font: 600 12px/20px var(--mono);
+    text-align: center;
+}
+
+.chip { background: none; font-weight: 500; }
+.chip:is([data-l="fine"], [data-l="plain"]) { color: var(--l-quiet); }
+.chip[data-l="warn"] { color: var(--l-amber); }
+.chip[data-l="far"] { color: var(--l-red); }
+.chip:is([data-l="silent"], [data-l="none"]) { color: var(--faint); font-style: italic; }
+
+.measure {
+    color: var(--text);
+    font: 600 13px/1.5 var(--mono);
+}
+
+.ok { color: var(--m-green); }
+.bad { color: var(--m-red); }
+
+.q {
+    padding: 12px 14px;
+    border-left: 3px solid var(--solo);
+    border-radius: 6px;
+    background: var(--section);
+}
+
+/* --- NEW in v2 (#151): the fader zone the LV1 way; v3: no PEAK, no clip --- */
+
+/* The zone keeps today's height: the strip's head (name button 30 px,
+   readout line 22 px) and the zone's padding (8 px top, 10 px bottom) are
+   unchanged, so the travel is today's. Inside it, right to left: the dB
+   scale (17 px, right edge), 2 px, the fader's track (12 px) holding the
+   stereo meter, the cap centred on the track, and left of the cap's widest
+   reach the information column. The whole zone stays the fader's touch
+   target, as today. */
+.fz2 {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
+    min-height: 0;
+    padding: 8px 0 10px;
+}
+
+.zone {
+    --cap-w: min(32px, calc(var(--strip-w, 76px) - 38px));
+    --x: calc(100% - 25px);
+    position: relative;
+    min-height: 0;
+}
+
+/* The unity mark: 4 px either side of the track (under the track). */
+.zone .unity {
+    position: absolute;
+    top: calc((1 - var(--u, 0.85)) * 100%);
+    left: calc(var(--x) - 10px);
+    width: 20px;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.4);
+}
+
+/* The track: two bars, L and R, 4 px each, 2 px apart, on the fader's own
+   dB scale (green, yellow from -12 dB, red from -3 dB, as today). */
+.track {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: calc(var(--x) - 6px);
+    width: 12px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px;
+    padding: 1px;
+    border-radius: 3px;
+    background: #08080f;
+    box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.bar2 {
+    position: relative;
+    overflow: hidden;
+    background: #0e0e18;
+}
+
+.bar2 .meter-zones,
+.bar2 .meter-cover {
+    position: absolute;
+    inset: 0;
+}
+
+.bar2 .meter-cover {
+    background: #0e0e18;
+    transform-origin: top;
+}
+
+.bar2 .meter-peak {
+    opacity: 0.85;
+}
+
+/* The scale on the right, its labels left-aligned beside the track (LV1).
+   The cap overhangs the labels' first 8 px as it passes. */
+.scale2 {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: 0;
+    width: 17px;
+}
+
+.scale2 .t2 {
+    position: absolute;
+    left: 0;
+    transform: translateY(-50%);
+    color: var(--muted);
+    font: 500 8.5px/1 var(--mono);
+    white-space: nowrap;
+}
+
+.scale2 .t2.unity-t {
+    color: #c4c4d6;
+}
+
+/* The cap rides a track-tall layer moved up by --p (today's mechanism).
+   Opaque, with a 1 px dark ring (no blur): the bars run under it and the
+   cap's white line stays readable over them. */
+.rail2 {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    transform: translateY(calc(var(--p, 0) * -100%));
+}
+
+.cap2 {
+    position: absolute;
+    top: 100%;
+    left: var(--x);
+    width: var(--cap-w);
+    height: 22px;
+    margin: -11px 0 0 calc(var(--cap-w) / -2);
+    border: 1px solid #4a4a66;
+    border-bottom-color: #15151f;
+    border-radius: 6px;
+    background: linear-gradient(#3a3a52, #262638);
+    box-shadow: 0 0 0 1px #07070c;
+}
+
+.cap2::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 6px;
+    right: 6px;
+    height: 2px;
+    margin-top: -1px;
+    border-radius: 1px;
+    background: var(--text);
+}
+
+.zone[data-held="true"] .cap2 {
+    border-color: var(--accent);
+}
+
+.strip:has(.zone[data-held="true"])::after {
+    border: 2px solid var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-dim);
+}
+
+.strip:has(.zone[data-held="true"]) .strip-readout {
+    background: var(--accent);
+}
+
+.strip:has(.zone[data-held="true"]) .strip-readout .db {
+    color: #07131a;
+}
+
+/* The information column: left of the cap's widest reach, the zone's
+   height: the LUFS (only on a +LUFS strip, else the row stays empty),
+   then the group's name. No PEAK, no clip (v3: Live mixes in 32-bit
+   float, a track cannot clip inside Live). */
+.info {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: calc(100% - 28px - var(--cap-w) / 2);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.cap-kind {
+    margin-top: -2px;
+}
+
+.cap-lbl {
+    overflow: hidden;
+    color: var(--faint);
+    font: 700 7.5px/9px var(--ui);
+    letter-spacing: 0.08em;
+    text-align: center;
+    white-space: nowrap;
+}
+
+.lpill {
+    align-self: center;
+    width: min(100%, 40px);
+}
+
+.lpill {
+    height: 16px;
+    overflow: hidden;
+    font: 500 10.5px/16px var(--mono);
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    white-space: nowrap;
+}
+
+/* v5 (the owner, #151, 26.10): quiet text, never a shape: no fill, no
+   box, no border, no glow. In range (and the output's number) dim grey;
+   out of range only the text is tinted, muted; silent or no value: nothing
+   at all (the caption goes too). Quieter than Live's dB (12 px, 600,
+   #9be7a8) in size, weight and contrast; the page checks it. */
+.lpill:is([data-l="fine"], [data-l="plain"]) { color: var(--l-quiet); }
+.lpill[data-l="warn"] { color: var(--l-amber); }
+.lpill[data-l="far"] { color: var(--l-red); }
+.lpill:is([data-l="silent"], [data-l="none"]) { visibility: hidden; }
+
+.lpill.empty,
+.cap-lbl.empty {
+    visibility: hidden;
+}
+
+/* The group's name (#127) moves from the scale column into the info
+   column, under the LUFS, read bottom to top as today. v6: calm grey text,
+   no group colour (one colour per strip, the track's own). */
+.gside {
+    position: absolute;
+    top: 40px;
+    left: 0;
+    width: 11px;
+    height: 96px;
+    overflow: hidden;
+    color: var(--faint);
+    font: 600 9.5px/11px var(--ui);
+    letter-spacing: 0.1em;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+}
+
+/* v6: one colour per strip, the Live track's own (the name's 4 px edge):
+   the layout group's 3 px top edge (#127, --gc) is not drawn. */
+.strip.one::before {
+    display: none;
+}
+
+/* A narrow strip (under 78 px: the phones; the app knows the width from
+   arrange.rs and marks the strip, nothing measures text): the column is
+   13-24 px, so the LUFS stands upright, digit under digit, and the caption
+   leaves. */
+.strip[data-narrow="true"] .cap-lbl {
+    display: none;
+}
+
+.strip[data-narrow="true"] .lpill {
+    height: auto;
+    padding: 3px 0;
+    font: 500 9.5px/12px var(--mono);
+    letter-spacing: -1px;
+    text-orientation: upright;
+    writing-mode: vertical-rl;
+}
+
+.strip[data-narrow="true"] .lpill:is(.empty, [data-l="silent"], [data-l="none"]) {
+    display: none;
+}
+
+.strip[data-narrow="true"] .gside {
+    top: 44px;
+}
+
+/* A muted strip steps back, as today. */
+.strip.muted {
+    background: var(--panel-mute);
+}
+
+.strip.muted::before {
+    opacity: 0.3;
+}
+
+.strip.muted :is(.cap2, .track, .strip-readout, .info) {
+    opacity: 0.4;
+}
+
+.strip-corner .mmark {
+    /* v7: today's red mute mark (strip.css .mute-mark), the word MUTED. */
+    flex: none;
+    margin: 0.5px 0 0 auto;
+    color: var(--mute);
+    font: 800 7.5px/1 var(--ui);
+    letter-spacing: 0.6px;
+}
+
+/* --- the screens --- */
+.body2 {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 132px minmax(0, 1fr);
+    grid-template-rows: repeat(var(--lines, 2), minmax(0, 1fr));
+    gap: 6px;
+    height: 100%;
+    padding: 6px;
+}
+
+.body2.phone {
+    grid-template-columns: minmax(0, 1fr) 34px minmax(0, 1fr);
+}
+
+.body2 > .column {
+    grid-column: 2;
+    grid-row: 1 / -1;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.body2 > .side {
+    min-height: 0;
+}
+
+.body2 > .side.left { grid-column: 1; }
+.body2 > .side.right { grid-column: 3; }
+
+.ministatus {
+    color: var(--faint);
+    font: 600 10px/1.4 var(--mono);
+    text-align: center;
+}
+
+.thin2 {
+    grid-column: 2;
+    grid-row: 1 / -1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding-top: 8px;
+    border-radius: 10px;
+    background: var(--bar);
+}
+
+.thin2 .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--m-green);
+}
+
+.thin2 .tb {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
+    background: #1d1d2c;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--muted);
+    font: 700 14px/1 var(--ui);
+}
+
+/* --- NEW in v4: the channel detail's key, bottom left (no ☰ in the
+   readout line any more). Its touch box runs from the strip's inner edge
+   (over the strip's 4 px padding) to the cap's widest reach, and from the
+   zone's foot (into its 10 px bottom padding) up: 36 x 36 px on an 83 px
+   iPad strip (36 px from 83 px up; a narrower strip gets the column's
+   room), so it never meets the cap, even at -inf. The drawn key is 2 px
+   inside it. A strip under 78 px: the column's room wide, 44 px high. It takes its own touches; the rest of the
+   zone stays the fader's. */
+.strip-info.nomenu {
+    --menu-w: 0px;
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.selbtn {
+    position: absolute;
+    z-index: 2;
+    left: -4px;
+    bottom: -10px;
+    width: min(36px, calc(100% - 21px - var(--cap-w) / 2));
+    height: 36px;
+    display: grid;
+    place-items: center;
+}
+
+.selkey {
+    width: calc(100% - 4px);
+    height: calc(100% - 4px);
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    border-radius: 6px;
+    background: #1f1f2e;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--muted);
+}
+
+.selkey .pa {
+    font: 700 12px/1 var(--display);
+    letter-spacing: 0.08em;
+    white-space: nowrap;
+}
+
+.strip[data-narrow="true"] .selbtn {
+    height: 44px;
+}
+
+.strip[data-narrow="true"] .selkey .pa {
+    font-size: 9.5px;
+    letter-spacing: 0.02em;
+}
+
+.strip.muted .selbtn {
+    opacity: 0.6;
+}
+
+/* --- NEW in v5: the calm name button (the owner, #151, 26.10). The
+   button keeps its size and its tap (MUTE, as today); unmuted it is the
+   strip's dark ground with the name in light, large text and the track's
+   colour only as a 4 px bar on its left edge (the group's colour stays on
+   the strip's top edge). v6 (the owner on v5's red muted look, #151,
+   26.10: what is switched off must not be the most striking thing):
+   muted, the strip RECEDES as today's surface does (strip.css: the
+   darker --panel-mute, the top edge at 0.3, the cap, the meter and the
+   readout at 0.4); the button goes darker than an unmuted one, its name
+   grey and of low contrast, its colour edge faded; only today's small MUTE
+   word in its corner, in grey; no fill colour, no badge, no strike. */
+.strip-head > .mute.calm {
+    background: #15151f;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--text);
+}
+
+.strip-head > .mute.calm::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 4px;
+    border-radius: 7px 0 0 7px;
+    background: var(--tc);
+}
+
+.strip-head > .mute.calm.muted {
+    background: #101018;
+    box-shadow: inset 0 0 0 1px var(--line-soft);
+    color: #55556e;
+}
+
+.strip-head > .mute.calm.muted::after {
+    opacity: 0.3;
+}
+
+.strip.muted .mute.calm {
+    opacity: 1;
+}
+
+/* --- NEW in v8: the head (the owner, #151, 26.10). The name button is
+   the strip's top edge: no padding above it (the strip's 5 px top padding
+   is gone), the strip's whole width (it reaches over the 4 px side
+   padding to the strip's 1 px edge), 37 px high, its top corners the
+   strip's. Read top-down: the NAME first, at the top, centred, large and
+   calm; under it, toward the button's bottom edge, ONE line of the
+   secondary marks, left to right: a problem's !, the linked mute's chain
+   and count, the fader link's mark, and the red MUTED word at the right
+   end. The readout line under the button is 20 px (the dB's 17 px line
+   fits). Head: 37 + 2 + 20 = 59 px, from the strip's top edge as today's
+   5 + 54. On a narrow strip the marks take their compact forms. */
+.strip.v8 {
+    padding-top: 0;
+}
+
+.strip.v8 .strip-head {
+    grid-template-rows: 37px 20px;
+}
+
+.strip.v8 .strip-info {
+    height: 20px;
+}
+
+.strip.v8 .strip-head > .mute.calm {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: space-between;
+    height: 37px;
+    margin: 0 -4px;
+    padding: 3px 3px 3px 7px;
+    border-radius: 8px 8px 5px 5px;
+}
+
+.strip.v8 .strip-head > .mute.calm::after {
+    width: 3px;
+    border-radius: 8px 0 0 5px;
+}
+
+.strip.v8 .strip-label {
+    height: 20px;
+    line-height: 20px;
+    text-align: center;
+}
+
+.marks {
+    display: flex;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    align-items: center;
+    gap: 16px 3px;
+    height: 10px;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+.marks .strip-flag {
+    width: 10px;
+    height: 10px;
+    margin: 0;
+    border-radius: 2px;
+    font: 800 8.5px/10px var(--ui);
+}
+
+.marks .mmark {
+    /* v8 (the owner: v7's red was still too loud): a muted, darker red of
+       lower contrast on the dimmed button, still read as red; 7 px, not
+       7.5 px. Text only. */
+    flex: none;
+    margin: 0 0 0 auto;
+    color: #a8474f;
+    font: 800 7px/10px var(--ui);
+    letter-spacing: 0.5px;
+}
+
+/* link.css (#127, #130), as today, on the marks line. */
+.link-mark {
+    --chain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='M6.4 9.6l3.2-3.2'/%3E%3Cpath d='M7.2 4.6l1.1-1.1a2.9 2.9 0 0 1 4.1 4.1l-1.1 1.1'/%3E%3Cpath d='M8.8 11.4l-1.1 1.1a2.9 2.9 0 0 1-4.1-4.1l1.1-1.1'/%3E%3C/svg%3E");
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 1px;
+    height: 10px;
+    padding: 0 3px 0 2px;
+    border-radius: 3px;
+    background: rgba(7, 7, 12, 0.66);
+    color: #b8b8c8;
+    font: 800 8.5px/10px var(--ui);
+    letter-spacing: 0.2px;
+}
+
+.link-mark::before {
+    content: "";
+    flex: none;
+    width: 8.5px;
+    height: 8.5px;
+    background: currentColor;
+    -webkit-mask: var(--chain) center / contain no-repeat;
+    mask: var(--chain) center / contain no-repeat;
+}
+
+.link-mark[data-state="muted"] { color: #ff5a67; }
+.link-mark[data-state="mixed"] { color: var(--warn); }
+.link-mark.flink { color: var(--accent); text-transform: none; }
+.link-mark.flink.follow { color: #d6d6e2; box-shadow: inset 0 0 0 1px var(--accent); }
+
+/* Narrow (under 78 px): the compact forms, as today's corner line. */
+.strip[data-narrow="true"] .link-mark {
+    gap: 0.5px;
+    padding: 0 2px 0 1.5px;
+    font-size: 7.5px;
+    letter-spacing: 0;
+}
+
+.strip[data-narrow="true"] .link-mark::before {
+    width: 7.5px;
+    height: 7.5px;
+}
+
+.strip[data-narrow="true"] .link-mark.flink .link-n {
+    display: none;
+}
+
+.strip[data-narrow="true"] .marks,
+.marks.crowd {
+    gap: 16px 2px;
+}
+
+.link-mark.bare .link-n {
+    display: none;
+}
+
+.link-mark.bare {
+    padding: 0 2px;
+}
+
+.strip[data-narrow="true"] .link-mark.flink.yield {
+    display: none;
+}
+
+.strip[data-narrow="true"] .marks .mmark {
+    letter-spacing: 0.3px;
+}
+
+.anat {
+    display: flex;
+    gap: 26px;
+    align-items: flex-start;
+}
+
+.anat-pair {
+    display: flex;
+    gap: 22px;
+    flex: none;
+    width: calc((83.16px * 2 + 22px) * 1.5);
+    height: calc(432px * 1.5);
+}
+
+.anat-scale {
+    display: flex;
+    gap: 22px;
+    height: 408px;
+    transform: scale(1.5);
+    transform-origin: 0 0;
+}
+
+.anat-col {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.anat-cap {
+    color: var(--muted);
+    font: 700 10px/1.2 var(--ui);
+    letter-spacing: 0.1em;
+    text-align: center;
+    text-transform: uppercase;
+}
+
+.anat ol {
+    margin: 0;
+    padding-left: 22px;
+}
+
+.samples2 {
+    display: flex;
+    gap: 6px;
+    height: 408px;
+    padding: 6px;
+    overflow-x: auto;
+    border-radius: 10px;
+    background: var(--page);
+}
+
+.caps2 {
+    display: flex;
+    gap: 6px;
+    padding: 0 6px;
+}
+
+.caps2 .sample-cap {
+    flex: none;
+}
+
+table.mtable td {
+    font-family: var(--mono);
+    font-size: 12.5px;
+}
+/* --- The channel detail (detail.css, the approved channel-detail-v2):
+   over the whole screen; the bar, the fader on the left, the EQ in the
+   middle, the pan on the right, and under the pan the NEW section
+   LAYOUTS: every sector's layouts, a tick each. --- */
+.detail {
+    --bar-h: 52px;
+    --chl: 230px;
+    --chr: 300px;
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--page);
+}
+
+.detail-bar {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 10px;
+    height: var(--bar-h);
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bar);
+}
+
+.detail-exit {
+    flex: none;
+    height: 100%;
+    padding: 0 14px;
+    border: 1px solid rgba(78, 205, 196, 0.55);
+    border-radius: 10px;
+    background: var(--panel);
+    color: var(--accent);
+    font: 700 15px/1.2 var(--display);
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.detail-name {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    min-width: 0;
+    padding-right: 140px;
+}
+
+.detail-chip {
+    flex: none;
+    max-width: 60%;
+    padding: 3px 12px;
+    overflow: hidden;
+    border-radius: 6px;
+    background: var(--tc, var(--accent));
+    color: var(--tt, #10101a);
+    font: 700 18px/1.3 var(--display);
+    letter-spacing: 0.03em;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.detail-sub {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--muted);
+    font: 600 12px/1.4 var(--mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.detail-body {
+    display: grid;
+    flex: 1;
+    grid-template-columns: var(--chl) minmax(0, 1fr) var(--chr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 10px;
+    min-height: 0;
+    padding: 10px;
+}
+
+.detail-box {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+    min-height: 0;
+    padding: 10px;
+    border-radius: 12px;
+    background: var(--panel);
+}
+
+.detail-left .dmute {
+    display: grid;
+    flex: none;
+    place-items: center;
+    height: 52px;
+    border-radius: 9px;
+    background: #181826;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--text);
+    font: 700 20px/1 var(--display);
+    letter-spacing: 0.08em;
+}
+
+.detail-left .dmute[data-muted="true"] {
+    background: var(--mute);
+    box-shadow: none;
+    color: #ffffff;
+}
+
+.detail-readout {
+    display: flex;
+    flex: none;
+    justify-content: center;
+}
+
+.detail-readout .db {
+    font-size: 26px;
+    line-height: 36px;
+}
+
+.detail-fz {
+    display: grid;
+    flex: 1;
+    grid-template-columns: 26px 10px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 6px;
+    min-height: 0;
+    padding: 18px 0 20px;
+}
+
+.detail-fz .scale { grid-area: 1 / 1; }
+.detail-fz .meter { grid-area: 1 / 2; }
+
+.detail-fz .fader {
+    grid-area: 1 / 1 / 2 / 4;
+    --x: calc(50% + 24px);
+}
+
+.detail-fz .tick {
+    font-size: 11px;
+    line-height: 14px;
+}
+
+.detail-fz .fader-groove,
+.detail-fz .fader-fill {
+    width: 8px;
+    margin-left: -4px;
+}
+
+.detail-fz .fader-cap {
+    --cap-w: 60px;
+    height: 34px;
+    margin: -17px 0 0 calc(var(--cap-w) / -2);
+    border-radius: 8px;
+}
+
+.detail-fz .fader-cap::before {
+    left: 12px;
+    right: 12px;
+}
+
+.detail-title {
+    margin: 0;
+    color: var(--faint);
+    font: 700 12px/1.3 var(--display);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.eq-ph {
+    display: grid;
+    flex: 1;
+    place-items: center;
+    border: 1px dashed var(--line);
+    border-radius: 10px;
+    color: var(--faint);
+    font: 600 12px/1.4 var(--ui);
+    text-align: center;
+}
+
+.pan {
+    --dot: 48px;
+    position: relative;
+    flex: none;
+    height: 64px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--track);
+}
+
+.pan-track {
+    position: absolute;
+    top: 10px;
+    bottom: 10px;
+    left: 50%;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--faint);
+}
+
+.pan-dot {
+    position: absolute;
+    top: 7px;
+    left: calc(0.5 * (100% - var(--dot)));
+    width: var(--dot);
+    height: var(--dot);
+    border-radius: 10px;
+    background: #8a8aa0;
+}
+
+.detail-pan-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    color: var(--muted);
+    font: 600 12px/1.4 var(--mono);
+    white-space: nowrap;
+}
+
+.detail-pan-value {
+    color: var(--text);
+    font: 600 20px/1.3 var(--mono);
+}
+
+.detail-centre {
+    flex: none;
+    min-height: 44px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #181826;
+    color: var(--text);
+    font: 700 15px/1.2 var(--display);
+    letter-spacing: 0.08em;
+}
+
+/* NEW: the layouts this fader shows in. A line per sector, in the
+   column's 2 x 2 order; a tick per layout; ticked: the panel's lighter
+   ground, the box filled in the accent; unticked: dim text. A layout with
+   no room (six faders on the iPad) cannot be ticked: FULL. */
+.lay-sec {
+    margin-top: 6px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+}
+
+.lay-group {
+    display: grid;
+    gap: 4px;
+}
+
+.lay-where {
+    color: var(--muted);
+    font: 700 10px/1.2 var(--ui);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.lay-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+}
+
+.tick-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    min-height: 40px;
+    padding: 0 6px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #181826;
+    color: var(--muted);
+    font: 700 11px/1 var(--ui);
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.tick-btn .box {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: 1.5px solid var(--faint);
+    border-radius: 4px;
+    background: none;
+    color: #07131a;
+    font: 800 12px/1 var(--ui);
+}
+
+.tick-btn .tname {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tick-btn[aria-checked="true"] {
+    background: var(--panel-hi);
+    color: var(--text);
+}
+
+.tick-btn[aria-checked="true"] .box {
+    border-color: var(--accent);
+    background: var(--accent);
+}
+
+.tick-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.tick-btn .tcol {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+}
+
+.tick-btn small {
+    overflow: hidden;
+    color: var(--faint);
+    font: 700 8px/1 var(--ui);
+    letter-spacing: 0.04em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.lay-note {
+    color: var(--faint);
+    font: 600 10.5px/1.35 var(--ui);
+}
+
+/* sectors.css: the detail bar's ◀ ▶ (#148). */
+.detail-steps {
+    display: flex;
+    flex: none;
+    gap: 6px;
+    height: 100%;
+}
+
+.detail-step {
+    width: 48px;
+    height: 100%;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+    color: var(--text);
+    font: 700 16px/1 var(--ui);
+    cursor: pointer;
+    touch-action: manipulation;
+}
+
+.detail-step.end {
+    opacity: 0.35;
+}
+
+.detail-name {
+    padding-right: 0;
+}
+
+/* ===================== NEW in strip colour v1 (#164) ===================== */
+
+/* The neutral colour of a strip with none chosen: calm grey, the same
+   tone as the dim texts, so a grey edge reads as "no colour". */
+:root {
+    --tc-none: #73738a;
+}
+
+/* COLOR: a section of the detail's right box under LAYOUTS, the same
+   divider and title. A 7 x 2 grid: NONE over two cells, then the twelve
+   colours. Each key is dark (the tick keys' ground and ring) with the
+   colour as a small square; the chosen key is drawn like a selected tab
+   (style.css `.tab.selected`: the lighter ground, the accent line at its
+   foot) and its square gets a light ring. Nothing else is filled. */
+.col-sec {
+    margin-top: 6px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+}
+
+.col-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.col-now {
+    color: var(--muted);
+    font: 700 10px/1.2 var(--ui);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.col-grid {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.col-key {
+    display: grid;
+    place-items: center;
+    min-width: 0;
+    height: 40px;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #181826;
+    color: var(--muted);
+    font: 700 11px/1 var(--ui);
+    letter-spacing: 0.3px;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.col-key.none {
+    grid-column: span 2;
+    display: flex;
+    gap: 6px;
+    justify-content: center;
+}
+
+.col-key .sw {
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    background: var(--sw);
+}
+
+.col-key[aria-pressed="true"] {
+    background: var(--panel-hi);
+    color: var(--text);
+    box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.col-key[aria-pressed="true"] .sw {
+    box-shadow: 0 0 0 2px var(--panel-hi), 0 0 0 3.5px var(--text);
+}
+
+/* The bar's chip in the chosen colour, as today in Live's; with NONE the
+   neutral grey. */
+.detail-chip {
+    transition: background-color 0.12s;
+}
+
+/* The mockup's page: the screenshot mode shows the two screens alone. */
+body.shot {
+    padding: 0;
+}
+
+body.shot .sheet {
+    display: block;
+    max-width: none;
+    margin: 0;
+}
+
+body.shot .sheet > :not(.shotbox) {
+    display: none;
+}
+
+body.shot .shotbox {
+    display: block;
+}
+
+body.shot .shotbox .wrap {
+    padding: 0;
+    overflow: visible;
+}
+
+body.shot .device {
+    border-radius: 0;
+    box-shadow: none;
+}
+
+.shotbox {
+    display: contents;
+}
+
+.pal-table td:first-child {
+    width: 34px;
+}
+
+.pal-sq {
+    display: inline-block;
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    vertical-align: middle;
+}
+</style>
+</head>
+<body>
+<div class="sheet">
+    <div class="overline">fohmixer #164 · farby pásov · návrh v1 na schválenie</div>
+    <h1>Farbu pásu si vyberáš v detaile kanála, nie v Abletone</h1>
+    <p><b>Čo sa mení oproti dnešku:</b> farba pásu (tenká 3 px hrana vľavo pri mene) už <b>nepochádza z farby stopy v Ableton Live</b>. Vyberáš ju na tablete: podrž <code>SEL</code> na páse, v detaile kanála je vpravo dole nová časť <b>COLOR</b>. Jeden ťuk farbu nastaví. Farba sa ukladá <b>v hube</b> (pri fadri, ako rozloženia sektorov), takže ju <b>hneď vidí každý tablet rovnako</b>. Pás bez vybranej farby má <b>neutrálnu tlmenú sivú</b> hranu (NONE), nikdy farbu z Live. Do Live sa nič nezapisuje a farbu stopy v Live si môžeš meniť, ako chceš: fohmixer ju už nečíta.</p>
+    <p><b>Čo ostáva:</b> pokojný vzhľad ako v schválenej v9: farbu nesie <b>len 3 px hrana</b> pri mene (a v detaile čip s menom v lište), nič iné na páse sa nerozsvieti ani nevyplní. Nad fadrami nie je nič nové, dráha fadra je nezmenená (stránka ju meria nižšie). Stlmený pás ustúpi ako dnes (hrana vybledne).</p>
+    <p><b>Skús:</b> klikni (ťukni) na <code>SEL</code> ktoréhokoľvek pásu na prvom iPade: v druhom sa otvorí jeho detail. Ťuk na farbu v časti COLOR prefarbí hranu toho pásu na prvom iPade aj čip v lište detailu. <code>◀ ▶</code> v lište listuje po pásoch.</p>
+    <p class="measure" id="measure-top"></p>
+
+    <h2>1 · iPad Pro 11 na šírku (1194 × 834, 1 : 1), stránka FOH</h2>
+    <p>Speváci ružoví, klávesy jantárové, gitara zelená, basa modrá, bicie oranžové, pad fialový, ruky tyrkysové, médiá purpurové, stream azúrový, efekty pieskové, sub a fill červené. <b>Click, Band, Talk a PA Out</b> nemajú farbu: sivá hrana NONE (Click a Talk sú stlmené, hrana vybledne).</p>
+    <div class="shotbox"><div class="wrap"><div class="device ipad" id="ipad"></div></div></div>
+
+    <h2>2 · Detail kanála (podržanie SEL) s novou časťou COLOR</h2>
+    <p>Pravý stĺpec (pod pravým palcom): PAN, CENTER, LAYOUTS ako dnes, pod nimi <b>COLOR</b>. Mriežka 7 × 2: <b>NONE</b> (sivá, cez dve políčka) a dvanásť farieb. Vybraná je označená ako vybraná záložka (svetlejší podklad, tyrkysová čiarka dole, svetlý krúžok okolo štvorčeka). Vpravo pri nadpise je meno vybranej farby.</p>
+    <div class="shotbox"><div class="wrap"><div class="device ipad" id="detail-ipad"></div></div></div>
+
+    <h2>Paleta</h2>
+    <div class="box">
+        <p>Dvanásť pokojných farieb, stredne sýtych a dosť svetlých, aby boli na tmavom pozadí zreteľné, ale nesvietili (žiadny neón). Každý odtieň je od susedov ďaleko, aby sa pásy dali rozlíšiť aj na 3 px hrane. Mená na tablete sú anglické.</p>
+        <table class="legend pal-table" id="palette-table"></table>
+    </div>
+
+    <h2>Otvorené detaily (rozhodnem ich takto, ak nepovieš inak)</h2>
+    <div class="box">
+        <ul>
+            <li><b>Po nasadení začnú všetky pásy sivé (NONE)</b>: dnešné farby z Live sa neprevezmú. Farby si nastavíš raz v detaile a odvtedy platia na všetkých tabletoch.</li>
+            <li><b>Farba patrí faderu</b> (Live + meno stopy, ako rozloženia sektorov): ten istý fader v dvoch rozloženiach má tú istú farbu. Pás z Tunera (marker) sa pozná podľa svojho mena.</li>
+            <li><b>Pás, ktorého stopu v Live premenuješ</b>, je pre hub nový fader: dostane NONE, kým mu farbu nevyberieš znova.</li>
+            <li><b>Telefón</b>: rovnaká časť COLOR v detaile; pri úzkej obrazovke sa mriežka zalomí do viac riadkov.</li>
+            <li>Keď má pás aj prepínač spojenia fadrov (FADER), časť COLOR je pod ním; ak by sa pravý stĺpec nezmestil, posúva sa (meria sa pri stavbe).</li>
+        </ul>
+    </div>
+
+    <h2>Merania</h2>
+    <div class="box">
+        <table class="legend mtable" id="measure"></table>
+    </div>
+
+    <h2>Otázka na schválenie</h2>
+    <div class="q">
+        <p><b>Schvaľuješ časť COLOR v detaile kanála (12 farieb + NONE, jeden ťuk platí hneď na všetkých tabletoch) a sivú hranu pre pás bez farby?</b></p>
+    </div>
+</div>
+
+<script>
+"use strict";
+// Live's volume taper (behave/fader.rs value2db) and the position of `db`.
+function value2db(v) {
+    if (v > 1) return 0;
+    if (v >= 0.4) return 40 * v - 34;
+    if (v >= 0.15) return -((399.751894 * v - 201.871345) ** 2 + 12630.61132) / 799.503788;
+    const db = 118.426374 * v ** (5567 / 7504) - 70;
+    return db <= -70 ? -Infinity : db;
+}
+function posOf(db) {
+    if (db === -Infinity || db <= -70) return 0;
+    let low = 0, high = 1;
+    for (let i = 0; i < 14; i++) {
+        const mid = (low + high) / 2;
+        if (value2db(mid) < db) low = mid; else high = mid;
+    }
+    return (low + high) / 2;
+}
+const UNITY = 0.85;
+const TODAY_IPAD = 322; // the deployed FOH page's fader travel (#127)
+const NARROW_BELOW = 78; // px: a narrower strip stands its LUFS upright
+const TICKS = [6, 0, -6, -12, -18, -24, -30, -40, -60];
+const minus = (x) => (x < 0 ? "−" + -x : String(x));
+const tickLabel = (db) => (db > 0 ? "+" + db : db < 0 ? "−" + -db : "0");
+const dbText = (db) => (db === -Infinity ? "−∞" : db === 0 ? "0.0" : (db < 0 ? "−" + (-db).toFixed(1) : db.toFixed(1)));
+const ZONES = `--yellow:${(posOf(-12) * 100).toFixed(2)}%;--red:${(posOf(-3) * 100).toFixed(2)}%;`;
+
+// The rule (design note §6.1): the integer shown, its colour judged on
+// that integer; tolerances 3 and 6 LU; -70 is silence.
+function judge(v, target) {
+    if (v === null) return { l: "none", text: "—" };
+    if (v <= -70) return { l: "silent", text: "—" };
+    const n = Math.sign(v) * Math.round(Math.abs(v));
+    if (target === null) return { l: "plain", text: minus(n) };
+    const d = Math.abs(n - target);
+    return { l: d <= 3 ? "fine" : d <= 6 ? "warn" : "far", text: minus(n) };
+}
+
+function textOn(hex) {
+    const lin = (c) => { c /= 255; return c <= 10 / 255 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+    const n = parseInt(hex.slice(1), 16);
+    const l = 0.2126 * lin((n >> 16) & 255) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
+    return l > 0.179 ? "#10101a" : "#f4f4fa";
+}
+
+function el(tag, cls, attrs = {}) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    for (const [k, v] of Object.entries(attrs)) {
+        if (k === "text") e.textContent = v; else e.setAttribute(k, v);
+    }
+    return e;
+}
+
+// Invented tracks. db: the fader; L/R: the channels' meter levels in dB;
+// pk: the peak line's level (held 1.5 s, no clip: v3); lufs/target as v1 (no `lufs` key: no tag); group: the
+// run's first strip names its group (inst: band or master).
+const STAGE = "#FFA529", BAND = "#4fa3ff", MASTER = "#8b7dff";
+const T = {
+    v1: { link: ["play", "2"], name: "Vox 1", tc: "#FF94A6", gc: STAGE, db: -1.5, L: -15, R: -15, pk: -9, lufs: -24.6, target: -25, group: "Stage", inst: "band" },
+    v2: { link: ["play", "2"], name: "Vox 2", tc: "#FFA529", gc: STAGE, db: -3, L: -11, R: -11, pk: -6, lufs: -20.8, target: -25 },
+    v3: { flag: true, link: ["mixed", "1/2"], name: "Vox 3", tc: "#F7F47C", gc: STAGE, db: -4.5, L: -24, R: -24, pk: -17, lufs: -33.2, target: -25 },
+    v4: { name: "Vox 4", tc: "#BFFB00", gc: STAGE, db: -2, L: -62, R: -62, pk: -55, lufs: -70, target: -25 },
+    v5: { name: "Vox 5", tc: "#87FF67", gc: STAGE, db: -6, L: -8, R: -8, pk: -5, lufs: -16.6, target: -25 },
+    v7: { name: "Vox 7", tc: "#87FF67", gc: STAGE, db: -6, L: -20, R: -20, pk: -15, lufs: -29.7, target: -25 },
+    v6: { name: "Vox 6", tc: "#87FF67", gc: STAGE, db: -6, L: -40, R: -40, pk: -33, lufs: null, target: -25, flag: true },
+    keys: { name: "Keys", tc: "#5ECBF1", gc: BAND, db: -8, L: -10, R: -27, pk: -7, group: "Band", inst: "band" },
+    gtr: { flink: "follow", name: "Gtr", tc: "#8BC5FF", gc: BAND, db: -10, L: -25, R: -14, pk: -12 },
+    bass: { name: "Bass", tc: "#5ECBF1", gc: BAND, db: -4, L: -12, R: -12, pk: -8 },
+    drums: { name: "Drums", tc: "#FF9B5E", gc: BAND, db: 0, L: -1, R: -0.5, pk: -0.5 },
+    pad: { name: "Pad", tc: "#D86CE4", gc: BAND, db: -12, L: -28, R: -27, pk: -22 },
+    click: { link: ["muted", "2"], name: "Click", tc: "#C4C4C4", gc: BAND, db: -20, L: -70, R: -70, pk: -70, muted: true },
+    band: { flink: "lead", name: "Band", tc: "#D86CE4", gc: MASTER, db: -2, L: -9, R: -10, pk: -5, group: "Master", inst: "master" },
+    hand1: { name: "Hand 1", tc: "#FFF034", gc: MASTER, db: -6, L: -30, R: -30, pk: -24, group: "Hands", inst: "master" },
+    hand2: { name: "Hand 2", tc: "#FFF034", gc: MASTER, db: -Infinity, L: -70, R: -70, pk: -70 },
+    media: { name: "Media", tc: "#E553A0", gc: MASTER, db: -12, L: -22, R: -21, pk: -15 },
+    talk: { link: ["muted", "2"], flag: true, name: "Talk", tc: "#C4C4C4", gc: MASTER, db: -8, L: -70, R: -70, pk: -70, muted: true },
+    stream: { name: "Stream", tc: "#8BC5FF", gc: MASTER, db: -3, L: -13, R: -14, pk: -8 },
+    rev: { name: "Reverb PA", tc: "#8BC5FF", gc: MASTER, db: -9, L: -26, R: -24, pk: -19, ret: true },
+    sub: { name: "Sub", tc: "#A6BE00", gc: MASTER, db: -4, L: -14, R: -14, pk: -9 },
+    fl: { name: "Fill L", tc: "#A6BE00", gc: MASTER, db: -6, L: -16, R: -70, pk: -11 },
+    fr: { name: "Fill R", tc: "#A6BE00", gc: MASTER, db: -6, L: -70, R: -16, pk: -11 },
+    dly: { name: "Delay", tc: "#8BC5FF", gc: MASTER, db: -14, L: -33, R: -31, pk: -26, ret: true },
+    out: { name: "PA Out", tc: "#C4C4C4", gc: MASTER, db: 0, L: -8, R: -9, pk: -4, lufs: -17.8, target: null, ret: true, wide: true },
+};
+
+function linkMark(cls, state, n) {
+    const k = el("span", cls, state ? { "data-state": state } : {});
+    k.append(el("span", "link-n", { text: n }));
+    return k;
+}
+
+function muteButton(m, today) {
+    const cls = today ? (m.muted ? "mute" : "mute lit") : (m.muted ? "mute calm muted" : "mute calm");
+    const b = el("div", cls, { style: `--tc:${m.tc};--tt:${textOn(m.tc)};` });
+    b.append(el("span", "strip-label", { text: m.name, style: `--n:${[...m.name].length};` }));
+    if (!today) {
+        // v8: the name first, then one line of the secondary marks under it.
+        // The line's rule (pure, from what the strip carries, nothing
+        // measured): while muted the chain drops its count (it is red, and
+        // MUTED says it); with three marks or more the fader link drops its
+        // "dB"; with all four the gaps narrow, and on a narrow strip the
+        // fader link's mark yields. `!`, the chain and MUTED never yield.
+        const count = [m.flag, m.link, m.flink, m.muted].filter(Boolean).length;
+        const line = el("span", count >= 4 ? "marks crowd" : "marks");
+        if (m.flag) line.append(el("span", "strip-flag", { text: "!" }));
+        if (m.link) line.append(linkMark(m.muted ? "link-mark bare" : "link-mark", m.link[0], m.link[1]));
+        if (m.flink) {
+            const fc = ["link-mark", "flink"];
+            if (m.flink === "follow") fc.push("follow");
+            if (count >= 3) fc.push("bare");
+            if (count >= 4) fc.push("yield");
+            line.append(linkMark(fc.join(" "), null, "dB"));
+        }
+        if (m.muted) line.append(el("span", "mmark", { text: "MUTED" }));
+        b.append(line);
+        return b;
+    }
+    const corner = el("span", "strip-corner");
+    if (m.flag) corner.append(el("span", "strip-flag", { text: "!" }));
+    // v7: no RET mark on a strip (today's strip keeps today's marks).
+    if (m.ret && today) corner.append(el("span", "strip-ret", { text: "RET" }));
+    if (m.muted) corner.append(el("span", "mmark", { text: today ? "MUTE" : "MUTED" }));
+    b.append(corner);
+    return b;
+}
+
+function stripHead(m, today) {
+    const h = el("div", "strip-head");
+    const info = el("div", today ? "strip-info" : "strip-info nomenu");
+    const readout = el("div", "strip-readout");
+    readout.append(el("span", m.db === 0 ? "db unity" : "db", { text: dbText(m.db) }));
+    info.append(readout);
+    if (today) {
+        const menu = el("div", "strip-menu");
+        menu.append(el("span", "", { text: "☰" }));
+        info.append(menu);
+    }
+    h.append(muteButton(m, today), info);
+    return h;
+}
+
+function bar2(db, pk) {
+    const b = el("div", "bar2");
+    const cover = el("div", "meter-cover", { style: `transform:scaleY(${(1 - posOf(db)).toFixed(4)});` });
+    cover.dataset.db = String(db);
+    b.append(el("div", "meter-zones", { style: ZONES }), cover);
+    if (pk > -70) b.append(el("div", "meter-peak", { style: `--pk:${posOf(pk).toFixed(4)};` }));
+    return b;
+}
+
+// The channel detail's key: the word SEL (v4's A, approved in v5).
+function selButton() {
+    const b = el("div", "selbtn", { "data-testid": "detail-key" });
+    const k = el("div", "selkey");
+    k.append(el("span", "pa", { text: "SEL" }));
+    b.append(k);
+    return b;
+}
+
+// The v5 fader zone (v4's, the LUFS quiet).
+function zone(m) {
+    const fz = el("div", "fz2");
+    const z = el("div", "zone", { style: `--p:${posOf(m.db).toFixed(4)};--u:${UNITY};`, "data-held": m.held ? "true" : "false" });
+    const info = el("div", "info");
+    const has = "lufs" in m;
+    const j = has ? judge(m.lufs, m.target) : null;
+    const shown = has && (j.l !== "silent" && j.l !== "none");
+    // v9 (the owner, 27.10): the caption says which loudness: IN after the
+    // Trim IN (a target), OUT at an output point (no target).
+    info.append(el("div", shown ? "cap-lbl" : "cap-lbl empty", { text: "LUFS" }));
+    info.append(el("div", shown ? "cap-lbl cap-kind" : "cap-lbl cap-kind empty", { text: has && m.target == null ? "OUT" : "IN" }));
+    info.append(has ? el("div", "lpill", { "data-l": j.l, text: j.text }) : el("div", "lpill empty", { text: "−25" }));
+    if (m.group) info.append(el("div", "gside", { text: m.group, "data-instance": m.inst }));
+    const scale = el("div", "scale2");
+    for (const db of TICKS) {
+        scale.append(el("span", db === 0 ? "t2 unity-t" : "t2", { text: tickLabel(db), style: `top:${((1 - posOf(db)) * 100).toFixed(3)}%;` }));
+    }
+    const track = el("div", "track");
+    track.append(bar2(m.L, m.pk >= m.L ? Math.min(m.pk, m.L + 4) : m.L), bar2(m.R, m.pk >= m.R ? Math.min(m.pk, m.R + 4) : m.R));
+    const rail = el("div", "rail2");
+    rail.append(el("div", "cap2"));
+    z.append(el("div", "unity"), info, scale, track, rail, selButton());
+    fz.append(z);
+    return fz;
+}
+
+function strip(m, w) {
+    const cls = ["strip", "one", "v8"];
+    if (m.wide) cls.push("wide");
+    if (m.muted) cls.push("muted");
+    const s = el("div", cls.join(" "), { style: `--gc:${m.gc};`, "data-name": m.name });
+    if ("lufs" in m) s.dataset.lufs = "true";
+    s.dataset.narrow = w < NARROW_BELOW ? "true" : "false";
+    s.append(stripHead(m), zone(m));
+    return s;
+}
+
+// Today's strip (strip.css v1.17.0) for the anatomy: the scale and the
+// mono meter on the left, the fill in the groove.
+function todayStrip(m) {
+    const s = el("div", "strip", { style: `--gc:${m.gc};`, "data-name": "today" });
+    const fz = el("div", "strip-fz", { style: `--u:${UNITY};` });
+    const scale = el("div", "scale");
+    for (const db of TICKS) {
+        scale.append(el("span", db === 0 ? "tick unity" : "tick", { text: tickLabel(db), style: `top:${((1 - posOf(db)) * 100).toFixed(3)}%;` }));
+    }
+    const meter = el("div", "meter", { style: ZONES });
+    const bars = el("div", "meter-bars");
+    const lvl = Math.max(m.L, m.R);
+    const bar = el("div", "meter-bar");
+    bar.append(el("div", "meter-zones"), el("div", "meter-cover", { style: `transform:scaleY(${(1 - posOf(lvl)).toFixed(4)});` }), el("div", "meter-peak", { style: `--pk:${posOf(m.pk).toFixed(4)};opacity:0.75;` }));
+    bars.append(bar);
+    meter.append(el("div", "meter-clip"), bars);
+    const fader = el("div", "fader", { style: `--p:${posOf(m.db).toFixed(4)};` });
+    const rail = el("div", "fader-rail");
+    rail.append(el("div", "fader-cap"));
+    fader.append(el("div", "fader-groove"), el("div", "fader-fill"), rail);
+    fz.append(scale, meter, fader);
+    s.append(stripHead(m, true), fz);
+    return s;
+}
+
+function side(cls, row, list, w) {
+    const sd = el("div", "side " + cls, { style: `grid-row:${row};` });
+    for (const m of list) sd.append(strip(m, w));
+    return sd;
+}
+
+// The iPad: two lines of strips at 83.16 px (the app's width there), the
+// control column in the middle; no bar over the page (the column holds
+// the status), as on the FOH page.
+function ipad() {
+    const w = 83.16;
+    const d = document.getElementById("ipad");
+    d.style.setProperty("--strip-w", w + "px");
+    const body = el("div", "body2", { style: "--lines:2;" });
+    const col = el("div", "column");
+    col.append(el("div", "ministatus", { text: "● BAND ● MASTER v1.18.0" }));
+    for (const t of ["FOH", "STREAM DECK", "STAGE", "REVERB", "AUTOTUNE", "SOLO VOCALS", "TALKBACK", "TECHALERT"]) col.append(el("div", "rbtn", { text: t }));
+    body.append(
+        side("left", 1, [T.v1, T.v2, T.v3, T.v4, T.v5, T.keys], w),
+        col,
+        side("right", 1, [T.gtr, T.bass, T.drums, T.pad, T.click, T.band], w),
+        side("left", 2, [T.hand1, T.hand2, T.media, T.talk, T.stream, T.rev], w),
+        side("right", 2, [T.sub, T.fl, T.fr, T.dly, T.out], w),
+    );
+    d.append(body);
+}
+
+// --- NEW (#164): the palette, the strips' chosen colours ---
+const PALETTE = [
+    { id: "red", name: "RED", sk: "červená", hex: "#d4676d" },
+    { id: "orange", name: "ORANGE", sk: "oranžová", hex: "#de8a4e" },
+    { id: "amber", name: "AMBER", sk: "jantárová", hex: "#d6b24e" },
+    { id: "lime", name: "LIME", sk: "limetková", hex: "#a9c45c" },
+    { id: "green", name: "GREEN", sk: "zelená", hex: "#5db87c" },
+    { id: "teal", name: "TEAL", sk: "tyrkysová", hex: "#4bb3a6" },
+    { id: "cyan", name: "CYAN", sk: "azúrová", hex: "#5aaed8" },
+    { id: "blue", name: "BLUE", sk: "modrá", hex: "#6d8fe2" },
+    { id: "violet", name: "VIOLET", sk: "fialová", hex: "#9b82e4" },
+    { id: "purple", name: "PURPLE", sk: "purpurová", hex: "#c47acb" },
+    { id: "pink", name: "PINK", sk: "ružová", hex: "#e27fa8" },
+    { id: "sand", name: "SAND", sk: "piesková", hex: "#b59a7c" },
+];
+const NONE = { id: "none", name: "NONE", sk: "žiadna (neutrálna sivá)", hex: "#73738a" };
+const colourOf = (id) => PALETTE.find((p) => p.id === id) || NONE;
+
+// The hub's map in the mockup: a fader's chosen colour by its name (the
+// app keys it by StripRef: instance and label). Absent = NONE.
+const chosen = {
+    "Vox 1": "pink", "Vox 2": "pink", "Vox 3": "pink", "Vox 4": "pink", "Vox 5": "pink",
+    Keys: "amber", Gtr: "green", Bass: "blue", Drums: "orange", Pad: "violet",
+    "Hand 1": "teal", "Hand 2": "teal", Media: "purple", Stream: "cyan", "Reverb PA": "sand",
+    Sub: "red", "Fill L": "red", "Fill R": "red", Delay: "sand",
+};
+
+const LINES = [
+    ["left", 1, ["v1", "v2", "v3", "v4", "v5", "keys"]],
+    ["right", 1, ["gtr", "bass", "drums", "pad", "click", "band"]],
+    ["left", 2, ["hand1", "hand2", "media", "talk", "stream", "rev"]],
+    ["right", 2, ["sub", "fl", "fr", "dly", "out"]],
+];
+const ORDER_KEYS = [...LINES[0][2], ...LINES[1][2], ...LINES[2][2], ...LINES[3][2]];
+const W = 83.16;
+let shownKey = "v1";
+
+const withColour = (k) => ({ ...T[k], tc: colourOf(chosen[T[k].name]).hex });
+
+function drawStrips() {
+    const d = document.getElementById("ipad");
+    d.textContent = "";
+    d.style.setProperty("--strip-w", W + "px");
+    const body = el("div", "body2", { style: "--lines:2;" });
+    const col = el("div", "column");
+    col.append(el("div", "ministatus", { text: "● BAND ● MASTER v1.28.0" }));
+    for (const t of ["FOH", "STREAM DECK", "STAGE", "REVERB", "AUTOTUNE", "SOLO VOCALS", "TALKBACK", "TECHALERT"]) col.append(el("div", "rbtn", { text: t }));
+    const sides = LINES.map(([cls, row, keys]) => {
+        const sd = el("div", "side " + cls, { style: `grid-row:${row};` });
+        for (const k of keys) {
+            const s = strip(withColour(k), W);
+            s.dataset.key = k;
+            s.dataset.colour = chosen[T[k].name] || "none";
+            sd.append(s);
+        }
+        return sd;
+    });
+    body.append(sides[0], col, sides[1], sides[2], sides[3]);
+    d.append(body);
+}
+
+// SEL opens the strip's detail (in the app a hold of 0.5 s; here a click).
+document.getElementById("ipad").addEventListener("click", (ev) => {
+    const sel = ev.target.closest(".selbtn");
+    if (!sel) return;
+    shownKey = sel.closest(".strip").dataset.key;
+    drawDetail();
+});
+
+function detailFader(m) {
+    const fz = el("div", "detail-fz", { style: `--u:${UNITY};` });
+    const scale = el("div", "scale");
+    for (const db of TICKS) scale.append(el("span", db === 0 ? "tick unity" : "tick", { text: tickLabel(db), style: `top:${((1 - posOf(db)) * 100).toFixed(3)}%;` }));
+    const meter = el("div", "meter", { style: ZONES });
+    const bars = el("div", "meter-bars");
+    for (const lvl of [m.L, m.R]) {
+        const bar = el("div", "meter-bar");
+        bar.append(el("div", "meter-zones"), el("div", "meter-cover", { style: `transform:scaleY(${(1 - posOf(lvl)).toFixed(4)});` }));
+        bars.append(bar);
+    }
+    meter.append(bars);
+    const fader = el("div", "fader", { style: `--p:${posOf(m.db).toFixed(4)};` });
+    const rail = el("div", "fader-rail");
+    rail.append(el("div", "fader-cap"));
+    fader.append(el("div", "fader-groove"), el("div", "fader-fill"), rail);
+    fz.append(scale, meter, fader);
+    return fz;
+}
+
+// LAYOUTS as shipped (#148): a group per sector, a tick per layout.
+const SECTORS = [["LU", ["MAIN", "SONG", "SPEECH"]], ["RU", ["MAIN", "FX"]], ["LD", ["MAIN", "BAND"]], ["RD", ["MAIN"]]];
+const ticked = {};
+function layoutsSection(name) {
+    const sec = el("div", "lay-sec", { "data-testid": "detail-layouts" });
+    sec.append(el("h4", "detail-title", { text: "Layouts" }));
+    const groups = el("div", "", { style: "display:grid;gap:8px;" });
+    const first = ORDER_KEYS.indexOf(shownKey) < 12 ? "LU" : "LD";
+    for (const [id, names] of SECTORS) {
+        const g = el("div", "lay-group");
+        g.append(el("div", "lay-where", { text: id }));
+        const row = el("div", "lay-row");
+        for (const l of names) {
+            const key = `${name}|${id}|${l}`;
+            if (!(key in ticked)) ticked[key] = id === first && l === "MAIN";
+            const b = el("button", "tick-btn", { type: "button", role: "checkbox", "aria-checked": ticked[key] ? "true" : "false" });
+            const words = el("span", "tcol");
+            words.append(el("span", "tname", { text: l }));
+            b.append(el("span", "box", { text: ticked[key] ? "✓" : "" }), words);
+            b.addEventListener("click", () => { ticked[key] = !ticked[key]; drawDetail(); });
+            row.append(b);
+        }
+        g.append(row);
+        groups.append(g);
+    }
+    sec.append(groups);
+    return sec;
+}
+
+// NEW: COLOR, the palette. One tap sets the fader's colour (in the app a
+// `set` to the hub, which tells every tablet).
+function colourSection(name) {
+    const now = chosen[name] || "none";
+    const sec = el("div", "col-sec", { "data-testid": "detail-colour" });
+    const head = el("div", "col-head");
+    head.append(el("h4", "detail-title", { text: "Color" }), el("span", "col-now", { text: colourOf(now).name, "data-testid": "colour-now" }));
+    const grid = el("div", "col-grid");
+    for (const p of [NONE, ...PALETTE]) {
+        const on = p.id === now;
+        const b = el("button", p === NONE ? "col-key none" : "col-key", {
+            type: "button", "aria-pressed": on ? "true" : "false", "aria-label": p.name, title: p.name,
+            "data-colour": p.id, "data-testid": "colour-key", style: `--sw:${p.hex};`,
+        });
+        b.append(el("span", "sw"));
+        if (p === NONE) b.append(el("span", "", { text: "NONE" }));
+        b.addEventListener("click", () => {
+            if (p === NONE) delete chosen[name]; else chosen[name] = p.id;
+            drawStrips();
+            drawDetail();
+        });
+        grid.append(b);
+    }
+    sec.append(head, grid);
+    return sec;
+}
+
+function drawDetail() {
+    const host = document.getElementById("detail-ipad");
+    host.textContent = "";
+    const m = withColour(shownKey);
+    const d = el("div", "detail", { "data-testid": "detail", "data-name": m.name });
+    const bar = el("div", "detail-bar");
+    bar.append(el("button", "detail-exit", { type: "button", text: "← BACK TO MIX" }));
+    const nm = el("div", "detail-name");
+    nm.append(el("span", "detail-chip", { text: m.name, "data-testid": "detail-name", style: `--tc:${m.tc};--tt:${textOn(m.tc)};` }), el("span", "detail-sub", { text: (m.inst || "band") === "master" || ORDER_KEYS.indexOf(shownKey) >= 12 ? "master" : "band" }));
+    const steps = el("div", "detail-steps");
+    const i = ORDER_KEYS.indexOf(shownKey);
+    for (const [txt, to] of [["◀", i - 1], ["▶", i + 1]]) {
+        const b = el("button", to < 0 || to >= ORDER_KEYS.length ? "detail-step end" : "detail-step", { type: "button", text: txt });
+        b.addEventListener("click", () => { if (to >= 0 && to < ORDER_KEYS.length) { shownKey = ORDER_KEYS[to]; drawDetail(); } });
+        steps.append(b);
+    }
+    bar.append(nm, steps);
+    const body = el("div", "detail-body");
+    const left = el("div", "detail-box detail-left");
+    const ro = el("div", "detail-readout");
+    ro.append(el("span", m.db === 0 ? "db unity" : "db", { text: dbText(m.db) }));
+    left.append(el("div", "dmute", { text: m.muted ? "MUTED" : "MUTE", "data-muted": m.muted ? "true" : "false" }), ro, detailFader(m));
+    const mid = el("div", "detail-box detail-middle");
+    mid.append(el("h4", "detail-title", { text: "EQ" }), el("div", "eq-ph", { text: "Pro-Q 4, as today" }));
+    const right = el("div", "detail-box detail-right", { "data-testid": "detail-right" });
+    const pan = el("div", "pan");
+    pan.append(el("div", "pan-track"), el("div", "pan-dot"));
+    const prow = el("div", "detail-pan-row");
+    prow.append(el("span", "", { text: "L 50" }), el("span", "detail-pan-value", { text: "C" }), el("span", "", { text: "R 50" }));
+    right.append(el("h4", "detail-title", { text: "Pan" }), pan, prow, el("div", "detail-centre", { text: "CENTER", style: "display:grid;place-items:center;" }), layoutsSection(m.name), colourSection(m.name));
+    body.append(left, mid, right);
+    d.append(bar, body);
+    host.append(d);
+    measure();
+}
+
+function paletteTable() {
+    const t = document.getElementById("palette-table");
+    const rows = [];
+    for (const p of [NONE, ...PALETTE]) rows.push(`<tr><td><span class="pal-sq" style="background:${p.hex}"></span></td><td><code>${p.name}</code> — ${p.sk} (<code>${p.hex}</code>)</td></tr>`);
+    t.innerHTML = rows.join("");
+}
+
+// --- The page measures itself ---
+const yes = (b) => `<span class="${b ? "ok" : "bad"}">${b ? "yes" : "NO"}</span>`;
+function measure() {
+    if (!document.getElementById("ipad").firstChild) return;
+    const strips = [...document.querySelectorAll("#ipad .strip")];
+    let travel = Infinity, above = true, edges = true, calm = true;
+    for (const s of strips) {
+        travel = Math.min(travel, s.querySelector(".zone").getBoundingClientRect().height);
+        const side = s.parentElement.getBoundingClientRect();
+        if (Math.abs(s.getBoundingClientRect().top - side.top) > 0.5) above = false;
+        const btn = s.querySelector(".mute");
+        const want = colourOf(chosen[s.dataset.name]).hex;
+        const edge = getComputedStyle(btn, "::after");
+        const rgb = (h) => `rgb(${parseInt(h.slice(1, 3), 16)}, ${parseInt(h.slice(3, 5), 16)}, ${parseInt(h.slice(5, 7), 16)})`;
+        if (edge.backgroundColor !== rgb(want) || Math.abs(parseFloat(edge.width) - 3) > 0.01) edges = false;
+        // Only the edge carries the colour: the button's ground and text and
+        // every other part of the strip are free of it.
+        for (const e of s.querySelectorAll("*")) {
+            const cs = getComputedStyle(e);
+            if (cs.backgroundColor === rgb(want) || cs.color === rgb(want) || cs.borderTopColor === rgb(want)) calm = false;
+        }
+    }
+    const right = document.querySelector("[data-testid=detail-right]");
+    const sec = document.querySelector("[data-testid=detail-colour]");
+    let free = NaN, fits = false, keys = "";
+    if (right && sec) {
+        const rb = right.getBoundingClientRect();
+        const pad = parseFloat(getComputedStyle(right).paddingBottom);
+        free = rb.bottom - pad - sec.getBoundingClientRect().bottom;
+        fits = free >= 0 && right.scrollHeight <= right.clientHeight + 0.5;
+        const k = [...sec.querySelectorAll(".col-key:not(.none)")].map((e) => e.getBoundingClientRect());
+        const w = Math.min(...k.map((r) => r.width)), h = Math.min(...k.map((r) => r.height));
+        keys = `${w.toFixed(1)} × ${h.toFixed(1)} px`;
+    }
+    const all = travel >= 322 - 0.01 && above && edges && calm && fits;
+    document.getElementById("measure").innerHTML = [
+        "<tr><th>Čo</th><th>Výsledok</th></tr>",
+        `<tr><td>dráha fadra na iPade (dnes 322 px)</td><td>${travel.toFixed(1)} px: ${yes(travel >= 321.99)}</td></tr>`,
+        `<tr><td>nad fadrami nič (pás začína hore pri okraji)</td><td>${yes(above)}</td></tr>`,
+        `<tr><td>hrana 3 px v zvolenej farbe (NONE sivá) na každom páse</td><td>${yes(edges)} (${strips.length} pásov)</td></tr>`,
+        `<tr><td>farbu nesie len hrana (nič iné na páse v tej farbe)</td><td>${yes(calm)}</td></tr>`,
+        `<tr><td>COLOR sa zmestí do pravého stĺpca detailu pod LAYOUTS</td><td>${yes(fits)} (${free.toFixed(0)} px voľných pod ním)</td></tr>`,
+        `<tr><td>kláves farby (najmenší)</td><td>${keys}</td></tr>`,
+    ].join("");
+    document.getElementById("measure-top").innerHTML = `Merané v tejto stránke: dráha fadra ${travel.toFixed(1)} px (dnes 322 px), nad fadrami nič, farba len na 3 px hrane, COLOR sa zmestí (${free.toFixed(0)} px voľných): ${yes(all)}.`;
+    document.body.dataset.measured = JSON.stringify({ travel, above, edges, calm, fits, free, keys, all });
+}
+
+if (new URLSearchParams(location.search).has("shot")) document.body.classList.add("shot");
+paletteTable();
+drawStrips();
+drawDetail();
+document.fonts.ready.then(measure);
+</script>
+</body>
+</html>
