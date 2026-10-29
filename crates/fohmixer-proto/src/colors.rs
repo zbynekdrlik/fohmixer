@@ -133,7 +133,7 @@ pub fn css(rgb: u32) -> String {
 
 /// The document, `colors.json`: each Live set's faders by label, each with
 /// its colour. A fader it does not name is NONE.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ColorsDoc {
     pub colors: BTreeMap<String, BTreeMap<String, ColorKey>>,

@@ -884,7 +884,7 @@ export async function columnHeadAndFoot(page: Page): Promise<string[]> {
 
 /**
  * The right half stays live beside an extra tab (#148 review): the first
- * bound standard strip of `strips` whole on the screen, Live's volume set
+ * bound strip (any kind, a return's too) of `strips` whole on the screen, Live's volume set
  * to 0.5 and shown, its cap's centre hit-tested (`elementFromPoint` there
  * is the cap or inside it: nothing, the deck's or AbleSet's pane included,
  * lies over it), then dragged up 80 px with the real mouse (trusted input,
@@ -899,7 +899,7 @@ export async function rightHalfLive(page: Page, strips: Locator) {
       const fader = s.querySelector('[data-testid="fader"]');
       const whole = r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight;
       const ready = fader?.getAttribute("aria-disabled") === "false";
-      if (whole && ready && !s.hasAttribute("data-mark") && s.getAttribute("data-kind") === "standard") {
+      if (whole && ready && !s.hasAttribute("data-mark") && s.querySelector('[data-testid="fader-cap"]')) {
         s.setAttribute("data-e2e-live", "1");
         return fader!.getAttribute("data-keys")!;
       }

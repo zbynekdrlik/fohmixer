@@ -96,7 +96,6 @@ fn the_document_reads_as_written_and_refuses_unknown_keys_and_fields() {
         serde_json::from_value::<ColorsDoc>(json!({"colors": {}})).unwrap(),
         ColorsDoc::empty()
     );
-    assert_eq!(ColorsDoc::default(), ColorsDoc::empty());
 }
 
 #[test]
