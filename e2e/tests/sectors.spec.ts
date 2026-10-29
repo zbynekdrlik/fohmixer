@@ -14,7 +14,7 @@ import {
   openSurface,
   pageEvents,
   resetSectors,
-  ret,
+  rightHalfLive,
   servedLayout,
   setSectors,
   track,
@@ -246,35 +246,67 @@ test.describe("The fader sectors", () => {
       // RU and RD shown, LU and LD under the deck.
       for (const sector of ["ru", "rd"]) await expect(slots(page, sector).getByTestId("strip").first(), sector).toBeVisible();
       for (const sector of ["lu", "ld"]) await expect(slots(page, sector).getByTestId("strip").first(), sector).toBeHidden();
-      // A fader in RU still moves: a dispatched drag of B-Main repro #'s cap
-      // reaches the hub as a set and Live's volume follows.
-      const live = await LiveClient.open();
-      const target = volume(ret("B-Main repro #"));
-      const start = await live.get("band", target, "value");
-      try {
-        await live.set("band", target, "value", 0.5);
-        const strip = slots(page, "ru").getByTestId("strip").first();
-        await expect.poll(async () => Number(await strip.getByTestId("fader").getAttribute("data-value"))).toBeCloseTo(0.5, 2);
-        const since = Date.now();
-        await dispatchPointer(strip.getByTestId("fader-cap"), [
-          { type: "pointerdown" },
-          { type: "pointermove", dy: 0 },
-          { type: "pointermove", dy: 20 },
-          { type: "pointermove", dy: 40 },
-          { type: "pointerup", dy: 40 },
-        ]);
-        const sets = await until(
-          async () => (await hubEvents()).filter((r: any) => r.ev === "set" && r.ts >= since),
-          (all) => all.length > 0,
-          "the drag's set at the hub",
-        );
-        expect(sets.every((r: any) => String(r.key).includes("B-Main repro #")), JSON.stringify(sets)).toBe(true);
-        await until(() => live.get("band", target, "value"), (v) => typeof v === "number" && v > 0.5, "Live's volume raised");
-        await expect(page.getByTestId("deck-key")).toHaveCount(32);
-      } finally {
-        await live.set("band", target, "value", start);
-        live.close();
-      }
+      // A fader in RU still moves (#148 review): its cap's centre is the
+      // cap's (nothing over it) and a real drag from there reaches the hub
+      // as a set and raises Live's volume.
+      await rightHalfLive(page, slots(page, "ru").getByTestId("strip"));
+      await expect(page.getByTestId("deck-key")).toHaveCount(32);
+      // The controls that act only on the hidden left sectors are inert
+      // (#148 review): LU's and LD's layouts and ARRANGE dimmed and
+      // aria-disabled, a dispatched tap on them changes nothing; RU's and
+      // RD's stay live.
+      const cell = (sector: string) => page.locator(`.sec-cell[data-sector="${sector}"]`);
+      for (const sector of ["lu", "ld"]) await expect(cell(sector), sector).toHaveAttribute("aria-disabled", "true");
+      for (const sector of ["ru", "rd"]) await expect(cell(sector), sector).toHaveAttribute("aria-disabled", "false");
+      const arrange = page.getByTestId("arrange");
+      await expect(arrange).toHaveAttribute("aria-disabled", "true");
+      expect(Number(await cell("lu").evaluate((e) => getComputedStyle(e).opacity))).toBeLessThan(0.5);
+      const tab = (id: string) => page.locator(`[data-testid="sector-tab"][data-layout="${id}"]`);
+      await tab("lu-2").dispatchEvent("pointerdown");
+      await arrange.dispatchEvent("pointerdown");
+      await frames(page);
+      await expect(tab("lu-1")).toHaveAttribute("aria-pressed", "true");
+      await expect(tab("lu-2")).toHaveAttribute("aria-pressed", "false");
+      await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "false");
+      // A layout tab leaves the deck; LU's layouts and ARRANGE are live again.
+      await page.locator('[data-testid="tabbar"][data-level="0"] [data-testid="tab"][data-page="foh"]').click();
+      await expect(page.getByTestId("deck")).toHaveCount(0);
+      await expect(cell("lu")).toHaveAttribute("aria-disabled", "false");
+      await expect(arrange).toHaveAttribute("aria-disabled", "false");
+      await tab("lu-2").click();
+      await expect(tab("lu-2")).toHaveAttribute("aria-pressed", "true");
+    });
+
+    test("an open deck stays mounted while the sectors switch on and off under it (#148 review)", async ({ page }) => {
+      // Another tablet's ARRANGE save or a hand edit can switch the default
+      // page between its rows and the sectors: the page is mounted anew,
+      // the deck beside it is not (its unmount would lift a held key).
+      await openSurface(page);
+      await expect(page.locator('[data-testid="page"][data-page="foh"]')).toBeVisible();
+      await expect(sectorsPage(page)).toHaveCount(0);
+      await openDeck(page);
+      await page.getByTestId("deck").evaluate((e) => e.setAttribute("data-e2e-kept", "1"));
+      await page.getByTestId("deck-key").evaluateAll((all) => all.forEach((e) => e.setAttribute("data-e2e-kept", "1")));
+      const kept = async () => {
+        await expect(page.getByTestId("deck")).toHaveAttribute("data-e2e-kept", "1");
+        await expect(page.locator('[data-testid="deck-key"][data-e2e-kept="1"]')).toHaveCount(32);
+        await expect(page.getByTestId("page")).toHaveAttribute("data-extra", "deck");
+        await expect(page.getByTestId("deck-tab")).toHaveAttribute("data-selected", "true");
+      };
+      // Sectors on: the sectors page, the deck the same elements.
+      await page.getByTestId("page").evaluate((e) => e.setAttribute("data-e2e-old", "1"));
+      await setSectors(DOC);
+      await expect(sectorsPage(page)).toBeVisible();
+      await expect(page.locator('[data-testid="page"][data-e2e-old]')).toHaveCount(0);
+      await kept();
+      const column = (await page.getByTestId("column").boundingBox())!;
+      const keys = await page.getByTestId("deck-key").evaluateAll((all) => all.map((k) => k.getBoundingClientRect().right));
+      for (const right of keys) expect(right, "a key right of the column").toBeLessThanOrEqual(column.x + 0.5);
+      // Sectors off again: the rows, the deck still the same elements.
+      await resetSectors();
+      await expect(sectorsPage(page)).toHaveCount(0);
+      await expect(page.locator('[data-testid="page"][data-page="foh"]')).toBeVisible();
+      await kept();
     });
 
     test("the column's head: FOH a centred row of its own above STREAM DECK and ABLESET, the status at its foot, nothing overflowing (#148)", async ({ page }) => {

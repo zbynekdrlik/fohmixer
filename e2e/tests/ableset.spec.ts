@@ -16,7 +16,12 @@ import {
   openSurface,
   pageEvents,
   pageHits,
+  extraOnAPhone,
+  resetSectors,
+  rightHalfLive,
+  setSectors,
   token,
+  type SectorsDoc,
   until,
 } from "./support/live";
 import { HTTPS } from "./support/pwa";
@@ -47,6 +52,14 @@ const LOCKED = "/.fohmixer/locked";
 const LOCK_SCRIPT_URL = new RegExp(`^${ABLESET.origin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/\\.fohmixer/locked\\.js$`);
 /** How long the probe may take (`behave::ableset::PROBE_MS`). */
 const PROBE_MS = 8_000;
+/** A sectors document that places faders (#148): the default page shows its sectors. */
+const SECTORS: SectorsDoc = {
+  rev: 0,
+  sectors: {
+    lu: [{ id: "lu-1", title: "STAGE", strips: [{ instance: "band", label: "Vocal 1 repro#" }] }],
+    ru: [{ id: "ru-1", title: "MAIN", strips: [{ instance: "band", label: "B-Main repro #" }] }],
+  },
+};
 const SANDBOX =
   "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads";
 
@@ -256,6 +269,9 @@ test.describe("AbleSet's tab (the LAN path, fohmixer's own https page)", () => {
     expect(framed.width).toBeGreaterThan((viewport.width - column.width) / 2 - 30);
     await expect(page.getByTestId("page")).toHaveAttribute("data-extra", "ableset");
     await expect(page.locator('.slot[data-side="right"] [data-testid="strip"]').first()).toBeVisible();
+    // The right half is live beside the frame (#148 review): a cap there
+    // hit-tests as itself and a real drag of it reaches the hub and Live.
+    await rightHalfLive(page, page.locator('.slot[data-side="right"] [data-testid="strip"]'));
     // AbleSet's socket goes through the hub, and a press inside the frame reaches AbleSet.
     await until(() => ablesetStatus(bearer), (s) => s.sockets >= 1, "AbleSet's socket counted");
     // The hub's record of that socket opening (design §6): the frame's own
@@ -366,6 +382,52 @@ test.describe("AbleSet's tab (the LAN path, fohmixer's own https page)", () => {
     await expect(area).toHaveAttribute("data-state", "frame");
     await ablesetLoaded(page);
   });
+
+  test("the frame stays loaded while the sectors switch on and off under it (#148 review)", async ({ page }) => {
+    // Another tablet's ARRANGE save or a hand edit can switch the default
+    // page between its rows and the sectors: the page is mounted anew, the
+    // frame beside it is not (a remount would load AbleSet again, locked).
+    await openSurface(page);
+    await openAbleSet(page);
+    await ablesetLoaded(page);
+    const frame = page.getByTestId("ableset-frame");
+    await frame.evaluate((f) => f.setAttribute("data-e2e-kept", "1"));
+    // A mark inside AbleSet's own document: a reload of the frame loses it.
+    await inside(page)!.evaluate(() => ((window as any).e2eKept = 1));
+    const kept = async () => {
+      await expect(frame).toHaveAttribute("data-e2e-kept", "1");
+      expect(await inside(page)!.evaluate(() => (window as any).e2eKept ?? 0), "AbleSet's page not loaded again").toBe(1);
+      await expect(page.getByTestId("page")).toHaveAttribute("data-extra", "ableset");
+      await expect(page.getByTestId("ableset")).toHaveAttribute("data-state", "frame");
+    };
+    try {
+      await setSectors(SECTORS);
+      await expect(page.locator('[data-testid="page"][data-sectors="true"]')).toBeVisible();
+      await kept();
+      await resetSectors();
+      await expect(page.locator('[data-testid="page"][data-sectors="true"]')).toHaveCount(0);
+      await expect(page.locator('[data-testid="page"][data-page="foh"]')).toBeVisible();
+      await kept();
+    } finally {
+      await resetSectors();
+    }
+  });
+
+  for (const size of [
+    { width: 844, height: 390 },
+    { width: 390, height: 844 },
+  ]) {
+    test.describe(`on a phone, ${size.width}×${size.height} (#148 review)`, () => {
+      test.use({ viewport: size });
+
+      test("AbleSet takes the screen but the thin ☰ strip, ☰ opens the column in its middle, nothing clipped", async ({ page }) => {
+        await openSurface(page);
+        await extraOnAPhone(page, page.getByTestId("ableset-tab"), page.getByTestId("ableset"), page.getByTestId("ableset-frame"), async () => {
+          await ablesetLoaded(page);
+        });
+      });
+    });
+  }
 });
 
 test.describe("AbleSet opened from the tab is locked (#90, the owner's report of 2026-10-14)", () => {
