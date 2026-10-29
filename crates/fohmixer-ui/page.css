@@ -8,11 +8,17 @@
 /* The column's width: 132 px; on a low screen (a phone on its side) wider,
    so its buttons go two by two; on a narrow one (a phone upright)
    narrower. `--tw` is a rail button's text width (the column's inner width
-   less a button's border and padding), `--rail-cols` the rail's columns. */
+   less a button's border and padding), `--rail-cols` the rail's columns.
+   Set on `.mixer` too: the extra tab's pane (#148), outside `.body`, takes
+   the column's width from it. */
+.mixer,
 .body {
     --col: 132px;
     --tw: 98px;
     --rail-cols: 1;
+}
+
+.body {
     display: grid;
     grid-template-columns: minmax(0, 1fr) var(--col) minmax(0, 1fr);
     gap: 6px;
@@ -21,6 +27,7 @@
 }
 
 @media (max-height: 520px) {
+    .mixer,
     .body {
         --col: 148px;
         --tw: 45px;
@@ -29,6 +36,7 @@
 }
 
 @media (max-width: 520px) {
+    .mixer,
     .body {
         --col: 96px;
         --tw: 62px;
@@ -317,14 +325,25 @@
 /* An extra tab (STREAM DECK, ABLESET: #148, the owner's ruling of
    29.10.2026) over the page's left half: the left sectors, or the rows'
    left halves, from the screen's left edge to the column; the column stays
-   in the middle and the right half keeps working. Over the left cells (a
-   strip's layers end at 2), under the column (10); the left cells hide and
-   take no touch meanwhile. */
-.body > .extra-pane {
+   in the middle and the right half keeps working. The pane is `.mixer`'s,
+   beside the page (surface.rs Shell, #148 review: a new page never mounts
+   it again), in the page's own cell and placed where `.body`'s first
+   column lies: its 6 px padding, then (width − 2 × 6 − 2 × 6 gaps −
+   --col) / 2. Over the left cells (a strip's layers end at 2), under the
+   column (10) and the phone's shade (5): `.body` opens no stacking context;
+   the left cells hide and take no touch meanwhile. Both in the one cell:
+   placed explicitly, or the page would be auto-placed into a second row. */
+.mixer > .body {
+    grid-area: 1 / 1;
+}
+
+.mixer > .extra-pane {
     position: relative;
     z-index: 4;
-    grid-column: 1;
-    grid-row: 1 / -1;
+    grid-area: 1 / 1;
+    justify-self: start;
+    width: calc((100% - 24px - var(--col)) / 2);
+    margin: 6px;
     min-width: 0;
     min-height: 0;
 }
@@ -570,9 +589,13 @@
 }
 
 @media (max-height: 520px), (max-width: 520px) {
+    .mixer,
     .body {
         --col: 34px;
         --overlay: 150px;
+    }
+
+    .body {
         position: relative;
     }
 
@@ -667,6 +690,12 @@
 
     .body:not([data-extra="none"]) > .column {
         grid-column: 1 / -1;
+    }
+
+    /* The pane there: the body's first column, the screen less its 6 px
+       padding, the gap and the thin strip. */
+    .mixer > .extra-pane {
+        width: calc(100% - 18px - var(--col));
     }
 
     .body > .column > .column-close {

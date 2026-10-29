@@ -333,8 +333,11 @@ exclude_re = [
   # Nav::open_column (the phone's column signal, written only on a change)
   # and step_window (a line's window moved through the tested Shift::moved
   # into the offsets' signal); column.spec.ts opens, closes and steps them
-  # on both phone sizes.
-  "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::select|Nav::show_extra|Nav::tap_view|Nav::open_column|step_window|remembered_pages)( |$)",
+  # on both phone sizes. #148 review: Nav::left_covered and
+  # Nav::left_covered_now (the nav.shown memo read, tracked and untracked,
+  # through the tested Extra::covers_left); sectors.spec.ts opens the deck
+  # and finds LU's and LD's layouts, ARRANGE and their taps inert.
+  "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::select|Nav::show_extra|Nav::tap_view|Nav::open_column|Nav::left_covered|Nav::left_covered_now|step_window|remembered_pages)( |$)",
   # The fader sectors' glue (#148), one function at a time. pages/surface.rs:
   # Nav::pick (a sector's layout tab: the picks' signal, written only on a
   # change, and localStorage under binding::sectors::PICKS_KEY),

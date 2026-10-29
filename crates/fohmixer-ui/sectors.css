@@ -423,3 +423,18 @@
 .body[data-arrange="true"] .column .lay-ed[data-renaming="true"] .lay-tools {
     display: none;
 }
+
+/* An extra tab over the left half (#148 review): the controls that act only
+   on the hidden left sectors (LU's and LD's layouts, ARRANGE, a left side's
+   arrows) are dimmed and inert (their handlers check it too). */
+.column .sec-cell[aria-disabled="true"],
+.column .arrange-btn > .tab[aria-disabled="true"],
+.column .shift[aria-disabled="true"] {
+    opacity: 0.35;
+    pointer-events: none;
+}
+
+.column .sec-cell[aria-disabled="true"] *,
+.column .shift[aria-disabled="true"] * {
+    pointer-events: none;
+}

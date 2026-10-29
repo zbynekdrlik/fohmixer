@@ -46,7 +46,7 @@ use crate::binding::sectors::{
 use crate::components::{ControlView, down_of, owns_touches};
 use crate::dom;
 use crate::pages::surface::{
-    ColumnFoot, ColumnHead, ExtraPane, Head, Nav, ThinStrip, extra_attr, measure_page,
+    ColumnFoot, ColumnHead, Head, Nav, ThinStrip, extra_attr, measure_page,
 };
 use crate::store::ResultFn;
 
@@ -409,7 +409,6 @@ pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
             data-narrow-wide=narrow_wide_attr
         >
             <For each=move || 0..count.try_get().unwrap_or(0) key=|line| *line children=line_view />
-            <ExtraPane />
             <ThinStrip arranged=no_lines offsets=no_offsets node=thin_ref />
             {shade}
             <nav class="column" data-testid="column" node_ref=column_ref>
@@ -821,8 +820,14 @@ fn LayoutCell(sector: SectorId, shown: Memo<Option<SectorsDoc>>) -> impl IntoVie
         mode.try_with(|m| m.edit_now().is_some_and(|e| e.can_add(sector)))
             .unwrap_or(false)
     });
+    // A left sector's cell under an extra tab (#148 review): inert and
+    // dimmed, its layouts hidden under the pane.
+    let covered = move || sector.left() && nav.left_covered();
     let on_add = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
+        if sector.left() && nav.left_covered_now() {
+            return;
+        }
         let added = change_mode(mode, |m| m.edit().and_then(|e| e.add(sector))).flatten();
         if let Some(id) = added {
             nav.pick(sector, &id);
@@ -848,7 +853,12 @@ fn LayoutCell(sector: SectorId, shown: Memo<Option<SectorsDoc>>) -> impl IntoVie
     };
     let tab = move |id: String| view! { <LayoutTab sector=sector layout=id rows=rows /> };
     view! {
-        <div class="sec-cell" data-sector=sector.as_str() title=sector_name(sector)>
+        <div
+            class="sec-cell"
+            data-sector=sector.as_str()
+            title=sector_name(sector)
+            aria-disabled=move || covered().to_string()
+        >
             <For each=move || ids.try_get().unwrap_or_default() key=|id: &String| id.clone() children=tab />
             {add}
         </div>
@@ -896,8 +906,13 @@ fn LayoutTab(sector: SectorId, layout: String, rows: Memo<Vec<TabRow>>) -> impl 
         .flatten()
         .unwrap_or_default()
     };
+    // A left sector's layouts under an extra tab take no tap (#148 review).
+    let inert = move || sector.left() && nav.left_covered_now();
     let on_tab = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
+        if inert() {
+            return;
+        }
         let Some(id) = id.try_get_value() else {
             return;
         };
@@ -908,6 +923,9 @@ fn LayoutTab(sector: SectorId, layout: String, rows: Memo<Vec<TabRow>>) -> impl 
     };
     let on_pen = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
+        if inert() {
+            return;
+        }
         let Some(id) = id.try_get_value() else {
             return;
         };
@@ -920,6 +938,9 @@ fn LayoutTab(sector: SectorId, layout: String, rows: Memo<Vec<TabRow>>) -> impl 
     };
     let on_x = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
+        if inert() {
+            return;
+        }
         let _ = id.try_with_value(|id| {
             change_mode(mode, |m| {
                 if let Some(edit) = m.edit() {
@@ -1048,6 +1069,11 @@ fn ArrangeButton(carrier: Carrier, refused: RwSignal<Option<&'static str>>) -> i
     let on = Memo::new(move |_| mode.try_with(Arrange::is_on).unwrap_or(false));
     let on_down = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
+        // Under an extra tab the left sectors it would arrange are hidden
+        // (#148 review): inert and dimmed.
+        if nav.left_covered_now() {
+            return;
+        }
         let Some(doc) = store
             .sectors
             .try_with_untracked(|told| told.shown().cloned())
@@ -1080,6 +1106,7 @@ fn ArrangeButton(carrier: Carrier, refused: RwSignal<Option<&'static str>>) -> i
                 class:selected=lit
                 data-testid="arrange"
                 aria-pressed=move || lit().to_string()
+                aria-disabled=move || nav.left_covered().to_string()
                 on:pointerdown=on_down
             >
                 "ARRANGE"
@@ -1096,6 +1123,11 @@ fn SectorShiftView(
     offsets: RwSignal<BTreeMap<WindowKey, usize>>,
     key: WindowKey,
 ) -> impl IntoView {
+    let nav = expect_context::<Nav>();
+    // A left side's arrows under an extra tab move hidden strips (#148
+    // review): inert and dimmed.
+    let left = key.sectors.iter().all(|s| s.left());
+    let covered = move || left && nav.left_covered();
     let sectors = key
         .sectors
         .iter()
@@ -1112,6 +1144,9 @@ fn SectorShiftView(
         .flatten()
     });
     let step = move |forward: bool| {
+        if left && nav.left_covered_now() {
+            return;
+        }
         let _ = key.try_with_value(|key| {
             step_sector_window(offsets, key, shift.try_get_untracked().flatten(), forward);
         });
@@ -1132,7 +1167,12 @@ fn SectorShiftView(
     let back_keys: Vec<String> = Vec::new();
     let next_keys: Vec<String> = Vec::new();
     view! {
-        <div class="shift" data-testid="shift" data-sectors=sectors>
+        <div
+            class="shift"
+            data-testid="shift"
+            data-sectors=sectors
+            aria-disabled=move || covered().to_string()
+        >
             <button
                 type="button"
                 class="btn shift-btn"

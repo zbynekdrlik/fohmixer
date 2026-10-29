@@ -218,6 +218,14 @@ impl PageModel {
         }
     }
 
+    /// Whether group `group` is one of the pager's sub-pages' (its region's).
+    pub fn in_pager(&self, group: usize) -> bool {
+        self.rows.iter().flatten().any(|part| match part {
+            Part::Pager(subs) => subs.iter().flatten().any(|g| *g == group),
+            Part::Group(_) => false,
+        })
+    }
+
     /// The control at `at`.
     pub fn control(&self, at: At) -> Option<&Control> {
         self.groups.get(at.group)?.controls.get(at.control)
@@ -713,6 +721,21 @@ pub fn runs(cells: &[Cell]) -> Vec<Run> {
         }
     }
     out
+}
+
+/// Whether the pager's region shows in a line's right half (#148 review):
+/// some cell of it (a slot's blank, or a control or block of a sub-page's
+/// group) lies right of the column, so its tabs switch what the right half
+/// shows, which an extra tab over the left half leaves live.
+pub fn pager_on_right(model: &PageModel, arranged: &Arrangement) -> bool {
+    arranged
+        .lines
+        .iter()
+        .flat_map(|line| &line.right)
+        .any(|cell| match cell {
+            Cell::Blank { .. } => true,
+            other => other.group().is_some_and(|g| model.in_pager(g)),
+        })
 }
 
 /// A side of the column.
