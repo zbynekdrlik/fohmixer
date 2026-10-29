@@ -480,9 +480,11 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
     }
 }
 
-/// The head of a page's column: the dropout counter, the badges and the
-/// version, the pages' tabs, the pager's tabs (none on an extra tab) and
-/// SOLO ✕.
+/// The head of a page's column: the pages' tabs first (each mixer page's
+/// tab a row of its own, larger; STREAM DECK and ABLESET under them,
+/// smaller: the owner's ruling of 29.10.2026 on #148), the pager's tabs
+/// (none on an extra tab) and SOLO ✕. The status is the column's foot
+/// ([`ColumnFoot`]).
 #[component]
 pub fn ColumnHead() -> impl IntoView {
     let nav = expect_context::<Nav>();
@@ -582,11 +584,9 @@ pub fn ColumnHead() -> impl IntoView {
     };
     // `.column-head` draws no box of its own (`display: contents`): it marks
     // the head for the Stream Deck page, whose capture listener lifts no
-    // hold on a down there (a tab or the counter: outside its page before
-    // the column).
+    // hold on a down there (a tab: outside its page before the column).
     view! {
         <div class="column-head">
-            <StatusCluster />
             <TabBar tabs=tabs level=0 selected=page />
             {pager_tabs}
             {views_bar}
@@ -614,13 +614,16 @@ fn TabBar(
                 selected.try_get().flatten() == Some(index)
                     && !(level == 0 && nav.shown.try_get().unwrap_or_default() != Extra::None)
             };
-            // A tab owns its touches (#43 PR G); it writes no key.
+            // A tab owns its touches (#43 PR G); it writes no key. A mixer
+            // page's tab (level 0) is the column's first, larger row (#148).
             let no_keys: Vec<String> = Vec::new();
+            let page_tab = level == 0;
             view! {
                 <button
                     type="button"
                     class="tab"
                     use:owns_touches=no_keys
+                    class:page-tab=page_tab
                     class:selected=lit
                     data-testid="tab"
                     data-page=id
@@ -646,6 +649,20 @@ fn TabBar(
         <div class="seg" class:dim=dim data-testid="tabbar" data-level={level.to_string()}>
             {buttons}
             {extra_tabs}
+        </div>
+    }
+}
+
+/// The column's foot (#148, the owner's ruling of 29.10.2026): the status
+/// (the dropout counter, the badges, the version, the tag manual's chip)
+/// under the global controls, smaller and dimmer; a red state stays red.
+/// The Stream Deck's capture listener lifts no hold on a down there, as in
+/// the head (`.column-foot`).
+#[component]
+pub fn ColumnFoot() -> impl IntoView {
+    view! {
+        <div class="column-foot" data-testid="column-foot">
+            <StatusCluster />
         </div>
     }
 }
@@ -724,10 +741,8 @@ fn ManualView() -> impl IntoView {
 }
 
 /// The Stream Deck's tab (#52): its title from the hub; a small red dot
-/// while Companion (or the hub) is unreachable, no words. Beside AbleSet's
-/// tab both take a row of the bar (#90, the approved mockup); without it
-/// the deck's tab is one cell, as before AbleSet (#90 PR C review L7: the
-/// column's height is the faders' first).
+/// while Companion (or the hub) is unreachable, no words. A row of the bar
+/// of its own under the mixer pages' tabs, smaller (#148).
 #[component]
 fn DeckTab() -> impl IntoView {
     let nav = expect_context::<Nav>();
@@ -739,15 +754,13 @@ fn DeckTab() -> impl IntoView {
     };
     let offline = move || store.deck.with(|d| d.as_ref().is_some_and(|d| !d.online));
     let lit = move || nav.shown.get() == Extra::Deck;
-    let wide = move || store.ableset.try_with(Option::is_some).unwrap_or(false);
     // A tab owns its touches (#43 PR G); it writes no key.
     let no_keys: Vec<String> = Vec::new();
     view! {
         <button
             type="button"
-            class="tab deck-tab"
+            class="tab extra-tab deck-tab"
             use:owns_touches=no_keys
-            class:wide=wide
             class:selected=lit
             data-testid="deck-tab"
             data-selected=move || lit().to_string()
@@ -784,7 +797,7 @@ fn AbleSetTab() -> impl IntoView {
     view! {
         <button
             type="button"
-            class="tab wide ableset-tab"
+            class="tab extra-tab ableset-tab"
             use:owns_touches=no_keys
             class:selected=lit
             data-testid="ableset-tab"
@@ -965,6 +978,7 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
                     <div class="rail-main">{rail}</div>
                     <div class="rail-foot">{global}</div>
                 </div>
+                <ColumnFoot />
             </nav>
         </div>
     }

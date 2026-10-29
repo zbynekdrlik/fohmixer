@@ -219,7 +219,8 @@ test.describe("AbleSet's tab (the LAN path, fohmixer's own https page)", () => {
     const pressed = (await fakeAbleSet.state()).presses;
     await openSurface(page);
     // The tab: from the hub's message, last, right after the Stream Deck's,
-    // both as wide as the bar (the mockup), no red dot.
+    // both as wide as the bar (the mockup; since #148 every tab of the bar
+    // is a row of its own, the page tabs' larger), no red dot.
     const bar = page.locator('[data-testid="tabbar"][data-level="0"]');
     const ids = await bar.locator(":scope > button").evaluateAll((tabs) => tabs.map((t) => t.getAttribute("data-testid")));
     expect(ids.slice(-2)).toEqual(["deck-tab", "ableset-tab"]);
@@ -229,7 +230,7 @@ test.describe("AbleSet's tab (the LAN path, fohmixer's own https page)", () => {
     await expect(page.getByTestId("ableset-dot")).toHaveCount(0);
     const width = async (l: Locator) => (await l.boundingBox())!.width;
     expect(Math.abs((await width(tab)) - (await width(page.getByTestId("deck-tab"))))).toBeLessThan(1);
-    expect(await width(tab)).toBeGreaterThan(1.5 * (await width(bar.getByTestId("tab").first())));
+    expect(await width(tab)).toBeGreaterThan(0.9 * (await width(bar)));
     // The service worker controls the page when the probe runs (#90: its
     // own fetch of the probe failed under its connect-src 'self').
     await expect.poll(() => page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
@@ -739,8 +740,10 @@ test.describe("A hub that does not tell of AbleSet", () => {
     await expect.poll(() => held).toBeGreaterThan(0);
     await expect(page.getByTestId("deck-tab")).toBeVisible();
     await expect(page.getByTestId("ableset-tab")).toHaveCount(0);
-    // Without it the bar is as before AbleSet (#90 PR C review L7): the
-    // deck's tab one cell as wide as a page's, never a row of its own.
+    // Without it the deck's tab is the bar's last row (#148, the owner's
+    // ruling of 29.10.2026: every tab a row of its own, the page tabs first
+    // and larger; #90 PR C review L7's one cell beside a page's tab went
+    // with the page tabs' own rows), as wide as a page's tab.
     const bar = page.locator('[data-testid="tabbar"][data-level="0"]');
     const deck = (await page.getByTestId("deck-tab").boundingBox())!;
     const first = (await bar.getByTestId("tab").first().boundingBox())!;
@@ -748,8 +751,7 @@ test.describe("A hub that does not tell of AbleSet", () => {
     const boxes = await bar.locator(":scope > button").evaluateAll((tabs) =>
       tabs.map((t) => Math.round(t.getBoundingClientRect().top)),
     );
-    const columns = await bar.evaluate((b) => getComputedStyle(b).gridTemplateColumns.split(" ").length);
-    expect(new Set(boxes).size).toBe(Math.ceil(boxes.length / columns));
+    expect(new Set(boxes).size, "one tab a row").toBe(boxes.length);
   });
 });
 

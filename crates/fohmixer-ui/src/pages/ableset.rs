@@ -35,7 +35,7 @@ use crate::components::{ControlView, owns_touches};
 use crate::diag;
 use crate::diag::trace::{self, AbleSetStep};
 use crate::dom;
-use crate::pages::surface::ColumnHead;
+use crate::pages::surface::{ColumnFoot, ColumnHead};
 use crate::store::LiveStore;
 
 /// The frame's sandbox (design §5.3): AbleSet's scripts, its own storage
@@ -300,6 +300,7 @@ pub fn AbleSetView(rail: Vec<Control>, global: Vec<Control>) -> impl IntoView {
                     <div class="rail-main">{rail}</div>
                     <div class="rail-foot">{global}</div>
                 </div>
+                <ColumnFoot />
             </nav>
         </div>
     }

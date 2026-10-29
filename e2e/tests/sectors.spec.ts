@@ -3,14 +3,17 @@ import { test, expect } from "./support/fixtures";
 import {
   LiveClient,
   centre,
+  columnHeadAndFoot,
   dispatchPointer,
   frames,
+  harness,
   hubEvents,
   hubStatus,
   openDetail,
   openSurface,
   pageEvents,
   resetSectors,
+  servedLayout,
   setSectors,
   track,
   until,
@@ -221,6 +224,42 @@ test.describe("The fader sectors", () => {
 
   test.describe("at the iPad's size", () => {
     test.use({ viewport: { width: 1194, height: 834 } });
+
+    test("the column's head: FOH a centred row of its own above STREAM DECK and ABLESET, the status at its foot, nothing overflowing (#148)", async ({ page }) => {
+      // The site's column (the owner's report of 29.10.2026): the LAYOUTS
+      // block, ARRANGE alone on its row, the rail STAGE, REVERB, AUTOTUNE,
+      // TALKBACK and TECHALERT at its foot.
+      const fixture = await servedLayout();
+      const rails = fixture.pages.find((p: any) => p.id === "foh").rail.length;
+      const layout = structuredClone(fixture);
+      const foh = layout.pages.find((p: any) => p.id === "foh");
+      const stage = foh.rail.find((c: any) => c.kind === "stage");
+      const talkback = { ...foh.rail.find((c: any) => c.label === "ZVUKAR"), label: "TALKBACK" };
+      foh.rail = [stage, { kind: "reverb", label: "REVERB" }, { kind: "autotune", label: "AUTOTUNE" }, talkback];
+      await harness("/hub/layout", { layout });
+      try {
+        await until(servedLayout, (l) => l.pages.find((p: any) => p.id === "foh").rail.length === 4, "the hub serving the site's rail");
+        await setSectors(DOC);
+        await openSectors(page);
+        await expect(page.getByTestId("sector-layouts")).toBeVisible();
+        await expect(page.getByTestId("reverb")).toBeVisible();
+        await expect(page.getByTestId("deck-tab")).toBeVisible();
+        await expect(page.getByTestId("sector-undo")).toHaveCount(0);
+        await frames(page);
+        expect(await columnHeadAndFoot(page)).toEqual([]);
+        // ARRANGE takes its row alone: as wide as the LAYOUTS block.
+        const arrange = (await page.locator(".arrange-btn").boundingBox())!;
+        const block = (await page.getByTestId("sector-layouts").boundingBox())!;
+        expect(Math.abs(arrange.width - block.width), "ARRANGE as wide as the LAYOUTS block").toBeLessThan(1);
+        // The selected FOH tab keeps today's mark.
+        const fohTab = page.locator('[data-testid="tabbar"][data-level="0"] [data-testid="tab"][data-page="foh"]');
+        await expect(fohTab).toHaveAttribute("data-selected", "true");
+        expect(await fohTab.evaluate((t) => getComputedStyle(t).boxShadow)).toMatch(/inset/);
+      } finally {
+        await harness("/hub/layout/reset");
+        await until(servedLayout, (l) => l.pages.find((p: any) => p.id === "foh").rail.length === rails, "the hub serving the fixture again");
+      }
+    });
 
     test("the fader travel is 322 px at 1194x834 in all four sectors, a mixed layout included", async ({ page }) => {
       await setSectors(MIXED_DOC);

@@ -36,8 +36,10 @@
     }
 }
 
-/* The column's head (the status, the tabs, SOLO ✕) is no box of its own:
-   its parts are the column's (surface.rs ColumnHead). */
+/* The column's head (the tabs, SOLO ✕) is no box of its own: its parts
+   are the column's (surface.rs ColumnHead). The status is its foot
+   (ColumnFoot, #148: the owner's ruling of 29.10.2026), the column's last
+   part, under the global controls. */
 .column-head {
     display: contents;
 }
@@ -64,10 +66,51 @@
     border-radius: 12px;
 }
 
+/* The status at the column's foot (#148): small and dim, so it never
+   competes with the controls; a red state stays red (the counter while a
+   dropout lasts, a badge's dot of a Live that is down). */
+.column-foot {
+    flex: none;
+}
+
 .column .status-cluster {
     flex-wrap: wrap;
     justify-content: center;
-    gap: 4px 8px;
+    gap: 2px 6px;
+    color: var(--faint);
+    font-size: 9px;
+    letter-spacing: 0.6px;
+}
+
+.column .status-cluster .dropouts {
+    min-width: 18px;
+    padding: 2px 4px;
+    border-color: var(--line-soft);
+    color: var(--faint);
+    font-size: 10px;
+}
+
+.column .status-cluster .dropouts.active {
+    border-color: var(--danger);
+    color: var(--danger);
+}
+
+.column .status-cluster .badge {
+    gap: 4px;
+}
+
+.column .status-cluster .badge-dot {
+    width: 6px;
+    height: 6px;
+}
+
+.column .status-cluster .version {
+    font-size: 9px;
+}
+
+.column .status-cluster .manual-chip {
+    font-size: 8.5px;
+    line-height: 12px;
 }
 
 .column .seg {
@@ -83,11 +126,29 @@
     white-space: normal;
 }
 
-/* The extra tabs (STREAM DECK, ABLESET: #90, the approved mockup
-   ableset-tab-v1) each take the bar's whole width; STREAM DECK only beside
-   ABLESET (surface.rs DeckTab), else it is one cell as before. */
-.column .seg > .wide {
-    grid-column: 1 / -1;
+/* The pages' bar (#148, the owner's ruling of 29.10.2026): one tab a row.
+   A mixer page's tab (FOH) first, centred, in the display face, larger
+   and bolder than the extra tabs; STREAM DECK and ABLESET under it,
+   smaller and calmer. The selected tab keeps its mark (.tab.selected). */
+.column .seg[data-level="0"] {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.column .tab.page-tab {
+    padding: 6px 3px;
+    color: var(--text);
+    font: 700 19px/1.05 var(--display);
+    letter-spacing: 0.08em;
+}
+
+.column .tab.extra-tab {
+    padding: 5px 3px;
+    font: 600 10px/1.1 var(--ui);
+    letter-spacing: 0.06em;
+}
+
+.column .tab.extra-tab:not(.selected) {
+    color: var(--faint);
 }
 
 .column .solo-clear.on {
@@ -344,13 +405,21 @@
 
     /* The counter and both badges on one line, the version under them. */
     .column .status-cluster {
-        gap: 3px 5px;
-        font-size: 10px;
-        letter-spacing: 0.4px;
+        gap: 2px 4px;
+        letter-spacing: 0.3px;
     }
 
     .column .badge {
-        gap: 4px;
+        gap: 3px;
+    }
+
+    .column .tab.page-tab {
+        padding: 3px 2px;
+        font-size: 16px;
+    }
+
+    .column .tab.extra-tab {
+        padding: 3px 2px;
     }
 
     .column .btn.shift-btn,

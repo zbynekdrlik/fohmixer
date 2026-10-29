@@ -28,7 +28,7 @@ use crate::behave::deck::{Action, Presses, Why, can_press};
 use crate::components::{ControlView, fail_flash, owns_touches};
 use crate::diag::{self, trace};
 use crate::dom;
-use crate::pages::surface::ColumnHead;
+use crate::pages::surface::{ColumnFoot, ColumnHead};
 use crate::store::LiveStore;
 use crate::store::deck::key_side;
 
@@ -74,11 +74,12 @@ fn half_vars(shape: Option<(u32, u32)>, area: (f64, f64), left: bool) -> String 
     format!("--cols:{shown};--rows:{rows};--key:{side:.0}px;")
 }
 
-/// Whether a pointer's down landed in the column's head (`.column-head`).
+/// Whether a pointer's down landed in the column's head or foot
+/// (`.column-head`: the tabs; `.column-foot`: the status, #148).
 fn in_column_head(ev: &web_sys::PointerEvent) -> bool {
     ev.target()
         .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-        .and_then(|el| el.closest(".column-head").ok().flatten())
+        .and_then(|el| el.closest(".column-head, .column-foot").ok().flatten())
         .is_some()
 }
 
@@ -295,6 +296,7 @@ pub fn DeckView(global: Vec<Control>, viewport: RwSignal<(f64, f64)>) -> impl In
                     <div class="rail-main"></div>
                     <div class="rail-foot">{global}</div>
                 </div>
+                <ColumnFoot />
             </nav>
             <div class="deck-area" data-side="right">
                 <div class="deck-grid" data-testid="deck-grid" style=right_style>

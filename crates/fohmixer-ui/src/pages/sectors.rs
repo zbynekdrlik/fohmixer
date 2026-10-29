@@ -45,7 +45,7 @@ use crate::binding::sectors::{
 };
 use crate::components::{ControlView, down_of, owns_touches};
 use crate::dom;
-use crate::pages::surface::{ColumnHead, Head, Nav, ThinStrip, measure_page};
+use crate::pages::surface::{ColumnFoot, ColumnHead, Head, Nav, ThinStrip, measure_page};
 use crate::store::ResultFn;
 
 /// How long the refused save's note shows under ARRANGE (ms).
@@ -435,6 +435,7 @@ pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
                     <div class="rail-main">{rail}</div>
                     <div class="rail-foot">{global}</div>
                 </div>
+                <ColumnFoot />
             </nav>
         </div>
     }

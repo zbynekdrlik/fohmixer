@@ -795,3 +795,64 @@ export function countLoads(page: Page): () => number {
   page.on("load", () => (loads += 1));
   return () => loads;
 }
+
+/**
+ * The column's head and foot (#148, the owner's ruling of 29.10.2026), read
+ * in the page: what is wrong, none when right. Every mixer page's tab (the
+ * pages' bar's `tab`s, FOH among them) is a row of its own, its title
+ * centred in the column (the text's left and right gaps within 1 px, the
+ * tab's centre on the column's within 1 px), in a larger face than the
+ * extra tabs (STREAM DECK, ABLESET), which sit under them; the status (the
+ * counter, the version) is the column's last part, under TechAlert; and
+ * nothing in the column overflows it (its scroll height its client
+ * height, every part inside its box).
+ */
+export async function columnHeadAndFoot(page: Page): Promise<string[]> {
+  return page.getByTestId("column").evaluate((column) => {
+    const out: string[] = [];
+    const box = (el: Element) => el.getBoundingClientRect();
+    const col = box(column);
+    const bar = column.querySelector('[data-testid="tabbar"][data-level="0"]');
+    if (!bar) return ["no pages' bar"];
+    const tabs = [...bar.querySelectorAll(':scope > [data-testid="tab"]')];
+    const extras = [...bar.querySelectorAll(":scope > .deck-tab, :scope > .ableset-tab")];
+    if (tabs.length === 0) out.push("no page tab");
+    if (extras.length === 0) out.push("no extra tab");
+    const all = [...bar.querySelectorAll(":scope > button")];
+    for (const tab of tabs) {
+      const name = tab.getAttribute("data-page");
+      const b = box(tab);
+      const sharing = all.filter((o) => o !== tab && Math.abs(box(o).top - b.top) < b.height / 2);
+      if (sharing.length > 0) out.push(`${name}: shares its row`);
+      const range = document.createRange();
+      range.selectNodeContents(tab);
+      const text = range.getBoundingClientRect();
+      const gaps = Math.abs(text.left - b.left - (b.right - text.right));
+      if (gaps > 1) out.push(`${name}: its title ${gaps.toFixed(2)} px off its centre`);
+      const centre = Math.abs(b.left + b.width / 2 - (col.left + col.width / 2));
+      if (centre > 1) out.push(`${name}: ${centre.toFixed(2)} px off the column's centre`);
+      for (const extra of extras) {
+        const size = parseFloat(getComputedStyle(tab).fontSize);
+        const theirs = parseFloat(getComputedStyle(extra).fontSize);
+        if (!(size > theirs)) out.push(`${name}: ${size} px, not larger than ${extra.getAttribute("data-testid")}'s ${theirs} px`);
+        if (box(extra).top < b.bottom - 0.5) out.push(`${extra.getAttribute("data-testid")} above ${name}`);
+      }
+    }
+    const foot = column.querySelector('[data-testid="column-foot"]');
+    const alert = column.querySelector('[data-testid="alert-toggle"]');
+    if (!foot || !alert) return [...out, "no status foot or no TechAlert"];
+    if (column.lastElementChild !== foot) out.push("the status is not the column's last part");
+    if (box(foot).top < box(alert).bottom - 0.5) out.push("the status above TechAlert");
+    for (const id of ["dropouts", "version"]) {
+      if (!foot.querySelector(`[data-testid="${id}"]`)) out.push(`${id} not in the status`);
+    }
+    if (column.scrollHeight > column.clientHeight) out.push(`the column overflows by ${column.scrollHeight - column.clientHeight} px`);
+    for (const part of [...column.children]) {
+      const b = box(part);
+      if (getComputedStyle(part).display === "none" || b.height === 0) continue;
+      if (b.bottom > col.bottom + 0.5 || b.top < col.top - 0.5 || b.right > col.right + 0.5 || b.left < col.left - 0.5)
+        out.push(`${part.className || part.tagName}: outside the column`);
+    }
+    return out;
+  });
+}
