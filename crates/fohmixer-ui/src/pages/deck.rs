@@ -1,7 +1,9 @@
 //! The Stream Deck tab (#52, spec §2, §6): Companion's keys as square keys
-//! as large as the area allows, in two halves with the control column
-//! between them (#63: its left columns, then its right ones), the layout's
-//! global controls at the column's foot (as on every page). A key is down at the touch and up at the
+//! as large as the area allows, in one grid over the left half of the page
+//! shown (#148, the owner's ruling of 29.10.2026: the left sectors, or the
+//! rows' left halves; the column stays in the screen's middle and the right
+//! half keeps working; on a phone the whole screen but the thin strip). A
+//! key is down at the touch and up at the
 //! release (`behave::deck::Presses` decides; this file carries it out): a
 //! down that cannot go now flashes red and is never sent later; a finger on
 //! a key shows a local outline at once (Companion's pressed look needs a
@@ -12,23 +14,22 @@
 //! every held key when the tab is left (`tab`) or the page goes hidden
 //! (`hidden`) or the grid changes its shape; a closed socket forgets the
 //! holds (the hub releases them); a primary pointer's down anywhere on the
-//! page (a capture-phase listener on its root) first lifts the holds whose
+//! page (a capture-phase listener on the window: the right half's strips
+//! and the column too) first lifts the holds whose
 //! end the browser never delivered. Every key owns its touches
 //! (`use:owns_touches`): no loupe, callout or drag on a hold.
 
 use std::collections::BTreeSet;
 
-use fohmixer_proto::layout::Control;
 use leptos::html;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
 use crate::behave::deck::{Action, Presses, Why, can_press};
-use crate::components::{ControlView, fail_flash, owns_touches};
+use crate::components::{fail_flash, owns_touches};
 use crate::diag::{self, trace};
 use crate::dom;
-use crate::pages::surface::ColumnHead;
 use crate::store::LiveStore;
 use crate::store::deck::key_side;
 
@@ -37,48 +38,35 @@ pub const KEY_GAP: f64 = 8.0;
 /// The grid area's padding on each side (px): `.deck-area` in deck.css.
 pub const AREA_PAD: f64 = 10.0;
 
-/// How many of the deck's `columns` the left half holds (the right one the
-/// rest): the larger half.
-fn left_columns(columns: u32) -> u32 {
-    columns.div_ceil(2)
-}
-
-/// A half's keys (`left` or the right one), row by row: the left half the
-/// first columns of each row, the right half the rest (none until the hub
-/// described the deck).
-fn half_keys(shape: Option<(u32, u32)>, left: bool) -> Vec<u32> {
+/// The deck's keys in key order, row by row (none until the hub described
+/// the deck).
+fn deck_keys(shape: Option<(u32, u32)>) -> Vec<u32> {
     let (columns, rows) = shape.unwrap_or((0, 0));
-    let split = left_columns(columns);
-    let (from, to) = if left { (0, split) } else { (split, columns) };
-    (0..rows)
-        .flat_map(|row| (from..to).map(move |column| row * columns + column))
-        .collect()
+    (0..columns * rows).collect()
 }
 
-/// A half's CSS variables: its columns, the rows (`shape`; one key until
-/// the hub described the deck) and the side of a square key, the same in
-/// both halves: the left half's (the larger) in `area` (`.deck-area`'s
-/// client size, its padding included).
-fn half_vars(shape: Option<(u32, u32)>, area: (f64, f64), left: bool) -> String {
+/// The grid's CSS variables: its columns and rows (`shape`; one key until
+/// the hub described the deck) and the side of a square key that fits
+/// them in `area` (`.deck-area`'s client size, its padding included).
+fn deck_vars(shape: Option<(u32, u32)>, area: (f64, f64)) -> String {
     let (columns, rows) = shape.unwrap_or((1, 1));
-    let split = left_columns(columns);
     let (width, height) = area;
     let side = key_side(
         width - 2.0 * AREA_PAD,
         height - 2.0 * AREA_PAD,
-        split,
+        columns,
         rows,
         KEY_GAP,
     );
-    let shown = if left { split } else { columns - split };
-    format!("--cols:{shown};--rows:{rows};--key:{side:.0}px;")
+    format!("--cols:{columns};--rows:{rows};--key:{side:.0}px;")
 }
 
-/// Whether a pointer's down landed in the column's head (`.column-head`).
+/// Whether a pointer's down landed in the column's head or foot
+/// (`.column-head`: the tabs; `.column-foot`: the status, #148).
 fn in_column_head(ev: &web_sys::PointerEvent) -> bool {
     ev.target()
         .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-        .and_then(|el| el.closest(".column-head").ok().flatten())
+        .and_then(|el| el.closest(".column-head, .column-foot").ok().flatten())
         .is_some()
 }
 
@@ -183,23 +171,18 @@ fn lift_missed(
     show_held(presses, held);
 }
 
-/// The page root's capture-phase `pointerdown` listener and its element,
-/// kept to remove it in the cleanup.
-type RootListener = (
-    web_sys::HtmlDivElement,
-    Closure<dyn FnMut(web_sys::PointerEvent)>,
-);
+/// The window's capture-phase `pointerdown` listener, kept to remove it in
+/// the cleanup.
+type RootListener = (web_sys::Window, Closure<dyn FnMut(web_sys::PointerEvent)>);
 
-/// The Stream Deck tab's page: the rail with the layout's global controls,
-/// then the key grid.
+/// The Stream Deck tab: the key grid over the page's left half (#148).
 #[component]
-pub fn DeckView(global: Vec<Control>, viewport: RwSignal<(f64, f64)>) -> impl IntoView {
+pub fn DeckView(viewport: RwSignal<(f64, f64)>) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let presses = StoredValue::new(Presses::default());
     let held = RwSignal::new(BTreeSet::<u32>::new());
     let area_ref = NodeRef::<html::Div>::new();
     let area = RwSignal::new((0.0_f64, 0.0_f64));
-    let root_ref = NodeRef::<html::Div>::new();
     let root_listener = StoredValue::new_local(None::<RootListener>);
     store.deck_view(true);
     diag::record(&trace::deck_view(dom::epoch_now(), true));
@@ -209,13 +192,15 @@ pub fn DeckView(global: Vec<Control>, viewport: RwSignal<(f64, f64)>) -> impl In
             leave_keys(store, presses, held, Why::Hidden);
         }
     });
-    // A primary down anywhere on the page (a key, the rail, the gaps between
-    // the keys) first lifts the holds whose end never came: a capture-phase
-    // listener on the page's root runs before every handler inside it.
-    root_ref.on_load(move |root| {
+    // A primary down anywhere on the page (a key, the gaps between the keys,
+    // the right half's strips, the rail) first lifts the holds whose end
+    // never came: a capture-phase listener on the window runs before every
+    // handler of the page (#148: the deck is a pane of the page now, so a
+    // listener on its own root would miss the right half).
+    if let Some(root) = web_sys::window() {
         let listener = Closure::wrap(Box::new(move |ev: web_sys::PointerEvent| {
-            // The column's head (the tabs, the counter: outside this page
-            // before the column, #63) is no finger on the deck.
+            // The column's head and foot (the tabs, the counter: outside
+            // this page before the column, #63) are no finger on the deck.
             if in_column_head(&ev) {
                 return;
             }
@@ -227,7 +212,7 @@ pub fn DeckView(global: Vec<Control>, viewport: RwSignal<(f64, f64)>) -> impl In
             true,
         );
         let _ = root_listener.try_set_value(Some((root, listener)));
-    });
+    }
     // The page's own signals stay untouched here (`lift_keys`, no outline):
     // its keys' render effects outlive this cleanup by a microtask.
     on_cleanup(move || {
@@ -268,37 +253,18 @@ pub fn DeckView(global: Vec<Control>, viewport: RwSignal<(f64, f64)>) -> impl In
         }
         now
     });
-    let left_style = move || half_vars(shape.get(), area.get(), true);
-    let right_style = move || half_vars(shape.get(), area.get(), false);
-    let keys = move |left: bool| {
-        move || {
-            half_keys(shape.get(), left)
-                .into_iter()
-                .map(|index| view! { <DeckKeyView index=index presses=presses held=held /> })
-                .collect_view()
-        }
+    let style = move || deck_vars(shape.get(), area.get());
+    let keys = move || {
+        deck_keys(shape.get())
+            .into_iter()
+            .map(|index| view! { <DeckKeyView index=index presses=presses held=held /> })
+            .collect_view()
     };
-    let global = global
-        .into_iter()
-        .map(|control| view! { <ControlView control=control /> })
-        .collect_view();
     view! {
-        <div class="body deck-page" data-testid="deck" node_ref=root_ref>
-            <div class="deck-area" data-side="left" node_ref=area_ref>
-                <div class="deck-grid" data-testid="deck-grid" style=left_style>
-                    {keys(true)}
-                </div>
-            </div>
-            <nav class="column" data-testid="column">
-                <ColumnHead />
-                <div class="rail" data-testid="rail">
-                    <div class="rail-main"></div>
-                    <div class="rail-foot">{global}</div>
-                </div>
-            </nav>
-            <div class="deck-area" data-side="right">
-                <div class="deck-grid" data-testid="deck-grid" style=right_style>
-                    {keys(false)}
+        <div class="extra-pane deck-pane" data-testid="deck">
+            <div class="deck-area" node_ref=area_ref>
+                <div class="deck-grid" data-testid="deck-grid" style=style>
+                    {keys}
                 </div>
             </div>
         </div>
@@ -406,57 +372,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn each_half_holds_its_columns_of_every_row() {
-        // 8 × 4: the left half columns 0–3 of each row, the right 4–7.
-        assert_eq!(
-            half_keys(Some((8, 4)), true),
-            vec![0, 1, 2, 3, 8, 9, 10, 11, 16, 17, 18, 19, 24, 25, 26, 27]
-        );
-        assert_eq!(
-            half_keys(Some((8, 4)), false),
-            vec![4, 5, 6, 7, 12, 13, 14, 15, 20, 21, 22, 23, 28, 29, 30, 31]
-        );
-        // An odd count: the left half the larger.
-        assert_eq!(half_keys(Some((5, 2)), true), vec![0, 1, 2, 5, 6, 7]);
-        assert_eq!(half_keys(Some((5, 2)), false), vec![3, 4, 8, 9]);
+    fn the_keys_go_in_key_order_row_by_row() {
+        assert_eq!(deck_keys(Some((8, 4))), (0..32).collect::<Vec<_>>());
+        assert_eq!(deck_keys(Some((5, 2))), vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
         // No deck described yet: no key.
-        assert_eq!(half_keys(None, true), Vec::<u32>::new());
-        assert_eq!(half_keys(None, false), Vec::<u32>::new());
+        assert_eq!(deck_keys(None), Vec::<u32>::new());
     }
 
     #[test]
-    fn a_halfs_grid_fills_the_area_less_its_padding() {
-        // The width decides: 552 − 2 × 10 = 532 px for 4 keys and 3 gaps
-        // (the width's `−` as `+`: 137; as `/`: 0; its `×` as `+`: 129; as
-        // `/`: 131).
+    fn the_grid_fills_the_area_less_its_padding() {
+        // The width decides: 552 − 2 × 10 = 532 px for 8 keys and 7 gaps
+        // (the width's `−` as `+`: 64; as `/`: 0; its `×` as `+`: 60; as
+        // `/`: 61).
         assert_eq!(
-            half_vars(Some((8, 4)), (552.0, 778.0), true),
-            "--cols:4;--rows:4;--key:127px;"
-        );
-        assert_eq!(
-            half_vars(Some((8, 4)), (552.0, 778.0), false),
-            "--cols:4;--rows:4;--key:127px;"
+            deck_vars(Some((8, 4)), (552.0, 778.0)),
+            "--cols:8;--rows:4;--key:59px;"
         );
         // The height decides: 220 − 2 × 10 = 200 px for 2 keys and 1 gap
         // (the height's `−` as `+`: 116; as `/`: 1; its `×` as `+`: 100; as
-        // `/`: 105). Five columns: three left, two right.
+        // `/`: 105).
         assert_eq!(
-            half_vars(Some((5, 2)), (1020.0, 220.0), true),
-            "--cols:3;--rows:2;--key:96px;"
+            deck_vars(Some((5, 2)), (1020.0, 220.0)),
+            "--cols:5;--rows:2;--key:96px;"
         );
+        // No deck described yet: one key in the area.
         assert_eq!(
-            half_vars(Some((5, 2)), (1020.0, 220.0), false),
-            "--cols:2;--rows:2;--key:96px;"
-        );
-        // No deck described yet: one key in the left area.
-        assert_eq!(
-            half_vars(None, (120.0, 140.0), true),
+            deck_vars(None, (120.0, 140.0)),
             "--cols:1;--rows:1;--key:100px;"
         );
         // Not laid out yet: no key, never a negative size.
         assert_eq!(
-            half_vars(Some((8, 4)), (0.0, 0.0), true),
-            "--cols:4;--rows:4;--key:0px;"
+            deck_vars(Some((8, 4)), (0.0, 0.0)),
+            "--cols:8;--rows:4;--key:0px;"
         );
     }
 }

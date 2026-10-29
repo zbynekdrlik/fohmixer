@@ -28,7 +28,7 @@ use serde_json::json;
 use crate::app::version_text;
 use crate::arrange::{
     Arrangement, Cell, GroupLabel, Item, LineKey, METRICS, PageModel, Shift, Side, Sides,
-    arrange_in, items, narrow, px_value, rooms, thin_line,
+    arrange_in, items, narrow, pager_on_right, px_value, rooms, thin_line,
 };
 use crate::behave::ableset::tab_dot;
 use crate::behave::arrange_drag::Arrange;
@@ -57,9 +57,12 @@ const BODY_PAD: f64 = 12.0;
 /// Between a side and the column (`.body`'s gap).
 const BODY_GAP: f64 = 6.0;
 
-/// A tab after the layout's pages, shown instead of them (#52, #90).
+/// A tab after the layout's pages (#52, #90), shown in the left half of
+/// the page shown (#148: the left sectors, or the rows' left halves; the
+/// right half and the column stay the page's; on a phone the whole screen
+/// but the thin strip).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum Extra {
+pub(crate) enum Extra {
     /// None: the layout's page.
     #[default]
     None,
@@ -68,6 +71,37 @@ enum Extra {
     /// AbleSet's own page (#90).
     AbleSet,
 }
+
+impl Extra {
+    /// The page's `data-extra`.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Extra::None => "none",
+            Extra::Deck => "deck",
+            Extra::AbleSet => "ableset",
+        }
+    }
+
+    /// It lies over the page's left half (#148 review): the controls that
+    /// act only on the hidden left cells (the LU and LD layout tabs,
+    /// ARRANGE, a left side's ◀ ▶) are inert meanwhile.
+    pub(crate) fn covers_left(self) -> bool {
+        self != Extra::None
+    }
+
+    /// The pager's tabs show (#148 review): with no extra tab, or with one
+    /// while the pager's region lies in the live right half (`pager_right`,
+    /// `arrange::pager_on_right`), whose sub-page they switch.
+    pub(crate) fn pager_tabs(self, pager_right: bool) -> bool {
+        !self.covers_left() || pager_right
+    }
+}
+
+/// Whether the shown page's pager region lies in its right half (#148
+/// review, `arrange::pager_on_right`): a context of `PageView`, read by the
+/// column's head (none on the sectors page, which shows no pager tabs).
+#[derive(Clone, Copy)]
+pub(crate) struct PagerRight(pub(crate) Memo<bool>);
 
 /// The page selection (a context of the surface).
 #[derive(Clone, Copy)]
@@ -126,9 +160,10 @@ impl Nav {
     /// closes too (#63, the approved mockup).
     fn select(self, level: usize, index: usize) {
         self.open_column(false);
-        // A layout tab leaves an extra tab; the page shown is selected as
-        // before.
-        if self.extra.try_get_untracked().unwrap_or_default() != Extra::None {
+        // A page's tab leaves an extra tab; the page shown is selected as
+        // before. A sub-page's tab keeps it (#148 review: it switches the
+        // live right half beside it).
+        if level == 0 && self.extra.try_get_untracked().unwrap_or_default() != Extra::None {
             let _ = self.extra.try_set(Extra::None);
         }
         let Some(Some(layout)) = self.store.layout.try_get_untracked() else {
@@ -190,6 +225,20 @@ impl Nav {
         if let Ok(text) = serde_json::to_string(&picks) {
             dom::storage_set(PICKS_KEY, &text);
         }
+    }
+
+    /// An extra tab lies over the left half (#148 review), read tracked
+    /// (a control's look) or untracked (its handler's gate).
+    pub(crate) fn left_covered(self) -> bool {
+        self.shown.try_get().unwrap_or_default().covers_left()
+    }
+
+    /// `left_covered`, untracked: a handler's gate.
+    pub(crate) fn left_covered_now(self) -> bool {
+        self.shown
+            .try_get_untracked()
+            .unwrap_or_default()
+            .covers_left()
     }
 
     /// The Stream Deck's tab (#52) or AbleSet's (#90) was tapped.
@@ -294,7 +343,7 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
         let detail = nav.detail.try_get().flatten();
         let doc = store
             .sectors
-            .try_with(|told| told.shown().map(|told| told.doc.clone()))
+            .try_with(|told| told.shown().cloned())
             .flatten();
         let picks = nav.picks.try_get().unwrap_or_default();
         let sectored = doc.as_ref().map(|doc| Sectored { doc, picks: &picks });
@@ -379,9 +428,7 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
             nav.path
                 .try_with(|path| {
                     sectors
-                        .try_with(|told| {
-                            sectors_on(&layout, path, told.shown().map(|told| &told.doc))
-                        })
+                        .try_with(|told| sectors_on(&layout, path, told.shown()))
                         .unwrap_or(false)
                 })
                 .unwrap_or(false)
@@ -393,7 +440,6 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
         sub,
         sectored,
     });
-    let viewport = nav.viewport;
     // The channel detail (#71): the layout's strip that is the held one
     // (`binding::detail_strip`: a marker strip follows its marker to any
     // index; its binding, label, guard and mark this layout's), over the
@@ -443,25 +489,14 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
             view! { <DetailView strip=strip group=group /> }
         })
     };
+    // The page shown; an extra tab (#148) lies over its left half
+    // (`ExtraPane`, mounted once here beside the page, never inside it: a
+    // switch between the sectors page and the rows, another tablet's
+    // ARRANGE save or a hand edit, remounts the page and never the deck,
+    // which would lift a held key, or AbleSet's frame, which would load
+    // it again; #148 review), so the right half and the column stay the
+    // page's and a tab's change mounts no page.
     let body = move || {
-        match nav.shown.get() {
-            Extra::Deck => {
-                let global = layout.global.clone();
-                return Some(view! { <DeckView global=global viewport=viewport /> }.into_any());
-            }
-            // AbleSet's page keeps the column of the page it was opened
-            // from: its rail and the global controls (#90, variant A).
-            Extra::AbleSet => {
-                let rail = page
-                    .get()
-                    .and_then(|index| layout.pages.get(index))
-                    .map(|opened_from| opened_from.rail.clone())
-                    .unwrap_or_default();
-                let global = layout.global.clone();
-                return Some(view! { <AbleSetView rail=rail global=global /> }.into_any());
-            }
-            Extra::None => {}
-        }
         let index = page.get()?;
         let shown = layout.pages.get(index)?.clone();
         let global = layout.global.clone();
@@ -475,14 +510,17 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
     view! {
         <div class="mixer" data-testid="stage">
             {body}
+            <ExtraPane />
             {detail}
         </div>
     }
 }
 
-/// The head of a page's column: the dropout counter, the badges and the
-/// version, the pages' tabs, the pager's tabs (none on an extra tab) and
-/// SOLO ✕.
+/// The head of a page's column: the pages' tabs first (each mixer page's
+/// tab a row of its own, larger; STREAM DECK and ABLESET under them,
+/// smaller: the owner's ruling of 29.10.2026 on #148), the pager's tabs
+/// (none on an extra tab) and SOLO ✕. The status is the column's foot
+/// ([`ColumnFoot`]).
 #[component]
 pub fn ColumnHead() -> impl IntoView {
     let nav = expect_context::<Nav>();
@@ -505,10 +543,14 @@ pub fn ColumnHead() -> impl IntoView {
     // selection while the old column's effects may still run once.
     // While a view is shown (#68), the pager's tabs of the page before it
     // stay, dimmed.
-    // The sectors page (#148) has the LAYOUTS block in their place.
+    // The sectors page (#148) has the LAYOUTS block in their place. Under
+    // an extra tab they show only while the pager's region lies in the
+    // live right half (#148 review, `Extra::pager_tabs`).
+    let pager_right = use_context::<PagerRight>();
     let pager_tabs = move || {
         let index = page.try_get().flatten()?;
-        if nav.shown.try_get().unwrap_or_default() != Extra::None {
+        let right = pager_right.is_some_and(|p| p.0.try_get().unwrap_or(false));
+        if !nav.shown.try_get().unwrap_or_default().pager_tabs(right) {
             return None;
         }
         if sectored.try_get().unwrap_or(false) {
@@ -582,11 +624,9 @@ pub fn ColumnHead() -> impl IntoView {
     };
     // `.column-head` draws no box of its own (`display: contents`): it marks
     // the head for the Stream Deck page, whose capture listener lifts no
-    // hold on a down there (a tab or the counter: outside its page before
-    // the column).
+    // hold on a down there (a tab: outside its page before the column).
     view! {
         <div class="column-head">
-            <StatusCluster />
             <TabBar tabs=tabs level=0 selected=page />
             {pager_tabs}
             {views_bar}
@@ -614,13 +654,16 @@ fn TabBar(
                 selected.try_get().flatten() == Some(index)
                     && !(level == 0 && nav.shown.try_get().unwrap_or_default() != Extra::None)
             };
-            // A tab owns its touches (#43 PR G); it writes no key.
+            // A tab owns its touches (#43 PR G); it writes no key. A mixer
+            // page's tab (level 0) is the column's first, larger row (#148).
             let no_keys: Vec<String> = Vec::new();
+            let page_tab = level == 0;
             view! {
                 <button
                     type="button"
                     class="tab"
                     use:owns_touches=no_keys
+                    class:page-tab=page_tab
                     class:selected=lit
                     data-testid="tab"
                     data-page=id
@@ -646,6 +689,44 @@ fn TabBar(
         <div class="seg" class:dim=dim data-testid="tabbar" data-level={level.to_string()}>
             {buttons}
             {extra_tabs}
+        </div>
+    }
+}
+
+/// An extra tab's content over the left half of the page shown (#148, the
+/// owner's ruling of 29.10.2026: STREAM DECK and ABLESET open in the left
+/// sectors; the column stays in the screen's middle and the right half
+/// keeps working): the deck's keys or AbleSet's frame. Mounted once by
+/// `Shell` beside the page (page.css places it over the left half), so a
+/// new page (the sectors switched on or off) mounts it nothing again; one
+/// `nav.shown` memo: a tap on the open tab or the pager mounts nothing
+/// again either.
+#[component]
+pub(crate) fn ExtraPane() -> impl IntoView {
+    let nav = expect_context::<Nav>();
+    let viewport = nav.viewport;
+    move || match nav.shown.try_get().unwrap_or_default() {
+        Extra::None => None,
+        Extra::Deck => Some(view! { <DeckView viewport=viewport /> }.into_any()),
+        Extra::AbleSet => Some(view! { <AbleSetView /> }.into_any()),
+    }
+}
+
+/// The page's `data-extra` (#148): the extra tab over its left half.
+pub(crate) fn extra_attr(nav: Nav) -> impl Fn() -> &'static str + Copy {
+    move || nav.shown.try_get().unwrap_or_default().name()
+}
+
+/// The column's foot (#148, the owner's ruling of 29.10.2026): the status
+/// (the dropout counter, the badges, the version, the tag manual's chip)
+/// under the global controls, smaller and dimmer; a red state stays red.
+/// The Stream Deck's capture listener lifts no hold on a down there, as in
+/// the head (`.column-foot`).
+#[component]
+pub fn ColumnFoot() -> impl IntoView {
+    view! {
+        <div class="column-foot" data-testid="column-foot">
+            <StatusCluster />
         </div>
     }
 }
@@ -724,10 +805,8 @@ fn ManualView() -> impl IntoView {
 }
 
 /// The Stream Deck's tab (#52): its title from the hub; a small red dot
-/// while Companion (or the hub) is unreachable, no words. Beside AbleSet's
-/// tab both take a row of the bar (#90, the approved mockup); without it
-/// the deck's tab is one cell, as before AbleSet (#90 PR C review L7: the
-/// column's height is the faders' first).
+/// while Companion (or the hub) is unreachable, no words. A row of the bar
+/// of its own under the mixer pages' tabs, smaller (#148).
 #[component]
 fn DeckTab() -> impl IntoView {
     let nav = expect_context::<Nav>();
@@ -739,15 +818,13 @@ fn DeckTab() -> impl IntoView {
     };
     let offline = move || store.deck.with(|d| d.as_ref().is_some_and(|d| !d.online));
     let lit = move || nav.shown.get() == Extra::Deck;
-    let wide = move || store.ableset.try_with(Option::is_some).unwrap_or(false);
     // A tab owns its touches (#43 PR G); it writes no key.
     let no_keys: Vec<String> = Vec::new();
     view! {
         <button
             type="button"
-            class="tab deck-tab"
+            class="tab extra-tab deck-tab"
             use:owns_touches=no_keys
-            class:wide=wide
             class:selected=lit
             data-testid="deck-tab"
             data-selected=move || lit().to_string()
@@ -784,7 +861,7 @@ fn AbleSetTab() -> impl IntoView {
     view! {
         <button
             type="button"
-            class="tab wide ableset-tab"
+            class="tab extra-tab ableset-tab"
             use:owns_touches=no_keys
             class:selected=lit
             data-testid="ableset-tab"
@@ -826,6 +903,16 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
         offsets.into(),
         |model, sides, height| rooms(model, sides, height, &METRICS),
     );
+    // Whether the pager's region lies in the right half, for the column's
+    // head: its tabs under an extra tab (#148 review).
+    {
+        let model = model.clone();
+        provide_context(PagerRight(Memo::new(move |_| {
+            arranged
+                .try_with(|a| a.as_ref().is_some_and(|a| pager_on_right(&model, a)))
+                .unwrap_or(false)
+        })));
+    }
     let count = Memo::new(move |_| {
         arranged
             .try_with(|a| a.as_ref().map_or(0, |a| a.lines.len()))
@@ -935,6 +1022,7 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
             data-testid="page"
             data-page=page.id
             data-column-open=move || open().to_string()
+            data-extra=extra_attr(nav)
             node_ref=body_ref
             style=body_style
             data-narrow=narrow_attr
@@ -965,6 +1053,7 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
                     <div class="rail-main">{rail}</div>
                     <div class="rail-foot">{global}</div>
                 </div>
+                <ColumnFoot />
             </nav>
         </div>
     }
@@ -1541,7 +1630,10 @@ fn StatusCluster() -> impl IntoView {
     view! {
         <div class="status-cluster">
             <DropoutCounter />
-            {badges}
+            // The badges in a box of their own (no box on a tablet:
+            // `display: contents`), so a low phone's foot wraps a third
+            // instance's badge under the others (#148 review).
+            <span class="badges">{badges}</span>
             <span class="version" data-testid="version">{version_text()}</span>
             <ManualChip />
         </div>
@@ -1553,6 +1645,30 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+
+    #[test]
+    fn an_extra_tab_covers_the_left_half_and_keeps_the_pager_tabs_of_a_right_region() {
+        // #148 review: the left half's own controls are inert under an
+        // extra tab; the pager's tabs stay while its region is right.
+        assert!(!Extra::None.covers_left());
+        assert!(Extra::Deck.covers_left());
+        assert!(Extra::AbleSet.covers_left());
+        assert!(Extra::None.pager_tabs(false));
+        assert!(Extra::None.pager_tabs(true));
+        assert!(!Extra::Deck.pager_tabs(false));
+        assert!(Extra::Deck.pager_tabs(true));
+        assert!(!Extra::AbleSet.pager_tabs(false));
+        assert!(Extra::AbleSet.pager_tabs(true));
+    }
+
+    #[test]
+    fn the_pages_data_extra_names_the_extra_tab() {
+        // #148: page.css hides the left half under any extra tab but "none".
+        assert_eq!(Extra::None.name(), "none");
+        assert_eq!(Extra::Deck.name(), "deck");
+        assert_eq!(Extra::AbleSet.name(), "ableset");
+        assert_eq!(Extra::default().name(), "none");
+    }
 
     fn strip(name: &str) -> serde_json::Value {
         json!({"kind": "strip", "binding": {"instance": "band", "anchor": {"kind": "track", "name": name}},

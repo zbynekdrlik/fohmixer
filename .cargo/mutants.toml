@@ -333,8 +333,11 @@ exclude_re = [
   # Nav::open_column (the phone's column signal, written only on a change)
   # and step_window (a line's window moved through the tested Shift::moved
   # into the offsets' signal); column.spec.ts opens, closes and steps them
-  # on both phone sizes.
-  "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::select|Nav::show_extra|Nav::tap_view|Nav::open_column|step_window|remembered_pages)( |$)",
+  # on both phone sizes. #148 review: Nav::left_covered and
+  # Nav::left_covered_now (the nav.shown memo read, tracked and untracked,
+  # through the tested Extra::covers_left); sectors.spec.ts opens the deck
+  # and finds LU's and LD's layouts, ARRANGE and their taps inert.
+  "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::select|Nav::show_extra|Nav::tap_view|Nav::open_column|Nav::left_covered|Nav::left_covered_now|step_window|remembered_pages)( |$)",
   # The fader sectors' glue (#148), one function at a time. pages/surface.rs:
   # Nav::pick (a sector's layout tab: the picks' signal, written only on a
   # change, and localStorage under binding::sectors::PICKS_KEY),
@@ -345,12 +348,12 @@ exclude_re = [
   # step_sector_window (a side's window moved through the tested
   # Shift::moved into the offsets' signal). store/live/sectors.rs: the three
   # requests onto the socket (sector_request: an id from the tested
-  # Conn::next_id, the pending map as cmd's; sector_tick, sector_edit,
-  # sector_undo build the message). The decisions are the tested
+  # Conn::next_id, the pending map as cmd's; sector_tick and sector_edit
+  # build the message). The decisions are the tested
   # binding::sectors (picks, picked, sectors_on, the wanted set, the ticks,
   # the pool's steps), arrange::sectors (lines, width, windows),
   # pages::sectors::sector_memo and store::on_refusal; sectors.spec.ts
-  # drives the glue in Chromium and WebKit (paging, the width kept, ↶, a
+  # drives the glue in Chromium and WebKit (paging, the width kept, a
   # tick's answer).
   "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::pick|remembered_picks|measure_page)( |$)",
   "fohmixer-ui/src/pages/sectors\\.rs.*(replace|in) step_sector_window( |$)",
@@ -369,7 +372,16 @@ exclude_re = [
   # class, lets go of the focus once the tested Edit::outside_down ended
   # its rename; sectors.spec.ts renames on Enter and on a tap elsewhere).
   "fohmixer-ui/src/pages/sectors\\.rs.*(replace|in) (change_mode|sector_spots|flash_note|blur_field|Carrier::(new|show|lift|hold|settle|leave))( |$)",
-  "fohmixer-ui/src/store/live/sectors\\.rs.*(replace|in) LiveStore::(sector_request|sector_tick|sector_edit|sector_undo)( |$)",
+  "fohmixer-ui/src/store/live/sectors\\.rs.*(replace|in) LiveStore::(sector_request|sector_tick|sector_edit)( |$)",
+  # store/live/colors.rs (#164): set_color, the strips' colours' request
+  # through sector_request (the socket); strip-color.spec.ts picks a colour
+  # in the detail and reads it on the strip and a second page.
+  "fohmixer-ui/src/store/live/colors\\.rs.*(replace|in) LiveStore::set_color( |$)",
+  # components/detail_color.rs (#164): strip_colour, the hub's document
+  # and the strip's identity read into a memo of the tested
+  # behave::colour::colour_of and binding::sectors::detail_ref;
+  # strip-color.spec.ts reads the strip's edge and the detail's chip.
+  "fohmixer-ui/src/components/detail_color\\.rs.*(replace|in) strip_colour( |$)",
   # pages/ableset.rs (#90): take_return (location.hash read through the
   # tested behave::ableset::returns_to_tab, then history.replaceState
   # without it); ableset.spec.ts's sign-in comes back to #ableset and finds
@@ -385,11 +397,12 @@ exclude_re = [
   # the cleanup must not write the page's own signal) and leave_keys (the
   # same when the page is hidden, then the outline) and lift_missed (the
   # tested Presses::missed_ups' ups through carry, then the outline: from
-  # the page root's capture-phase pointerdown listener and a key's down).
+  # the window's capture-phase pointerdown listener and a key's down).
   # deck.spec.ts drives them in Chromium and WebKit (down and up on
   # pointerup, pointercancel and leaving the tab, with the page's deck
   # events and their whys in the event log; the outline; the red flash with
-  # no later send). half_keys and half_vars (each half's keys and size, #63) are tested.
+  # no later send). deck_keys and deck_vars (the one grid over the page's
+  # left half, #148) are tested.
   # in_column_head (#63): whether a down's target lies in the column's head
   # (web_sys Element::closest); deck.spec.ts proves it: a tap of a layout
   # tab or of the open deck tab leaves a held key held (its up says "tab",

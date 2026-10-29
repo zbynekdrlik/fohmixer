@@ -16,15 +16,21 @@ import {
   openSurface,
   pageEvents,
   pageHits,
+  extraOnAPhone,
+  resetSectors,
+  rightHalfLive,
+  setSectors,
   token,
+  type SectorsDoc,
   until,
 } from "./support/live";
 import { HTTPS } from "./support/pwa";
 
 // AbleSet's tab (#90 PR C; the owner's variant A of
 // docs/mockups/ableset-tab-v1.html): ABLESET is the last tab, right after
-// STREAM DECK; its page puts the column at the right edge and AbleSet's own
-// page, framed from AbleSet's name through the hub, in the rest. The e2e
+// STREAM DECK; AbleSet's own page, framed from AbleSet's name through the
+// hub, lies over the page's left half, the column staying in the screen's
+// middle (#148, the owner's ruling of 29.10.2026). The e2e
 // job's harness runs the fake AbleSet (e2e/harness/fake_ableset.py) behind
 // the hub's `[ableset]` (`ableset.e2e.test`, a sibling of `foh.e2e.test`):
 // its page keeps a `browserId` in localStorage, opens a Socket.IO-like
@@ -46,6 +52,14 @@ const LOCKED = "/.fohmixer/locked";
 const LOCK_SCRIPT_URL = new RegExp(`^${ABLESET.origin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/\\.fohmixer/locked\\.js$`);
 /** How long the probe may take (`behave::ableset::PROBE_MS`). */
 const PROBE_MS = 8_000;
+/** A sectors document that places faders (#148): the default page shows its sectors. */
+const SECTORS: SectorsDoc = {
+  rev: 0,
+  sectors: {
+    lu: [{ id: "lu-1", title: "STAGE", strips: [{ instance: "band", label: "Vocal 1 repro#" }] }],
+    ru: [{ id: "ru-1", title: "MAIN", strips: [{ instance: "band", label: "B-Main repro #" }] }],
+  },
+};
 const SANDBOX =
   "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads";
 
@@ -219,7 +233,8 @@ test.describe("AbleSet's tab (the LAN path, fohmixer's own https page)", () => {
     const pressed = (await fakeAbleSet.state()).presses;
     await openSurface(page);
     // The tab: from the hub's message, last, right after the Stream Deck's,
-    // both as wide as the bar (the mockup), no red dot.
+    // both as wide as the bar (the mockup; since #148 every tab of the bar
+    // is a row of its own, the page tabs' larger), no red dot.
     const bar = page.locator('[data-testid="tabbar"][data-level="0"]');
     const ids = await bar.locator(":scope > button").evaluateAll((tabs) => tabs.map((t) => t.getAttribute("data-testid")));
     expect(ids.slice(-2)).toEqual(["deck-tab", "ableset-tab"]);
@@ -229,7 +244,7 @@ test.describe("AbleSet's tab (the LAN path, fohmixer's own https page)", () => {
     await expect(page.getByTestId("ableset-dot")).toHaveCount(0);
     const width = async (l: Locator) => (await l.boundingBox())!.width;
     expect(Math.abs((await width(tab)) - (await width(page.getByTestId("deck-tab"))))).toBeLessThan(1);
-    expect(await width(tab)).toBeGreaterThan(1.5 * (await width(bar.getByTestId("tab").first())));
+    expect(await width(tab)).toBeGreaterThan(0.9 * (await width(bar)));
     // The service worker controls the page when the probe runs (#90: its
     // own fetch of the probe failed under its connect-src 'self').
     await expect.poll(() => page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
@@ -243,13 +258,20 @@ test.describe("AbleSet's tab (the LAN path, fohmixer's own https page)", () => {
     await expect(frame).toHaveAttribute("referrerpolicy", "no-referrer");
     await expect(frame).toHaveAttribute("allow", "");
     await ablesetLoaded(page);
-    // Variant A: the column at the right edge, AbleSet left of it.
+    // #148: the column stays in the screen's middle (its right-edge place of
+    // variant A is gone), AbleSet fills the left half up to it, and the
+    // page's right half is shown beside.
     const viewport = page.viewportSize()!;
-    const column = (await area.getByTestId("column").boundingBox())!;
+    const column = (await page.getByTestId("column").boundingBox())!;
     const framed = (await frame.boundingBox())!;
-    expect(column.x + column.width).toBeGreaterThan(viewport.width - 12);
-    expect(framed.x + framed.width).toBeLessThanOrEqual(column.x);
-    expect(framed.width).toBeGreaterThan(viewport.width - column.width - 40);
+    expect(Math.abs(column.x + column.width / 2 - viewport.width / 2), "the column's centre (px off the screen's)").toBeLessThan(1);
+    expect(framed.x + framed.width).toBeLessThanOrEqual(column.x + 0.5);
+    expect(framed.width).toBeGreaterThan((viewport.width - column.width) / 2 - 30);
+    await expect(page.getByTestId("page")).toHaveAttribute("data-extra", "ableset");
+    await expect(page.locator('.slot[data-side="right"] [data-testid="strip"]').first()).toBeVisible();
+    // The right half is live beside the frame (#148 review): a cap there
+    // hit-tests as itself and a real drag of it reaches the hub and Live.
+    await rightHalfLive(page, page.locator('.slot[data-side="right"] [data-testid="strip"]'));
     // AbleSet's socket goes through the hub, and a press inside the frame reaches AbleSet.
     await until(() => ablesetStatus(bearer), (s) => s.sockets >= 1, "AbleSet's socket counted");
     // The hub's record of that socket opening (design §6): the frame's own
@@ -360,6 +382,52 @@ test.describe("AbleSet's tab (the LAN path, fohmixer's own https page)", () => {
     await expect(area).toHaveAttribute("data-state", "frame");
     await ablesetLoaded(page);
   });
+
+  test("the frame stays loaded while the sectors switch on and off under it (#148 review)", async ({ page }) => {
+    // Another tablet's ARRANGE save or a hand edit can switch the default
+    // page between its rows and the sectors: the page is mounted anew, the
+    // frame beside it is not (a remount would load AbleSet again, locked).
+    await openSurface(page);
+    await openAbleSet(page);
+    await ablesetLoaded(page);
+    const frame = page.getByTestId("ableset-frame");
+    await frame.evaluate((f) => f.setAttribute("data-e2e-kept", "1"));
+    // A mark inside AbleSet's own document: a reload of the frame loses it.
+    await inside(page)!.evaluate(() => ((window as any).e2eKept = 1));
+    const kept = async () => {
+      await expect(frame).toHaveAttribute("data-e2e-kept", "1");
+      expect(await inside(page)!.evaluate(() => (window as any).e2eKept ?? 0), "AbleSet's page not loaded again").toBe(1);
+      await expect(page.getByTestId("page")).toHaveAttribute("data-extra", "ableset");
+      await expect(page.getByTestId("ableset")).toHaveAttribute("data-state", "frame");
+    };
+    try {
+      await setSectors(SECTORS);
+      await expect(page.locator('[data-testid="page"][data-sectors="true"]')).toBeVisible();
+      await kept();
+      await resetSectors();
+      await expect(page.locator('[data-testid="page"][data-sectors="true"]')).toHaveCount(0);
+      await expect(page.locator('[data-testid="page"][data-page="foh"]')).toBeVisible();
+      await kept();
+    } finally {
+      await resetSectors();
+    }
+  });
+
+  for (const size of [
+    { width: 844, height: 390 },
+    { width: 390, height: 844 },
+  ]) {
+    test.describe(`on a phone, ${size.width}×${size.height} (#148 review)`, () => {
+      test.use({ viewport: size });
+
+      test("AbleSet takes the screen but the thin ☰ strip, ☰ opens the column in its middle, nothing clipped", async ({ page }) => {
+        await openSurface(page);
+        await extraOnAPhone(page, page.getByTestId("ableset-tab"), page.getByTestId("ableset"), page.getByTestId("ableset-frame"), async () => {
+          await ablesetLoaded(page);
+        });
+      });
+    });
+  }
 });
 
 test.describe("AbleSet opened from the tab is locked (#90, the owner's report of 2026-10-14)", () => {
@@ -739,8 +807,10 @@ test.describe("A hub that does not tell of AbleSet", () => {
     await expect.poll(() => held).toBeGreaterThan(0);
     await expect(page.getByTestId("deck-tab")).toBeVisible();
     await expect(page.getByTestId("ableset-tab")).toHaveCount(0);
-    // Without it the bar is as before AbleSet (#90 PR C review L7): the
-    // deck's tab one cell as wide as a page's, never a row of its own.
+    // Without it the deck's tab is the bar's last row (#148, the owner's
+    // ruling of 29.10.2026: every tab a row of its own, the page tabs first
+    // and larger; #90 PR C review L7's one cell beside a page's tab went
+    // with the page tabs' own rows), as wide as a page's tab.
     const bar = page.locator('[data-testid="tabbar"][data-level="0"]');
     const deck = (await page.getByTestId("deck-tab").boundingBox())!;
     const first = (await bar.getByTestId("tab").first().boundingBox())!;
@@ -748,8 +818,7 @@ test.describe("A hub that does not tell of AbleSet", () => {
     const boxes = await bar.locator(":scope > button").evaluateAll((tabs) =>
       tabs.map((t) => Math.round(t.getBoundingClientRect().top)),
     );
-    const columns = await bar.evaluate((b) => getComputedStyle(b).gridTemplateColumns.split(" ").length);
-    expect(new Set(boxes).size).toBe(Math.ceil(boxes.length / columns));
+    expect(new Set(boxes).size, "one tab a row").toBe(boxes.length);
   });
 });
 

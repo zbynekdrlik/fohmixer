@@ -15,7 +15,7 @@ use super::{
 };
 use crate::events::{is_warn, stamp};
 use crate::outbox::Outbox;
-use crate::sectors::{PREV_FILE, SECTORS_FILE};
+use crate::sectors::{OLD_PREV_FILE, SECTORS_FILE};
 
 fn band(label: &str) -> StripRef {
     StripRef {
@@ -76,13 +76,13 @@ fn served(
 }
 
 /// The `sectors` messages waiting in `outbox`.
-fn told(outbox: &Outbox) -> Vec<(SectorsDoc, bool)> {
+fn told(outbox: &Outbox) -> Vec<SectorsDoc> {
     outbox
         .take()
         .unwrap_or_default()
         .into_iter()
         .filter_map(|m| match m {
-            ServerMsg::Sectors { doc, undo } => Some((doc, undo)),
+            ServerMsg::Sectors { doc } => Some(doc),
             _ => None,
         })
         .collect()
@@ -170,12 +170,12 @@ async fn a_page_gets_the_document_at_attach() {
     );
     let (mut router, _own, _rx) = served(dir.path(), Some(&first));
     let page = attach(&mut router, 1);
-    assert_eq!(told(&page), vec![(first, false)]);
+    assert_eq!(told(&page), vec![first]);
     // An empty data folder: the empty document, sectors off.
     let empty = tempfile::tempdir().unwrap();
     let (mut router, _own, _rx) = served(empty.path(), None);
     let page = attach(&mut router, 1);
-    assert_eq!(told(&page), vec![(SectorsDoc::empty(), false)]);
+    assert_eq!(told(&page), vec![SectorsDoc::empty()]);
 }
 
 #[tokio::test]
@@ -201,17 +201,11 @@ async fn a_tick_is_answered_recorded_and_told_to_every_page() {
     );
     assert_eq!(
         a.take().unwrap(),
-        vec![
-            result("t1"),
-            ServerMsg::Sectors {
-                doc: after.clone(),
-                undo: true
-            }
-        ]
+        vec![result("t1"), ServerMsg::Sectors { doc: after.clone() }]
     );
-    assert_eq!(told(&b), vec![(after.clone(), true)]);
+    assert_eq!(told(&b), vec![after.clone()]);
     assert_eq!(on_disk(dir.path(), SECTORS_FILE), after);
-    assert_eq!(on_disk(dir.path(), PREV_FILE), first);
+    assert!(!dir.path().join(OLD_PREV_FILE).exists(), "no undo file");
     assert_eq!(
         sector_records(&rx),
         vec![
@@ -226,12 +220,9 @@ async fn a_tick_is_answered_recorded_and_told_to_every_page() {
     assert_eq!(answers(&b), vec![result("t2")]);
     assert_eq!(
         told(&a),
-        vec![(
-            doc(
-                3,
-                vec![(SectorId::Lu, vec![layout("lu-1", "VOX", &["", "Bass"])])]
-            ),
-            true
+        vec![doc(
+            3,
+            vec![(SectorId::Lu, vec![layout("lu-1", "VOX", &["", "Bass"])])]
         )]
     );
     assert_eq!(sector_records(&rx).len(), 1, "the tick off");
@@ -268,7 +259,7 @@ async fn each_refusal_answers_the_asker_alone_and_records_nothing() {
     assert_eq!(b.take().unwrap(), vec![]);
     assert_eq!(sector_records(&rx), Vec::<Value>::new());
     assert_eq!(router.sectors.store.doc(), &first);
-    assert!(!dir.path().join(PREV_FILE).exists(), "nothing written");
+    assert_eq!(on_disk(dir.path(), SECTORS_FILE), first, "nothing written");
 }
 
 #[tokio::test]
@@ -316,7 +307,7 @@ async fn an_edit_with_an_old_rev_is_refused_stale() {
 }
 
 #[tokio::test]
-async fn an_edit_that_changes_nothing_is_refused_empty_and_keeps_the_undo() {
+async fn an_edit_that_changes_nothing_is_refused_empty() {
     let dir = tempfile::tempdir().unwrap();
     let first = doc(
         4,
@@ -334,12 +325,12 @@ async fn an_edit_that_changes_nothing_is_refused_empty_and_keeps_the_undo() {
     router.handle(edit_msg(1, "o1", taken.sectors.clone(), taken.rev));
     assert_eq!(a.take().unwrap(), vec![error("o1", "EMPTY")]);
     assert_eq!(router.sectors.store.doc(), &taken);
-    assert_eq!(on_disk(dir.path(), PREV_FILE), first, "the undo step kept");
+    assert_eq!(on_disk(dir.path(), SECTORS_FILE), taken, "nothing written");
     assert_eq!(sector_records(&rx), Vec::<Value>::new());
 }
 
 #[tokio::test]
-async fn an_edit_of_two_layouts_is_one_change_and_one_undo_step() {
+async fn an_edit_of_two_layouts_is_one_change() {
     let dir = tempfile::tempdir().unwrap();
     let first = doc(
         1,
@@ -390,46 +381,19 @@ async fn an_edit_of_two_layouts_is_one_change_and_one_undo_step() {
         vec![
             result("o1"),
             ServerMsg::Sectors {
-                doc: arranged.clone(),
-                undo: true
+                doc: arranged.clone()
             }
         ]
     );
-    assert_eq!(told(&b), vec![(arranged.clone(), true)]);
-    router.handle(RouterMsg::SectorUndo {
-        client: 2,
-        id: "u1".into(),
-    });
-    let mut back = first.clone();
-    back.rev = 3;
-    assert_eq!(answers(&b), vec![result("u1")]);
-    assert_eq!(told(&a), vec![(back.clone(), true)]);
-    assert_eq!(on_disk(dir.path(), SECTORS_FILE), back);
+    assert_eq!(told(&b), vec![arranged.clone()]);
+    assert_eq!(on_disk(dir.path(), SECTORS_FILE), arranged);
     assert_eq!(
         sector_records(&rx),
         vec![
             json!({"ev": "sectors", "what": "edit", "client": 1, "peer": "10.0.0.1",
                    "rev": 2, "added": 0, "removed": 0, "renamed": 0, "reordered": 2}),
-            json!({"ev": "sectors", "what": "undo", "client": 2, "peer": "10.0.0.2",
-                   "rev": 3}),
         ]
     );
-}
-
-#[tokio::test]
-async fn undo_without_prev_is_refused_nothing_to_undo() {
-    let dir = tempfile::tempdir().unwrap();
-    let first = doc(1, vec![(SectorId::Lu, vec![layout("lu-1", "VOX", &[])])]);
-    let (mut router, _own, rx) = served(dir.path(), Some(&first));
-    let a = attach(&mut router, 1);
-    a.take();
-    let _ = records(&rx);
-    router.handle(RouterMsg::SectorUndo {
-        client: 1,
-        id: "u1".into(),
-    });
-    assert_eq!(a.take().unwrap(), vec![error("u1", "nothing to undo")]);
-    assert_eq!(sector_records(&rx), Vec::<Value>::new());
 }
 
 #[tokio::test]
@@ -453,7 +417,7 @@ async fn a_hand_edit_is_told_to_every_page_and_recorded_file() {
     router.handle(RouterMsg::SectorsPoll);
     let mut served_doc = edited.clone();
     served_doc.rev = 5;
-    assert_eq!(told(&a), vec![(served_doc, true)]);
+    assert_eq!(told(&a), vec![served_doc]);
     assert_eq!(
         sector_records(&rx),
         vec![
@@ -491,7 +455,6 @@ async fn a_removed_file_is_written_back_and_recorded_never_seeded() {
     std::fs::remove_file(dir.path().join(SECTORS_FILE)).unwrap();
     router.handle(RouterMsg::SectorsPoll);
     assert_eq!(on_disk(dir.path(), SECTORS_FILE), taken);
-    assert_eq!(on_disk(dir.path(), PREV_FILE), first, "the undo kept");
     assert_eq!(router.sectors.store.doc(), &taken);
     assert!(!router.sectors.store.missing());
     assert_eq!(told(&a), vec![], "the document did not change");
@@ -576,7 +539,7 @@ async fn the_seed_waits_for_every_instances_marker_read() {
     );
     assert_eq!(router.sectors.store.doc(), &seeded);
     assert_eq!(on_disk(dir.path(), SECTORS_FILE), seeded);
-    assert_eq!(told(&page), vec![(seeded, false)]);
+    assert_eq!(told(&page), vec![seeded]);
     assert_eq!(
         sector_records(&rx),
         vec![
@@ -678,13 +641,12 @@ async fn the_status_counts_layouts_strips_and_unknown_refs() {
             layouts: 2,
             strips: 3,
             unknown: 1,
-            undo: false,
             error: None,
         }
     );
     router.handle(tick(1, "t1", "lu-2", "Klavir", true));
     let now = status(&mut router).sectors;
-    assert_eq!((now.rev, now.strips, now.undo), (7, 4, true));
+    assert_eq!((now.rev, now.strips), (7, 4));
 }
 
 #[tokio::test]
@@ -726,13 +688,12 @@ async fn a_write_that_fails_is_an_error_to_the_asker_and_changes_nothing() {
     std::fs::create_dir(dir.path().join("sectors.tmp")).unwrap();
     std::fs::write(dir.path().join("sectors.tmp").join("x"), "x").unwrap();
     router.handle(tick(1, "t2", "lu-1", "Klavir", true));
-    router.handle(RouterMsg::SectorUndo {
-        client: 1,
-        id: "u1".into(),
-    });
+    let mut edited = taken.sectors.clone();
+    edited.get_mut(&SectorId::Lu).unwrap()[0].title = "VOCALS".into();
+    router.handle(edit_msg(1, "e1", edited, taken.rev));
     let got = a.take().unwrap();
     assert_eq!(got.len(), 2, "{got:?}");
-    for (msg, want) in got.iter().zip(["t2", "u1"]) {
+    for (msg, want) in got.iter().zip(["t2", "e1"]) {
         assert!(
             matches!(msg, ServerMsg::Error { id: Some(id), message } if id == want && !message.is_empty()),
             "{msg:?}"
@@ -803,7 +764,7 @@ async fn an_edit_with_gaps_puts_a_strip_at_the_right_edge_and_is_written_with_nu
     );
     assert_eq!(answers(&a), vec![result("o1")]);
     assert_eq!(router.sectors.store.doc(), &arranged);
-    assert_eq!(told(&b), vec![(arranged.clone(), true)]);
+    assert_eq!(told(&b), vec![arranged.clone()]);
     assert_eq!(on_disk(dir.path(), SECTORS_FILE), arranged);
     let text = std::fs::read_to_string(dir.path().join(SECTORS_FILE)).unwrap();
     assert_eq!(text.matches("null").count(), 2, "{text}");
@@ -901,7 +862,7 @@ async fn a_tick_fills_the_first_empty_slot_and_an_untick_leaves_one() {
 }
 
 #[tokio::test]
-async fn an_edit_renames_adds_and_removes_layouts_in_one_change_and_one_undo_step() {
+async fn an_edit_renames_adds_and_removes_layouts_in_one_change() {
     let dir = tempfile::tempdir().unwrap();
     let first = doc(
         1,
@@ -949,10 +910,9 @@ async fn an_edit_renames_adds_and_removes_layouts_in_one_change_and_one_undo_ste
         ],
     );
     assert_eq!(answers(&a), vec![result("e1")]);
-    assert_eq!(told(&b), vec![(edited.clone(), true)]);
+    assert_eq!(told(&b), vec![edited.clone()]);
     assert_eq!(router.sectors.store.doc(), &edited);
     assert_eq!(on_disk(dir.path(), SECTORS_FILE), edited);
-    assert_eq!(on_disk(dir.path(), PREV_FILE), first, "one undo step");
     assert_eq!(
         sector_records(&rx),
         vec![
@@ -960,30 +920,21 @@ async fn an_edit_renames_adds_and_removes_layouts_in_one_change_and_one_undo_ste
                     "rev": 2, "added": 1, "removed": 1, "renamed": 1, "reordered": 0})
         ]
     );
-    // One undo brings all of it back.
-    router.handle(RouterMsg::SectorUndo {
-        client: 2,
-        id: "u1".into(),
-    });
-    let mut back = first.clone();
-    back.rev = 3;
-    assert_eq!(answers(&b), vec![result("u1")]);
-    assert_eq!(router.sectors.store.doc(), &back);
-    let _ = records(&rx);
+    let back = edited.clone();
+    b.take();
     a.take();
     // A lower-case title, a fifth layout: invalid, to the asker alone,
     // nothing recorded or told.
     let mut lower = back.sectors.clone();
     lower.get_mut(&SectorId::Lu).unwrap()[0].title = "vocals".into();
-    router.handle(edit_msg(1, "e2", lower, 3));
+    router.handle(edit_msg(1, "e2", lower, 2));
     let mut five = back.sectors.clone();
     five.get_mut(&SectorId::Ru).unwrap().extend([
-        layout("ru-2", "NEW", &[]),
         layout("ru-3", "NEW 2", &[]),
         layout("ru-4", "NEW 3", &[]),
         layout("ru-5", "NEW 4", &[]),
     ]);
-    router.handle(edit_msg(1, "e3", five, 3));
+    router.handle(edit_msg(1, "e3", five, 2));
     assert_eq!(
         a.take().unwrap(),
         vec![error("e2", "invalid"), error("e3", "invalid")]

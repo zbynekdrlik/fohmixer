@@ -14,7 +14,10 @@ import {
   openDeck,
   openSurface,
   pageEvents,
+  extraOnAPhone,
+  rightHalfLive,
   selectPage,
+  servedLayout,
   token,
   until,
 } from "./support/live";
@@ -286,7 +289,7 @@ test.describe("The Stream Deck tab", () => {
     await companion.reset();
   });
 
-  test("shows 8 × 4 square keys in key order around the column, and only the global controls on the rail", async ({ page }) => {
+  test("shows 8 × 4 square keys in key order left of the column, the page's own column and right half beside them", async ({ page }) => {
     await openSurface(page);
     await openDeck(page);
     const boxes = await page.getByTestId("deck-key").evaluateAll((els) =>
@@ -295,14 +298,14 @@ test.describe("The Stream Deck tab", () => {
         return { key: Number(e.getAttribute("data-key")), x: r.x, y: r.y, w: r.width, h: r.height };
       }),
     );
-    // #63: the left half's keys (columns 0–3 of each row), then the right's.
-    expect(boxes.map((b) => b.key)).toEqual([0, 1, 2, 3, 8, 9, 10, 11, 16, 17, 18, 19, 24, 25, 26, 27, 4, 5, 6, 7, 12, 13, 14, 15, 20, 21, 22, 23, 28, 29, 30, 31]);
-    boxes.sort((a, b) => a.key - b.key);
+    // #148 (the owner's ruling of 29.10.2026): one grid in key order over
+    // the page's left half (#63's two halves around the column are gone).
+    expect(boxes.map((b) => b.key)).toEqual([...Array(32).keys()]);
     const viewport = page.viewportSize()!;
     for (const b of boxes) {
       expect(Math.abs(b.w - b.h), `key ${b.key} is square`).toBeLessThanOrEqual(1);
       expect(b.w, `key ${b.key} is large`).toBeGreaterThan(40);
-      expect(b.x + b.w).toBeLessThanOrEqual(viewport.width);
+      expect(b.x).toBeGreaterThanOrEqual(0);
       expect(b.y + b.h).toBeLessThanOrEqual(viewport.height);
     }
     for (let key = 1; key < 32; key++) {
@@ -315,12 +318,20 @@ test.describe("The Stream Deck tab", () => {
         expect(Math.abs(boxes[key].x - boxes[key - 8].x)).toBeLessThanOrEqual(1);
       }
     }
-    // The column sits between keys 3 and 4.
-    const column = (await page.locator('[data-testid="deck"] [data-testid="column"]').boundingBox())!;
-    expect(boxes[3].x + boxes[3].w).toBeLessThanOrEqual(column.x + 0.5);
-    expect(boxes[4].x).toBeGreaterThanOrEqual(column.x + column.width - 0.5);
-    await expect(page.locator('[data-testid="deck"] .rail-main > *')).toHaveCount(0);
-    await expect(page.locator('[data-testid="deck"] .rail-foot > *').first()).toBeVisible();
+    // The page's own column, in the screen's middle, every key left of it;
+    // the page's rail and global controls in it; its right half's strips shown.
+    const column = (await page.getByTestId("column").boundingBox())!;
+    expect(Math.abs(column.x + column.width / 2 - viewport.width / 2), "the column's centre (px off the screen's)").toBeLessThan(1);
+    for (const b of boxes) expect(b.x + b.w, `key ${b.key} left of the column`).toBeLessThanOrEqual(column.x + 0.5);
+    await expect(page.getByTestId("page")).toHaveAttribute("data-extra", "deck");
+    await expect(page.locator('.rail-main > *').first()).toBeVisible();
+    await expect(page.locator('.rail-foot > *').first()).toBeVisible();
+    await expect(page.locator('.slot[data-side="right"] [data-testid="strip"]').first()).toBeVisible();
+    await expect(page.locator('.slot[data-side="left"] [data-testid="strip"]').first()).toBeHidden();
+    // The right half is live (#148 review): a cap there hit-tests as itself
+    // and a real drag of it reaches the hub and Live.
+    await rightHalfLive(page, page.locator('.slot[data-side="right"] [data-testid="strip"]'));
+    await expect(page.getByTestId("deck-key")).toHaveCount(32);
     await expect(page.getByTestId("deck-tab")).toHaveAttribute("data-offline", "false");
     await expect(page.getByTestId("deck-dot")).toHaveCount(0);
     // The layout's tabs are not lit while the deck is shown, and the pages'
@@ -330,6 +341,45 @@ test.describe("The Stream Deck tab", () => {
     await expect(bar.locator('[data-testid="tab"][data-selected="true"]')).toHaveCount(0);
     await expect(bar.getByTestId("tab")).toHaveText(["Cue", "FOH"]);
     await expect(bar.getByTestId("deck-tab")).toHaveCount(1);
+  });
+
+  test("the pager's tabs stay beside the deck while its region is in the right half, and switch it (#148 review)", async ({ page }) => {
+    // The fixture's FOH: the pager's region is the first row's left half,
+    // so the deck hides it and its tabs.
+    await openSurface(page);
+    await openDeck(page);
+    await expect(page.locator('.slot[data-side="left"][data-group="stage-1"]').first()).toBeAttached();
+    await expect(page.locator('[data-testid="tabbar"][data-level="1"]')).toHaveCount(0);
+    // The first row's group before the pager: the region is its right half.
+    const fixture = await servedLayout();
+    const layout = structuredClone(fixture);
+    const row = layout.pages.find((p: any) => p.id === "foh").rows[0];
+    row.sections = [...row.sections.slice(1), row.sections[0]];
+    const swapped = (l: any) => l.pages.find((p: any) => p.id === "foh").rows[0].sections[0].kind === "group";
+    await harness("/hub/layout", { layout });
+    try {
+      await until(servedLayout, swapped, "the hub serving the pager on the right");
+      await expect(page.locator('.slot[data-side="right"][data-group="stage-1"]').first()).toBeAttached();
+      await expect(page.getByTestId("deck-tab")).toHaveAttribute("data-selected", "true");
+      await expect(page.getByTestId("deck-key")).toHaveCount(32);
+      await page.getByTestId("deck").evaluate((e) => e.setAttribute("data-e2e-kept", "1"));
+      const pager = page.locator('[data-testid="tabbar"][data-level="1"]');
+      await expect(pager).toHaveCount(1);
+      await expect.poll(() => litTabs(page, 1)).toEqual(["stage"]);
+      // OTHERS switches the right half's sub-page; the deck stays open,
+      // the same element, and the pages' tabs stay unlit.
+      await pager.locator('[data-testid="tab"][data-page="others"]').click();
+      await expect.poll(() => litTabs(page, 1)).toEqual(["others"]);
+      await expect(page.locator('.slot[data-side="right"][data-group="others-1"] [data-testid="strip"]').first()).toBeVisible();
+      await expect(page.getByTestId("deck")).toHaveAttribute("data-e2e-kept", "1");
+      await expect(page.getByTestId("deck-tab")).toHaveAttribute("data-selected", "true");
+      await expect.poll(() => litTabs(page, 0)).toEqual([]);
+      await pager.locator('[data-testid="tab"][data-page="stage"]').click();
+      await expect.poll(() => litTabs(page, 1)).toEqual(["stage"]);
+    } finally {
+      await harness("/hub/layout/reset");
+      await until(servedLayout, (l) => !swapped(l), "the hub serving the fixture again");
+    }
   });
 
   test("the column keeps the version on screen beside the deck tab", async ({ page }) => {
@@ -866,6 +916,23 @@ test.describe("The Stream Deck tab", () => {
       expect(await flashedKeys(page)).toEqual([7]);
     });
   });
+
+  for (const size of [
+    { width: 844, height: 390 },
+    { width: 390, height: 844 },
+  ]) {
+    test.describe(`on a phone, ${size.width}×${size.height} (#148 review)`, () => {
+      test.use({ viewport: size });
+
+      test("the deck takes the screen but the thin ☰ strip, ☰ opens the column in its middle, nothing clipped", async ({ page }) => {
+        await openSurface(page);
+        await extraOnAPhone(page, page.getByTestId("deck-tab"), page.getByTestId("deck"), page.getByTestId("deck-key"), async () => {
+          await expect(page.getByTestId("deck-key")).toHaveCount(32);
+          await expect(page.locator('[data-testid="deck-key"] img')).toHaveCount(32);
+        });
+      });
+    });
+  }
 
   test("the tab exists only when the hub has a [companion] table", async ({ page }) => {
     // Both hub restarts happen with no page open: a page's reconnect while

@@ -307,8 +307,7 @@ export async function setSectors(doc: SectorsDoc) {
 
 /**
  * The harness's empty `sectors.json` again (#148: sectors off, the FOH page
- * as before), served by the hub when this returns. The hub keeps its undo
- * version in memory, so a test never relies on ↶ being dim at its start.
+ * as before), served by the hub when this returns.
  */
 export async function resetSectors() {
   const bearer = await token();
@@ -319,6 +318,31 @@ export async function resetSectors() {
     (s: any) => s.layouts === 0 && !s.error && (before.layouts === 0 || s.rev > before.rev),
     "the hub serving the empty sectors document",
   );
+}
+
+/** The strips' colours as `colors.json` holds them (#164): instance → label → palette key. */
+export type ColorsDoc = { colors: Record<string, Record<string, string>> };
+
+/**
+ * Writes `doc` as the hub's `colors.json` (#164, a hand edit) and returns
+ * once the hub serves as many colours as it holds (`/api/status` `colors`,
+ * no `error`; the hub polls the file at the layout poll's tick). A spec that
+ * sets colours puts the empty document back with `resetColors`.
+ */
+export async function setColors(doc: ColorsDoc) {
+  const bearer = await token();
+  await harness("/hub/colors", { doc });
+  const n = Object.values(doc.colors).reduce((sum, labels) => sum + Object.keys(labels).length, 0);
+  await until(
+    async () => (await hubStatus(bearer)).colors,
+    (c: any) => c !== undefined && c.strips === n && !c.error,
+    "the hub serving the colours",
+  );
+}
+
+/** The harness's empty `colors.json` again (#164: every strip NONE), served when this returns. */
+export async function resetColors() {
+  await setColors({ colors: {} });
 }
 
 /** A control line on a host's stdin (`stall <ms>`, `rename "<a>" "<b>"`): its answer. */
@@ -366,7 +390,7 @@ export class LiveClient {
   reverb: any = null;
   /** The hub's last AUTOTUNE state (#104: `ServerMsg::Autotune`, told to every client). */
   autotune: any = null;
-  /** The hub's last fader sectors (#148: `ServerMsg::Sectors`, `{doc, undo}`, told to every client). */
+  /** The hub's last fader sectors (#148: `ServerMsg::Sectors`, `{doc}`, told to every client). */
   sectors: any = null;
 
   private constructor(ws: WebSocket) {
@@ -406,7 +430,7 @@ export class LiveClient {
 
   /**
    * A request the hub answers by its `id` (a `cmd`, #148's `sector_tick`,
-   * `sector_edit`, `sector_undo`): `msg` with a fresh `id`, and the hub's
+   * `sector_edit`): `msg` with a fresh `id`, and the hub's
    * `result` or `error` for it (an error is returned, not thrown).
    */
   async ask(msg: Record<string, unknown>): Promise<any> {
@@ -795,4 +819,202 @@ export function countLoads(page: Page): () => number {
   let loads = 0;
   page.on("load", () => (loads += 1));
   return () => loads;
+}
+
+/**
+ * The column's head and foot (#148, the owner's ruling of 29.10.2026), read
+ * in the page: what is wrong, none when right. Every mixer page's tab (the
+ * pages' bar's `tab`s, FOH among them) is a row of its own, its title
+ * centred in the column (the text's left and right gaps within 1 px, the
+ * tab's centre on the column's within 1 px), in a larger face than the
+ * extra tabs (STREAM DECK, ABLESET), which sit under them; the status (the
+ * counter, the version) is the column's last part, under TechAlert; and
+ * nothing in the column overflows it (its scroll height its client
+ * height, every part inside its box).
+ */
+export async function columnHeadAndFoot(page: Page): Promise<string[]> {
+  return page.getByTestId("column").evaluate((column) => {
+    const out: string[] = [];
+    const box = (el: Element) => el.getBoundingClientRect();
+    const col = box(column);
+    const bar = column.querySelector('[data-testid="tabbar"][data-level="0"]');
+    if (!bar) return ["no pages' bar"];
+    const tabs = [...bar.querySelectorAll(':scope > [data-testid="tab"]')];
+    const extras = [...bar.querySelectorAll(":scope > .deck-tab, :scope > .ableset-tab")];
+    if (tabs.length === 0) out.push("no page tab");
+    if (extras.length === 0) out.push("no extra tab");
+    const all = [...bar.querySelectorAll(":scope > button")];
+    for (const tab of tabs) {
+      const name = tab.getAttribute("data-page");
+      const b = box(tab);
+      const sharing = all.filter((o) => o !== tab && Math.abs(box(o).top - b.top) < b.height / 2);
+      if (sharing.length > 0) out.push(`${name}: shares its row`);
+      const range = document.createRange();
+      range.selectNodeContents(tab);
+      const text = range.getBoundingClientRect();
+      const gaps = Math.abs(text.left - b.left - (b.right - text.right));
+      if (gaps > 1) out.push(`${name}: its title ${gaps.toFixed(2)} px off its centre`);
+      const centre = Math.abs(b.left + b.width / 2 - (col.left + col.width / 2));
+      if (centre > 1) out.push(`${name}: ${centre.toFixed(2)} px off the column's centre`);
+      for (const extra of extras) {
+        const size = parseFloat(getComputedStyle(tab).fontSize);
+        const theirs = parseFloat(getComputedStyle(extra).fontSize);
+        if (!(size > theirs)) out.push(`${name}: ${size} px, not larger than ${extra.getAttribute("data-testid")}'s ${theirs} px`);
+        if (box(extra).top < b.bottom - 0.5) out.push(`${extra.getAttribute("data-testid")} above ${name}`);
+      }
+    }
+    const foot = column.querySelector('[data-testid="column-foot"]');
+    const alert = column.querySelector('[data-testid="alert-toggle"]');
+    if (!foot || !alert) return [...out, "no status foot or no TechAlert"];
+    if (column.lastElementChild !== foot) out.push("the status is not the column's last part");
+    if (box(foot).top < box(alert).bottom - 0.5) out.push("the status above TechAlert");
+    for (const id of ["dropouts", "version"]) {
+      if (!foot.querySelector(`[data-testid="${id}"]`)) out.push(`${id} not in the status`);
+    }
+    if (column.scrollHeight > column.clientHeight) out.push(`the column overflows by ${column.scrollHeight - column.clientHeight} px`);
+    for (const part of [...column.children]) {
+      const b = box(part);
+      if (getComputedStyle(part).display === "none" || b.height === 0) continue;
+      if (b.bottom > col.bottom + 0.5 || b.top < col.top - 0.5 || b.right > col.right + 0.5 || b.left < col.left - 0.5)
+        out.push(`${part.className || part.tagName}: outside the column`);
+    }
+    return out;
+  });
+}
+
+/**
+ * The right half stays live beside an extra tab (#148 review): the first
+ * bound strip (any kind, a return's too) of `strips` whole on the screen, Live's volume set
+ * to 0.5 and shown, its cap's centre hit-tested (`elementFromPoint` there
+ * is the cap or inside it: nothing, the deck's or AbleSet's pane included,
+ * lies over it), then dragged up 80 px with the real mouse (trusted input,
+ * hit-tested at every event; both projects, as strip.spec.ts' and
+ * group-side.spec.ts' cap drags): the drag's sets reach the hub under the
+ * strip's volume key and Live's volume rises. Live put back.
+ */
+export async function rightHalfLive(page: Page, strips: Locator) {
+  const pick = await strips.evaluateAll((all) => {
+    for (const s of all) {
+      const r = s.getBoundingClientRect();
+      const fader = s.querySelector('[data-testid="fader"]');
+      const whole = r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight;
+      const ready = fader?.getAttribute("aria-disabled") === "false";
+      if (whole && ready && !s.hasAttribute("data-mark") && s.querySelector('[data-testid="fader-cap"]')) {
+        s.setAttribute("data-e2e-live", "1");
+        return fader!.getAttribute("data-keys")!;
+      }
+    }
+    return null;
+  });
+  expect(pick, "a bound strip of the right half whole on the screen").not.toBeNull();
+  const key: string = JSON.parse(pick!)[0];
+  const [instance, target, prop] = key.split("|");
+  const picked = page.locator('[data-e2e-live="1"]');
+  const fader = picked.getByTestId("fader");
+  const cap = picked.getByTestId("fader-cap");
+  const live = await LiveClient.open();
+  const before = await live.get(instance, target, prop);
+  try {
+    await live.set(instance, target, prop, 0.5);
+    await until(() => shown(fader), (v) => Math.abs(v - 0.5) < 0.01, "the fader at Live's 0.5");
+    await frames(page);
+    const c = await centre(cap);
+    const hit = await cap.evaluate((el, [x, y]) => {
+      const at = document.elementFromPoint(x, y);
+      return at === null ? "nothing" : at === el || el.contains(at) ? "cap" : `${at.tagName.toLowerCase()}.${at.className}`;
+    }, [c.x, c.y]);
+    expect(hit, "the cap's centre is the cap's, nothing over it").toBe("cap");
+    const since = Date.now();
+    await page.mouse.move(c.x, c.y);
+    await page.mouse.down();
+    for (let i = 1; i <= 10; i++) await page.mouse.move(c.x, c.y - 8 * i);
+    await page.mouse.up();
+    await until(
+      async () => (await hubEvents()).filter((r: any) => r.ev === "set" && r.ts >= since && r.key === key),
+      (sets) => sets.length > 0,
+      "the drag's sets at the hub",
+    );
+    await until(() => live.get(instance, target, prop), (v) => typeof v === "number" && v > 0.5, "Live's volume raised");
+  } finally {
+    await live.set(instance, target, prop, before);
+    live.close();
+    await picked.evaluate((s) => s.removeAttribute("data-e2e-live"));
+  }
+}
+
+/**
+ * An extra tab on a phone (#148 review), the surface open at a phone's
+ * size: ☰ then the tab (`tab`, its `pointerdown`, as column.spec.ts' page
+ * tabs) opens it and closes the column; `items` (the deck's keys, AbleSet's
+ * frame) then lie inside the screen and left of the thin strip, which
+ * stands at the screen's right edge; every strip is hidden; ☰ opens the
+ * column in the screen's middle over the pane, nothing in it clipped or
+ * overflowing; a page's tab there closes the extra tab (`pane` gone).
+ * `ready` waits for what the pane shows once open.
+ */
+export async function extraOnAPhone(page: Page, tab: Locator, pane: Locator, items: Locator, ready: () => Promise<void>) {
+  const viewport = page.viewportSize()!;
+  const burger = page.getByTestId("thin-burger");
+  const column = page.getByTestId("column");
+  const body = page.getByTestId("page");
+  await burger.dispatchEvent("pointerdown");
+  await expect(body).toHaveAttribute("data-column-open", "true");
+  await tab.dispatchEvent("pointerdown");
+  await expect(tab).toHaveAttribute("data-selected", "true");
+  await expect(body).toHaveAttribute("data-column-open", "false");
+  await expect(column).toBeHidden();
+  await ready();
+  await frames(page);
+  // The thin strip at the screen's right edge, the pane and its items left of it.
+  const thin = (await page.getByTestId("thin").boundingBox())!;
+  expect(thin.width).toBe(34);
+  expect(Math.abs(thin.x + thin.width - (viewport.width - 6)), "the thin strip at the right edge (px off)").toBeLessThan(1);
+  const box = (await pane.boundingBox())!;
+  expect(box.x, "the pane from the screen's left").toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width, "the pane left of the thin strip").toBeLessThanOrEqual(thin.x + 0.5);
+  expect(box.width, "the pane takes the screen but the thin strip").toBeGreaterThan(viewport.width - thin.width - 30);
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.y + box.height).toBeLessThanOrEqual(viewport.height + 0.5);
+  const boxes = await items.evaluateAll((all) =>
+    all.map((e) => {
+      const r = e.getBoundingClientRect();
+      return { x: r.x, y: r.y, w: r.width, h: r.height };
+    }),
+  );
+  expect(boxes.length).toBeGreaterThan(0);
+  for (const b of boxes) {
+    expect(b.w, "an item drawn").toBeGreaterThan(0);
+    expect(b.x).toBeGreaterThanOrEqual(box.x - 0.5);
+    expect(b.x + b.w, "an item left of the thin strip").toBeLessThanOrEqual(thin.x + 0.5);
+    expect(b.y).toBeGreaterThanOrEqual(-0.5);
+    expect(b.y + b.h, "an item inside the screen").toBeLessThanOrEqual(viewport.height + 0.5);
+  }
+  // No strip shows under it.
+  const strips = await page
+    .getByTestId("strip")
+    .evaluateAll((all) => all.filter((s) => getComputedStyle(s).visibility === "visible").map((s) => s.getAttribute("data-track")));
+  expect(strips, "strips shown beside an extra tab on a phone").toEqual([]);
+  // ☰ opens the column over the pane, in the screen's middle, whole.
+  await burger.dispatchEvent("pointerdown");
+  await expect(column).toBeVisible();
+  const col = (await column.boundingBox())!;
+  expect(Math.abs(col.x + col.width / 2 - viewport.width / 2), "the column's centre (px off the screen's)").toBeLessThan(1);
+  expect(col.x).toBeGreaterThanOrEqual(box.x);
+  expect(col.x + col.width).toBeLessThanOrEqual(box.x + box.width + 0.5);
+  const hit = await column.evaluate((el, [x, y]) => {
+    const at = document.elementFromPoint(x, y);
+    return at !== null && (at === el || el.contains(at));
+  }, [col.x + col.width / 2, col.y + col.height / 2]);
+  expect(hit, "the open column over the pane").toBe(true);
+  expect(await columnHeadAndFoot(page)).toEqual([]);
+  const tabs = column.locator('[data-testid="tabbar"][data-level="0"] > button');
+  for (let i = 0; i < (await tabs.count()); i++) {
+    expect(await clipped(tabs.nth(i)), await tabs.nth(i).innerText()).toEqual([]);
+  }
+  // A page's tab closes the extra tab and the column.
+  await column.locator('[data-testid="tabbar"][data-level="0"] [data-testid="tab"]').first().dispatchEvent("pointerdown");
+  await expect(pane).toHaveCount(0);
+  await expect(body).toHaveAttribute("data-extra", "none");
+  await expect(column).toBeHidden();
+  await expect(tab).toHaveAttribute("data-selected", "false");
 }

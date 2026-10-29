@@ -17,9 +17,8 @@
 //! empty cell (its old place left empty) or another strip (the two swap),
 //! and a second tap saves; nothing reaches Live; in the mode the LAYOUTS
 //! block stays live and renames, adds and removes layouts, mockup v2,
-//! `behave::arrange_edit`, saved with the same tap) and ↶ (the hub's undo
-//! of the last change,
-//! dim while the hub holds no version before it), then the arrows of a side
+//! `behave::arrange_edit`, saved with the same tap; no undo, the owner's
+//! ruling of 29.10.2026), then the arrows of a side
 //! that does not fit, the rail and the global controls. No strip draws its
 //! instance pill here (it costs 16 px of travel); a layout that mixes Live
 //! sets names each strip's set where the group's name sits on the classic
@@ -44,10 +43,12 @@ use crate::behave::arrange_edit::{REMOVE_ASK, TabRow, TabTap, field_text, tab_ro
 use crate::binding::sectors::{
     Picks, picked, pool_controls, sector_instances, sector_name, sector_side,
 };
-use crate::components::{ControlView, down_of, fail_flash, owns_touches};
+use crate::components::{ControlView, down_of, owns_touches};
 use crate::dom;
-use crate::pages::surface::{ColumnHead, Head, Nav, ThinStrip, measure_page};
-use crate::store::{LiveStore, ResultFn, on_refusal};
+use crate::pages::surface::{
+    ColumnFoot, ColumnHead, Head, Nav, ThinStrip, extra_attr, measure_page,
+};
+use crate::store::ResultFn;
 
 /// How long the refused save's note shows under ARRANGE (ms).
 const NOTE_MS: u64 = 4000;
@@ -259,7 +260,7 @@ pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
     let doc = Memo::new(move |_| {
         store
             .sectors
-            .try_with(|told| told.shown().map(|told| told.doc.clone()))
+            .try_with(|told| told.shown().cloned())
             .flatten()
     });
     // ARRANGE (#148): the page shows the edited orders; a new document from
@@ -401,6 +402,7 @@ pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
             data-sectors="true"
             data-arrange=arranging
             data-column-open=move || open().to_string()
+            data-extra=extra_attr(nav)
             node_ref=body_ref
             style=body_style
             data-narrow=narrow_attr
@@ -423,7 +425,6 @@ pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
                 <LayoutsBlock shown=shown_doc />
                 <div class="sector-actions">
                     <ArrangeButton carrier=carrier refused=refused />
-                    <UndoButton />
                 </div>
                 <div class="saved-note" data-testid="arrange-note">{note}</div>
                 <div class="shifts">
@@ -437,6 +438,7 @@ pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
                     <div class="rail-main">{rail}</div>
                     <div class="rail-foot">{global}</div>
                 </div>
+                <ColumnFoot />
             </nav>
         </div>
     }
@@ -661,7 +663,7 @@ fn ArrangeCover(
             .sectors
             .try_with_untracked(|told| {
                 told.shown()
-                    .and_then(|told| mode.try_with_untracked(|m| m.applied(&told.doc)))
+                    .and_then(|doc| mode.try_with_untracked(|m| m.applied(doc)))
             })
             .flatten();
         let Some(layout) = shown
@@ -818,8 +820,14 @@ fn LayoutCell(sector: SectorId, shown: Memo<Option<SectorsDoc>>) -> impl IntoVie
         mode.try_with(|m| m.edit_now().is_some_and(|e| e.can_add(sector)))
             .unwrap_or(false)
     });
+    // A left sector's cell under an extra tab (#148 review): inert and
+    // dimmed, its layouts hidden under the pane.
+    let covered = move || sector.left() && nav.left_covered();
     let on_add = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
+        if sector.left() && nav.left_covered_now() {
+            return;
+        }
         let added = change_mode(mode, |m| m.edit().and_then(|e| e.add(sector))).flatten();
         if let Some(id) = added {
             nav.pick(sector, &id);
@@ -845,7 +853,12 @@ fn LayoutCell(sector: SectorId, shown: Memo<Option<SectorsDoc>>) -> impl IntoVie
     };
     let tab = move |id: String| view! { <LayoutTab sector=sector layout=id rows=rows /> };
     view! {
-        <div class="sec-cell" data-sector=sector.as_str() title=sector_name(sector)>
+        <div
+            class="sec-cell"
+            data-sector=sector.as_str()
+            title=sector_name(sector)
+            aria-disabled=move || covered().to_string()
+        >
             <For each=move || ids.try_get().unwrap_or_default() key=|id: &String| id.clone() children=tab />
             {add}
         </div>
@@ -893,8 +906,13 @@ fn LayoutTab(sector: SectorId, layout: String, rows: Memo<Vec<TabRow>>) -> impl 
         .flatten()
         .unwrap_or_default()
     };
+    // A left sector's layouts under an extra tab take no tap (#148 review).
+    let inert = move || sector.left() && nav.left_covered_now();
     let on_tab = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
+        if inert() {
+            return;
+        }
         let Some(id) = id.try_get_value() else {
             return;
         };
@@ -905,6 +923,9 @@ fn LayoutTab(sector: SectorId, layout: String, rows: Memo<Vec<TabRow>>) -> impl 
     };
     let on_pen = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
+        if inert() {
+            return;
+        }
         let Some(id) = id.try_get_value() else {
             return;
         };
@@ -917,6 +938,9 @@ fn LayoutTab(sector: SectorId, layout: String, rows: Memo<Vec<TabRow>>) -> impl 
     };
     let on_x = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
+        if inert() {
+            return;
+        }
         let _ = id.try_with_value(|id| {
             change_mode(mode, |m| {
                 if let Some(edit) = m.edit() {
@@ -1045,9 +1069,14 @@ fn ArrangeButton(carrier: Carrier, refused: RwSignal<Option<&'static str>>) -> i
     let on = Memo::new(move |_| mode.try_with(Arrange::is_on).unwrap_or(false));
     let on_down = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
+        // Under an extra tab the left sectors it would arrange are hidden
+        // (#148 review): inert and dimmed.
+        if nav.left_covered_now() {
+            return;
+        }
         let Some(doc) = store
             .sectors
-            .try_with_untracked(|told| told.shown().map(|told| told.doc.clone()))
+            .try_with_untracked(|told| told.shown().cloned())
             .flatten()
         else {
             return;
@@ -1077,53 +1106,12 @@ fn ArrangeButton(carrier: Carrier, refused: RwSignal<Option<&'static str>>) -> i
                 class:selected=lit
                 data-testid="arrange"
                 aria-pressed=move || lit().to_string()
+                aria-disabled=move || nav.left_covered().to_string()
                 on:pointerdown=on_down
             >
                 "ARRANGE"
             </button>
         </div>
-    }
-}
-
-/// ↶: the hub's undo of the last change (a tick or an ARRANGE save; a
-/// second ↶ redoes it). Dim (`aria-disabled`) while the hub holds no
-/// version before it; a tap sends the undo only while the hub's document is
-/// fresh and says it holds one, and a refusal flashes the button.
-#[component]
-fn UndoButton() -> impl IntoView {
-    let store = expect_context::<LiveStore>();
-    let undo = Memo::new(move |_| {
-        store
-            .sectors
-            .try_with(|told| told.shown().is_some_and(|told| told.undo))
-            .unwrap_or(false)
-    });
-    let failed = RwSignal::new(false);
-    let on_down = move |ev: web_sys::PointerEvent| {
-        ev.prevent_default();
-        let can = store
-            .sectors
-            .try_with_untracked(|told| told.fresh().is_some_and(|told| told.undo))
-            .unwrap_or(false);
-        if can {
-            store.sector_undo(Some(on_refusal(fail_flash(failed))));
-        }
-    };
-    // It owns its touches (#43 PR G); it writes no Live key.
-    let no_keys: Vec<String> = Vec::new();
-    view! {
-        <button
-            type="button"
-            class="undo-btn"
-            use:owns_touches=no_keys
-            class:failed=move || failed.try_get().unwrap_or(false)
-            data-testid="sector-undo"
-            aria-label="Undo the last layout change"
-            aria-disabled=move || (!undo.try_get().unwrap_or(false)).to_string()
-            on:pointerdown=on_down
-        >
-            "↶"
-        </button>
     }
 }
 
@@ -1135,6 +1123,11 @@ fn SectorShiftView(
     offsets: RwSignal<BTreeMap<WindowKey, usize>>,
     key: WindowKey,
 ) -> impl IntoView {
+    let nav = expect_context::<Nav>();
+    // A left side's arrows under an extra tab move hidden strips (#148
+    // review): inert and dimmed.
+    let left = key.sectors.iter().all(|s| s.left());
+    let covered = move || left && nav.left_covered();
     let sectors = key
         .sectors
         .iter()
@@ -1151,6 +1144,9 @@ fn SectorShiftView(
         .flatten()
     });
     let step = move |forward: bool| {
+        if left && nav.left_covered_now() {
+            return;
+        }
         let _ = key.try_with_value(|key| {
             step_sector_window(offsets, key, shift.try_get_untracked().flatten(), forward);
         });
@@ -1171,7 +1167,12 @@ fn SectorShiftView(
     let back_keys: Vec<String> = Vec::new();
     let next_keys: Vec<String> = Vec::new();
     view! {
-        <div class="shift" data-testid="shift" data-sectors=sectors>
+        <div
+            class="shift"
+            data-testid="shift"
+            data-sectors=sectors
+            aria-disabled=move || covered().to_string()
+        >
             <button
                 type="button"
                 class="btn shift-btn"

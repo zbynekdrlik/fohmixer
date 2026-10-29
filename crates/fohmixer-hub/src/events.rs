@@ -224,6 +224,7 @@ pub fn is_warn(record: &Value) -> bool {
                 | "fader_link"
                 | "autotune"
                 | "sectors"
+                | "colors"
         )
         || (ev == "trace" && holds_warn_event(record))
         || (ev == "songmap" && problems_changed(record))

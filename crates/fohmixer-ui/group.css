@@ -5,7 +5,7 @@
    run keeps the group's title over it when there is one to show (a title,
    or the Live set its strips share). The group's colour is on every
    block's 3 px top edge (a group of buttons, `.block::before` below) and
-   on its title; a strip carries one colour, its track's own (#151, v8:
+   on its title; a strip carries one colour, its own (#151, v8; #164:
    the name button's edge), so a strip shows no group colour. */
 
 /* A line keeps the titles' 16 px at its top only while it shows a title
@@ -97,13 +97,16 @@
 /* A group's name on its side in its run's first strip (variant B of
    docs/mockups/group-captions-v1.html; #151, mockup v8: in the info
    column, calm grey, no group colour): its title, or an untitled group's
-   shared Live set (BAND, MASTER). 40 px under the column's top (64 px on a
-   narrow strip), read bottom to top, 11 px thick and 96 px long, so a
-   long name ends in an ellipsis and never widens anything. The fader under
-   the column takes the touch. */
+   shared Live set (BAND, MASTER). 52 px under the column's top, under the
+   LUFS row at its tallest (v10 A, the owner's ruling of 29.10: 45.5 px at
+   120 px); on a narrow strip, whose stacked LUFS can reach 69 px, 50 px
+   above the column's foot, clear of SEL (strip-head.spec.ts' sweep). Read
+   bottom to top, 11 px thick and 96 px long, so a long name ends in an
+   ellipsis and never widens anything. The fader under the column takes
+   the touch. */
 .group-side {
     position: absolute;
-    top: 40px;
+    top: 52px;
     left: 0;
     width: 11px;
     height: 96px;
@@ -120,5 +123,6 @@
 }
 
 :is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .group-side {
-    top: 64px;
+    top: auto;
+    bottom: 50px;
 }

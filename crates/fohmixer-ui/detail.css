@@ -84,8 +84,8 @@
     min-width: 0;
 }
 
-/* The track's colour, as the strip's name button (`--tc`, `--tt`); the
-   accent until Live's colour is known. */
+/* The strip's colour, as its name button's edge (`--tc`, `--tt`; #164: the
+   colour chosen in COLOR, else NONE's grey). */
 .detail-chip {
     flex: none;
     max-width: 60%;
@@ -139,8 +139,8 @@
 }
 
 /* The mute (the strip's, its label MUTE): dark while the channel sounds,
-   red while muted (the mockup's; the strip's name button is lit in the
-   track's colour instead). */
+   red while muted (the mockup's; the strip's name button is calm, its
+   colour only as its edge). */
 .detail-left .mute {
     flex: none;
     height: 52px;

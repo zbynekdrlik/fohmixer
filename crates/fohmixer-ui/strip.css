@@ -45,7 +45,8 @@
 /* No rounded clip on the strip (a clip is painted again with every change
    inside it): its edge lines are borders of a layer as large as the strip,
    so they follow its rounded corners, and take no touch. No group colour
-   on a strip (#151, v8: one colour per strip, the track's own). */
+   on a strip (#151, v8: one colour per strip, its own, chosen on the
+   tablet since #164). */
 .strip::after {
     content: "";
     position: absolute;
@@ -228,24 +229,24 @@
     pointer-events: none;
 }
 
-/* The caption (mockup v9, the owner's ruling of 27.10): `LUFS` over `IN`
-   or `OUT`, two 9 px lines in PR 1's caption font; shown while the number
-   shows, `−∞` in silence too (`data-shown`), its rows kept: 9 + 9 + 2 + 16
-   = 36 px, above the group's name at 40 px. */
+/* The caption (mockup v9, the owner's ruling of 27.10; v10 A, 29.10):
+   `LUFS` over `IN` or `OUT`, two 8 px lines in PR 1's caption font at
+   6.5 px; shown while the number shows, `−∞` in silence too
+   (`data-shown`), its rows kept. */
 .lufs-cap {
     display: flex;
     flex-direction: column;
     overflow: hidden;
     color: var(--faint);
-    font: 700 7.5px/9px var(--ui);
-    letter-spacing: 0.08em;
+    font: 700 6.5px/8px var(--ui);
+    letter-spacing: 0.06em;
     text-align: center;
     white-space: nowrap;
 }
 
 .lufs-cap > span {
     display: block;
-    height: 9px;
+    height: 8px;
     overflow: hidden;
 }
 
@@ -253,24 +254,24 @@
     visibility: hidden;
 }
 
-/* The reading, like Sonible trueLevel (the owner's ruling of 27.10
-   evening): short-term with one decimal (`−25.9`, `−∞` in silence), quiet
-   text, never a shape (no fill, box, border or glow), quieter than Live's
-   dB. Calm grey, but an input point within ±1 LU of its target in
-   trueLevel's green (`in`); no amber, no red. No reading: nothing, the row
-   kept. The size fits `−25.9` (3 em of the mono face) in the column
-   (`strip-w − 38 px − cap-w / 2`) at every strip width: / 3.4 keeps it
-   inside in WebKit (3 em exactly) and in Chromium, which rounds the face's
-   advance to whole px at small sizes (5 px from 7.5 px, 6 px from 9.17 px:
-   both still inside at / 3.4); 8.6 px on the iPad's 83.16 px strip. */
+/* The reading (the owner's ruling of 29.10, mockup v10 A: bigger and more
+   prominent; trueLevel's look of 27.10 otherwise): short-term with one
+   decimal (`−25.9`, `−∞` in silence) at the info column's whole width, in
+   the condensed display face, bold, nearly white; an input point within
+   ±1 LU of its target in trueLevel's green (`in`); never a shape (no
+   fill, box, border or glow), no amber, no red. One span per character
+   (`behave::lufs::glyph_class`), laid out on one line here. The size is
+   the column's width (`strip-w − 38 px − cap-w / 2`) / 2.25, 9 to 22 px:
+   12.96 px on the iPad's 83.16 px strip; its row 1.25 em, kept with no
+   reading (`min-height`), so the caption 8 + 8 + 2 + 27.5 px at most
+   ends above the group's name at 52 px (group.css). */
 .lufs {
-    align-self: center;
-    width: min(100%, 40px);
-    height: 16px;
+    width: 100%;
+    min-height: 1.25em;
     overflow: hidden;
-    color: #6e6e88;
-    font: 500 10.5px/16px var(--mono);
-    font-size: clamp(6.5px, calc((var(--strip-w, 76px) - 38px - var(--cap-w) / 2) / 3.4), 10.5px);
+    color: #e2e2ec;
+    font: 700 13px/1.25 var(--display);
+    font-size: clamp(9px, calc((var(--strip-w, 76px) - 38px - var(--cap-w) / 2) / 2.25), 22px);
     font-variant-numeric: tabular-nums;
     text-align: center;
     white-space: nowrap;
@@ -285,28 +286,52 @@
 }
 
 /* A narrow strip (#151: under 78 px, `arrange::narrow` on `.body`): the
-   column is 13-24 px, so the LUFS stands upright, digit under digit, and
-   the caption leaves; an empty one takes no row. Upright, the line is the
-   text's width: 13 px holds the mono face's whole content area (12 px let
-   it pass the box by 1 px, lufs.spec.ts' sweep). `−25.9` upright at 8.5 px
-   is 61 px high in Chromium (its upright advance is the face's height),
-   26.5 px in WebKit, so the group's name starts at 64 px there
+   column is 13-24 px, so the caption leaves (an empty reading takes no
+   row) and the number stands upright, character under character, bold,
+   as wide as the column (its width × 0.8, 9 to 24 px). Built of the
+   characters' own blocks, never `writing-mode: vertical-rl`: WebKit (the
+   iPad) advances an upright glyph by its horizontal width, so the
+   condensed digits overlapped there (1.20.0's mono 8.5 px stack was
+   26.5 px high in WebKit, 61 px in Chromium). A digit's row is 0.82 em
+   (its ink is 0.11-0.81 em of it), the minus's 0.5 em, the point's
+   0.3 em (its line at the row's foot): the same in both engines, `−25.9`
+   3.26 em + 6 px. The group's name moves to the column's foot there
    (group.css). */
 :is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .lufs-cap {
     display: none;
 }
 
 :is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .lufs {
-    height: auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 0;
     padding: 3px 0;
-    font: 500 8.5px/13px var(--mono);
-    letter-spacing: -1px;
-    text-orientation: upright;
-    writing-mode: vertical-rl;
+    font: 700 13px/1 var(--display);
+    font-size: clamp(9px, calc((var(--strip-w, 76px) - 38px - var(--cap-w) / 2) * 0.8), 24px);
 }
 
 :is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .lufs[data-l="none"] {
     display: none;
+}
+
+:is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .lufs .g {
+    display: block;
+    height: 0.82em;
+    overflow: hidden;
+    line-height: 0.82em;
+}
+
+:is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .lufs .g.sign {
+    height: 0.5em;
+    line-height: 0.5em;
+}
+
+:is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .lufs .g.dot {
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    height: 0.3em;
 }
 
 .scale {
@@ -558,9 +583,9 @@
     color: #ffffff;
 }
 
-/* The name button is the mute: the channel detail's is lit in the track's
-   Live colour (`--tc`, the text `--tt`) while the track is audible, dark
-   with a red MUTE mark while muted; a strip's is calm (below). */
+/* The name button is the mute: the channel detail's is lit in the accent
+   while the track is audible, dark with a red MUTE mark while muted; a
+   strip's is calm (below). */
 .mute {
     position: relative;
     display: flex;
@@ -580,8 +605,8 @@
     touch-action: none;
 }
 
-/* Until Live's colour arrives (or when it cannot), the accent: light, so the
-   dark text reads on it. */
+/* Lit: the accent (light, so the dark text reads on it), or `--tc` where a
+   button carries one. */
 .mute.lit {
     background: var(--tc, var(--accent));
     box-shadow: none;
@@ -596,8 +621,9 @@
 /* A strip's name button (#151, the owner's mockup v8): the strip's top
    edge, its whole width (over the 4 px side padding to the 1 px edge),
    37 px, its top corners the strip's. Calm: the strip's dark ground and
-   the name in light, the track's Live colour only as a 3 px edge at its
-   left (`--tc`). Read top-down: the name first, at the top, centred; under
+   the name in light, the strip's colour only as a 3 px edge at its left
+   (`--tc`: the colour chosen in the detail's COLOR, #164, else NONE's calm
+   grey; never Live's track colour). Read top-down: the name first, at the top, centred; under
    it, toward the bottom edge, one line of marks (`.strip-marks`). Muted,
    it recedes with its strip: darker, the name grey, the edge faded; no
    fill colour, no strike. */
@@ -676,8 +702,9 @@
     left: 0;
     width: 3px;
     border-radius: 8px 0 0 5px;
-    /* Until Live gives the track's colour (or when it cannot): no edge. */
-    background: var(--tc, transparent);
+    /* The strip's colour (#164): the page always writes `--tc`, NONE's
+       grey when none is chosen. */
+    background: var(--tc, #73738a);
     pointer-events: none;
 }
 

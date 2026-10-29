@@ -771,14 +771,18 @@ fn api_bodies_round_trip() {
             layouts: 2,
             strips: 5,
             unknown: 1,
-            undo: true,
+            error: None,
+        },
+        colors: ColorsStatus {
+            strips: 4,
+            unknown: 1,
             error: None,
         },
     };
     let json = serde_json::to_value(&status).unwrap();
     assert_eq!(
         json["sectors"],
-        json!({"rev": 3, "layouts": 2, "strips": 5, "unknown": 1, "undo": true})
+        json!({"rev": 3, "layouts": 2, "strips": 5, "unknown": 1})
     );
     assert_eq!(
         json["lufs"]["strips"],
@@ -1742,13 +1746,19 @@ fn sectors_messages_round_trip() {
         {"id": "lu-1", "title": "VOX", "strips": [{"instance": "band", "label": "Vox 1"}]}]}}))
         .unwrap();
     round_trip_server(
-        ServerMsg::Sectors { doc, undo: true },
+        ServerMsg::Sectors { doc: doc.clone() },
         json!({"type": "sectors", "doc": {"rev": 2, "sectors": {"lu": [
-            {"id": "lu-1", "title": "VOX", "strips": [{"instance": "band", "label": "Vox 1"}]}]}},
-            "undo": true}),
+            {"id": "lu-1", "title": "VOX", "strips": [{"instance": "band", "label": "Vox 1"}]}]}}}),
     );
+    // An older hub's `undo` (its ↶, gone since the owner's 29.10.2026) is
+    // ignored.
+    let older: ServerMsg = serde_json::from_value(json!({"type": "sectors", "doc": {"rev": 2,
+        "sectors": {"lu": [{"id": "lu-1", "title": "VOX",
+        "strips": [{"instance": "band", "label": "Vox 1"}]}]}}, "undo": true}))
+    .unwrap();
+    assert_eq!(older, ServerMsg::Sectors { doc });
     // A document that does not parse is no message.
-    let bad = json!({"type": "sectors", "doc": {"rev": 2, "sectors": {"lx": []}}, "undo": false});
+    let bad = json!({"type": "sectors", "doc": {"rev": 2, "sectors": {"lx": []}}});
     assert!(serde_json::from_value::<ServerMsg>(bad).is_err());
 }
 
@@ -1770,7 +1780,7 @@ fn a_sector_tick_reads_as_the_page_sends_it() {
 }
 
 #[test]
-fn sector_edit_and_undo_read_as_the_page_sends_them() {
+fn a_sector_edit_reads_as_the_page_sends_it() {
     let strip = |label: &str| StripRef {
         instance: "band".into(),
         label: label.into(),
@@ -1803,9 +1813,9 @@ fn sector_edit_and_undo_read_as_the_page_sends_them() {
                         {"instance": "band", "label": "Klavir"}]},
             {"id": "ru-2", "title": "NEW", "strips": []}]}}),
     );
-    round_trip_client(
-        ClientMsg::SectorUndo { id: "s3".into() },
-        json!({"type": "sector_undo", "id": "s3"}),
+    // An older page's undo is no message the hub knows.
+    assert!(
+        serde_json::from_value::<ClientMsg>(json!({"type": "sector_undo", "id": "s3"})).is_err()
     );
 }
 
@@ -1842,14 +1852,14 @@ fn an_older_hubs_status_reads_with_default_sectors() {
             layouts: 1,
             strips: 1,
             unknown: 0,
-            undo: false,
             error: Some("expected value at line 1 column 1".into()),
         },
+        colors: ColorsStatus::default(),
     };
     let mut json = serde_json::to_value(&status).unwrap();
     assert_eq!(
         json["sectors"],
-        json!({"rev": 9, "layouts": 1, "strips": 1, "unknown": 0, "undo": false,
+        json!({"rev": 9, "layouts": 1, "strips": 1, "unknown": 0,
                "error": "expected value at line 1 column 1"})
     );
     assert_eq!(
@@ -1861,9 +1871,12 @@ fn an_older_hubs_status_reads_with_default_sectors() {
     json.as_object_mut().unwrap().remove("sectors");
     let older: HubStatus = serde_json::from_value(json).unwrap();
     assert_eq!(older.sectors, SectorsStatus::default());
-    // A status without `undo` and `error` reads them as their defaults.
-    let bare: SectorsStatus =
-        serde_json::from_value(json!({"rev": 1, "layouts": 0, "strips": 0, "unknown": 0})).unwrap();
+    // A status without `error` reads it as its default, and an older hub's
+    // `undo` is ignored.
+    let bare: SectorsStatus = serde_json::from_value(
+        json!({"rev": 1, "layouts": 0, "strips": 0, "unknown": 0, "undo": true}),
+    )
+    .unwrap();
     assert_eq!(
         bare,
         SectorsStatus {
@@ -1871,8 +1884,77 @@ fn an_older_hubs_status_reads_with_default_sectors() {
             layouts: 0,
             strips: 0,
             unknown: 0,
-            undo: false,
             error: None,
         }
+    );
+}
+
+#[test]
+fn a_set_color_reads_as_the_page_sends_it() {
+    let strip = StripRef {
+        instance: "band".into(),
+        label: "Vox 1".into(),
+    };
+    round_trip_client(
+        ClientMsg::SetColor {
+            id: "c1".into(),
+            strip: strip.clone(),
+            color: Some(crate::colors::ColorKey::Pink),
+        },
+        json!({"type": "set_color", "id": "c1",
+               "strip": {"instance": "band", "label": "Vox 1"}, "color": "pink"}),
+    );
+    // NONE is `null`.
+    round_trip_client(
+        ClientMsg::SetColor {
+            id: "c2".into(),
+            strip,
+            color: None,
+        },
+        json!({"type": "set_color", "id": "c2",
+               "strip": {"instance": "band", "label": "Vox 1"}, "color": null}),
+    );
+    // A key the palette does not hold is no message.
+    let bad = json!({"type": "set_color", "id": "c3",
+                     "strip": {"instance": "band", "label": "Vox 1"}, "color": "gold"});
+    assert!(serde_json::from_value::<ClientMsg>(bad).is_err());
+}
+
+#[test]
+fn the_colors_message_carries_the_document() {
+    let doc = crate::colors::ColorsDoc::empty().with(
+        &StripRef {
+            instance: "band".into(),
+            label: "Vox 1".into(),
+        },
+        Some(crate::colors::ColorKey::Teal),
+    );
+    let msg = ServerMsg::Colors { doc };
+    let json = serde_json::to_value(&msg).unwrap();
+    assert_eq!(
+        json,
+        json!({"type": "colors", "doc": {"colors": {"band": {"Vox 1": "teal"}}}})
+    );
+    assert_eq!(serde_json::from_value::<ServerMsg>(json).unwrap(), msg);
+}
+
+#[test]
+fn the_colors_status_reads_as_written_and_defaults_for_an_older_hub() {
+    let status = ColorsStatus {
+        strips: 3,
+        unknown: 1,
+        error: Some("bad".into()),
+    };
+    let json = serde_json::to_value(&status).unwrap();
+    assert_eq!(json, json!({"strips": 3, "unknown": 1, "error": "bad"}));
+    assert_eq!(
+        serde_json::from_value::<ColorsStatus>(json).unwrap(),
+        status
+    );
+    let bare: ColorsStatus = serde_json::from_value(json!({"strips": 0, "unknown": 0})).unwrap();
+    assert_eq!(bare, ColorsStatus::default());
+    assert_eq!(
+        serde_json::to_value(ColorsStatus::default()).unwrap(),
+        json!({"strips": 0, "unknown": 0})
     );
 }

@@ -260,9 +260,9 @@ pub fn new_title(layouts: &[SectorLayout]) -> String {
 
 /// An added layout's id in `sector`: `<sector>-r<rev>-<n>`, `rev` the
 /// revision its save makes and `n` the edit's `n`-th add. Revisions only
-/// grow (an undo and a hand edit make new ones too) and only one save
-/// makes each, so no id is ever used again, also after its layout was
-/// removed or undone (#148 review).
+/// grow (a hand edit makes new ones too) and only one save makes each, so
+/// no id is ever used again, also after its layout was removed or a hand
+/// edit took it back out (#148 review).
 pub fn new_id(sector: SectorId, rev: u64, n: usize) -> String {
     format!("{}-r{rev}-{n}", sector.as_str())
 }

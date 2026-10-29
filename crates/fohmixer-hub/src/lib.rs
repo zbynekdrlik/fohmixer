@@ -68,9 +68,11 @@ pub mod cf_token;
 pub mod client_report;
 pub mod clock;
 pub mod cloudflare;
+pub mod colors;
 pub mod companion;
 pub mod config;
 pub mod deck;
+pub mod doc_store;
 #[cfg(windows)]
 mod dpapi;
 pub mod eq;
@@ -421,6 +423,7 @@ impl HubInner {
             companion: self.companion.as_ref().map(CompanionHandle::status),
             ableset,
             sectors: router.sectors,
+            colors: router.colors,
         }
     }
 }
@@ -650,7 +653,8 @@ fn remote_http() -> anyhow::Result<http_client::HttpClient> {
 }
 
 /// Checks the layout file every `period`; a new layout goes to the router,
-/// and the router reads `sectors.json` again (#148).
+/// and the router reads `sectors.json` (#148) and `colors.json` (#164)
+/// again.
 async fn poll_layout(
     layout: Arc<LayoutStore>,
     router: mpsc::UnboundedSender<RouterMsg>,
@@ -671,6 +675,10 @@ async fn poll_layout(
         }
         // The fader sectors' file rides the same tick (#148).
         if router.send(RouterMsg::SectorsPoll).is_err() {
+            return;
+        }
+        // So does the strips' colours' file (#164).
+        if router.send(RouterMsg::ColorsPoll).is_err() {
             return;
         }
     }

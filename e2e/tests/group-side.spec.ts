@@ -254,13 +254,14 @@ test.describe("A group's name on its side (#127)", () => {
       // Its strips' own instance tags: only where the strips differ.
       const strips = group.controls.filter((c: any) => c.kind === "strip").length;
       await expect(page.locator(`.slot[data-group="${group.id}"]`).getByTestId("strip-instance")).toHaveCount(shared ? 0 : strips);
-      // In the info column: 40 px under its top, 96 px long, under the
-      // LUFS row, the whole name shown.
+      // In the info column: 52 px under its top (#151, v10 A: under the
+      // bigger LUFS row), 96 px long, under the LUFS row, the whole name
+      // shown.
       const geo = await sideGeometry(s);
       const { label: box, col } = geo;
       expect(box.left, `${group.id}: in the column`).toBeGreaterThanOrEqual(col.left - 0.5);
       expect(box.right).toBeLessThanOrEqual(col.right + 0.5);
-      expect(Math.abs(box.top - col.top - 40), `${group.id}: 40 px under the column's top`).toBeLessThan(0.5);
+      expect(Math.abs(box.top - col.top - 52), `${group.id}: 52 px under the column's top`).toBeLessThan(0.5);
       expect(Math.abs(box.bottom - box.top - 96), `${group.id}: 96 px long`).toBeLessThan(0.5);
       expect(box.top, `${group.id}: under the LUFS row`).toBeGreaterThanOrEqual(geo.lufs.bottom - 0.5);
       expect(geo.overflow, `${group.id}: the whole name`).toEqual([0, 0]);

@@ -53,6 +53,7 @@
 
 use std::rc::Rc;
 
+use fohmixer_proto::colors::ColorKey;
 use fohmixer_proto::eq::{Crop, EqItem, EqState, FrameHead, PRODUCT};
 use fohmixer_proto::layout::Strip;
 use leptos::html;
@@ -60,9 +61,9 @@ use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
-use super::buttons::colour_style;
 use super::{down_of, owns_touches, trace_detail};
 use crate::behave::Down;
+use crate::behave::colour::colour_style;
 use crate::behave::eq::{
     AreaWatch, CardLock, Finger, ListLink, Look, Out, Point, STALE_TEXT, Spot, Viewer, can_open,
     card_lock, failure_text, hh_mm, in_use_text, list_text, lists_now, lock_refusal, locked,
@@ -76,7 +77,7 @@ use crate::diag::trace::fingers::{EqFingers, eq_touch, eq_view};
 use crate::dom;
 use crate::raf;
 use crate::store::eq::{EqView, ended, screen_state, screen_view};
-use crate::store::{FrameSink, LiveStore, Slot};
+use crate::store::{FrameSink, LiveStore};
 
 /// What the screen shows: an editor, its name as its card gives it
 /// (`behave::eq::place_text`), and the strip's name, its chip's colours and
@@ -168,7 +169,7 @@ fn EqCard(
     item: EqItem,
     instance: String,
     label: String,
-    color: Option<RwSignal<Slot>>,
+    color: Signal<Option<ColorKey>>,
     keys: Vec<String>,
 ) -> impl IntoView {
     let store = expect_context::<LiveStore>();
@@ -236,8 +237,7 @@ fn EqCard(
         let (Some(nav), Some(mut target)) = (nav, target.try_get_value()) else {
             return;
         };
-        target.chip =
-            colour_style(color.and_then(|c| c.try_with_untracked(Slot::number).flatten()));
+        target.chip = colour_style(color.try_get_untracked().flatten());
         nav.open(target, ev.pointer_id());
     };
     let no_keys: Vec<String> = Vec::new();
@@ -286,7 +286,7 @@ fn EqCard(
 
 /// The channel detail's middle: the strip's Pro-Q 4 instances.
 #[component]
-pub fn EqCards(strip: Strip, label: String, color: Option<RwSignal<Slot>>) -> impl IntoView {
+pub fn EqCards(strip: Strip, label: String, color: Signal<Option<ColorKey>>) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let nav = use_context::<EqNav>();
     let binding = StoredValue::new(strip.binding.clone());

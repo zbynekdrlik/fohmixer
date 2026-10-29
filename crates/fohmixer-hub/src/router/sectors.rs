@@ -1,5 +1,5 @@
 //! The router's part of the fader sectors (#148): the document at every
-//! page's attach, the pages' ticks, ARRANGE's saves and the undo, the
+//! page's attach, the pages' ticks, ARRANGE's saves, the
 //! file's hand edits (polled with the layout), the first document (the
 //! seed), the records and `/api/status`.
 //!
@@ -33,7 +33,7 @@ pub(super) fn seed_due(missing: bool, pool_len: usize, every_read: bool) -> bool
     missing && pool_len > 0 && every_read
 }
 
-/// A `sectors` record's fields: `what` (`tick`, `edit`, `undo`, `seed`,
+/// A `sectors` record's fields: `what` (`tick`, `edit`, `seed`,
 /// `file`), the page and its peer (none for the hub's own), then `extra`'s.
 pub(super) fn sectors_fields(
     what: &str,
@@ -93,7 +93,6 @@ impl Router {
     fn sectors_message(&self) -> ServerMsg {
         ServerMsg::Sectors {
             doc: self.sectors.store.doc().clone(),
-            undo: self.sectors.store.has_prev(),
         }
     }
 
@@ -230,15 +229,6 @@ impl Router {
         }
     }
 
-    /// A page's undo (a second one redoes).
-    pub(super) fn sectors_undo(&mut self, client: ClientId, id: String) {
-        match self.sectors.store.undo() {
-            Err(refusal) => self.sectors_refuse(client, id, refusal),
-            Ok(Ok(())) => self.sectors_done(client, id, "undo", json!({})),
-            Ok(Err(e)) => self.sectors_write_failed(client, id, &e),
-        }
-    }
-
     /// The file read again (the layout poll's tick): a hand edit is
     /// recorded and told; a bad one is logged and the last good document
     /// stays; a removed one is written back and recorded (`file`, `why:
@@ -292,7 +282,6 @@ impl Router {
             layouts: doc.layout_count(),
             strips: doc.strip_count(),
             unknown: model::unknown(doc, &pool),
-            undo: self.sectors.store.has_prev(),
             error: self.sectors.store.error().map(str::to_string),
         }
     }

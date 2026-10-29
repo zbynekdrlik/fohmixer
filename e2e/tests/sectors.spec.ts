@@ -3,14 +3,19 @@ import { test, expect } from "./support/fixtures";
 import {
   LiveClient,
   centre,
+  columnHeadAndFoot,
   dispatchPointer,
   frames,
+  harness,
   hubEvents,
   hubStatus,
+  openDeck,
   openDetail,
   openSurface,
   pageEvents,
   resetSectors,
+  rightHalfLive,
+  servedLayout,
   setSectors,
   track,
   until,
@@ -25,7 +30,8 @@ import {
 // the column (lu ru over ld rd), each paging through its own layouts in the
 // column's LAYOUTS block; a strip's channel detail ticks the layouts it is
 // in, ARRANGE reorders a sector's strips and renames, adds and removes its
-// layouts (saved as one change), ↶ undoes the last change. The hub owns
+// layouts (saved as one change); there is no undo (the owner's ruling of
+// 29.10.2026: the ↶ beside ARRANGE is gone, ARRANGE takes its row alone). The hub owns
 // sectors.json; the harness starts it empty (sectors off) and each test puts
 // the empty document back.
 //
@@ -220,6 +226,124 @@ test.describe("The fader sectors", () => {
 
   test.describe("at the iPad's size", () => {
     test.use({ viewport: { width: 1194, height: 834 } });
+
+    test("STREAM DECK opens in the left sectors: the column stays in the middle and RU and RD stay live (#148)", async ({ page }) => {
+      // The owner (29.10.2026): the deck and AbleSet in the left sectors, the
+      // column never moving right; the right sectors keep working.
+      await setSectors(DOC);
+      await openSectors(page);
+      const before = (await page.getByTestId("column").boundingBox())!;
+      await openDeck(page);
+      await expect(sectorsPage(page)).toHaveAttribute("data-extra", "deck");
+      const viewport = page.viewportSize()!;
+      const column = (await page.getByTestId("column").boundingBox())!;
+      expect(Math.abs(column.x + column.width / 2 - viewport.width / 2), "the column's centre (px off the screen's)").toBeLessThan(1);
+      expect(Math.abs(column.x - before.x), "the column did not move").toBeLessThan(0.5);
+      // Every key left of the column, none right of it.
+      const keys = await page.getByTestId("deck-key").evaluateAll((all) => all.map((k) => k.getBoundingClientRect().right));
+      expect(keys).toHaveLength(32);
+      for (const right of keys) expect(right, "a key right of the column").toBeLessThanOrEqual(column.x + 0.5);
+      // RU and RD shown, LU and LD under the deck.
+      for (const sector of ["ru", "rd"]) await expect(slots(page, sector).getByTestId("strip").first(), sector).toBeVisible();
+      for (const sector of ["lu", "ld"]) await expect(slots(page, sector).getByTestId("strip").first(), sector).toBeHidden();
+      // A fader in RU still moves (#148 review): its cap's centre is the
+      // cap's (nothing over it) and a real drag from there reaches the hub
+      // as a set and raises Live's volume.
+      await rightHalfLive(page, slots(page, "ru").getByTestId("strip"));
+      await expect(page.getByTestId("deck-key")).toHaveCount(32);
+      // The controls that act only on the hidden left sectors are inert
+      // (#148 review): LU's and LD's layouts and ARRANGE dimmed and
+      // aria-disabled, a dispatched tap on them changes nothing; RU's and
+      // RD's stay live.
+      const cell = (sector: string) => page.locator(`.sec-cell[data-sector="${sector}"]`);
+      for (const sector of ["lu", "ld"]) await expect(cell(sector), sector).toHaveAttribute("aria-disabled", "true");
+      for (const sector of ["ru", "rd"]) await expect(cell(sector), sector).toHaveAttribute("aria-disabled", "false");
+      const arrange = page.getByTestId("arrange");
+      await expect(arrange).toHaveAttribute("aria-disabled", "true");
+      expect(Number(await cell("lu").evaluate((e) => getComputedStyle(e).opacity))).toBeLessThan(0.5);
+      const tab = (id: string) => page.locator(`[data-testid="sector-tab"][data-layout="${id}"]`);
+      await tab("lu-2").dispatchEvent("pointerdown");
+      await arrange.dispatchEvent("pointerdown");
+      await frames(page);
+      await expect(tab("lu-1")).toHaveAttribute("aria-pressed", "true");
+      await expect(tab("lu-2")).toHaveAttribute("aria-pressed", "false");
+      await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "false");
+      // A layout tab leaves the deck; LU's layouts and ARRANGE are live again.
+      await page.locator('[data-testid="tabbar"][data-level="0"] [data-testid="tab"][data-page="foh"]').click();
+      await expect(page.getByTestId("deck")).toHaveCount(0);
+      await expect(cell("lu")).toHaveAttribute("aria-disabled", "false");
+      await expect(arrange).toHaveAttribute("aria-disabled", "false");
+      await tab("lu-2").click();
+      await expect(tab("lu-2")).toHaveAttribute("aria-pressed", "true");
+    });
+
+    test("an open deck stays mounted while the sectors switch on and off under it (#148 review)", async ({ page }) => {
+      // Another tablet's ARRANGE save or a hand edit can switch the default
+      // page between its rows and the sectors: the page is mounted anew,
+      // the deck beside it is not (its unmount would lift a held key).
+      await openSurface(page);
+      await expect(page.locator('[data-testid="page"][data-page="foh"]')).toBeVisible();
+      await expect(sectorsPage(page)).toHaveCount(0);
+      await openDeck(page);
+      await page.getByTestId("deck").evaluate((e) => e.setAttribute("data-e2e-kept", "1"));
+      await page.getByTestId("deck-key").evaluateAll((all) => all.forEach((e) => e.setAttribute("data-e2e-kept", "1")));
+      const kept = async () => {
+        await expect(page.getByTestId("deck")).toHaveAttribute("data-e2e-kept", "1");
+        await expect(page.locator('[data-testid="deck-key"][data-e2e-kept="1"]')).toHaveCount(32);
+        await expect(page.getByTestId("page")).toHaveAttribute("data-extra", "deck");
+        await expect(page.getByTestId("deck-tab")).toHaveAttribute("data-selected", "true");
+      };
+      // Sectors on: the sectors page, the deck the same elements.
+      await page.getByTestId("page").evaluate((e) => e.setAttribute("data-e2e-old", "1"));
+      await setSectors(DOC);
+      await expect(sectorsPage(page)).toBeVisible();
+      await expect(page.locator('[data-testid="page"][data-e2e-old]')).toHaveCount(0);
+      await kept();
+      const column = (await page.getByTestId("column").boundingBox())!;
+      const keys = await page.getByTestId("deck-key").evaluateAll((all) => all.map((k) => k.getBoundingClientRect().right));
+      for (const right of keys) expect(right, "a key right of the column").toBeLessThanOrEqual(column.x + 0.5);
+      // Sectors off again: the rows, the deck still the same elements.
+      await resetSectors();
+      await expect(sectorsPage(page)).toHaveCount(0);
+      await expect(page.locator('[data-testid="page"][data-page="foh"]')).toBeVisible();
+      await kept();
+    });
+
+    test("the column's head: FOH a centred row of its own above STREAM DECK and ABLESET, the status at its foot, nothing overflowing (#148)", async ({ page }) => {
+      // The site's column (the owner's report of 29.10.2026): the LAYOUTS
+      // block, ARRANGE alone on its row, the rail STAGE, REVERB, AUTOTUNE,
+      // TALKBACK and TECHALERT at its foot.
+      const fixture = await servedLayout();
+      const rails = fixture.pages.find((p: any) => p.id === "foh").rail.length;
+      const layout = structuredClone(fixture);
+      const foh = layout.pages.find((p: any) => p.id === "foh");
+      const stage = foh.rail.find((c: any) => c.kind === "stage");
+      const talkback = { ...foh.rail.find((c: any) => c.label === "ZVUKAR"), label: "TALKBACK" };
+      foh.rail = [stage, { kind: "reverb", label: "REVERB" }, { kind: "autotune", label: "AUTOTUNE" }, talkback];
+      await harness("/hub/layout", { layout });
+      try {
+        await until(servedLayout, (l) => l.pages.find((p: any) => p.id === "foh").rail.length === 4, "the hub serving the site's rail");
+        await setSectors(DOC);
+        await openSectors(page);
+        await expect(page.getByTestId("sector-layouts")).toBeVisible();
+        await expect(page.getByTestId("reverb")).toBeVisible();
+        await expect(page.getByTestId("deck-tab")).toBeVisible();
+        await expect(page.getByTestId("sector-undo")).toHaveCount(0);
+        await frames(page);
+        expect(await columnHeadAndFoot(page)).toEqual([]);
+        // ARRANGE takes its row alone: as wide as the LAYOUTS block.
+        const arrange = (await page.locator(".arrange-btn").boundingBox())!;
+        const block = (await page.getByTestId("sector-layouts").boundingBox())!;
+        expect(Math.abs(arrange.width - block.width), "ARRANGE as wide as the LAYOUTS block").toBeLessThan(1);
+        // The selected FOH tab keeps today's mark.
+        const fohTab = page.locator('[data-testid="tabbar"][data-level="0"] [data-testid="tab"][data-page="foh"]');
+        await expect(fohTab).toHaveAttribute("data-selected", "true");
+        expect(await fohTab.evaluate((t) => getComputedStyle(t).boxShadow)).toMatch(/inset/);
+      } finally {
+        await harness("/hub/layout/reset");
+        await until(servedLayout, (l) => l.pages.find((p: any) => p.id === "foh").rail.length === rails, "the hub serving the fixture again");
+      }
+    });
 
     test("the fader travel is 322 px at 1194x834 in all four sectors, a mixed layout included", async ({ page }) => {
       await setSectors(MIXED_DOC);
@@ -581,22 +705,6 @@ test.describe("The fader sectors", () => {
         await expect.poll(() => stripsOf(other, "lu")).toEqual([]);
         expect(otherConsole, "the second page's console").toEqual([]);
         await other.close();
-
-        // One ↶ brings all of it back; the page's pick of a gone layout
-        // falls back to its sector's first.
-        const undo = page.getByTestId("sector-undo");
-        await expect(undo).toHaveAttribute("aria-disabled", "false");
-        await undo.click();
-        await expect.poll(() => titles(page, "lu")).toEqual(["STAGE", "ALT"]);
-        await expect.poll(() => titles(page, "ld")).toEqual(["HANDS", "FX"]);
-        await expect.poll(() => stripsOf(page, "lu")).toEqual([name(VOCAL), name(KEYS)]);
-        await expect(tabOf(page, "lu-1")).toHaveAttribute("aria-pressed", "true");
-        const all = await until(
-          () => sectorSteps(since),
-          (s) => s.includes("undo"),
-          "the hub's undo record",
-        );
-        expect(all).toEqual(["edit", "undo"]);
       } finally {
         live.close();
       }
@@ -832,39 +940,6 @@ test.describe("The fader sectors", () => {
     expect(typeof steps[0].pointer).toBe("number");
   });
 
-  test("undo restores the last change and a second undo redoes it", async ({ page }) => {
-    await setSectors(DOC);
-    await openSectors(page);
-    await expect.poll(() => stripsOf(page, "lu")).toEqual([name(VOCAL), name(KEYS)]);
-    const live = await LiveClient.open();
-    try {
-      const since = Date.now();
-      // A change from another client: master Hand4 # into STAGE.
-      const answer = await live.ask({ type: "sector_tick", layout: "lu-1", strip: master("Hand4 #"), on: true });
-      expect(answer.type, JSON.stringify(answer)).toBe("result");
-      const ticked = [name(VOCAL), name(KEYS), "master|Hand4 #"];
-      await expect.poll(() => stripsOf(page, "lu")).toEqual(ticked);
-
-      const undo = page.getByTestId("sector-undo");
-      await expect(undo).toHaveAttribute("aria-disabled", "false");
-      await undo.click();
-      await expect.poll(() => stripsOf(page, "lu")).toEqual([name(VOCAL), name(KEYS)]);
-      // The second ↶ redoes it.
-      await expect(undo).toHaveAttribute("aria-disabled", "false");
-      await undo.click();
-      await expect.poll(() => stripsOf(page, "lu")).toEqual(ticked);
-      await expect(undo).not.toHaveClass(/failed/);
-      const steps = await until(
-        () => sectorSteps(since),
-        (s) => s.filter((w) => w === "undo").length === 2,
-        "the hub's two undo records",
-      );
-      expect(steps).toEqual(["tick", "undo", "undo"]);
-    } finally {
-      live.close();
-    }
-  });
-
   test("the existing FOH page is unchanged with the empty document", async ({ page }) => {
     await setSectors(DOC);
     await openSectors(page);
@@ -875,7 +950,6 @@ test.describe("The fader sectors", () => {
     await expect(page.getByTestId("page")).toHaveAttribute("data-page", "foh");
     await expect(page.getByTestId("sector-layouts")).toHaveCount(0);
     await expect(page.getByTestId("arrange")).toHaveCount(0);
-    await expect(page.getByTestId("sector-undo")).toHaveCount(0);
     const pager = page.locator('[data-testid="tabbar"][data-level="1"]');
     await expect(pager).toBeVisible();
     await expect(pager.locator('[data-testid="tab"][data-page="stage"]')).toBeVisible();

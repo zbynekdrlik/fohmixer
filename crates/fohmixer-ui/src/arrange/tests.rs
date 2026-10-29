@@ -1791,3 +1791,63 @@ fn a_wide_strip_is_narrow_by_its_own_width() {
         }
     );
 }
+
+#[test]
+fn the_pager_is_on_the_right_when_any_cell_of_its_region_lies_right_of_the_column() {
+    // #148 review: the pager's tabs show under an extra tab only while its
+    // region reaches the live right half. Region first: the fixture's FOH
+    // row (its two slots, then a group of two), all left.
+    let region = || {
+        pager(vec![
+            (
+                "stage",
+                vec![group("stage", vec![strip("S0"), strip("S1")])],
+            ),
+            ("others", vec![group("others", vec![strip("O0")])]),
+        ])
+    };
+    let band = || group("band", vec![strip("B0"), strip("B1")]);
+    let left = PageModel::of(&page(vec![vec![region(), band()]]));
+    assert!(left.in_pager(0));
+    assert!(left.in_pager(1));
+    assert!(!left.in_pager(2));
+    assert!(!left.in_pager(3));
+    let shown = arrange(&left, Some(0), 519.0, 822.0, |_| 0, &METRICS);
+    assert_eq!(keys(&shown.lines[0].left), ["c0-0", "c0-1"]);
+    assert_eq!(keys(&shown.lines[0].right), ["c2-0", "c2-1"]);
+    assert!(!pager_on_right(&left, &shown));
+    // OTHERS leaves its second slot blank, on the left still.
+    let others = arrange(&left, Some(1), 519.0, 822.0, |_| 0, &METRICS);
+    assert_eq!(keys(&others.lines[0].left), ["c1-0", "s1"]);
+    assert!(!pager_on_right(&left, &others));
+    // The group first: the region is the right half.
+    let right = PageModel::of(&page(vec![vec![band(), region()]]));
+    assert!(!right.in_pager(0));
+    assert!(right.in_pager(1));
+    let shown = arrange(&right, Some(0), 519.0, 822.0, |_| 0, &METRICS);
+    assert_eq!(keys(&shown.lines[0].right), ["c1-0", "c1-1"]);
+    assert!(pager_on_right(&right, &shown));
+    // OTHERS: its control and the blank on the right; a blank alone counts.
+    let others = arrange(&right, Some(1), 519.0, 822.0, |_| 0, &METRICS);
+    assert_eq!(keys(&others.lines[0].right), ["c2-0", "s1"]);
+    assert!(pager_on_right(&right, &others));
+    let blank_only = Arrangement {
+        width: 80.0,
+        lines: vec![LineArrangement {
+            rows: vec![0],
+            key: right.line_key(&[0], Some(1)),
+            left: Vec::new(),
+            right: vec![Cell::Blank { slot: 1 }],
+            shift: None,
+        }],
+    };
+    assert!(pager_on_right(&right, &blank_only));
+    // A page with no pager: never.
+    let plain = PageModel::of(&page(vec![vec![
+        band(),
+        group("x", vec![strip("X0"), strip("X1")]),
+    ]]));
+    let shown = arrange(&plain, None, 519.0, 822.0, |_| 0, &METRICS);
+    assert!(!plain.in_pager(0));
+    assert!(!pager_on_right(&plain, &shown));
+}

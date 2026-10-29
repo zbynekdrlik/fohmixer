@@ -392,7 +392,6 @@ pub enum Refusal {
     NotInPool,
     Full,
     Stale,
-    NothingToUndo,
     NoLayout,
     /// An ARRANGE save that changes nothing.
     Empty,
@@ -409,7 +408,6 @@ impl Refusal {
             Refusal::NotInPool => "not in the pool",
             Refusal::Full => "FULL",
             Refusal::Stale => "stale",
-            Refusal::NothingToUndo => "nothing to undo",
             Refusal::NoLayout => "no layout served",
             Refusal::Empty => "EMPTY",
             Refusal::Invalid => "invalid",
@@ -466,7 +464,7 @@ fn sorted_refs(slots: &[Slot]) -> Vec<&StripRef> {
 
 /// ARRANGE's save (#148, the approved mockup `docs/mockups/sectors-v2.html`):
 /// the whole edited `sectors` replace the document's as one change at
-/// `rev + 1` (one undo step), each layout's trailing empty slots dropped.
+/// `rev + 1`, each layout's trailing empty slots dropped.
 /// It is `Stale` unless `rev` is the document's, it names the document's
 /// sectors, a layout the document holds keeps its sector and its refs (its
 /// gaps aside) and a new layout starts empty; `Full` for a layout past
@@ -475,7 +473,7 @@ fn sorted_refs(slots: &[Slot]) -> Vec<&StripRef> {
 /// with no layout or more than [`MAX_LAYOUTS`] (unless it had as many), a
 /// new or changed title that is no [`title_ok`] one, or a document that no
 /// longer validates (an id empty or twice); `Empty` when nothing changes
-/// (no revision, no undo step). A removed layout's strips simply leave it.
+/// (no revision). A removed layout's strips simply leave it.
 pub fn edit(
     doc: &SectorsDoc,
     sectors: &Sectors,

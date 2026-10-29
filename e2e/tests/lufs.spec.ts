@@ -6,14 +6,17 @@ import { LiveClient, centre, clipped, frames, harness, hostLine, hubStatus, open
 
 // The strip's loudness (#151, spec §6.1, §6.2, §9's E2E bullet; mockup
 // docs/mockups/lufs-v9.html; the owner's ruling of 27.10 evening: like
-// Sonible trueLevel): SimLive's FohMixer LUFS devices send their readings
-// to the hub, which serves them to the `+LUFS` strips. Every point shows its
-// short-term `S` (the device's first number; `V` is no longer shown) with
-// one decimal, quiet text under the caption `LUFS` over `IN` (a mic, green
-// within ±1 LU of its target, calm outside) or `OUT` (an output, always
-// calm); silence shows `−∞` with its caption; the row keeps its height;
-// under 78 px the number stands upright and the caption leaves. A strip
-// whose device is missing shows `!` and no number.
+// Sonible trueLevel; the owner's ruling of 29.10: mockup lufs-v10.html
+// variant A, bigger and more prominent): SimLive's FohMixer LUFS devices
+// send their readings to the hub, which serves them to the `+LUFS` strips.
+// Every point shows its short-term `S` (the device's first number; `V` is
+// no longer shown) with one decimal, bold and nearly white at the info
+// column's whole width, under the smaller caption `LUFS` over `IN` (a mic,
+// green within ±1 LU of its target) or `OUT` (an output, never green);
+// silence shows `−∞` with its caption; the row keeps its height; under
+// 78 px the caption leaves and the number stands upright, one character
+// under another. A strip whose device is missing shows `!` and no number.
+// strip-head.spec.ts sweeps the look at every width in both engines.
 
 const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
 
@@ -31,8 +34,8 @@ const OUT_TRACK = "live_set tracks 2";
 const NONE_TRACK = "live_set tracks 3";
 const TRACKS = [IN_TRACK, OUT_TRACK, NONE_TRACK];
 
-/** The colours: the calm grey, and trueLevel's green inside an input's ±1 LU band. */
-const GREY = "rgb(110, 110, 136)";
+/** The colours (v10 A): nearly white, and trueLevel's green inside an input's ±1 LU band. */
+const WHITE = "rgb(226, 226, 236)";
 const GREEN = "rgb(47, 199, 154)";
 
 /** A `+LUFS` marker strip by its label. */
@@ -119,6 +122,31 @@ async function captionOf(s: Locator): Promise<string[]> {
   return s.getByTestId("lufs-cap").locator("span").allTextContents();
 }
 
+/** The reading's size (v10 A, strip.css): the info column's width (`strip-w − 38 − cap-w / 2`) / 2.25, 9 to 22 px; narrow × 0.8, 9 to 24 px. */
+function sizeAt(w: number, narrow: boolean): number {
+  const col = w - 38 - Math.min(32, w - 38) / 2;
+  return narrow ? Math.min(24, Math.max(9, col * 0.8)) : Math.min(22, Math.max(9, col / 2.25));
+}
+
+/** The reading's characters (`behave::lufs::glyph_class`), one under another on a narrow strip: their texts and any overlap. */
+async function stacked(lufs: Locator): Promise<{ text: string; problems: string[] }> {
+  return lufs.evaluate((n) => {
+    const problems: string[] = [];
+    const nb = n.getBoundingClientRect();
+    let above = nb.top;
+    let text = "";
+    for (const g of n.querySelectorAll(".g")) {
+      const b = g.getBoundingClientRect();
+      text += g.textContent;
+      if (b.top < above - 0.01) problems.push(`"${g.textContent}" over the character above`);
+      if (b.left < nb.left - 0.5 || b.right > nb.right + 0.5) problems.push(`"${g.textContent}" passes the number's box`);
+      above = b.bottom;
+    }
+    if (above > nb.bottom + 0.01) problems.push("the last character passes the number's box");
+    return { text, problems };
+  });
+}
+
 /** The strip at `px` wide, the narrow flags as the page sets them on `.body`. */
 async function widen(s: Locator, px: number) {
   await s.evaluate((el, w) => {
@@ -132,9 +160,11 @@ async function widen(s: Locator, px: number) {
 
 /**
  * Every shown part of a strip's reading inside the info column and its own
- * box: the number's laid-out text too (`clipped`); a caption line by its
- * scroll sizes (its 9 px line is the face's whole content area, so its text
- * range is no measure: `.claude/rules/ui-rust.md`, the group's name).
+ * box: the number's laid-out text too (`clipped`; upright, its characters'
+ * blocks, which clip the face's content area on purpose: `stacked`); a
+ * caption line by its scroll sizes (its 8 px line is the face's whole
+ * content area, so its text range is no measure: `.claude/rules/ui-rust.md`,
+ * the group's name).
  */
 async function inside(s: Locator): Promise<string[]> {
   const problems: string[] = [];
@@ -148,9 +178,12 @@ async function inside(s: Locator): Promise<string[]> {
     if (b.x < col.x - 0.5 || b.x + b.width > col.x + col.width + 0.5 || b.y < col.y - 0.5 || b.y + b.height > col.y + col.height + 0.5) {
       problems.push(`${text} at ${JSON.stringify(b)} outside the column ${JSON.stringify(col)}`);
     }
+    const upright = part === number && (await part.evaluate((e) => getComputedStyle(e).display === "flex"));
     const cut =
       part === number
-        ? await clipped(part)
+        ? upright
+          ? (await stacked(part)).problems
+          : await clipped(part)
         : await part.evaluate((e) => (e.scrollWidth > e.clientWidth || e.scrollHeight > e.clientHeight ? [`scroll ${e.scrollWidth} x ${e.scrollHeight} > ${e.clientWidth} x ${e.clientHeight}`] : []));
     for (const c of cut) problems.push(`${text}: ${c}`);
   }
@@ -183,8 +216,9 @@ test.describe("The LUFS reading on a strip", () => {
     expect(await captionOf(s)).toEqual(["LUFS", "IN"]);
     const row = (await lufs.boundingBox())!.height;
     const caption = (await cap.boundingBox())!.height;
-    expect(row).toBeCloseTo(16, 1);
-    expect(caption).toBeCloseTo(18, 1);
+    // v10 A: the row 1.25 em of the reading's size, the caption 8 + 8 px.
+    expect(row).toBeCloseTo(1.25 * sizeAt((await s.boundingBox())!.width, false), 0);
+    expect(caption).toBeCloseTo(16, 1);
     // V never shows: a V inside the band with S outside it is calm.
     expect(await hostLine("band", "lufs track 1 -330 -250")).toBe("LUFS 1");
     await expect(lufs).toHaveText("−33.0", { timeout: 10_000 });
@@ -192,11 +226,11 @@ test.describe("The LUFS reading on a strip", () => {
     // The band's edges, both inside (|S − target| ≤ 1.0 LU).
     for (const [tenths, text, colour, state] of [
       [-240, "−24.0", GREEN, "in"],
-      [-239, "−23.9", GREY, "off"],
+      [-239, "−23.9", WHITE, "off"],
       [-260, "−26.0", GREEN, "in"],
-      [-261, "−26.1", GREY, "off"],
+      [-261, "−26.1", WHITE, "off"],
       [-259, "−25.9", GREEN, "in"],
-      [-180, "−18.0", GREY, "off"],
+      [-180, "−18.0", WHITE, "off"],
     ] as const) {
       await shortTerm(page, tenths, text);
       await expect(lufs).toHaveAttribute("data-l", state);
@@ -206,7 +240,7 @@ test.describe("The LUFS reading on a strip", () => {
     // Silence: −∞ under its caption, calm; the rows keep their heights.
     await shortTerm(page, -700, "−∞");
     await expect(lufs).toHaveAttribute("data-l", "silent");
-    await quiet(lufs, GREY);
+    await quiet(lufs, WHITE);
     await expect(lufs).toBeVisible();
     await expect(cap).toBeVisible();
     expect(await captionOf(s)).toEqual(["LUFS", "IN"]);
@@ -236,12 +270,12 @@ test.describe("The LUFS reading on a strip", () => {
     const lufs = out.getByTestId("lufs");
     await expect(lufs).toHaveText("−18.3", { timeout: 10_000 });
     await expect(lufs).toHaveAttribute("data-l", "plain");
-    await quiet(lufs, GREY);
+    await quiet(lufs, WHITE);
     // Inside an input's band an output stays calm: it has no target.
     expect(await hostLine("band", "lufs track 2 -250 -700")).toBe("LUFS 1");
     await expect(lufs).toHaveText("−25.0", { timeout: 10_000 });
     await expect(lufs).toHaveAttribute("data-l", "plain");
-    await quiet(lufs, GREY);
+    await quiet(lufs, WHITE);
     expect(await captionOf(out)).toEqual(["LUFS", "OUT"]);
     await expect(out.getByTestId("lufs-cap")).toHaveAttribute("data-kind", "out");
     // No device on Vox 3: `no LUFS meter` after the hub's grace, its `!`.
@@ -260,44 +294,61 @@ test.describe("The LUFS reading on a strip", () => {
     await expect(out.getByTestId("strip-flag")).toHaveCount(0);
   });
 
-  test("the LUFS is quieter than the dB; a +LUFS strip's travel equals a plain strip's, at least 322 px", async ({ page }) => {
+  test("the LUFS is bold and nearly white at the column's width, a digit half again as tall as 1.20.0's; a +LUFS strip's travel equals a plain strip's, at least 322 px", async ({ page }) => {
+    // The owner's ruling of 29.10 (mockup v10 A): bigger and more prominent,
+    // no longer quieter than Live's dB, which is unchanged.
     saved = await setUp(page, live);
     await shortTerm(page, -210, "−21.0");
     expect(await hostLine("band", "lufs track 2 -183 -700")).toBe("LUFS 2"); // the input's device sends too (SimLive counts every device sending)
     await expect(lufsStrip(page, "Vocals").getByTestId("lufs")).toHaveText("−18.3", { timeout: 10_000 });
     await frames(page);
-    const looks = await page.locator('[data-testid="strip"][data-lufs]').evaluateAll((all) => {
-      const rgb = (c: string) => (c.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
-      const lum = (c: string) => {
-        const [r, g, b] = rgb(c).map((v) => {
-          const s = v / 255;
-          return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
-        });
-        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-      };
-      const contrast = (a: string, b: string) => {
-        const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
-        return (x + 0.05) / (y + 0.05);
-      };
-      return all
+    const looks = await page.locator('[data-testid="strip"][data-lufs]').evaluateAll((all) =>
+      all
         .filter((s) => (s.querySelector('[data-testid="lufs"]')?.textContent ?? "") !== "")
         .map((s) => {
-          const ground = getComputedStyle(s).backgroundColor;
-          const l = getComputedStyle(s.querySelector('[data-testid="lufs"]')!);
+          const n = s.querySelector('[data-testid="lufs"]')!;
+          const l = getComputedStyle(n);
           const d = getComputedStyle(s.querySelector('[data-testid="db"]')!);
+          // A digit's drawn height: the glyph "2"'s ink at the reading's face.
+          const c = document.createElement("canvas");
+          c.width = c.height = 400;
+          const g = c.getContext("2d", { willReadFrequently: true })!;
+          g.font = `${l.fontWeight} 200px ${l.fontFamily}`;
+          g.fillText("2", 20, 300);
+          const px = g.getImageData(0, 0, 400, 400).data;
+          let first = -1;
+          let last = -1;
+          for (let y = 0; y < 400; y++)
+            for (let x = 0; x < 400; x++)
+              if (px[(y * 400 + x) * 4 + 3] > 0) {
+                if (first < 0) first = y;
+                last = y;
+                break;
+              }
           return {
             label: s.getAttribute("data-label"),
-            size: [parseFloat(l.fontSize), parseFloat(d.fontSize)],
-            weight: [Number(l.fontWeight), Number(d.fontWeight)],
-            contrast: [contrast(l.color, ground), contrast(d.color, ground)],
+            strip: s.getBoundingClientRect().width,
+            col: s.querySelector('[data-testid="strip-col"]')!.getBoundingClientRect().width,
+            width: n.getBoundingClientRect().width,
+            size: parseFloat(l.fontSize),
+            weight: l.fontWeight,
+            family: l.fontFamily,
+            digit: ((last + 1 - first) * parseFloat(l.fontSize)) / 200,
+            db: [d.fontSize, d.fontWeight, d.color],
           };
-        });
-    });
+        }),
+    );
     expect(looks.map((l) => l.label).sort()).toEqual(["Vocals", "Vox 1"]);
+    console.log(`lufs look (${test.info().project.name}): ${JSON.stringify(looks)}`);
     for (const l of looks) {
-      expect(l.size[0], `${l.label}: smaller`).toBeLessThan(l.size[1]);
-      expect(l.weight[0], `${l.label}: lighter`).toBeLessThan(l.weight[1]);
-      expect(l.contrast[0], `${l.label}: lower contrast`).toBeLessThan(l.contrast[1]);
+      expect(l.weight, `${l.label}: bold`).toBe("700");
+      expect(l.family, `${l.label}: the display face`).toMatch(/^"Barlow Condensed"/);
+      expect(Math.abs(l.width - l.col), `${l.label}: the column's width`).toBeLessThan(0.5);
+      expect(l.size, `${l.label}: the size`).toBeCloseTo(sizeAt(l.strip, false), 1);
+      // 1.20.0's digit was 6.3 px on the iPad's strip, v10 A's 9.3 px.
+      expect(l.digit, `${l.label}: a digit's height`).toBeGreaterThanOrEqual(9);
+      // Live's dB as before.
+      expect(l.db[1], `${l.label}: the dB's weight`).toBe("600");
     }
     // The travel: the reading costs the fader nothing.
     const travels = await page.getByTestId("strip").evaluateAll((all) =>
@@ -322,7 +373,7 @@ test.describe("The LUFS reading on a strip", () => {
     }
   });
 
-  test("every reading inside its box from 64 to 120 px: the caption from 78 px, the number upright under it", async ({ page }) => {
+  test("every reading inside its box from 64 to 120 px: the caption from 78 px, under 78 px the number stacked upright", async ({ page }) => {
     saved = await setUp(page, live);
     // The widest text a reading shows: five characters, one decimal.
     await shortTerm(page, -259, "−25.9");
@@ -340,17 +391,23 @@ test.describe("The LUFS reading on a strip", () => {
         expect(await inside(s), `${kind} ${px} px`).toEqual([]);
         if (px < 78) {
           await expect(cap).toHaveCSS("display", "none");
-          await expect(lufs).toHaveCSS("writing-mode", "vertical-rl");
+          await expect(lufs).toHaveCSS("writing-mode", "horizontal-tb");
+          await expect(lufs).toHaveCSS("flex-direction", "column");
+          const upright = await stacked(lufs);
+          expect(upright.text, `${kind} ${px} px: one block per character`).toBe(await lufs.textContent());
+          expect(upright.problems, `${kind} ${px} px: one under another`).toEqual([]);
+          expect(parseFloat(await lufs.evaluate((e) => getComputedStyle(e).fontSize)), `${kind} ${px} px: the size`).toBeCloseTo(sizeAt(px, true), 1);
         } else {
           for (const line of await cap.locator("span").all()) expect(await seen(line), `${kind} ${px} px: the caption seen`).toBe(true);
           expect(await captionOf(s)).toEqual(["LUFS", kind]);
           await expect(lufs).toHaveCSS("writing-mode", "horizontal-tb");
-          // Under the caption, above the group's name at 40 px.
+          // Under the caption, above the group's name at 52 px.
           const c = (await cap.boundingBox())!;
           const l = (await lufs.boundingBox())!;
           const col = (await s.getByTestId("strip-col").boundingBox())!;
           expect(l.y, `${kind} ${px} px: the number under the caption`).toBeGreaterThanOrEqual(c.y + c.height - 0.5);
-          expect(l.y + l.height - col.y, `${kind} ${px} px: the row ends by 36 px`).toBeLessThanOrEqual(36.5);
+          expect(l.y + l.height - col.y, `${kind} ${px} px: the row ends by 52 px`).toBeLessThanOrEqual(52.5);
+          expect(parseFloat(await lufs.evaluate((e) => getComputedStyle(e).fontSize)), `${kind} ${px} px: the size`).toBeCloseTo(sizeAt(px, false), 1);
           // `−25.9` fits its own box: no scroll.
           expect(await lufs.evaluate((e) => e.scrollWidth <= e.clientWidth), `${kind} ${px} px: the number fits`).toBe(true);
         }
@@ -434,7 +491,7 @@ test.describe("The LUFS reading on a strip", () => {
 
 // The phones and the iPad (spec §9: the phone sizes): on the real surface,
 // a strip of 78 px or more shows the caption, a narrower one the number
-// alone, upright; every reading inside its column.
+// alone, stacked upright; every reading inside its column.
 for (const size of [
   { width: 1194, height: 834 },
   { width: 844, height: 390 },
@@ -469,7 +526,8 @@ for (const size of [
         expect(await inside(s), `${own} px`).toEqual([]);
         if (narrow) {
           await expect(s.getByTestId("lufs-cap")).toHaveCSS("display", "none");
-          await expect(lufs).toHaveCSS("writing-mode", "vertical-rl");
+          await expect(lufs).toHaveCSS("flex-direction", "column");
+          expect((await stacked(lufs)).problems, `${own} px: one under another`).toEqual([]);
         } else {
           for (const line of await s.getByTestId("lufs-cap").locator("span").all()) expect(await seen(line), `${own} px: the caption`).toBe(true);
           await expect(lufs).toHaveCSS("writing-mode", "horizontal-tb");

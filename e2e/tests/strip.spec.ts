@@ -14,6 +14,8 @@ import {
   openDetail,
   openSurface,
   panning,
+  resetColors,
+  setColors,
   ready,
   seen,
   selectPage,
@@ -57,6 +59,8 @@ async function drawn(bars: import("@playwright/test").Locator): Promise<{ level:
 
 /** A strip's calm name button (#151, mockup v8: `#15151f`). */
 const CALM = "rgb(21, 21, 31)";
+/** NONE's calm grey (#164): the edge of a strip with no colour chosen. */
+const NONE = "rgb(115, 115, 138)";
 
 test.describe("A strip", () => {
   test("shows Live's volume in TouchOSC's form, white exactly at 0 dB", async ({ page }) => {
@@ -299,13 +303,19 @@ test.describe("A strip", () => {
     await until(() => live.get("band", HAND2, "mute"), (v) => v === false, "audible again");
   });
 
-  test("the name button is calm, the track's colour only as its 3 px edge, and follows Live's colour", async ({ page }) => {
-    // #151, mockup v8: one colour per strip, the Live track's own, as a thin
-    // edge at the name button's left (SimLive's Hand2 #: 0xFF3636); the
-    // button itself is the strip's dark ground with the name in light.
+  test("the name button is calm, the strip's chosen colour only as its 3 px edge, never Live's", async ({ page }) => {
+    // #151, mockup v8: one colour per strip, as a thin edge at the name
+    // button's left; the button itself is the strip's dark ground with the
+    // name in light. Since #164 (the owner's approved strip-color-v1) that
+    // colour is the one chosen in the detail's COLOR, kept by the hub, never
+    // the Live track's: this test checked Live's colour (SimLive's Hand2 #
+    // 0xFF3636) reaching the edge, which is now exactly what must not
+    // happen, so it checks NONE's grey, a hub colour, and Live's colour
+    // changing nothing.
     await live.set("band", HAND2, "mute", false);
     const before = await live.get("band", HAND2, "color");
     try {
+      await resetColors();
       await openSurface(page);
       const mute = strip(page, "Hand2 #").getByTestId("mute");
       await ready(mute);
@@ -315,21 +325,26 @@ test.describe("A strip", () => {
       };
       await expect(mute).toHaveCSS("background-color", CALM);
       await expect(mute).toHaveCSS("color", "rgb(234, 234, 240)");
-      await expect.poll(() => mute.evaluate(edge)).toEqual({ color: "rgb(255, 54, 54)", width: "3px" });
-      // Another strip of another colour: the same button, its own edge.
+      await expect.poll(() => mute.evaluate(edge)).toEqual({ color: NONE, width: "3px" });
+      // A colour change in Live reaches nothing.
+      await live.set("band", HAND2, "color", 0x1e3a8a);
+      await page.waitForTimeout(500);
+      expect(await mute.evaluate(edge)).toEqual({ color: NONE, width: "3px" });
+      // The hub's colour (here a hand edit of colors.json): the edge only.
+      await setColors({ colors: { band: { "Hand2 #": "blue" } } });
+      await expect.poll(() => mute.evaluate(edge)).toEqual({ color: "rgb(109, 143, 226)", width: "3px" });
+      await expect(mute).toHaveCSS("background-color", CALM);
+      await expect(mute).toHaveCSS("color", "rgb(234, 234, 240)");
+      // Another strip keeps its own: NONE.
       const other = strip(page, "B-Main repro #").getByTestId("mute");
       await ready(other);
       await expect(other).toHaveCSS("background-color", CALM);
-      expect((await other.evaluate(edge)).color).not.toBe("rgb(255, 54, 54)");
-      // A colour change in Live changes the edge only.
-      await live.set("band", HAND2, "color", 0x1e3a8a);
-      await expect.poll(() => mute.evaluate(edge)).toEqual({ color: "rgb(30, 58, 138)", width: "3px" });
-      await expect(mute).toHaveCSS("background-color", CALM);
-      await expect(mute).toHaveCSS("color", "rgb(234, 234, 240)");
+      expect((await other.evaluate(edge)).color).toBe(NONE);
       // No group colour on a strip: no top edge.
       expect(await strip(page, "Hand2 #").evaluate((el) => getComputedStyle(el, "::before").borderTopWidth)).toBe("0px");
     } finally {
       await live.set("band", HAND2, "color", before);
+      await resetColors();
     }
   });
 
@@ -511,7 +526,11 @@ test.describe("A strip", () => {
       await expect(c).toHaveCSS("visibility", "hidden");
     }
     const s = strip(page, "Hand2 #");
-    expect((await s.getByTestId("lufs").boundingBox())!.height).toBeCloseTo(16, 1);
+    // The empty row kept (v10 A, the owner's ruling of 29.10): 1.25 em of
+    // the reading's size, the info column's width / 2.25 (9 to 22 px).
+    const w = (await s.boundingBox())!.width;
+    const size = Math.min(22, Math.max(9, (w - 38 - Math.min(32, w - 38) / 2) / 2.25));
+    expect((await s.getByTestId("lufs").boundingBox())!.height).toBeCloseTo(1.25 * size, 0);
     const fader = s.getByTestId("fader");
     await ready(fader);
     const col = s.getByTestId("strip-col");

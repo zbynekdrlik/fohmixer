@@ -523,7 +523,13 @@ fn handle_text(hub: &Hub, conn: &mut Conn, text: &str) {
             sectors,
             rev,
         }),
-        Ok(ClientMsg::SectorUndo { id }) => hub.route(RouterMsg::SectorUndo { client, id }),
+        // The strips' colours (#164): answered as the sectors' are.
+        Ok(ClientMsg::SetColor { id, strip, color }) => hub.route(RouterMsg::SetColor {
+            client,
+            id,
+            strip,
+            color,
+        }),
         // Straight to the outbox (PR I): the writer's next frame may go.
         Ok(ClientMsg::EqFrameAck { session, seq }) => {
             outbox.frame_acked(session, seq, std::time::Instant::now());

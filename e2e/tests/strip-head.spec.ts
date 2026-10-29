@@ -28,6 +28,16 @@ import { openSurface } from "./support/live";
 // sweep (counts 3, 1/3, 2/4, 10, 12, 1/10, 9/12, 10/12, 12/12, all
 // playing, mixed and muted) with and without `!` and with each fader mark,
 // at every width.
+//
+// The LUFS reading (the owner's ruling of 29.10, docs/mockups/lufs-v10.html
+// variant A): once per width and label, on the plain strip, and on the
+// group's strip at every width, each reading's look (`−25.9` in target,
+// `−23.9` off it, an output's `−18.3`, `−∞`): at the info column's whole
+// width, bold, nearly white, green only in target; on a narrow strip one
+// character under another, every character's ink inside its own block and
+// the blocks one after another (never `writing-mode`, which overlapped the
+// digits in WebKit); inside the column, above the group's name, which
+// stays above SEL.
 
 const WIDTHS = [64, 72, 76, 77.99, 78, 83.16, 88, 120];
 const LABELS = ["Vox 1", "Klavir 2"];
@@ -63,7 +73,18 @@ type Case = {
   conflict?: boolean;
   /** The group's name on the strip's side. */
   group?: string;
+  /** The LUFS readings shown in turn (the plain strip and the group's). */
+  lufs?: boolean;
 };
+
+/** A LUFS reading as behave::lufs::look gives it: its text, `data-l` and caption. */
+type Reading = { text: string; l: "in" | "off" | "plain" | "silent"; kind: "IN" | "OUT" };
+const READINGS: Reading[] = [
+  { text: "−25.9", l: "in", kind: "IN" },
+  { text: "−23.9", l: "off", kind: "IN" },
+  { text: "−18.3", l: "plain", kind: "OUT" },
+  { text: "−∞", l: "silent", kind: "IN" },
+];
 
 /** The mockup's combination table (its HEADS), at 83.16 and 64 px. */
 function combinations(): Case[] {
@@ -91,9 +112,12 @@ function sweepCases(): Case[] {
       for (const link of LINKS)
         for (const flag of [false, true])
           for (const fader of FADERS)
-            for (const muted of link ? [false] : [false, true]) out.push({ w, label, link, flag, muted, fader });
-  // A conflict's readout and a group's name at every width.
-  for (const w of WIDTHS) out.push({ w, label: "Vox 1", link: null, flag: false, muted: false, fader: "", conflict: true, group: "Stage" });
+            for (const muted of link ? [false] : [false, true]) {
+              const plain = !link && !flag && !fader && !muted;
+              out.push({ w, label, link, flag, muted, fader, lufs: plain });
+            }
+  // A conflict's readout and a group's name under the LUFS at every width.
+  for (const w of WIDTHS) out.push({ w, label: "Vox 1", link: null, flag: false, muted: false, fader: "", conflict: true, group: "Stage", lufs: true });
   return out;
 }
 
@@ -104,13 +128,15 @@ type Result = {
   yielded: Record<string, number>;
   /** The first case's measures at each width: button, head, SEL's box. */
   measures: Record<string, { button: number; head: number; top: number; width: number; strip: number; key: string }>;
+  /** Per width: the LUFS's font size and a digit's drawn height (the glyph "2"), px. */
+  digits: Record<string, { size: number; digit: number }>;
 };
 
 /**
  * Draws each case's strip in the page, over the surface, as the components
  * draw it, and measures it: the faces not loaded and every problem.
  */
-async function sweep(list: Case[]): Promise<Result> {
+async function sweep([list, readings]: [Case[], Reading[]]): Promise<Result> {
   const host = document.createElement("div");
   host.id = "strip-sweep";
   host.style.cssText =
@@ -203,9 +229,81 @@ async function sweep(list: Case[]): Promise<Result> {
     const b = box.getBoundingClientRect();
     return box.scrollWidth > box.clientWidth || t.left < b.left - 0.5 || t.right > b.right + 0.5;
   };
+  /** behave::lufs::glyph_class. */
+  const glyphClass = (ch: string) => (ch === "−" ? "g sign" : ch === "." ? "g dot" : "g");
+  /** The info column's reading as InfoColumn draws it (none: no reading, the rows kept). */
+  const setReading = (col: Element, r: Reading | null) => {
+    const cap = col.querySelector(".lufs-cap")!;
+    const n = col.querySelector(".lufs")!;
+    cap.setAttribute("data-shown", String(!!r));
+    cap.innerHTML = r ? `<span>LUFS</span><span>${r.kind}</span>` : "<span></span><span></span>";
+    n.setAttribute("data-l", r ? r.l : "none");
+    n.innerHTML = r ? [...r.text].map((ch) => `<span class="${glyphClass(ch)}">${ch}</span>`).join("") : "";
+  };
+  // A glyph's ink above and below its baseline at 200 px, scanned from its
+  // pixels (WebKit's canvas clamps a glyph's negative descent to 0, so its
+  // metrics cannot place the minus sign); cached per glyph and face.
+  const metrics = document.createElement("canvas").getContext("2d")!;
+  const inkCanvas = document.createElement("canvas");
+  inkCanvas.width = 400;
+  inkCanvas.height = 400;
+  const inkCache = new Map<string, { up: number; down: number }>();
+  const inkRows = (ch: string, font: string) => {
+    const key = `${font}|${ch}`;
+    const known = inkCache.get(key);
+    if (known) return known;
+    const c = inkCanvas.getContext("2d", { willReadFrequently: true })!;
+    c.clearRect(0, 0, 400, 400);
+    c.font = font;
+    c.fillStyle = "#000";
+    c.textBaseline = "alphabetic";
+    c.fillText(ch, 20, 300);
+    const d = c.getImageData(0, 0, 400, 400).data;
+    let first = -1;
+    let last = -1;
+    for (let y = 0; y < 400; y++)
+      for (let x = 0; x < 400; x++)
+        if (d[(y * 400 + x) * 4 + 3] > 0) {
+          if (first < 0) first = y;
+          last = y;
+          break;
+        }
+    const ink = { up: 300 - first, down: last + 1 - 300 };
+    inkCache.set(key, ink);
+    return ink;
+  };
+  /**
+   * Where a stacked character's ink falls in its block (which clips the
+   * face's 1.2 em content area on purpose): the baseline from the face's
+   * metrics and the block's line (centred half-leading; the point's line at
+   * the block's foot), the ink from the pixels, both scaled from 200 px.
+   */
+  const inkOf = (g: Element) => {
+    const cs = getComputedStyle(g);
+    const size = parseFloat(cs.fontSize);
+    const k = size / 200;
+    const font = `${cs.fontWeight} 200px ${cs.fontFamily}`;
+    metrics.font = font;
+    const m = metrics.measureText(g.textContent ?? "");
+    const fa = m.fontBoundingBoxAscent * k;
+    const fd = m.fontBoundingBoxDescent * k;
+    const b = g.getBoundingClientRect();
+    const lh = parseFloat(cs.lineHeight);
+    const lineTop = cs.display === "flex" ? b.height - lh : 0;
+    const base = lineTop + (lh - fa - fd) / 2 + fa;
+    const ink = inkRows(g.textContent ?? "", font);
+    return { top: base - ink.up * k, bottom: base + ink.down * k, width: m.width * k, height: b.height, boxWidth: b.width };
+  };
+  /** A digit's drawn height (the glyph "2") at an element's font. */
+  const digitHeight = (e: Element) => {
+    const cs = getComputedStyle(e);
+    const ink = inkRows("2", `${cs.fontWeight} 200px ${cs.fontFamily}`);
+    return ((ink.up + ink.down) * parseFloat(cs.fontSize)) / 200;
+  };
   const problems: string[] = [];
   const yielded: Record<string, number> = {};
   const measures: Result["measures"] = {};
+  const digits: Result["digits"] = {};
   const at = (n: number) => n.toFixed(2);
   list.forEach((c, i) => {
     const s = strips[i];
@@ -296,8 +394,78 @@ async function sweep(list: Case[]): Promise<Result> {
     if (Math.abs(strip.bottom - 5 - sel.bottom) > 0.5) fail(`SEL's foot ${at(strip.bottom - sel.bottom)} px above the strip's`);
     if (clips(s.querySelector(".strip-sel-word")!)) fail("SEL is clipped");
     // The info column clear of the cap's widest reach.
-    const col = s.querySelector(".strip-col")!.getBoundingClientRect();
+    const colEl = s.querySelector(".strip-col")!;
+    const col = colEl.getBoundingClientRect();
     if (col.right > cap.left - 2.99) fail(`the info column ends ${at(cap.left - col.right)} px from the cap`);
+    // The LUFS (v10 A, the owner's ruling of 29.10): each reading in turn.
+    const column = c.w - 38 - capW / 2;
+    for (const r of c.lufs ? readings : []) {
+      setReading(colEl, r);
+      const say = (what: string) => fail(`LUFS ${r.text} (${r.l}): ${what}`);
+      const n = colEl.querySelector(".lufs") as HTMLElement;
+      const ncs = getComputedStyle(n);
+      const nb = seenBox(n, s)!;
+      if (!nb.seen) say(`not seen whole (${at(nb.left - col.left)}..${at(nb.right - col.left)} x ${at(nb.top - col.top)}..${at(nb.bottom - col.top)})`);
+      if (nb.left < col.left - 0.5 || nb.right > col.right + 0.5 || nb.top < col.top - 0.5 || nb.bottom > col.bottom + 0.5) say("outside the info column");
+      if (n.scrollWidth > n.clientWidth || n.scrollHeight > n.clientHeight) say(`scrolls (${n.scrollWidth} x ${n.scrollHeight} > ${n.clientWidth} x ${n.clientHeight})`);
+      // Bold, the display face, nearly white; green only in target; no shape.
+      if (ncs.fontWeight !== "700") say(`weight ${ncs.fontWeight}`);
+      if (!ncs.fontFamily.startsWith('"Barlow Condensed"')) say(`face ${ncs.fontFamily}`);
+      const colour = r.l === "in" ? "rgb(47, 199, 154)" : "rgb(226, 226, 236)";
+      if (ncs.color !== colour) say(`colour ${ncs.color}, not ${colour}`);
+      if (ncs.backgroundColor !== "rgba(0, 0, 0, 0)" || ncs.backgroundImage !== "none" || ncs.borderTopStyle !== "none" || ncs.boxShadow !== "none") say("drawn as a shape");
+      if (n.textContent !== r.text) say(`reads ${n.textContent}`);
+      const size = parseFloat(ncs.fontSize);
+      const capCs = getComputedStyle(colEl.querySelector(".lufs-cap")!);
+      const side = colEl.querySelector(".group-side");
+      if (!narrow) {
+        // The column's whole width; the size its width / 2.25, 9 to 22 px.
+        const want = Math.min(22, Math.max(9, column / 2.25));
+        if (Math.abs(size - want) > 0.05) say(`${at(size)} px, not ${at(want)}`);
+        if (Math.abs(nb.width - col.width) > 0.5) say(`${at(nb.width)} px wide in a ${at(col.width)} px column`);
+        if (clips(n)) say("its text passes its box");
+        // The caption over it, smaller (6.5 px), each line whole.
+        if (capCs.display === "none" || capCs.visibility !== "visible") say("no caption");
+        if (capCs.fontSize !== "6.5px") say(`the caption is ${capCs.fontSize}`);
+        const lines = [...colEl.querySelectorAll(".lufs-cap > span")] as HTMLElement[];
+        if (lines.map((l) => l.textContent).join(" ") !== `LUFS ${r.kind}`) say("the caption's words");
+        for (const l of lines) if (l.scrollWidth > l.clientWidth || l.scrollHeight > l.clientHeight) say(`the caption "${l.textContent}" is clipped`);
+        const capBox = colEl.querySelector(".lufs-cap")!.getBoundingClientRect();
+        if (nb.top < capBox.bottom - 0.5) say("over the caption");
+        // One line: every character on the same row.
+        const rows = new Set([...n.querySelectorAll(".g")].map((g) => Math.round(g.getBoundingClientRect().top)));
+        if (rows.size !== 1) say(`on ${rows.size} rows`);
+      } else {
+        // Upright: no caption, one block per character, one under another.
+        const want = Math.min(24, Math.max(9, column * 0.8));
+        if (Math.abs(size - want) > 0.05) say(`${at(size)} px, not ${at(want)}`);
+        if (capCs.display !== "none") say("the caption shows");
+        if (ncs.writingMode !== "horizontal-tb") say(`writing-mode ${ncs.writingMode}`);
+        const blocks = [...n.querySelectorAll(".g")];
+        if (blocks.length !== [...r.text].length) say(`${blocks.length} blocks`);
+        let above = nb.top;
+        for (const g of blocks) {
+          const gb = g.getBoundingClientRect();
+          if (gb.top < above - 0.01) say(`"${g.textContent}" overlaps the character above it`);
+          above = gb.bottom;
+          if (Math.abs((gb.left + gb.right) / 2 - (col.left + col.right) / 2) > 0.5) say(`"${g.textContent}" off the column's centre`);
+          if (gb.left < col.left - 0.5 || gb.right > col.right + 0.5) say(`"${g.textContent}" passes the column`);
+          const ink = inkOf(g);
+          if (ink.top < -0.25 || ink.bottom > ink.height + 0.25) say(`"${g.textContent}"'s ink ${at(ink.top)}..${at(ink.bottom)} passes its ${at(ink.height)} px block`);
+          if (ink.width > ink.boxWidth + 0.5) say(`"${g.textContent}" is ${at(ink.width)} px wide in a ${at(ink.boxWidth)} px block`);
+        }
+        if (above > nb.bottom + 0.01) say("the last character passes the number's box");
+      }
+      // Above the group's name, which stays whole and above SEL.
+      if (side) {
+        const g = side.getBoundingClientRect();
+        if (nb.bottom > g.top + 0.5) say(`over the group's name (${at(nb.bottom - col.top)} > ${at(g.top - col.top)})`);
+        if (g.bottom > sel.top + 0.5) say(`the group's name reaches SEL (${at(g.bottom - col.top)} > ${at(sel.top - col.top)})`);
+        if (side.scrollWidth > side.clientWidth || side.scrollHeight > side.clientHeight) say("the group's name is clipped");
+      }
+      if (r.text === "−25.9" && !digits[key]) digits[key] = { size, digit: digitHeight(n) };
+    }
+    if (c.lufs) setReading(colEl, null);
     // Nothing passes the strip's right or bottom edge (the fader's rail is
     // a transparent layer as tall as the track, moved by --p; a bar's moving
     // layers are clipped by the bar).
@@ -355,13 +523,13 @@ async function sweep(list: Case[]): Promise<Result> {
     mute.removeAttribute("data-holding");
   });
   host.remove();
-  return { faces, problems, yielded, measures };
+  return { faces, problems, yielded, measures, digits };
 }
 
 test.describe("The v8 strip head and SEL", () => {
   test("the mockup's combinations fit at 83 and 64 px: `!`, the chain and MUTED never yield, the fader mark only on a narrow strip beside `!` and a chain", async ({ page }) => {
     await openSurface(page);
-    const result = await page.evaluate(sweep, combinations());
+    const result = await page.evaluate(sweep, [combinations(), READINGS] as [Case[], Reading[]]);
     expect(result.faces, "the bundled faces loaded").toEqual([]);
     expect(result.problems).toEqual([]);
     // The all-four case yields its fader mark at 64 px, never at 83 px
@@ -372,9 +540,10 @@ test.describe("The v8 strip head and SEL", () => {
 
   test("every link state, `!` and fader mark fits from 64 to 120 px, the head 59 px and SEL clear of the cap", async ({ page }) => {
     await openSurface(page);
-    const result = await page.evaluate(sweep, sweepCases());
+    const result = await page.evaluate(sweep, [sweepCases(), READINGS] as [Case[], Reading[]]);
     expect(result.faces, "the bundled faces loaded").toEqual([]);
     console.log(`v8 head sweep (${test.info().project.name}): ${JSON.stringify(result.measures)} yielded ${JSON.stringify(result.yielded)}`);
+    console.log(`LUFS digits (${test.info().project.name}): ${JSON.stringify(result.digits)}`);
     expect(result.problems).toEqual([]);
     // The narrow boundary: 77.99 px is narrow (a 44 px SEL), 78 px is not.
     expect(result.measures["77.99"].key).toMatch(/x44\.00$/);
@@ -382,5 +551,10 @@ test.describe("The v8 strip head and SEL", () => {
     // The iPad's 83 px strip: 36 px high, 3 px short of the cap.
     expect(result.measures["83.16"].key).toMatch(/^33\.\d\dx36\.00$/);
     expect(result.measures["88"].key).toBe("36.00x36.00");
+    // The LUFS checked at every width; on the iPad's 83 px strip a digit
+    // about half again as tall as 1.20.0's 6.3 px (mockup v10 A: 9.3 px).
+    expect(Object.keys(result.digits).sort()).toEqual(WIDTHS.map(String).sort());
+    expect(result.digits["83.16"].digit).toBeGreaterThanOrEqual(9);
+    expect(result.digits["64"].digit).toBeGreaterThanOrEqual(7);
   });
 });

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { test, expect } from "./support/fixtures";
-import { LiveClient, clipped, harness, openSurface, ready, selectPage, strip, track, until } from "./support/live";
+import { LiveClient, clipped, columnHeadAndFoot, harness, openSurface, ready, selectPage, strip, track, until } from "./support/live";
 
 // The control column (#63, the owner's design of 2026-10-08): every screen is
 // the page's rows cut in two by one column in the middle, which holds the
@@ -133,6 +133,10 @@ test.describe("At the tablet's and the desktop's own size", () => {
     for (const id of ["version", "dropouts", "tabbar", "rail", "alert-toggle"]) {
       await expect(column.getByTestId(id).first(), id).toBeVisible();
     }
+    // #148: the page tabs first, each a centred row larger than STREAM DECK
+    // and ABLESET under them; the status at the foot under TechAlert; no
+    // overflow.
+    expect(await columnHeadAndFoot(page)).toEqual([]);
     // Two lines, each cut by the column; no arrows.
     await expect(page.getByTestId("line")).toHaveCount(2);
     await expect(page.getByTestId("shift")).toHaveCount(0);
@@ -214,6 +218,7 @@ test.describe("On a phone on its side", () => {
     await openColumn(page);
     const column = (await page.getByTestId("column").boundingBox())!;
     expect(Math.abs(column.x + column.width / 2 - 422), "the column's centre (px off the screen's)").toBeLessThan(1);
+    expect(await columnHeadAndFoot(page)).toEqual([]);
     expect(column.y + column.height).toBeLessThanOrEqual(390);
     await expect(page.getByTestId("line")).toHaveCount(1);
     expect(await headFirst(page)).toEqual([]);
@@ -425,6 +430,7 @@ test.describe("On a phone upright", () => {
     await openColumn(page);
     const column = (await page.getByTestId("column").boundingBox())!;
     expect(Math.abs(column.x + column.width / 2 - 195), "the column's centre (px off the screen's)").toBeLessThan(1);
+    expect(await columnHeadAndFoot(page)).toEqual([]);
     await expect(page.getByTestId("line")).toHaveCount(2);
     await expect(page.getByTestId("shift")).toHaveCount(2);
     for (const line of await page.getByTestId("line").all()) {

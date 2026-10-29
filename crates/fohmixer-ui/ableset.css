@@ -1,6 +1,7 @@
 /* AbleSet's tab (#90, the owner's variant A of
-   docs/mockups/ableset-tab-v1.html): the control column at the right edge
-   and AbleSet's own page in one frame filling the rest, or one of the
+   docs/mockups/ableset-tab-v1.html; #148: over the page's left half, the
+   page's own column in the middle, page.css .extra-pane): AbleSet's own
+   page in one frame, or one of the
    panels in its place (down, the sign-in, the emergency address, the brief
    check). Colours and sizes are the mockup's. html and body take no touch
    (style.css); the frame and its area take them again, so a finger scrolls
@@ -20,10 +21,11 @@
     background: var(--danger);
 }
 
-/* The page's one line: AbleSet's area, then the column. */
 .ableset-page {
-    grid-template-columns: minmax(0, 1fr) var(--col);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr);
+    background: var(--page);
 }
 
 .ableset-area {

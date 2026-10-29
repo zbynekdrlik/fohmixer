@@ -10,6 +10,7 @@
 
 use std::time::Duration;
 
+use fohmixer_proto::colors::ColorKey;
 use fohmixer_proto::layout::{Anchor, Binding};
 use leptos::html;
 use leptos::prelude::*;
@@ -21,7 +22,7 @@ use super::{
     BtnText, down_of, fail_flash, intent_look, key_of, owns_touches, readiness, slot_of,
     trace_rail, trace_touch,
 };
-use crate::behave::colour::{css_color, text_on};
+use crate::behave::colour::colour_style;
 use crate::behave::fader_link::Flink;
 use crate::behave::hold::{HINT_MS, Hold, Lift};
 use crate::behave::label::{label_chars, strip_label};
@@ -34,15 +35,6 @@ use crate::binding::{SubSpec, mute_sub, solo_sub};
 use crate::diag::perf::Pointer;
 use crate::dom;
 use crate::store::{LiveStore, Slot};
-
-/// The style of a button lit in Live's colour `value` (the track colour and
-/// the text colour that reads on it); nothing until the colour is known.
-/// The channel detail's name chip takes it too (#71).
-pub(crate) fn colour_style(value: Option<f64>) -> String {
-    value
-        .and_then(|v| css_color(v).map(|css| format!("--tc:{css};--tt:{};", text_on(v))))
-        .unwrap_or_default()
-}
 
 /// A solo button's text: `SOLO` and its label, or the first word of its
 /// group track's name.
@@ -177,8 +169,9 @@ pub struct Corner {
 }
 
 /// A strip's name button, its mute (#151, mockup v8: calm, the strip's top
-/// edge, the name first and the marks line under it; the detail's MUTE is
-/// lit in the track's Live colour while the track is audible). A guarded
+/// edge, the name first and the marks line under it; the strip's colour
+/// chosen on the tablet, #164, only as its 3 px edge, `color`; the detail's
+/// MUTE has none). A guarded
 /// strip's mute acts by a hold (#162, `behave::mute::mute_press`, as the
 /// rail buttons' `Hold::lifted(RAIL_HOLD_MS)`): the fill grows across the
 /// button for 1 s, the line then says what the lift does (on a strip in the
@@ -203,7 +196,7 @@ pub fn MuteView(
     spec: SubSpec,
     guarded: bool,
     label: String,
-    color: Option<RwSignal<Slot>>,
+    color: Option<Signal<Option<ColorKey>>>,
     partners: Vec<Partner>,
     corner: Option<Corner>,
     /// The fader link's mark on the marks line (#130): a leader's or a
@@ -564,7 +557,9 @@ pub fn MuteView(
         String::new()
     };
     let look = move || {
-        let colour = colour_style(color.and_then(|c| c.try_with(Slot::number).flatten()));
+        let colour = color
+            .map(|c| colour_style(c.try_get().flatten()))
+            .unwrap_or_default();
         format!("{colour}{hold_time}")
     };
     let length = format!("--n:{};", label_chars(&label));
@@ -788,20 +783,6 @@ mod tests {
         });
         assert_eq!(solo_text(None, &group), "SOLO Stems");
         assert_eq!(solo_text(Some("Podklady"), &group), "SOLO Podklady");
-    }
-
-    #[test]
-    fn a_name_button_takes_the_tracks_colour_once_known() {
-        assert_eq!(colour_style(None), "");
-        assert_eq!(colour_style(Some(12.5)), "");
-        assert_eq!(
-            colour_style(Some(f64::from(0xF5C451u32))),
-            "--tc:#F5C451;--tt:#10101a;"
-        );
-        assert_eq!(
-            colour_style(Some(f64::from(0x1E3A8Au32))),
-            "--tc:#1E3A8A;--tt:#f4f4fa;"
-        );
     }
 
     #[test]

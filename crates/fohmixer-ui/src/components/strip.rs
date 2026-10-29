@@ -1,7 +1,7 @@
 //! A mixer strip (spec F2–F5, F8–F13; the redesign, #21; held in the hands,
 //! #63; the owner's mockup v8, #151): at the top the name button, the mute,
-//! as the strip's top edge (37 px, calm: the track's Live colour only as a
-//! 3 px edge), the name first and one marks line under it, with the status
+//! as the strip's top edge (37 px, calm: the strip's colour, chosen in the
+//! channel detail's COLOR since #164, only as a 3 px edge), the name first and one marks line under it, with the status
 //! light and Live's dB readout on the line under it (a hand holding the
 //! tablet covers the bottom of the screen, so nothing to read sits there);
 //! then the instance tag when the group's strips differ and the fader
@@ -20,6 +20,7 @@ use leptos::prelude::*;
 
 use super::buttons::{Corner, MuteView, Partner, anchor_name};
 use super::detail::DetailStrip;
+use super::detail_color::strip_colour;
 use super::fader::{FaderView, Law, Target};
 use super::fader_link::link_parts;
 use super::meter::StatusView;
@@ -29,7 +30,7 @@ use crate::behave::db_text::db_text;
 use crate::behave::fader::{UNITY, VolumeLaw};
 use crate::behave::hold::{HINT_MS, HOLD_MS, Hold, Lift};
 use crate::behave::label::{mark_look, shown_label};
-use crate::behave::lufs::{LufsLook, kind_name, look as lufs_look_of, point_key};
+use crate::behave::lufs::{LufsLook, glyphs, kind_name, look as lufs_look_of, point_key};
 use crate::behave::reverb::held_low;
 use crate::behave::scale::{tick_label, tick_pos, ticks};
 use crate::binding::{detail_keys, strip_subs};
@@ -59,12 +60,14 @@ pub fn ScaleView(law: VolumeLaw) -> impl IntoView {
 
 /// A strip's info column (#151, mockups v8 and v9): left of the cap's
 /// widest reach, the zone's height: the LUFS caption (`LUFS` over `IN` or
-/// `OUT`, two 9 px lines) and the reading (`behave::lufs::look`: quiet
-/// text with one decimal, green only within an input point's ±1 LU band,
-/// `−∞` in silence; no reading, a problem or a strip without `+LUFS` show
-/// nothing, their rows kept), and on the first
+/// `OUT`, two 8 px lines) and the reading (`behave::lufs::look`; the
+/// owner's ruling of 29.10, mockup v10 A: bold, nearly white, the column's
+/// width, one decimal, green only within an input point's ±1 LU band,
+/// `−∞` in silence, one span per character so a narrow strip stacks them;
+/// no reading, a problem or a strip without `+LUFS` show nothing, their
+/// rows kept), and on the first
 /// strip of a group's run `group_name`, the group's name read bottom to
-/// top, in grey (#127; one colour per strip, the track's own). It takes no
+/// top, in grey (#127; one colour per strip, its own). It takes no
 /// touch: the fader under it gets it.
 #[component]
 fn InfoColumn(
@@ -85,10 +88,22 @@ fn InfoColumn(
             })
     };
     let state = move || lufs.try_with(|l| l.state.as_str()).unwrap_or("none");
-    let text = move || {
-        lufs.try_with(|l| l.text.clone())
-            .flatten()
+    // One span per character (`behave::lufs::glyphs`): a narrow strip
+    // stacks them upright (the owner's ruling of 29.10, v10 A). The spans
+    // are kept by their place and each reads its character and class from
+    // one memo, so a new value rewrites them in place (#151 review: 5 to
+    // 10 Hz on every `+LUFS` strip rebuilt every span, ui-rust.md "paint
+    // little per frame").
+    let shown = Memo::new(move |_| {
+        lufs.try_with(|l| glyphs(l.text.as_deref()))
             .unwrap_or_default()
+    });
+    let places = move || 0..shown.try_with(Vec::len).unwrap_or(0);
+    let glyph = move |place: usize| {
+        let at = move || shown.try_with(|g| g.get(place).copied()).flatten();
+        let class = move || at().map_or("g", |(_, class)| class);
+        let ch = move || at().map(|(ch, _)| ch.to_string()).unwrap_or_default();
+        view! { <span class=class>{ch}</span> }
     };
     let line = move |i: usize| {
         move || {
@@ -109,7 +124,9 @@ fn InfoColumn(
                 <span>{line(0)}</span>
                 <span>{line(1)}</span>
             </div>
-            <div class="lufs" data-testid="lufs" data-kind=kind data-l=state>{text}</div>
+            <div class="lufs" data-testid="lufs" data-kind=kind data-l=state>
+                <For each=places key=|place| *place children=glyph />
+            </div>
             {side}
         </div>
     }
@@ -300,10 +317,11 @@ pub fn StripView(
     let parts = link_parts(store, &strip, &subs, settings.law);
     let volume = subs.volume.as_ref().map(|s| store.slot(s));
     let mute = subs.mute.as_ref().map(|s| store.slot(s));
-    let color = subs.color.as_ref().map(|s| store.slot(s));
+    // The strip's colour, chosen on the tablet (#164): its edge only.
+    let color = Some(strip_colour(store, &strip));
     let meters: Vec<RwSignal<Slot>> = subs.meters.iter().map(|s| store.slot(s)).collect();
-    // The status light: every value the strip shows (the colour never
-    // gates it); it never blinks with them (#151).
+    // The status light: every value the strip shows; it never blinks with
+    // them (#151).
     let all: Vec<RwSignal<Slot>> = [volume, mute]
         .into_iter()
         .flatten()

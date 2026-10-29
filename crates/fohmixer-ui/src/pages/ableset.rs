@@ -1,8 +1,10 @@
 //! AbleSet's tab (#90, design §5; the owner's variant A of
-//! `docs/mockups/ableset-tab-v1.html`): the control column at the right
-//! edge (its head, the rail of the page it was opened from, the global
-//! controls at its foot) and one frame of AbleSet's own page,
-//! `https://<AbleSet's name>[:the page's port]/`, filling the rest, opened
+//! `docs/mockups/ableset-tab-v1.html`, placed by #148: the owner's ruling
+//! of 29.10.2026): one frame of AbleSet's own page,
+//! `https://<AbleSet's name>[:the page's port]/`, over the left half of the
+//! page shown (the left sectors, or the rows' left halves; the column stays
+//! in the screen's middle, the page's own, and the right half keeps
+//! working; on a phone the whole screen but the thin strip), opened
 //! through the hub's `/.fohmixer/locked`, which stores AbleSet's lock first
 //! (#90, the owner's report of 2026-10-14: every open starts it locked). The
 //! frame is mounted only while the tab shows it: on the mixer AbleSet's app, its
@@ -21,7 +23,6 @@
 
 use std::time::Duration;
 
-use fohmixer_proto::layout::Control;
 use leptos::prelude::*;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
@@ -31,11 +32,10 @@ use crate::behave::ableset::{
     framed_here, panel_text, panel_title, probe_url, probed, probes, returns_to_tab, show,
     signin_url,
 };
-use crate::components::{ControlView, owns_touches};
+use crate::components::owns_touches;
 use crate::diag;
 use crate::diag::trace::{self, AbleSetStep};
 use crate::dom;
-use crate::pages::surface::ColumnHead;
 use crate::store::LiveStore;
 
 /// The frame's sandbox (design §5.3): AbleSet's scripts, its own storage
@@ -64,9 +64,10 @@ pub fn take_return() -> bool {
     true
 }
 
-/// AbleSet's tab's page: AbleSet's frame or a panel, then the column.
+/// AbleSet's tab: AbleSet's frame or a panel over the page's left half
+/// (#148).
 #[component]
-pub fn AbleSetView(rail: Vec<Control>, global: Vec<Control>) -> impl IntoView {
+pub fn AbleSetView() -> impl IntoView {
     let store = expect_context::<LiveStore>();
     // Where this page is: AbleSet frames only in fohmixer's own https page,
     // and its addresses take this page's port.
@@ -283,24 +284,9 @@ pub fn AbleSetView(rail: Vec<Control>, global: Vec<Control>) -> impl IntoView {
         }
     };
     let state = move || shown.try_get().map_or("checking", Show::name);
-    let rail = rail
-        .into_iter()
-        .map(|control| view! { <ControlView control=control /> })
-        .collect_view();
-    let global = global
-        .into_iter()
-        .map(|control| view! { <ControlView control=control /> })
-        .collect_view();
     view! {
-        <div class="body ableset-page" data-testid="ableset" data-state=state>
+        <div class="extra-pane ableset-page" data-testid="ableset" data-state=state>
             <div class="ableset-area">{content}</div>
-            <nav class="column" data-testid="column">
-                <ColumnHead />
-                <div class="rail" data-testid="rail">
-                    <div class="rail-main">{rail}</div>
-                    <div class="rail-foot">{global}</div>
-                </div>
-            </nav>
         </div>
     }
 }

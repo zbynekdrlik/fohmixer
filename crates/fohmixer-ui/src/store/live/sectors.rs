@@ -1,5 +1,5 @@
 //! The fader sectors' requests (#148): a tick of a strip in a layout, an
-//! ARRANGE save (one edit of every sector's layouts) and the undo. Each
+//! ARRANGE save (one edit of every sector's layouts). Each
 //! carries an id from the pending-request counter `cmd` uses, so the hub's
 //! `result` or `error` reaches its `done`
 //! through `finish` (a socket close answers it "the hub connection closed",
@@ -15,8 +15,9 @@ use super::{LiveStore, ResultFn};
 
 impl LiveStore {
     /// Sends the message `make` builds with a fresh request id; `done` gets
-    /// the hub's answer. Whether the socket took it.
-    fn sector_request(
+    /// the hub's answer. Whether the socket took it. (The strips' colours,
+    /// #164, ask the same way.)
+    pub(super) fn sector_request(
         self,
         make: impl FnOnce(String) -> ClientMsg,
         done: Option<ResultFn>,
@@ -59,10 +60,5 @@ impl LiveStore {
     /// `rev`, one change.
     pub fn sector_edit(self, sectors: Sectors, rev: u64, done: Option<ResultFn>) -> bool {
         self.sector_request(|id| ClientMsg::SectorEdit { id, sectors, rev }, done)
-    }
-
-    /// ↶: the hub swaps in the version before its last change.
-    pub fn sector_undo(self, done: Option<ResultFn>) -> bool {
-        self.sector_request(|id| ClientMsg::SectorUndo { id }, done)
     }
 }

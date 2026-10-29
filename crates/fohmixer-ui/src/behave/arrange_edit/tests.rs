@@ -181,8 +181,7 @@ fn saved_with(doc: &SectorsDoc, id: &str) -> SectorsDoc {
     next
 }
 
-/// `doc` without the layout `id`, one revision on (a save of its removal,
-/// or the undo of its add).
+/// `doc` without the layout `id`, one revision on (a save of its removal).
 fn saved_without(doc: &SectorsDoc, id: &str) -> SectorsDoc {
     let mut next = doc.clone();
     next.rev += 1;
@@ -213,18 +212,18 @@ fn an_id_removed_in_an_earlier_revision_is_never_used_again() {
 }
 
 #[test]
-fn an_undo_then_an_add_never_uses_the_undone_id_again() {
-    // The add saved at revision 6; ↶ brings back revision 5's layouts at
-    // revision 7 (the hub's undo is a change of its own).
+fn a_hand_edit_back_to_older_layouts_then_an_add_never_uses_the_taken_out_id_again() {
+    // The add saved at revision 6; a hand edit of sectors.json brings back
+    // revision 5's layouts, served at revision 7 (a change of its own).
     let first = doc();
     let added = Edit::of(&first).add(SectorId::Lu).expect("an id");
     assert_eq!(added, "lu-r6-1");
     let with = saved_with(&first, &added);
-    let undone = SectorsDoc {
+    let back = SectorsDoc {
         rev: with.rev + 1,
         sectors: first.sectors.clone(),
     };
-    let again = Edit::of(&undone).add(SectorId::Lu).expect("an id");
+    let again = Edit::of(&back).add(SectorId::Lu).expect("an id");
     assert_ne!(again, added);
     assert_eq!(again, "lu-r8-1");
 }

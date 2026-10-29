@@ -130,7 +130,7 @@ fn keys(specs: &[SubSpec]) -> Vec<String> {
 }
 
 #[test]
-fn a_strip_subscribes_every_part_and_its_colour() {
+fn a_strip_subscribes_every_part_and_never_lives_colour() {
     let subs = strip_subs(&strip("Hand2 #"), MeterSource::Level);
     let t = "live_set tracks[name=Hand2 #]";
     assert_eq!(
@@ -140,13 +140,11 @@ fn a_strip_subscribes_every_part_and_its_colour() {
             format!("band|{t} mixer_device panning|value|false"),
             format!("band|{t}|mute|false"),
             format!("band|{t}|output_meter_level|false"),
-            format!("band|{t}|color|false"),
         ]
     );
-    assert_eq!(
-        subs.color.as_ref().map(SubSpec::key),
-        Some(format!("band|{t}|color|false"))
-    );
+    // #164: a strip's colour is the hub's (the detail's COLOR), never the
+    // Live track's: nothing subscribes it.
+    assert!(!subs.all().iter().any(|s| s.prop == "color"));
     // #71: the strip on the page draws no pan (the channel detail does), so
     // it subscribes every part but the pan.
     assert_eq!(
@@ -155,7 +153,6 @@ fn a_strip_subscribes_every_part_and_its_colour() {
             format!("band|{t} mixer_device volume|value|true"),
             format!("band|{t}|mute|false"),
             format!("band|{t}|output_meter_level|false"),
-            format!("band|{t}|color|false"),
         ]
     );
     // Two bars with `lr`.
@@ -167,8 +164,8 @@ fn a_strip_subscribes_every_part_and_its_colour() {
             format!("band|{t}|output_meter_right|false"),
         ]
     );
-    assert_eq!(lr.all().len(), 6);
-    assert_eq!(lr.shown().len(), 5);
+    assert_eq!(lr.all().len(), 5);
+    assert_eq!(lr.shown().len(), 4);
     // A binding whose path does not parse subscribes nothing.
     let mut bad = strip("X");
     bad.binding.path = Some("devices[name=".into());
@@ -201,11 +198,11 @@ fn a_linked_mute_subscribes_each_partners_mute_on_the_page_and_in_the_detail() {
     let subs = strip_subs(&linked, MeterSource::Level);
     assert_eq!(keys(&subs.linked), partners);
     let shown = keys(&subs.shown());
-    assert_eq!(shown.len(), 6);
-    assert_eq!(shown[4..], partners[..]);
+    assert_eq!(shown.len(), 5);
+    assert_eq!(shown[3..], partners[..]);
     let all = keys(&subs.all());
-    assert_eq!(all.len(), 7);
-    assert_eq!(all[5..], partners[..]);
+    assert_eq!(all.len(), 6);
+    assert_eq!(all[4..], partners[..]);
     assert_eq!(
         keys(&control_subs(
             &Control::Strip(Box::new(linked.clone())),
@@ -214,7 +211,7 @@ fn a_linked_mute_subscribes_each_partners_mute_on_the_page_and_in_the_detail() {
         shown
     );
     let detail = keys(&detail_subs(&linked, MeterSource::Level).all());
-    assert_eq!(detail[5..], partners[..]);
+    assert_eq!(detail[4..], partners[..]);
     // A strip without a link: none.
     assert_eq!(
         strip_subs(&marker(3, "Vox 1"), MeterSource::Level).linked,
@@ -233,14 +230,12 @@ fn a_channel_detail_subscribes_every_part_its_pan_with_lives_display() {
             format!("band|{t} mixer_device panning|value|true"),
             format!("band|{t}|mute|false"),
             format!("band|{t}|output_meter_level|false"),
-            format!("band|{t}|color|false"),
         ]
     );
     // The parts are the strip's, but for the pan's display string.
     let page = strip_subs(&strip("Hand2 #"), MeterSource::Level);
     assert_eq!(subs.volume, page.volume);
     assert_eq!(subs.mute, page.mute);
-    assert_eq!(subs.color, page.color);
     assert_eq!(subs.meters, page.meters);
     assert_eq!(
         subs.pan.map(|p| (p.target, p.prop, p.display)),
@@ -338,8 +333,8 @@ fn every_control_kind_subscribes_what_it_shows() {
     );
     assert_eq!(
         sub(&Control::Strip(Box::new(strip("S")))).len(),
-        4,
-        "a strip: volume, mute, one meter, colour (#71: its pan is the detail's)"
+        3,
+        "a strip: volume, mute, one meter (#71: its pan is the detail's; #164: no Live colour)"
     );
     // A control whose every target fails to parse subscribes nothing.
     let none = Control::ParamToggle {
@@ -431,18 +426,19 @@ fn every_key_on_screen_is_subscribed_once() {
     let layout = sample();
     let subs = visible_subs(&layout, &[1, 0]);
     // stage (its mute and, with STAGE AUT, its Live's transport, #104) +
-    // solo, strips A and C (A twice on screen; no pan, #71), TechAlert.
-    assert_eq!(subs.len(), 3 + 4 + 4 + 1);
+    // solo, strips A and C (A twice on screen; no pan, #71; no colour,
+    // #164), TechAlert.
+    assert_eq!(subs.len(), 3 + 3 + 3 + 1);
     let unique: std::collections::BTreeSet<String> = subs.iter().map(SubSpec::key).collect();
     assert_eq!(unique.len(), subs.len());
     assert!(
         subs.iter()
-            .any(|s| s.target == "live_set tracks[name=C]" && s.prop == "color")
+            .any(|s| s.target == "live_set tracks[name=C]" && s.prop == "mute")
     );
     assert!(!subs.iter().any(|s| s.target.contains("name=B]")));
     // The other sub-page: B instead of A (A stays, the fixed group holds it).
     let others = visible_subs(&layout, &[1, 1]);
-    assert_eq!(others.len(), 3 + 4 + 4 + 4 + 1);
+    assert_eq!(others.len(), 3 + 3 + 3 + 3 + 1);
     assert!(
         !others
             .iter()
@@ -649,7 +645,7 @@ fn a_detail_of_a_strip_on_no_page_shown_adds_all_its_subscriptions() {
     // The cue page shows its toggle and TechAlert; B's detail adds B.
     let page = visible_subs(&layout, &[0]);
     let wanted = wanted_subs(&layout, &[0], Some(&held("B")), None);
-    assert_eq!(wanted.len(), page.len() + 5);
+    assert_eq!(wanted.len(), page.len() + 4);
     for key in keys(&detail_subs(&held("B"), MeterSource::Level).all()) {
         assert!(keys(&wanted).contains(&key), "{key}");
     }
@@ -660,7 +656,7 @@ fn a_detail_of_a_strip_on_no_page_shown_adds_all_its_subscriptions() {
     let mut lr = sample();
     lr.config.meter_source = Some(MeterSource::Lr);
     let wanted = wanted_subs(&lr, &[0], Some(&held("B")), None);
-    assert_eq!(wanted.len(), page.len() + 6);
+    assert_eq!(wanted.len(), page.len() + 5);
     assert!(
         wanted
             .iter()
