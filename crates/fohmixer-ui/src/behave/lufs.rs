@@ -80,6 +80,21 @@ pub fn look(tenths: Option<i16>, problem: Option<LufsProblem>, spec: Option<Lufs
     }
 }
 
+/// A character's block in the reading (#151, the owner's ruling of 29.10,
+/// mockup v10 A): every character is a span of its own, so a narrow strip
+/// stacks them one under another, upright, as blocks of the stylesheet's
+/// heights (`strip.css`: a digit's row 0.82 em, the minus's 0.5 em, the
+/// point's 0.3 em) and never through `writing-mode`, whose upright advance
+/// WebKit takes from the glyph's width (the digits overlapped there). A
+/// wide strip lays the same spans out on one line.
+pub fn glyph_class(ch: char) -> &'static str {
+    match ch {
+        '\u{2212}' => "g sign",
+        '.' => "g dot",
+        _ => "g",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,6 +222,14 @@ mod tests {
         };
         assert_eq!(look(Some(-250), None, None), none);
         assert_eq!(look(Some(-250), Some(LufsProblem::NoLufsMeter), None), none);
+    }
+
+    #[test]
+    fn each_character_is_its_own_block() {
+        let classes = |t: &str| t.chars().map(glyph_class).collect::<Vec<_>>();
+        assert_eq!(classes("\u{2212}25.9"), ["g sign", "g", "g", "g dot", "g"]);
+        assert_eq!(classes("\u{2212}\u{221e}"), ["g sign", "g"]);
+        assert_eq!(classes("3.0"), ["g", "g dot", "g"]);
     }
 
     #[test]

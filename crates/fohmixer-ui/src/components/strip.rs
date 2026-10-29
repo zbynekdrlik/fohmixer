@@ -29,7 +29,7 @@ use crate::behave::db_text::db_text;
 use crate::behave::fader::{UNITY, VolumeLaw};
 use crate::behave::hold::{HINT_MS, HOLD_MS, Hold, Lift};
 use crate::behave::label::{mark_look, shown_label};
-use crate::behave::lufs::{LufsLook, kind_name, look as lufs_look_of, point_key};
+use crate::behave::lufs::{LufsLook, glyph_class, kind_name, look as lufs_look_of, point_key};
 use crate::behave::reverb::held_low;
 use crate::behave::scale::{tick_label, tick_pos, ticks};
 use crate::binding::{detail_keys, strip_subs};
@@ -59,10 +59,12 @@ pub fn ScaleView(law: VolumeLaw) -> impl IntoView {
 
 /// A strip's info column (#151, mockups v8 and v9): left of the cap's
 /// widest reach, the zone's height: the LUFS caption (`LUFS` over `IN` or
-/// `OUT`, two 9 px lines) and the reading (`behave::lufs::look`: quiet
-/// text with one decimal, green only within an input point's ±1 LU band,
-/// `−∞` in silence; no reading, a problem or a strip without `+LUFS` show
-/// nothing, their rows kept), and on the first
+/// `OUT`, two 8 px lines) and the reading (`behave::lufs::look`; the
+/// owner's ruling of 29.10, mockup v10 A: bold, nearly white, the column's
+/// width, one decimal, green only within an input point's ±1 LU band,
+/// `−∞` in silence, one span per character so a narrow strip stacks them;
+/// no reading, a problem or a strip without `+LUFS` show nothing, their
+/// rows kept), and on the first
 /// strip of a group's run `group_name`, the group's name read bottom to
 /// top, in grey (#127; one colour per strip, the track's own). It takes no
 /// touch: the fader under it gets it.
@@ -85,10 +87,15 @@ fn InfoColumn(
             })
     };
     let state = move || lufs.try_with(|l| l.state.as_str()).unwrap_or("none");
+    // One span per character (`behave::lufs::glyph_class`): a narrow strip
+    // stacks them upright (the owner's ruling of 29.10, v10 A).
     let text = move || {
         lufs.try_with(|l| l.text.clone())
             .flatten()
             .unwrap_or_default()
+            .chars()
+            .map(|ch| view! { <span class=glyph_class(ch)>{ch.to_string()}</span> })
+            .collect_view()
     };
     let line = move |i: usize| {
         move || {

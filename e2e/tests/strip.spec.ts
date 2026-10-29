@@ -511,7 +511,11 @@ test.describe("A strip", () => {
       await expect(c).toHaveCSS("visibility", "hidden");
     }
     const s = strip(page, "Hand2 #");
-    expect((await s.getByTestId("lufs").boundingBox())!.height).toBeCloseTo(16, 1);
+    // The empty row kept (v10 A, the owner's ruling of 29.10): 1.25 em of
+    // the reading's size, the info column's width / 2.25 (9 to 22 px).
+    const w = (await s.boundingBox())!.width;
+    const size = Math.min(22, Math.max(9, (w - 38 - Math.min(32, w - 38) / 2) / 2.25));
+    expect((await s.getByTestId("lufs").boundingBox())!.height).toBeCloseTo(1.25 * size, 0);
     const fader = s.getByTestId("fader");
     await ready(fader);
     const col = s.getByTestId("strip-col");
