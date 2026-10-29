@@ -2,7 +2,8 @@
 something at a time. The page's ``rail`` events (a rail button's press
 steps: ``press``, ``tap``, ``full``, ``hold``, ``refused``, ``slid``,
 ``lost``, ``cancel``, and the AUTOTUNE panel's ``close`` and ``singer``;
-``button`` ``stage``, ``reverb`` or ``autotune``; the keys it writes, its
+``button`` ``stage``, ``reverb`` or ``autotune``, or ``mute`` for a guarded
+mute's hold, #162, which adds ``hint``; the keys it writes, its
 pointer; ``diag/trace.rs`` ``rail``) and the hub's rule records
 (``transport``: ``playing`` and ``prev``, or ``error``; ``stage_aut``:
 ``step`` ``flag``, ``write``, ``failed``; ``reverb``: every step of
