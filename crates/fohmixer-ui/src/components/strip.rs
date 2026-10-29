@@ -30,7 +30,7 @@ use crate::behave::db_text::db_text;
 use crate::behave::fader::{UNITY, VolumeLaw};
 use crate::behave::hold::{HINT_MS, HOLD_MS, Hold, Lift};
 use crate::behave::label::{mark_look, shown_label};
-use crate::behave::lufs::{LufsLook, glyph_class, kind_name, look as lufs_look_of, point_key};
+use crate::behave::lufs::{LufsLook, glyphs, kind_name, look as lufs_look_of, point_key};
 use crate::behave::reverb::held_low;
 use crate::behave::scale::{tick_label, tick_pos, ticks};
 use crate::binding::{detail_keys, strip_subs};
@@ -88,15 +88,22 @@ fn InfoColumn(
             })
     };
     let state = move || lufs.try_with(|l| l.state.as_str()).unwrap_or("none");
-    // One span per character (`behave::lufs::glyph_class`): a narrow strip
-    // stacks them upright (the owner's ruling of 29.10, v10 A).
-    let text = move || {
-        lufs.try_with(|l| l.text.clone())
-            .flatten()
+    // One span per character (`behave::lufs::glyphs`): a narrow strip
+    // stacks them upright (the owner's ruling of 29.10, v10 A). The spans
+    // are kept by their place and each reads its character and class from
+    // one memo, so a new value rewrites them in place (#151 review: 5 to
+    // 10 Hz on every `+LUFS` strip rebuilt every span, ui-rust.md "paint
+    // little per frame").
+    let shown = Memo::new(move |_| {
+        lufs.try_with(|l| glyphs(l.text.as_deref()))
             .unwrap_or_default()
-            .chars()
-            .map(|ch| view! { <span class=glyph_class(ch)>{ch.to_string()}</span> })
-            .collect_view()
+    });
+    let places = move || 0..shown.try_with(Vec::len).unwrap_or(0);
+    let glyph = move |place: usize| {
+        let at = move || shown.try_with(|g| g.get(place).copied()).flatten();
+        let class = move || at().map_or("g", |(_, class)| class);
+        let ch = move || at().map(|(ch, _)| ch.to_string()).unwrap_or_default();
+        view! { <span class=class>{ch}</span> }
     };
     let line = move |i: usize| {
         move || {
@@ -117,7 +124,9 @@ fn InfoColumn(
                 <span>{line(0)}</span>
                 <span>{line(1)}</span>
             </div>
-            <div class="lufs" data-testid="lufs" data-kind=kind data-l=state>{text}</div>
+            <div class="lufs" data-testid="lufs" data-kind=kind data-l=state>
+                <For each=places key=|place| *place children=glyph />
+            </div>
             {side}
         </div>
     }

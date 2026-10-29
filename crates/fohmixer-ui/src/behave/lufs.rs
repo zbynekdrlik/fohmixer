@@ -95,6 +95,18 @@ pub fn glyph_class(ch: char) -> &'static str {
     }
 }
 
+/// The reading's characters in order, each with its block's class
+/// (`glyph_class`): one span each, kept by its place, so a change of the
+/// reading rewrites the spans' text and class in place and adds or drops
+/// only the spans past the shorter reading (#151 review: no rebuild of
+/// every span per value). Nothing shown: none.
+pub fn glyphs(text: Option<&str>) -> Vec<(char, &'static str)> {
+    text.unwrap_or_default()
+        .chars()
+        .map(|ch| (ch, glyph_class(ch)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,6 +242,33 @@ mod tests {
         assert_eq!(classes("\u{2212}25.9"), ["g sign", "g", "g", "g dot", "g"]);
         assert_eq!(classes("\u{2212}\u{221e}"), ["g sign", "g"]);
         assert_eq!(classes("3.0"), ["g", "g dot", "g"]);
+    }
+
+    #[test]
+    fn the_glyphs_are_the_readings_characters_in_order_with_their_blocks() {
+        assert_eq!(
+            glyphs(Some("\u{2212}25.9")),
+            [
+                ('\u{2212}', "g sign"),
+                ('2', "g"),
+                ('5', "g"),
+                ('.', "g dot"),
+                ('9', "g"),
+            ]
+        );
+        assert_eq!(
+            glyphs(Some("\u{2212}\u{221e}")),
+            [('\u{2212}', "g sign"), ('\u{221e}', "g")]
+        );
+        assert!(glyphs(Some("")).is_empty());
+        assert!(glyphs(None).is_empty());
+        // A new value of the same length keeps every place: only text and
+        // class change (the spans are kept by their place).
+        let before = glyphs(look(Some(-259), None, IN).text.as_deref());
+        let after = glyphs(look(Some(-241), None, IN).text.as_deref());
+        assert_eq!(before.len(), after.len());
+        assert_eq!(after[1], ('2', "g"));
+        assert_eq!(after[2], ('4', "g"));
     }
 
     #[test]
