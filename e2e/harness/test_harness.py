@@ -261,6 +261,18 @@ class HarnessTest(unittest.TestCase):
         with open(path, encoding="utf-8") as f:
             self.assertEqual(json.load(f), {"rev": 0, "sectors": {}})
 
+    def test_the_colors_file_starts_empty_is_replaced_and_reset(self):
+        path = os.path.join(self.data, "colors.json")
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f), {"colors": {}})
+        doc = {"colors": {"band": {"Hand2 #": "teal"}}}
+        self.assertEqual(self.post("/hub/colors", {"doc": doc}), (200, {"ok": True}))
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f), doc)
+        self.assertEqual(self.post("/hub/colors/reset"), (200, {"ok": True}))
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f), {"colors": {}})
+
     def test_the_hub_config_names_both_hosts(self):
         with open(os.path.join(self.data, "fohmixer-hub.toml"), encoding="utf-8") as f:
             text = f.read()

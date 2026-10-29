@@ -320,6 +320,31 @@ export async function resetSectors() {
   );
 }
 
+/** The strips' colours as `colors.json` holds them (#164): instance → label → palette key. */
+export type ColorsDoc = { colors: Record<string, Record<string, string>> };
+
+/**
+ * Writes `doc` as the hub's `colors.json` (#164, a hand edit) and returns
+ * once the hub serves as many colours as it holds (`/api/status` `colors`,
+ * no `error`; the hub polls the file at the layout poll's tick). A spec that
+ * sets colours puts the empty document back with `resetColors`.
+ */
+export async function setColors(doc: ColorsDoc) {
+  const bearer = await token();
+  await harness("/hub/colors", { doc });
+  const n = Object.values(doc.colors).reduce((sum, labels) => sum + Object.keys(labels).length, 0);
+  await until(
+    async () => (await hubStatus(bearer)).colors,
+    (c: any) => c !== undefined && c.strips === n && !c.error,
+    "the hub serving the colours",
+  );
+}
+
+/** The harness's empty `colors.json` again (#164: every strip NONE), served when this returns. */
+export async function resetColors() {
+  await setColors({ colors: {} });
+}
+
 /** A control line on a host's stdin (`stall <ms>`, `rename "<a>" "<b>"`): its answer. */
 export async function hostLine(instance: string, line: string): Promise<string | null> {
   return (await harness(`/host/${instance}/line`, { line })).answer;
