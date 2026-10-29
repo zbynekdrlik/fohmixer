@@ -583,10 +583,10 @@ export type PointerStep =
   | { snap: true };
 
 /**
- * A rail button's look at a `{ snap: true }` step, read in the page (PR
- * #133's review, M1): `at` ms after the sequence started, its `data-holding`
- * and `data-full`, its second line (`.btn-sub`) and whether it flashes
- * `failed`.
+ * A rail button's or a guarded mute's look at a `{ snap: true }` step, read
+ * in the page (PR #133's review, M1): `at` ms after the sequence started, its
+ * `data-holding` and `data-full`, its second line (`.btn-sub`; a guarded
+ * mute's hold line `.mute-hold`, #162) and whether it flashes `failed`.
  */
 export type ButtonSnap = { at: number; holding: string | null; full: string | null; sub: string; failed: boolean };
 
@@ -619,7 +619,7 @@ export async function dispatchSnapped(
             at: performance.now() - start,
             holding: el.getAttribute("data-holding"),
             full: el.getAttribute("data-full"),
-            sub: el.querySelector(".btn-sub")?.textContent ?? "",
+            sub: el.querySelector(".btn-sub, .mute-hold")?.textContent ?? "",
             failed: el.classList.contains("failed"),
           });
           continue;

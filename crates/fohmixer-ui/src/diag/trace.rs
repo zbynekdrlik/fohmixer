@@ -244,9 +244,11 @@ pub fn detail(
 }
 
 /// A rail button's press step (#104, #130, D18): `what` `press`, `slid`,
-/// `tap`, `hold`, `cancel`, `lost`; `button` `stage` or `reverb`; the keys
-/// it writes (none for REVERB: the hub writes); the pointer. Essential:
-/// rare, and what a "STAGE AUT switched by itself" report is read from.
+/// `tap`, `hold`, `cancel`, `lost`; `button` `stage` or `reverb`, or
+/// `mute` for a guarded mute's hold (#162, with `full`, `refused` and
+/// `hint`); the keys it writes (none for REVERB: the hub writes); the
+/// pointer. Essential: rare, and what a "STAGE AUT switched by itself" or
+/// "the mute switched by itself" report is read from.
 pub fn rail(t: f64, what: &str, button: &str, keys: &[String], pointer: i32) -> Value {
     json!({"ev": "rail", "t": t, "what": what, "button": button, "keys": keys, "pointer": pointer})
 }

@@ -172,6 +172,17 @@
     display: none;
 }
 
+/* A guarded MUTE's hold line (#162) takes the label's place while it
+   says something. */
+.detail-left .mute[data-says="true"] > .strip-label {
+    display: none;
+}
+
+.detail-left .mute > .mute-hold {
+    font: 700 15px/1 var(--display);
+    letter-spacing: 0.04em;
+}
+
 /* The status light and Live's dB, large. */
 .detail-readout {
     display: flex;

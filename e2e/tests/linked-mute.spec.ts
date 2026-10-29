@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { test, expect } from "./support/fixtures";
 import {
   LiveClient,
-  doubleTap,
+  dispatchPointer,
+  dispatchSnapped,
   harness,
   hostLine,
   hubEvents,
@@ -22,7 +23,8 @@ import {
 // name button shows a chain and the count on its marks line under the name
 // (#151, mockup v8; a muted strip's chain without its count): grey while
 // all play, red while all are muted, amber "m/N" while m of them are muted by
-// hand in Live. A tap mutes all, or unmutes all when all are muted.
+// hand in Live. A tap mutes all, or unmutes all when all are muted; a
+// guarded one (+MG) does it by a 1 s hold, at the lift (#162).
 
 const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
 
@@ -236,7 +238,7 @@ test.describe("A linked mute", () => {
     await expect(strips).toHaveCount(0, { timeout: 10_000 });
   });
 
-  test("a guarded linked mute (+MG): the first tap arms and writes nothing, the second mutes all three in one batch", async ({ page }) => {
+  test("a guarded linked mute (+MG): a tap only hints and writes nothing, a 1 s hold mutes all three in one batch at its lift (#162)", async ({ page }) => {
     for (const t of LINKED) await live.set("band", t, "mute", false);
     await openSurface(page);
     const strips = page.locator('.slot[data-group="markers"] [data-testid="strip"]');
@@ -251,21 +253,26 @@ test.describe("A linked mute", () => {
       const chain = linked.getByTestId("mute-link");
       await expect(chain).toHaveText("3", { timeout: 10_000 });
       await ready(mute);
+      await expect(mute).toHaveAttribute("data-guarded", "true");
       const since = Date.now();
-      // One tap arms (the button pulses) and the arm runs out.
-      await mute.click();
-      await expect(mute).toHaveClass(/\barmed\b/);
-      await expect(mute).not.toHaveClass(/\barmed\b/);
+      // A tap (a lift before the hold's 1 s): the hint, nothing written.
+      await dispatchPointer(mute, [{ type: "pointerdown" }, { wait: 100 }, { type: "pointerup" }]);
+      await expect(mute.getByTestId("mute-hold")).toHaveText("hold");
+      await expect(mute.getByTestId("mute-hold")).toHaveCount(0);
       expect(await mutes(live)).toEqual([false, false, false]);
       await expect(chain).toHaveAttribute("data-state", "all");
-      // Two taps within the guard's 500 ms: all three muted.
-      await doubleTap(mute, 150);
-      for (const t of LINKED) await until(() => live.get("band", t, "mute"), (v) => v === true, `${t} muted by the confirming tap`);
+      // A hold to full: the lift's line, still nothing written; the lift
+      // mutes all three.
+      const held = await dispatchSnapped(mute, [{ type: "pointerdown" }, { wait: 1300 }, { snap: true }]);
+      expect(held.snaps[0]).toMatchObject({ holding: "true", full: "true", sub: "lift: mute" });
+      expect(await mutes(live), "nothing before the lift").toEqual([false, false, false]);
+      await dispatchPointer(mute, [{ type: "pointerup" }]);
+      for (const t of LINKED) await until(() => live.get("band", t, "mute"), (v) => v === true, `${t} muted at the hold's lift`);
       await expect(chain).toHaveAttribute("data-state", "muted");
       await expect(mute).toHaveAttribute("data-muted", "true");
-      // The hub's only batch of the three since the first tap is the
-      // confirming tap's: the arming taps wrote nothing.
-      const batches = await until(() => linkedBatches(since), (b) => b.length >= 1, "the confirming tap's batch");
+      // The hub's only batch of the three since the tap is the lift's: the
+      // tap and the press wrote nothing.
+      const batches = await until(() => linkedBatches(since), (b) => b.length >= 1, "the lift's batch");
       expect(batches.length).toBe(1);
       expect(batches[0].n).toBe(3);
       expect(batches[0].sent.map((item: any) => item.key).sort()).toEqual(KEYS);

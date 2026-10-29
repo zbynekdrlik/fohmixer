@@ -1,5 +1,6 @@
 //! The toggle buttons (spec F12, F14, F15): the strip mute with its
-//! protection, the group solos and the stage-mic button without STAGE AUT
+//! protection (a guarded mute acts by a 1 s hold with a fill, #162), the
+//! group solos and the stage-mic button without STAGE AUT
 //! (with it, the stage button is `components::rail::RuleButton`, D18).
 //! Every button shows Live's value, never a local memory (spec P2),
 //! and takes a tap only once that value is here (I8). A write that Live has
@@ -7,20 +8,30 @@
 //! `components::intent_look`), and each tap goes to the page's flight
 //! recorder.
 
+use std::time::Duration;
+
 use fohmixer_proto::layout::{Anchor, Binding};
 use leptos::html;
 use leptos::prelude::*;
 use serde_json::json;
+use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 
 use super::{
-    BtnText, fail_flash, intent_look, key_of, owns_touches, readiness, slot_of, trace_touch,
+    BtnText, down_of, fail_flash, intent_look, key_of, owns_touches, readiness, slot_of,
+    trace_rail, trace_touch,
 };
 use crate::behave::colour::{css_color, text_on};
 use crate::behave::fader_link::Flink;
+use crate::behave::hold::{HINT_MS, Hold, Lift};
 use crate::behave::label::{label_chars, strip_label};
 use crate::behave::marks::marks_look;
-use crate::behave::mute::{GUARD_MS, GuardAction, Linked, MuteGuard, Reach, chain_compact};
+use crate::behave::mute::{Linked, Reach, chain_compact, hold_line, mute_fill, mute_press};
+use crate::behave::rail::{
+    Fill, RAIL_HOLD_MS, cancels, full_step, hold_step, restarted, stale_press,
+};
 use crate::binding::{SubSpec, mute_sub, solo_sub};
+use crate::diag::perf::Pointer;
 use crate::dom;
 use crate::store::{LiveStore, Slot};
 
@@ -73,6 +84,17 @@ pub(super) fn toggle_flag(
         Some(fail_flash(failed)),
     );
 }
+
+/// A guarded mute's page-wide `pointerdown` listener (capture phase, #124:
+/// a press whose end never came ends at the next primary down of its
+/// type), kept to remove it in the cleanup.
+type DownListener = Closure<dyn FnMut(web_sys::PointerEvent)>;
+
+/// The flight recorder's `button` of a guarded mute's `rail` steps (#162).
+const MUTE_BUTTON: &str = "mute";
+
+/// Why a guarded mute's hold did nothing (the failure flash's words).
+const MUTE_REFUSAL: &str = "the mute cannot be switched now";
 
 /// A linked mute's partner (#127): another track's mute, its subscription
 /// and its slot.
@@ -156,9 +178,17 @@ pub struct Corner {
 
 /// A strip's name button, its mute (#151, mockup v8: calm, the strip's top
 /// edge, the name first and the marks line under it; the detail's MUTE is
-/// lit in the track's Live colour while the track is audible); a guarded
-/// strip needs a second tap within 500 ms (the
-/// first arms and pulses). A linked mute (#127, `partners`) shows and writes
+/// lit in the track's Live colour while the track is audible). A guarded
+/// strip's mute acts by a hold (#162, `behave::mute::mute_press`, as the
+/// rail buttons' `Hold::lifted(RAIL_HOLD_MS)`): the fill grows across the
+/// button for 1 s, the line then says what the lift does (on a strip in the
+/// marks line's place, on the detail's MUTE in the label's) and the lift
+/// writes; a lift before full shows the `hold` hint for `HINT_MS` and
+/// writes nothing, and a slide past 10 px, a cancel, a lost capture, a
+/// hidden page or the next primary down of its type elsewhere (#124) end the
+/// press with nothing written. Each step goes to the flight recorder as a
+/// `rail` step of the button `mute`. An unguarded mute acts on its down,
+/// one tap. A linked mute (#127, `partners`) shows and writes
 /// its partners' mutes with its own: lit while any of them plays, dark only
 /// when all are muted; a tap mutes all, or unmutes all when all are muted,
 /// in one `sets` message. It takes a tap once the strip's own track has
@@ -275,85 +305,312 @@ pub fn MuteView(
     let spec = StoredValue::new(spec);
     let specs = StoredValue::new(specs);
     let slots = StoredValue::new(all);
-    let guard = StoredValue::new(MuteGuard::default());
-    let armed = RwSignal::new(false);
     let failed = RwSignal::new(false);
+    // The write a tap or a full hold's lift makes, from what the button
+    // shows now (P2).
+    let write = move || {
+        if linked {
+            // Over the tracks with Live's value: all muted unmutes them,
+            // else they are muted.
+            let reach = slots.try_with_value(|s| linked_now(s, false));
+            if let Some(reach) = reach
+                && let Some(muted) = reach.state.tap()
+            {
+                let _ = specs.try_with_value(|s| {
+                    let targets: Vec<SubSpec> = reach
+                        .targets
+                        .iter()
+                        .filter_map(|&i| s.get(i).cloned())
+                        .collect();
+                    store.set_together(&targets, &json!(muted), true, move || fail_flash(failed));
+                });
+            }
+        } else {
+            let _ = spec.try_with_value(|s| toggle_flag(store, s, slot, failed));
+        }
+    };
+    // A guarded mute's press (#162): its pointer's type (#124), its one
+    // check, the hint's timer, and its state as shown.
+    let hold = StoredValue::new(mute_press());
+    let press_kind = StoredValue::new(None::<Pointer>);
+    let check = StoredValue::new(None::<TimeoutHandle>);
+    let hint_timer = StoredValue::new(None::<TimeoutHandle>);
+    let holding = RwSignal::new(false);
+    let full = RwSignal::new(false);
+    let hint = RwSignal::new(false);
+    let any_down = StoredValue::new_local(None::<DownListener>);
+    // The timers and the page's listener go with the button (the cleanup
+    // writes no signal of its own).
+    on_cleanup(move || {
+        for timer in [check, hint_timer] {
+            if let Some(Some(handle)) = timer.try_update_value(Option::take) {
+                handle.clear();
+            }
+        }
+        if let (Some(Some(listener)), Some(window)) =
+            (any_down.try_update_value(Option::take), web_sys::window())
+        {
+            let _ = window.remove_event_listener_with_callback_and_bool(
+                "pointerdown",
+                listener.as_ref().unchecked_ref(),
+                true,
+            );
+        }
+    });
+    // The mute a full hold's lift writes now (none: the strip's own track
+    // has no value, the hold is refused).
+    let to_now = move || {
+        slots
+            .try_with_value(|s| linked_now(s, false).state.tap())
+            .flatten()
+    };
+    let fill = Memo::new(move |_| {
+        mute_fill(
+            holding.try_get().unwrap_or(false),
+            full.try_get().unwrap_or(false),
+            shown.try_get().and_then(Linked::tap),
+        )
+    });
+    let said = Memo::new(move |_| {
+        hold_line(
+            fill.try_get().unwrap_or(Fill::None),
+            shown.try_get().and_then(Linked::tap),
+            hint.try_get().unwrap_or(false),
+        )
+    });
+    let step = move |what: &str, pointer: i32| {
+        let _ = keys.try_with_value(|k| trace_rail(what, MUTE_BUTTON, k, pointer));
+    };
+    let refuse = move || fail_flash(failed)(MUTE_REFUSAL.to_string());
+    // The press's state follows it; a press no longer filling waits for no
+    // check.
+    let settle = move || {
+        let filling = hold.try_with_value(Hold::holding).unwrap_or(false);
+        let is_full = hold.try_with_value(Hold::full).unwrap_or(false);
+        if !filling && let Some(Some(handle)) = check.try_update_value(Option::take) {
+            handle.clear();
+        }
+        let _ = holding.try_set(filling);
+        let _ = full.try_set(is_full);
+    };
+    let hide_hint = move || {
+        if let Some(Some(handle)) = hint_timer.try_update_value(Option::take) {
+            handle.clear();
+        }
+        let _ = hint.try_set(false);
+    };
+    // A lift before full: the hint, for HINT_MS.
+    let show_hint = move || {
+        hide_hint();
+        let _ = hint.try_set(true);
+        let timer = set_timeout_with_handle(
+            move || {
+                let _ = hint_timer.try_set_value(None);
+                let _ = hint.try_set(false);
+            },
+            Duration::from_millis(HINT_MS as u64),
+        );
+        let _ = hint_timer.try_set_value(timer.ok());
+    };
+    // The lift of a full press: the write when it can act, else refused.
+    let held = move |pointer: i32| {
+        let value = to_now();
+        step(hold_step(value), pointer);
+        match value {
+            Some(_) => write(),
+            None => refuse(),
+        }
+    };
+    if guarded {
+        // A press whose end never came ends at the next primary down
+        // anywhere on the page, before any control's handler sees it
+        // (#124).
+        let listener = Closure::wrap(Box::new(move |ev: web_sys::PointerEvent| {
+            let pressing = hold.try_with_value(Hold::pressing).flatten();
+            let kind = press_kind.try_get_value().flatten();
+            if let Some(old) = stale_press(pressing, kind, down_of(&ev)) {
+                let _ = hold.try_update_value(Hold::leave);
+                step("lost", old);
+                settle();
+            }
+        }) as Box<dyn FnMut(web_sys::PointerEvent)>);
+        if let Some(window) = web_sys::window() {
+            let _ = window.add_event_listener_with_callback_and_bool(
+                "pointerdown",
+                listener.as_ref().unchecked_ref(),
+                true,
+            );
+        }
+        let _ = any_down.try_set_value(Some(listener));
+        // A hidden page ends a press with nothing done.
+        let hidden = window_event_listener_untyped("visibilitychange", move |_| {
+            if dom::hidden()
+                && let Some(Some(pointer)) = hold.try_update_value(Hold::leave)
+            {
+                step("lost", pointer);
+                settle();
+            }
+        });
+        on_cleanup(move || hidden.remove());
+    }
     let on_down = move |ev: web_sys::PointerEvent| {
         if !slot.try_with_untracked(Slot::is_ready).unwrap_or(false) {
             return;
         }
         ev.prevent_default();
-        let _ = keys.try_with_value(|k| trace_touch("tap", k, ev.pointer_id()));
-        let action = guard
-            .try_update_value(|g| g.on_tap(guarded, dom::now()))
-            .unwrap_or(GuardAction::Arm);
-        match action {
-            GuardAction::Apply if linked => {
-                let _ = armed.try_set(false);
-                // What the button shows now (P2), over the tracks with
-                // Live's value: all muted unmutes them, else they are muted.
-                let reach = slots.try_with_value(|s| linked_now(s, false));
-                if let Some(reach) = reach
-                    && let Some(muted) = reach.state.tap()
-                {
-                    let _ = specs.try_with_value(|s| {
-                        let targets: Vec<SubSpec> = reach
-                            .targets
-                            .iter()
-                            .filter_map(|&i| s.get(i).cloned())
-                            .collect();
-                        store.set_together(&targets, &json!(muted), true, move || {
-                            fail_flash(failed)
-                        });
-                    });
-                }
-            }
-            GuardAction::Apply => {
-                let _ = armed.try_set(false);
-                let _ = spec.try_with_value(|s| toggle_flag(store, s, slot, failed));
-            }
-            GuardAction::Arm => {
-                let _ = armed.try_set(true);
-                set_timeout(
-                    move || {
-                        let still = guard
-                            .try_with_value(|g| g.armed(dom::now()))
-                            .unwrap_or(false);
-                        if !still {
-                            let _ = armed.try_set(false);
-                        }
-                    },
-                    std::time::Duration::from_millis(GUARD_MS as u64 + 20),
-                );
-            }
+        if !guarded {
+            let _ = keys.try_with_value(|k| trace_touch("tap", k, ev.pointer_id()));
+            write();
+            return;
         }
+        let id = ev.pointer_id();
+        let before = hold.try_with_value(Hold::pressing).flatten();
+        let pressed = hold
+            .try_update_value(|h| h.down(id, ev.is_primary(), dom::now()))
+            .unwrap_or(false);
+        if !pressed {
+            return;
+        }
+        // A down of another type took over a press still down.
+        if let Some(old) = restarted(before, id) {
+            step("lost", old);
+        }
+        let _ = press_kind.try_set_value(Pointer::parse(&ev.pointer_type()));
+        step("press", id);
+        hide_hint();
+        if let Some(el) = dom::current_element(&ev) {
+            let _ = el.set_pointer_capture(id);
+        }
+        if let Some(Some(handle)) = check.try_update_value(Option::take) {
+            handle.clear();
+        }
+        // One check a little after the hold: the press is full, nothing is
+        // written; one that cannot act is refused and dead.
+        let timer = set_timeout_with_handle(
+            move || {
+                let _ = check.try_set_value(None);
+                let fills = hold
+                    .try_update_value(|h| h.open(dom::now()))
+                    .unwrap_or(false);
+                if fills {
+                    let value = to_now();
+                    step(full_step(value), id);
+                    if value.is_none() {
+                        let _ = hold.try_update_value(Hold::refuse);
+                        refuse();
+                    }
+                }
+                settle();
+            },
+            Duration::from_millis(RAIL_HOLD_MS as u64 + 20),
+        );
+        let _ = check.try_set_value(timer.ok());
+        settle();
+    };
+    // A finger that slides off the press ends it (`Hold::moved`).
+    let on_move = move |ev: web_sys::PointerEvent| {
+        if !guarded {
+            return;
+        }
+        let id = ev.pointer_id();
+        let (x, y) = (f64::from(ev.client_x()), f64::from(ev.client_y()));
+        let ended = hold
+            .try_update_value(|h| h.moved(id, x, y))
+            .unwrap_or(false);
+        if ended {
+            step("slid", id);
+            settle();
+        }
+    };
+    let on_up = move |ev: web_sys::PointerEvent| {
+        if !guarded {
+            return;
+        }
+        let id = ev.pointer_id();
+        let lift = hold
+            .try_update_value(|h| h.up(id, dom::now()))
+            .unwrap_or(Lift::Nothing);
+        settle();
+        match lift {
+            Lift::Tap => {
+                step("hint", id);
+                show_hint();
+            }
+            Lift::Open => held(id),
+            Lift::Nothing => {}
+        }
+    };
+    // A cancelled pointer, or one whose capture was lost: nothing done.
+    let on_cancel = move |ev: web_sys::PointerEvent| {
+        if !guarded {
+            return;
+        }
+        let id = ev.pointer_id();
+        if cancels(hold.try_with_value(Hold::pressing).flatten(), id) {
+            step("cancel", id);
+        }
+        let _ = hold.try_update_value(|h| h.cancel(id));
+        settle();
     };
     let now = move || shown.try_get().unwrap_or(Linked::Unknown);
     // Its own track's readiness alone (#127 review M2).
     let state = Memo::new(move |_| readiness(&[slot]));
     let binding = move || state.try_get().map_or("waiting", |s| s.name());
     let disabled = move || state.try_get().map_or("true", |s| s.disabled());
-    let look = move || colour_style(color.and_then(|c| c.try_with(Slot::number).flatten()));
+    // A guarded mute's fill takes the hold's time (strip.css reads it).
+    let hold_time = if guarded {
+        format!("--hold-ms:{RAIL_HOLD_MS}ms;")
+    } else {
+        String::new()
+    };
+    let look = move || {
+        let colour = colour_style(color.and_then(|c| c.try_with(Slot::number).flatten()));
+        format!("{colour}{hold_time}")
+    };
     let length = format!("--n:{};", label_chars(&label));
+    let filling = move || guarded.then(|| fill.try_get().is_some_and(Fill::holding).to_string());
+    let is_full = move || guarded.then(|| fill.try_get().is_some_and(Fill::full).to_string());
+    let says = move || said.try_get().flatten().is_some().then_some("true");
+    // The hold's line is in the page only while it says something (no
+    // hidden text in a button).
+    let said_view = move || {
+        said.try_get().flatten().map(|text| {
+            view! {
+                <span class="mute-hold" data-testid="mute-hold" aria-hidden="true">
+                    {text}
+                </span>
+            }
+        })
+    };
+    let fill_layer = guarded.then(|| view! { <span class="hold" aria-hidden="true"></span> });
     view! {
         <div
             class="mute"
             node_ref=root
             use:owns_touches=touch_keys
             class:lit=move || now().lit()
-            class:armed=move || armed.try_get().unwrap_or(false)
             class:failed=move || failed.try_get().unwrap_or(false)
             data-testid="mute"
             data-muted=move || now().muted_attr()
+            data-guarded=guarded.to_string()
+            data-holding=filling
+            data-full=is_full
+            data-says=says
             data-binding=binding
             aria-disabled=disabled
             style=look
             on:pointerdown=on_down
+            on:pointermove=on_move
+            on:pointerup=on_up
+            on:pointercancel=on_cancel
+            on:lostpointercapture=on_cancel
         >
             <span class="strip-label" data-testid="strip-label" style=length>{label}</span>
             {on_button}
             {pill}
+            {said_view}
             {line}
+            {fill_layer}
         </div>
     }
 }

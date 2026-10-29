@@ -55,7 +55,7 @@ pub fn AlertView(
         })
     });
     // A guarded TechAlert needs a second tap within 500 ms (the first arms
-    // and pulses), as a guarded strip's mute.
+    // and pulses); a strip's guarded mute holds instead (#162).
     let on_down = move |ev: web_sys::PointerEvent| {
         if !slot.try_with_untracked(Slot::is_ready).unwrap_or(false) {
             return;

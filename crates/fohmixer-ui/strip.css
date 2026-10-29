@@ -588,12 +588,7 @@
     color: var(--tt, #10101a);
 }
 
-.mute.armed {
-    outline: 2px solid var(--solo);
-    outline-offset: 1px;
-    animation: arm 0.5s ease-out infinite;
-}
-
+/* A guarded TechAlert's armed pulse (buttons.css `.btn.armed`). */
 @keyframes arm {
     to { outline-offset: 4px; outline-color: transparent; }
 }
@@ -621,19 +616,56 @@
     color: var(--text);
 }
 
-/* The armed guard's pulse and an open write's outline (intent.css) drawn
-   inside the button (#151): it is the strip's top edge and its whole
-   width, so an outline outside it would be cut by the line at the top. */
-.strip-head > .mute:is(.armed, [data-intent="unconfirmed"], [data-intent="not_sent"]) {
+/* An open write's outline (intent.css) drawn inside the button (#151): it
+   is the strip's top edge and its whole width, so an outline outside it
+   would be cut by the line at the top. */
+.strip-head > .mute:is([data-intent="unconfirmed"], [data-intent="not_sent"]) {
     outline-offset: -2px;
 }
 
-.strip-head > .mute.armed {
-    animation-name: arm-in;
+/* A guarded mute's hold (#162, as the rail buttons' `.hold`, rule.css):
+   the fill grows from the left across the button over `--hold-ms` (the
+   component's, RAIL_HOLD_MS) while `data-holding`, and stays full until
+   the lift. It is a layer inside the button (`inset: 0`, its corners the
+   button's, a `clip-path` growing to the whole box), so nothing passes
+   the button or the strip's top edge; calm: a light veil and a thin
+   foot. No touch: the button takes it. */
+.mute > .hold {
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: rgba(234, 234, 240, 0.2);
+    box-shadow: inset 0 -3px 0 var(--text);
+    clip-path: inset(0 100% 0 0 round 5px);
+    pointer-events: none;
 }
 
-@keyframes arm-in {
-    to { outline-offset: -6px; outline-color: transparent; }
+.mute[data-holding="true"] > .hold {
+    clip-path: inset(0 0 0 0 round 5px);
+    transition: clip-path var(--hold-ms) linear;
+}
+
+/* The hold's line (#162): on a strip it takes the marks line's place
+   (what the hold will do, what the lift does once full, or the `hold`
+   hint after a lift before full), in the marks' size; the name stays. */
+.mute[data-says="true"] > .strip-marks {
+    display: none;
+}
+
+.mute-hold {
+    overflow: hidden;
+    color: var(--text);
+    font: 700 7px/10px var(--ui);
+    letter-spacing: 0;
+    text-align: left;
+    text-transform: none;
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+.strip-head > .mute > .mute-hold {
+    height: 10px;
+    margin-left: -3px;
 }
 
 .strip-head > .mute::after {

@@ -205,7 +205,7 @@ fn DetailKey(strip: Strip) -> impl IntoView {
         if let Some(Some(handle)) = check.try_update_value(Option::take) {
             handle.clear();
         }
-        // One check a little after the hold (as the mute guard's), so a
+        // One check a little after the hold (as a rail button's), so a
         // coarse clock never finds the press a hair short of it.
         let timer = set_timeout_with_handle(
             move || {
