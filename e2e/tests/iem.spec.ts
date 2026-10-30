@@ -65,7 +65,7 @@ async function openIem(page: Page) {
 
 /** A layout page's tab: the mixer again. */
 async function backToTheMixer(page: Page) {
-  await page.locator('[data-testid="tabbar"][data-level="0"] [data-testid="tab"]').first().click();
+  await page.locator('[data-testid="tabbar"][data-level="0"] [data-testid="tab"]').filter({ hasText: "FOH" }).click();
   await expect(page.getByTestId("page")).toHaveAttribute("data-extra", "none");
 }
 
@@ -195,8 +195,8 @@ test.describe("The IEM tab (fohmixer's own https page)", () => {
     try {
       // A title changed, as a Tuner edit does (detail.spec's recipe).
       const changed = JSON.parse(readFileSync(FIXTURE_LAYOUT, "utf-8"));
-      const groups = changed.pages.flatMap((p: any) => p.rows).flatMap((r: any) => r.sections);
-      groups.find((s: any) => s.kind === "group").title = "IEM TEST";
+      const foh = changed.pages.find((p: any) => p.id === "foh");
+      foh.rows.flatMap((r: any) => r.sections).find((s: any) => s.id === "foh-2").title = "IEM TEST";
       await harness("/hub/layout", { layout: changed });
       // The old shell is gone: the page has mounted the new layout.
       await expect(page.locator('[data-testid="stage"][data-e2e-shell="1"]')).toHaveCount(0, { timeout: 10_000 });
