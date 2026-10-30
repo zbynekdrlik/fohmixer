@@ -518,6 +518,7 @@ impl Hub {
             stage_aut = hub_state.stage_aut,
             public_name = config.tls.as_ref().map(|t| t.name.as_str()).unwrap_or("-"),
             ableset = config.ableset.as_ref().map(|a| a.name.as_str()).unwrap_or("-"),
+            iem = config.iem.as_ref().map(|i| i.url.as_str()).unwrap_or("-"),
             access = config.access.is_some(),
             companion = config.companion.is_some(),
             eq = ?config.eq_backend(),
@@ -550,6 +551,10 @@ impl Hub {
         // AbleSet's page (#90 B3): every page is told of it.
         if let (Some(cfg), Some(tls)) = (&config.ableset, &config.tls) {
             router = router.with_ableset(ableset::link::Page::of(cfg, tls));
+        }
+        // iemmixer's page (#166): every page is told of it.
+        if let Some(cfg) = &config.iem {
+            router = router.with_iem(cfg);
         }
         tokio::spawn(router.run(router_rx));
         // The LUFS devices' listener (#151): 127.0.0.1 only; a port taken
@@ -730,18 +735,23 @@ pub(crate) fn test_hub(dir: &std::path::Path) -> Hub {
 }
 
 /// The Content-Security-Policy the hub of `config` sends with its pages:
-/// [`page_csp`] of `[ableset]`'s name and the `[tls]` port (#90).
+/// [`page_csp`] of `[ableset]`'s name and the `[tls]` port (#90) and
+/// `[iem]`'s origin (#166).
 pub fn page_policy(config: &Config) -> String {
     let framed = config.ableset.as_ref().zip(config.tls.as_ref());
-    page_csp(framed.map(|(a, tls)| (a.name.as_str(), tls.port)))
+    let iem = config.iem.as_ref().and_then(config::IemCfg::origin);
+    page_csp(
+        framed.map(|(a, tls)| (a.name.as_str(), tls.port)),
+        iem.as_deref(),
+    )
 }
 
 /// The revision of a page policy (#90): its FNV-1a hash in 16 hex digits
 /// (as a key image's identity, `deck::img_hash`). A page keeps the one it
 /// loaded with (the hub writes it into the `index.html` it serves,
 /// `routes::with_policy`) and reloads when a hello names another: a restart
-/// with `[ableset]` added or removed changes it, one with the same policy
-/// never does.
+/// with `[ableset]` or `[iem]` added or removed changes it, one with the same
+/// policy never does.
 pub fn policy_rev(policy: &str) -> String {
     deck::img_hash(policy)
 }
@@ -751,14 +761,20 @@ pub fn policy_rev(policy: &str) -> String {
 /// client WebSocket is same-origin, which 'self' covers); images may also be
 /// the page's own blobs (a Pro-Q 4 card's last picture, fetched with the
 /// token, #71). With `[ableset]` (#90; `framed`: its name and the `[tls]`
-/// port) AbleSet's origins may be framed and probed as an image.
-pub fn page_csp(framed: Option<(&str, u16)>) -> String {
-    let (img, frame) = match framed {
-        Some((name, port)) => {
-            let origins = ableset::https_origins(name, port);
-            (format!(" {origins}"), format!("; frame-src {origins}"))
-        }
-        None => (String::new(), String::new()),
+/// port) AbleSet's origins may be framed and probed as an image. With
+/// `[iem]` (#166; `iem`: its page's origin) that origin may be framed: it is
+/// fohmixer's own page saying what it frames, nothing of iemmixer's answers.
+pub fn page_csp(framed: Option<(&str, u16)>, iem: Option<&str>) -> String {
+    let ableset = framed.map(|(name, port)| ableset::https_origins(name, port));
+    let img = ableset
+        .as_ref()
+        .map(|origins| format!(" {origins}"))
+        .unwrap_or_default();
+    let frames: Vec<&str> = ableset.as_deref().into_iter().chain(iem).collect();
+    let frame = if frames.is_empty() {
+        String::new()
+    } else {
+        format!("; frame-src {}", frames.join(" "))
     };
     format!(
         "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:{img}; font-src 'self'{frame}"
@@ -1253,13 +1269,40 @@ mod tests {
     #[test]
     fn the_page_may_frame_ablesets_origins_only_with_ableset() {
         let today = "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self'";
-        assert_eq!(page_csp(None), today);
+        assert_eq!(page_csp(None, None), today);
         assert_eq!(
-            page_csp(Some(("ableset.example.org", 8443))),
+            page_csp(Some(("ableset.example.org", 8443)), None),
             "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; \
              img-src 'self' data: blob: https://ableset.example.org https://ableset.example.org:8443; font-src 'self'; \
              frame-src https://ableset.example.org https://ableset.example.org:8443"
         );
+    }
+
+    #[test]
+    fn the_page_may_frame_iemmixers_origin_only_with_iem_and_probes_nothing_there() {
+        // #166: without it `default-src 'self'` refuses the frame. It is no
+        // image source: the IEM tab probes nothing.
+        assert_eq!(
+            page_csp(None, Some("https://iem.example.org:8443")),
+            "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; \
+             img-src 'self' data: blob:; font-src 'self'; frame-src https://iem.example.org:8443"
+        );
+        assert_eq!(
+            page_csp(
+                Some(("ableset.example.org", 443)),
+                Some("https://iem.example.org")
+            ),
+            "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; \
+             img-src 'self' data: blob: https://ableset.example.org; font-src 'self'; \
+             frame-src https://ableset.example.org https://iem.example.org"
+        );
+        let data = std::path::Path::new("data");
+        let config = |text: &str| Config::parse(text, data).unwrap();
+        let with = "[iem]\nurl = \"https://iem.example.org:8443/mix\"\n";
+        let policy = page_policy(&config(with));
+        assert_eq!(policy, page_csp(None, Some("https://iem.example.org:8443")));
+        // A page open across a restart that adds it reloads for the frame.
+        assert_ne!(policy_rev(&policy), policy_rev(&page_policy(&config(""))));
     }
 
     #[test]
@@ -1277,11 +1320,11 @@ mod tests {
         };
         let with = ableset(8443, "AbleSet");
         // The policy is the page's CSP of the config.
-        assert_eq!(page_policy(&config(tls)), page_csp(None));
-        assert_eq!(page_policy(&config("")), page_csp(None));
+        assert_eq!(page_policy(&config(tls)), page_csp(None, None));
+        assert_eq!(page_policy(&config("")), page_csp(None, None));
         assert_eq!(
             page_policy(&config(&with)),
-            page_csp(Some(("ableset.example.org", 8443)))
+            page_csp(Some(("ableset.example.org", 8443)), None)
         );
         let rev = |text: &str| policy_rev(&page_policy(&config(text)));
         // The same config: the same revision, so a plain restart reloads nothing.

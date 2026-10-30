@@ -23,6 +23,7 @@ from http.server import ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import harness  # noqa: E402
+import test_fake_iem  # noqa: E402
 import timeline_read  # noqa: E402  (on sys.path through the harness)
 
 LAYOUT = os.path.join(harness.REPO, "tools", "import-tosc", "fixtures", "expected-layout.json")
@@ -554,6 +555,18 @@ class HarnessTest(unittest.TestCase):
             harness.hub_config(8480, 1, 2, None, None, ableset), harness.hub_config(8480, 1, 2)
         )
 
+    def test_the_iem_table_of_the_hub_config_needs_no_public_name(self):
+        # #166: the hub only tells the page of it.
+        base = harness.hub_config(8480, 1, 2)
+        url = "https://iem.e2e.test:39194/"
+        self.assertEqual(harness.hub_config(8480, 1, 2, iem=url), base + f'[iem]\nurl = "{url}"\n')
+
+    def test_without_a_fake_iemmixer_its_routes_are_absent(self):
+        self.assertEqual(self.harness.handle("GET", "/iem", {})[0], 404)
+        self.assertEqual(self.post("/iem/clear")[0], 404)
+        self.assertEqual(self.post("/hub/iem", {"on": True})[0], 404, "no hub in this test")
+        self.assertEqual(self.harness.set_iem(True), False, "no --iem-url")
+
     def test_without_a_fake_ableset_its_routes_are_absent(self):
         self.assertEqual(self.harness.handle("GET", "/ableset", {})[0], 404)
         self.assertEqual(self.post("/ableset/down")[0], 404)
@@ -619,11 +632,12 @@ class EphemeralPorts(unittest.TestCase):
             [
                 *("--data", "d", "--layout", "l", "--link-port", "8481"),
                 *("--fake-companion-port", "39192", "--fake-ableset-port", "39193"),
+                *("--fake-iem-port", "39194"),
             ]
         )
         self.assertEqual(
             sorted(p for p in harness.fixed_ports(args) if p),
-            [8443, 8480, 8481, 39101, 39102, 39190, 39192, 39193],
+            [8443, 8480, 8481, 39101, 39102, 39190, 39192, 39193, 39194],
         )
 
 
@@ -754,6 +768,67 @@ class FakeCompanionRoutes(unittest.TestCase):
                 harness.companion_of(
                     harness.parse_args(["--data", "d", "--layout", "l", "--companion", bad]), None
                 )
+
+
+class FakeIemRoutes(unittest.TestCase):
+    """The harness with ``--fake-iem-port`` and ``--iem-url`` (#166): the hub's
+    config names the address, the routes drive the fake."""
+
+    URL = "https://iem.e2e.test:39194/"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.data = tempfile.mkdtemp(prefix="fohmixer-harness-test-")
+        cert, key = test_fake_iem.leaf(cls.data)
+        args = harness.parse_args(
+            [
+                *("--data", os.path.join(cls.data, "hub"), "--layout", LAYOUT),
+                *("--band-port", "0", "--master-port", "0", "--meters-hz", "0"),
+                *("--fake-iem-port", "0", "--iem-url", cls.URL),
+                *("--iem-cert", cert, "--iem-key", key),
+                *("--iem-ancestors", "https://foh.e2e.test:8443"),
+            ]
+        )
+        cls.harness = harness.Harness(args)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.harness.stop()
+        shutil.rmtree(cls.data, ignore_errors=True)
+
+    def config(self):
+        with open(os.path.join(self.data, "hub", "fohmixer-hub.toml"), encoding="utf-8") as f:
+            return f.read()
+
+    def test_the_routes_drive_the_fake(self):
+        handle = self.harness.handle
+        port = self.harness.iem_fake.port
+        status, _, _ = test_fake_iem.get(port, "/")
+        self.assertEqual(status, 200)
+        status, state = handle("GET", "/iem", {})
+        self.assertEqual((status, state["port"], state["loads"]), (200, port, 1))
+        self.assertEqual(handle("POST", "/iem/clear", {})[1]["loads"], 0)
+
+    def test_the_iem_table_goes_and_comes_back_with_the_rest_kept(self):
+        whole = self.config()
+        table = f'[iem]\nurl = "{self.URL}"\n'
+        self.assertTrue(whole.endswith(table))
+        try:
+            self.assertEqual(self.harness.set_iem(False), False)
+            self.assertEqual(self.config(), whole.replace(table, ""), "only [iem] went")
+        finally:
+            self.assertEqual(self.harness.set_iem(True), True)
+        self.assertEqual(self.config(), whole)
+
+
+class FakeIemArguments(unittest.TestCase):
+    def test_a_fake_without_its_certificate_is_refused(self):
+        args = harness.parse_args(["--data", "d", "--layout", "l", "--fake-iem-port", "0"])
+        with self.assertRaisesRegex(SystemExit, "--iem-cert"):
+            harness.fake_iem_of(args)
+
+    def test_no_fake_without_its_port(self):
+        self.assertIsNone(harness.fake_iem_of(harness.parse_args(["--data", "d", "--layout", "l"])))
 
 
 class FakeAbleSetRoutes(unittest.TestCase):

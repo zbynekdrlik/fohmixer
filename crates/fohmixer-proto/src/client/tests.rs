@@ -478,6 +478,20 @@ fn deck_messages_round_trip() {
 }
 
 #[test]
+fn iemmixers_message_round_trips_and_is_whole_or_refused() {
+    round_trip_server(
+        ServerMsg::Iem {
+            url: "https://iem.example.org/".into(),
+            title: "IEM MIXER".into(),
+        },
+        json!({"type": "iem", "url": "https://iem.example.org/", "title": "IEM MIXER"}),
+    );
+    // The page never guesses a frame's address.
+    let no_url = json!({"type": "iem", "title": "IEM MIXER"});
+    assert!(serde_json::from_value::<ServerMsg>(no_url).is_err());
+}
+
+#[test]
 fn ablesets_message_round_trips_and_a_message_this_page_does_not_know_is_ignored() {
     round_trip_server(
         ServerMsg::Ableset {

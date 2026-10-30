@@ -338,6 +338,12 @@ exclude_re = [
   # through the tested Extra::covers_left); sectors.spec.ts opens the deck
   # and finds LU's and LD's layouts, ARRANGE and their taps inert.
   "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::select|Nav::show_extra|Nav::tap_view|Nav::open_column|Nav::left_covered|Nav::left_covered_now|step_window|remembered_pages)( |$)",
+  # #166: Nav::iem_alive and Nav::iem_shown (the frame's signal and the
+  # nav.shown memo read) and Nav::close_iem (those signals written through
+  # the tested Extra::after_iem_closed, each only on a change, and the
+  # recorder told); iem.spec.ts opens the tab, finds the dot and the hidden
+  # frame behind FOH, and taps the ✕ from both.
+  "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::iem_alive|Nav::iem_shown|Nav::close_iem)( |$)",
   # The fader sectors' glue (#148), one function at a time. pages/surface.rs:
   # Nav::pick (a sector's layout tab: the picks' signal, written only on a
   # change, and localStorage under binding::sectors::PICKS_KEY),

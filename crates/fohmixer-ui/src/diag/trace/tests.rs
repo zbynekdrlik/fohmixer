@@ -98,6 +98,7 @@ fn what_a_touch_and_an_outage_need_is_essential_moves_round_trips_and_long_frame
         "idle",
         "ableset_view",
         "ableset",
+        "iem",
     ] {
         assert!(is_essential(ev), "{ev}");
     }
@@ -766,6 +767,22 @@ fn a_stream_deck_press_and_the_tab_are_page_events() {
     assert_eq!(
         deck_view(6.0, false),
         json!({"ev": "deck_view", "t": 6.0, "on": false})
+    );
+}
+
+#[test]
+fn iemmixers_frame_and_its_steps_are_page_events() {
+    assert_eq!(
+        iem(5.0, IemStep::Open),
+        json!({"ev": "iem", "t": 5.0, "what": "open"})
+    );
+    assert_eq!(
+        iem(6.0, IemStep::Load { ms: 41.6 }),
+        json!({"ev": "iem", "t": 6.0, "what": "load", "ms": 42.0})
+    );
+    assert_eq!(
+        iem(7.0, IemStep::Close),
+        json!({"ev": "iem", "t": 7.0, "what": "close"})
     );
 }
 

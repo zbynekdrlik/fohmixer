@@ -33,6 +33,9 @@
 #   [ableset] in the toml and the installed remote tables, the hosts block
 #   with both names, its refusals, the hub refusing a cross-site name, the
 #   LAN-only install, an update keeping it and an install taking it out;
+#   iemmixer's page (#166): [iem] last in the toml, its title only when not the
+#   hub's default, the hub refusing a plain-http address, an update keeping it
+#   and an install taking it out;
 # - the Pro-Q 4 screen's [eq] table (#71): read back from an installed toml
 #   (as the install writes it and as written by hand: no blank line, LF,
 #   trailing blanks, a UTF-8 byte order mark; never after [tls]), checked by
@@ -422,6 +425,15 @@ try {
     Assert ($ablesetRemote -ceq ($wantRemote + $wantAbleSet)) 'remote-toml-has-ableset-last-without-the-default-title'
     $lanOnly = Get-FohRemoteToml -Name 'foh.example.org' -AbleSetName 'ableset.example.org' -AbleSetTitle 'Set "1"'
     Assert ($lanOnly.EndsWith("`r`n[acme]`r`n`r`n[ableset]`r`nname = `"ableset.example.org`"`r`ntitle = `"Set \`"1\`"`"`r`n")) 'remote-toml-ableset-lan-only-with-its-own-title'
+    # iemmixer's page (#166): [iem] last, after [ableset]; the title only when not the hub's default.
+    $wantIem = "`r`n[iem]`r`nurl = `"https://iem.example.org/`"`r`n"
+    $iemRemote = Get-FohRemoteToml -Name 'foh.example.org' -HttpsPort 443 -AcmeEmail 'owner@example.org' `
+        -AccessTeam 'team.cloudflareaccess.com' -AccessAud @('aud-1', 'aud-2') -Tunnel -TunnelMetricsPort 20241 `
+        -AbleSetName 'ableset.example.org' -AbleSetAccessAud @('aud-a') -AbleSetTitle 'AbleSet' `
+        -IemUrl 'https://iem.example.org/' -IemTitle 'IEM MIXER'
+    Assert ($iemRemote -ceq ($wantRemote + $wantAbleSet + $wantIem)) 'remote-toml-has-iem-last-without-the-default-title'
+    $iemOwnTitle = Get-FohRemoteToml -Name 'foh.example.org' -IemUrl 'https://iem.example.org/' -IemTitle 'Monitors'
+    Assert ($iemOwnTitle.EndsWith("`r`n[acme]`r`n`r`n[iem]`r`nurl = `"https://iem.example.org/`"`r`ntitle = `"Monitors`"`r`n")) 'remote-toml-iem-with-its-own-title'
     $hostsBlock = "# BEGIN fohmixer (Install-Fohmixer.ps1, #17: the public name on this PC)`r`n127.0.0.1 foh.example.org`r`n# END fohmixer`r`n"
     Assert ((Get-FohHostsText -Text '' -Name 'foh.example.org') -ceq $hostsBlock) 'hosts-block-into-an-empty-file'
     $hostsOrig = "# Copyright (c) Microsoft`r`n127.0.0.1 localhost"
@@ -468,6 +480,10 @@ try {
     Assert ((Test-FohHubToml -Exe $HubExe -Text $ablesetToml -Dir $checkDir) -like '*: OK*') 'hub-toml-check-accepts-the-ableset-table'
     $crossSite = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote (Get-FohRemoteToml -Name 'foh.example.org' -AbleSetName 'ableset.example.net')
     Assert ((ErrorOf { Test-FohHubToml -Exe $HubExe -Text $crossSite -Dir $checkDir }) -like '*refused by the hub (exit 2)*(the same site)*') 'hub-toml-check-refuses-a-cross-site-ableset-name'
+    $iemToml = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote $iemRemote
+    Assert ((Test-FohHubToml -Exe $HubExe -Text $iemToml -Dir $checkDir) -like '*: OK*') 'hub-toml-check-accepts-the-iem-table'
+    $plainIem = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote (Get-FohRemoteToml -Name 'foh.example.org' -IemUrl 'http://iem.example.org/')
+    Assert ((ErrorOf { Test-FohHubToml -Exe $HubExe -Text $plainIem -Dir $checkDir }) -like '*refused by the hub (exit 2)*no credentials*') 'hub-toml-check-refuses-a-plain-http-iem-address'
     Assert (@(Get-ChildItem -LiteralPath $checkDir -Force).Count -eq 0) 'hub-toml-check-leaves-no-file'
     # A layout is checked by the hub it is for, against the new config (#21).
     $okLayout = Join-Path $repo 'crates\fohmixer-hub\tests\fixtures\layout-ok.json'
@@ -488,6 +504,7 @@ try {
     Assert ((Get-FohInstalledRemoteToml -Text ((New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3) + $gotRemote)) -ceq $gotRemote) 'installed-remote-tables-read-back-as-written'
     Assert ((Get-FohInstalledRemoteToml -Text (New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3)) -ceq '') 'installed-remote-tables-none-without-tls'
     Assert ((Get-FohInstalledRemoteToml -Text ((New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3) + $ablesetRemote)) -ceq $ablesetRemote) 'installed-remote-tables-carry-ableset'
+    Assert ((Get-FohInstalledRemoteToml -Text ((New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3) + $iemRemote)) -ceq $iemRemote) 'installed-remote-tables-carry-iem'
     # ---- the Stream Deck tab (#52): the [companion] table ----
     $wantCompanion = "`r`n[companion]`r`nhost = `"companion.example.org`"`r`nport = 16622`r`n"
     Assert ((Get-FohCompanionToml -Endpoint 'companion.example.org') -ceq $wantCompanion) 'companion-toml-default-port'
@@ -854,6 +871,7 @@ try {
         DataDir = $dataR; PublicName = 'foh.example.org'; HttpsPort = 18443; AcmeEmail = 'owner@example.org'
         AccessTeam = 'team.cloudflareaccess.com'; AccessAud = 'aud-1, aud-2'; HostsFile = $hostsR; BandDesktop = $deskR
         TunnelDir = $tunnelR; TunnelMetricsPort = 20299; AbleSetName = 'ableset.example.org'; AbleSetAccessAud = 'aud-a'
+        IemUrl = 'https://iem.example.org/'
         # -NoTask registers no service: the fake answers the --token-file check.
         CloudflaredExe = $cloudflared
     }
@@ -871,7 +889,9 @@ try {
             @{ over = @{ AbleSetName = 'FOH.example.org' }; says = '*AbleSet needs a name of its own*'; what = 'ablesets-name-equal-to-the-public-name' },
             @{ over = @{ AccessTeam = $null; AccessAud = $null }; says = '*-AbleSetAccessAud needs -AccessTeam*'; what = 'an-ableset-aud-without-an-access-team' },
             @{ over = @{ AbleSetName = $null }; says = '*give -AbleSetName*'; what = 'an-ableset-aud-without-ablesets-name' },
-            @{ over = @{ AbleSetName = $null; AbleSetAccessAud = $null; AbleSetTitle = 'Set' }; says = '*give -AbleSetName*'; what = 'an-ableset-title-without-ablesets-name' })) {
+            @{ over = @{ AbleSetName = $null; AbleSetAccessAud = $null; AbleSetTitle = 'Set' }; says = '*give -AbleSetName*'; what = 'an-ableset-title-without-ablesets-name' },
+            # iemmixer's page (#166): the hub checks the address; this is refused before.
+            @{ over = @{ IemUrl = $null; IemTitle = 'Monitors' }; says = '*give -IemUrl*'; what = 'an-iem-title-without-iems-address' })) {
         $o = $remoteOver.Clone()
         foreach ($k in @($r.over.Keys)) {
             if ($null -eq $r.over[$k]) { $o.Remove($k) } else { $o[$k] = $r.over[$k] }
@@ -893,7 +913,8 @@ try {
     $res = Invoke-PsInput $install ($argsR + '-SetTunnelToken') 'not-a-token'
     Assert ($res.code -ne 0 -and $res.out -like '*tunnel token refused*' -and -not (Test-Path -LiteralPath $dataR)) 'install-refuses-a-bad-tunnel-token-before-any-change'
     foreach ($o in @(@{ AccessTeam = 'team.cloudflareaccess.com' }, @{ HttpsPort = 8443 }, @{ HostsFile = $hostsR },
-            @{ AbleSetName = 'ableset.example.org' }, @{ AbleSetAccessAud = 'aud-a' }, @{ AbleSetTitle = 'Set' })) {
+            @{ AbleSetName = 'ableset.example.org' }, @{ AbleSetAccessAud = 'aud-a' }, @{ AbleSetTitle = 'Set' },
+            @{ IemUrl = 'https://iem.example.org/' }, @{ IemTitle = 'Monitors' })) {
         $o['DataDir'] = $noneR
         $res = Invoke-Ps $install (Get-InstallArgs $o)
         Assert ($res.code -ne 0 -and $res.out -like '*need -PublicName*' -and -not (Test-Path -LiteralPath $noneR)) "install-refuses-$(@($o.Keys | Where-Object { $_ -ne 'DataDir' })[0])-without-a-public-name"
@@ -905,11 +926,11 @@ try {
     $tablesR = @{ Name = 'foh.example.org'; HttpsPort = 18443; AcmeEmail = 'owner@example.org'; AccessTeam = 'team.cloudflareaccess.com'
         AccessAud = @('aud-1', 'aud-2'); Tunnel = $true; TunnelMetricsPort = 20299 }
     $wantR = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote (Get-FohRemoteToml @tablesR `
-        -AbleSetName 'ableset.example.org' -AbleSetAccessAud @('aud-a'))
+        -AbleSetName 'ableset.example.org' -AbleSetAccessAud @('aud-a') -IemUrl 'https://iem.example.org/')
     Assert ([IO.File]::ReadAllText((Join-Path $dataR 'fohmixer-hub.toml')) -ceq $wantR) 'install-5-toml-has-the-remote-tables'
     # Contains, not -like: '[' opens a wildcard character class.
     Assert ($wantR.Contains('ready_url = "http://127.0.0.1:20299/ready"') -and $wantR.Contains('aud = ["aud-1", "aud-2"]') -and
-        $wantR.EndsWith("`r`n[ableset]`r`nname = `"ableset.example.org`"`r`naccess_aud = [`"aud-a`"]`r`n")) 'install-5-toml-tunnel-audiences-and-ableset-last'
+        $wantR.EndsWith("`r`n[ableset]`r`nname = `"ableset.example.org`"`r`naccess_aud = [`"aud-a`"]`r`n$wantIem")) 'install-5-toml-tunnel-audiences-then-ableset-and-iem-last'
     Assert ([IO.File]::ReadAllText($hostsR) -ceq ("127.0.0.1 localhost`r`n" + $hostsBlock2)) 'install-5-maps-both-names-to-this-pc'
     Assert ($r5.out -like '*foh.example.org and ableset.example.org -> 127.0.0.1 in the hosts file*' -and -not $r5.out.Contains('the LAN only')) 'install-5-says-both-names'
     Assert ([IO.File]::ReadAllText((Join-Path $deskR 'fohmixer.url')) -ceq "[InternetShortcut]`r`nURL=https://foh.example.org:18443/`r`n") 'install-5-desktop-shortcut'
@@ -927,7 +948,7 @@ try {
     Assert ($r7.code -eq 0 -and $r7.out -like '*remote access kept as installed*') 'install-7-without-a-public-name-exits-0'
     $newer = @(Get-ChangedFiles $watchR)
     Assert ($newer.Count -eq 0) "install-7-keeps-the-remote-access ($($newer -join ', '))"
-    Assert ([IO.File]::ReadAllText((Join-Path $dataR 'fohmixer-hub.toml')) -ceq $wantR) 'install-7-keeps-ablesets-table'
+    Assert ([IO.File]::ReadAllText((Join-Path $dataR 'fohmixer-hub.toml')) -ceq $wantR) 'install-7-keeps-the-ableset-and-iem-tables'
     # ---- install 8: the Stream Deck tab (#52): -CompanionHost writes [companion], an update keeps it ----
     $dataC = Join-Path $base 'data-companion'
     $r8 = Invoke-Ps $install (Get-InstallArgs @{ DataDir = $dataC; CompanionHost = '10.0.0.7:16700' })
@@ -989,15 +1010,21 @@ try {
     $o.Remove('AbleSetAccessAud')
     $r12 = Invoke-Ps $install (Get-InstallArgs $o)
     Assert ($r12.code -eq 0 -and $r12.out -like "*AbleSet's name ableset.example.org without -AbleSetAccessAud: the LAN only*") 'install-12-ableset-for-the-lan-only-says-so'
-    $want12 = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote (Get-FohRemoteToml @tablesR -AbleSetName 'ableset.example.org')
+    $want12 = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote (Get-FohRemoteToml @tablesR -AbleSetName 'ableset.example.org' -IemUrl 'https://iem.example.org/')
     Assert ([IO.File]::ReadAllText((Join-Path $dataR 'fohmixer-hub.toml')) -ceq $want12) 'install-12-toml-ableset-without-access-aud'
     Assert ([IO.File]::ReadAllText($hostsR) -ceq ("127.0.0.1 localhost`r`n" + $hostsBlock2)) 'install-12-hosts-block-keeps-both-names'
     $o.Remove('AbleSetName')
     $r13 = Invoke-Ps $install (Get-InstallArgs $o)
     Assert ($r13.code -eq 0) 'install-13-without-ablesets-name-exits-0'
-    $want13 = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote (Get-FohRemoteToml @tablesR)
+    $want13 = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote (Get-FohRemoteToml @tablesR -IemUrl 'https://iem.example.org/')
     Assert ([IO.File]::ReadAllText((Join-Path $dataR 'fohmixer-hub.toml')) -ceq $want13) 'install-13-removes-the-ableset-table'
     Assert ([IO.File]::ReadAllText($hostsR) -ceq ("127.0.0.1 localhost`r`n" + $hostsBlock)) 'install-13-hosts-block-back-to-the-public-name'
+    # iemmixer's page (#166): taken out as AbleSet's, with -PublicName and without -IemUrl.
+    $o.Remove('IemUrl')
+    $r13b = Invoke-Ps $install (Get-InstallArgs $o)
+    Assert ($r13b.code -eq 0) 'install-13b-without-iems-address-exits-0'
+    $want13b = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote (Get-FohRemoteToml @tablesR)
+    Assert ([IO.File]::ReadAllText((Join-Path $dataR 'fohmixer-hub.toml')) -ceq $want13b) 'install-13b-removes-the-iem-table'
 
     # ---- the tasks, registered for this user in a test folder (never started) ----
     Register-FohHubTasks -AppDir $appV1 -DataDir $data -User $me -TaskPath $taskFolder

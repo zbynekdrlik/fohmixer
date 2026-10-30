@@ -639,7 +639,7 @@ fn the_handshake_is_hello_and_a_protocol_mismatch_closes_with_4001() {
                 assert_eq!(*min_client_proto, 2);
                 // #90: the revision of the policy its pages are served with
                 // (this hub has no [ableset]).
-                let served = fohmixer_hub::policy_rev(&fohmixer_hub::page_csp(None));
+                let served = fohmixer_hub::policy_rev(&fohmixer_hub::page_csp(None, None));
                 assert_eq!(policy.as_deref(), Some(served.as_str()));
             }
             other => panic!("{other:?}"),

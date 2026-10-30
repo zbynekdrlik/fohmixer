@@ -21,7 +21,8 @@
    channel detail and its pan, #71), states.css
    (disabled, failed, unresolved, reduced motion) and intent.css (the look
    of a write Live has not confirmed), then deck.css (the Stream Deck tab,
-   #52) and ableset.css (AbleSet's tab, #90). */
+   #52), ableset.css (AbleSet's tab, #90) and iem.css (iemmixer's tab,
+   #166). */
 
 @font-face {
     font-family: "Barlow Condensed";

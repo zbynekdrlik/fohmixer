@@ -32,6 +32,9 @@
 //! AbleSet's page (#90 B3, `router/ableset.rs`): every page is told of it
 //! at attach and at each change of the hub's link to AbleSet.
 //!
+//! iemmixer's page (#166, `router/iem.rs`): every page is told of it at
+//! attach; the hub has no link to it.
+//!
 //! AUTOTUNE (#104, D19, `router/autotune.rs`): the `+AUTOTUNE` tracks'
 //! `Latencies` racks found by a walk, their first macro written through its
 //! `$ref` by the rule's transport, the pages' flag and taps (its own
@@ -73,6 +76,7 @@ mod autotune;
 #[path = "router/deck.rs"]
 mod deck;
 mod eq;
+mod iem;
 #[path = "router/links.rs"]
 mod links;
 #[path = "router/lufs.rs"]
@@ -630,6 +634,8 @@ pub struct Router {
     eq: Option<eq::EqIo>,
     /// AbleSet's page (#90 B3); none without `[ableset]`.
     ableset: Option<ableset::AbleSetIo>,
+    /// iemmixer's page as a page is told of it (#166); none without `[iem]`.
+    iem: Option<ServerMsg>,
     /// Keeps the strips' groups unfolded (#58).
     unfold: unfold::Keeper,
     /// Finds the Tuner markers (#68).
@@ -736,6 +742,7 @@ impl Router {
             deck: None,
             eq: None,
             ableset: None,
+            iem: None,
             unfold: unfold::Keeper::default(),
             markers: markers::Keeper::default(),
             layout_store: None,
@@ -801,6 +808,7 @@ impl Router {
                 self.deck_attach(client, &outbox);
                 self.eq_attach(client, &outbox);
                 self.ableset_attach(&outbox, lan);
+                self.iem_attach(&outbox);
                 self.clients.insert(client, outbox);
                 self.peers.insert(client, peer);
                 self.lan.insert(client, lan);

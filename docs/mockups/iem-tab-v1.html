@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IEM Mixer tab</title>
+<style>
+/* The app's fonts, by relative path (.claude/rules/public-repo-hygiene.md). */
+@font-face { font-family: "Barlow Condensed"; font-weight: 700; font-display: block; src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 600; font-display: block; src: url("../../crates/fohmixer-ui/fonts/barlow-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-weight: 500; font-display: block; src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2"); }
+:root { --bg:#0a0b10; --bar:#14141e; --panel:#181824; --line:#2a2a3a; --text:#e2e2ec; --dim:#8a8a9c; --faint:#5e5e72; --sel:#1d1f33; --teal:#2fc79a; --gold:#e0b84a; --red:#e0555f; --blue:#3f8cff; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 16px; background: #05050a; color: var(--text); font: 600 15px/1.45 "Barlow", sans-serif; }
+h1 { font: 700 26px/1.1 "Barlow Condensed", sans-serif; letter-spacing: .04em; margin: 0 0 6px; }
+h2 { font: 700 20px/1.2 "Barlow Condensed", sans-serif; letter-spacing: .03em; margin: 26px 0 4px; }
+p { margin: 4px 0 10px; color: var(--dim); max-width: 74ch; }
+.scroll { overflow-x: auto; }
+.ipad { width: 1194px; height: 834px; background: var(--bg); display: grid; grid-template-columns: 1fr 132px 1fr; gap: 6px; padding: 6px; border: 2px solid #333; border-radius: 14px; flex: none; }
+.half { display: grid; grid-template-rows: 1fr 1fr; gap: 6px; min-width: 0; }
+.row { display: flex; gap: 6px; min-height: 0; }
+.strip { flex: 1; min-width: 0; background: var(--panel); border-radius: 10px; display: flex; flex-direction: column; align-items: center; padding: 8px 0; color: var(--text); }
+.strip b { font: 700 19px/1 "Barlow Condensed", sans-serif; letter-spacing: .04em; }
+.strip .v { font: 500 12px "JetBrains Mono", monospace; margin-top: 8px; }
+.strip .t { flex: 1; width: 8px; margin: 12px 0; background: #0c0c13; border-radius: 3px; position: relative; }
+.strip .t::after { content: ""; position: absolute; left: -22px; right: -22px; top: 15%; height: 22px; border-radius: 5px; background: #33354a; }
+.strip .s { font: 700 13px "Barlow Condensed", sans-serif; color: var(--dim); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; }
+.column { background: var(--bar); border: 1px solid var(--line); border-radius: 12px; padding: 8px 6px; display: flex; flex-direction: column; gap: 8px; }
+.pages { border: 1px solid var(--line); border-radius: 10px; padding: 4px; display: grid; gap: 2px; }
+.tab { text-align: center; border-radius: 7px; padding: 6px 3px; color: var(--faint); font: 600 10px/1.1 "Barlow", sans-serif; letter-spacing: .06em; border-bottom: 2px solid transparent; }
+.tab.big { font: 700 19px/1.05 "Barlow Condensed", sans-serif; letter-spacing: .08em; color: var(--text); }
+.tab.on { background: var(--sel); color: var(--text); border-bottom-color: var(--teal); }
+.iemrow { display: grid; grid-template-columns: 1fr 26px; align-items: stretch; gap: 2px; }
+.iemrow .tab { display: flex; align-items: center; justify-content: center; gap: 5px; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--teal); }
+.x { display: grid; place-items: center; color: var(--dim); font: 600 13px "Barlow", sans-serif; border-radius: 6px; }
+.cap { color: var(--faint); font-size: 9px; letter-spacing: .12em; text-align: center; }
+.block { flex: 0 0 150px; border: 1px solid var(--line); border-radius: 10px; }
+.btn { background: var(--panel); border-radius: 9px; padding: 11px 9px; font: 600 12px "Barlow", sans-serif; color: var(--dim); }
+.grow { flex: 1; }
+.foot { font: 500 9px "JetBrains Mono", monospace; color: var(--faint); text-align: center; }
+.iem { background: #101218; border: 1px solid var(--line); border-radius: 10px; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+.iemhead { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.iemhead b { font: 700 18px "Barlow Condensed", sans-serif; letter-spacing: .04em; }
+.iemhead .sp { flex: 1; }
+.chip { font: 700 14px "Barlow Condensed", sans-serif; padding: 8px 14px; border-radius: 8px; background: #20222e; color: var(--text); }
+.chip.listen { background: #16463a; color: #7cf0c8; }
+.chip.talk { background: #4a1d22; color: #ffb3b8; }
+.mix { flex: 1; display: grid; grid-template-columns: repeat(6, 1fr); gap: 5px; padding: 8px; min-height: 0; }
+.mix .strip { background: #171a22; }
+.note { font: 500 11px "JetBrains Mono", monospace; color: var(--faint); padding: 7px 12px; border-top: 1px solid var(--line); }
+.tag { display: inline-block; background: #2a2a3a; color: var(--text); padding: 1px 6px; border-radius: 4px; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>IEM MIXER: tretia appka v stĺpci</h1>
+<p>Vymyslené názvy, len ukážka rozloženia. Plocha iPadu 1194 × 834.</p>
+
+<h2>1 · Otvorený IEM MIXER</h2>
+<p>Ľavá polovica je stránka iemmixeru: zvukárske prihlásenie, mix, <span class="tag">LISTEN</span> a <span class="tag">TALK</span>. Stĺpec stojí na mieste a pravé sektory fungujú ďalej.</p>
+<div class="scroll"><div class="ipad">
+  <div class="iem">
+    <div class="iemhead"><b>ENGINEER</b><span class="sp"></span><span class="chip listen">LISTEN</span><span class="chip talk">TALK</span></div>
+    <div class="mix">
+      <div class="strip"><b>VOX 1</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div>
+      <div class="strip"><b>VOX 2</b><span class="v">-3.0</span><i class="t"></i><span class="s">SEL</span></div>
+      <div class="strip"><b>KEYS</b><span class="v">-6.0</span><i class="t"></i><span class="s">SEL</span></div>
+      <div class="strip"><b>BASS</b><span class="v">-4.5</span><i class="t"></i><span class="s">SEL</span></div>
+      <div class="strip"><b>DRUMS</b><span class="v">-2.0</span><i class="t"></i><span class="s">SEL</span></div>
+      <div class="strip"><b>CLICK</b><span class="v">-9.0</span><i class="t"></i><span class="s">SEL</span></div>
+    </div>
+    <div class="note">stránka iemmixeru, jej vzhľad a ovládanie sa nemenia</div>
+  </div>
+  <nav class="column">
+    <div class="pages">
+      <div class="tab big">FOH</div>
+      <div class="tab">STREAM DECK</div>
+      <div class="tab">ABLESET</div>
+      <div class="iemrow"><div class="tab on">IEM MIXER</div><div class="x">✕</div></div>
+    </div>
+    <div class="cap">LAYOUTS</div><div class="block"></div>
+    <div class="btn">ARRANGE</div><div class="btn">STAGE</div><div class="btn">REVERB</div><div class="btn">AUTOTUNE</div><div class="btn">TALKBACK</div>
+    <div class="grow"></div><div class="btn">TECHALERT</div><div class="foot">BAND · MASTER · v1.28.0</div>
+  </nav>
+  <div class="half">
+    <div class="row"><div class="strip"><b>KEYS</b><span class="v">-12.8</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>VOCALS</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>BACKING</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>PA BAND</b><span class="v">-20.0</span><i class="t"></i><span class="s">SEL</span></div></div>
+    <div class="row"><div class="strip"><b>CG</b><span class="v">-19.3</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>HAND1</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>HAND2</b><span class="v">-31.5</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>REPROM</b><span class="v">-13.5</span><i class="t"></i><span class="s">SEL</span></div></div>
+  </div>
+</div></div>
+
+<h2>2 · Späť na FOH, počúvanie beží ďalej</h2>
+<p>Ťukneš na FOH a máš fadre. IEM MIXER ostane otvorený v pozadí, takže počúvanie sa nepreruší. Bodka pri názve ukazuje, že beží. Ťuknutím na ✕ ho zavrieš, zvuk skončí a iPad šetrí batériu.</p>
+<div class="scroll"><div class="ipad">
+  <div class="half">
+    <div class="row"><div class="strip"><b>STEVE</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>ANNA</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>LUKE</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>MARY</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div></div>
+    <div class="row"><div class="strip"><b>CLAPS</b><span class="v">-10.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>REV REPRO</b><span class="v">-20.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>REV STREAM</b><span class="v">-19.8</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>BOOM</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div></div>
+  </div>
+  <nav class="column">
+    <div class="pages">
+      <div class="tab big on">FOH</div>
+      <div class="tab">STREAM DECK</div>
+      <div class="tab">ABLESET</div>
+      <div class="iemrow"><div class="tab"><span class="dot"></span>IEM MIXER</div><div class="x">✕</div></div>
+    </div>
+    <div class="cap">LAYOUTS</div><div class="block"></div>
+    <div class="btn">ARRANGE</div><div class="btn">STAGE</div><div class="btn">REVERB</div><div class="btn">AUTOTUNE</div><div class="btn">TALKBACK</div>
+    <div class="grow"></div><div class="btn">TECHALERT</div><div class="foot">BAND · MASTER · v1.28.0</div>
+  </nav>
+  <div class="half">
+    <div class="row"><div class="strip"><b>KEYS</b><span class="v">-12.8</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>VOCALS</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>BACKING</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>PA BAND</b><span class="v">-20.0</span><i class="t"></i><span class="s">SEL</span></div></div>
+    <div class="row"><div class="strip"><b>CG</b><span class="v">-19.3</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>HAND1</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>HAND2</b><span class="v">-31.5</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>REPROM</b><span class="v">-13.5</span><i class="t"></i><span class="s">SEL</span></div></div>
+  </div>
+</div></div>
+</body>
+</html>
