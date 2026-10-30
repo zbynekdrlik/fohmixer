@@ -163,7 +163,7 @@ pub(super) fn track_name(
         Anchor::TrackAt { index } => list(TRACKS, *index),
         Anchor::ReturnAt { index } => list(RETURNS, *index),
         Anchor::Master => masters.get(instance).cloned(),
-        Anchor::Song => None,
+        Anchor::Song | Anchor::Ctrl { .. } => None,
     }
 }
 

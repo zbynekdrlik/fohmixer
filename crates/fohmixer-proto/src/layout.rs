@@ -14,7 +14,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::path::{PathError, escape_name, parse_steps, steps_text};
+use crate::path::{PathError, UNFILLED, escape_name, parse_steps, steps_text};
 
 /// The schema version this build reads.
 pub const LAYOUT_SCHEMA: u32 = 2;
@@ -577,6 +577,40 @@ pub enum Anchor {
     },
     Master,
     Song,
+    /// The track whose Tuner carries `+CTRL:<id>` in the binding's Live set
+    /// (#104): only a frame's `stage`, `alert` and `param_toggle` name one,
+    /// and `compose` replaces it with that track by index. One left in a
+    /// served layout has no Tuner: no target, and its control shows red.
+    Ctrl {
+        id: CtrlId,
+    },
+}
+
+/// The ids of a `+CTRL:<id>` tag (#104): the frame controls a Tuner binds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CtrlId {
+    Stage,
+    Alert,
+    Talkback,
+}
+
+impl CtrlId {
+    /// The id as a tag and a frame write it.
+    pub fn name(self) -> &'static str {
+        match self {
+            CtrlId::Stage => "stage",
+            CtrlId::Alert => "alert",
+            CtrlId::Talkback => "talkback",
+        }
+    }
+
+    /// The id a tag's argument names; none for any other text.
+    pub fn parse(text: &str) -> Option<Self> {
+        [CtrlId::Stage, CtrlId::Alert, CtrlId::Talkback]
+            .into_iter()
+            .find(|id| id.name() == text)
+    }
 }
 
 /// The label a strip bound by name shows (spec F4): the first word of its
@@ -596,6 +630,7 @@ pub fn strip_label(name: &str) -> String {
 impl Binding {
     /// The LOM target path (S2 design note §3.1) the binding names.
     pub fn target(&self) -> Result<String, PathError> {
+        let steps = parse_steps(self.path.as_deref().unwrap_or(""))?;
         let mut text = match &self.anchor {
             Anchor::Track { name } => format!("live_set tracks[name={}]", escape_name(name)),
             Anchor::Return { name } => {
@@ -605,8 +640,8 @@ impl Binding {
             Anchor::ReturnAt { index } => format!("live_set return_tracks {index}"),
             Anchor::Master => "live_set master_track".to_string(),
             Anchor::Song => "live_set".to_string(),
+            Anchor::Ctrl { id } => return Err(PathError::unfilled(id.name())),
         };
-        let steps = parse_steps(self.path.as_deref().unwrap_or(""))?;
         if !steps.is_empty() {
             text.push(' ');
             text.push_str(&steps_text(&steps));
@@ -696,6 +731,18 @@ impl Layout {
             } => Some(binding),
             _ => None,
         })
+    }
+
+    /// The `+CTRL` ids the controls name (#104), each once per Live set: on
+    /// a frame every one, on a served layout those no Tuner filled.
+    pub fn ctrls(&self) -> std::collections::BTreeSet<(String, CtrlId)> {
+        self.bindings()
+            .into_iter()
+            .filter_map(|b| match b.anchor {
+                Anchor::Ctrl { id } => Some((b.instance.clone(), id)),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The tracks the strips show, as `(instance, LOM target)`, each once
@@ -986,7 +1033,10 @@ impl Validator {
             }
             _ => {}
         }
-        if let Err(e) = b.target() {
+        // A `ctrl` anchor waits for its Tuner (#104): its path still counts.
+        if let Err(e) = b.target()
+            && e.kind != UNFILLED
+        {
             self.error(at, format!("path: {e}"));
         }
     }

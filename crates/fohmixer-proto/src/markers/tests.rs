@@ -2214,3 +2214,287 @@ fn compose_carries_lufs_to_the_strip() {
     assert_eq!(strip_in(&composed.layout, "vocals", "Vox 2").lufs, None);
     assert_eq!(composed.layout.validate(), vec![]);
 }
+
+#[test]
+fn a_ctrl_tag_names_one_of_its_ids_each_once() {
+    let m = parse(r#""Mics" +G:STAGE +CTRL:stage +CTRL:alert"#);
+    assert_eq!(m.ctrls, [CtrlId::Stage, CtrlId::Alert]);
+    assert_eq!(m.problems, vec![]);
+    assert_eq!(parse("+CTRL:talkback").ctrls, [CtrlId::Talkback]);
+    assert_eq!(parse(r#""Vox" +G:STAGE"#).ctrls, vec![]);
+    // Twice: it counts once.
+    let m = parse("+CTRL:stage +CTRL:stage");
+    assert_eq!(m.ctrls, [CtrlId::Stage]);
+    assert_eq!(m.problems, [TagProblem::RepeatedCtrl { id: CtrlId::Stage }]);
+    // An id it does not know, a capital one and an empty one.
+    for tag in ["+CTRL:solo", "+CTRL:STAGE", "+CTRL:"] {
+        let m = parse(&format!(r#""Vox" +G:STAGE {tag}"#));
+        assert_eq!(m.ctrls, vec![], "{tag}");
+        assert_eq!(m.problems, [TagProblem::BadCtrl { tag: tag.into() }]);
+    }
+    // No colon: another tag altogether.
+    assert_eq!(
+        parse(r#""Vox" +G:STAGE +CTRL"#).problems,
+        [TagProblem::UnknownTag {
+            tag: "+CTRL".into()
+        }]
+    );
+}
+
+#[test]
+fn a_tuner_of_only_ctrl_tags_makes_no_strip() {
+    let none = Vec::<TagProblem>::new();
+    assert_eq!(parse("+CTRL:stage").problems, none);
+    assert_eq!(parse("+MUTE:A +CTRL:alert").problems, none);
+    // Any strip tag beside it wants a strip.
+    for name in ["+CTRL:stage +PIN", "+CTRL:alert +ID:X"] {
+        assert_eq!(
+            parse(name).problems,
+            [TagProblem::NoLabel, TagProblem::NoGroup],
+            "{name}"
+        );
+    }
+    // A bad id alone is no ctrl: its label and group still miss.
+    assert_eq!(
+        parse("+CTRL:solo").problems,
+        [
+            TagProblem::NoLabel,
+            TagProblem::BadCtrl {
+                tag: "+CTRL:solo".into()
+            },
+            TagProblem::NoGroup
+        ]
+    );
+}
+
+#[test]
+fn the_ctrl_problems_serialize_with_their_codes() {
+    assert_eq!(
+        serde_json::to_value([
+            TagProblem::BadCtrl {
+                tag: "+CTRL:solo".into()
+            },
+            TagProblem::RepeatedCtrl { id: CtrlId::Stage },
+            TagProblem::DuplicateCtrl {
+                id: CtrlId::Talkback
+            },
+        ])
+        .unwrap(),
+        json!([
+            {"code": "bad_ctrl", "tag": "+CTRL:solo"},
+            {"code": "repeated_ctrl", "id": "stage"},
+            {"code": "duplicate_ctrl", "id": "talkback"},
+        ])
+    );
+}
+
+/// A control per kind that names a `+CTRL` id, on the FOH rail, in a row's
+/// group, in a pager's sub-page and among the global controls; `Podklady`
+/// stays on a named track.
+fn ctrl_frame() -> Layout {
+    let id = |id: &str| json!({"instance": "band", "anchor": {"kind": "ctrl", "id": id}});
+    let stage = json!({"kind": "stage", "aut": true, "binding": id("stage")});
+    let alert = json!({"kind": "alert", "period_ms": 300, "binding": id("alert")});
+    let talkback = json!({"kind": "param_toggle", "label": "TALKBACK", "press": "toggle",
+        "targets": [
+            {"binding": id("talkback"), "prop": "mute", "on": 0, "off": 1},
+            {"binding": {"instance": "band", "anchor": {"kind": "track", "name": "Named #"}},
+             "prop": "mute", "on": 0, "off": 1}]});
+    serde_json::from_value(json!({
+        "schema": 2,
+        "default_page": "foh",
+        "pages": [{"id": "foh", "title": "FOH", "rail": [stage], "rows": [
+            {"sections": [
+                {"kind": "group", "id": "vocals", "title": "VOCALS", "tags": "VOCALS"},
+                {"kind": "group", "id": "fx", "controls": [talkback.clone()]}]},
+            {"sections": [{"kind": "pager", "id": "pager", "default_page": "one", "pages": [
+                {"id": "one", "title": "ONE", "sections": [
+                    {"kind": "group", "id": "deep", "controls": [talkback]}]}]}]}]}],
+        "global": [alert]
+    }))
+    .expect("the frame parses")
+}
+
+/// Every binding of `layout`, with its target, in document order.
+fn targets_of(layout: &Layout) -> Vec<Option<String>> {
+    layout
+        .bindings()
+        .into_iter()
+        .map(|b| b.target().ok())
+        .collect()
+}
+
+fn ctrl_report(id: CtrlId, tuners: usize) -> CtrlReport {
+    CtrlReport {
+        instance: "band".into(),
+        id,
+        tuners,
+    }
+}
+
+#[test]
+fn compose_fills_every_control_naming_a_ctrl_id_with_its_tuners_track_by_index() {
+    let tuners = [
+        found("band", TrackKind::Track, 7, "+CTRL:stage"),
+        found(
+            "band",
+            TrackKind::Track,
+            8,
+            r#""Tech" +G:VOCALS +CTRL:alert"#,
+        ),
+        found("band", TrackKind::Return, 2, "+CTRL:talkback"),
+        // The other Live set's id binds nothing of the band.
+        found("master", TrackKind::Track, 1, "+CTRL:stage"),
+    ];
+    let composed = compose(&ctrl_frame(), &tuners);
+    let stage = Some("live_set tracks 7".to_string());
+    let alert = Some("live_set tracks 8".to_string());
+    let talkback = Some("live_set return_tracks 2".to_string());
+    let named = Some("live_set tracks[name=Named #]".to_string());
+    assert_eq!(
+        targets_of(&composed.layout),
+        [
+            stage.clone(),
+            // The `Tech` strip's own binding, then the rows' controls.
+            alert.clone(),
+            talkback.clone(),
+            named.clone(),
+            talkback,
+            named,
+            alert
+        ]
+    );
+    assert_eq!(composed.problems, vec![]);
+    assert_eq!(
+        composed.ctrls,
+        [
+            ctrl_report(CtrlId::Stage, 1),
+            ctrl_report(CtrlId::Alert, 1),
+            ctrl_report(CtrlId::Talkback, 1)
+        ]
+    );
+    // STAGE AUT reads the composed binding: its track by index.
+    assert_eq!(
+        composed
+            .layout
+            .stage_aut_binding()
+            .unwrap()
+            .target()
+            .as_deref(),
+        Ok("live_set tracks 7")
+    );
+    assert!(composed.layout.ctrls().is_empty(), "nothing left to fill");
+    assert_eq!(composed.layout.validate(), vec![]);
+}
+
+#[test]
+fn a_views_copied_rail_takes_the_ctrl_track_too() {
+    let tuners = [
+        found("band", TrackKind::Track, 7, "+CTRL:stage"),
+        found("band", TrackKind::Track, 3, r#""Hall" +G:TALKSHOW"#),
+    ];
+    let composed = compose(&ctrl_frame(), &tuners);
+    let view = composed.layout.pages.last().unwrap();
+    assert!(view.view);
+    assert_eq!(
+        view.rail[0].bindings()[0].target().as_deref(),
+        Ok("live_set tracks 7")
+    );
+}
+
+#[test]
+fn an_id_no_tuner_carries_stays_unfilled_and_is_reported() {
+    let composed = compose(&ctrl_frame(), &[]);
+    assert_eq!(
+        composed.ctrls,
+        [
+            ctrl_report(CtrlId::Stage, 0),
+            ctrl_report(CtrlId::Alert, 0),
+            ctrl_report(CtrlId::Talkback, 0)
+        ]
+    );
+    assert_eq!(composed.layout.ctrls().len(), 3);
+    assert_eq!(
+        composed.layout.stage_aut_binding().unwrap().target().ok(),
+        None
+    );
+    assert_eq!(composed.layout.validate(), vec![]);
+}
+
+#[test]
+fn an_id_on_two_tuners_of_a_set_is_a_problem_on_each_and_binds_neither() {
+    let tuners = [
+        found("band", TrackKind::Track, 7, "+CTRL:stage"),
+        found(
+            "band",
+            TrackKind::Track,
+            9,
+            r#""Mics" +G:VOCALS +CTRL:stage"#,
+        ),
+        found("band", TrackKind::Track, 2, "+CTRL:alert"),
+    ];
+    let composed = compose(&ctrl_frame(), &tuners);
+    let twice = TagProblem::DuplicateCtrl { id: CtrlId::Stage };
+    let marked: Vec<(u32, Vec<TagProblem>)> = composed
+        .problems
+        .iter()
+        .map(|p| (p.index, p.problems.clone()))
+        .collect();
+    assert_eq!(marked, [(7, vec![twice.clone()]), (9, vec![twice])]);
+    assert_eq!(composed.ctrls[0], ctrl_report(CtrlId::Stage, 2));
+    assert_eq!(
+        composed.layout.stage_aut_binding().unwrap().target().ok(),
+        None
+    );
+    // The strip shows it, and the other id still binds.
+    let strip = strips(&group(&composed.layout, "vocals").controls)[0];
+    assert_eq!(strip.mark, Some(StripMark::Problem));
+    assert_eq!(
+        composed.layout.global[0].bindings()[0].target().as_deref(),
+        Ok("live_set tracks 2")
+    );
+}
+
+#[test]
+fn the_same_id_in_the_other_set_is_no_duplicate() {
+    let tuners = [
+        found("band", TrackKind::Track, 7, "+CTRL:stage"),
+        found("master", TrackKind::Track, 7, "+CTRL:stage"),
+    ];
+    assert_eq!(compose(&ctrl_frame(), &tuners).problems, vec![]);
+}
+
+#[test]
+fn a_frame_naming_its_tracks_is_composed_as_before() {
+    let frame = frame();
+    let composed = compose(&frame, &[found("band", TrackKind::Track, 1, "+CTRL:stage")]);
+    assert_eq!(composed.ctrls, vec![]);
+    assert_eq!(composed.problems, vec![]);
+    assert_eq!(composed.layout, frame);
+}
+
+#[test]
+fn a_frame_may_name_ctrl_ids_only_on_stage_alert_and_param_toggle() {
+    assert_eq!(frame_problems(&ctrl_frame()), vec![]);
+    let id = json!({"instance": "band", "anchor": {"kind": "ctrl", "id": "stage"}});
+    for rail in [
+        json!({"kind": "solo", "binding": id}),
+        json!({"kind": "param_fader", "label": "F", "targets": [
+            {"binding": id, "prop": "value", "scale": "cc_linear"}]}),
+    ] {
+        let frame: Layout = serde_json::from_value(json!({
+            "schema": 2,
+            "default_page": "foh",
+            "pages": [{"id": "foh", "title": "FOH", "rail": [rail]}]
+        }))
+        .unwrap();
+        assert_eq!(
+            frame_problems(&frame),
+            [LayoutError {
+                at: "pages[0]".into(),
+                message: "a ctrl anchor: only stage, alert and param_toggle take one".into()
+            }],
+            "{rail:?}"
+        );
+    }
+}

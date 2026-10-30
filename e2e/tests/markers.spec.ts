@@ -247,3 +247,45 @@ test("the tag manual stays open through a new layout (a Tuner edited in Live)", 
   }
   await expect(tab).toHaveText("FOH", { timeout: 10_000 });
 });
+
+/** The fixture with STAGE, TechAlert and one toggle named by `+CTRL` ids instead of their tracks (#104). */
+function withCtrls(): any {
+  const frame = JSON.parse(readFileSync(LAYOUT, "utf-8"));
+  const ctrl = (id: string) => ({ instance: "band", anchor: { kind: "ctrl", id } });
+  const rail = frame.pages.find((p: any) => p.id === "foh").rail;
+  rail.find((c: any) => c.kind === "stage").binding = ctrl("stage");
+  rail.find((c: any) => c.label === "ZVUKAR").targets = [{ binding: ctrl("talkback"), prop: "mute", on: false, off: true }];
+  frame.global.find((c: any) => c.kind === "alert").binding = ctrl("alert");
+  return frame;
+}
+
+test("a control naming a +CTRL id is red until its Tuner comes, then follows that track", async ({ page }) => {
+  await openSurface(page);
+  const stage = page.getByTestId("stage-mics");
+  const alert = page.getByTestId("rail").getByTestId("alert-toggle");
+  const toggle = page.locator('[data-testid="param-toggle"][data-label="ZVUKAR"]');
+  const live = await LiveClient.open();
+  try {
+    await harness("/hub/layout", { layout: withCtrls() });
+    await selectPage(page, "foh");
+    for (const button of [stage, alert, toggle]) {
+      await expect(button).toHaveAttribute("data-binding", "unresolved", { timeout: 10_000 });
+    }
+    expect(await hostLine("band", "tuner track 1 set '+CTRL:stage'")).toBe("TUNER 1");
+    expect(await hostLine("band", "tuner track 2 set '+CTRL:alert'")).toBe("TUNER 1");
+    expect(await hostLine("band", "tuner track 3 set '+CTRL:talkback'")).toBe("TUNER 1");
+    for (const button of [stage, alert, toggle]) {
+      await expect(button).toHaveAttribute("data-binding", "ready", { timeout: 10_000 });
+    }
+    // The button reads the tagged track, by its index.
+    await live.set("band", "live_set tracks 1", "mute", true);
+    await expect(stage).toHaveAttribute("data-muted", "true");
+    await live.set("band", "live_set tracks 1", "mute", false);
+    await expect(stage).toHaveAttribute("data-muted", "false");
+  } finally {
+    live.close();
+    for (const track of [1, 2, 3]) await hostLine("band", `tuner track ${track} remove`);
+    await harness("/hub/layout/reset");
+    await markersGone();
+  }
+});

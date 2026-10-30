@@ -51,6 +51,8 @@ pub fn anchor_name(binding: &Binding) -> String {
         Anchor::TrackAt { index } | Anchor::ReturnAt { index } => format!("#{}", index + 1),
         Anchor::Master => "Master".to_string(),
         Anchor::Song => "Song".to_string(),
+        // A control waiting for its Tuner's `+CTRL` (#104).
+        Anchor::Ctrl { id } => id.name().to_string(),
     }
 }
 
@@ -712,6 +714,7 @@ pub fn StageMicsView(binding: Binding, label: Option<String>) -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fohmixer_proto::layout::CtrlId;
 
     fn binding(anchor: Anchor) -> Binding {
         Binding {
@@ -739,6 +742,12 @@ mod tests {
         assert_eq!(anchor_name(&binding(Anchor::ReturnAt { index: 11 })), "#12");
         assert_eq!(anchor_name(&binding(Anchor::Master)), "Master");
         assert_eq!(anchor_name(&binding(Anchor::Song)), "Song");
+        assert_eq!(
+            anchor_name(&binding(Anchor::Ctrl {
+                id: CtrlId::Talkback
+            })),
+            "talkback"
+        );
     }
 
     #[test]
@@ -783,6 +792,13 @@ mod tests {
         });
         assert_eq!(solo_text(None, &group), "SOLO Stems");
         assert_eq!(solo_text(Some("Podklady"), &group), "SOLO Podklady");
+    }
+
+    #[test]
+    fn a_control_waiting_for_its_tuner_subscribes_nothing() {
+        // No target: `slot_of` makes it unresolved, so it shows red (#104).
+        let waiting = binding(Anchor::Ctrl { id: CtrlId::Stage });
+        assert_eq!(crate::binding::mute_sub(&waiting), None);
     }
 
     #[test]

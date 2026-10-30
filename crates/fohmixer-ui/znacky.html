@@ -54,6 +54,7 @@ html, body { margin: 0; background: #0b0b12; }
 <tr><td><code>+REVERB</code></td><td>reverb fader: the REVERB button lowers it by 10 dB and returns it; REVERB AUTO does it when Live stops. Only on a strip (quoted name and group); without its own name (or with a name another strip has) it is not a reverb fader.</td></tr>
 <tr><td><code>+AUTOTUNE</code></td><td>this track's autotune (below): the rack named <b>Latencies</b>, also inside another rack, and its first macro; on = 127, off = 0 (stream)</td></tr>
 <tr><td><code>+AUTOTUNE:0</code></td><td>the same, on = 0 and off = 127 (repro)</td></tr>
+<tr><td><code>+CTRL:stage</code></td><td>this track is the one the STAGE button drives; the same for <code>+CTRL:alert</code> (TECHALERT) and <code>+CTRL:talkback</code> (TALKBACK). No strip of its own, so a Tuner of only this tag needs no name or group. One track per id in a Live set; with none, or two, the button stays red</td></tr>
 <tr><td><code>+LUFS:-25</code></td><td>loudness of a mic after its Trim IN, judged against the target (here −25 LUFS): <code>LUFS IN</code> (below)</td></tr>
 <tr><td><code>+LUFS</code></td><td>loudness of an output (the PA return, a bus), plain: <code>LUFS OUT</code> (below)</td></tr>
 </table>

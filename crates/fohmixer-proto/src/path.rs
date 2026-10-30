@@ -51,7 +51,16 @@ pub struct PathError {
     pub detail: String,
 }
 
+/// The `kind` of a binding whose `ctrl` anchor no Tuner filled (#104).
+pub const UNFILLED: &str = "unfilled";
+
 impl PathError {
+    /// A binding that waits for the Tuner carrying `+CTRL:<id>` (#104): no
+    /// syntax fault, it has no LOM target yet.
+    pub(crate) fn unfilled(id: impl Into<String>) -> Self {
+        Self::new(UNFILLED, id)
+    }
+
     fn new(kind: &'static str, detail: impl Into<String>) -> Self {
         Self {
             kind,

@@ -71,6 +71,8 @@ mod tests {
             main.contains("Procedure: switch one singer off"),
             "the procedure"
         );
+        // #104: the frame controls' tag.
+        assert!(main.contains("<code>+CTRL:stage</code>"), "the tag");
         assert!(main.contains("<code>OFF</code>") && main.contains("<code>ON</code>"));
         // #151: the LUFS tags, the caption, the devices and the problems.
         assert!(main.contains("<code>+LUFS:-25</code>") && main.contains("<code>+LUFS</code>"));
