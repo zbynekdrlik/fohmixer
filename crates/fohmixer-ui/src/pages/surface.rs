@@ -32,6 +32,7 @@ use crate::arrange::{
 };
 use crate::behave::ableset::tab_dot;
 use crate::behave::arrange_drag::Arrange;
+use crate::behave::iem::alive_after;
 use crate::behave::solo::soloed;
 use crate::binding::sectors::{PICKS_KEY, Picks, Sectored, parse_picks, sectors_on};
 use crate::binding::{
@@ -41,11 +42,14 @@ use crate::binding::{
 use crate::components::detail::{DetailStrip, DetailView};
 use crate::components::eq::{EqNav, EqScreen, EqTarget};
 use crate::components::{ControlView, Settings, fail_flash, key_of, owns_surface, owns_touches};
+use crate::diag;
+use crate::diag::trace::{self, IemStep};
 use crate::dom;
 use crate::flow::{is_column, shared_instance};
 use crate::manual::manual_parts;
 use crate::pages::ableset::{AbleSetView, take_return};
 use crate::pages::deck::DeckView;
+use crate::pages::iem::{IemPane, IemTab};
 use crate::pages::sectors::SectorsView;
 use crate::store::{Badge, LiveStore, Slot};
 
@@ -57,7 +61,7 @@ const BODY_PAD: f64 = 12.0;
 /// Between a side and the column (`.body`'s gap).
 const BODY_GAP: f64 = 6.0;
 
-/// A tab after the layout's pages (#52, #90), shown in the left half of
+/// A tab after the layout's pages (#52, #90, #166), shown in the left half of
 /// the page shown (#148: the left sectors, or the rows' left halves; the
 /// right half and the column stay the page's; on a phone the whole screen
 /// but the thin strip).
@@ -70,6 +74,9 @@ pub(crate) enum Extra {
     Deck,
     /// AbleSet's own page (#90).
     AbleSet,
+    /// iemmixer's own page (#166): its frame is `IemPane`'s, which outlives
+    /// the tab, so `ExtraPane` draws nothing for it.
+    Iem,
 }
 
 impl Extra {
@@ -79,6 +86,17 @@ impl Extra {
             Extra::None => "none",
             Extra::Deck => "deck",
             Extra::AbleSet => "ableset",
+            Extra::Iem => "iem",
+        }
+    }
+
+    /// The extra tab shown after iemmixer's ✕ (#166): its frame ended, so
+    /// its own tab gives way to the page; any other stays.
+    pub(crate) fn after_iem_closed(self) -> Extra {
+        if self == Extra::Iem {
+            Extra::None
+        } else {
+            self
         }
     }
 
@@ -135,6 +153,10 @@ pub(crate) struct Nav {
     /// opens it). Here, not in a layout's shell: a Tuner edit in Live is a
     /// new layout, and it must not close the manual explaining it.
     manual: RwSignal<bool>,
+    /// iemmixer's frame lives (#166): from the tab's first open until the
+    /// ✕, whatever tab shows meanwhile (`behave::iem::alive_after`). Here,
+    /// not in a layout's shell, as the frame. Written only on a change.
+    iem_frame: RwSignal<bool>,
     /// The channel detail's strip, as held (#71: a hold on a strip's SEL
     /// opens it). Here, not in a layout's shell: a new layout keeps it open
     /// while its strip is in it (`binding::detail_strip`).
@@ -241,8 +263,9 @@ impl Nav {
             .covers_left()
     }
 
-    /// The Stream Deck's tab (#52) or AbleSet's (#90) was tapped.
-    fn show_extra(self, extra: Extra) {
+    /// The Stream Deck's tab (#52), AbleSet's (#90) or iemmixer's (#166)
+    /// was tapped.
+    pub(crate) fn show_extra(self, extra: Extra) {
         self.open_column(false);
         if self
             .extra
@@ -250,6 +273,36 @@ impl Nav {
             .is_some_and(|shown| shown != extra)
         {
             let _ = self.extra.try_set(extra);
+        }
+        if let Some(alive) = self.iem_frame.try_get_untracked() {
+            let after = alive_after(alive, extra == Extra::Iem);
+            if after != alive {
+                let _ = self.iem_frame.try_set(after);
+            }
+        }
+    }
+
+    /// iemmixer's frame lives (#166), read tracked.
+    pub(crate) fn iem_alive(self) -> bool {
+        self.iem_frame.try_get().unwrap_or(false)
+    }
+
+    /// iemmixer's tab is the one shown (#166), read tracked.
+    pub(crate) fn iem_shown(self) -> bool {
+        self.shown.try_get().unwrap_or_default() == Extra::Iem
+    }
+
+    /// iemmixer's ✕ (#166): the frame ends with its audio, and its own tab
+    /// gives way to the page. Nothing else moves under another tab.
+    pub(crate) fn close_iem(self) {
+        let shown = self.extra.try_get_untracked().unwrap_or_default();
+        let after = shown.after_iem_closed();
+        if after != shown {
+            self.show_extra(after);
+        }
+        if self.iem_frame.try_get_untracked() == Some(true) {
+            let _ = self.iem_frame.try_set(false);
+            diag::record(&trace::iem(dom::epoch_now(), IemStep::Close));
         }
     }
 }
@@ -287,6 +340,7 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
         shown: Memo::new(move |_| extra.get()),
         before_view: RwSignal::new(None),
         manual: RwSignal::new(false),
+        iem_frame: RwSignal::new(false),
         detail: RwSignal::new(None),
         detail_opened: StoredValue::new(f64::NEG_INFINITY),
         column_open: RwSignal::new(false),
@@ -368,6 +422,8 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
             .into_any()
         }
     };
+    // iemmixer's frame (#166) lives through a new layout too: here, outside
+    // the shell, and never moved (a moved iframe loads again).
     // The tag manual (#68) stays open through a new layout.
     let manual_view = move || nav.manual.get().then(|| view! { <ManualView /> });
     // The Pro-Q 4 screen too (#71 PR E).
@@ -390,6 +446,7 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
             data-idle=move || store.idle.get().to_string()
         >
             {content}
+            <IemPane />
             {manual_view}
             {eq_view}
         </div>
@@ -675,14 +732,16 @@ fn TabBar(
             }
         })
         .collect_view();
-    // The Stream Deck's tab (#52), then AbleSet's (#90), end the pages' bar,
-    // each from a hub with one.
+    // The Stream Deck's tab (#52), AbleSet's (#90), then iemmixer's (#166)
+    // end the pages' bar, each from a hub with one.
     let extra_tabs = (level == 0).then(|| {
         let has_deck = move || nav.store.deck.with(Option::is_some);
         let has_ableset = move || nav.store.ableset.with(Option::is_some);
+        let has_iem = move || nav.store.iem.try_with(Option::is_some).unwrap_or(false);
         view! {
             <Show when=has_deck><DeckTab /></Show>
             <Show when=has_ableset><AbleSetTab /></Show>
+            <Show when=has_iem><IemTab /></Show>
         }
     });
     view! {
@@ -696,7 +755,8 @@ fn TabBar(
 /// An extra tab's content over the left half of the page shown (#148, the
 /// owner's ruling of 29.10.2026: STREAM DECK and ABLESET open in the left
 /// sectors; the column stays in the screen's middle and the right half
-/// keeps working): the deck's keys or AbleSet's frame. Mounted once by
+/// keeps working): the deck's keys or AbleSet's frame (iemmixer's lies in
+/// `IemPane`, which outlives its tab, #166). Mounted once by
 /// `Shell` beside the page (page.css places it over the left half), so a
 /// new page (the sectors switched on or off) mounts it nothing again; one
 /// `nav.shown` memo: a tap on the open tab or the pager mounts nothing
@@ -706,7 +766,7 @@ pub(crate) fn ExtraPane() -> impl IntoView {
     let nav = expect_context::<Nav>();
     let viewport = nav.viewport;
     move || match nav.shown.try_get().unwrap_or_default() {
-        Extra::None => None,
+        Extra::None | Extra::Iem => None,
         Extra::Deck => Some(view! { <DeckView viewport=viewport /> }.into_any()),
         Extra::AbleSet => Some(view! { <AbleSetView /> }.into_any()),
     }
@@ -1653,12 +1713,24 @@ mod tests {
         assert!(!Extra::None.covers_left());
         assert!(Extra::Deck.covers_left());
         assert!(Extra::AbleSet.covers_left());
+        assert!(Extra::Iem.covers_left());
         assert!(Extra::None.pager_tabs(false));
         assert!(Extra::None.pager_tabs(true));
         assert!(!Extra::Deck.pager_tabs(false));
         assert!(Extra::Deck.pager_tabs(true));
         assert!(!Extra::AbleSet.pager_tabs(false));
         assert!(Extra::AbleSet.pager_tabs(true));
+        assert!(!Extra::Iem.pager_tabs(false));
+        assert!(Extra::Iem.pager_tabs(true));
+    }
+
+    #[test]
+    fn iemmixers_close_leaves_its_own_tab_and_no_other() {
+        // #166: its ✕ ends the frame; under another tab nothing else moves.
+        assert_eq!(Extra::Iem.after_iem_closed(), Extra::None);
+        for other in [Extra::None, Extra::Deck, Extra::AbleSet] {
+            assert_eq!(other.after_iem_closed(), other);
+        }
     }
 
     #[test]
@@ -1667,6 +1739,7 @@ mod tests {
         assert_eq!(Extra::None.name(), "none");
         assert_eq!(Extra::Deck.name(), "deck");
         assert_eq!(Extra::AbleSet.name(), "ableset");
+        assert_eq!(Extra::Iem.name(), "iem");
         assert_eq!(Extra::default().name(), "none");
     }
 

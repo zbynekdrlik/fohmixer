@@ -1,0 +1,80 @@
+
+/* iemmixer's tab (#166; the owner's approved docs/mockups/iem-tab-v1.html):
+   its row under ABLESET, the dot and the ✕, and the pane over the page's left
+   half (placed in page.css beside the extra pane). html and body take no
+   touch (style.css); the frame and its area take them again, so a finger
+   reaches iemmixer's own page. */
+
+.iem-row {
+    display: flex;
+    min-width: 0;
+    gap: 2px;
+}
+
+.column .tab.iem-tab {
+    display: flex;
+    flex: 1 1 0;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    gap: 5px;
+}
+
+/* The frame lives behind another tab: its audio goes on out of sight. */
+.iem-dot {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #2fc79a;
+}
+
+.iem-close {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 26px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    color: var(--muted);
+    font: 600 13px/1 var(--ui);
+    cursor: pointer;
+    touch-action: manipulation;
+}
+
+.iem-pane {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    background: var(--page);
+}
+
+/* Hidden, never gone: the frame stays alive behind the other tabs, so its
+   audio goes on. `visibility`, not `display: none` or a move off-screen: the
+   frame keeps its box where it was, so its page keeps its size and stays in
+   the viewport (a frame laid out as nothing or outside the viewport is what
+   engines throttle or suspend), and a hidden element takes no touch, so the
+   strips under it work. No iPad has proved this yet: #166's live check. */
+.iem-pane[data-shown="false"] {
+    visibility: hidden;
+}
+
+.iem-area {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    border: 1px solid #1c1d2a;
+    border-radius: 10px;
+    background: #0f1016;
+    touch-action: auto;
+}
+
+.iem-frame {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    touch-action: auto;
+}

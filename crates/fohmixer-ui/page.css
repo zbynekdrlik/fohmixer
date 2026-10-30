@@ -10,9 +10,11 @@
    narrower. `--tw` is a rail button's text width (the column's inner width
    less a button's border and padding), `--rail-cols` the rail's columns.
    Set on `.mixer` too: the extra tab's pane (#148), outside `.body`, takes
-   the column's width from it. */
+   the column's width from it; and on iemmixer's pane (#166), outside
+   `.mixer`. */
 .mixer,
-.body {
+.body,
+.iem-pane {
     --col: 132px;
     --tw: 98px;
     --rail-cols: 1;
@@ -28,7 +30,8 @@
 
 @media (max-height: 520px) {
     .mixer,
-    .body {
+    .body,
+    .iem-pane {
         --col: 148px;
         --tw: 45px;
         --rail-cols: 2;
@@ -37,7 +40,8 @@
 
 @media (max-width: 520px) {
     .mixer,
-    .body {
+    .body,
+    .iem-pane {
         --col: 96px;
         --tw: 62px;
         --rail-cols: 1;
@@ -348,6 +352,21 @@
     min-height: 0;
 }
 
+/* iemmixer's pane (#166) lies where `.extra-pane` does, a sibling of `.mixer`
+   in `.surface` (surface.rs Surface): its frame outlives a new layout, which
+   remounts `.mixer`. Neither opens a stacking context, so its z-index is
+   measured against the same column, shade and detail. Hidden behind another
+   tab: iem.css. */
+.surface > .iem-pane {
+    position: absolute;
+    top: 6px;
+    bottom: 6px;
+    left: 6px;
+    z-index: 4;
+    width: calc((100% - 24px - var(--col)) / 2);
+    min-width: 0;
+}
+
 .body:not([data-extra="none"]) [data-side="left"] {
     visibility: hidden;
 }
@@ -590,7 +609,8 @@
 
 @media (max-height: 520px), (max-width: 520px) {
     .mixer,
-    .body {
+    .body,
+    .iem-pane {
         --col: 34px;
         --overlay: 150px;
     }
@@ -694,7 +714,8 @@
 
     /* The pane there: the body's first column, the screen less its 6 px
        padding, the gap and the thin strip. */
-    .mixer > .extra-pane {
+    .mixer > .extra-pane,
+    .surface > .iem-pane {
         width: calc(100% - 18px - var(--col));
     }
 

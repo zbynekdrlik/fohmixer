@@ -40,9 +40,10 @@ use crate::store::LiveStore;
 
 /// The frame's sandbox (design §5.3): AbleSet's scripts, its own storage
 /// (another origin, so its own), its forms, pop-ups and downloads; never
-/// the top-level navigation that would take the mixer away.
-const SANDBOX: &str = "allow-scripts allow-same-origin allow-forms allow-popups \
-                       allow-popups-to-escape-sandbox allow-modals allow-downloads";
+/// the top-level navigation that would take the mixer away. iemmixer's
+/// frame takes the same (#166).
+pub(crate) const SANDBOX: &str = "allow-scripts allow-same-origin allow-forms allow-popups \
+                                      allow-popups-to-escape-sandbox allow-modals allow-downloads";
 
 /// The page came back from AbleSet's sign-in (`#ableset`, design §5.4): the
 /// hash goes at once (a reload never opens the tab again), and the caller
