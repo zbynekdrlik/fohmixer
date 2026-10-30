@@ -968,17 +968,16 @@ fn api_bodies_round_trip() {
         json["layout"]["markers"],
         json!({"found": 2, "problems": [{"instance": "band", "kind": "track", "index": 4,
                "name": "\"Vox\" +G:x", "problems": [{"code": "bad_group", "tag": "+G:x"}]}],
-               "links": [{"instance": "band", "id": "PODKLADY", "leader": "frame", "partners": 5}]})
+               "links": [{"instance": "band", "id": "PODKLADY", "leader": "frame", "partners": 5}],
+               "ctrls": [{"instance": "band", "id": "stage", "tuners": 1}]})
     );
-    // A hub before the fader links (#130) names none.
+    // A hub before the fader links (#130) and the ctrl ids (#104) names none.
     let mut unlinked = json["layout"]["markers"].clone();
     unlinked.as_object_mut().unwrap().remove("links");
-    assert_eq!(
-        serde_json::from_value::<MarkersStatus>(unlinked)
-            .unwrap()
-            .links,
-        vec![]
-    );
+    unlinked.as_object_mut().unwrap().remove("ctrls");
+    let older = serde_json::from_value::<MarkersStatus>(unlinked).unwrap();
+    assert_eq!(older.links, vec![]);
+    assert_eq!(older.ctrls, vec![]);
     // A report's fields sit next to when and where it came from.
     assert_eq!(
         json["client_reports"][0],
