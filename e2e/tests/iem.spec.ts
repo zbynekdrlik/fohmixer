@@ -191,16 +191,14 @@ test.describe("The IEM tab (fohmixer's own https page)", () => {
       await expect(page.getByTestId("iem-tab")).toHaveAttribute("data-selected", "true");
       expect((await fakeIem.state()).loads).toBe(1);
     };
-    await page.getByTestId("stage").evaluate((s) => s.setAttribute("data-e2e-shell", "1"));
     try {
       // A title changed, as a Tuner edit does (detail.spec's recipe).
       const changed = JSON.parse(readFileSync(FIXTURE_LAYOUT, "utf-8"));
       const foh = changed.pages.find((p: any) => p.id === "foh");
       foh.rows.flatMap((r: any) => r.sections).find((s: any) => s.id === "foh-2").title = "IEM TEST";
       await harness("/hub/layout", { layout: changed });
-      // The old shell is gone: the page has mounted the new layout.
-      await expect(page.locator('[data-testid="stage"][data-e2e-shell="1"]')).toHaveCount(0, { timeout: 10_000 });
-      await expect(page.getByTestId("stage")).toBeVisible();
+      // The new layout is on the page, as the group's new title shows.
+      await expect(page.getByTestId("group-side").filter({ hasText: "IEM TEST" })).toHaveCount(1, { timeout: 10_000 });
       await kept();
       await resetLayout();
       await setSectors(SECTORS);
