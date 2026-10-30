@@ -90,12 +90,12 @@ async function twoDrags(page: Page, fader: Locator, pointer: number): Promise<{ 
 }
 
 /** The fader's sets the page sent from `from` to `to` (a drag sends dozens): the first and last one's arrival (`hub_ms`) and page time (`t`). */
-function dragSets(events: any[], from: number, to: number): { first: number; last: number; t0: number; t1: number } {
+function dragSets(events: any[], from: number, to: number): { first: number; last: number; t0: number; t1: number; arrived: number[] } {
   const sets = events.filter((e) => e.ev === "set" && e.key === KEY && e.t >= from && e.t <= to);
   expect(sets.length, "the drag's sets").toBeGreaterThan(10);
-  const arrived = sets.map((e) => e.hub_ms);
+  const arrived = sets.map((e) => e.hub_ms).sort((a, b) => a - b);
   const sent = sets.map((e) => e.t);
-  return { first: Math.min(...arrived), last: Math.max(...arrived), t0: Math.min(...sent), t1: Math.max(...sent) };
+  return { first: arrived[0], last: arrived[arrived.length - 1], t0: Math.min(...sent), t1: Math.max(...sent), arrived };
 }
 
 /** The bytes of the page events (each once) that the hub's trace records hold with a page time from `from` to `to`. */
@@ -180,25 +180,33 @@ test("on a slow link the recorder never delays a drag's sets and its newest even
   // 6.1 s lag for ~32 KB, #43), so 10 s. PR C's gate starved it for minutes.
   expect(lag, "the recorder's lag behind the page (ms)").toBeLessThan(10_000);
 
-  // With the recorder on, no batch goes while a drag's sets do: between a
-  // drag's first and last set at most 2 `trace` records arrive (the socket's
-  // one task stamps both in arrival order; `ts` is whole ms, `hub_ms` finer:
-  // 5 ms either side). A tick lets one through only after a page frame over
-  // 100 ms without a set (WebKit on the runner draws 14 to 22 frames a second).
+  // With the recorder on, no batch goes while a drag's sets do: between two
+  // of a drag's sets under 100 ms apart at most 2 `trace` records arrive (the
+  // socket's one task stamps both in arrival order; `ts` is whole ms, `hub_ms`
+  // finer: 5 ms either side). A tick lets one through only after a page frame
+  // over 100 ms without a set, and such a batch delays no set: WebKit on a
+  // loaded runner can draw 7 frames a second, a set every 150 ms, and then
+  // 3 or 4 batches go inside a drag by design.
   // The check can fail: the page events recorded between the drag's first
-  // and last set fill at least 4 batches of 1 000 bytes, so without the
-  // gate at least 3 would go inside it.
+  // and last set fill at least 4 batches of 1 000 bytes, so at the runner's
+  // usual 14 to 22 frames a second at least 3 would go between close sets
+  // without the gate.
   const events = await hubEvents();
   for (const [a, b] of [
     [on.from, on.between],
     [on.between, on.to],
   ]) {
-    const { first, last, t0, t1 } = dragSets(events, a, b);
+    const { first, last, t0, t1, arrived } = dragSets(events, a, b);
     const bytes = eventBytes(events, t0, t1);
     test.info().annotations.push({ type: "drag-bytes", description: String(bytes) });
     expect(bytes, "the page events between the drag's first and last set (bytes)").toBeGreaterThanOrEqual(4000);
     const inside = events.filter((e) => e.ev === "trace" && e.ts > first + 5 && e.ts < last - 5);
-    expect(inside.length, `trace records inside a drag of ${Math.round(last - first)} ms: ${JSON.stringify(inside.map((e) => e.ts - first))}`).toBeLessThanOrEqual(2);
+    const gap = (ts: number) => {
+      const next = arrived.findIndex((at) => at >= ts);
+      return arrived[next] - arrived[next - 1];
+    };
+    const gaps = inside.map((e) => Math.round(gap(e.ts)));
+    expect(gaps.filter((g) => g < 100).length, `trace records inside a drag of ${Math.round(last - first)} ms, the gap between the sets around each (ms): ${JSON.stringify(gaps)}`).toBeLessThanOrEqual(2);
   }
 
   // It drains without a stall once the fingers rest: from the second drag's
