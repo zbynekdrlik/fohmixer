@@ -584,7 +584,7 @@ mod tests {
         // With the policy's revision of a hub without [ableset] in it (#90;
         // the native builds' placeholder has no head, `with_policy` has its
         // own test).
-        let rev = crate::policy_rev(&crate::page_csp(None));
+        let rev = crate::policy_rev(&crate::page_csp(None, None));
         let page = with_policy(&String::from_utf8_lossy(&index.data), &rev);
         assert_eq!(body_bytes(response).await, page.into_bytes());
     }

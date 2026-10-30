@@ -539,6 +539,11 @@ pub enum ServerMsg {
         #[serde(default)]
         lan: bool,
     },
+    /// iemmixer's own page (#166): sent on attach, only by a hub with
+    /// `[iem]` (a page without it shows no IEM tab). `url` is the page's
+    /// address, framed directly (no proxy: iemmixer itself allows the
+    /// frame), `title` the tab's title.
+    Iem { url: String, title: String },
     /// REVERB (#130, D18): REVERB AUT, whether the reverb faders are
     /// lowered and why, the followed transport, the stop's wait, and each
     /// fader's return level and hand; at attach and on every change.

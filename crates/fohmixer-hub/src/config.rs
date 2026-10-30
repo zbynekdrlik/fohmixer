@@ -38,6 +38,15 @@
 //! access_aud = ["<the AbleSet app's AUD tag>"]  # needs [access]; none: internet refused
 //! title = "AbleSet"      # 1..=24 characters, the tab's title (the default)
 //!
+//! # iemmixer's own page (#166), optional: the IEM tab, a frame of this
+//! # address beside the mixer. https://, a DNS name, an optional port and
+//! # path, no credentials. No proxy and no name of the hub's: iemmixer serves
+//! # the page and allows the frame itself (its own frame-ancestors); the hub
+//! # tells the page the address and names its origin in the page's frame-src.
+//! [iem]
+//! url = "https://iem.example.org/"
+//! title = "IEM MIXER"    # 1..=24 characters, the tab's title (the default)
+//!
 //! # The Stream Deck tab (#52), optional: Bitfocus Companion's Satellite API
 //! [companion]
 //! host = "companion.example.org"
@@ -109,6 +118,8 @@ pub const DEFAULT_DECK_TITLE: &str = "Stream Deck";
 pub const DEFAULT_ABLESET_UPSTREAM: &str = "http://127.0.0.1:80";
 /// AbleSet's tab's title when `[ableset]` names none (#90 B3).
 pub const DEFAULT_ABLESET_TITLE: &str = "AbleSet";
+/// iemmixer's tab's title when `[iem]` names none (#166).
+pub const DEFAULT_IEM_TITLE: &str = "IEM MIXER";
 
 /// One Live instance: its name (the `instance` of every command and
 /// binding) and the localhost port of its FohMixer script.
@@ -192,6 +203,10 @@ fn default_ableset_title() -> String {
     DEFAULT_ABLESET_TITLE.to_string()
 }
 
+fn default_iem_title() -> String {
+    DEFAULT_IEM_TITLE.to_string()
+}
+
 /// `[tls]`: the HTTPS listener for the one public name (LAN by the router's
 /// static DNS or the PC's hosts entry, the internet through the tunnel).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -268,6 +283,30 @@ pub struct AbleSetCfg {
     pub access_aud: Vec<String>,
     #[serde(default = "default_ableset_title")]
     pub title: String,
+}
+
+/// `[iem]` (#166): iemmixer's own page as the IEM tab's frame. The hub only
+/// tells the page of it: no proxy, nothing of iemmixer's answers changed
+/// (iemmixer allows the frame itself), and the page policy names its origin
+/// ([`IemCfg::origin`]) so fohmixer's own page may frame it. The tab is
+/// titled `title`. The address is site data: the installer writes it, never
+/// this repository.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IemCfg {
+    pub url: String,
+    #[serde(default = "default_iem_title")]
+    pub title: String,
+}
+
+impl IemCfg {
+    /// The page's origin (`https://`, its host, its port when it names
+    /// one): what fohmixer's `frame-src` allows. None only for a `url`
+    /// [`is_iem_url`] refuses.
+    pub fn origin(&self) -> Option<String> {
+        let uri = self.url.parse::<axum::http::Uri>().ok()?;
+        Some(format!("https://{}", uri.authority()?))
+    }
 }
 
 /// `[companion]` (#52): the Stream Deck tab. The hub registers with
@@ -442,15 +481,32 @@ pub fn is_upstream(url: &str) -> bool {
     else {
         return false;
     };
-    // The authority parses whole (no path, query or fragment); after its
-    // host only `:<port>` may follow, a port in 1..=65535.
+    // The authority parses whole (no path, query or fragment).
+    port_ok(&authority) && url_allowed(url)
+}
+
+/// Whether only `:<port>`, a port in 1..=65535, or nothing follows
+/// `authority`'s host (an authority without credentials).
+fn port_ok(authority: &axum::http::uri::Authority) -> bool {
     let port = &authority.as_str()[authority.host().len()..];
-    let port_ok = port.is_empty()
+    port.is_empty()
         || port
             .strip_prefix(':')
             .and_then(|p| p.parse::<u16>().ok())
-            .is_some_and(|p| p != 0);
-    port_ok && url_allowed(url)
+            .is_some_and(|p| p != 0)
+}
+
+/// Whether `url` may be iemmixer's page (#166): `https://`, a DNS name, an
+/// optional port and path, no credentials. The microphone needs a secure
+/// context, and the name goes into the page policy's `frame-src`.
+pub fn is_iem_url(url: &str) -> bool {
+    let Ok(uri) = url.parse::<axum::http::Uri>() else {
+        return false;
+    };
+    uri.scheme_str() == Some("https")
+        && uri.authority().is_some_and(|authority| {
+            !authority.as_str().contains('@') && is_dns_name(authority.host()) && port_ok(authority)
+        })
 }
 
 /// The hub's configuration.
@@ -480,6 +536,9 @@ pub struct Config {
     /// AbleSet's page (#90); none: the hub knows of no AbleSet.
     #[serde(default)]
     pub ableset: Option<AbleSetCfg>,
+    /// iemmixer's page (#166); none: no IEM tab.
+    #[serde(default)]
+    pub iem: Option<IemCfg>,
     /// The Stream Deck tab (#52); none: no tab.
     #[serde(default)]
     pub companion: Option<CompanionCfg>,
@@ -509,6 +568,7 @@ impl Config {
             access: None,
             tunnel: None,
             ableset: None,
+            iem: None,
             companion: None,
             eq: None,
             lufs: LufsCfg::default(),
@@ -716,6 +776,17 @@ impl Config {
             self.validate_ableset_aud(&ableset.access_aud)?;
             if !(1..=24).contains(&ableset.title.chars().count()) {
                 bail!("[ableset] title {:?}: 1..=24 characters", ableset.title);
+            }
+        }
+        if let Some(iem) = &self.iem {
+            if !is_iem_url(&iem.url) {
+                bail!(
+                    "[iem] url {:?}: https://, a DNS name and no credentials, like https://iem.example.org/",
+                    iem.url
+                );
+            }
+            if !(1..=24).contains(&iem.title.chars().count()) {
+                bail!("[iem] title {:?}: 1..=24 characters", iem.title);
             }
         }
         Ok(())
@@ -1089,6 +1160,106 @@ mod tests {
                 "{rest}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn iemmixers_page_is_read_with_its_default_title_and_needs_no_tls() {
+        // #166: no name of the hub's and no proxy, so no [tls] either.
+        let table = "[iem]\nurl = \"https://iem.example.org/\"\n";
+        assert_eq!(
+            Config::parse(table, &data()).unwrap().iem,
+            Some(IemCfg {
+                url: "https://iem.example.org/".into(),
+                title: "IEM MIXER".into(),
+            })
+        );
+        assert_eq!(Config::parse("", &data()).unwrap().iem, None);
+        let error = Config::parse("[iem]\ntitle = \"IEM\"\n", &data()).unwrap_err();
+        assert!(format!("{error:#}").contains("url"), "{error:#}");
+        let error = Config::parse(&format!("{table}proxy = true\n"), &data()).unwrap_err();
+        assert!(format!("{error:#}").contains("proxy"), "{error:#}");
+    }
+
+    #[test]
+    fn iemmixers_title_is_1_to_24_characters() {
+        let title = |rest: &str| {
+            let text = format!("[iem]\nurl = \"https://iem.example.org/\"\n{rest}");
+            Config::parse(&text, &data()).map(|config| config.iem.unwrap().title)
+        };
+        assert_eq!(title("title = \"IEM\"\n").unwrap(), "IEM");
+        // Characters, not bytes: Ž is two.
+        let longest = "Ž".repeat(24);
+        assert_eq!(title(&format!("title = \"{longest}\"\n")).unwrap(), longest);
+        for rest in [
+            "title = \"\"\n".to_string(),
+            format!("title = \"{}\"\n", "a".repeat(25)),
+        ] {
+            let error = format!("{:#}", title(&rest).unwrap_err());
+            assert!(
+                error.contains("[iem] title") && error.contains("1..=24 characters"),
+                "{rest}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn iemmixers_url_is_https_a_dns_name_and_no_credentials() {
+        for url in [
+            "https://iem.example.org",
+            "https://iem.example.org/",
+            "https://iem.example.org:8443/",
+            "https://iem.example.org:65535/mix",
+            "https://iem.example.org/mix?page=engineer",
+            "https://IEM.Example.ORG/",
+        ] {
+            assert!(is_iem_url(url), "{url}");
+        }
+        for url in [
+            "http://iem.example.org/",
+            "ftp://iem.example.org/",
+            "//iem.example.org/",
+            "iem.example.org",
+            "https://user@iem.example.org/",
+            "https://user:secret@iem.example.org/",
+            "https://iem/",
+            "https://192.0.2.7/",
+            "https://[::1]/",
+            "https://iem.example.org:0/",
+            "https://iem.example.org:65536/",
+            "https://iem.example.org:/",
+            "https://iem.example.org/a b",
+            "https://",
+            "",
+        ] {
+            assert!(!is_iem_url(url), "{url}");
+        }
+        let error = Config::parse("[iem]\nurl = \"http://iem.example.org/\"\n", &data());
+        let error = format!("{:#}", error.unwrap_err());
+        assert!(
+            error.contains("[iem] url") && error.contains("https://"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn iemmixers_origin_is_its_scheme_host_and_port_without_the_path() {
+        let origin = |url: &str| {
+            IemCfg {
+                url: url.into(),
+                title: DEFAULT_IEM_TITLE.into(),
+            }
+            .origin()
+        };
+        assert_eq!(
+            origin("https://iem.example.org/mix?a=1").as_deref(),
+            Some("https://iem.example.org")
+        );
+        assert_eq!(
+            origin("https://iem.example.org:8443/").as_deref(),
+            Some("https://iem.example.org:8443")
+        );
+        assert_eq!(origin("not a url"), None);
+        assert_eq!(origin("/a-path-only"), None);
     }
 
     #[test]

@@ -21,6 +21,7 @@ mod eq_probe_cli;
 mod fader_link;
 mod fanout;
 mod graceful_stop;
+mod iem;
 mod layout;
 mod live_client;
 mod lufs;
