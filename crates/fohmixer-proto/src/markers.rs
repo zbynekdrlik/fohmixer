@@ -109,9 +109,8 @@ pub struct Marker {
 impl Marker {
     /// Whether the Tuner makes no strip (#127, #130, #104): `+MUTE`,
     /// `+FADER`, `+AUTOTUNE` or `+CTRL` tags with no quote, no group and no
-    /// other tag
-    /// (its first problem is [`TagProblem::NoLabel`] while [`parse`] reads
-    /// it). A missing label or group is no problem there.
+    /// other tag (its first problem is [`TagProblem::NoLabel`] while
+    /// [`parse`] reads it). A missing label or group is no problem there.
     fn makes_no_strip(&self) -> bool {
         !(self.mutes.is_empty()
             && self.faders.is_empty()
@@ -1036,87 +1035,6 @@ fn fill_autotune(layout: &mut Layout, tracks: &[AutotuneTarget]) {
     });
 }
 
-/// Who carries a `+CTRL` id (#104): the entries, per Live set and id.
-type Ctrls = BTreeMap<(String, CtrlId), Vec<usize>>;
-
-/// Every `+CTRL` id of every Live set and its entries.
-fn ctrl_carriers(entries: &[Entry<'_>]) -> Ctrls {
-    let mut ctrls = Ctrls::new();
-    for (i, entry) in entries.iter().enumerate() {
-        for id in &entry.marker.ctrls {
-            ctrls
-                .entry((entry.found.instance.clone(), *id))
-                .or_default()
-                .push(i);
-        }
-    }
-    ctrls
-}
-
-/// An id on two Tuners of a set is a problem on each (never a guess, #104).
-fn duplicate_ctrls(entries: &mut [Entry<'_>], ctrls: &Ctrls) {
-    for ((_, id), list) in ctrls {
-        if list.len() > 1 {
-            for i in list {
-                entries[*i]
-                    .problems
-                    .push(TagProblem::DuplicateCtrl { id: *id });
-            }
-        }
-    }
-}
-
-/// The track each id binds: only an id on exactly one Tuner has one.
-fn ctrl_tracks(entries: &[Entry<'_>], ctrls: &Ctrls) -> BTreeMap<(String, CtrlId), Anchor> {
-    ctrls
-        .iter()
-        .filter_map(|(key, list)| match list.as_slice() {
-            [one] => Some((key.clone(), entries[*one].track().anchor)),
-            _ => None,
-        })
-        .collect()
-}
-
-/// Every id the frame names and how many Tuners carry it (#104).
-fn ctrl_reports(frame: &Layout, ctrls: &Ctrls) -> Vec<CtrlReport> {
-    frame
-        .ctrls()
-        .into_iter()
-        .map(|(instance, id)| CtrlReport {
-            tuners: ctrls.get(&(instance.clone(), id)).map_or(0, Vec::len),
-            instance,
-            id,
-        })
-        .collect()
-}
-
-/// A binding that names a `+CTRL` id takes its track by index, its instance
-/// and path staying; with no track it keeps the id (#104).
-fn fill_ctrl(binding: &mut Binding, tracks: &BTreeMap<(String, CtrlId), Anchor>) {
-    if let Anchor::Ctrl { id } = binding.anchor
-        && let Some(anchor) = tracks.get(&(binding.instance.clone(), id))
-    {
-        binding.anchor = anchor.clone();
-    }
-}
-
-/// Fills every `stage`, `alert` and `param_toggle` that names a `+CTRL` id
-/// (#104; a view's copied rail too, so it runs after the views). A control
-/// that still names its track stays as it is.
-fn fill_ctrls(layout: &mut Layout, tracks: &BTreeMap<(String, CtrlId), Anchor>) {
-    each_control_mut(layout, &mut |control: &mut Control| match control {
-        Control::Stage { binding, .. } | Control::Alert { binding, .. } => {
-            fill_ctrl(binding, tracks);
-        }
-        Control::ParamToggle { targets, .. } => {
-            for target in targets {
-                fill_ctrl(&mut target.binding, tracks);
-            }
-        }
-        _ => {}
-    });
-}
-
 /// Every control of the layout, mutable: each page's rail and rows (a
 /// pager's sub-pages too), then the global controls.
 fn each_control_mut(layout: &mut Layout, f: &mut impl FnMut(&mut Control)) {
@@ -1255,8 +1173,8 @@ pub fn compose(frame: &Layout, found: &[Found]) -> Composed {
     duplicate_ids(&mut entries, &ids);
     link_mutes(&mut entries, &ids);
     let frame_partners = link_faders(&mut entries, &ids, &frame_links);
-    let ctrls = ctrl_carriers(&entries);
-    duplicate_ctrls(&mut entries, &ctrls);
+    let ctrls = ctrl::carriers(&entries);
+    ctrl::mark_duplicates(&mut entries, &ctrls);
     let groups = members(&entries);
     // Two strips on one place of a group: both marked.
     for (name, list) in &groups {
@@ -1322,7 +1240,7 @@ pub fn compose(frame: &Layout, found: &[Found]) -> Composed {
     }
     fill_links(&mut layout, &frame_links, &frame_partners);
     fill_autotune(&mut layout, &autotune_targets(&entries));
-    fill_ctrls(&mut layout, &ctrl_tracks(&entries, &ctrls));
+    ctrl::fill(&mut layout, &ctrl::tracks(&entries, &ctrls));
     let mut links: Vec<LinkReport> = entries
         .iter()
         .filter_map(|e| {
@@ -1361,7 +1279,7 @@ pub fn compose(frame: &Layout, found: &[Found]) -> Composed {
         layout,
         problems,
         links,
-        ctrls: ctrl_reports(frame, &ctrls),
+        ctrls: ctrl::reports(frame, &ctrls),
     }
 }
 
@@ -1422,6 +1340,7 @@ fn view_page(
     }
 }
 
+mod ctrl;
 pub mod migrate;
 
 #[cfg(test)]
