@@ -432,6 +432,8 @@ function Install-FohRemoteFiles {
     if ($Remote.ableset -and -not $Remote.ableset_internet) {
         Write-Host "fohmixer install: AbleSet's name $($Remote.ableset) without -AbleSetAccessAud: the LAN only (the hub refuses it from the internet)"
     }
+    if ($Remote.iem) { Write-Host "fohmixer install: the IEM tab frames $($Remote.iem)" }
+    else { Write-Host 'fohmixer install: no -IemUrl: no [iem], no IEM tab' }
     return [pscustomobject]@{
         kept = $false; public_name = $Remote.name; url = $Remote.url; hosts_changed = $hostsChanged
         shortcut_changed = $shortcutChanged; token_changed = $tokenChanged; tunnel = $Remote.tunnel; tunnel_service = $null

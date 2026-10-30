@@ -127,6 +127,9 @@ fn IemClose() -> impl IntoView {
     let nav = expect_context::<Nav>();
     // It owns its touches (#43 PR G); it writes no key.
     let no_keys: Vec<String> = Vec::new();
+    // It acts at the lift of a press that began on it: a finger that slides
+    // here ends no audio.
+    let pressed = RwSignal::new(false);
     view! {
         <button
             type="button"
@@ -134,7 +137,15 @@ fn IemClose() -> impl IntoView {
             use:owns_touches=no_keys
             data-testid="iem-close"
             aria-label="Close IEM MIXER"
-            on:pointerdown=move |_| nav.close_iem()
+            on:pointerdown=move |_| pressed.set(true)
+            on:pointercancel=move |_| pressed.set(false)
+            on:pointerleave=move |_| pressed.set(false)
+            on:pointerup=move |_| {
+                if pressed.get_untracked() {
+                    pressed.set(false);
+                    nav.close_iem();
+                }
+            }
         >
             "✕"
         </button>

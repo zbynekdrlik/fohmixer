@@ -354,7 +354,7 @@
 
 /* iemmixer's pane (#166) lies where `.extra-pane` does, a sibling of `.mixer`
    in `.surface` (surface.rs Surface): its frame outlives a new layout, which
-   remounts `.mixer`. Neither opens a stacking context, so its z-index is
+   replaces what `.mixer` holds. Neither opens a stacking context, so its z-index is
    measured against the same column, shade and detail. Hidden behind another
    tab: iem.css. */
 .surface > .iem-pane {
@@ -469,15 +469,18 @@
        FOH, STREAM DECK beside ABLESET, IEM with its ✕. One row more would
        take the rail's last button. */
     .column .seg[data-level="0"] {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        display: flex;
+        flex-wrap: wrap;
     }
 
     .column .tab.page-tab,
     .column .iem-row {
-        grid-column: 1 / -1;
+        flex: 0 0 100%;
     }
 
     .column .tab.extra-tab {
+        flex: 1 1 0;
+        min-width: 0;
         font-size: 9px;
         letter-spacing: 0;
     }

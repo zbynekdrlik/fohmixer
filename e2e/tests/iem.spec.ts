@@ -93,19 +93,23 @@ test.describe("The IEM tab (fohmixer's own https page)", () => {
     await expect(page.getByTestId("iem-dot")).toHaveCount(0);
     await expect(page.getByTestId("iem-close")).toHaveCount(0);
     expect((await fakeIem.state()).loads).toBe(0);
-    // As wide as AbleSet's tab until the ✕ takes its place beside it.
+    // The ✕'s cell is kept from the start: the tab keeps its width.
     const width = async (l: Locator) => (await l.boundingBox())!.width;
-    expect(Math.abs((await width(tab)) - (await width(page.getByTestId("ableset-tab"))))).toBeLessThan(1);
+    const before = await width(tab);
     const column = (await page.getByTestId("column").boundingBox())!;
 
     await openIem(page);
     await expect(page.getByTestId("page")).toHaveAttribute("data-extra", "iem");
+    expect(await width(tab)).toBe(before);
     const frame = page.getByTestId("iem-frame");
     await expect(frame).toHaveAttribute("src", IEM.href);
     await expect(frame).toHaveAttribute("title", "IEM MIXER");
     await expect(frame).toHaveAttribute("allow", "microphone; autoplay");
     await expect(frame).toHaveAttribute("sandbox", SANDBOX);
     await expect(frame).toHaveAttribute("referrerpolicy", "no-referrer");
+    // The microphone reaches the frame's own document (Chromium's API; WebKit
+    // has none, and only the real iPad proves it there).
+    expect(await inside(page).evaluate(() => (document as any).featurePolicy?.allowsFeature("microphone") ?? true)).toBe(true);
     await expect(frameOf(page).locator("#fake-iem")).toHaveText("ENGINEER");
     // While it shows: the ✕, no dot.
     await expect(tab).toHaveAttribute("data-alive", "true");
@@ -151,10 +155,10 @@ test.describe("The IEM tab (fohmixer's own https page)", () => {
     });
     expect(style).toEqual({ visibility: "hidden", display: "block" });
     expect(await boxOf(frame)).toEqual(shown);
-    // Its page runs on: the counter its own timer keeps goes up, in the same
-    // document.
+    // Its page runs on at its own pace: the counter its 50 ms timer keeps
+    // gains 20 within 3 s, which a frame throttled to 1 Hz never does.
     const before = await ticks(page);
-    await expect.poll(() => ticks(page)).toBeGreaterThan(before);
+    await expect.poll(() => ticks(page), { timeout: 3000 }).toBeGreaterThan(before + 20);
     expect(await marked(page)).toBe(1);
     // The hidden frame takes no touch: a strip under it is hit and works,
     // once the page has its values again (the wanted set drops what an extra

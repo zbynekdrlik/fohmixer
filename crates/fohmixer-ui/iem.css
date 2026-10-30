@@ -5,10 +5,13 @@
    touch (style.css); the frame and its area take them again, so a finger
    reaches iemmixer's own page. */
 
+/* The ✕'s cell is the row's from the start: the tab never changes under a
+   finger, so a second tap on it cannot land on a ✕ that just appeared. */
 .iem-row {
+    position: relative;
     display: flex;
     min-width: 0;
-    gap: 2px;
+    padding-right: 28px;
 }
 
 .column .tab.iem-tab {
@@ -30,8 +33,11 @@
 }
 
 .iem-close {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
     display: grid;
-    flex: none;
     place-items: center;
     width: 26px;
     padding: 0;
