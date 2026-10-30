@@ -1255,6 +1255,10 @@ pub struct MarkersStatus {
     /// (#130); absent in an older hub's answer.
     #[serde(default)]
     pub links: Vec<crate::markers::LinkReport>,
+    /// Every `+CTRL` id the frame names, with its Tuner count (#104);
+    /// absent in an older hub's answer.
+    #[serde(default)]
+    pub ctrls: Vec<crate::markers::CtrlReport>,
 }
 
 /// STAGE AUT in `GET /api/status`: the flag and the mute writes it made.

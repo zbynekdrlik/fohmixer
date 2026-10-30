@@ -1362,3 +1362,82 @@ fn the_lufs_points_are_the_strips_with_lufs_each_track_once() {
         ]
     );
 }
+
+/// A binding of the band that names the `+CTRL` id `id` (#104).
+fn ctrl(id: &str) -> Value {
+    json!({"instance": "band", "anchor": {"kind": "ctrl", "id": id}})
+}
+
+#[test]
+fn a_ctrl_id_reads_its_three_names_and_no_other() {
+    for (id, name) in [
+        (CtrlId::Stage, "stage"),
+        (CtrlId::Alert, "alert"),
+        (CtrlId::Talkback, "talkback"),
+    ] {
+        assert_eq!(id.name(), name);
+        assert_eq!(CtrlId::parse(name), Some(id));
+        assert_eq!(serde_json::to_value(id).unwrap(), json!(name));
+    }
+    for text in ["", "STAGE", "stage ", "solo"] {
+        assert_eq!(CtrlId::parse(text), None, "{text:?}");
+    }
+}
+
+#[test]
+fn a_ctrl_anchor_has_no_target_but_keeps_its_path_checked() {
+    let unfilled = |path: Option<&str>| Binding {
+        instance: "band".into(),
+        anchor: Anchor::Ctrl { id: CtrlId::Stage },
+        path: path.map(str::to_string),
+    };
+    let error = unfilled(None).target().unwrap_err();
+    assert_eq!(error.kind, crate::path::UNFILLED);
+    assert_eq!(error.detail, "stage");
+    assert_eq!(unfilled(Some("[")).target().unwrap_err().kind, "syntax");
+}
+
+#[test]
+fn stage_alert_and_a_toggle_may_name_a_ctrl_id_and_validate() {
+    let mut v = sample();
+    v["pages"][1]["rail"][0]["binding"] = ctrl("stage");
+    v["global"][0]["binding"] = ctrl("alert");
+    v["global"].as_array_mut().unwrap().push(json!({
+        "kind": "param_toggle", "label": "TALKBACK", "press": "toggle",
+        "targets": [{"binding": ctrl("talkback"), "prop": "mute", "on": 0, "off": 1}]}));
+    let layout = parse(v);
+    assert_eq!(layout.validate(), vec![]);
+    assert_eq!(
+        layout.ctrls().into_iter().collect::<Vec<_>>(),
+        vec![
+            ("band".to_string(), CtrlId::Stage),
+            ("band".to_string(), CtrlId::Alert),
+            ("band".to_string(), CtrlId::Talkback),
+        ]
+    );
+    assert!(parse(sample()).ctrls().is_empty(), "named tracks name none");
+}
+
+#[test]
+fn a_ctrl_binding_is_still_checked_for_its_instance_and_path() {
+    let mut v = sample();
+    v["pages"][1]["rail"][0]["binding"] =
+        json!({"instance": "", "anchor": {"kind": "ctrl", "id": "stage"}});
+    let errors = parse(v).validate();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].message, "binding without an instance");
+    let mut v = sample();
+    v["pages"][1]["rail"][0]["binding"] =
+        json!({"instance": "band", "anchor": {"kind": "ctrl", "id": "stage"}, "path": "["});
+    let errors = parse(v).validate();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].message.starts_with("path: syntax"), "{errors:?}");
+}
+
+#[test]
+fn an_unknown_ctrl_id_does_not_parse() {
+    let mut v = sample();
+    v["pages"][1]["rail"][0]["binding"] = ctrl("solo");
+    let error = serde_json::from_value::<Layout>(v).unwrap_err().to_string();
+    assert!(error.contains("unknown variant"), "{error}");
+}

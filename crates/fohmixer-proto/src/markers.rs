@@ -5,9 +5,9 @@
 //! - [`parse`] reads one Tuner's name: the quoted label, the groups with
 //!   their places, `+PIN`, `+MG`, the linked mute's `+ID:<id>` and
 //!   `+MUTE:<id>` (#127), the fader link's `+FADER:<id>` and the REVERB
-//!   rule's `+REVERB` (#130), the AUTOTUNE rule's `+AUTOTUNE` (#104), and
-//!   every problem as a value (never an error: a problem is shown on the
-//!   strip, I9).
+//!   rule's `+REVERB` (#130), the AUTOTUNE rule's `+AUTOTUNE` (#104), a
+//!   frame control's `+CTRL:<id>` (#104), and every problem as a value
+//!   (never an error: a problem is shown on the strip, I9).
 //! - [`compose`] turns the frame (the layout file: pages, rows, the rail)
 //!   and the markers the hub found into the served layout: a frame group
 //!   with `tags` shows that tag group's strips, every other tag group
@@ -15,8 +15,9 @@
 //!   a strip whose `+ID` other Tuners of its Live set name with `+MUTE`
 //!   mutes their tracks with its own, a strip whose `+ID` other Tuners
 //!   name with `+FADER` leads their faders, the frame's linked fader
-//!   takes the `+FADER` tracks of its link, and every `autotune` control
-//!   takes the `+AUTOTUNE` tracks (#104).
+//!   takes the `+FADER` tracks of its link, every `autotune` control
+//!   takes the `+AUTOTUNE` tracks (#104), and a control naming a `+CTRL` id
+//!   takes that Tuner's track by index (#104).
 //!
 //! Pure, shared by the hub, `layout check` and the tests.
 
@@ -25,9 +26,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::layout::{
-    Anchor, AutotuneTarget, Binding, Control, FaderFollow, FaderLink, Group, Layout, LayoutError,
-    LinkId, LinkPartner, LufsSpec, Page, ParamTarget, Row, Scale, Section, Strip, StripKind,
-    StripMark, lufs_target_ok,
+    Anchor, AutotuneTarget, Binding, Control, CtrlId, FaderFollow, FaderLink, Group, Layout,
+    LayoutError, LinkId, LinkPartner, LufsSpec, Page, ParamTarget, Row, Scale, Section, Strip,
+    StripKind, StripMark, lufs_target_ok,
 };
 
 /// The `class_name` of Live's Tuner (only a Tuner can be a marker).
@@ -99,16 +100,23 @@ pub struct Marker {
     pub autotune: Option<AutotuneOn>,
     /// `+LUFS` / `+LUFS:<target>` (#151): the strip is a loudness point.
     pub lufs: Option<LufsSpec>,
+    /// `+CTRL:<id>` (#104): the frame controls this track binds, each id
+    /// once.
+    pub ctrls: Vec<CtrlId>,
     pub problems: Vec<TagProblem>,
 }
 
 impl Marker {
     /// Whether the Tuner makes no strip (#127, #130, #104): `+MUTE`,
-    /// `+FADER` or `+AUTOTUNE` tags with no quote, no group and no other tag
+    /// `+FADER`, `+AUTOTUNE` or `+CTRL` tags with no quote, no group and no
+    /// other tag
     /// (its first problem is [`TagProblem::NoLabel`] while [`parse`] reads
     /// it). A missing label or group is no problem there.
     fn makes_no_strip(&self) -> bool {
-        !(self.mutes.is_empty() && self.faders.is_empty() && self.autotune.is_none())
+        !(self.mutes.is_empty()
+            && self.faders.is_empty()
+            && self.autotune.is_none()
+            && self.ctrls.is_empty())
             && self.groups.is_empty()
             && self.id.is_none()
             && !self.pin
@@ -179,6 +187,13 @@ pub enum TagProblem {
     /// A `+LUFS:` tag whose target is not an integer in
     /// [`crate::layout::LUFS_TARGET_MIN`]..=[`crate::layout::LUFS_TARGET_MAX`] (#151).
     BadLufs { tag: String },
+    /// A `+CTRL:` tag whose id is none of [`CtrlId`] (#104).
+    BadCtrl { tag: String },
+    /// The same `+CTRL:` id twice on a Tuner (it counts once; #104).
+    RepeatedCtrl { id: CtrlId },
+    /// Another Tuner of the Live set carries the same `+CTRL:` id: which
+    /// track is meant is not known, so neither binds (#104).
+    DuplicateCtrl { id: CtrlId },
 }
 
 impl TagProblem {
@@ -299,6 +314,8 @@ pub fn parse(name: &str) -> Marker {
                     autotune_tag(&mut marker, token, autotune_arg(arg));
                 } else if let Some(arg) = tag.strip_prefix("LUFS:") {
                     lufs_tag(&mut marker, token, lufs_arg(arg));
+                } else if let Some(arg) = tag.strip_prefix("CTRL:") {
+                    ctrl_tag(&mut marker, token, arg);
                 } else {
                     marker.problems.push(TagProblem::UnknownTag {
                         tag: token.to_string(),
@@ -393,6 +410,20 @@ fn lufs_tag(marker: &mut Marker, token: &str, spec: Option<LufsSpec>) {
     }
 }
 
+/// A `+CTRL:<id>` tag (`token`, its argument `arg`): one of [`CtrlId`],
+/// each once (#104).
+fn ctrl_tag(marker: &mut Marker, token: &str, arg: &str) {
+    match CtrlId::parse(arg) {
+        None => marker.problems.push(TagProblem::BadCtrl {
+            tag: token.to_string(),
+        }),
+        Some(id) if marker.ctrls.contains(&id) => {
+            marker.problems.push(TagProblem::RepeatedCtrl { id });
+        }
+        Some(id) => marker.ctrls.push(id),
+    }
+}
+
 /// A `+MUTE:<id>` or `+FADER:<id>` tag (`token`, its argument `arg`): an id
 /// into `ids`, each once (`twice` names a repeat's problem; #127, #130).
 fn link_tag(
@@ -419,8 +450,9 @@ fn link_tag(
 /// a strip with `mute_links` (#127 review M4: a linked mute is the Tuner
 /// markers' `+ID` and `+MUTE`, never the frame's) or with `reverb` (#130:
 /// the markers' `+REVERB`), a strip with a fader link or a follow, a
-/// linked fader with its own targets, or one link on two faders (#130), or
-/// an autotune control naming tracks (#104: the markers' `+AUTOTUNE`).
+/// linked fader with its own targets, or one link on two faders (#130), an
+/// autotune control naming tracks (#104: the markers' `+AUTOTUNE`), or a
+/// `ctrl` anchor on a control that takes none (#104: [`names_ctrl_wrongly`]).
 pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
     let mut out = Vec::new();
     let mut id = |at: &str, id: &str| {
@@ -513,6 +545,12 @@ pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
         |c| matches!(c, Control::Autotune { targets, .. } if !targets.is_empty()),
         "the autotune tracks: the Tuner markers make those",
     );
+    refuse(
+        frame,
+        &mut out,
+        names_ctrl_wrongly,
+        "a ctrl anchor: only stage, alert and param_toggle take one",
+    );
     // One link on two faders: named at the second, with its label (#130
     // review M4).
     let places = frame
@@ -553,6 +591,18 @@ pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
         }
     }
     out
+}
+
+/// Whether a control other than `stage`, `alert` and `param_toggle` names a
+/// `+CTRL` id (#104): those three are all a Tuner's tag binds.
+fn names_ctrl_wrongly(control: &Control) -> bool {
+    !matches!(
+        control,
+        Control::Stage { .. } | Control::Alert { .. } | Control::ParamToggle { .. }
+    ) && control
+        .bindings()
+        .iter()
+        .any(|b| matches!(b.anchor, Anchor::Ctrl { .. }))
 }
 
 /// Refuses each page whose controls, and each global control, `bad` finds,
@@ -626,6 +676,7 @@ pub struct Composed {
     pub layout: Layout,
     pub problems: Vec<MarkerReport>,
     pub links: Vec<LinkReport>,
+    pub ctrls: Vec<CtrlReport>,
 }
 
 /// Which leader a link has (#130).
@@ -647,6 +698,16 @@ pub struct LinkReport {
     pub id: String,
     pub leader: Leader,
     pub partners: usize,
+}
+
+/// A `+CTRL` id the frame names (#104, `/api/status`
+/// `layout.markers.ctrls`): its Live set and how many Tuners carry it. It
+/// binds only with exactly one.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct CtrlReport {
+    pub instance: String,
+    pub id: CtrlId,
+    pub tuners: usize,
 }
 
 /// The label a marker strip shows when its Tuner names none (a missing,
@@ -975,6 +1036,87 @@ fn fill_autotune(layout: &mut Layout, tracks: &[AutotuneTarget]) {
     });
 }
 
+/// Who carries a `+CTRL` id (#104): the entries, per Live set and id.
+type Ctrls = BTreeMap<(String, CtrlId), Vec<usize>>;
+
+/// Every `+CTRL` id of every Live set and its entries.
+fn ctrl_carriers(entries: &[Entry<'_>]) -> Ctrls {
+    let mut ctrls = Ctrls::new();
+    for (i, entry) in entries.iter().enumerate() {
+        for id in &entry.marker.ctrls {
+            ctrls
+                .entry((entry.found.instance.clone(), *id))
+                .or_default()
+                .push(i);
+        }
+    }
+    ctrls
+}
+
+/// An id on two Tuners of a set is a problem on each (never a guess, #104).
+fn duplicate_ctrls(entries: &mut [Entry<'_>], ctrls: &Ctrls) {
+    for ((_, id), list) in ctrls {
+        if list.len() > 1 {
+            for i in list {
+                entries[*i]
+                    .problems
+                    .push(TagProblem::DuplicateCtrl { id: *id });
+            }
+        }
+    }
+}
+
+/// The track each id binds: only an id on exactly one Tuner has one.
+fn ctrl_tracks(entries: &[Entry<'_>], ctrls: &Ctrls) -> BTreeMap<(String, CtrlId), Anchor> {
+    ctrls
+        .iter()
+        .filter_map(|(key, list)| match list.as_slice() {
+            [one] => Some((key.clone(), entries[*one].track().anchor)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every id the frame names and how many Tuners carry it (#104).
+fn ctrl_reports(frame: &Layout, ctrls: &Ctrls) -> Vec<CtrlReport> {
+    frame
+        .ctrls()
+        .into_iter()
+        .map(|(instance, id)| CtrlReport {
+            tuners: ctrls.get(&(instance.clone(), id)).map_or(0, Vec::len),
+            instance,
+            id,
+        })
+        .collect()
+}
+
+/// A binding that names a `+CTRL` id takes its track by index, its instance
+/// and path staying; with no track it keeps the id (#104).
+fn fill_ctrl(binding: &mut Binding, tracks: &BTreeMap<(String, CtrlId), Anchor>) {
+    if let Anchor::Ctrl { id } = binding.anchor
+        && let Some(anchor) = tracks.get(&(binding.instance.clone(), id))
+    {
+        binding.anchor = anchor.clone();
+    }
+}
+
+/// Fills every `stage`, `alert` and `param_toggle` that names a `+CTRL` id
+/// (#104; a view's copied rail too, so it runs after the views). A control
+/// that still names its track stays as it is.
+fn fill_ctrls(layout: &mut Layout, tracks: &BTreeMap<(String, CtrlId), Anchor>) {
+    each_control_mut(layout, &mut |control: &mut Control| match control {
+        Control::Stage { binding, .. } | Control::Alert { binding, .. } => {
+            fill_ctrl(binding, tracks);
+        }
+        Control::ParamToggle { targets, .. } => {
+            for target in targets {
+                fill_ctrl(&mut target.binding, tracks);
+            }
+        }
+        _ => {}
+    });
+}
+
 /// Every control of the layout, mutable: each page's rail and rows (a
 /// pager's sub-pages too), then the global controls.
 fn each_control_mut(layout: &mut Layout, f: &mut impl FnMut(&mut Control)) {
@@ -1113,6 +1255,8 @@ pub fn compose(frame: &Layout, found: &[Found]) -> Composed {
     duplicate_ids(&mut entries, &ids);
     link_mutes(&mut entries, &ids);
     let frame_partners = link_faders(&mut entries, &ids, &frame_links);
+    let ctrls = ctrl_carriers(&entries);
+    duplicate_ctrls(&mut entries, &ctrls);
     let groups = members(&entries);
     // Two strips on one place of a group: both marked.
     for (name, list) in &groups {
@@ -1178,6 +1322,7 @@ pub fn compose(frame: &Layout, found: &[Found]) -> Composed {
     }
     fill_links(&mut layout, &frame_links, &frame_partners);
     fill_autotune(&mut layout, &autotune_targets(&entries));
+    fill_ctrls(&mut layout, &ctrl_tracks(&entries, &ctrls));
     let mut links: Vec<LinkReport> = entries
         .iter()
         .filter_map(|e| {
@@ -1216,6 +1361,7 @@ pub fn compose(frame: &Layout, found: &[Found]) -> Composed {
         layout,
         problems,
         links,
+        ctrls: ctrl_reports(frame, &ctrls),
     }
 }
 

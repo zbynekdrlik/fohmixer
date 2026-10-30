@@ -589,6 +589,11 @@ fn api_bodies_round_trip() {
                     leader: crate::markers::Leader::Frame,
                     partners: 5,
                 }],
+                ctrls: vec![crate::markers::CtrlReport {
+                    instance: "band".into(),
+                    id: crate::layout::CtrlId::Stage,
+                    tuners: 1,
+                }],
             },
         },
         stage_aut: StageAutStatus {
@@ -1845,6 +1850,7 @@ fn an_older_hubs_status_reads_with_default_sectors() {
                 found: 0,
                 problems: vec![],
                 links: vec![],
+                ctrls: vec![],
             },
         },
         stage_aut: StageAutStatus {

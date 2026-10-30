@@ -24,7 +24,7 @@ use fohmixer_proto::client::MarkersStatus;
 use fohmixer_proto::layout::Layout;
 use fohmixer_proto::markers::migrate::{Migration, Planned, migration};
 use fohmixer_proto::markers::{
-    Found, Leader, LinkReport, MarkerReport, TrackKind, compose, frame_problems, parse,
+    CtrlReport, Found, Leader, LinkReport, MarkerReport, TrackKind, compose, frame_problems, parse,
 };
 
 /// Backups kept.
@@ -51,6 +51,7 @@ struct State {
     problems: Vec<MarkerReport>,
     /// The fader links of the last composition (#130).
     links: Vec<LinkReport>,
+    ctrls: Vec<CtrlReport>,
     /// The accepted file content.
     accepted: Option<Vec<u8>>,
     error: Option<String>,
@@ -293,6 +294,7 @@ impl LayoutStore {
             found: state.markers.len(),
             problems: state.problems.clone(),
             links: state.links.clone(),
+            ctrls: state.ctrls.clone(),
         }
     }
 
@@ -473,20 +475,42 @@ fn serve(state: &mut State) {
     let Some(frame) = state.frame.clone() else {
         state.problems = Vec::new();
         state.links = Vec::new();
+        state.ctrls = Vec::new();
         return;
     };
     let composed = compose(&frame, &state.markers);
     state.problems = composed.problems;
     state.links = composed.links;
+    state.ctrls = composed.ctrls;
     state.layout = Some(Arc::new(composed.layout));
 }
 
 /// A new composition's warn lines (#130: once per composition served, never
 /// again for a marker set that leaves it as it was).
 fn warn_lonely(state: &State) {
-    for line in lonely_lines(&state.links) {
+    for line in lonely_lines(&state.links)
+        .into_iter()
+        .chain(unbound_lines(&state.ctrls))
+    {
         tracing::warn!("{line}");
     }
+}
+
+/// A warn line per `+CTRL` id of the frame no Tuner carries (#104): its
+/// control is red on the surface until one does. An id on two Tuners is a
+/// marker problem on each already.
+pub fn unbound_lines(ctrls: &[CtrlReport]) -> Vec<String> {
+    ctrls
+        .iter()
+        .filter(|c| c.tuners == 0)
+        .map(|c| {
+            let id = c.id.name();
+            format!(
+                "the control {}/{id} has no track: no Tuner of its Live set carries +CTRL:{id}",
+                c.instance
+            )
+        })
+        .collect()
 }
 
 /// A warn line per linked fader no Tuner names (#130): it is red on the
@@ -1018,6 +1042,50 @@ mod tests {
             {"kind": "group", "id": "g", "controls": [{"kind": "param_fader", "label": "P", "link": {"instance": "nowhere", "id": "P"}}]}]}]}]});
         let error = check(frame.to_string().as_bytes(), &["band".to_string()]).unwrap_err();
         assert!(error.contains("unknown instance \"nowhere\""), "{error}");
+    }
+
+    #[test]
+    fn a_ctrl_id_no_tuner_carries_is_a_warn_line_and_its_status() {
+        use fohmixer_proto::layout::CtrlId;
+        let report = |id, tuners| CtrlReport {
+            instance: "band".into(),
+            id,
+            tuners,
+        };
+        assert_eq!(
+            unbound_lines(&[
+                report(CtrlId::Stage, 0),
+                report(CtrlId::Alert, 1),
+                report(CtrlId::Talkback, 2),
+            ]),
+            vec![
+                "the control band/stage has no track: no Tuner of its Live set carries +CTRL:stage"
+                    .to_string()
+            ]
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let frame = json!({"schema": 2, "default_page": "p", "pages": [{"id": "p", "title": "P", "rail": [
+            {"kind": "stage", "binding": {"instance": "band", "anchor": {"kind": "ctrl", "id": "stage"}}}]}]});
+        write(dir.path(), &serde_json::to_vec(&frame).unwrap());
+        let log = crate::ws::tests::logged(|| assert_eq!(store.poll(), Some(1)));
+        assert!(log.contains("the control band/stage has no track"), "{log}");
+        assert_eq!(store.markers_status().ctrls, vec![report(CtrlId::Stage, 0)]);
+        let tuner = Found {
+            instance: "band".into(),
+            kind: TrackKind::Track,
+            index: 2,
+            name: "+CTRL:stage".into(),
+            tuners: 1,
+        };
+        assert_eq!(store.set_markers(vec![tuner]), Some(2));
+        assert_eq!(store.markers_status().ctrls, vec![report(CtrlId::Stage, 1)]);
+        assert_eq!(store.markers_status().problems, vec![]);
+        let (_, served) = store.current();
+        assert_eq!(
+            served.unwrap().bindings()[0].target().as_deref(),
+            Ok("live_set tracks 2")
+        );
     }
 
     #[test]

@@ -8,6 +8,7 @@
 use std::time::{Duration, Instant};
 
 use crate::support::{Host, TestHub, runtime, serial};
+use fohmixer_proto::client::ClientMsg;
 use fohmixer_proto::layout::{Anchor, Control, LayoutResponse, StripMark};
 use fohmixer_proto::markers::TagProblem;
 use fohmixer_proto::markers::migrate::MigrationStatus;
@@ -382,5 +383,117 @@ fn a_frame_with_a_problem_renames_nothing() {
         assert_eq!(row(&status, "Hand1 #"), (1, Some(0), 1, 0, false));
         hub.stop().await;
         host.stop();
+    });
+}
+
+/// A frame whose rail names three `+CTRL` ids (#104): STAGE with AUT, the
+/// alert and a toggle of a track's mute. Its group shows nothing.
+fn ctrl_frame() -> Value {
+    let id = |id: &str| json!({"instance": "band", "anchor": {"kind": "ctrl", "id": id}});
+    json!({
+        "schema": 2,
+        "default_page": "p",
+        "pages": [{"id": "p", "title": "P", "rail": [
+            {"kind": "stage", "aut": true, "binding": id("stage")},
+            {"kind": "alert", "period_ms": 300, "binding": id("alert")},
+            {"kind": "param_toggle", "label": "TALKBACK", "press": "toggle",
+             "targets": [{"binding": id("talkback"), "prop": "mute", "on": 0, "off": 1}]}
+        ]}]
+    })
+}
+
+/// The targets of the served rail, in its order (none: no Tuner yet).
+fn rail(served: &LayoutResponse) -> Vec<Option<String>> {
+    served
+        .layout
+        .pages
+        .iter()
+        .flat_map(|p| p.controls())
+        .flat_map(|c| c.bindings())
+        .map(|b| b.target().ok())
+        .collect()
+}
+
+fn tracks(indices: [u32; 3]) -> Vec<Option<String>> {
+    indices
+        .iter()
+        .map(|i| Some(format!("live_set tracks {i}")))
+        .collect()
+}
+
+#[test]
+fn a_renamed_or_moved_track_keeps_the_controls_its_ctrl_tag_binds() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let mut host = Host::start("band");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("layout.json"),
+            serde_json::to_vec(&ctrl_frame()).unwrap(),
+        )
+        .unwrap();
+        let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        let mut a = hub.client().await;
+        a.instance_state("band", true, Some(false), SECS_5).await;
+
+        // No Tuner yet: no target, and the status says why.
+        let served = layout_until(&hub, "the frame served", |s| s.rev > 0).await;
+        assert_eq!(rail(&served), [None, None, None]);
+        let status = hub
+            .status_until(SECS_5, |s| s.layout.markers.ctrls.len() == 3)
+            .await;
+        assert!(
+            status.layout.markers.ctrls.iter().all(|c| c.tuners == 0),
+            "{status:?}"
+        );
+
+        assert_eq!(host.tuner("track", 1, "set", "+CTRL:stage"), 1);
+        assert_eq!(host.tuner("track", 2, "set", "+CTRL:alert"), 1);
+        assert_eq!(host.tuner("track", 3, "set", "+CTRL:talkback"), 1);
+        let bound = tracks([1, 2, 3]);
+        let served = layout_until(&hub, "the rail bound", |s| rail(s) == bound).await;
+        let rev = served.rev;
+        let status = hub
+            .status_until(SECS_5, |s| s.layout.markers.found == 3)
+            .await;
+        assert_eq!(status.layout.markers.problems, vec![]);
+        assert_eq!(status.layout.unresolved, vec![]);
+
+        // A rename in Live changes nothing: the same composition.
+        assert_eq!(host.rename("Hand2 #", "Renamed mics #"), 1);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let (_, body) = hub.get("/api/layout").await;
+        let served: LayoutResponse = serde_json::from_value(body).unwrap();
+        assert_eq!((served.rev, rail(&served)), (rev, bound));
+
+        // STAGE AUT mutes the renamed track, by its index.
+        let mute = a.sub_key("band", "live_set tracks 1", "mute", false).await;
+        a.send(&ClientMsg::SetHub {
+            key: "stage_aut".into(),
+            value: json!(true),
+        })
+        .await;
+        a.value_until(&mute, SECS_5, |i| i.value == Some(json!(false)))
+            .await;
+        let play = json!({"target": "live_set", "name": "start_playing", "args": []});
+        let slots = a.cmd("band", vec![play]).await.unwrap();
+        assert_eq!(slots[0]["ok"], json!(true), "{slots:?}");
+        a.value_until(&mute, SECS_5, |i| i.value == Some(json!(true)))
+            .await;
+        let stop = json!({"target": "live_set", "name": "stop_playing", "args": []});
+        let slots = a.cmd("band", vec![stop]).await.unwrap();
+        assert_eq!(slots[0]["ok"], json!(true), "{slots:?}");
+        a.value_until(&mute, SECS_5, |i| i.value == Some(json!(false)))
+            .await;
+
+        // The track above deleted: every control follows its Tuner.
+        assert_eq!(host.delete_track(0), 14);
+        let moved = tracks([0, 1, 2]);
+        layout_until(&hub, "the rail moved", |s| rail(s) == moved).await;
+
+        // The Tuner gone: the control waits again, no other track is taken.
+        assert_eq!(host.tuner("track", 0, "remove", ""), 0);
+        let served = layout_until(&hub, "stage unbound", |s| rail(s)[0].is_none()).await;
+        assert_eq!(rail(&served)[1..], moved[1..]);
     });
 }
