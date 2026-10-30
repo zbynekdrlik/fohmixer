@@ -203,7 +203,7 @@ export async function servedLayout(): Promise<any> {
 }
 
 /** The harness's layout: the import tool's synthetic fixture. */
-const FIXTURE_LAYOUT = join(__dirname, "..", "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
+export const FIXTURE_LAYOUT = join(__dirname, "..", "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
 
 /**
  * The fixture layout with touch-idle after `seconds` (#51: its

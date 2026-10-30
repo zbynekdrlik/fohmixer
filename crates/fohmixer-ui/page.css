@@ -465,6 +465,23 @@
         padding: 4px 2px;
     }
 
+    /* The pages' bar in the three rows it had before the IEM tab (#166):
+       FOH, STREAM DECK beside ABLESET, IEM with its ✕. One row more would
+       take the rail's last button. */
+    .column .seg[data-level="0"] {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .column .tab.page-tab,
+    .column .iem-row {
+        grid-column: 1 / -1;
+    }
+
+    .column .tab.extra-tab {
+        font-size: 9px;
+        letter-spacing: 0;
+    }
+
     /* The foot (#148) in two 9 px rows, 18 px in all, 3 px under the
        rail: the counter and TAGS each span both rows at its ends, the
        badges over the version between them. So the rail keeps the room it

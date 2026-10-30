@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { Frame, Locator, Page } from "@playwright/test";
 import { expect, test } from "./support/fixtures";
 import {
@@ -5,6 +6,7 @@ import {
   countLoads,
   extraOnAPhone,
   fakeIem,
+  FIXTURE_LAYOUT,
   harness,
   hubEvents,
   openDeck,
@@ -13,7 +15,6 @@ import {
   resetLayout,
   resetSectors,
   rightHalfLive,
-  setIdleAfter,
   setSectors,
   type SectorsDoc,
   until,
@@ -155,7 +156,10 @@ test.describe("The IEM tab (fohmixer's own https page)", () => {
     const before = await ticks(page);
     await expect.poll(() => ticks(page)).toBeGreaterThan(before);
     expect(await marked(page)).toBe(1);
-    // The hidden frame takes no touch: a strip under it is hit and works.
+    // The hidden frame takes no touch: a strip under it is hit and works,
+    // once the page has its values again (the wanted set drops what an extra
+    // tab covers).
+    await expect(page.locator('.slot[data-side="left"] [data-testid="fader"][aria-disabled="false"]').first()).toBeVisible();
     await rightHalfLive(page, page.locator('.slot[data-side="left"] [data-testid="strip"]'));
 
     await tab.click();
@@ -189,9 +193,13 @@ test.describe("The IEM tab (fohmixer's own https page)", () => {
     };
     await page.getByTestId("stage").evaluate((s) => s.setAttribute("data-e2e-shell", "1"));
     try {
-      await setIdleAfter(3600);
+      // A title changed, as a Tuner edit does (detail.spec's recipe).
+      const changed = JSON.parse(readFileSync(FIXTURE_LAYOUT, "utf-8"));
+      const groups = changed.pages.flatMap((p: any) => p.rows).flatMap((r: any) => r.sections);
+      groups.find((s: any) => s.kind === "group").title = "IEM TEST";
+      await harness("/hub/layout", { layout: changed });
       // The old shell is gone: the page has mounted the new layout.
-      await expect(page.locator('[data-testid="stage"][data-e2e-shell="1"]')).toHaveCount(0);
+      await expect(page.locator('[data-testid="stage"][data-e2e-shell="1"]')).toHaveCount(0, { timeout: 10_000 });
       await expect(page.getByTestId("stage")).toBeVisible();
       await kept();
       await resetLayout();
@@ -323,9 +331,9 @@ test.describe("A hub without [iem] and then with it", () => {
     try {
       on = (await harness("/hub/iem", { on: false })).iem;
       expect(on).toBe(false);
-      const answer = await page.goto("/");
-      expect(answer!.headers()["content-security-policy"]).not.toContain(IEM.hostname);
-      await page.goto("about:blank");
+      // Read without a page: WebKit hangs in an about:blank right after a load.
+      const answer = await page.request.get("/");
+      expect(answer.headers()["content-security-policy"]).not.toContain(IEM.hostname);
       await openSurface(page);
       await expect(page.getByTestId("ableset-tab")).toBeVisible();
       await expect(page.getByTestId("iem-tab")).toHaveCount(0);

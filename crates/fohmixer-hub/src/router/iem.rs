@@ -86,7 +86,11 @@ mod tests {
         };
         for client in [1, 2] {
             let outbox = attach(&mut router, client);
-            assert_eq!(told(&outbox), [wanted.clone()], "page {client}");
+            assert_eq!(
+                told(&outbox),
+                std::slice::from_ref(&wanted),
+                "page {client}"
+            );
         }
         // A hub without [iem] tells no page of it.
         let mut without = bare(dir.path());
