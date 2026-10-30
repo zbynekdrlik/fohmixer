@@ -137,12 +137,18 @@ fn IemClose() -> impl IntoView {
             use:owns_touches=no_keys
             data-testid="iem-close"
             aria-label="Close IEM MIXER"
-            on:pointerdown=move |_| pressed.set(true)
-            on:pointercancel=move |_| pressed.set(false)
-            on:pointerleave=move |_| pressed.set(false)
+            on:pointerdown=move |_| {
+                let _ = pressed.try_set(true);
+            }
+            on:pointercancel=move |_| {
+                let _ = pressed.try_set(false);
+            }
+            on:pointerleave=move |_| {
+                let _ = pressed.try_set(false);
+            }
             on:pointerup=move |_| {
-                if pressed.get_untracked() {
-                    pressed.set(false);
+                if pressed.try_get_untracked() == Some(true) {
+                    let _ = pressed.try_set(false);
                     nav.close_iem();
                 }
             }
