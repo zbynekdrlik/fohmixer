@@ -8,6 +8,8 @@
         [--fake-companion-port N | --companion HOST:PORT]
         [--fake-ableset-port N --ableset-name NAME --ableset-cert FILE
          --ableset-key FILE [--ableset-aud AUD]]
+        [--fake-iem-port N --iem-url URL --iem-cert FILE --iem-key FILE
+         [--iem-ancestors ORIGIN]]
 
 It starts ``sim/host.py`` for ``band`` and ``master`` (the real FohMixer script on
 SimLive), writes the hub's config and layout into the data folder, starts the hub
@@ -90,6 +92,12 @@ what only the harness can do:
     POST /ableset/down                   AbleSet stopped (a connect is refused)
     POST /ableset/up                     AbleSet listening again
     POST /ableset/clear                  the hits forgotten
+    GET  /iem                            the fake iemmixer's state (#166,
+                                         ``--fake-iem-port``): ``port``, ``loads``, ``hits``
+    POST /iem/clear                      the hits forgotten
+    POST /hub/iem {"on": <bool>}         the hub's config with or without ``[iem]``,
+                                         and the hub restarted; {"iem": what it now
+                                         holds}: false without ``--iem-url``
     POST /hub/ableset {"on": <bool>}     the hub's config with or without
                                          ``[ableset]``, and the hub restarted
                                          (also when it already was so: a
@@ -115,6 +123,12 @@ public name the hub's config gets ``[ableset]`` (that name, the fake as its
 upstream, ``--ableset-aud`` as its Access audience) and the name's own
 certificate (``--ableset-cert``, ``--ableset-key``) goes into its store
 ``tls/ableset/``.
+
+iemmixer's page (#166): with ``--fake-iem-port`` the harness starts
+``fake_iem.py`` there over TLS (``--iem-cert``, ``--iem-key``; 0: any free
+port), its page's ``frame-ancestors`` being ``--iem-ancestors``; with
+``--iem-url`` the hub's config gets ``[iem]`` of that address, which the
+browser reaches directly: the hub proxies nothing of it.
 
 The Pro-Q 4 screen (#71 PR E): the hub's config gets ``[eq] backend = "sim"``,
 the simulated window backend, whose records the tests read through ``/sim/eq``.
@@ -142,6 +156,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import fake_ableset
 import fake_companion
+import fake_iem
 import impair
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -186,7 +201,14 @@ ANSWERS = {
 
 
 def hub_config(
-    http_port, band_port, master_port, remote=None, companion=None, ableset=None, lufs_port=None
+    http_port,
+    band_port,
+    master_port,
+    remote=None,
+    companion=None,
+    ableset=None,
+    lufs_port=None,
+    iem=None,
 ):
     """The hub's ``fohmixer-hub.toml`` for the two hosts (layout polled fast) and
     the Pro-Q 4 screen on the simulated window backend (#71 PR E), with the
@@ -194,8 +216,9 @@ def hub_config(
     then the remote-access tables of ``remote`` (``name``, ``https_port``, and
     ``team``, ``aud``, ``jwks_url`` for ``[access]``) when given, and
     ``[ableset]`` of ``ableset`` (``name``, ``upstream``, ``aud``) beside a
-    ``[tls]`` name (#90), and ``[lufs]`` on ``lufs_port`` when given (#151:
-    the LUFS devices' UDP port, where both hosts' SimLive devices send)."""
+    ``[tls]`` name (#90), ``[lufs]`` on ``lufs_port`` when given (#151:
+    the LUFS devices' UDP port, where both hosts' SimLive devices send), and
+    ``[iem]`` of ``iem``, its page's address, when given (#166)."""
     text = (
         f"http_port = {http_port}\n"
         'layout = "layout.json"\n'
@@ -226,6 +249,8 @@ def hub_config(
         text += f'[ableset]\nname = "{ableset["name"]}"\nupstream = "{ableset["upstream"]}"\n'
         if ableset.get("aud"):
             text += f'access_aud = ["{ableset["aud"]}"]\n'
+    if iem:
+        text += f'[iem]\nurl = "{iem}"\n'
     return text
 
 
@@ -619,6 +644,11 @@ class Harness:
             self.ableset_fake = fake_ableset.Child(args.fake_ableset_port)
             self.ableset_fake.start()
         self.ableset = ableset_of(args, self.ableset_fake)
+        self.iem_fake = fake_iem_of(args)
+        if self.iem_fake is not None:
+            self.iem_fake.start()
+        self.iem = args.iem_url
+        self.iem_on = self.iem is not None
         if self.ableset and args.ableset_cert:
             tls = os.path.join(self.data, "tls", "ableset")
             copy_cert(args.ableset_cert, args.ableset_key, tls)
@@ -642,7 +672,8 @@ class Harness:
         self.hub = Hub(args.hub, self.data, args.http_port, log_dir) if args.hub else None
 
     def write_config(self):
-        """The hub's config, with ``[companion]`` and ``[ableset]`` while they are on."""
+        """The hub's config, with ``[companion]``, ``[ableset]`` and ``[iem]`` while
+        they are on."""
         with open(os.path.join(self.data, "fohmixer-hub.toml"), "w", encoding="utf-8") as f:
             f.write(
                 hub_config(
@@ -653,6 +684,7 @@ class Harness:
                     self.companion if self.companion_on else None,
                     self.ableset if self.ableset_on else None,
                     self.lufs_port,
+                    self.iem if self.iem_on else None,
                 )
             )
 
@@ -675,6 +707,17 @@ class Harness:
         if self.hub is not None:
             self.hub.restart(False)
         return self.ableset_on
+
+    def set_iem(self, on):
+        """The hub's config with or without ``[iem]`` (#166: as ``[ableset]``, a
+        page open across the restart loaded with another page policy); answers
+        what it now holds (never on without ``--iem-url``), the hub restarted
+        when there is one, also when nothing changed."""
+        self.iem_on = bool(on) and self.iem is not None
+        self.write_config()
+        if self.hub is not None:
+            self.hub.restart(False)
+        return self.iem_on
 
     def write_layout(self, layout):
         """Replaces the layout file whole (the hub never reads half a file)."""
@@ -726,6 +769,9 @@ class Harness:
         if method == "GET" and parts == ["ableset"]:
             fake = self.ableset_fake
             return (200, fake.state()) if fake else (404, {"error": "no fake AbleSet"})
+        if method == "GET" and parts == ["iem"]:
+            fake = self.iem_fake
+            return (200, fake.state()) if fake else (404, {"error": "no fake iemmixer"})
         if method == "GET" and "/" + "/".join(parts) == CERTS_PATH:
             return (200, self.jwks) if self.jwks else (404, {"error": "no --access-key"})
         if method != "POST":
@@ -765,6 +811,8 @@ class Harness:
             return 200, {"companion": self.set_companion(on_of(body, "/hub/companion"))}
         if parts == ["hub", "ableset"] and self.hub is not None:
             return 200, {"ableset": self.set_ableset(on_of(body, "/hub/ableset"))}
+        if parts == ["hub", "iem"] and self.hub is not None:
+            return 200, {"iem": self.set_iem(on_of(body, "/hub/iem"))}
         if parts and parts[0] == "companion":
             if self.fake is None:
                 return 404, {"error": "no fake Companion"}
@@ -790,6 +838,10 @@ class Harness:
                 return 200, self.ableset_fake.up()
             if parts == ["ableset", "clear"]:
                 return 200, self.ableset_fake.clear()
+        if parts == ["iem", "clear"]:
+            if self.iem_fake is None:
+                return 404, {"error": "no fake iemmixer"}
+            return 200, self.iem_fake.clear()
         if parts == ["forensics", "timeline"]:
             return 200, forensics_timeline(self.data, body)
         if parts == ["link", "stall"]:
@@ -815,6 +867,8 @@ class Harness:
             parts.append(("the fake Companion", self.fake))
         if self.ableset_fake is not None:
             parts.append(("the fake AbleSet", self.ableset_fake))
+        if self.iem_fake is not None:
+            parts.append(("the fake iemmixer", self.iem_fake))
         parts += [(f"host {name}", host) for name, host in self.hosts.items()]
         failures = []
         for what, part in parts:
@@ -877,6 +931,16 @@ def ports_at_risk(ports, port_range, reserved):
     return [p for p in ports if p and low <= p <= high and p not in kept]
 
 
+def fake_iem_of(args):
+    """The fake iemmixer (#166, not started): ``--fake-iem-port`` with its
+    certificate, else none."""
+    if args.fake_iem_port is None:
+        return None
+    if not args.iem_cert or not args.iem_key:
+        raise SystemExit("--fake-iem-port needs --iem-cert and --iem-key")
+    return fake_iem.Child(args.fake_iem_port, args.iem_cert, args.iem_key, args.iem_ancestors)
+
+
 def fixed_ports(args):
     """Every port the harness, its hosts, its tools and the hub bind."""
     return [
@@ -888,6 +952,7 @@ def fixed_ports(args):
         args.link_port,
         args.fake_companion_port,
         args.fake_ableset_port,
+        args.fake_iem_port,
     ]
 
 
@@ -941,6 +1006,12 @@ def parse_args(argv):
     parser.add_argument("--ableset-cert", default=None)
     parser.add_argument("--ableset-key", default=None)
     parser.add_argument("--ableset-aud", default=None)
+    # iemmixer's page (#166): a fake iemmixer on this port (0: any) and [iem].
+    parser.add_argument("--fake-iem-port", type=int, default=None)
+    parser.add_argument("--iem-url", default=None)
+    parser.add_argument("--iem-cert", default=None)
+    parser.add_argument("--iem-key", default=None)
+    parser.add_argument("--iem-ancestors", default="*")
     return parser.parse_args(argv)
 
 

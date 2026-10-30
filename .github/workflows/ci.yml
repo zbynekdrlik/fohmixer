@@ -494,7 +494,7 @@ jobs:
         timeout-minutes: 10
         with:
           browsers: ${{ matrix.browser }}
-      - name: Remote access (#17, #90) - a per-run test CA with a certificate for foh.e2e.test and one for AbleSet's ableset.e2e.test that both browsers trust, the names in /etc/hosts, the Access test key
+      - name: Remote access (#17, #90, #166) - a per-run test CA with certificates for foh.e2e.test, AbleSet's ableset.e2e.test and iemmixer's iem.e2e.test that both browsers trust, the names in /etc/hosts, the Access test key
         run: |
           set -euo pipefail
           dir="$RUNNER_TEMP/e2e-remote"
@@ -510,8 +510,10 @@ jobs:
           leaf foh.e2e.test ""
           # AbleSet's name (#90): its own certificate, same-site with foh.e2e.test.
           leaf ableset.e2e.test ableset-
+          # The fake iemmixer's page (#166): an origin of its own, over HTTPS.
+          leaf iem.e2e.test iem-
           # The names resolve to this runner, as the installer maps them on the Ableton PC.
-          printf '127.0.0.1 foh.e2e.test\n127.0.0.1 ableset.e2e.test\n' | sudo tee -a /etc/hosts
+          printf '127.0.0.1 foh.e2e.test\n127.0.0.1 ableset.e2e.test\n127.0.0.1 iem.e2e.test\n' | sudo tee -a /etc/hosts
           # WebKit (GnuTLS) trusts the system store; Chromium the NSS database.
           sudo cp "$dir/ca.pem" /usr/local/share/ca-certificates/fohmixer-e2e.crt
           sudo update-ca-certificates
@@ -543,9 +545,11 @@ jobs:
           # proxy in front of the hub (#43, 127.0.0.1:8481: the surface opens
           # through it), the fake Companion (#52, 127.0.0.1:39192: the hub's
           # Stream Deck tab), the fake AbleSet (#90, 127.0.0.1:39193: the
-          # hub's [ableset] upstream, its name ableset.e2e.test) and the
-          # harness's control API for the tests (127.0.0.1:39190).
-          # The harness's fixed ports (39101-39193) sit in the runner's
+          # hub's [ableset] upstream, its name ableset.e2e.test), the fake
+          # iemmixer (#166, https://iem.e2e.test:39194: the hub's [iem]; the
+          # browser reaches it directly) and the harness's control API for the
+          # tests (127.0.0.1:39190).
+          # The harness's fixed ports (39101-39194) sit in the runner's
           # ephemeral range: reserve them, or an outbound connection can take
           # one before the harness binds it (EADDRINUSE; the harness checks).
           sudo sysctl -w net.ipv4.ip_local_reserved_ports=39100-39199
@@ -561,13 +565,17 @@ jobs:
             --fake-ableset-port 39193 --ableset-name ableset.e2e.test \
             --ableset-cert "$E2E_REMOTE_DIR/ableset-cert.pem" --ableset-key "$E2E_REMOTE_DIR/ableset-key.pem" \
             --ableset-aud fohmixer-e2e-ableset-aud \
+            --fake-iem-port 39194 --iem-url https://iem.e2e.test:39194/ \
+            --iem-cert "$E2E_REMOTE_DIR/iem-cert.pem" --iem-key "$E2E_REMOTE_DIR/iem-key.pem" \
+            --iem-ancestors https://foh.e2e.test:8443 \
             --log-dir "$RUNNER_TEMP/e2e-logs" > "$RUNNER_TEMP/e2e-logs/harness.log" 2>&1 &
           for i in $(seq 1 60); do
             if curl -sf http://127.0.0.1:39190/health > /dev/null \
               && curl -sf http://127.0.0.1:8480/api/version > /dev/null \
               && curl -sf http://127.0.0.1:8481/api/version > /dev/null \
               && curl -sf https://foh.e2e.test:8443/api/version > /dev/null \
-              && curl -sf https://ableset.e2e.test:8443/static/app.css > /dev/null; then
+              && curl -sf https://ableset.e2e.test:8443/static/app.css > /dev/null \
+              && curl -sf https://iem.e2e.test:39194/ > /dev/null; then
               echo "harness ready after ${i}s"
               exit 0
             fi
@@ -597,6 +605,7 @@ jobs:
           E2E_HARNESS_URL: http://127.0.0.1:39190
           E2E_HTTPS_URL: https://foh.e2e.test:8443
           E2E_ABLESET_URL: https://ableset.e2e.test:8443
+          E2E_IEM_URL: https://iem.e2e.test:39194/
           E2E_ACCESS_TEAM: fohmixer-e2e.cloudflareaccess.com
           E2E_ACCESS_AUD: fohmixer-e2e-aud
         # NODE_EXTRA_CA_CERTS: the tests' own requests (Node) trust the test CA too.

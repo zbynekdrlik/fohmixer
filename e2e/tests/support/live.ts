@@ -101,6 +101,20 @@ export const fakeAbleSet = {
   clear: () => harness("/ableset/clear"),
 };
 
+/**
+ * The harness's fake iemmixer (#166, `e2e/harness/fake_iem.py`), its own
+ * origin over HTTPS: `state()` (`port`, `loads`: its page's own requests,
+ * `hits`), `clear` (the hits forgotten).
+ */
+export const fakeIem = {
+  state: async (): Promise<any> => {
+    const response = await fetch(`${HARNESS}/iem`);
+    if (!response.ok) throw new Error(`harness /iem: ${response.status}`);
+    return response.json();
+  },
+  clear: () => harness("/iem/clear"),
+};
+
 /** The fake AbleSet's hits of pages: the hub's own link reads left out. */
 export function pageHits(hits: any[]): any[] {
   return hits.filter((hit) => !hit.link);
@@ -840,7 +854,7 @@ export async function columnHeadAndFoot(page: Page): Promise<string[]> {
     const bar = column.querySelector('[data-testid="tabbar"][data-level="0"]');
     if (!bar) return ["no pages' bar"];
     const tabs = [...bar.querySelectorAll(':scope > [data-testid="tab"]')];
-    const extras = [...bar.querySelectorAll(":scope > .deck-tab, :scope > .ableset-tab")];
+    const extras = [...bar.querySelectorAll(":scope > .deck-tab, :scope > .ableset-tab, :scope > .iem-row > .iem-tab")];
     if (tabs.length === 0) out.push("no page tab");
     if (extras.length === 0) out.push("no extra tab");
     const all = [...bar.querySelectorAll(":scope > button")];
@@ -949,7 +963,8 @@ export async function rightHalfLive(page: Page, strips: Locator) {
  * frame) then lie inside the screen and left of the thin strip, which
  * stands at the screen's right edge; every strip is hidden; ☰ opens the
  * column in the screen's middle over the pane, nothing in it clipped or
- * overflowing; a page's tab there closes the extra tab (`pane` gone).
+ * overflowing; a page's tab there closes the extra tab (`pane` gone, or
+ * hidden for iemmixer's, whose frame lives on).
  * `ready` waits for what the pane shows once open.
  */
 export async function extraOnAPhone(page: Page, tab: Locator, pane: Locator, items: Locator, ready: () => Promise<void>) {
@@ -1013,7 +1028,7 @@ export async function extraOnAPhone(page: Page, tab: Locator, pane: Locator, ite
   }
   // A page's tab closes the extra tab and the column.
   await column.locator('[data-testid="tabbar"][data-level="0"] [data-testid="tab"]').first().dispatchEvent("pointerdown");
-  await expect(pane).toHaveCount(0);
+  await expect(pane).toBeHidden();
   await expect(body).toHaveAttribute("data-extra", "none");
   await expect(column).toBeHidden();
   await expect(tab).toHaveAttribute("data-selected", "false");
