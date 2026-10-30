@@ -22,6 +22,9 @@
 # AbleSet's name beside the public name, so the toml gets [ableset] (written
 # last, after [tunnel]) and the hosts block maps both names. The hub checks
 # the name (one label beside or under the public name: the same site).
+# iemmixer's own page (#166, -IemUrl with -PublicName): the toml gets [iem],
+# written last. The hub only tells the page of it, so no hosts line, no
+# certificate and no Cloudflare route belong to it here; the hub checks it.
 # An install without -PublicName keeps what an earlier one set up: the toml's
 # remote tables are carried over as installed, the hosts block, shortcut,
 # firewall rule and service are left alone (a routine update never strips
@@ -38,6 +41,8 @@ $script:HttpsRule = 'fohmixer-hub-https'
 # The hub's default [ableset] title (config.rs DEFAULT_ABLESET_TITLE): never
 # written, as a hub before 1.0.0 refuses the key (a rollback stays possible).
 $script:AbleSetTitle = 'AbleSet'
+# The hub's default [iem] title (config.rs DEFAULT_IEM_TITLE): never written.
+$script:IemTitle = 'IEM MIXER'
 
 function Test-FohPublicName {
     # The public name as the hub takes it (config.rs is_dns_name): at least two
@@ -80,13 +85,15 @@ function Get-FohRemoteToml {
     # The remote-access tables of fohmixer-hub.toml (CRLF lines, '' without a
     # public name). [acme] always goes with [tls]; [access] with a team;
     # [tunnel] with the tunnel service; [ableset] (#90) with AbleSet's name,
-    # last: its access_aud only when given (none: the LAN only), its title
-    # only when it is not the hub's default.
+    # its access_aud only when given (none: the LAN only), its title only
+    # when it is not the hub's default; [iem] (#166) with iemmixer's address,
+    # last, its title likewise.
     param([AllowEmptyString()][string]$Name = '', [int]$HttpsPort = 443, [AllowEmptyString()][string]$AcmeEmail = '',
           [AllowEmptyString()][string]$AcmeDirectory = '', [AllowEmptyString()][string]$AccessTeam = '',
           [string[]]$AccessAud = @(), [switch]$Tunnel, [int]$TunnelMetricsPort = 20241,
           [AllowEmptyString()][string]$AbleSetName = '', [string[]]$AbleSetAccessAud = @(),
-          [AllowEmptyString()][string]$AbleSetTitle = '')
+          [AllowEmptyString()][string]$AbleSetTitle = '', [AllowEmptyString()][string]$IemUrl = '',
+          [AllowEmptyString()][string]$IemTitle = '')
     if (-not $Name) { return '' }
     $lines = @('', '[tls]', ('name = "{0}"' -f $Name), ('port = {0}' -f $HttpsPort), '', '[acme]')
     if ($AcmeEmail) { $lines += ('email = ' + (ConvertTo-FohTomlString $AcmeEmail)) }
@@ -105,6 +112,10 @@ function Get-FohRemoteToml {
             $lines += ('access_aud = [{0}]' -f $auds)
         }
         if ($AbleSetTitle -and $AbleSetTitle -cne $script:AbleSetTitle) { $lines += ('title = ' + (ConvertTo-FohTomlString $AbleSetTitle)) }
+    }
+    if ($IemUrl) {
+        $lines += @('', '[iem]', ('url = ' + (ConvertTo-FohTomlString $IemUrl)))
+        if ($IemTitle -and $IemTitle -cne $script:IemTitle) { $lines += ('title = ' + (ConvertTo-FohTomlString $IemTitle)) }
     }
     return (($lines -join "`r`n") + "`r`n")
 }
@@ -329,7 +340,8 @@ function Resolve-FohRemote {
     # (Test-FohHubToml, `fohmixer-hub config check`), the one set of rules
     # (AbleSet's name beside the public name, #90, included). Refused here:
     # -AbleSetName equal to -PublicName, -AbleSetAccessAud without
-    # -AccessTeam, -AbleSetAccessAud or -AbleSetTitle without -AbleSetName.
+    # -AccessTeam, -AbleSetAccessAud or -AbleSetTitle without -AbleSetName,
+    # -IemTitle without -IemUrl.
     param([Parameter(Mandatory)][string]$DataDir, [Parameter(Mandatory)][string]$BandUser,
           [Parameter(Mandatory)][int]$HttpPort, [Parameter(Mandatory)][int]$BandPort, [Parameter(Mandatory)][int]$MasterPort,
           [AllowEmptyString()][string]$PublicName = '', [int]$HttpsPort = 443,
@@ -338,13 +350,15 @@ function Resolve-FohRemote {
           [AllowEmptyString()][string]$CloudflaredExe = '', [int]$TunnelMetricsPort = 20241,
           [AllowEmptyString()][string]$TunnelDir = '', [AllowEmptyString()][string]$HostsFile = '',
           [AllowEmptyString()][string]$BandDesktop = '', [AllowEmptyString()][string]$AbleSetName = '',
-          [AllowEmptyString()][string]$AbleSetAccessAud = '', [AllowEmptyString()][string]$AbleSetTitle = '')
+          [AllowEmptyString()][string]$AbleSetAccessAud = '', [AllowEmptyString()][string]$AbleSetTitle = '',
+          [AllowEmptyString()][string]$IemUrl = '', [AllowEmptyString()][string]$IemTitle = '')
     $DataDir = Resolve-FohPath $DataDir
     if (-not $PublicName) {
         $bound = $PSBoundParameters
         $given = @()
         foreach ($k in @('HttpsPort', 'AcmeEmail', 'AcmeDirectory', 'AccessTeam', 'AccessAud', 'SetTunnelToken', 'CloudflaredExe',
-                'TunnelMetricsPort', 'TunnelDir', 'HostsFile', 'BandDesktop', 'AbleSetName', 'AbleSetAccessAud', 'AbleSetTitle')) {
+                'TunnelMetricsPort', 'TunnelDir', 'HostsFile', 'BandDesktop', 'AbleSetName', 'AbleSetAccessAud', 'AbleSetTitle',
+                'IemUrl', 'IemTitle')) {
             if ($bound.ContainsKey($k)) { $given += ('-' + $k) }
         }
         if ($given.Count -gt 0) { throw ('the remote-access parameters need -PublicName: ' + ($given -join ', ')) }
@@ -370,6 +384,7 @@ function Resolve-FohRemote {
     if ($ablesetAuds.Count -gt 0 -and -not $AccessTeam) {
         throw '-AbleSetAccessAud needs -AccessTeam (and -AccessAud): the AbleSet Access application is in the same team'
     }
+    if ($IemTitle -and -not $IemUrl) { throw 'give -IemUrl with -IemTitle (iemmixer''s page, #166)' }
     Test-FohPortFree -Port $HttpsPort -DataDir $DataDir
     if (-not $TunnelDir) { $TunnelDir = Join-Path $env:ProgramData 'fohmixer-tunnel' }
     $TunnelDir = Resolve-FohPath $TunnelDir
@@ -388,10 +403,11 @@ function Resolve-FohRemote {
         mode = 'set'; name = $PublicName; url = (Get-FohPublicUrl -Name $PublicName -HttpsPort $HttpsPort); https_port = $HttpsPort
         toml = (Get-FohRemoteToml -Name $PublicName -HttpsPort $HttpsPort -AcmeEmail $AcmeEmail -AcmeDirectory $AcmeDirectory `
             -AccessTeam $AccessTeam -AccessAud $auds -Tunnel:$tunnel -TunnelMetricsPort $TunnelMetricsPort `
-            -AbleSetName $AbleSetName -AbleSetAccessAud $ablesetAuds -AbleSetTitle $AbleSetTitle)
+            -AbleSetName $AbleSetName -AbleSetAccessAud $ablesetAuds -AbleSetTitle $AbleSetTitle `
+            -IemUrl $IemUrl -IemTitle $IemTitle)
         tunnel = $tunnel; tunnel_dir = $TunnelDir; token_file = $tokenFile; token = $token; cloudflared = $CloudflaredExe
         metrics_port = $TunnelMetricsPort; hosts_file = $HostsFile; desktop = $BandDesktop
-        ableset = $AbleSetName; ableset_internet = ($ablesetAuds.Count -gt 0)
+        ableset = $AbleSetName; ableset_internet = ($ablesetAuds.Count -gt 0); iem = $IemUrl
     }
 }
 
@@ -419,7 +435,7 @@ function Install-FohRemoteFiles {
     return [pscustomobject]@{
         kept = $false; public_name = $Remote.name; url = $Remote.url; hosts_changed = $hostsChanged
         shortcut_changed = $shortcutChanged; token_changed = $tokenChanged; tunnel = $Remote.tunnel; tunnel_service = $null
-        ableset = $Remote.ableset
+        ableset = $Remote.ableset; iem = $Remote.iem
     }
 }
 

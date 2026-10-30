@@ -61,6 +61,11 @@ tag(s), comma separated, in -AccessTeam's team (none: the LAN only, said on
 one line); -AbleSetTitle is the tab's title, written only when it is not
 the hub's default (AbleSet). A run with -PublicName and without
 -AbleSetName removes [ableset]; one without -PublicName keeps it.
+iemmixer's own page (#166), with -PublicName: -IemUrl writes [iem] last, the
+page's https address (iemmixer serves it and allows the frame itself; the hub
+checks the address); -IemTitle is the tab's title, written only when it is not
+the hub's default (IEM MIXER). A run with -PublicName and without -IemUrl
+removes [iem]; one without -PublicName keeps it.
 The Stream Deck tab (#52), only with -CompanionHost: the toml gets [companion]
 (Bitfocus Companion's Satellite API as host or host:port, default port 16622);
 the hub registers there as one more Stream Deck ("fohmixer"). A run without
@@ -127,6 +132,9 @@ param(
     [string]$AbleSetName = '',
     [string]$AbleSetAccessAud = '',
     [string]$AbleSetTitle = '',
+    # iemmixer's own page (#166), with -PublicName: its https address and the tab's title.
+    [string]$IemUrl = '',
+    [string]$IemTitle = '',
     # The Stream Deck tab (#52): Bitfocus Companion's Satellite API as host or host:port
     # (default port 16622). Without it an installed [companion] table is kept.
     [string]$CompanionHost = ''
@@ -139,7 +147,7 @@ try {
     $remoteArgs = @{}
     foreach ($k in @('PublicName', 'HttpsPort', 'AcmeEmail', 'AcmeDirectory', 'AccessTeam', 'AccessAud', 'SetTunnelToken',
             'CloudflaredExe', 'TunnelMetricsPort', 'TunnelDir', 'HostsFile', 'BandDesktop', 'AbleSetName', 'AbleSetAccessAud',
-            'AbleSetTitle')) {
+            'AbleSetTitle', 'IemUrl', 'IemTitle')) {
         if ($PSBoundParameters.ContainsKey($k)) { $remoteArgs[$k] = $PSBoundParameters[$k] }
     }
     $remote = Resolve-FohRemote -DataDir $DataDir -BandUser $BandUser -HttpPort $HttpPort -BandPort $BandPort `
