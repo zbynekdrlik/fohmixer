@@ -1081,3 +1081,47 @@ fn a_two_in_one_live_leaves_the_other_lives_point_alone() {
     assert_eq!(sends(&acts), vec![band.clone()]);
     assert_eq!(rule.items(), vec![band, item("master", 3, None)]);
 }
+
+fn peak_lines(acts: &[Act]) -> Vec<Value> {
+    acts.iter()
+        .filter_map(|a| match a {
+            Act::Log(line) if line.fields["what"] == "meter_peak" => Some(line.fields.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_meter_devices_peak_reaches_the_log_once_a_period_at_the_tick() {
+    let mut rule = rule(vec![strip("band", 3, "Vox 1", Some(-25))]);
+    match_meter(&mut rule, 9, 0);
+    assert!(peak_lines(&rule.reading(&meter_reading(9, -120, -180), 100)).is_empty());
+    rule.reading(&meter_reading(9, -300, -90), 120);
+    assert!(peak_lines(&rule.tick(140)).is_empty());
+    // A silent last reading changes nothing.
+    rule.reading(&meter_reading(9, -700, -700), 9_950);
+    let lines = peak_lines(&rule.tick(10_000));
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["meters"][0]["device"], 9);
+    assert_eq!(lines[0]["meters"][0]["matched"], true);
+    assert_eq!(lines[0]["meters"][0]["left_db"], -12.0);
+    assert_eq!(lines[0]["meters"][0]["right_db"], -9.0);
+    assert!(peak_lines(&rule.tick(30_000)).is_empty());
+}
+
+#[test]
+fn a_meter_device_matched_to_no_strip_says_so_and_silence_logs_nothing() {
+    let mut rule = rule(vec![strip("band", 3, "Vox 1", Some(-25))]);
+    rule.reading(&meter_reading(9, -700, -700), 10);
+    assert!(peak_lines(&rule.tick(20_000)).is_empty());
+    rule.reading(&meter_reading(9, -120, -180), 20_010);
+    let lines = peak_lines(&rule.tick(30_010));
+    assert_eq!(lines[0]["meters"][0]["matched"], false);
+}
+
+#[test]
+fn a_lufs_devices_reading_is_no_peak() {
+    let mut rule = rule(vec![strip("band", 3, "Vox 1", Some(-25))]);
+    rule.reading(&on_vox(-120, -180), 10);
+    assert!(peak_lines(&rule.tick(20_000)).is_empty());
+}

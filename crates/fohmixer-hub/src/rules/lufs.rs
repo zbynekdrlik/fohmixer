@@ -41,7 +41,8 @@
 //!   keys back to Live's own values.
 //! - **Records** (`lufs`): a key found, matched, unmatched (once per key),
 //!   two, lost; a point's problem raised (warn) or cleared; a point's state
-//!   change at most once per [`STATE_LOG_MS`]. Never one per datagram.
+//!   change at most once per [`STATE_LOG_MS`]; the meter devices' peaks of a
+//!   period (`peaks.rs`, none in silence). Never one per datagram.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -57,6 +58,8 @@ use serde_json::{Value, json};
 pub mod bound;
 #[path = "lufs/confirm.rs"]
 pub mod confirm;
+#[path = "lufs/peaks.rs"]
+pub mod peaks;
 
 pub use bound::Key;
 pub use confirm::Answer;
@@ -476,6 +479,8 @@ pub struct Lufs {
     /// When each Live's names were last read or asked for.
     names_at: BTreeMap<String, u64>,
     asks: u64,
+    /// The meter devices' peaks of the period, for the event log.
+    peaks: peaks::Peaks,
 }
 
 impl Lufs {
@@ -646,6 +651,12 @@ impl Lufs {
         if ask {
             acts.extend(self.ask(&key, now));
         }
+        let matched = self
+            .devices
+            .get(&key)
+            .is_some_and(|d| matches!(d.status, Status::Matched(_)));
+        self.peaks
+            .note(&key, reading.first, reading.second, matched, now);
         acts.extend(self.refresh(now));
         acts
     }
@@ -802,7 +813,8 @@ impl Lufs {
         acts
     }
 
-    /// The router's tick: stale keys lost, the grace's problems.
+    /// The router's tick: stale keys lost, the grace's problems, the
+    /// meter devices' peaks once their period is over.
     pub fn tick(&mut self, now: u64) -> Vec<Act> {
         let stale: Vec<Key> = self
             .devices
@@ -826,6 +838,7 @@ impl Lufs {
             }
         }
         acts.extend(self.refresh(now));
+        acts.extend(self.peaks.take(now).map(Act::Log));
         acts
     }
 
