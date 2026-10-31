@@ -651,7 +651,7 @@ async fn a_reconnects_values_are_judged_once_its_window_ends() {
 }
 
 /// Live's push of `value` under its listener key `key`.
-fn pushed(key: &str, value: Value) -> LiveValue {
+pub(in crate::router) fn pushed(key: &str, value: Value) -> LiveValue {
     LiveValue {
         key: key.into(),
         value,
@@ -1321,7 +1321,7 @@ async fn a_layout_served_while_the_markers_read_runs_keeps_the_window() {
     lowered_at_rest(&mut router);
     let seq = added_after(&mut router, &mut own).await;
     let (rev, served) = router.layout_store.clone().unwrap().current();
-    router.handle(layout_msg(rev + 1, served.as_deref()));
+    router.handle(layout_msg(rev + 1, served.as_deref(), None));
     let _ = records(&rx);
     tick_after(&mut router, 600.0);
     assert_eq!(rule_sets(&records(&rx)), vec![], "the read still runs");

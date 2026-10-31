@@ -37,6 +37,7 @@ impl Router {
                 .map(|(key, state)| (key.as_str(), cached_value(state))),
         );
         self.markers_do(next);
+        self.stage_places_known();
     }
 
     /// Carries out actions; the subscriptions' cached states, by key.
@@ -257,8 +258,8 @@ impl Router {
         };
         tracing::info!(found = found.len(), "the Tuner markers changed");
         if let Some(rev) = store.set_markers(found) {
-            let served = store.current().1;
-            self.handle(layout_msg(rev, served.as_deref()));
+            let (served, stage_ctrl) = store.served();
+            self.handle(layout_msg(rev, served.as_deref(), stage_ctrl));
         }
         // Served or unchanged, the composition is settled: REVERB's
         // track-list windows close, each only where no read of its instance
@@ -271,6 +272,7 @@ impl Router {
             }
             self.autotune_release(&name, "settled");
         }
+        self.stage_places_known();
         // No composition waits now: the sectors' seed may be due (#148).
         self.sectors_seed_if_due();
     }

@@ -733,6 +733,14 @@ impl Layout {
         })
     }
 
+    /// The `+CTRL` id the STAGE AUT binding names, on a frame (#104).
+    pub fn stage_aut_ctrl(&self) -> Option<CtrlId> {
+        match self.stage_aut_binding()?.anchor {
+            Anchor::Ctrl { id } => Some(id),
+            _ => None,
+        }
+    }
+
     /// The `+CTRL` ids the controls name (#104), each once per Live set: on
     /// a frame every one, on a served layout those no Tuner filled.
     pub fn ctrls(&self) -> std::collections::BTreeSet<(String, CtrlId)> {

@@ -252,8 +252,10 @@ fn the_lowered_state_survives_a_hub_restart_and_returns_exactly() {
         reverb_until(&mut a, |s| s.aut && s.waiting).await;
         set_hub(&mut a, "reverb_low", true).await;
         reverb_until(&mut a, |s| s.low == Some(Low::Stop) && !s.waiting).await;
-        until_volume(&mut a, 2, |v| db_close(v, lowered(0.85))).await;
-        until_volume(&mut a, 3, |v| db_close(v, lowered(0.6))).await;
+        // The glide's end exactly: its last 25 ms step lies inside `db_close`,
+        // and a hub stopped before it leaves Live a step short for good.
+        until_volume(&mut a, 2, |v| v == lowered(0.85)).await;
+        until_volume(&mut a, 3, |v| v == lowered(0.6)).await;
         a.close().await;
         hub.stop().await;
         let saved: Value = serde_json::from_str(

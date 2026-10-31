@@ -670,9 +670,9 @@ async fn poll_layout(
     loop {
         tick.tick().await;
         if let Some(rev) = layout.poll() {
-            let served = layout.current().1;
+            let (served, stage_ctrl) = layout.served();
             if router
-                .send(router::layout_msg(rev, served.as_deref()))
+                .send(router::layout_msg(rev, served.as_deref(), stage_ctrl))
                 .is_err()
             {
                 return;

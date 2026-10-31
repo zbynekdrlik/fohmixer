@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "./support/fixtures";
-import { LiveClient, centre, clipped, frames, harness, hostLine, hubStatus, openSurface, ready, selectPage, until, volume } from "./support/live";
+import { LiveClient, centre, clipped, frames, harness, hostLine, hubEvents, hubStatus, openSurface, ready, selectPage, servedLayout, until, volume } from "./support/live";
 
 // Strips from Tuner markers (#68, spec D16): a Tuner in a track's device
 // chain, renamed with the strip's quoted label and its tags, puts the strip
@@ -265,11 +265,20 @@ test("a control naming a +CTRL id is red until its Tuner comes, then follows tha
   const alert = page.getByTestId("rail").getByTestId("alert-toggle");
   const toggle = page.locator('[data-testid="param-toggle"][data-label="ZVUKAR"]');
   const live = await LiveClient.open();
+  const mutes = [1, 2, 3].map((i) => `live_set tracks ${i}`);
+  const before = await Promise.all(mutes.map((target) => live.get("band", target, "mute")));
   try {
     await harness("/hub/layout", { layout: withCtrls() });
     await selectPage(page, "foh");
     for (const button of [stage, alert, toggle]) {
       await expect(button).toHaveAttribute("data-binding", "unresolved", { timeout: 10_000 });
+    }
+    // A press on a red control writes nothing (read at the end: the first
+    // sets after these presses are the filled controls').
+    const since = Date.now();
+    for (const button of [stage, alert, toggle]) {
+      const { x, y } = await centre(button);
+      await page.mouse.click(x, y);
     }
     expect(await hostLine("band", "tuner track 1 set '+CTRL:stage'")).toBe("TUNER 1");
     expect(await hostLine("band", "tuner track 2 set '+CTRL:alert'")).toBe("TUNER 1");
@@ -282,10 +291,37 @@ test("a control naming a +CTRL id is red until its Tuner comes, then follows tha
     await expect(stage).toHaveAttribute("data-muted", "true");
     await live.set("band", "live_set tracks 1", "mute", false);
     await expect(stage).toHaveAttribute("data-muted", "false");
+    // A press on the filled alert and the filled toggle reaches its track.
+    await live.set("band", mutes[1], "mute", true);
+    await live.set("band", mutes[2], "mute", true);
+    await expect(alert).toHaveAttribute("data-on", "false");
+    await ready(alert);
+    await alert.click();
+    await until(() => live.get("band", mutes[1], "mute"), (v) => v === false, "the alert reaches its track");
+    await expect(alert).toHaveAttribute("data-on", "true");
+    await alert.click();
+    await until(() => live.get("band", mutes[1], "mute"), (v) => v === true, "the alert off");
+    await ready(toggle);
+    const { x, y } = await centre(toggle);
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await until(() => live.get("band", mutes[2], "mute"), (v) => v === false, "the toggle reaches its track");
+    await page.mouse.up();
+    await until(() => live.get("band", mutes[2], "mute"), (v) => v === true, "the toggle off");
+    const keys = await until(
+      async () => new Set((await hubEvents()).filter((e) => e.ev === "set" && e.ts >= since).map((e) => e.key)),
+      (found) => found.size >= 2,
+      "the presses' sets in the event log",
+    );
+    expect([...keys].sort()).toEqual([`band|${mutes[1]}|mute`, `band|${mutes[2]}|mute`]);
   } finally {
+    for (const [i, target] of mutes.entries()) await live.set("band", target, "mute", before[i]);
     live.close();
     for (const track of [1, 2, 3]) await hostLine("band", `tuner track ${track} remove`);
     await harness("/hub/layout/reset");
+    // Only the fixture names STAGE's track: `markersGone` alone can return
+    // while the hub still serves `withCtrls()`.
+    await until(servedLayout, (l) => l.pages.find((p: any) => p.id === "foh").rail.find((c: any) => c.kind === "stage").binding.anchor.kind === "track", "the hub serving the fixture layout again");
     await markersGone();
   }
 });

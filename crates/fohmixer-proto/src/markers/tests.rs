@@ -2477,24 +2477,39 @@ fn a_frame_naming_its_tracks_is_composed_as_before() {
 fn a_frame_may_name_ctrl_ids_only_on_stage_alert_and_param_toggle() {
     assert_eq!(frame_problems(&ctrl_frame()), vec![]);
     let id = json!({"instance": "band", "anchor": {"kind": "ctrl", "id": "stage"}});
-    for rail in [
-        json!({"kind": "solo", "binding": id}),
-        json!({"kind": "param_fader", "label": "F", "targets": [
-            {"binding": id, "prop": "value", "scale": "cc_linear"}]}),
+    let solo = json!({"kind": "solo", "binding": id});
+    let fader = json!({"kind": "param_fader", "label": "F", "targets": [
+        {"binding": id, "prop": "value", "scale": "cc_linear"}]});
+    let strip = json!({"kind": "strip", "strip_kind": "standard", "binding": id});
+    let group =
+        |control: &serde_json::Value| json!({"kind": "group", "id": "g", "controls": [control]});
+    let pager = json!({"kind": "pager", "id": "pager", "default_page": "one", "pages": [
+        {"id": "one", "title": "ONE", "sections": [group(&strip)]}]});
+    let row = |section: serde_json::Value| json!([{"sections": [section]}]);
+    // The rail, a row, a pager's sub-page and the global controls.
+    for (rail, rows, global, at) in [
+        (json!([solo]), json!([]), json!([]), "pages[0]"),
+        (json!([fader]), json!([]), json!([]), "pages[0]"),
+        (json!([]), row(group(&strip)), json!([]), "pages[0]"),
+        (json!([]), row(group(&solo)), json!([]), "pages[0]"),
+        (json!([]), row(pager), json!([]), "pages[0]"),
+        (json!([]), json!([]), json!([solo]), "global[0]"),
+        (json!([]), json!([]), json!([strip]), "global[0]"),
     ] {
         let frame: Layout = serde_json::from_value(json!({
             "schema": 2,
             "default_page": "foh",
-            "pages": [{"id": "foh", "title": "FOH", "rail": [rail]}]
+            "pages": [{"id": "foh", "title": "FOH", "rail": rail, "rows": rows}],
+            "global": global
         }))
         .unwrap();
         assert_eq!(
             frame_problems(&frame),
             [LayoutError {
-                at: "pages[0]".into(),
+                at: at.into(),
                 message: "a ctrl anchor: only stage, alert and param_toggle take one".into()
             }],
-            "{rail:?}"
+            "{frame:?}"
         );
     }
 }

@@ -53,7 +53,7 @@ use fohmixer_proto::client::{
     AutotuneStatus, FaderLinkStatus, HUB_STAGE_AUT, ReverbStatus, ServerMsg, SetItem,
     SongMapReport, SongMapStatus, StageAutStatus, Unresolved, ValueItem,
 };
-use fohmixer_proto::layout::{AutotuneTarget, Binding, Layout, LinkId, RuleFader};
+use fohmixer_proto::layout::{AutotuneTarget, Binding, CtrlId, Layout, LinkId, RuleFader};
 use fohmixer_proto::sectors::{Sectors, StripRef};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
@@ -64,7 +64,7 @@ use crate::live::names::NameCheck;
 use crate::live::subs::{Cached, ClientId, Outgoing, Subs};
 use crate::outbox::Outbox;
 use crate::rules::links::FaderLinks;
-use crate::rules::{HubState, StageAut};
+use crate::rules::{HubState, StageAut, StageChange, StageTarget, stage_change};
 use crate::setter::Setter;
 
 #[path = "router/writes.rs"]
@@ -94,6 +94,9 @@ mod sectors;
 mod colors;
 #[path = "router/songmap.rs"]
 mod songmap;
+#[cfg(test)]
+#[path = "router/stage_tests.rs"]
+mod stage_tests;
 mod unfold;
 
 pub use lufs::LUFS_TICK;
@@ -208,7 +211,7 @@ pub enum RouterMsg {
     /// reverb faders.
     Layout {
         rev: u64,
-        stage: Option<Binding>,
+        stage: Option<StageTarget>,
         targets: BTreeMap<String, Vec<String>>,
         /// The strips' tracks (`Layout::strip_tracks`, #58).
         strips: Vec<(String, String)>,
@@ -550,14 +553,6 @@ struct InstanceState {
     online: bool,
     busy: bool,
     set_name: String,
-}
-
-/// Where STAGE AUT acts: the stage-mic track's mute (its instance's
-/// transport drives it, `Router::transport`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct StageTarget {
-    instance: String,
-    target: String,
 }
 
 /// One instance's transport as the router follows it: its subscription's
@@ -966,7 +961,7 @@ impl Router {
                 for outbox in self.clients.values() {
                     outbox.layout(rev);
                 }
-                self.set_stage_binding(stage.as_ref());
+                self.set_stage_binding(stage);
                 self.reverb_layout(reverb);
                 self.autotune_layout(autotune);
                 self.lufs_layout(lufs);
@@ -1375,29 +1370,61 @@ impl Router {
         }
     }
 
-    /// Follows a new layout's STAGE AUT binding: the rule starts afresh on
-    /// the new target, with its instance's transport as last heard.
-    fn set_stage_binding(&mut self, binding: Option<&Binding>) {
-        let wanted = binding.and_then(|b| b.target().ok().map(|t| (b.instance.clone(), t)));
-        let current = self
-            .stage_target
-            .as_ref()
-            .map(|t| (t.instance.clone(), t.target.clone()));
-        if wanted == current {
-            return;
+    /// Follows a new layout's STAGE AUT target (`rules::stage_change`): a
+    /// `+CTRL` track that moved keeps the rule's state and writes nothing;
+    /// else the rule starts afresh on the new target, with its instance's
+    /// transport as last heard.
+    fn set_stage_binding(&mut self, wanted: Option<StageTarget>) {
+        match stage_change(self.stage_target.as_ref(), wanted.as_ref()) {
+            StageChange::Same => self.stage_target = wanted,
+            StageChange::Moved => {
+                self.stage_moved(wanted.as_ref());
+                self.stage_target = wanted;
+                if let Some(mute) = self.stage.on_moved() {
+                    self.write_stage(mute);
+                }
+            }
+            StageChange::Afresh => self.stage_afresh(wanted),
         }
+    }
+
+    /// STAGE AUT starts afresh on `wanted`.
+    fn stage_afresh(&mut self, wanted: Option<StageTarget>) {
         self.stage_target = None;
         self.stage.on_disconnect();
-        let Some((instance, target)) = wanted else {
+        let Some(wanted) = wanted else {
             tracing::info!("the layout has no STAGE AUT binding");
             return;
         };
-        tracing::info!(instance = %instance, target = %target, "STAGE AUT follows the transport");
-        let playing = self.transport_now(&instance);
-        self.stage_target = Some(StageTarget { instance, target });
+        tracing::info!(instance = %wanted.instance, target = %wanted.target, "STAGE AUT follows the transport");
+        let playing = self.transport_now(&wanted.instance);
+        self.stage_target = Some(wanted);
         if let Some(playing) = playing {
             self.stage_value(playing);
         }
+    }
+
+    /// The track places settled: STAGE AUT's last write hit its track (a
+    /// move, had it come, would have come first).
+    pub(super) fn stage_places_known(&mut self) {
+        if self
+            .stage_target
+            .as_ref()
+            .is_some_and(|t| self.reverb_settled(&t.instance))
+        {
+            self.stage.places_known();
+        }
+    }
+
+    /// STAGE AUT's track moved in its Live set: logged and recorded.
+    fn stage_moved(&self, wanted: Option<&StageTarget>) {
+        let from = self.stage_target.as_ref().map(|t| t.target.as_str());
+        let to = wanted.map(|t| t.target.as_str());
+        tracing::info!(from = ?from, to = ?to, "STAGE AUT's track moved: the rule keeps its state");
+        self.io.events.record(
+            "stage_aut",
+            json!({"step": "moved", "from": from, "to": to}),
+        );
     }
 
     /// The latest `is_playing` of `instance` (none before one was heard).
@@ -1461,7 +1488,12 @@ impl Router {
 
     /// Writes the stage mics' mute (logged and recorded; a failure is
     /// logged and recorded, never retried — spec I6).
-    fn write_stage(&self, mute: bool) {
+    fn write_stage(&mut self, mute: bool) {
+        let unsure = self
+            .stage_target
+            .as_ref()
+            .is_some_and(|t| !self.reverb_settled(&t.instance));
+        self.stage.note_write(unsure);
         let Some(target) = &self.stage_target else {
             return;
         };
@@ -1681,6 +1713,13 @@ impl Router {
             self.autotune_delivery(&item.sub, item.value, item.error);
         }
         self.songmap_delivery(songmap_items);
+        // The keeper's values before the transport: a list change and a start
+        // in one flush must find the read running, so STAGE AUT's write
+        // counts as unsure (#104).
+        let marker_actions = self
+            .markers
+            .values(marker_items.iter().map(|(k, v)| (k.as_str(), v.as_ref())));
+        self.markers_apply(marker_actions);
         for (sub, heard) in transport {
             match heard {
                 Ok(value) => self.on_transport(&sub, &value),
@@ -1688,19 +1727,19 @@ impl Router {
             }
         }
         self.unfold_apply(unfold);
-        let marker_actions = self
-            .markers
-            .values(marker_items.iter().map(|(k, v)| (k.as_str(), v.as_ref())));
-        self.markers_apply(marker_actions);
     }
 }
 
 /// The `Layout` message of the layout served at revision `rev`: the file
-/// changed, or the markers did (#68).
-pub fn layout_msg(rev: u64, served: Option<&Layout>) -> RouterMsg {
+/// changed, or the markers did (#68). `stage_ctrl` is the `+CTRL` id the
+/// frame's STAGE AUT control names (`LayoutStore::served`): the served
+/// layout holds its track by index only.
+pub fn layout_msg(rev: u64, served: Option<&Layout>, stage_ctrl: Option<CtrlId>) -> RouterMsg {
     RouterMsg::Layout {
         rev,
-        stage: served.and_then(|l| l.stage_aut_binding().cloned()),
+        stage: served
+            .and_then(Layout::stage_aut_binding)
+            .and_then(|b| StageTarget::of(b, stage_ctrl)),
         targets: served
             .map(crate::live::names::layout_targets)
             .unwrap_or_default(),
@@ -2234,14 +2273,11 @@ mod tests {
             (&json!("flag"), &json!(true), &json!(1), &json!("10.0.0.1"))
         );
         a.take();
-        let binding = Binding {
+        router.set_stage_binding(Some(StageTarget {
             instance: "band".into(),
-            anchor: fohmixer_proto::layout::Anchor::Track {
-                name: "Mics Stage #".into(),
-            },
-            path: None,
-        };
-        router.set_stage_binding(Some(&binding));
+            target: "live_set tracks[name=Mics Stage #]".into(),
+            ctrl: None,
+        }));
         let write = next_record(&rx, "stage_aut").await;
         assert_eq!(
             (&write["step"], &write["instance"], &write["mute"]),
@@ -2280,6 +2316,118 @@ mod tests {
             (&again["playing"], &again["prev"]),
             (&json!(true), &json!(null))
         );
+    }
+
+    #[tokio::test]
+    async fn a_moved_stage_track_keeps_the_rule_and_a_new_control_starts_afresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, _rx, rx) = offline_router(dir.path());
+        let key = router.transport["band"].key.clone();
+        let at = |index: u32, ctrl: Option<CtrlId>| StageTarget {
+            instance: "band".into(),
+            target: format!("live_set tracks {index}"),
+            ctrl,
+        };
+        let stage = Some(CtrlId::Stage);
+        router.on_transport(&key, &json!(false));
+        let _a = attach(&mut router, 1);
+        router.handle(RouterMsg::SetHub {
+            client: 1,
+            key: HUB_STAGE_AUT.into(),
+            value: json!(true),
+        });
+        let _ = records(&rx);
+        router.set_stage_binding(Some(at(5, stage)));
+        assert_eq!(router.stage.writes(), 1);
+        assert_eq!(next_record(&rx, "stage_aut").await["step"], "write");
+        assert_eq!(next_record(&rx, "stage_aut").await["step"], "failed");
+
+        // The same layout again: nothing.
+        router.set_stage_binding(Some(at(5, stage)));
+        assert_eq!(router.stage.writes(), 1);
+        assert_eq!(records(&rx), Vec::<Value>::new());
+
+        // The track moved: recorded, no write, and the rule's state stays.
+        router.set_stage_binding(Some(at(4, stage)));
+        assert_eq!(router.stage.writes(), 1);
+        let moved = records(&rx);
+        assert_eq!(evs(&moved), ["stage_aut"]);
+        assert_eq!(
+            (&moved[0]["step"], &moved[0]["from"], &moved[0]["to"]),
+            (
+                &json!("moved"),
+                &json!("live_set tracks 5"),
+                &json!("live_set tracks 4")
+            )
+        );
+
+        // The next change writes the moved track.
+        router.on_transport(&key, &json!(true));
+        assert_eq!(router.stage.writes(), 2);
+        assert_eq!(next_record(&rx, "stage_aut").await["step"], "write");
+        let failed = next_record(&rx, "stage_aut").await;
+        assert_eq!(failed["target"], "live_set tracks 4");
+
+        // Another control starts afresh: the rule applies again.
+        router.set_stage_binding(Some(at(3, Some(CtrlId::Talkback))));
+        assert_eq!(router.stage.writes(), 3);
+        // The binding lost: no target, no write, then a new one writes.
+        router.set_stage_binding(None);
+        router.on_transport(&key, &json!(false));
+        assert_eq!(router.stage.writes(), 3);
+        router.set_stage_binding(Some(at(3, stage)));
+        assert_eq!(router.stage.writes(), 4);
+    }
+
+    #[tokio::test]
+    async fn a_write_before_the_track_places_settled_is_made_again_on_the_moved_track() {
+        // A set load with the tag on another track: the first transport
+        // value after the connect reaches the rule before the read does.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, _rx, rx) = offline_router(dir.path());
+        let _ = router.markers.set_instances(["band".to_string()]);
+        let key = router.transport["band"].key.clone();
+        let at = |index: u32| StageTarget {
+            instance: "band".into(),
+            target: format!("live_set tracks {index}"),
+            ctrl: Some(CtrlId::Stage),
+        };
+        let disconnected = || RouterMsg::Live {
+            instance: "band".into(),
+            event: LiveEvent::Disconnected,
+        };
+        router.stage.set_flag(true);
+        router.on_transport(&key, &json!(true));
+        router.set_stage_binding(Some(at(5)));
+        assert_eq!(router.stage.writes(), 1);
+        router.handle(disconnected());
+        router.on_transport(&key, &json!(true));
+        assert_eq!(router.stage.writes(), 2, "the old index");
+        // Still unsure: the mark stays.
+        router.stage_places_known();
+        let _ = records(&rx);
+        router.set_stage_binding(Some(at(4)));
+        assert_eq!(router.stage.writes(), 3, "again, on the moved track");
+        let got = records(&rx);
+        let steps: Vec<&Value> = got.iter().map(|r| &r["step"]).collect();
+        assert_eq!(steps, [&json!("moved"), &json!("write")]);
+        for target in [
+            "live_set tracks 5",
+            "live_set tracks 5",
+            "live_set tracks 4",
+        ] {
+            assert_eq!(next_record(&rx, "stage_aut").await["target"], target);
+        }
+
+        // The same reconnect with an unchanged set: the read settles it,
+        // and a later move writes nothing.
+        router.handle(disconnected());
+        router.on_transport(&key, &json!(true));
+        assert_eq!(router.stage.writes(), 4);
+        router.markers = markers::Keeper::default();
+        router.stage_places_known();
+        router.set_stage_binding(Some(at(3)));
+        assert_eq!(router.stage.writes(), 4);
     }
 
     #[test]
