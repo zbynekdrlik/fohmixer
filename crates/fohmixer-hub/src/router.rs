@@ -1372,14 +1372,21 @@ impl Router {
     /// else the rule starts afresh on the new target, with its instance's
     /// transport as last heard.
     fn set_stage_binding(&mut self, wanted: Option<StageTarget>) {
-        let change = stage_change(self.stage_target.as_ref(), wanted.as_ref());
-        if change == StageChange::Moved {
-            self.stage_moved(wanted.as_ref());
+        match stage_change(self.stage_target.as_ref(), wanted.as_ref()) {
+            StageChange::Same => self.stage_target = wanted,
+            StageChange::Moved => {
+                self.stage_moved(wanted.as_ref());
+                self.stage_target = wanted;
+                if let Some(mute) = self.stage.on_moved() {
+                    self.write_stage(mute);
+                }
+            }
+            StageChange::Afresh => self.stage_afresh(wanted),
         }
-        if change != StageChange::Afresh {
-            self.stage_target = wanted;
-            return;
-        }
+    }
+
+    /// STAGE AUT starts afresh on `wanted`.
+    fn stage_afresh(&mut self, wanted: Option<StageTarget>) {
         self.stage_target = None;
         self.stage.on_disconnect();
         let Some(wanted) = wanted else {
@@ -1391,6 +1398,18 @@ impl Router {
         self.stage_target = Some(wanted);
         if let Some(playing) = playing {
             self.stage_value(playing);
+        }
+    }
+
+    /// The track places settled: STAGE AUT's last write hit its track (a
+    /// move, had it come, would have come first).
+    pub(super) fn stage_places_known(&mut self) {
+        if self
+            .stage_target
+            .as_ref()
+            .is_some_and(|t| self.reverb_settled(&t.instance))
+        {
+            self.stage.places_known();
         }
     }
 
@@ -1466,7 +1485,12 @@ impl Router {
 
     /// Writes the stage mics' mute (logged and recorded; a failure is
     /// logged and recorded, never retried — spec I6).
-    fn write_stage(&self, mute: bool) {
+    fn write_stage(&mut self, mute: bool) {
+        let unsure = self
+            .stage_target
+            .as_ref()
+            .is_some_and(|t| !self.reverb_settled(&t.instance));
+        self.stage.note_write(unsure);
         let Some(target) = &self.stage_target else {
             return;
         };
@@ -2346,6 +2370,57 @@ mod tests {
         router.on_transport(&key, &json!(false));
         assert_eq!(router.stage.writes(), 3);
         router.set_stage_binding(Some(at(3, stage)));
+        assert_eq!(router.stage.writes(), 4);
+    }
+
+    #[tokio::test]
+    async fn a_write_before_the_track_places_settled_is_made_again_on_the_moved_track() {
+        // A set load with the tag on another track: the first transport
+        // value after the connect reaches the rule before the read does.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, _rx, rx) = offline_router(dir.path());
+        let _ = router.markers.set_instances(["band".to_string()]);
+        let key = router.transport["band"].key.clone();
+        let at = |index: u32| StageTarget {
+            instance: "band".into(),
+            target: format!("live_set tracks {index}"),
+            ctrl: Some(CtrlId::Stage),
+        };
+        let disconnected = || RouterMsg::Live {
+            instance: "band".into(),
+            event: LiveEvent::Disconnected,
+        };
+        router.stage.set_flag(true);
+        router.on_transport(&key, &json!(true));
+        router.set_stage_binding(Some(at(5)));
+        assert_eq!(router.stage.writes(), 1);
+        router.handle(disconnected());
+        router.on_transport(&key, &json!(true));
+        assert_eq!(router.stage.writes(), 2, "the old index");
+        // Still unsure: the mark stays.
+        router.stage_places_known();
+        let _ = records(&rx);
+        router.set_stage_binding(Some(at(4)));
+        assert_eq!(router.stage.writes(), 3, "again, on the moved track");
+        let got = records(&rx);
+        let steps: Vec<&Value> = got.iter().map(|r| &r["step"]).collect();
+        assert_eq!(steps, [&json!("moved"), &json!("write")]);
+        for target in [
+            "live_set tracks 5",
+            "live_set tracks 5",
+            "live_set tracks 4",
+        ] {
+            assert_eq!(next_record(&rx, "stage_aut").await["target"], target);
+        }
+
+        // The same reconnect with an unchanged set: the read settles it,
+        // and a later move writes nothing.
+        router.handle(disconnected());
+        router.on_transport(&key, &json!(true));
+        assert_eq!(router.stage.writes(), 4);
+        router.markers = markers::Keeper::default();
+        router.stage_places_known();
+        router.set_stage_binding(Some(at(3)));
         assert_eq!(router.stage.writes(), 4);
     }
 

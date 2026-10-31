@@ -298,6 +298,7 @@ test("a control naming a +CTRL id is red until its Tuner comes, then follows tha
     await ready(alert);
     await alert.click();
     await until(() => live.get("band", mutes[1], "mute"), (v) => v === false, "the alert reaches its track");
+    await expect(alert).toHaveAttribute("data-on", "true");
     await alert.click();
     await until(() => live.get("band", mutes[1], "mute"), (v) => v === true, "the alert off");
     await ready(toggle);

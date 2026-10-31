@@ -37,6 +37,7 @@ impl Router {
                 .map(|(key, state)| (key.as_str(), cached_value(state))),
         );
         self.markers_do(next);
+        self.stage_places_known();
     }
 
     /// Carries out actions; the subscriptions' cached states, by key.
@@ -271,6 +272,7 @@ impl Router {
             }
             self.autotune_release(&name, "settled");
         }
+        self.stage_places_known();
         // No composition waits now: the sectors' seed may be due (#148).
         self.sectors_seed_if_due();
     }

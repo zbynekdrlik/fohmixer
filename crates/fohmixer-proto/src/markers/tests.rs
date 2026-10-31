@@ -2485,7 +2485,7 @@ fn a_frame_may_name_ctrl_ids_only_on_stage_alert_and_param_toggle() {
         |control: &serde_json::Value| json!({"kind": "group", "id": "g", "controls": [control]});
     let pager = json!({"kind": "pager", "id": "pager", "default_page": "one", "pages": [
         {"id": "one", "title": "ONE", "sections": [group(&strip)]}]});
-    let row = |section: Value| json!([{"sections": [section]}]);
+    let row = |section: serde_json::Value| json!([{"sections": [section]}]);
     // The rail, a row, a pager's sub-page and the global controls.
     for (rail, rows, global, at) in [
         (json!([solo]), json!([]), json!([]), "pages[0]"),

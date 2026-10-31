@@ -11,7 +11,9 @@
 //! flag is turned on, and once after the instance reconnects (a set load):
 //! the rule then applies to the fresh state. A `+CTRL` track that only moves
 //! in its Live set is the same track: the rule keeps its state, no write
-//! (#104, [`stage_change`]).
+//! (#104, [`stage_change`]), unless its last write went out while the track
+//! places were unsure and so may have hit the old index
+//! ([`StageAut::on_moved`]).
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -103,6 +105,10 @@ pub struct StageAut {
     written: Option<bool>,
     /// Writes made since the hub started.
     writes: u64,
+    /// The last write went out with the track places unsure (a track-list
+    /// read or a composition under way, a reconnect): it may have hit the
+    /// old index.
+    unsure: bool,
 }
 
 impl StageAut {
@@ -141,6 +147,30 @@ impl StageAut {
     pub fn on_disconnect(&mut self) {
         self.playing = None;
         self.written = None;
+        self.unsure = false;
+    }
+
+    /// A write goes out, with the track places `unsure` or known.
+    pub fn note_write(&mut self, unsure: bool) {
+        self.unsure = unsure;
+    }
+
+    /// The track places are known and nothing moved: the last write hit
+    /// its track.
+    pub fn places_known(&mut self) {
+        self.unsure = false;
+    }
+
+    /// The target moved: nothing to write, so a mute set by hand stays,
+    /// unless the last write may have hit the old index. Then that mute,
+    /// for the moved track.
+    pub fn on_moved(&mut self) -> Option<bool> {
+        if !std::mem::take(&mut self.unsure) || !self.on {
+            return None;
+        }
+        let mute = self.written?;
+        self.writes += 1;
+        Some(mute)
     }
 
     fn decide(&mut self) -> Option<bool> {
@@ -242,6 +272,35 @@ mod tests {
         assert_eq!(stage_rule(true, false), Some(false));
         assert_eq!(stage_rule(false, true), None);
         assert_eq!(stage_rule(false, false), None);
+    }
+
+    #[test]
+    fn a_move_writes_only_what_may_have_hit_the_old_index() {
+        let mut rule = StageAut::new(true);
+        assert_eq!(rule.on_playing(true), Some(true));
+        assert_eq!(rule.on_moved(), None, "a sure write: a hand's mute stays");
+        rule.note_write(true);
+        assert_eq!(rule.on_moved(), Some(true));
+        assert_eq!(rule.writes(), 2);
+        assert_eq!(rule.on_moved(), None, "once");
+        rule.note_write(true);
+        rule.places_known();
+        assert_eq!(rule.on_moved(), None, "it hit its track");
+        rule.note_write(true);
+        rule.note_write(false);
+        assert_eq!(rule.on_moved(), None, "the last write counts");
+        rule.note_write(true);
+        rule.on_disconnect();
+        assert_eq!(rule.on_moved(), None, "a new session");
+        assert_eq!(rule.on_playing(false), Some(false));
+        rule.note_write(true);
+        assert_eq!(rule.set_flag(false), None);
+        assert_eq!(rule.on_moved(), None, "AUT off");
+        assert_eq!(rule.writes(), 3);
+        let mut rule = StageAut::new(true);
+        rule.note_write(true);
+        assert_eq!(rule.on_moved(), None, "nothing written yet");
+        assert_eq!(rule.writes(), 0);
     }
 
     #[test]
