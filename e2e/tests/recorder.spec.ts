@@ -89,13 +89,12 @@ async function twoDrags(page: Page, fader: Locator, pointer: number): Promise<{ 
   return { from, between, to: await pageNow(page) };
 }
 
-/** The fader's sets the page sent from `from` to `to` (a drag sends dozens): the first and last one's arrival (`hub_ms`) and page time (`t`). */
-function dragSets(events: any[], from: number, to: number): { first: number; last: number; t0: number; t1: number; arrived: number[] } {
-  const sets = events.filter((e) => e.ev === "set" && e.key === KEY && e.t >= from && e.t <= to);
+/** The fader's sets the page sent from `from` to `to` (a drag sends dozens), in arrival order: the first and last one's arrival (`hub_ms`) and page time (`t`), and each set's `hub_ms` and `t`. */
+function dragSets(events: any[], from: number, to: number): { first: number; last: number; t0: number; t1: number; sets: { hub_ms: number; t: number }[] } {
+  const sets = events.filter((e) => e.ev === "set" && e.key === KEY && e.t >= from && e.t <= to).sort((a, b) => a.hub_ms - b.hub_ms);
   expect(sets.length, "the drag's sets").toBeGreaterThan(10);
-  const arrived = sets.map((e) => e.hub_ms).sort((a, b) => a - b);
   const sent = sets.map((e) => e.t);
-  return { first: arrived[0], last: arrived[arrived.length - 1], t0: Math.min(...sent), t1: Math.max(...sent), arrived };
+  return { first: sets[0].hub_ms, last: sets[sets.length - 1].hub_ms, t0: Math.min(...sent), t1: Math.max(...sent), sets };
 }
 
 /** The bytes of the page events (each once) that the hub's trace records hold with a page time from `from` to `to`. */
@@ -181,10 +180,13 @@ test("on a slow link the recorder never delays a drag's sets and its newest even
   expect(lag, "the recorder's lag behind the page (ms)").toBeLessThan(10_000);
 
   // With the recorder on, no batch goes while a drag's sets do: between two
-  // of a drag's sets under 100 ms apart at most 2 `trace` records arrive (the
+  // of a drag's sets under 100 ms apart on the page's clock at most 2 `trace`
+  // records arrive. Arrival only places a record between two sets (the
   // socket's one task stamps both in arrival order; `ts` is whole ms, `hub_ms`
-  // finer: 5 ms either side). A tick lets one through only after a page frame
-  // over 100 ms without a set, and such a batch delays no set: WebKit on a
+  // finer: 5 ms either side); the gap is the sets' page `t`, the clock the
+  // gate works on (an arrival gap can hide a leaked batch on a slow runner
+  // and count a legal one). A tick lets one through only after a page tick
+  // of 100 ms without a set, and such a batch delays no set: WebKit on a
   // loaded runner can draw 7 frames a second, a set every 150 ms, and then
   // 3 or 4 batches go inside a drag by design.
   // The check can fail: the page events recorded between the drag's first
@@ -196,17 +198,17 @@ test("on a slow link the recorder never delays a drag's sets and its newest even
     [on.from, on.between],
     [on.between, on.to],
   ]) {
-    const { first, last, t0, t1, arrived } = dragSets(events, a, b);
+    const { first, last, t0, t1, sets } = dragSets(events, a, b);
     const bytes = eventBytes(events, t0, t1);
     test.info().annotations.push({ type: "drag-bytes", description: String(bytes) });
     expect(bytes, "the page events between the drag's first and last set (bytes)").toBeGreaterThanOrEqual(4000);
     const inside = events.filter((e) => e.ev === "trace" && e.ts > first + 5 && e.ts < last - 5);
     const gap = (ts: number) => {
-      const next = arrived.findIndex((at) => at >= ts);
-      return arrived[next] - arrived[next - 1];
+      const next = sets.findIndex((set) => set.hub_ms >= ts);
+      return sets[next].t - sets[next - 1].t;
     };
-    const gaps = inside.map((e) => Math.round(gap(e.ts)));
-    expect(gaps.filter((g) => g < 100).length, `trace records inside a drag of ${Math.round(last - first)} ms, the gap between the sets around each (ms): ${JSON.stringify(gaps)}`).toBeLessThanOrEqual(2);
+    const gaps = inside.map((e) => gap(e.ts));
+    expect(gaps.filter((g) => g < 100).length, `trace records inside a drag of ${Math.round(last - first)} ms, the page-clock gap between the sets around each (ms): ${JSON.stringify(gaps.map(Math.round))}`).toBeLessThanOrEqual(2);
   }
 
   // It drains without a stall once the fingers rest: from the second drag's
