@@ -257,8 +257,8 @@ impl Router {
         };
         tracing::info!(found = found.len(), "the Tuner markers changed");
         if let Some(rev) = store.set_markers(found) {
-            let served = store.current().1;
-            self.handle(layout_msg(rev, served.as_deref()));
+            let (served, stage_ctrl) = store.served();
+            self.handle(layout_msg(rev, served.as_deref(), stage_ctrl));
         }
         // Served or unchanged, the composition is settled: REVERB's
         // track-list windows close, each only where no read of its instance

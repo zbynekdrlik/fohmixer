@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fohmixer_proto::client::MarkersStatus;
-use fohmixer_proto::layout::Layout;
+use fohmixer_proto::layout::{CtrlId, Layout};
 use fohmixer_proto::markers::migrate::{Migration, Planned, migration};
 use fohmixer_proto::markers::{
     CtrlReport, Found, Leader, LinkReport, MarkerReport, TrackKind, compose, frame_problems, parse,
@@ -221,6 +221,14 @@ impl LayoutStore {
     pub fn current(&self) -> (u64, Option<Arc<Layout>>) {
         let state = self.lock();
         (state.rev, state.layout.clone())
+    }
+
+    /// The served layout and the `+CTRL` id its frame's STAGE AUT control
+    /// names (#104: the served one holds its track by index), read together.
+    pub fn served(&self) -> (Option<Arc<Layout>>, Option<CtrlId>) {
+        let state = self.lock();
+        let ctrl = state.frame.as_deref().and_then(Layout::stage_aut_ctrl);
+        (state.layout.clone(), ctrl)
     }
 
     /// Why the file on disk is not served, if it is not.

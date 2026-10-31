@@ -431,11 +431,11 @@ fn a_layout_msg_carries_the_autotune_targets() {
             {"binding": {"instance": "band", "anchor": {"kind": "track_at", "index": 7}},
              "label": "#8", "on": 127, "off": 0}]}]}]}))
     .unwrap();
-    let RouterMsg::Layout { autotune, .. } = layout_msg(3, Some(&served)) else {
+    let RouterMsg::Layout { autotune, .. } = layout_msg(3, Some(&served), None) else {
         panic!("a layout message")
     };
     assert_eq!(autotune, vec![stream()]);
-    let RouterMsg::Layout { autotune, .. } = layout_msg(4, None) else {
+    let RouterMsg::Layout { autotune, .. } = layout_msg(4, None, None) else {
         panic!("a layout message")
     };
     assert!(autotune.is_empty());

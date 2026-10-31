@@ -681,6 +681,18 @@ fn the_stage_aut_binding_is_the_first_stage_control_with_aut() {
     assert_eq!(parse(v).stage_aut_binding(), None);
 }
 
+#[test]
+fn the_stage_aut_ctrl_is_the_id_its_binding_names() {
+    assert_eq!(parse(sample()).stage_aut_ctrl(), None, "a track by name");
+    let mut v = sample();
+    v["pages"][1]["rail"][0]["binding"] =
+        json!({"instance": "band", "anchor": {"kind": "ctrl", "id": "stage"}});
+    assert_eq!(parse(v).stage_aut_ctrl(), Some(CtrlId::Stage));
+    let mut v = sample();
+    v["pages"][1]["rail"][0]["aut"] = json!(false);
+    assert_eq!(parse(v).stage_aut_ctrl(), None, "no STAGE AUT");
+}
+
 /// The TouchOSC import tool's output for its synthetic fixtures
 /// (`tools/import-tosc/fixtures/expected-layout.json`, which the tool's own
 /// tests compare with its import) is a layout this schema reads and accepts.
