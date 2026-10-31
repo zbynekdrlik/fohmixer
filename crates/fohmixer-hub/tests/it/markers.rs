@@ -587,3 +587,66 @@ fn a_moved_stage_track_keeps_the_rules_state_and_writes_nothing() {
         host.stop();
     });
 }
+
+#[test]
+fn stage_aut_with_no_target_writes_nothing() {
+    // #104: the Tuner removed or a second one with the id: the control is
+    // red, and a transport start mutes no track.
+    let _serial = serial();
+    runtime().block_on(async {
+        let mut host = Host::start("band");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("layout.json"),
+            serde_json::to_vec(&ctrl_frame()).unwrap(),
+        )
+        .unwrap();
+        let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        let mut a = hub.client().await;
+        a.instance_state("band", true, Some(false), SECS_5).await;
+        layout_until(&hub, "the frame served", |s| s.rev > 0).await;
+        assert_eq!(host.tuner("track", 1, "set", "+CTRL:stage"), 1);
+        let bound = Some("live_set tracks 1".to_string());
+        layout_until(&hub, "stage bound", |s| rail(s)[0] == bound).await;
+        hub.status_until(SECS_5, |s| s.instances[0].playing == Some(false))
+            .await;
+        a.send(&ClientMsg::SetHub {
+            key: "stage_aut".into(),
+            value: json!(true),
+        })
+        .await;
+        hub.status_until(SECS_5, |s| s.stage_aut.writes == 1).await;
+
+        // The Tuner removed: a start writes nothing.
+        assert_eq!(host.tuner("track", 1, "remove", ""), 0);
+        layout_until(&hub, "stage unbound", |s| rail(s)[0].is_none()).await;
+        transport(&mut a, &hub, true).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(stage_writes(&hub).await, 1);
+        assert_eq!(
+            a.get("band", "live_set tracks 1", "mute").await,
+            json!(false)
+        );
+        transport(&mut a, &hub, false).await;
+
+        // Two Tuners: red again, and a start writes nothing. The first of
+        // them may bind for a moment: count from the settled state.
+        let third = a.get("band", "live_set tracks 2", "mute").await;
+        assert_eq!(host.tuner("track", 1, "set", "+CTRL:stage"), 1);
+        assert_eq!(host.tuner("track", 2, "set", "+CTRL:stage"), 1);
+        hub.status_until(SECS_5, |s| s.layout.markers.problems.len() == 2)
+            .await;
+        layout_until(&hub, "stage unbound again", |s| rail(s)[0].is_none()).await;
+        let writes = stage_writes(&hub).await;
+        transport(&mut a, &hub, true).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(stage_writes(&hub).await, writes);
+        assert_eq!(
+            a.get("band", "live_set tracks 1", "mute").await,
+            json!(false)
+        );
+        assert_eq!(a.get("band", "live_set tracks 2", "mute").await, third);
+        hub.stop().await;
+        host.stop();
+    });
+}
