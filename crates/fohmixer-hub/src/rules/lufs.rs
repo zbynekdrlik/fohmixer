@@ -41,7 +41,8 @@
 //!   keys back to Live's own values.
 //! - **Records** (`lufs`): a key found, matched, unmatched (once per key),
 //!   two, lost; a point's problem raised (warn) or cleared; a point's state
-//!   change at most once per [`STATE_LOG_MS`]. Never one per datagram.
+//!   change at most once per [`STATE_LOG_MS`]; the meter devices' peaks of a
+//!   period (`peaks.rs`, none in silence). Never one per datagram.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -57,6 +58,8 @@ use serde_json::{Value, json};
 pub mod bound;
 #[path = "lufs/confirm.rs"]
 pub mod confirm;
+#[path = "lufs/peaks.rs"]
+pub mod peaks;
 
 pub use bound::Key;
 pub use confirm::Answer;
@@ -476,6 +479,8 @@ pub struct Lufs {
     /// When each Live's names were last read or asked for.
     names_at: BTreeMap<String, u64>,
     asks: u64,
+    /// The meter devices' peaks of the period, for the event log.
+    peaks: peaks::Peaks,
 }
 
 impl Lufs {
@@ -647,7 +652,38 @@ impl Lufs {
             acts.extend(self.ask(&key, now));
         }
         acts.extend(self.refresh(now));
+        // After the refresh: the levels this very reading made.
+        let sample = self.sample(&key, reading);
+        self.peaks.note(&key, sample, now);
         acts
+    }
+
+    /// A reading for the event log's peaks: the device's values and what
+    /// the hub sends for them on its strip now. Nothing is built: this runs
+    /// per datagram.
+    fn sample(&self, key: &Key, reading: &Reading) -> peaks::Sample {
+        let mut sample = peaks::Sample {
+            left: reading.first,
+            right: reading.second,
+            matched: false,
+            levels: None,
+            muted: false,
+        };
+        let Some(Status::Matched(instance)) = self.devices.get(key).map(|d| &d.status) else {
+            return sample;
+        };
+        sample.matched = true;
+        let track = track_and_set(&key.parents).map(|(track, _)| track);
+        let strip = self
+            .strips
+            .iter()
+            .find(|s| s.instance == *instance && s.track.as_deref() == track);
+        if let Some(strip) = strip {
+            sample.levels = peaks::at(&self.levels, instance, &strip.target).copied();
+            sample.muted = peaks::at(&self.faders, instance, &strip.target)
+                .is_some_and(|fader| fader.mute == Some(true));
+        }
+        sample
     }
 
     /// The online instances' set names (only those read).
@@ -802,7 +838,8 @@ impl Lufs {
         acts
     }
 
-    /// The router's tick: stale keys lost, the grace's problems.
+    /// The router's tick: stale keys lost, the grace's problems, the
+    /// meter devices' peaks once their period is over.
     pub fn tick(&mut self, now: u64) -> Vec<Act> {
         let stale: Vec<Key> = self
             .devices
@@ -826,6 +863,7 @@ impl Lufs {
             }
         }
         acts.extend(self.refresh(now));
+        acts.extend(self.peaks.take(now).map(Act::Log));
         acts
     }
 

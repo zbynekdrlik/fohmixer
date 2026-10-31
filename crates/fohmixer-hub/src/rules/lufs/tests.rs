@@ -1081,3 +1081,111 @@ fn a_two_in_one_live_leaves_the_other_lives_point_alone() {
     assert_eq!(sends(&acts), vec![band.clone()]);
     assert_eq!(rule.items(), vec![band, item("master", 3, None)]);
 }
+
+fn peak_lines(acts: &[Act]) -> Vec<Value> {
+    acts.iter()
+        .filter_map(|a| match a {
+            Act::Log(line) if line.fields["what"] == "meter_peak" => Some(line.fields.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_meter_devices_peak_reaches_the_log_once_a_period_at_the_tick() {
+    let mut rule = rule(vec![strip("band", 3, "Vox 1", Some(-25))]);
+    match_meter(&mut rule, 9, 0);
+    assert!(peak_lines(&rule.reading(&meter_reading(9, -120, -180), 100)).is_empty());
+    rule.reading(&meter_reading(9, -300, -90), 120);
+    assert!(peak_lines(&rule.tick(140)).is_empty());
+    // A silent last reading changes nothing.
+    rule.reading(&meter_reading(9, -700, -700), 9_950);
+    let lines = peak_lines(&rule.tick(10_000));
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["meters"][0]["device"], 9);
+    assert_eq!(lines[0]["meters"][0]["matched"], true);
+    assert_eq!(lines[0]["meters"][0]["left_db"], -12.0);
+    assert_eq!(lines[0]["meters"][0]["right_db"], -9.0);
+    assert!(peak_lines(&rule.tick(30_000)).is_empty());
+}
+
+#[test]
+fn a_meter_device_matched_to_no_strip_says_so_and_silence_logs_nothing() {
+    let mut rule = rule(vec![strip("band", 3, "Vox 1", Some(-25))]);
+    rule.reading(&meter_reading(9, -700, -700), 10);
+    assert!(peak_lines(&rule.tick(20_000)).is_empty());
+    rule.reading(&meter_reading(9, -120, -180), 20_010);
+    let lines = peak_lines(&rule.tick(30_010));
+    assert_eq!(lines[0]["meters"][0]["matched"], false);
+    assert!(lines[0]["meters"][0]["level_left"].is_null());
+    assert_eq!(lines[0]["meters"][0]["muted"], false);
+}
+
+#[test]
+fn a_lufs_devices_reading_is_no_peak() {
+    let mut rule = rule(vec![strip("band", 3, "Vox 1", Some(-25))]);
+    rule.reading(&on_vox(-120, -180), 10);
+    assert!(peak_lines(&rule.tick(20_000)).is_empty());
+}
+
+#[test]
+fn a_peak_holds_the_levels_the_hub_sent_beside_the_devices_values() {
+    let mut rule = armed();
+    let acts = rule.reading(&meter_reading(7, -60, -90), 50);
+    let sent = levels(&acts)[0].unwrap();
+    let want = fohmixer_proto::meter::post_fader(
+        -60,
+        -90,
+        fohmixer_proto::volume::volume_of(0.0),
+        0.0,
+        false,
+    );
+    assert!(close_pair(sent, want));
+    let lines = peak_lines(&rule.tick(10_025));
+    let meter = &lines[0]["meters"][0];
+    assert_eq!(meter["left_db"], -6.0);
+    assert_eq!(meter["right_db"], -9.0);
+    assert_eq!(meter["level_left"], sent.0);
+    assert_eq!(meter["level_right"], sent.1);
+    assert_eq!(meter["muted"], false);
+}
+
+#[test]
+fn a_muted_strips_peak_says_muted_with_the_device_still_loud() {
+    let mut rule = armed();
+    let mut fader = open_fader(0.0, 0.0, true);
+    fader.mute = Some(true);
+    rule.fader("band", "live_set tracks 1", fader, 45);
+    rule.reading(&meter_reading(7, -60, -90), 50);
+    let lines = peak_lines(&rule.tick(10_025));
+    let meter = &lines[0]["meters"][0];
+    assert_eq!(meter["left_db"], -6.0);
+    assert_eq!(meter["level_left"], 0.0);
+    assert_eq!(meter["level_right"], 0.0);
+    assert_eq!(meter["muted"], true);
+}
+
+#[test]
+fn a_peak_reads_its_own_strip_of_its_own_live() {
+    // The other Live's strip and the Live's other strip come first: found
+    // in place of its own, neither has a level or an open fader to read.
+    let mut rule = rule(vec![
+        strip("master", 5, "Vox 1", Some(-25)),
+        strip("band", 2, "Vox 2", Some(-25)),
+        strip("band", 1, "Vox 1", Some(-25)),
+    ]);
+    let mut muted = open_fader(0.0, 0.0, true);
+    muted.mute = Some(true);
+    rule.fader("master", "live_set tracks 5", muted, 1);
+    rule.fader("band", "live_set tracks 2", muted, 1);
+    rule.fader("band", "live_set tracks 1", open_fader(0.0, 0.0, true), 1);
+    let r = meter_reading(9, -120, -180);
+    let ask = confirms(&rule.reading(&r, 10))[0].2;
+    rule.answered(&key_of(&r), "master", ask, Answer::NotOurs, 20);
+    rule.answered(&key_of(&r), "band", ask, Answer::Ours, 20);
+    rule.reading(&r, 30);
+    let lines = peak_lines(&rule.tick(10_010));
+    let meter = &lines[0]["meters"][0];
+    assert_eq!(meter["muted"], false);
+    assert!(meter["level_left"].as_f64().is_some_and(|v| v > 0.0));
+}
