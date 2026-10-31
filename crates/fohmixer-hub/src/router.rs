@@ -1713,6 +1713,13 @@ impl Router {
             self.autotune_delivery(&item.sub, item.value, item.error);
         }
         self.songmap_delivery(songmap_items);
+        // The keeper's values before the transport: a list change and a start
+        // in one flush must find the read running, so STAGE AUT's write
+        // counts as unsure (#104).
+        let marker_actions = self
+            .markers
+            .values(marker_items.iter().map(|(k, v)| (k.as_str(), v.as_ref())));
+        self.markers_apply(marker_actions);
         for (sub, heard) in transport {
             match heard {
                 Ok(value) => self.on_transport(&sub, &value),
@@ -1720,10 +1727,6 @@ impl Router {
             }
         }
         self.unfold_apply(unfold);
-        let marker_actions = self
-            .markers
-            .values(marker_items.iter().map(|(k, v)| (k.as_str(), v.as_ref())));
-        self.markers_apply(marker_actions);
     }
 }
 

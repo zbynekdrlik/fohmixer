@@ -65,9 +65,13 @@ impl StageTarget {
 pub enum StageChange {
     /// The same target: nothing to do.
     Same,
-    /// The same `+CTRL` control in the same Live set at another index (a
-    /// track inserted or deleted above it): the target changes, the rule
-    /// keeps its state and writes nothing.
+    /// The same `+CTRL` control in the same Live set at another index: the
+    /// target changes, the rule keeps its state and writes nothing but
+    /// [`StageAut::on_moved`]. A track inserted or deleted above it, or the
+    /// tag moved to another track in one composition: [`stage_change`]
+    /// cannot tell them apart. In the second case, during a song, the new
+    /// track stays open until the next transport change and the old one
+    /// stays muted; accepted, nobody moves this tag during a song.
     Moved,
     /// Another instance or control, a new binding or a lost one: the rule
     /// starts afresh.
@@ -163,7 +167,8 @@ impl StageAut {
 
     /// The target moved: nothing to write, so a mute set by hand stays,
     /// unless the last write may have hit the old index. Then that mute,
-    /// for the moved track.
+    /// for the moved track. A read that gave up keeps the note (the places
+    /// stayed unknown): a later move rewriting the rule's mute is accepted.
     pub fn on_moved(&mut self) -> Option<bool> {
         if !std::mem::take(&mut self.unsure) || !self.on {
             return None;
