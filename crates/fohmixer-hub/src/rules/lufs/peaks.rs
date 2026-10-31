@@ -3,8 +3,11 @@
 //! prove from an event's log that its bars showed a real signal. Each
 //! `FohMixer Meter` key's loudest L and R are held over a period of
 //! [`PERIOD_MS`] that starts at the first value above silence, and given out
-//! as one `lufs` `meter_peak` record ([`peak_line`]) at the router's tick.
-//! Silence holds nothing, so an idle hub adds no line.
+//! as one `lufs` `meter_peak` record ([`peak_line`]) at the router's tick,
+//! beside the loudest levels the hub put on the strip's meter keys for them
+//! (after the fader, pan and mute) and whether the strip was muted, so the
+//! log proves the bars follow them. Silence holds nothing, so an idle hub
+//! adds no line.
 //!
 //! A value only updates the map: a key is cloned once a period, and the
 //! listener's bound keeps the keys to `bound::MAX_KEYS`.
@@ -30,46 +33,66 @@ pub fn period_over(since: u64, now: u64) -> bool {
     now.saturating_sub(since) >= PERIOD_MS
 }
 
-/// A key's loudest values of the period, in tenths of dBFS, and whether its
-/// device was matched to a strip at the latest of them (only a matched
-/// device's values reach the strip's bars).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Peak {
+/// The value of the point (`instance`, `target`) in `map`; a key of two
+/// `String`s is found without building one.
+pub fn at<'a, V>(
+    map: &'a BTreeMap<(String, String), V>,
+    instance: &str,
+    target: &str,
+) -> Option<&'a V> {
+    map.iter()
+        .find(|((i, t), _)| i == instance && t == target)
+        .map(|(_, value)| value)
+}
+
+/// Each side's louder of two levels; one known is kept.
+pub fn louder(held: Option<(f64, f64)>, new: Option<(f64, f64)>) -> Option<(f64, f64)> {
+    match (held, new) {
+        (Some(a), Some(b)) => Some((a.0.max(b.0), a.1.max(b.1))),
+        (a, b) => a.or(b),
+    }
+}
+
+/// One reading of a key, or a key's loudest of the period: the device's
+/// peaks in tenths of dBFS; whether it was matched to a strip (at the latest
+/// reading; only a matched device reaches the bars); the levels the hub sends
+/// (left, right, Live's 0..1; none: it sends none, the bars are Live's own);
+/// whether the strip was muted (at any reading of the period).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Sample {
     pub left: i16,
     pub right: i16,
     pub matched: bool,
+    pub levels: Option<(f64, f64)>,
+    pub muted: bool,
 }
 
 /// The period's peaks.
 #[derive(Debug, Default)]
 pub struct Peaks {
     since: Option<u64>,
-    held: BTreeMap<Key, Peak>,
+    held: BTreeMap<Key, Sample>,
 }
 
 impl Peaks {
     /// A reading of `key` at `now`: only a meter device's above silence
     /// counts.
-    pub fn note(&mut self, key: &Key, left: i16, right: i16, matched: bool, now: u64) {
-        if key.kind != DeviceKind::Meter || !(above_silence(left) || above_silence(right)) {
+    pub fn note(&mut self, key: &Key, sample: Sample, now: u64) {
+        let loud = above_silence(sample.left) || above_silence(sample.right);
+        if key.kind != DeviceKind::Meter || !loud {
             return;
         }
         self.since.get_or_insert(now);
         match self.held.get_mut(key) {
             Some(peak) => {
-                peak.left = peak.left.max(left);
-                peak.right = peak.right.max(right);
-                peak.matched = matched;
+                peak.left = peak.left.max(sample.left);
+                peak.right = peak.right.max(sample.right);
+                peak.matched = sample.matched;
+                peak.levels = louder(peak.levels, sample.levels);
+                peak.muted = peak.muted || sample.muted;
             }
             None => {
-                self.held.insert(
-                    key.clone(),
-                    Peak {
-                        left,
-                        right,
-                        matched,
-                    },
-                );
+                self.held.insert(key.clone(), sample);
             }
         }
     }
@@ -88,8 +111,9 @@ fn db(tenths: i16) -> f64 {
     f64::from(tenths) / 10.0
 }
 
-/// One period's record: its length and each key's peaks, in dB.
-pub fn peak_line(held: &BTreeMap<Key, Peak>, ms: u64) -> Line {
+/// One period's record: its length and, per key, the device's peaks in dB,
+/// the levels the hub sent (`null`: none) and the strip's mute.
+pub fn peak_line(held: &BTreeMap<Key, Sample>, ms: u64) -> Line {
     let meters: Vec<Value> = held
         .iter()
         .map(|(key, peak)| {
@@ -99,6 +123,9 @@ pub fn peak_line(held: &BTreeMap<Key, Peak>, ms: u64) -> Line {
                 "matched": peak.matched,
                 "left_db": db(peak.left),
                 "right_db": db(peak.right),
+                "level_left": peak.levels.map(|levels| levels.0),
+                "level_right": peak.levels.map(|levels| levels.1),
+                "muted": peak.muted,
             })
         })
         .collect();

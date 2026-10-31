@@ -651,14 +651,39 @@ impl Lufs {
         if ask {
             acts.extend(self.ask(&key, now));
         }
-        let matched = self
-            .devices
-            .get(&key)
-            .is_some_and(|d| matches!(d.status, Status::Matched(_)));
-        self.peaks
-            .note(&key, reading.first, reading.second, matched, now);
         acts.extend(self.refresh(now));
+        // After the refresh: the levels this very reading made.
+        let sample = self.sample(&key, reading);
+        self.peaks.note(&key, sample, now);
         acts
+    }
+
+    /// A reading for the event log's peaks: the device's values and what
+    /// the hub sends for them on its strip now. Nothing is built: this runs
+    /// per datagram.
+    fn sample(&self, key: &Key, reading: &Reading) -> peaks::Sample {
+        let mut sample = peaks::Sample {
+            left: reading.first,
+            right: reading.second,
+            matched: false,
+            levels: None,
+            muted: false,
+        };
+        let Some(Status::Matched(instance)) = self.devices.get(key).map(|d| &d.status) else {
+            return sample;
+        };
+        sample.matched = true;
+        let track = track_and_set(&key.parents).map(|(track, _)| track);
+        let strip = self
+            .strips
+            .iter()
+            .find(|s| s.instance == *instance && s.track.as_deref() == track);
+        if let Some(strip) = strip {
+            sample.levels = peaks::at(&self.levels, instance, &strip.target).copied();
+            sample.muted = peaks::at(&self.faders, instance, &strip.target)
+                .is_some_and(|fader| fader.mute == Some(true));
+        }
+        sample
     }
 
     /// The online instances' set names (only those read).
