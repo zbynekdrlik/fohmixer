@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>REC dohľad</title>
+<style>
+/* The app's fonts, by relative path (.claude/rules/public-repo-hygiene.md). */
+@font-face { font-family: "Barlow Condensed"; font-weight: 700; font-display: block; src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 600; font-display: block; src: url("../../crates/fohmixer-ui/fonts/barlow-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-weight: 500; font-display: block; src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2"); }
+:root { --bg:#0a0b10; --bar:#14141e; --panel:#181824; --line:#2a2a3a; --text:#e2e2ec; --dim:#8a8a9c; --faint:#5e5e72; --sel:#1d1f33; --teal:#2fc79a; --gold:#e0b84a; --red:#e0404c; --mut:#a8474f; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 16px; background: #05050a; color: var(--text); font: 600 15px/1.45 "Barlow", sans-serif; }
+h1 { font: 700 26px/1.1 "Barlow Condensed", sans-serif; letter-spacing: .04em; margin: 0 0 6px; }
+h2 { font: 700 20px/1.2 "Barlow Condensed", sans-serif; letter-spacing: .03em; margin: 28px 0 4px; }
+p { margin: 4px 0 10px; color: var(--dim); max-width: 74ch; }
+.scroll { overflow-x: auto; padding-bottom: 6px; }
+.ipad { width: 1194px; height: 560px; background: var(--bg); display: grid; grid-template-columns: 1fr 132px 1fr; gap: 6px; padding: 6px; border: 2px solid #333; border-radius: 14px; }
+.half { display: flex; gap: 4px; min-width: 0; }
+.strip { position: relative; flex: 1 1 0; width: var(--w, auto); min-width: 0; background: var(--panel); border-radius: 8px; display: flex; flex-direction: column; overflow: hidden; }
+.strip.fixed { flex: none; height: 300px; }
+.name { margin: 0; height: 37px; background: #15151f; border-bottom: 1px solid var(--line); padding: 3px 3px 3px 7px; display: flex; flex-direction: column; border-left: 3px solid var(--c, #73738a); }
+.name b { font: 700 15px/20px "Barlow Condensed", sans-serif; letter-spacing: .03em; text-align: center; white-space: nowrap; overflow: hidden; }
+.marks { display: flex; align-items: center; gap: 3px; height: 10px; font: 800 7px/10px "Barlow", sans-serif; color: var(--faint); white-space: nowrap; overflow: hidden; }
+.mk-arm { display: inline-flex; align-items: center; gap: 2px; color: #b98a8e; }
+.mk-arm i { width: 6px; height: 6px; border-radius: 50%; border: 1px solid #b98a8e; }
+.rec .mk-arm { color: var(--red); }
+.rec .mk-arm i { background: var(--red); border-color: var(--red); }
+.muted-mk { margin-left: auto; color: var(--mut); }
+.readout { height: 20px; font: 500 11px/20px "JetBrains Mono", monospace; text-align: center; color: var(--dim); }
+.zone { position: relative; flex: 1; }
+.track { position: absolute; right: 19px; top: 8px; bottom: 10px; width: 12px; background: #0c0c13; border-radius: 3px; }
+.cap { position: absolute; right: 8px; width: 34px; height: 46px; top: var(--y, 30%); background: #33354a; border-radius: 6px; }
+.sel { position: absolute; left: 2px; bottom: 2px; width: 33px; height: 34px; background: #1f1f2e; border: 1px solid var(--line); border-radius: 6px; display: grid; place-items: center; font: 700 12px/1 "Barlow Condensed", sans-serif; color: var(--dim); }
+.sel.dot::after { content: ""; position: absolute; top: 3px; right: 3px; width: 7px; height: 7px; border-radius: 50%; border: 1px solid #b98a8e; }
+.rec .sel.dot::after { background: var(--red); border-color: var(--red); }
+.is-muted .name b { color: #55556e; }
+.is-muted .cap, .is-muted .track { opacity: .4; }
+.column { background: var(--bar); border: 1px solid var(--line); border-radius: 12px; padding: 8px 6px; display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.column.solo { width: 132px; flex: none; height: 250px; }
+.tab { text-align: center; font: 700 19px/1.05 "Barlow Condensed", sans-serif; letter-spacing: .08em; padding: 6px 3px; background: var(--sel); border-radius: 7px; border-bottom: 2px solid var(--teal); }
+.btn { background: var(--panel); border-radius: 9px; padding: 10px 8px; font: 600 12px "Barlow", sans-serif; color: var(--dim); }
+.grow { flex: 1; }
+.recbox { border-radius: 9px; padding: 8px 8px 7px; background: var(--panel); border: 1px solid var(--line); display: grid; gap: 2px; }
+.recbox .top { display: flex; align-items: center; gap: 6px; font: 700 18px/1 "Barlow Condensed", sans-serif; letter-spacing: .06em; color: var(--dim); }
+.recbox .top i { width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; flex: none; }
+.recbox .sub { font: 600 11px/14px "Barlow", sans-serif; color: var(--faint); }
+.recbox.ready .top { color: #d98a90; }
+.recbox.on { background: var(--red); border-color: var(--red); }
+.recbox.on .top, .recbox.on .sub { color: #fff; }
+.recbox.on .top i { background: #fff; border-color: #fff; }
+.recbox.warn { background: #3a2d0c; border-color: var(--gold); }
+.recbox.warn .top, .recbox.warn .sub { color: var(--gold); }
+.states { display: flex; flex-wrap: wrap; gap: 14px; }
+.state { width: 196px; }
+.state .cap2 { font: 600 13px/1.35 "Barlow", sans-serif; color: var(--dim); margin-top: 6px; }
+.strips { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
+.detail { width: 1194px; height: 330px; background: var(--bg); border: 2px solid #333; border-radius: 14px; padding: 6px; display: grid; grid-template-columns: 300px 1fr 300px; gap: 6px; }
+.box { background: var(--panel); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 8px; min-width: 0; color: var(--faint); }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.big { height: 58px; border-radius: 9px; background: #15151f; border: 1px solid var(--line); display: grid; place-items: center; font: 700 19px/1 "Barlow Condensed", sans-serif; letter-spacing: .06em; color: var(--text); }
+.big small { display: block; font: 600 10px/1.2 "Barlow", sans-serif; letter-spacing: 0; color: var(--dim); text-align: center; margin-top: 3px; }
+.big.armed { border-color: #b98a8e; color: #e7a9ae; }
+.big.armed.live { background: var(--red); border-color: var(--red); color: #fff; }
+.big.armed.live small { color: #fff; }
+ul { margin: 6px 0; padding-left: 20px; color: var(--dim); max-width: 74ch; }
+.tag { display: inline-block; background: #2a2a3a; color: var(--text); padding: 1px 6px; border-radius: 4px; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>REC dohľad: čo sa nahráva</h1>
+<p>Vymyslené názvy, len ukážka. Plocha iPadu 1194 široká, výška skrátená. Sleduje sa Live <span class="tag">band</span>, tam sa nahráva.</p>
+
+<h2>1 · Počas nahrávania</h2>
+<p>Hore v stĺpci je stav nahrávania. Na páse je značka <span class="tag">ARM</span>: tlmená, kým Live nenahráva, červená, keď nahráva. Vox 4 nemá ARM, takže hneď vidno, že chýba.</p>
+<div class="scroll"><div class="ipad">
+  <div class="half" id="left"></div>
+  <div class="column">
+    <div class="tab">FOH</div>
+    <div class="recbox on"><div class="top"><i></i>REC</div><div class="sub">recording · 3 ARM</div></div>
+    <div class="btn">STAGE</div><div class="btn">REVERB</div><div class="btn">AUTOTUNE</div><div class="grow"></div>
+  </div>
+  <div class="half" id="right"></div>
+</div></div>
+
+<h2>2 · REC v stĺpci, všetky stavy</h2>
+<p>Pokoj je tmavý. Svieti len skutočné nahrávanie (červená) a chyba (žltá). Podržanie 1 s zapne alebo vypne veľké červené koliesko v Live, ako pri STAGE AUTO. Ťuknutie nerobí nič, aby sa nedalo trafiť omylom.</p>
+<div class="states" id="states"></div>
+
+<h2>3 · Značka na páse, vyber A alebo B</h2>
+<p><b>A (odporúčam):</b> slovo ARM v riadku pod menom, vedľa MUTED. <b>B:</b> len bodka v rohu SEL. Vľavo šírka 83 px ako na iPade, vpravo 64 px ako na telefóne. Pás sa nezväčšuje, fader nestráca výšku. Pri 64 px a plnom riadku ostane z A len bodka.</p>
+<div class="strips" id="marks"></div>
+
+<h2>4 · ARM v detaile (podržaný SEL)</h2>
+<p>Vedľa MUTE pribudne ARM. Zapnutie jedným ťuknutím, aby sa zabudnutá stopa dala rýchlo opraviť. Vypnutie podržaním 1 s, lebo počas nahrávania by to stopu ukončilo. Skupinové stopy a returny sa armovať nedajú, tam ARM nebude.</p>
+<div class="scroll"><div class="detail">
+  <div class="box"><div class="pair"><div class="big">MUTE</div><div class="big armed live">● ARM<small>recording · hold: off</small></div></div><div>−6.0 dB, fader</div></div>
+  <div class="box">Pro-Q 4</div>
+  <div class="box">PAN · LAYOUTS · COLOR</div>
+</div></div>
+<div class="pair" style="max-width:420px;margin-top:10px">
+  <div class="big armed">○ ARM<small>armed · hold: off</small></div>
+  <div class="big">ARM<small>tap: on</small></div>
+</div>
+
+<script>
+const mk = (o) => {
+  const armOn = o.arm ? (o.v === 'B' ? '' : '<span class="mk-arm"><i></i>' + (o.w === 64 && o.chain ? '' : 'ARM') + '</span>') : '';
+  const muted = o.muted ? '<span class="muted-mk">MUTED</span>' : '';
+  const chain = o.chain ? '<span>⛓3</span>' : '';
+  return `<div class="strip ${o.rec ? 'rec' : ''} ${o.muted ? 'is-muted' : ''} ${o.w ? 'fixed' : ''}" style="${o.w ? '--w:' + o.w + 'px;width:' + o.w + 'px' : ''}">
+    <div class="name" style="--c:${o.c || '#73738a'}"><b>${o.n}</b><div class="marks">${armOn}${chain}${muted}</div></div>
+    <div class="readout">${o.db || '−3.2'}</div>
+    <div class="zone"><div class="track"></div><div class="cap" style="--y:${o.y || 28}%"></div><div class="sel ${o.arm && o.v === 'B' ? 'dot' : ''}">SEL</div></div></div>`;
+};
+const L = [{n:'Vox 1',arm:1,rec:1,c:'#c77d4a'},{n:'Vox 2',arm:1,rec:1,c:'#c77d4a',y:36},{n:'Vox 3',arm:1,rec:1,c:'#c77d4a',y:24},{n:'Vox 4',c:'#c77d4a',y:40},{n:'Klavir',c:'#4a8fc7'},{n:'Gitara',c:'#4a8fc7',y:34}];
+const R = [{n:'Bass',c:'#4ac7a0'},{n:'Drums',c:'#4ac7a0',y:33},{n:'Backing',y:25},{n:'Host',muted:1,y:50},{n:'REVERB',y:30},{n:'PA',y:22}];
+document.getElementById('left').innerHTML = L.map(mk).join('');
+document.getElementById('right').innerHTML = R.map(mk).join('');
+const S = [
+  ['', 'REC', 'off · 0 ARM', 'Nič nie je pripravené.'],
+  ['ready', 'REC', 'ready · 3 ARM', 'Koliesko zapnuté, Live stojí. PLAY spustí nahrávanie.'],
+  ['on', 'REC', 'recording · 3 ARM', 'Live hrá a nahráva.'],
+  ['warn', 'NOT REC', 'playing · 3 ARM', 'Stopy sú armnuté, Live hrá, ale koliesko je vypnuté. Toto je zabudnuté nahrávanie.'],
+  ['warn', 'NO ARM', 'recording · 0 ARM', 'Koliesko zapnuté, Live hrá, ale žiadna stopa sa nenahráva.'],
+  ['', 'REC', 'off · 3 ARM', 'Stopy armnuté, Live stojí, koliesko vypnuté.'],
+];
+document.getElementById('states').innerHTML = S.map(([c, t, s, n]) => `<div class="state"><div class="recbox ${c}"><div class="top"><i></i>${t}</div><div class="sub">${s}</div></div><div class="cap2">${n}</div></div>`).join('');
+const M = [];
+for (const v of ['A', 'B']) for (const w of [83, 64]) M.push(
+  {n:'Vox 1',arm:1,v,w},{n:'Vox 1',arm:1,rec:1,v,w},{n:'Vox 1',arm:1,rec:1,muted:1,v,w},{n:'Vox 1',arm:1,rec:1,chain:1,muted:1,v,w});
+document.getElementById('marks').innerHTML = M.map(mk).join('');
+</script>
+</body>
+</html>
