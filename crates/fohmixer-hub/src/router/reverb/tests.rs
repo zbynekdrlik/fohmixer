@@ -651,7 +651,7 @@ async fn a_reconnects_values_are_judged_once_its_window_ends() {
 }
 
 /// Live's push of `value` under its listener key `key`.
-fn pushed(key: &str, value: Value) -> LiveValue {
+pub(in crate::router) fn pushed(key: &str, value: Value) -> LiveValue {
     LiveValue {
         key: key.into(),
         value,

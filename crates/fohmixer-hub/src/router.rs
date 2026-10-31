@@ -94,6 +94,9 @@ mod sectors;
 mod colors;
 #[path = "router/songmap.rs"]
 mod songmap;
+#[cfg(test)]
+#[path = "router/stage_tests.rs"]
+mod stage_tests;
 mod unfold;
 
 pub use lufs::LUFS_TICK;
