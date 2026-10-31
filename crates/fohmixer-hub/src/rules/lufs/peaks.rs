@@ -57,7 +57,8 @@ pub fn louder(held: Option<(f64, f64)>, new: Option<(f64, f64)>) -> Option<(f64,
 /// peaks in tenths of dBFS; whether it was matched to a strip (at the latest
 /// reading; only a matched device reaches the bars); the levels the hub sends
 /// (left, right, Live's 0..1; none: it sends none, the bars are Live's own);
-/// whether the strip was muted (at any reading of the period).
+/// whether the strip was muted (at any reading above silence of the period:
+/// with levels above 0 beside it, the mute covered only a part).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sample {
     pub left: i16,

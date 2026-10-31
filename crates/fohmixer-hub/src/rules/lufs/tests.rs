@@ -1167,15 +1167,16 @@ fn a_muted_strips_peak_says_muted_with_the_device_still_loud() {
 
 #[test]
 fn a_peak_reads_its_own_strip_of_its_own_live() {
-    // The other Live's strip and the Live's other strip come first, muted.
+    // The other Live's strip and the Live's other strip come first: found
+    // in place of its own, neither has a level or an open fader to read.
     let mut rule = rule(vec![
-        strip("master", 1, "Vox 1", Some(-25)),
+        strip("master", 5, "Vox 1", Some(-25)),
         strip("band", 2, "Vox 2", Some(-25)),
         strip("band", 1, "Vox 1", Some(-25)),
     ]);
     let mut muted = open_fader(0.0, 0.0, true);
     muted.mute = Some(true);
-    rule.fader("master", "live_set tracks 1", muted, 1);
+    rule.fader("master", "live_set tracks 5", muted, 1);
     rule.fader("band", "live_set tracks 2", muted, 1);
     rule.fader("band", "live_set tracks 1", open_fader(0.0, 0.0, true), 1);
     let r = meter_reading(9, -120, -180);
