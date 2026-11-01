@@ -104,6 +104,7 @@ fn the_watch_follows_a_recording_to_its_stop_and_logs_why() {
                     r["ev"] == "rec" && r["why"] == "transport" && r["prev"] == "recording"
                 })
             })
+            .await
             .into_iter()
             .filter(|r| r["ev"] == "rec");
         let steps: Vec<(String, String)> = logged
@@ -203,6 +204,7 @@ fn a_lost_live_forgets_the_state_and_logs_it() {
                 all.iter()
                     .any(|r| r["ev"] == "rec" && r["why"] == "offline")
             })
+            .await
             .into_iter()
             .rfind(|r| r["ev"] == "rec")
             .expect("the record");
