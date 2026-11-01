@@ -62,3 +62,7 @@ paths:
 ## Trunk
 
 WebKit warns ("preloaded using link preload but not used within a few seconds") about Trunk's default `<link rel="preload">` of the WASM, which fails every iPad test on the console guard. `Trunk.toml` sets `pattern_preload` to a `modulepreload` of the JS only; the `wasm` CI job checks the built `index.html` has no WASM preload.
+
+## A live check walks every state of the mockup's captions (#172)
+
+A green E2E proves the states the spec named; the mockup's captions are what the owner approved. On the deployed page, drive each caption's state and compare the look. A hold or tap whose log says it worked but whose key does not change is a bug, not a timing issue: 1.33.0's foot `REC` showed `ready` from armed tracks while stopped, so holding it changed Live's record button and nothing on the surface (1.33.1 reads the button).
