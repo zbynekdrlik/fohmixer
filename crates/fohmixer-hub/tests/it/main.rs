@@ -30,6 +30,7 @@ mod markers;
 mod names;
 mod pin_cli;
 mod ping;
+mod rec;
 mod remote;
 mod reverb;
 mod sectors;

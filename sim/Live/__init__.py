@@ -701,14 +701,23 @@ def _monitoring(track, value):
     raise TypeError(_SIGNATURE_ERROR)
 
 
+def _arm(obj, value):
+    if not obj._v["can_be_armed"]:
+        raise RuntimeError("Track cannot be armed")
+    return _bool(obj, value)
+
+
 class _TrackClass(_LiveObject):
     name = _Prop(coerce=_str)
     color = _Prop(coerce=_int)
     mute = _Prop(coerce=_bool)
     solo = _Prop(coerce=_bool)
     # arm (#151 Task 13): the hub follows it on a LUFS input point (Live
-    # meters an armed track's input).
-    arm = _Prop(coerce=_bool)
+    # meters an armed track's input), and on every armable track for the
+    # recording watch (#172). Only `can_be_armed` tracks take a write: Live
+    # has no arm on a group, a return or the main track.
+    arm = _Prop(coerce=_arm)
+    can_be_armed = _Prop(readonly=True, observable=False)
     current_monitoring_state = _Prop(coerce=_monitoring)
     output_meter_left = _Prop(readonly=True)
     output_meter_right = _Prop(readonly=True)
@@ -733,6 +742,7 @@ class _TrackClass(_LiveObject):
             mute=False,
             solo=False,
             arm=False,
+            can_be_armed=not foldable,
             fold_state=0,
             current_monitoring_state=_MonitoringStates.AUTO,
             output_meter_left=0.0,
@@ -823,6 +833,9 @@ def _root_note(song, value):
 
 class _SongClass(_LiveObject):
     is_playing = _Prop(coerce=_bool)
+    # record_mode (#172): Live's arrangement record button, the recording
+    # watch's second input.
+    record_mode = _Prop(coerce=_bool)
     tempo = _Prop(coerce=_tempo)
     name = _Prop(readonly=True, observable=False)
     # #140 PR 2: the playhead (beats; a set is a jump, the host's song clock
@@ -838,6 +851,7 @@ class _SongClass(_LiveObject):
         super().__init__()
         self._v.update(
             is_playing=False,
+            record_mode=False,
             tempo=120.0,
             name=name,
             current_song_time=0.0,

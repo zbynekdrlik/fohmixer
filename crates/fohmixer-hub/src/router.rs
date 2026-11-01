@@ -84,6 +84,8 @@ mod lufs;
 mod markers;
 #[path = "router/markers_io.rs"]
 mod markers_io;
+#[path = "router/rec.rs"]
+mod rec;
 mod retries;
 #[path = "router/reverb.rs"]
 mod reverb;
@@ -461,6 +463,15 @@ pub enum RouterMsg {
         instance: String,
         read_no: u64,
     },
+    /// The recording watch's `can_be_armed` reads ended (#172).
+    RecRead {
+        read: u64,
+        outcome: Result<Vec<Value>, String>,
+    },
+    /// A failed `can_be_armed` read is due again (#172).
+    RecRetry {
+        read: u64,
+    },
     /// A LUFS device's reading the listener took (#151, `lufs_udp.rs`).
     Lufs {
         reading: fohmixer_proto::lufs::wire::Reading,
@@ -612,6 +623,8 @@ pub struct Router {
     songmap: songmap::SongMapIo,
     /// LUFS (#151): the rule, the points, their faders, the set names.
     lufs: lufs::LufsIo,
+    /// The recording watch (#172).
+    rec: rec::RecIo,
     /// The fader sectors (#148): `sectors.json`.
     sectors: sectors::SectorsIo,
     /// The strips' colours (#164): `colors.json`.
@@ -726,6 +739,7 @@ impl Router {
             autotune: autotune::AutotuneIo::new(state.autotune_aut, state.autotune_off.clone()),
             songmap: songmap::SongMapIo::default(),
             lufs: lufs::LufsIo::default(),
+            rec: rec::RecIo::default(),
             sectors,
             colors,
             state,
@@ -794,6 +808,7 @@ impl Router {
                 self.reverb_attach(&outbox);
                 self.autotune_attach(&outbox);
                 self.lufs_attach(&outbox);
+                self.rec_attach(&outbox);
                 self.links_attach(&outbox);
                 self.sectors_attach(&outbox);
                 self.colors_attach(&outbox);
@@ -1004,6 +1019,7 @@ impl Router {
                                 autotune::AUTOTUNE_CLIENT,
                                 songmap::SONGMAP_CLIENT,
                                 lufs::LEVELS_CLIENT,
+                                rec::REC_CLIENT,
                             ];
                             (n.clone(), self.subs.subscriptions_besides(n, &own))
                         })
@@ -1020,6 +1036,7 @@ impl Router {
                                 autotune::AUTOTUNE_CLIENT,
                                 songmap::SONGMAP_CLIENT,
                                 lufs::LEVELS_CLIENT,
+                                rec::REC_CLIENT,
                             ];
                             (n.clone(), self.subs.listeners_besides(n, &own))
                         })
@@ -1168,6 +1185,8 @@ impl Router {
                 let _ = reply.send(self.songmap_report(&instance));
             }
             RouterMsg::SongMapRetry { instance, read_no } => self.songmap_retry(&instance, read_no),
+            RouterMsg::RecRead { read, outcome } => self.rec_read_done(read, outcome),
+            RouterMsg::RecRetry { read } => self.rec_retry(read),
             RouterMsg::Lufs { reading } => self.lufs_reading(&reading),
             RouterMsg::LufsTick => self.lufs_tick(),
             RouterMsg::LufsConfirmed {
@@ -1265,6 +1284,7 @@ impl Router {
                 self.autotune_offline(instance);
                 self.songmap_offline(instance);
                 self.lufs_offline(instance);
+                self.rec_offline(instance);
                 self.broadcast_instance(instance);
             }
             LiveEvent::Busy {
@@ -1460,6 +1480,7 @@ impl Router {
         self.reverb_transport(&instance, playing);
         self.autotune_transport(&instance, playing);
         self.songmap_transport(&instance, prev);
+        self.rec_transport(&instance, Some(playing));
     }
 
     /// The rules' transport subscription of the hub key `sub` failed: the
@@ -1477,6 +1498,7 @@ impl Router {
             .record("transport", json!({"instance": instance, "error": error}));
         self.reverb_transport_lost(&instance);
         self.autotune_transport_lost(&instance);
+        self.rec_transport(&instance, None);
     }
 
     /// A transport value for STAGE AUT.
@@ -1656,6 +1678,7 @@ impl Router {
         let mut autotune_items: Vec<ValueItem> = Vec::new();
         let mut songmap_items: Vec<ValueItem> = Vec::new();
         let mut lufs_items: Vec<ValueItem> = Vec::new();
+        let mut rec_items: Vec<ValueItem> = Vec::new();
         for (client, item) in self.subs.take_deliveries() {
             if client == RULES_CLIENT {
                 if let Some(heard) = transport_heard(item.value, item.error) {
@@ -1686,6 +1709,8 @@ impl Router {
                 songmap_items.push(item);
             } else if client == lufs::LEVELS_CLIENT {
                 lufs_items.push(item);
+            } else if client == rec::REC_CLIENT {
+                rec_items.push(item);
             } else if let Some(outbox) = self.clients.get(&client) {
                 // A meter key that carries a point's levels (#151 §3.4)
                 // never gets Live's own value.
@@ -1705,6 +1730,10 @@ impl Router {
         // output points' faders.
         if lists_heard {
             self.lufs_lists();
+            self.rec_lists();
+        }
+        for item in rec_items {
+            self.rec_value(&item.sub, item.value.as_ref(), item.error.as_deref());
         }
         for item in lufs_items {
             self.lufs_value(&item.sub, item.value);
@@ -2793,6 +2822,7 @@ mod tests {
             vec![
                 ServerMsg::Reverb(router.reverb.rule.state()),
                 ServerMsg::Autotune(router.autotune.state()),
+                ServerMsg::Rec(fohmixer_proto::client::RecState::default()),
                 ServerMsg::Sectors {
                     doc: fohmixer_proto::sectors::SectorsDoc::empty(),
                 },

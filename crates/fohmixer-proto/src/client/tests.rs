@@ -1977,3 +1977,59 @@ fn the_colors_status_reads_as_written_and_defaults_for_an_older_hub() {
         json!({"strips": 0, "unknown": 0})
     );
 }
+
+#[test]
+fn the_recording_watch_says_each_state() {
+    let cases = [
+        (false, false, 0, RecWatch::Off, "off"),
+        (false, true, 0, RecWatch::Off, "off"),
+        (true, false, 0, RecWatch::Off, "off"),
+        (false, false, 1, RecWatch::Ready, "ready"),
+        (false, true, 2, RecWatch::Ready, "ready"),
+        (true, true, 1, RecWatch::Recording, "recording"),
+        (true, false, 1, RecWatch::NotRec, "not_rec"),
+        (true, true, 0, RecWatch::NoArm, "no_arm"),
+    ];
+    for (playing, record, armed, watch, name) in cases {
+        assert_eq!(RecWatch::of(playing, record, armed), watch);
+        assert_eq!(watch.name(), name);
+    }
+}
+
+#[test]
+fn the_recording_state_counts_its_armed_tracks_and_says_its_watch() {
+    let track = |index, arm| RecTrack {
+        index,
+        name: format!("Vox {index}"),
+        arm,
+    };
+    let state = RecState {
+        playing: Some(true),
+        record_mode: Some(true),
+        tracks: vec![track(1, true), track(2, false), track(4, true)],
+    };
+    assert_eq!(state.armed(), 2);
+    assert_eq!(state.watch(), RecWatch::Recording);
+    round_trip_server(
+        ServerMsg::Rec(state.clone()),
+        json!({"type": "rec", "playing": true, "record_mode": true, "tracks": [
+            {"index": 1, "name": "Vox 1", "arm": true},
+            {"index": 2, "name": "Vox 2", "arm": false},
+            {"index": 4, "name": "Vox 4", "arm": true},
+        ]}),
+    );
+    // Nothing heard: no state but off, playing unknown is not playing.
+    assert_eq!(RecState::default().watch(), RecWatch::Off);
+    let unheard = RecState {
+        playing: None,
+        record_mode: Some(true),
+        tracks: state.tracks.clone(),
+    };
+    assert_eq!(unheard.watch(), RecWatch::Ready);
+    let unheard = RecState {
+        playing: Some(true),
+        record_mode: None,
+        tracks: state.tracks,
+    };
+    assert_eq!(unheard.watch(), RecWatch::NotRec);
+}

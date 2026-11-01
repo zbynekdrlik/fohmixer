@@ -221,6 +221,7 @@ pub fn is_warn(record: &Value) -> bool {
                 | "transport"
                 | "stage_aut"
                 | "reverb"
+                | "rec"
                 | "fader_link"
                 | "autotune"
                 | "sectors"
