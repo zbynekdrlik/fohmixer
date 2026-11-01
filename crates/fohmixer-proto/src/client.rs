@@ -1618,6 +1618,10 @@ pub struct LufsItem {
     pub instance: String,
     pub target: String,
     pub tenths: Option<i16>,
+    /// An input point's `V`, the reading that skips pauses, in tenths: the
+    /// spring's (mockup v13). None on an output point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<i16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub problem: Option<LufsProblem>,
 }

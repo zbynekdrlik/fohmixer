@@ -205,10 +205,17 @@ fn a_track_list_change_never_shows_a_false_state() {
         client.instance_state("band", true, None, SECS_5).await;
         rec_until(&mut client, |s| s.tracks.len() == ARMABLE).await;
         client.set("band", TRACK, "arm", json!(true)).await;
-        rec_until(&mut client, |s| s.armed() == 1).await;
+        client
+            .set("band", "live_set", "record_mode", json!(true))
+            .await;
+        rec_until(&mut client, |s| {
+            s.armed() == 1 && s.watch() == RecWatch::Ready
+        })
+        .await;
         client.clear();
 
-        // Every state told through the change holds the one armed track.
+        // Every state told through the change holds the one armed track and
+        // stays Ready.
         assert!(host.delete_track(0) >= 0);
         let deadline = std::time::Instant::now() + SECS_5;
         loop {
@@ -216,6 +223,7 @@ fn a_track_list_change_never_shows_a_false_state() {
             let msg = client.next_message(left).await.expect("the new list");
             if let ServerMsg::Rec(s) = msg {
                 assert_eq!(s.armed(), 1, "{s:?}");
+                assert_eq!(s.watch(), RecWatch::Ready, "{s:?}");
                 if s.tracks.len() == ARMABLE - 1 {
                     break;
                 }
@@ -225,8 +233,8 @@ fn a_track_list_change_never_shows_a_false_state() {
         let all = records(&hub);
         assert!(
             !all.iter()
-                .skip_while(|r| r["armed"] != json!(1))
-                .any(|r| r["armed"] != json!(1)),
+                .skip_while(|r| r["state"] != "ready")
+                .any(|r| r["armed"] != json!(1) || r["state"] != "ready"),
             "{all:?}"
         );
 

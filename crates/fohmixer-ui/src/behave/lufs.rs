@@ -5,11 +5,15 @@
 //! `fohmixer_proto::lufs` decisions, never re-derived here. Silence shows
 //! `−∞` with its caption; no reading, a problem or a strip without `+LUFS`
 //! show nothing at all: no number, no caption (the row keeps its height in
-//! the stylesheet).
+//! the stylesheet). An input point also has its spring (`spring`, mockup
+//! v13): the pause-skipping `V` on the meter's scale.
 
 use fohmixer_proto::layout::{Binding, LufsKind, LufsSpec, Strip};
-use fohmixer_proto::lufs::{LufsProblem, LufsState, caption, judge, text};
+use fohmixer_proto::lufs::{LufsProblem, LufsState, caption, in_band, judge, text};
 use fohmixer_proto::path::canonical_target;
+
+use super::fader::VolumeLaw;
+use super::scale::tick_pos;
 
 /// The key the hub sends a strip's reading under (`LufsItem`'s instance
 /// and target): the strip's instance and its track's target in canonical
@@ -78,6 +82,80 @@ pub fn look(tenths: Option<i16>, problem: Option<LufsProblem>, spec: Option<Lufs
         caption: tenths.map(|_| caption(spec.kind())),
         problem: problem.map(LufsProblem::text),
     }
+}
+
+/// The spring's coil in its `0 0 6 100` box (mockup v13): stretched by its
+/// height, it keeps its turns.
+pub const COIL: &str = "3,0 6,5 0,15 6,25 0,35 6,45 0,55 6,65 0,75 6,85 3,100";
+
+/// The spring's body (mockup v13): from the target to the reading.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpringBody {
+    /// The reading's line, percent from the zone's top.
+    pub now: f64,
+    /// The coil's top and height, percent of the zone.
+    pub top: f64,
+    pub height: f64,
+    /// Inside the target's band: green.
+    pub in_band: bool,
+}
+
+/// An input point's spring on the meter's own scale.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpringLook {
+    /// The target's line, percent from the zone's top.
+    pub goal: f64,
+    /// None in silence: the target's line alone.
+    pub body: Option<SpringBody>,
+}
+
+impl SpringLook {
+    /// `data-l`: `in`, `off`, `silent` without a body.
+    pub fn state(&self) -> &'static str {
+        match self.body {
+            Some(b) if b.in_band => "in",
+            Some(_) => "off",
+            None => "silent",
+        }
+    }
+
+    /// The stylesheet's positions.
+    pub fn vars(&self) -> String {
+        let body = self.body.unwrap_or(SpringBody {
+            now: self.goal,
+            top: self.goal,
+            height: 0.0,
+            in_band: false,
+        });
+        format!(
+            "--goal:{:.3}%;--now:{:.3}%;--top:{:.3}%;--h:{:.3}%;",
+            self.goal, body.now, body.top, body.height
+        )
+    }
+}
+
+/// Percent from the zone's top of `tenths` LU read on the dB scale.
+fn top_of(tenths: i16, law: VolumeLaw) -> f64 {
+    (1.0 - tick_pos(law, f64::from(tenths) / 10.0)) * 100.0
+}
+
+/// The spring of a point with `spec` and the hub's `voice` (`V`): none
+/// without a target or a value (mockup v13, the owner's sketch: a line at
+/// the target, a spring to a line at the reading; the number stays `S`).
+pub fn spring(voice: Option<i16>, spec: Option<LufsSpec>, law: VolumeLaw) -> Option<SpringLook> {
+    let target = spec?.target?;
+    let voice = voice?;
+    let goal = top_of(i16::from(target) * 10, law);
+    let body = (judge(Some(voice), Some(target)) != LufsState::Silent).then(|| {
+        let now = top_of(voice, law);
+        SpringBody {
+            now,
+            top: goal.min(now),
+            height: (now - goal).abs(),
+            in_band: in_band(voice, target),
+        }
+    });
+    Some(SpringLook { goal, body })
 }
 
 /// A character's block in the reading (#151, the owner's ruling of 29.10,
@@ -269,6 +347,81 @@ mod tests {
         assert_eq!(before.len(), after.len());
         assert_eq!(after[1], ('2', "g"));
         assert_eq!(after[2], ('4', "g"));
+    }
+
+    const LAW: VolumeLaw = VolumeLaw::Live;
+
+    #[test]
+    fn the_spring_stands_on_the_meters_own_scale() {
+        let at = |db: f64| (1.0 - tick_pos(LAW, db)) * 100.0;
+        let quiet = spring(Some(-340), IN, LAW).expect("a spring");
+        assert!((quiet.goal - at(-25.0)).abs() < 1e-9);
+        let body = quiet.body.expect("a body");
+        assert!((body.now - at(-34.0)).abs() < 1e-9);
+        // Quieter: from the target's line down to the reading's.
+        assert!(body.now > quiet.goal);
+        assert!((body.top - quiet.goal).abs() < 1e-9);
+        assert!((body.height - (body.now - quiet.goal)).abs() < 1e-9);
+        // Louder: from the reading's line down to the target's.
+        let loud = spring(Some(-180), IN, LAW).expect("a spring");
+        let body = loud.body.expect("a body");
+        assert!(body.now < loud.goal);
+        assert!((body.top - body.now).abs() < 1e-9);
+        assert!((body.height - (loud.goal - body.now)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_spring_is_green_only_in_the_band() {
+        let state = |v: i16| spring(Some(v), IN, LAW).expect("a spring").state();
+        assert_eq!(state(-240), "in");
+        assert_eq!(state(-260), "in");
+        assert_eq!(state(-239), "off");
+        assert_eq!(state(-261), "off");
+    }
+
+    #[test]
+    fn silence_leaves_the_targets_line_alone() {
+        let silent = spring(Some(-700), IN, LAW).expect("a spring");
+        assert_eq!(silent.body, None);
+        assert_eq!(silent.state(), "silent");
+        assert_eq!(
+            silent.vars(),
+            format!(
+                "--goal:{0:.3}%;--now:{0:.3}%;--top:{0:.3}%;--h:0.000%;",
+                silent.goal
+            )
+        );
+        // Just above silence is a reading.
+        assert!(
+            spring(Some(-699), IN, LAW)
+                .expect("a spring")
+                .body
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn no_target_or_no_value_has_no_spring() {
+        assert_eq!(spring(Some(-250), OUT, LAW), None);
+        assert_eq!(spring(Some(-250), None, LAW), None);
+        assert_eq!(spring(None, IN, LAW), None);
+    }
+
+    #[test]
+    fn the_springs_positions_go_to_the_stylesheet() {
+        let look = SpringLook {
+            goal: 60.0,
+            body: Some(SpringBody {
+                now: 70.0,
+                top: 60.0,
+                height: 10.0,
+                in_band: false,
+            }),
+        };
+        assert_eq!(
+            look.vars(),
+            "--goal:60.000%;--now:70.000%;--top:60.000%;--h:10.000%;"
+        );
     }
 
     #[test]
