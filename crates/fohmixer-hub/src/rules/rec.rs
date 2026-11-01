@@ -51,6 +51,11 @@ impl Rec {
         self.armable
     }
 
+    /// The name of the track at `index`.
+    pub fn name_at(&self, index: u32) -> Option<&str> {
+        self.tracks.get(&index).map(|t| t.0.as_str())
+    }
+
     /// Whether track `index`'s `arm` is known.
     pub fn arm_known(&self, index: u32) -> bool {
         self.tracks.get(&index).is_some_and(|t| t.1.is_some())
@@ -221,6 +226,8 @@ mod tests {
         assert_eq!(rec.state().armed(), 1);
         assert!(rec.arm_known(0) && rec.arm_known(4));
         assert!(!rec.arm_known(1));
+        assert_eq!(rec.name_at(1), Some("New"));
+        assert_eq!(rec.name_at(2), None);
         // Two of one name: only the one at its own index is known to stay.
         let mut twin = Rec::default();
         twin.set_tracks(vec![(1, "Keys".into()), (5, "Keys".into())]);

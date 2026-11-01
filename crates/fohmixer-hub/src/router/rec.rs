@@ -10,10 +10,11 @@
 //!   (`retries.rs`);
 //! - follows each armable track's `arm` with its own subscriber
 //!   [`REC_CLIENT`] (in the `Status` `own` lists), so the watch holds with no
-//!   page open; at a list change a track that stays keeps its known `arm`,
-//!   only the changed subscriptions change, and nothing is told or logged
-//!   until the new list's arms are heard (the table re-resolves a followed
-//!   index itself, so a value heard while the read runs waits for it);
+//!   page open; at a list change a track that stays keeps its known `arm`
+//!   and its subscription, a subscription whose index names another track
+//!   now is made afresh (an index path is bound to its object when it
+//!   resolves), and nothing is told or logged until the new list's arms are
+//!   heard;
 //! - takes the transport from the rules' own (`on_transport`);
 //! - tells every page ([`ServerMsg::Rec`]) on a change and at attach, and
 //!   logs each change of the transport, the record button or the armed
@@ -80,6 +81,20 @@ fn mode_again(failures: u32) -> bool {
     failures <= CONNECT_RETRIES
 }
 
+/// The `arm` subscriptions the new list `tracks` ends: each whose index
+/// names another track now or none. An index path is bound to its object
+/// when it resolves, so a kept key would follow the old track.
+fn gone_keys(arms: &BTreeMap<String, u32>, rule: &Rec, tracks: &[(u32, String)]) -> Vec<String> {
+    arms.iter()
+        .filter(|(_, index)| {
+            !tracks
+                .iter()
+                .any(|(i, name)| i == *index && rule.name_at(*i) == Some(name.as_str()))
+        })
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
 /// The router's recording watch.
 #[derive(Debug, Default)]
 pub(super) struct RecIo {
@@ -100,8 +115,6 @@ pub(super) struct RecIo {
     task: Option<tokio::task::AbortHandle>,
     /// `record_mode`'s failed subscriptions in a row.
     mode_failures: u32,
-    /// The values heard while a read runs, by the index they follow.
-    early: BTreeMap<u32, Option<bool>>,
     /// The new list's tracks whose `arm` is not heard yet.
     waiting: BTreeSet<u32>,
     /// Why a change waits for the new list's arms (the first cause).
@@ -221,7 +234,6 @@ impl Router {
                 if !read_again(&why, self.rec.failures) {
                     tracing::warn!(error = %why, "rec: the armable tracks could not be read; the last ones stay until the next list change or connect");
                     self.rec.reading = None;
-                    self.rec.early.clear();
                     self.rec_changed("tracks");
                     return;
                 }
@@ -242,27 +254,19 @@ impl Router {
         }
     }
 
-    /// Follows the `arm` of `tracks`: only the subscriptions that change
-    /// change, a track that stays keeps its `arm`, and what the read's wait
-    /// heard counts. A change is told once every `arm` is heard.
+    /// Follows the `arm` of `tracks`: a subscription stays only while its
+    /// index names the same track (it is bound to that track's object), a
+    /// track that stays keeps its `arm`. A change is told once every `arm`
+    /// is heard.
     fn rec_follow(&mut self, tracks: Vec<(u32, String)>) {
         tracing::info!(armable = tracks.len(), "rec: the armable tracks are read");
         let wanted: BTreeSet<u32> = tracks.iter().map(|(index, _)| *index).collect();
-        let gone: Vec<String> = self
-            .rec
-            .arms
-            .iter()
-            .filter(|(_, index)| !wanted.contains(index))
-            .map(|(key, _)| key.clone())
-            .collect();
+        let gone = gone_keys(&self.rec.arms, &self.rec.rule, &tracks);
         for key in gone {
             self.rec.arms.remove(&key);
             self.subs.unsubscribe(REC_CLIENT, &key);
         }
         self.rec.rule.set_tracks(tracks);
-        for (index, arm) in std::mem::take(&mut self.rec.early) {
-            self.rec.rule.set_arm(index, arm);
-        }
         self.rec.waiting.clear();
         for index in wanted {
             let target = track_target(index);
@@ -318,13 +322,9 @@ impl Router {
                     self.rec.mode_failures = 0;
                 }
             } else if let Some(index) = self.rec.arms.get(&item.sub).copied() {
-                if self.rec.reading.is_some() {
-                    self.rec.early.insert(index, heard);
-                } else {
-                    self.rec.rule.set_arm(index, heard);
-                    self.rec.waiting.remove(&index);
-                    why = why.or(Some("arm"));
-                }
+                self.rec.rule.set_arm(index, heard);
+                self.rec.waiting.remove(&index);
+                why = why.or(Some("arm"));
             }
         }
         if let Some(why) = why {
@@ -351,7 +351,6 @@ impl Router {
         }
         self.rec.reading = None;
         self.rec.list = None;
-        self.rec.early.clear();
         self.rec.waiting.clear();
         self.rec.held = None;
         self.rec_unfollow();
@@ -436,18 +435,23 @@ mod tests {
         let page = attach(&mut router, 1);
         let _ = page.take();
         let _ = records(&rx);
-        // A list change: its read runs, and a value of the old index waits.
+        // A list change: its read runs, and a value of the old list counts
+        // for the old list's track.
         router.rec.reading = Some(7);
         router.rec_values(vec![item(&arm_key(1), Some(json!(true)), None)]);
-        assert_eq!(router.rec.rule.state().armed(), 1, "nothing mixed in");
-        // The read: Vox 1 moved to index 1, a new track at 2; Vox 2 went.
+        assert_eq!(page.take(), Some(Vec::new()), "no page told while it runs");
+        assert!(records(&rx).is_empty());
+        // Back: Vox 2 off, then the read: Vox 1 moved to index 1, a new
+        // track at 2; Vox 2 went.
+        router.rec_values(vec![item(&arm_key(1), Some(json!(false)), None)]);
         router.rec.reading = None;
         router.rec_follow(vec![(1, "Vox 1".to_string()), (2, "New".to_string())]);
-        // Index 1's subscription stayed, index 0's went, 2's is new.
+        // Index 1 names another track: followed afresh; 0's went, 2's is new.
         assert!(router.rec.arms.contains_key(&arm_key(1)));
         assert!(router.rec.arms.contains_key(&arm_key(2)));
         assert!(!router.rec.arms.contains_key(&arm_key(0)));
         assert!(router.rec.settling(), "the new track's arm is not heard");
+        assert!(router.rec.waiting.contains(&2) && router.rec.waiting.len() == 1);
         assert_eq!(page.take(), Some(Vec::new()), "no page told yet");
         assert!(records(&rx).is_empty(), "no false record");
         router.rec_values(vec![item(&arm_key(2), Some(json!(false)), None)]);
@@ -468,9 +472,25 @@ mod tests {
             ],
         };
         assert_eq!(page.take(), Some(vec![ServerMsg::Rec(want)]));
+        assert!(!router.rec.settling());
         let got = records(&rx);
         // The armed tracks stayed: one track armed, no record of a change.
         assert!(got.is_empty(), "{got:?}");
+    }
+
+    #[test]
+    fn a_subscription_stays_only_while_its_index_names_the_same_track() {
+        let mut rule = Rec::default();
+        rule.set_tracks(vec![(0, "Vox 1".to_string()), (1, "Vox 2".to_string())]);
+        let arms = BTreeMap::from([("a".to_string(), 0), ("b".to_string(), 1)]);
+        // Vox 2 stays at 1; index 0 names a new track.
+        let tracks = vec![(0, "New".to_string()), (1, "Vox 2".to_string())];
+        assert_eq!(gone_keys(&arms, &rule, &tracks), vec!["a".to_string()]);
+        // A shifted list: both indexes name others or none.
+        let shifted = vec![(0, "Vox 2".to_string())];
+        assert_eq!(gone_keys(&arms, &rule, &shifted).len(), 2);
+        let same = vec![(0, "Vox 1".to_string()), (1, "Vox 2".to_string())];
+        assert!(gone_keys(&arms, &rule, &same).is_empty());
     }
 
     #[tokio::test]
