@@ -245,7 +245,11 @@ async fn the_lists_are_followed_once_and_are_the_hubs_own() {
     let (mut router, _rx, _events) = offline_router(dir.path());
     assert_eq!(router.subs.subscriptions("band"), 1, "the transport only");
     connected(&mut router);
-    assert_eq!(router.subs.subscriptions("band"), 3);
+    assert_eq!(
+        router.subs.subscriptions("band"),
+        4,
+        "the transport, the lists and the recording watch's record button (#172)"
+    );
     assert_eq!(
         router.songmap.subs.keys().cloned().collect::<Vec<_>>(),
         vec![cue_key(), tracks_key()]
@@ -256,7 +260,7 @@ async fn the_lists_are_followed_once_and_are_the_hubs_own() {
         event: LiveEvent::Disconnected,
     });
     connected(&mut router);
-    assert_eq!(router.subs.subscriptions("band"), 3);
+    assert_eq!(router.subs.subscriptions("band"), 4);
     let now = status(&mut router);
     assert_eq!(now.subscriptions["band"], 0, "the hub's own");
     assert_eq!(now.listeners["band"], 0, "the hub's own");
@@ -810,7 +814,11 @@ async fn the_sections_clips_are_followed_by_the_index_a_read_found() {
         ))
     );
     assert!(router.songmap.subs.contains_key(&first));
-    assert_eq!(router.subs.subscriptions("band"), 4);
+    assert_eq!(
+        router.subs.subscriptions("band"),
+        5,
+        "with the recording watch's record button (#172)"
+    );
     // Its first value names the clips the read saw: the read's own, no read.
     assert_eq!(
         router.songmap.fresh.get(&first),
@@ -835,7 +843,7 @@ async fn the_sections_clips_are_followed_by_the_index_a_read_found() {
         Some(second.clone())
     );
     assert!(!router.songmap.subs.contains_key(&first));
-    assert_eq!(router.subs.subscriptions("band"), 4, "the old one let go");
+    assert_eq!(router.subs.subscriptions("band"), 5, "the old one let go");
     // An error as its first value is a trigger (and it is fresh no more).
     router.songmap_delivery(vec![ValueItem::error(&second, "not found")]);
     assert_eq!(router.songmap.reads, 3);
@@ -846,7 +854,7 @@ async fn the_sections_clips_are_followed_by_the_index_a_read_found() {
     answer(&mut router, 3, Ok(none));
     assert_eq!(router.songmap.clips.get("band"), None);
     assert!(!router.songmap.subs.contains_key(&second));
-    assert_eq!(router.subs.subscriptions("band"), 3);
+    assert_eq!(router.subs.subscriptions("band"), 4);
 }
 
 #[test]

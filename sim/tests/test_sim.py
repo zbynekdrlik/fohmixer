@@ -275,6 +275,14 @@ class ListenerTest(unittest.TestCase):
         self.assertIs(self.track.arm, True)
         self.assertEqual(heard, [True])
 
+    def test_a_track_that_cannot_be_armed_refuses_the_write(self):
+        self.assertTrue(self.track.can_be_armed)
+        group = Live.Track.Track(self.track._song, "Group", foldable=True)
+        self.assertFalse(group.can_be_armed)
+        with self.assertRaises(RuntimeError):
+            group.arm = True
+        self.assertFalse(group.arm)
+
     def test_enum_property(self):
         states = Live.Track.Track.monitoring_states
         self.assertEqual(states.names["IN"], 0)

@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>REC dohľad v3</title>
+<style>
+/* The app's fonts, by relative path (.claude/rules/public-repo-hygiene.md). */
+@font-face { font-family: "Barlow Condensed"; font-weight: 700; font-display: block; src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 600; font-display: block; src: url("../../crates/fohmixer-ui/fonts/barlow-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-weight: 500; font-display: block; src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2"); }
+:root { --bg:#0a0b10; --bar:#14141e; --panel:#181824; --line:#2a2a3a; --text:#e2e2ec; --dim:#8a8a9c; --faint:#5e5e72; --sel:#1d1f33; --teal:#2fc79a; --gold:#e0b84a; --red:#e0404c; --mut:#a8474f; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 16px; background: #05050a; color: var(--text); font: 600 15px/1.45 "Barlow", sans-serif; }
+h1 { font: 700 26px/1.1 "Barlow Condensed", sans-serif; letter-spacing: .04em; margin: 0 0 6px; }
+h2 { font: 700 20px/1.2 "Barlow Condensed", sans-serif; letter-spacing: .03em; margin: 28px 0 4px; }
+p { margin: 4px 0 10px; color: var(--dim); max-width: 74ch; }
+.scroll { overflow-x: auto; padding-bottom: 6px; }
+.ipad { width: 1194px; height: 560px; background: var(--bg); display: grid; grid-template-columns: 1fr 132px 1fr; gap: 6px; padding: 6px; border: 2px solid #333; border-radius: 14px; }
+.half { display: flex; gap: 4px; min-width: 0; }
+.strip { position: relative; flex: 1 1 0; width: var(--w, auto); min-width: 0; background: var(--panel); border-radius: 8px; display: flex; flex-direction: column; overflow: hidden; }
+.strip.fixed { flex: none; height: 300px; }
+.name { margin: 0; height: 37px; background: #15151f; border-bottom: 1px solid var(--line); padding: 3px 3px 3px 7px; display: flex; flex-direction: column; border-left: 3px solid var(--c, #73738a); }
+.name b { font: 700 15px/20px "Barlow Condensed", sans-serif; letter-spacing: .03em; text-align: center; white-space: nowrap; overflow: hidden; }
+.marks { display: flex; align-items: center; gap: 3px; height: 10px; font: 800 7px/10px "Barlow", sans-serif; color: var(--faint); white-space: nowrap; overflow: hidden; }
+.mk-arm { display: inline-flex; align-items: center; gap: 2px; color: #b98a8e; }
+.mk-arm i { width: 6px; height: 6px; border-radius: 50%; border: 1px solid #b98a8e; }
+.rec .mk-arm { color: var(--red); }
+.rec .mk-arm i { background: var(--red); border-color: var(--red); }
+.muted-mk { margin-left: auto; color: var(--mut); }
+.readout { height: 20px; font: 500 11px/20px "JetBrains Mono", monospace; text-align: center; color: var(--dim); }
+.zone { position: relative; flex: 1; }
+.track { position: absolute; right: 19px; top: 8px; bottom: 10px; width: 12px; background: #0c0c13; border-radius: 3px; }
+.cap { position: absolute; right: 8px; width: 34px; height: 46px; top: var(--y, 30%); background: #33354a; border-radius: 6px; }
+.sel { position: absolute; left: 2px; bottom: 2px; width: 33px; height: 34px; background: #1f1f2e; border: 1px solid var(--line); border-radius: 6px; display: grid; place-items: center; font: 700 12px/1 "Barlow Condensed", sans-serif; color: var(--dim); }
+.sel.dot::after { content: ""; position: absolute; top: 3px; right: 3px; width: 7px; height: 7px; border-radius: 50%; border: 1px solid #b98a8e; }
+.rec .sel.dot::after { background: var(--red); border-color: var(--red); }
+.is-muted .name b { color: #55556e; }
+.is-muted .cap, .is-muted .track { opacity: .4; }
+.column { background: var(--bar); border: 1px solid var(--line); border-radius: 12px; padding: 8px 6px; display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.column.solo { width: 132px; flex: none; height: 250px; }
+.tab { text-align: center; font: 700 19px/1.05 "Barlow Condensed", sans-serif; letter-spacing: .08em; padding: 6px 3px; background: var(--sel); border-radius: 7px; border-bottom: 2px solid var(--teal); }
+.btn { background: var(--panel); border-radius: 9px; padding: 10px 8px; font: 600 12px "Barlow", sans-serif; color: var(--dim); }
+.grow { flex: 1; }
+.recbox { border-radius: 9px; padding: 8px 8px 7px; background: var(--panel); border: 1px solid var(--line); display: grid; gap: 2px; }
+.recbox .top { display: flex; align-items: center; gap: 6px; font: 700 18px/1 "Barlow Condensed", sans-serif; letter-spacing: .06em; color: var(--dim); }
+.recbox .top i { width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; flex: none; }
+.recbox .sub { font: 600 11px/14px "Barlow", sans-serif; color: var(--faint); }
+.recbox.ready .top { color: #d98a90; }
+.recbox.on { background: var(--red); border-color: var(--red); }
+.recbox.on .top, .recbox.on .sub { color: #fff; }
+.recbox.on .top i { background: #fff; border-color: #fff; }
+.recbox.warn { background: #3a2d0c; border-color: var(--gold); }
+.recbox.warn .top, .recbox.warn .sub { color: var(--gold); }
+.states { display: flex; flex-wrap: wrap; gap: 14px; }
+.state { width: 196px; }
+.state .cap2 { font: 600 13px/1.35 "Barlow", sans-serif; color: var(--dim); margin-top: 6px; }
+.strips { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
+.detail { width: 1194px; height: 330px; background: var(--bg); border: 2px solid #333; border-radius: 14px; padding: 6px; display: grid; grid-template-columns: 300px 1fr 300px; gap: 6px; }
+.box { background: var(--panel); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 8px; min-width: 0; color: var(--faint); }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.big { height: 58px; border-radius: 9px; background: #15151f; border: 1px solid var(--line); display: grid; place-items: center; font: 700 19px/1 "Barlow Condensed", sans-serif; letter-spacing: .06em; color: var(--text); }
+.big small { display: block; font: 600 10px/1.2 "Barlow", sans-serif; letter-spacing: 0; color: var(--dim); text-align: center; margin-top: 3px; }
+.big.armed { border-color: #b98a8e; color: #e7a9ae; }
+.big.armed.live { background: var(--red); border-color: var(--red); color: #fff; }
+.big.armed.live small { color: #fff; }
+ul { margin: 6px 0; padding-left: 20px; color: var(--dim); max-width: 74ch; }
+.tag { display: inline-block; background: #2a2a3a; color: var(--text); padding: 1px 6px; border-radius: 4px; font-size: 13px; }
+
+@keyframes blink { 50% { opacity: .12; } }
+.bul { width: 8px; height: 8px; border-radius: 50%; background: var(--red); flex: none; }
+.bul.go { animation: blink 1s steps(1) infinite; }
+.foot { margin-top: auto; border-top: 1px solid var(--line); padding-top: 5px; font: 600 10px/14px "Barlow", sans-serif; color: var(--faint); display: flex; justify-content: space-between; align-items: center; gap: 4px; }
+.recst { display: inline-flex; align-items: center; gap: 3px; font: 700 12px/14px "Barlow Condensed", sans-serif; letter-spacing: .05em; color: var(--red); }
+.recst.warn { color: var(--gold); }
+.recst.warn .bul { background: var(--gold); }
+.armbtn { height: 58px; width: 62px; flex: none; border-radius: 9px; background: #15151f; border: 1px solid var(--line); display: grid; place-items: center; font: 700 13px/1 "Barlow Condensed", sans-serif; color: var(--dim); }
+.armbtn .bul { margin: 0 auto 4px; }
+.armbtn .off { background: none; border: 1px solid var(--faint); }
+.row { display: flex; gap: 6px; }
+.row .big { flex: 1; }
+
+.armk { position: absolute; left: 2px; bottom: 38px; width: 33px; height: 34px; background: #1f1f2e; border: 1px solid var(--line); border-radius: 6px; display: grid; place-items: center; overflow: hidden; }
+.armk .bul { position: relative; width: 11px; height: 11px; }
+.bul.off { background: none; border: 1.5px solid var(--faint); }
+.fill::before { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 60%; background: var(--red); opacity: .55; }
+.foot { align-items: stretch; }
+.reckey { position: relative; overflow: hidden; flex: none; width: 74px; height: 36px; border-radius: 6px; background: #1f1f2e; border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; }
+.reckey .recst { position: relative; font-size: 15px; gap: 5px; }
+.reckey .bul { position: relative; }
+.recst.idle { color: var(--faint); }
+.foot .v { align-self: center; }
+</style>
+</head>
+<body>
+<h1>REC dohľad, tretí návrh</h1>
+<p>Vymyslené názvy, len ukážka. Hore na páse nepribudlo nič. ARM je vo voľnom ľavom stĺpci hneď nad SEL, teda dole pri ruke, kam sa bežne nesiaha. Fader nestráca ani pixel.</p>
+<h2>1 · Počas nahrávania</h2>
+<p>Vox 1 až 3 nahrávajú, bodka bliká. Vox 4 nemá ARM, má len tmavý krúžok, takže chýbajúci ARM vidno. Skupiny a pásy druhého Live štvorec nemajú, tie sa nearmujú.</p>
+<div class="scroll"><div class="ipad">
+ <div class="half" id="left"></div>
+ <div class="column"><div class="tab">FOH</div><div class="btn">STAGE</div><div class="btn">REVERB</div><div class="btn">AUTOTUNE</div><div class="grow"></div>
+ <div class="foot"><div class="reckey"><span class="recst"><i class="bul go"></i>REC</span></div><span class="v">v1.34.0</span></div></div>
+ <div class="half" id="right"></div>
+</div></div>
+<h2>2 · ARM nad SEL</h2>
+<p>Podržanie 1 s zapne alebo vypne ARM, ťuknutie nerobí nič. Štvorec sa počas držania plní zdola ako SEL. Zľava: bez ARM, ARM, nahráva sa (bliká), držanie, úzky pás na telefóne.</p>
+<div class="strips" id="marks"></div>
+<h2>3 · REC dole v stĺpci</h2>
+<p>Ukazuje stav celého Live a podržanie 1 s zapne alebo vypne veľké červené koliesko v Live. Ťuknutie nerobí nič. V pokoji je tmavé. Bežne ho zapína AbleSet, tu je na rýchlu opravu.</p>
+<div class="states" id="states"></div>
+<script>
+const key = (o) => o.armable ? `<div class="armk ${o.hold ? 'fill' : ''}"><i class="bul ${o.arm ? (o.rec ? 'go' : '') : 'off'}"></i></div>` : '';
+const mk = (o) => `<div class="strip ${o.muted ? 'is-muted' : ''} ${o.w ? 'fixed' : ''}" style="${o.w ? 'width:' + o.w + 'px' : ''}">
+ <div class="name" style="--c:${o.c || '#73738a'}"><b>${o.n}</b><div class="marks">${o.muted ? '<span class="muted-mk">MUTED</span>' : ''}</div></div>
+ <div class="readout">−3.2</div><div class="zone"><div class="track"></div><div class="cap" style="--y:${o.y || 28}%"></div>${key(o)}<div class="sel">SEL</div></div></div>`;
+const V = {armable:1,c:'#c77d4a'};
+const L = [{...V,n:'Vox 1',arm:1,rec:1},{...V,n:'Vox 2',arm:1,rec:1,y:36},{...V,n:'Vox 3',arm:1,rec:1,y:24},{...V,n:'Vox 4',y:40},{n:'Klavir',armable:1,c:'#4a8fc7'},{n:'Gitara',armable:1,c:'#4a8fc7',y:34}];
+const R = [{n:'Bass',armable:1,c:'#4ac7a0'},{n:'Drums',c:'#4ac7a0',y:33},{n:'Backing',y:25},{n:'Host',muted:1,y:50},{n:'REVERB',y:30},{n:'PA',y:22}];
+left.innerHTML = L.map(mk).join(''); right.innerHTML = R.map(mk).join('');
+marks.innerHTML = [{...V,n:'Vox 1',w:83},{...V,n:'Vox 1',arm:1,w:83},{...V,n:'Vox 1',arm:1,rec:1,w:83},{...V,n:'Vox 1',hold:1,w:83},{...V,n:'Vox 1',arm:1,rec:1,w:64}].map(mk).join('');
+const K = (c,t,g,f) => `<div class="reckey ${f ? 'fill' : ''}"><span class="recst ${c}"><i class="bul ${g}"></i>${t}</span></div>`;
+const S = [[K('idle','REC','off'),'Nenahráva sa, nič nechýba.'],[K('','REC',''),'Koliesko zapnuté, Live stojí.'],[K('','REC','go'),'Live hrá a nahráva.'],[K('warn','NOT REC','go'),'Live hrá, stopy majú ARM, koliesko je vypnuté.'],[K('warn','NO ARM','go'),'Koliesko zapnuté, Live hrá, žiadna stopa nemá ARM.'],[K('idle','REC','off',1),'Držanie, plní sa zdola.']];
+states.innerHTML = S.map(([t,n]) => `<div class="state"><div class="foot"><span>${t}</span><span class="v">v1.34.0</span></div><div class="cap2">${n}</div></div>`).join('');
+</script>
+</body>
+</html>

@@ -8,7 +8,8 @@
 //! zone: the info column (the LUFS slot, the group's name on the first
 //! strip of its run, #127), the fader with the stereo meter in its track,
 //! the dB scale on its right, and SEL at the bottom left, whose hold opens
-//! the channel detail. The pan left the strip for the channel detail (#71,
+//! the channel detail, with the ARM key above it on an armable track (#172).
+//! The pan left the strip for the channel detail (#71,
 //! D17: at the foot the iPad's home bar waits for a swipe, and pans are
 //! rarely used), so the strip neither draws nor subscribes it
 //! (`StripSubs::shown`).
@@ -24,6 +25,7 @@ use super::detail_color::strip_colour;
 use super::fader::{FaderView, Law, Target};
 use super::fader_link::link_parts;
 use super::meter::StatusView;
+use super::rec::ArmKey;
 use super::{Settings, key_of, owns_touches, trace_detail};
 use crate::arrange::GroupLabel;
 use crate::behave::db_text::db_text;
@@ -311,6 +313,8 @@ pub fn StripView(
     let store = expect_context::<LiveStore>();
     // The strip its SEL opens the detail of (#71, #151).
     let key_strip = strip.clone();
+    // The ARM key above SEL (#172).
+    let arm_strip = strip.clone();
     let subs = strip_subs(&strip, settings.meter_source);
     // The fader link (#130, D18): a leader's partners and switch, a
     // partner's leaders, the corner's mark.
@@ -488,6 +492,7 @@ pub fn StripView(
                 <ScaleView law=law />
                 {fader}
                 <DetailKey strip=key_strip />
+                <ArmKey strip=arm_strip />
             </div>
         </div>
     }

@@ -38,7 +38,7 @@ WIRE_VERSION = 1
 NO_PARENT = "-"
 PARENTS = 4
 # The devices' version on the wire, ``v<version.txt>``.
-VERSION = "v1.32.0"
+VERSION = "v1.33.0"
 # Nominal rates: the LUFS device's `snapshot~ 200` (the owner, 27.10), the
 # meter's `peakamp~ 33`; the real devices send only while Live's DSP runs
 # them (a device switched off goes silent, its key stale), and SimLive's

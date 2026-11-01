@@ -214,6 +214,12 @@ fn a_trace_with_ablesets_tab_opened_or_closed_outlives_the_cap() {
 }
 
 #[test]
+fn a_recording_watch_record_outlives_the_cap() {
+    // #172: it is what a later read of a day's log asks for.
+    assert!(is_warn(&json!({"ev": "rec", "state": "ready"})));
+}
+
+#[test]
 fn a_trace_with_a_rail_step_outlives_the_cap() {
     // #130 PR 6 review: a rail button's steps explain the rules' records
     // (`stage_aut`, `reverb`, `autotune`) that outlive a day file's cap;

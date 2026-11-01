@@ -29,8 +29,8 @@ use super::eq::inputs::Inputs;
 use super::eq::{EqListView, EqView};
 use super::intent::Intents;
 use super::{
-    HubAutotune, HubColors, HubLufs, HubReverb, HubSectors, HubValues, InstanceView, ResultFn,
-    Slot, TOKEN_KEY, next_range,
+    HubAutotune, HubColors, HubLufs, HubRec, HubReverb, HubSectors, HubValues, InstanceView,
+    ResultFn, Slot, TOKEN_KEY, next_range,
 };
 use crate::behave::ableset::AbleSetInfo;
 use crate::behave::idle::IdleWatch;
@@ -174,6 +174,9 @@ pub struct LiveStore {
     /// AUTOTUNE (#104): the hub's last state, kept through a reconnect,
     /// stale until the hub's next (`HubAutotune`).
     pub autotune: RwSignal<HubAutotune>,
+    /// The recording watch (#172): the hub's last state, kept through a
+    /// reconnect, stale until the hub's next.
+    pub rec: RwSignal<HubRec>,
     /// The fader sectors (#148): the hub's last document,
     /// kept through a reconnect, stale until the hub's next (`HubSectors`).
     pub sectors: RwSignal<HubSectors>,
@@ -224,6 +227,7 @@ impl LiveStore {
             hub: RwSignal::new(HubValues::default()),
             reverb: RwSignal::new(HubReverb::default()),
             autotune: RwSignal::new(HubAutotune::default()),
+            rec: RwSignal::new(HubRec::default()),
             sectors: RwSignal::new(HubSectors::default()),
             colors: RwSignal::new(HubColors::default()),
             lufs: RwSignal::new(HubLufs::default()),
@@ -501,6 +505,7 @@ impl LiveStore {
         let _ = self.hub.try_update(HubValues::closed);
         let _ = self.reverb.try_update(HubReverb::closed);
         let _ = self.autotune.try_update(HubAutotune::closed);
+        let _ = self.rec.try_update(HubRec::closed);
         let _ = self.sectors.try_update(HubSectors::closed);
         let _ = self.colors.try_update(HubColors::closed);
         let _ = self.lufs.try_update(HubLufs::closed);
@@ -612,6 +617,10 @@ impl LiveStore {
             // AUTOTUNE (#104): the rail button reads it.
             ServerMsg::Autotune(state) => {
                 let _ = self.autotune.try_update(|autotune| autotune.put(state));
+            }
+            // The recording watch (#172): the ARM keys and the foot read it.
+            ServerMsg::Rec(state) => {
+                let _ = self.rec.try_update(|rec| rec.put(state));
             }
             ServerMsg::Layout { rev } => self.on_layout(rev),
             ServerMsg::Result { id, data } => self.finish(&id, Ok(data)),

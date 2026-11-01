@@ -55,6 +55,8 @@ def build_from_spec(spec):
         _add_track(song, track_spec, None, return_names)
     song._returns = [_make_track(song, r, None, return_names) for r in spec.get("returns", ())]
     song._master = _make_track(song, spec.get("master", {"name": "Main"}), None, ())
+    for track in [*song._returns, song._master]:
+        track._v["can_be_armed"] = False
     song._cue_points = [
         Live.Song.CuePoint(song, c["name"], c["time"]) for c in spec.get("cue_points", ())
     ]

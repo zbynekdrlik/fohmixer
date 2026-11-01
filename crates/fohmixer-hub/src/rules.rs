@@ -27,6 +27,8 @@ pub mod autotune;
 pub mod links;
 #[path = "rules/lufs.rs"]
 pub mod lufs;
+#[path = "rules/rec.rs"]
+pub mod rec;
 #[path = "rules/reverb.rs"]
 pub mod reverb;
 

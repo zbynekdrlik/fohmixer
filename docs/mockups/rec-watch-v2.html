@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>REC dohľad v2</title>
+<style>
+/* The app's fonts, by relative path (.claude/rules/public-repo-hygiene.md). */
+@font-face { font-family: "Barlow Condensed"; font-weight: 700; font-display: block; src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 600; font-display: block; src: url("../../crates/fohmixer-ui/fonts/barlow-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-weight: 500; font-display: block; src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2"); }
+:root { --bg:#0a0b10; --bar:#14141e; --panel:#181824; --line:#2a2a3a; --text:#e2e2ec; --dim:#8a8a9c; --faint:#5e5e72; --sel:#1d1f33; --teal:#2fc79a; --gold:#e0b84a; --red:#e0404c; --mut:#a8474f; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 16px; background: #05050a; color: var(--text); font: 600 15px/1.45 "Barlow", sans-serif; }
+h1 { font: 700 26px/1.1 "Barlow Condensed", sans-serif; letter-spacing: .04em; margin: 0 0 6px; }
+h2 { font: 700 20px/1.2 "Barlow Condensed", sans-serif; letter-spacing: .03em; margin: 28px 0 4px; }
+p { margin: 4px 0 10px; color: var(--dim); max-width: 74ch; }
+.scroll { overflow-x: auto; padding-bottom: 6px; }
+.ipad { width: 1194px; height: 560px; background: var(--bg); display: grid; grid-template-columns: 1fr 132px 1fr; gap: 6px; padding: 6px; border: 2px solid #333; border-radius: 14px; }
+.half { display: flex; gap: 4px; min-width: 0; }
+.strip { position: relative; flex: 1 1 0; width: var(--w, auto); min-width: 0; background: var(--panel); border-radius: 8px; display: flex; flex-direction: column; overflow: hidden; }
+.strip.fixed { flex: none; height: 300px; }
+.name { margin: 0; height: 37px; background: #15151f; border-bottom: 1px solid var(--line); padding: 3px 3px 3px 7px; display: flex; flex-direction: column; border-left: 3px solid var(--c, #73738a); }
+.name b { font: 700 15px/20px "Barlow Condensed", sans-serif; letter-spacing: .03em; text-align: center; white-space: nowrap; overflow: hidden; }
+.marks { display: flex; align-items: center; gap: 3px; height: 10px; font: 800 7px/10px "Barlow", sans-serif; color: var(--faint); white-space: nowrap; overflow: hidden; }
+.mk-arm { display: inline-flex; align-items: center; gap: 2px; color: #b98a8e; }
+.mk-arm i { width: 6px; height: 6px; border-radius: 50%; border: 1px solid #b98a8e; }
+.rec .mk-arm { color: var(--red); }
+.rec .mk-arm i { background: var(--red); border-color: var(--red); }
+.muted-mk { margin-left: auto; color: var(--mut); }
+.readout { height: 20px; font: 500 11px/20px "JetBrains Mono", monospace; text-align: center; color: var(--dim); }
+.zone { position: relative; flex: 1; }
+.track { position: absolute; right: 19px; top: 8px; bottom: 10px; width: 12px; background: #0c0c13; border-radius: 3px; }
+.cap { position: absolute; right: 8px; width: 34px; height: 46px; top: var(--y, 30%); background: #33354a; border-radius: 6px; }
+.sel { position: absolute; left: 2px; bottom: 2px; width: 33px; height: 34px; background: #1f1f2e; border: 1px solid var(--line); border-radius: 6px; display: grid; place-items: center; font: 700 12px/1 "Barlow Condensed", sans-serif; color: var(--dim); }
+.sel.dot::after { content: ""; position: absolute; top: 3px; right: 3px; width: 7px; height: 7px; border-radius: 50%; border: 1px solid #b98a8e; }
+.rec .sel.dot::after { background: var(--red); border-color: var(--red); }
+.is-muted .name b { color: #55556e; }
+.is-muted .cap, .is-muted .track { opacity: .4; }
+.column { background: var(--bar); border: 1px solid var(--line); border-radius: 12px; padding: 8px 6px; display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.column.solo { width: 132px; flex: none; height: 250px; }
+.tab { text-align: center; font: 700 19px/1.05 "Barlow Condensed", sans-serif; letter-spacing: .08em; padding: 6px 3px; background: var(--sel); border-radius: 7px; border-bottom: 2px solid var(--teal); }
+.btn { background: var(--panel); border-radius: 9px; padding: 10px 8px; font: 600 12px "Barlow", sans-serif; color: var(--dim); }
+.grow { flex: 1; }
+.recbox { border-radius: 9px; padding: 8px 8px 7px; background: var(--panel); border: 1px solid var(--line); display: grid; gap: 2px; }
+.recbox .top { display: flex; align-items: center; gap: 6px; font: 700 18px/1 "Barlow Condensed", sans-serif; letter-spacing: .06em; color: var(--dim); }
+.recbox .top i { width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; flex: none; }
+.recbox .sub { font: 600 11px/14px "Barlow", sans-serif; color: var(--faint); }
+.recbox.ready .top { color: #d98a90; }
+.recbox.on { background: var(--red); border-color: var(--red); }
+.recbox.on .top, .recbox.on .sub { color: #fff; }
+.recbox.on .top i { background: #fff; border-color: #fff; }
+.recbox.warn { background: #3a2d0c; border-color: var(--gold); }
+.recbox.warn .top, .recbox.warn .sub { color: var(--gold); }
+.states { display: flex; flex-wrap: wrap; gap: 14px; }
+.state { width: 196px; }
+.state .cap2 { font: 600 13px/1.35 "Barlow", sans-serif; color: var(--dim); margin-top: 6px; }
+.strips { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
+.detail { width: 1194px; height: 330px; background: var(--bg); border: 2px solid #333; border-radius: 14px; padding: 6px; display: grid; grid-template-columns: 300px 1fr 300px; gap: 6px; }
+.box { background: var(--panel); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 8px; min-width: 0; color: var(--faint); }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.big { height: 58px; border-radius: 9px; background: #15151f; border: 1px solid var(--line); display: grid; place-items: center; font: 700 19px/1 "Barlow Condensed", sans-serif; letter-spacing: .06em; color: var(--text); }
+.big small { display: block; font: 600 10px/1.2 "Barlow", sans-serif; letter-spacing: 0; color: var(--dim); text-align: center; margin-top: 3px; }
+.big.armed { border-color: #b98a8e; color: #e7a9ae; }
+.big.armed.live { background: var(--red); border-color: var(--red); color: #fff; }
+.big.armed.live small { color: #fff; }
+ul { margin: 6px 0; padding-left: 20px; color: var(--dim); max-width: 74ch; }
+.tag { display: inline-block; background: #2a2a3a; color: var(--text); padding: 1px 6px; border-radius: 4px; font-size: 13px; }
+
+@keyframes blink { 50% { opacity: .12; } }
+.bul { width: 8px; height: 8px; border-radius: 50%; background: var(--red); flex: none; }
+.bul.go { animation: blink 1s steps(1) infinite; }
+.foot { margin-top: auto; border-top: 1px solid var(--line); padding-top: 5px; font: 600 10px/14px "Barlow", sans-serif; color: var(--faint); display: flex; justify-content: space-between; align-items: center; gap: 4px; }
+.recst { display: inline-flex; align-items: center; gap: 3px; font: 700 12px/14px "Barlow Condensed", sans-serif; letter-spacing: .05em; color: var(--red); }
+.recst.warn { color: var(--gold); }
+.recst.warn .bul { background: var(--gold); }
+.armbtn { height: 58px; width: 62px; flex: none; border-radius: 9px; background: #15151f; border: 1px solid var(--line); display: grid; place-items: center; font: 700 13px/1 "Barlow Condensed", sans-serif; color: var(--dim); }
+.armbtn .bul { margin: 0 auto 4px; }
+.armbtn .off { background: none; border: 1px solid var(--faint); }
+.row { display: flex; gap: 6px; }
+.row .big { flex: 1; }
+</style>
+</head>
+<body>
+<h1>REC dohľad, druhý návrh</h1>
+<p>Vymyslené názvy, len ukážka. Žiadne nové tlačidlo v stĺpci: nahrávanie spúšťa AbleSet. Fader nestráca ani pixel.</p>
+<h2>1 · Počas nahrávania</h2>
+<p>Pásy Vox 1 až 3 nahrávajú, bodka bliká. Vox 4 nemá ARM, bodka nie je. Stav celého Live je len v spodnom stavovom riadku stĺpca.</p>
+<div class="scroll"><div class="ipad">
+ <div class="half" id="left"></div>
+ <div class="column"><div class="tab">FOH</div><div class="btn">STAGE</div><div class="btn">REVERB</div><div class="btn">AUTOTUNE</div><div class="grow"></div>
+ <div class="foot"><span class="recst"><i class="bul go"></i>REC</span><span>v1.34.0</span></div></div>
+ <div class="half" id="right"></div>
+</div></div>
+<h2>2 · Bodka na páse</h2>
+<p>Bez nápisu, červená. Svieti: stopa má ARM, Live nenahráva. Bliká: táto stopa sa práve nahráva. Nič: bez ARM.</p>
+<div class="strips" id="marks"></div>
+<h2>3 · Stavový riadok v stĺpci</h2>
+<p>Dá sa len pozerať, nič sa tam nestláča. Keď je všetko v poriadku a nič sa nenahráva, nie je tam nič.</p>
+<div class="states" id="states"></div>
+<h2>4 · ARM v detaile (podržaný SEL)</h2>
+<p>Úzky štvorec vedľa MUTE, MUTE ostáva hlavný. Zapnutie jedným ťuknutím, vypnutie podržaním 1 s. Stopy, ktoré sa armovať nedajú, ho nemajú a MUTE ostane plnej šírky.</p>
+<div class="row" style="max-width:300px"><div class="big">MUTE</div><div class="armbtn"><div><i class="bul go" style="display:block"></i>ARM</div></div></div>
+<div class="row" style="max-width:300px;margin-top:8px"><div class="big">MUTE</div><div class="armbtn"><div><i class="bul off" style="display:block"></i>ARM</div></div></div>
+<script>
+const mk = (o) => `<div class="strip ${o.muted ? 'is-muted' : ''} ${o.w ? 'fixed' : ''}" style="${o.w ? 'width:' + o.w + 'px' : ''}">
+ <div class="name" style="--c:${o.c || '#73738a'}"><b>${o.n}</b><div class="marks">${o.arm ? `<i class="bul ${o.rec ? 'go' : ''}"></i>` : ''}${o.muted ? '<span class="muted-mk">MUTED</span>' : ''}</div></div>
+ <div class="readout">−3.2</div><div class="zone"><div class="track"></div><div class="cap" style="--y:${o.y || 28}%"></div><div class="sel">SEL</div></div></div>`;
+const L = [{n:'Vox 1',arm:1,rec:1,c:'#c77d4a'},{n:'Vox 2',arm:1,rec:1,c:'#c77d4a',y:36},{n:'Vox 3',arm:1,rec:1,c:'#c77d4a',y:24},{n:'Vox 4',c:'#c77d4a',y:40},{n:'Klavir',c:'#4a8fc7'},{n:'Gitara',c:'#4a8fc7',y:34}];
+const R = [{n:'Bass',c:'#4ac7a0'},{n:'Drums',c:'#4ac7a0',y:33},{n:'Backing',y:25},{n:'Host',muted:1,y:50},{n:'REVERB',y:30},{n:'PA',y:22}];
+left.innerHTML = L.map(mk).join(''); right.innerHTML = R.map(mk).join('');
+marks.innerHTML = [{n:'Vox 1',w:83},{n:'Vox 1',arm:1,w:83},{n:'Vox 1',arm:1,rec:1,w:83},{n:'Vox 1',arm:1,rec:1,muted:1,w:83},{n:'Vox 1',arm:1,rec:1,w:64}].map(mk).join('');
+const S = [['','', 'Nič sa nenahráva, nič nechýba.'],['','<span class="recst"><i class="bul go"></i>REC</span>','Live hrá a nahráva.'],['','<span class="recst warn"><i class="bul go"></i>NOT REC</span>','Live hrá, stopy majú ARM, veľké koliesko je vypnuté.'],['','<span class="recst warn"><i class="bul go"></i>NO ARM</span>','Koliesko zapnuté, Live hrá, žiadna stopa nemá ARM.']];
+states.innerHTML = S.map(([c,t,n]) => `<div class="state"><div class="foot" style="min-height:20px"><span>${t}</span><span>v1.34.0</span></div><div class="cap2">${n}</div></div>`).join('');
+</script>
+</body>
+</html>

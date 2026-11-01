@@ -1,0 +1,138 @@
+/* The recording watch (#172; docs/mockups/rec-watch-v3.html with the owner's
+   correction of 2026-11-01): secondary information the eye goes to by
+   choice, so no box, muted colours and only a slow soft pulse. */
+:root {
+    --rec: #a8585e;
+    --rec-warn: #a98f4e;
+}
+
+.rec-dot {
+    position: relative;
+    flex: none;
+    box-sizing: border-box;
+    width: 6px;
+    height: 6px;
+    border: 1px solid var(--faint);
+    border-radius: 50%;
+}
+
+[data-state="armed"] > .rec-dot,
+[data-state="ready"] > .rec-dot,
+[data-state="recording"] > .rec-dot {
+    border-color: var(--rec);
+    background: var(--rec);
+}
+
+[data-state="not_rec"] > .rec-dot,
+[data-state="no_arm"] > .rec-dot {
+    border-color: var(--rec-warn);
+    background: var(--rec-warn);
+}
+
+/* The owner's one looping animation: opacity only, so it paints nothing. */
+[data-state="recording"] > .rec-dot {
+    animation: rec-pulse 2.4s ease-in-out infinite;
+    will-change: opacity;
+}
+
+@keyframes rec-pulse {
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.5;
+    }
+}
+
+/* The ARM key: right above SEL (`.strip-sel`, 36 px or 44 px high from the
+   zone's foot) on SEL's centre line, its 33 x 34 px touch area invisible
+   and as clear of the cap as SEL. */
+.strip-arm {
+    position: absolute;
+    left: -2.5px;
+    bottom: 26px;
+    z-index: 2;
+    display: grid;
+    place-items: center;
+    width: calc(min(36px, 100% - 24px - var(--cap-w) / 2) - 3px);
+    height: 34px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+:is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .strip-arm {
+    bottom: 34px;
+}
+
+/* The fill shows only under a finger, from the bottom (as SEL's). */
+.strip-arm::before,
+.rec-key::before {
+    content: "";
+    position: absolute;
+    border-radius: 6px;
+    background: var(--rec);
+    opacity: 0.35;
+    transform: scaleY(0);
+    transform-origin: bottom;
+    pointer-events: none;
+}
+
+.strip-arm::before {
+    inset: 2px;
+}
+
+.rec-key::before {
+    inset: -3px -4px;
+}
+
+[data-holding="true"].strip-arm::before,
+[data-holding="true"].rec-key::before {
+    transform: scaleY(1);
+    transition: transform 1000ms linear;
+}
+
+/* The foot's REC key: the status line's text and size. Its box is only the
+   text: `::after` is the touch area, so the foot does not grow. */
+.rec-key {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--faint);
+    font: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+    white-space: nowrap;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.rec-key::after {
+    content: "";
+    position: absolute;
+    inset: -5px -4px -4px;
+}
+
+.rec-key[data-state="ready"],
+.rec-key[data-state="recording"] {
+    color: var(--rec);
+}
+
+.rec-key[data-state="not_rec"],
+.rec-key[data-state="no_arm"] {
+    color: var(--rec-warn);
+}
+
+.rec-word {
+    position: relative;
+}

@@ -551,6 +551,9 @@ pub enum ServerMsg {
     /// AUTOTUNE (#104, D19): AUTOTUNE AUT, the first target's Live set's
     /// transport and each target's state; at attach and on every change.
     Autotune(AutotuneState),
+    /// The recording watch (#172): the `band` Live's transport, its record
+    /// button and its armable tracks; at attach and on every change.
+    Rec(RecState),
     /// The loudness points' readings (#151, spec §5.3): each changed
     /// strip's latest, paced with the meters (#51).
     Lufs { items: Vec<LufsItem> },
@@ -590,6 +593,85 @@ pub struct SetItem {
 pub enum Low {
     Tap,
     Stop,
+}
+
+/// The Live set the recording watch follows (#172, the owner's decision:
+/// recording happens there only).
+pub const REC_INSTANCE: &str = "band";
+
+/// What the recording watch says of a Live set (#172).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecWatch {
+    /// Stopped with nothing armed, or playing with neither armed tracks nor
+    /// the record button: nothing to record, nothing missing.
+    Off,
+    /// Stopped with armed tracks.
+    Ready,
+    /// Playing, the record button on, a track armed.
+    Recording,
+    /// Playing with armed tracks, the record button off.
+    NotRec,
+    /// Playing with the record button on, nothing armed.
+    NoArm,
+}
+
+impl RecWatch {
+    /// What `playing`, the record button and `armed` tracks make.
+    pub fn of(playing: bool, record_mode: bool, armed: usize) -> Self {
+        match (playing, record_mode, armed > 0) {
+            (false, _, true) => Self::Ready,
+            (true, true, true) => Self::Recording,
+            (true, false, true) => Self::NotRec,
+            (true, true, false) => Self::NoArm,
+            (_, _, false) => Self::Off,
+        }
+    }
+
+    /// Its name in the event log and the page's `data-state`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Ready => "ready",
+            Self::Recording => "recording",
+            Self::NotRec => "not_rec",
+            Self::NoArm => "no_arm",
+        }
+    }
+}
+
+/// One armable track in [`RecState`] (#172): its index in `live_set tracks`,
+/// its name and its `arm`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecTrack {
+    pub index: u32,
+    pub name: String,
+    pub arm: bool,
+}
+
+/// The recording watch's state, told to every page (#172,
+/// [`ServerMsg::Rec`]): `None` while not heard. Only tracks whose
+/// `can_be_armed` read true and whose `arm` was heard are listed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecState {
+    pub playing: Option<bool>,
+    pub record_mode: Option<bool>,
+    pub tracks: Vec<RecTrack>,
+}
+
+impl RecState {
+    /// How many tracks are armed.
+    pub fn armed(&self) -> usize {
+        self.tracks.iter().filter(|t| t.arm).count()
+    }
+
+    /// What the watch says now.
+    pub fn watch(&self) -> RecWatch {
+        RecWatch::of(
+            self.playing == Some(true),
+            self.record_mode == Some(true),
+            self.armed(),
+        )
+    }
 }
 
 /// One reverb fader in [`ReverbState`] (#130, D18).
