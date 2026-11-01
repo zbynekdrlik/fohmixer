@@ -56,6 +56,7 @@ fn the_watch_follows_a_recording_to_its_stop_and_logs_why() {
         let host = Host::start("band");
         let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
         let mut client = hub.client().await;
+        client.instance_state("band", true, None, SECS_5).await;
         // The armable tracks, a group's left out, every arm heard and off.
         let told = rec_until(&mut client, |s| s.tracks.len() == ARMABLE).await;
         assert!(told.tracks.iter().all(|t| !t.arm), "{told:?}");
@@ -162,6 +163,7 @@ fn a_track_list_change_reads_the_armable_tracks_again() {
         let mut host = Host::start("band");
         let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
         let mut client = hub.client().await;
+        client.instance_state("band", true, None, SECS_5).await;
         rec_until(&mut client, |s| s.tracks.len() == ARMABLE).await;
         client.set("band", TRACK, "arm", json!(true)).await;
         rec_until(&mut client, |s| s.armed() == 1).await;
@@ -202,6 +204,7 @@ fn a_track_list_change_never_shows_a_false_state() {
         let mut host = Host::start("band");
         let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
         let mut client = hub.client().await;
+        client.instance_state("band", true, None, SECS_5).await;
         rec_until(&mut client, |s| s.tracks.len() == ARMABLE).await;
         client.set("band", TRACK, "arm", json!(true)).await;
         rec_until(&mut client, |s| s.armed() == 1).await;
@@ -242,6 +245,7 @@ fn a_lost_live_forgets_the_state_and_logs_it() {
         let host = Host::start("band");
         let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
         let mut client = hub.client().await;
+        client.instance_state("band", true, None, SECS_5).await;
         rec_until(&mut client, |s| s.tracks.len() == ARMABLE).await;
         client.set("band", TRACK, "arm", json!(true)).await;
         rec_until(&mut client, |s| s.armed() == 1).await;

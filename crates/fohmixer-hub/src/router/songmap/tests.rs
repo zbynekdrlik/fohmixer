@@ -245,7 +245,11 @@ async fn the_lists_are_followed_once_and_are_the_hubs_own() {
     let (mut router, _rx, _events) = offline_router(dir.path());
     assert_eq!(router.subs.subscriptions("band"), 1, "the transport only");
     connected(&mut router);
-    assert_eq!(router.subs.subscriptions("band"), 3);
+    assert_eq!(
+        router.subs.subscriptions("band"),
+        4,
+        "the transport, the lists and the recording watch's record button (#172)"
+    );
     assert_eq!(
         router.songmap.subs.keys().cloned().collect::<Vec<_>>(),
         vec![cue_key(), tracks_key()]
@@ -810,7 +814,11 @@ async fn the_sections_clips_are_followed_by_the_index_a_read_found() {
         ))
     );
     assert!(router.songmap.subs.contains_key(&first));
-    assert_eq!(router.subs.subscriptions("band"), 4);
+    assert_eq!(
+        router.subs.subscriptions("band"),
+        5,
+        "with the recording watch's record button (#172)"
+    );
     // Its first value names the clips the read saw: the read's own, no read.
     assert_eq!(
         router.songmap.fresh.get(&first),
