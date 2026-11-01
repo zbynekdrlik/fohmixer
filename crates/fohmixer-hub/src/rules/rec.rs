@@ -343,7 +343,7 @@ mod tests {
     fn each_input_makes_a_record_and_nothing_else_does() {
         let base = state(false, false, &["Vox 1"]);
         assert_eq!(change_fields(&base, &base.clone(), 1, "arm"), None);
-        // Armed tracks swapped: same count, same watch.
+        // Armed tracks swapped: same count, same watch, a record for the names.
         assert!(change_fields(&base, &state(false, false, &["Vox 2"]), 1, "arm").is_some());
         // The record button while stopped: Off to Ready.
         assert!(change_fields(&base, &state(false, true, &["Vox 1"]), 1, "record_mode").is_some());
