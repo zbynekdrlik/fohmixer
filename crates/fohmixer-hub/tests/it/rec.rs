@@ -177,10 +177,8 @@ fn a_track_list_change_reads_the_armable_tracks_again() {
         })
         .await;
         assert_eq!(moved.tracks[0].name, "Hand2 #");
-        rec_until(&mut client, |s| {
-            s.armed() == 1 && s.tracks.len() == ARMABLE - 1
-        })
-        .await;
+        // One state, told once its arms are heard.
+        assert_eq!((moved.armed(), moved.tracks.len()), (1, ARMABLE - 1));
         client.clear();
         client
             .set("band", "live_set tracks 0", "arm", json!(false))
