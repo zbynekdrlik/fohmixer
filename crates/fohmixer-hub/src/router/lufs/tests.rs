@@ -520,6 +520,7 @@ async fn a_page_attached_gets_every_points_item() {
             instance: "band".into(),
             target: "live_set tracks 1".into(),
             tenths: None,
+            voice: None,
             problem: None,
         }]
     );

@@ -393,6 +393,8 @@ pub type HubColors = HubTold<fohmixer_proto::colors::ColorsDoc>;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LufsPoint {
     pub tenths: Option<i16>,
+    /// An input point's `V`, the spring's value.
+    pub voice: Option<i16>,
     pub problem: Option<LufsProblem>,
 }
 
@@ -413,6 +415,7 @@ impl HubLufs {
                 (item.instance, item.target),
                 LufsPoint {
                     tenths: item.tenths,
+                    voice: item.voice,
                     problem: item.problem,
                 },
             );

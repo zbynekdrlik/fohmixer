@@ -52,13 +52,26 @@ fn confirms(acts: &[Act]) -> Vec<(String, String, u64)> {
         .collect()
 }
 
-fn sends(acts: &[Act]) -> Vec<LufsItem> {
+fn told(acts: &[Act]) -> Vec<LufsItem> {
     acts.iter()
         .filter_map(|a| match a {
             Act::Send(item) => Some(item.clone()),
             _ => None,
         })
         .collect()
+}
+
+/// The items as the number's tests compare them: without the spring's `V`
+/// ([`told`] keeps it).
+fn plain(items: Vec<LufsItem>) -> Vec<LufsItem> {
+    items
+        .into_iter()
+        .map(|i| LufsItem { voice: None, ..i })
+        .collect()
+}
+
+fn sends(acts: &[Act]) -> Vec<LufsItem> {
+    plain(told(acts))
 }
 
 fn whats(acts: &[Act]) -> Vec<String> {
@@ -75,6 +88,7 @@ fn item(instance: &str, index: u32, tenths: Option<i16>) -> LufsItem {
         instance: instance.to_string(),
         target: format!("live_set tracks {index}"),
         tenths,
+        voice: None,
         problem: None,
     }
 }
@@ -288,11 +302,7 @@ fn an_input_point_sends_s_an_output_point_sends_s_after_its_fader() {
         sends(&rule.reading(&on_vox(-250, -310), 40)),
         vec![item("band", 1, Some(-250))]
     );
-    assert_eq!(
-        sends(&rule.reading(&on_vox(-250, -200), 45)),
-        Vec::<LufsItem>::new(),
-        "a change of V alone sends nothing"
-    );
+    assert_eq!(rule.items()[0].voice, Some(-310));
     // An output point: nothing until its fader is known, then S + fader dB.
     let mut out = matched(None);
     assert_eq!(sends(&out.reading(&on_vox(-253, -300), 30)), vec![]);
@@ -337,6 +347,38 @@ fn an_input_point_sends_s_an_output_point_sends_s_after_its_fader() {
         out.output_points(),
         vec![("band".to_string(), "live_set tracks 1".to_string())]
     );
+}
+
+#[test]
+fn an_input_points_spring_follows_v_and_a_change_of_v_alone_is_told() {
+    let mut lufs = matched(Some(-25));
+    let first = told(&lufs.reading(&on_vox(-300, -250), 2000));
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert_eq!((first[0].tenths, first[0].voice), (Some(-300), Some(-250)));
+    // The same reading tells nothing; V alone moves: the item goes.
+    assert!(told(&lufs.reading(&on_vox(-300, -250), 2100)).is_empty());
+    let moved = told(&lufs.reading(&on_vox(-300, -260), 2200));
+    assert_eq!(moved.len(), 1, "{moved:?}");
+    assert_eq!((moved[0].tenths, moved[0].voice), (Some(-300), Some(-260)));
+    // A page's attach hears it too.
+    assert_eq!(lufs.items()[0].voice, Some(-260));
+}
+
+#[test]
+fn a_problem_tells_no_voice() {
+    let mut lufs = matched(Some(-25));
+    assert_eq!(lufs.items()[0].voice, Some(-300));
+    lufs.reading(&on_vox(-253, -300), 30);
+    // The device goes silent past its stale time: no reading, no spring.
+    lufs.tick(5000);
+    assert_eq!(lufs.items()[0].voice, None);
+}
+
+#[test]
+fn an_output_point_has_no_spring() {
+    assert_eq!(voice_of(LufsSpec { target: None }, -250), None);
+    assert_eq!(voice_of(LufsSpec { target: Some(-25) }, -250), Some(-250));
+    assert_eq!(voice_of(LufsSpec { target: Some(-25) }, -700), Some(-700));
 }
 
 #[test]
@@ -563,7 +605,7 @@ fn a_page_gets_every_point_at_attach_and_the_status_lists_them() {
         30,
     );
     assert_eq!(
-        rule.items(),
+        plain(rule.items()),
         vec![item("band", 1, Some(-253)), item("band", 2, None)]
     );
     let strips = rule.strip_status();
@@ -638,8 +680,8 @@ fn an_unchanged_reading_is_never_sent_again() {
     // changed, never once per datagram.
     let mut rule = matched(Some(-25));
     for n in 0..20 {
-        let acts = rule.reading(&on_vox(-253, -300 - n), 30 + 200 * n as u64);
-        assert!(sends(&acts).is_empty(), "datagram {n}: V unchanged");
+        let acts = rule.reading(&on_vox(-253, -300), 30 + 200 * n as u64);
+        assert!(told(&acts).is_empty(), "datagram {n}: nothing changed");
     }
     assert_eq!(
         sends(&rule.reading(&on_vox(-252, -300), 5000)),
@@ -745,7 +787,7 @@ fn levels_follow_the_fader_and_pan() {
     assert!(close_pair(levels(&acts)[0].unwrap(), want));
     assert!(levels(&rule.reading(&meter_reading(7, -60, -60), 80)).is_empty());
     // Only the meter keys: the LUFS reading is unchanged.
-    assert_eq!(rule.items(), vec![item("band", 1, Some(-253))]);
+    assert_eq!(plain(rule.items()), vec![item("band", 1, Some(-253))]);
 }
 
 #[test]
@@ -896,7 +938,7 @@ fn two_meter_devices_carry_no_levels() {
     let mut rule = armed();
     let acts = match_meter(&mut rule, 8, 50);
     assert_eq!(levels(&acts), vec![None]);
-    assert_eq!(rule.items(), vec![item("band", 1, Some(-253))]);
+    assert_eq!(plain(rule.items()), vec![item("band", 1, Some(-253))]);
 }
 
 #[test]
@@ -919,7 +961,7 @@ fn offline_and_a_point_gone_give_the_keys_back() {
 #[test]
 fn a_point_back_in_the_layout_is_told_its_state_even_when_none() {
     let mut rule = matched(Some(-25));
-    assert_eq!(rule.items(), vec![item("band", 1, Some(-253))]);
+    assert_eq!(plain(rule.items()), vec![item("band", 1, Some(-253))]);
     // The point leaves the layout; its device goes silent meanwhile.
     rule.set_strips(Vec::new(), true, 30);
     assert_eq!(whats(&rule.tick(1100)), vec!["lost"]);
@@ -1026,7 +1068,7 @@ fn an_offline_live_forgets_its_own_points_faders_only() {
     assert_eq!(sends(&acts), vec![item("band", 1, Some(-253))]);
     // Another Live goes: band's point keeps its fader and its reading.
     assert!(sends(&rule.offline("master", 40)).is_empty());
-    assert_eq!(rule.items(), vec![item("band", 1, Some(-253))]);
+    assert_eq!(plain(rule.items()), vec![item("band", 1, Some(-253))]);
     // Band goes: its fader is forgotten, so once matched again the point
     // shows nothing until its fader is heard again.
     rule.offline("band", 50);
@@ -1037,7 +1079,7 @@ fn an_offline_live_forgets_its_own_points_faders_only() {
     assert_eq!(asked.len(), 1);
     let acts = rule.answered(&key_of(&r), "band", asked[0].2, Answer::Ours, 80);
     assert_eq!(whats(&acts)[0], "matched");
-    assert_eq!(rule.items(), vec![item("band", 1, None)]);
+    assert_eq!(plain(rule.items()), vec![item("band", 1, None)]);
 }
 
 #[test]
@@ -1079,7 +1121,7 @@ fn a_two_in_one_live_leaves_the_other_lives_point_alone() {
     let mut band = item("band", 3, None);
     band.problem = Some(LufsProblem::TwoLufsMeters);
     assert_eq!(sends(&acts), vec![band.clone()]);
-    assert_eq!(rule.items(), vec![band, item("master", 3, None)]);
+    assert_eq!(plain(rule.items()), vec![band, item("master", 3, None)]);
 }
 
 fn peak_lines(acts: &[Act]) -> Vec<Value> {

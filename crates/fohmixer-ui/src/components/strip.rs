@@ -32,7 +32,9 @@ use crate::behave::db_text::db_text;
 use crate::behave::fader::{UNITY, VolumeLaw};
 use crate::behave::hold::{HINT_MS, HOLD_MS, Hold, Lift};
 use crate::behave::label::{mark_look, shown_label};
-use crate::behave::lufs::{LufsLook, glyphs, kind_name, look as lufs_look_of, point_key};
+use crate::behave::lufs::{
+    COIL, LufsLook, SpringLook, glyphs, kind_name, look as lufs_look_of, point_key, spring,
+};
 use crate::behave::reverb::held_low;
 use crate::behave::scale::{tick_label, tick_pos, ticks};
 use crate::binding::{detail_keys, strip_subs};
@@ -58,6 +60,30 @@ pub fn ScaleView(law: VolumeLaw) -> impl IntoView {
         })
         .collect_view();
     view! { <div class="scale" data-testid="scale" aria-hidden="true">{labels}</div> }
+}
+
+/// An input point's spring (#151, mockup v13, the owner's sketch): small and
+/// calm, left of the track on the meter's own scale: a thin line at the
+/// target, a thin coil, a short line at the reading (`behave::lufs::spring`).
+/// The fader paints over it; no touch.
+#[component]
+fn LufsSpring(look: Memo<Option<SpringLook>>) -> impl IntoView {
+    let state = move || look.try_get().flatten().map_or("none", |l| l.state());
+    let vars = move || {
+        look.try_get()
+            .flatten()
+            .map(|l| l.vars())
+            .unwrap_or_default()
+    };
+    view! {
+        <div class="lufs-spring" data-testid="lufs-spring" data-l=state style=vars aria-hidden="true">
+            <div class="goal" data-testid="spring-goal"></div>
+            <svg class="coil" data-testid="spring-coil" viewBox="0 0 6 100" preserveAspectRatio="none">
+                <polyline points=COIL></polyline>
+            </svg>
+            <div class="now" data-testid="spring-now"></div>
+        </div>
+    }
 }
 
 /// A strip's info column (#151, mockups v8 and v9): left of the cap's
@@ -416,6 +442,21 @@ pub fn StripView(
             .unwrap_or_default();
         lufs_look_of(point.tenths, point.problem, lufs_spec)
     });
+    let spring_law = settings.law;
+    let spring_look = Memo::new(move |_| {
+        let voice = lufs_key
+            .try_with_value(|key| {
+                key.as_ref().and_then(|(instance, target)| {
+                    store.lufs.try_with(|l| l.point(instance, target).voice)
+                })
+            })
+            .flatten()
+            .flatten();
+        spring(voice, lufs_spec, spring_law)
+    });
+    let spring_view = lufs_spec
+        .and_then(|s| s.target)
+        .map(|_| view! { <LufsSpring look=spring_look /> });
     let lufs_flag =
         Signal::derive(move || lufs_look.try_with(|l| l.problem.is_some()).unwrap_or(false));
     let lufs_problem = move || lufs_look.try_with(|l| l.problem).flatten();
@@ -490,6 +531,7 @@ pub fn StripView(
             <div class="strip-zone" style=unity>
                 <InfoColumn group_name=group_name lufs=lufs_look kind=lufs_kind />
                 <ScaleView law=law />
+                {spring_view}
                 {fader}
                 <DetailKey strip=key_strip />
                 <ArmKey strip=arm_strip />

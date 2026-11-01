@@ -9,8 +9,8 @@ import { LiveClient, centre, clipped, frames, harness, hostLine, hubStatus, open
 // Sonible trueLevel; the owner's ruling of 29.10: mockup lufs-v10.html
 // variant A, bigger and more prominent): SimLive's FohMixer LUFS devices
 // send their readings to the hub, which serves them to the `+LUFS` strips.
-// Every point shows its short-term `S` (the device's first number; `V` is
-// no longer shown) with one decimal, bold and nearly white at the info
+// Every point shows its short-term `S` (the device's first number; `V` only
+// moves an input point's spring, mockup lufs-v13.html) with one decimal, bold and nearly white at the info
 // column's whole width, under the smaller caption `LUFS` over `IN` (a mic,
 // green within ±1 LU of its target) or `OUT` (an output, never green);
 // silence shows `−∞` with its caption; the row keeps its height; under
@@ -91,7 +91,7 @@ async function cleanUp(live: LiveClient, saved: Saved) {
   }
 }
 
-/** The input device's `S` (and a `V` far from it, never shown), its strip's number once it shows `text`. */
+/** The input device's `S` (and a `V` far from it, the spring's), its strip's number once it shows `text`. */
 async function shortTerm(page: Page, tenths: number, text: string) {
   expect(await hostLine("band", `lufs track 1 ${tenths} -100`)).toBe("LUFS 1");
   await expect(lufsStrip(page, "Vox 1").getByTestId("lufs")).toHaveText(text, { timeout: 10_000 });
@@ -219,7 +219,7 @@ test.describe("The LUFS reading on a strip", () => {
     // v10 A: the row 1.25 em of the reading's size, the caption 8 + 8 px.
     expect(row).toBeCloseTo(1.25 * sizeAt((await s.boundingBox())!.width, false), 0);
     expect(caption).toBeCloseTo(16, 1);
-    // V never shows: a V inside the band with S outside it is calm.
+    // V never colours the number: V inside the band, S outside it, calm.
     expect(await hostLine("band", "lufs track 1 -330 -250")).toBe("LUFS 1");
     await expect(lufs).toHaveText("−33.0", { timeout: 10_000 });
     await expect(lufs).toHaveAttribute("data-l", "off");
@@ -260,6 +260,57 @@ test.describe("The LUFS reading on a strip", () => {
     // A stopped device is no device: the strip's `!` and its words.
     await expect(s).toHaveAttribute("data-lufs-problem", "no LUFS meter", { timeout: 5000 });
     await expect(s.getByTestId("strip-flag")).toHaveText("!");
+  });
+
+  test("an input point's spring follows V on the meter's scale while the number stays S; silence keeps the target's line; an output has none", async ({ page }) => {
+    saved = await setUp(page, live);
+    const s = lufsStrip(page, "Vox 1");
+    const lufs = s.getByTestId("lufs");
+    const spring = s.getByTestId("lufs-spring");
+    const centre = async (id: string) => {
+      const b = (await s.getByTestId(id).boundingBox())!;
+      return b.y + b.height / 2;
+    };
+    // V in the band, S far from it: the spring green, the number calm.
+    expect(await hostLine("band", "lufs track 1 -300 -250")).toBe("LUFS 1");
+    await expect(lufs).toHaveText("−30.0", { timeout: 10_000 });
+    await expect(spring).toHaveAttribute("data-l", "in", { timeout: 10_000 });
+    await expect(lufs).toHaveAttribute("data-l", "off");
+    await expect(s.getByTestId("spring-now")).toHaveCSS("background-color", GREEN);
+    // The target's line on the meter's own scale, between its −18 and −30.
+    const goal = await centre("spring-goal");
+    const tick = async (t: string) => {
+      const b = (await s.locator(`.scale [data-db="${t}"]`).boundingBox())!;
+      return b.y + b.height / 2;
+    };
+    expect(goal).toBeGreaterThan(await tick("-18"));
+    expect(goal).toBeLessThan(await tick("-30"));
+    // Quieter: the reading's line under the target's, the coil between them.
+    expect(await hostLine("band", "lufs track 1 -300 -340")).toBe("LUFS 1");
+    await expect(spring).toHaveAttribute("data-l", "off", { timeout: 10_000 });
+    await expect(lufs).toHaveText("−30.0");
+    await expect.poll(() => centre("spring-now")).toBeGreaterThan(goal + 5);
+    const quiet = await centre("spring-now");
+    const coil = (await s.getByTestId("spring-coil").boundingBox())!;
+    expect(coil.height).toBeCloseTo(quiet - goal, -0.5);
+    // Calm: no fill, no glow, thin.
+    await expect(spring).toHaveCSS("box-shadow", "none");
+    expect((await spring.locator("polyline").evaluate((e) => getComputedStyle(e).fill))).toBe("none");
+    // Louder: above the target's line.
+    expect(await hostLine("band", "lufs track 1 -300 -180")).toBe("LUFS 1");
+    await expect.poll(() => centre("spring-now")).toBeLessThan(goal - 5);
+    // Silence: the target's line alone.
+    expect(await hostLine("band", "lufs track 1 -300 -700")).toBe("LUFS 1");
+    await expect(spring).toHaveAttribute("data-l", "silent", { timeout: 10_000 });
+    await expect(s.getByTestId("spring-goal")).toBeVisible();
+    await expect(s.getByTestId("spring-now")).toBeHidden();
+    await expect(s.getByTestId("spring-coil")).toBeHidden();
+    expect(await centre("spring-goal")).toBeCloseTo(goal, 0);
+    // An output point has no target, so no spring.
+    await expect(lufsStrip(page, "Vocals").getByTestId("lufs-spring")).toHaveCount(0);
+    // A stopped device: no value, no spring.
+    expect(await hostLine("band", "lufs track 1 off")).toBe("LUFS 0");
+    await expect(spring).toBeHidden({ timeout: 5000 });
   });
 
   test("the output shows its calm short-term under LUFS OUT; a strip with no device shows ! and nothing in the row", async ({ page }) => {

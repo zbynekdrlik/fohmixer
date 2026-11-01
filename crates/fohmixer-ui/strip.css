@@ -71,7 +71,7 @@
     background-color: var(--panel-mute);
 }
 
-.strip:has(.mute[data-muted="true"]) :is(.fader-cap, .fader-track, .strip-readout, .strip-col) {
+.strip:has(.mute[data-muted="true"]) :is(.fader-cap, .fader-track, .strip-readout, .strip-col, .lufs-spring) {
     opacity: 0.4;
 }
 
@@ -213,6 +213,69 @@
    white line stays readable over them. */
 .strip-zone .fader-cap {
     box-shadow: 0 0 0 1px #07070c;
+}
+
+/* An input point's spring (#151, mockup v13, the owner's sketch): secondary
+   and calm, left of the track on the meter's own scale. A thin line at the
+   target, a thin coil to a short line at the reading; no fill, no box; grey,
+   green inside the band. No touch; the cap passes over it. The positions
+   come from `behave::lufs::SpringLook::vars`. */
+.lufs-spring {
+    --left: calc(100% - 39px);
+    position: relative;
+    color: #9a9ab4;
+    pointer-events: none;
+}
+
+.lufs-spring[data-l="none"] {
+    display: none;
+}
+
+.lufs-spring[data-l="in"] {
+    color: #2fc79a;
+}
+
+.lufs-spring .goal,
+.lufs-spring .now {
+    position: absolute;
+}
+
+.lufs-spring .goal {
+    top: var(--goal);
+    left: calc(var(--left) - 2px);
+    width: 22px;
+    height: 1px;
+    margin-top: -0.5px;
+    background: rgba(255, 255, 255, 0.5);
+}
+
+.lufs-spring .now {
+    top: var(--now);
+    left: var(--left);
+    width: 8px;
+    height: 1.25px;
+    margin-top: -0.6px;
+    background: currentColor;
+}
+
+.lufs-spring .coil {
+    position: absolute;
+    top: var(--top);
+    left: calc(var(--left) + 1px);
+    width: 6px;
+    height: var(--h);
+    overflow: visible;
+}
+
+.lufs-spring .coil polyline {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1px;
+    vector-effect: non-scaling-stroke;
+}
+
+.lufs-spring[data-l="silent"] :is(.coil, .now) {
+    display: none;
 }
 
 /* The info column (#151): left of the cap's widest reach (3 px clear), the

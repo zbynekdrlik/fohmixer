@@ -18,6 +18,8 @@
 //!   asked again at the key's next reading after [`RECONFIRM_MS`], a
 //!   track-list change of a Live, a Live's set name read, a layout or a
 //!   disconnect.
+//! - **The spring's value** ([`voice_of`], mockup v13): an input point also
+//!   tells the pages its `V`, which skips pauses; the number stays `S`.
 //! - **The reading** a matched point shows ([`reading_of`], the owner's
 //!   ruling of 27.10 evening: like Sonible trueLevel): an input point
 //!   (`+LUFS:<target>`) its `S`, pre-fader, as trueLevel's short-term (the
@@ -159,6 +161,12 @@ pub fn reading_of(spec: LufsSpec, first: i16, fader: Fader) -> Option<i16> {
         (Some(false), Some(volume)) => Some(post_fader(first, value2db(volume))),
         _ => None,
     }
+}
+
+/// The value a matched point's spring follows (mockup v13): an input
+/// point's `V` (`second`); an output point has no target, so no spring.
+pub fn voice_of(spec: LufsSpec, second: i16) -> Option<i16> {
+    spec.target.map(|_| second)
 }
 
 /// A meter device's L/R peaks (tenths of dBFS) as Live's meter values after
@@ -434,6 +442,17 @@ struct Device {
     told_unmatched: bool,
 }
 
+/// What a point shows at this moment.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PointNow {
+    tenths: Option<i16>,
+    /// The spring's value ([`voice_of`]).
+    voice: Option<i16>,
+    problem: Option<LufsProblem>,
+    /// Its meter keys' levels.
+    levels: Option<(f64, f64)>,
+}
+
 /// What a point last told the pages, and its state log.
 #[derive(Debug, Clone, PartialEq)]
 struct Shown {
@@ -441,6 +460,7 @@ struct Shown {
     /// in it, is told its state once even when that is `none`).
     told: bool,
     tenths: Option<i16>,
+    voice: Option<i16>,
     problem: Option<LufsProblem>,
     logged: LufsState,
     logged_at: Option<u64>,
@@ -451,6 +471,7 @@ impl Default for Shown {
         Self {
             told: false,
             tenths: None,
+            voice: None,
             problem: None,
             logged: LufsState::None,
             logged_at: None,
@@ -887,13 +908,8 @@ impl Lufs {
         (matched, two)
     }
 
-    /// What a point shows now: its reading, its problem and its meter keys'
-    /// levels.
-    fn point(
-        &self,
-        strip: &LufsStrip,
-        now: u64,
-    ) -> (Option<i16>, Option<LufsProblem>, Option<(f64, f64)>) {
+    /// What a point shows now.
+    fn point(&self, strip: &LufsStrip, now: u64) -> PointNow {
         let (matched, two) = self.covering(strip, DeviceKind::Lufs);
         let grace = self
             .online
@@ -905,9 +921,12 @@ impl Lufs {
             .get(&(strip.instance.clone(), strip.target.clone()))
             .copied()
             .unwrap_or_default();
-        let tenths = match (lufs_problem, matched.as_slice()) {
-            (None, [device]) => reading_of(strip.spec, device.first, fader),
-            _ => None,
+        let (tenths, voice) = match (lufs_problem, matched.as_slice()) {
+            (None, [device]) => (
+                reading_of(strip.spec, device.first, fader),
+                voice_of(strip.spec, device.second),
+            ),
+            _ => (None, None),
         };
         let (meters, meters_two) = self.covering(strip, DeviceKind::Meter);
         let levels = match (meters_two, meters.as_slice()) {
@@ -920,7 +939,12 @@ impl Lufs {
             !meters.is_empty() || meters_two,
             grace,
         ));
-        (tenths, problem, levels)
+        PointNow {
+            tenths,
+            voice,
+            problem,
+            levels,
+        }
     }
 
     /// Every point's reading and problem: a change goes to the pages, a
@@ -929,7 +953,12 @@ impl Lufs {
         let mut acts = Vec::new();
         let strips = self.strips.clone();
         for strip in &strips {
-            let (tenths, problem, levels) = self.point(strip, now);
+            let PointNow {
+                tenths,
+                voice,
+                problem,
+                levels,
+            } = self.point(strip, now);
             let point = (strip.instance.clone(), strip.target.clone());
             if self.levels.get(&point) != levels.as_ref() {
                 match levels {
@@ -954,11 +983,13 @@ impl Lufs {
                 .shown
                 .entry((strip.instance.clone(), strip.target.clone()))
                 .or_default();
-            if !shown.told || (shown.tenths, shown.problem) != (tenths, problem) {
+            if !shown.told || (shown.tenths, shown.voice, shown.problem) != (tenths, voice, problem)
+            {
                 acts.push(Act::Send(LufsItem {
                     instance: strip.instance.clone(),
                     target: strip.target.clone(),
                     tenths,
+                    voice,
                     problem,
                 }));
             }
@@ -967,6 +998,7 @@ impl Lufs {
             }
             shown.told = true;
             shown.tenths = tenths;
+            shown.voice = voice;
             shown.problem = problem;
             let state = judge(tenths, strip.spec.target);
             let since = shown.logged_at.map(|at| now.saturating_sub(at));
@@ -1008,6 +1040,7 @@ impl Lufs {
                     instance: strip.instance.clone(),
                     target: strip.target.clone(),
                     tenths: shown.tenths,
+                    voice: shown.voice,
                     problem: shown.problem,
                 }
             })

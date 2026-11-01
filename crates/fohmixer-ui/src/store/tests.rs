@@ -451,6 +451,7 @@ fn lufs_points_take_each_item_and_a_close_forgets_them() {
         instance: instance.into(),
         target: target.into(),
         tenths,
+        voice: tenths.map(|t: i16| t - 1),
         problem,
     };
     let mut lufs = HubLufs::default();
@@ -471,6 +472,7 @@ fn lufs_points_take_each_item_and_a_close_forgets_them() {
         lufs.point("band", "live_set tracks 1"),
         LufsPoint {
             tenths: Some(-253),
+            voice: Some(-254),
             problem: None
         }
     );
@@ -479,6 +481,7 @@ fn lufs_points_take_each_item_and_a_close_forgets_them() {
         lufs.point("master", "live_set tracks 1"),
         LufsPoint {
             tenths: None,
+            voice: None,
             problem: Some(LufsProblem::NoLufsMeter)
         }
     );

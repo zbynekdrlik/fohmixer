@@ -1608,6 +1608,7 @@ mod tests {
             instance: "band".into(),
             target: target.into(),
             tenths,
+            voice: None,
             problem: None,
         }
     }
