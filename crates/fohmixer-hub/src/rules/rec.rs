@@ -345,7 +345,7 @@ mod tests {
         assert_eq!(change_fields(&base, &base.clone(), 1, "arm"), None);
         // Armed tracks swapped: same count, same watch.
         assert!(change_fields(&base, &state(false, false, &["Vox 2"]), 1, "arm").is_some());
-        // The record button while stopped: the watch stays Ready.
+        // The record button while stopped: Off to Ready.
         assert!(change_fields(&base, &state(false, true, &["Vox 1"]), 1, "record_mode").is_some());
         // The transport with nothing armed: the watch stays Off.
         let idle = state(false, false, &[]);

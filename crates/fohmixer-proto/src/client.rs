@@ -602,10 +602,10 @@ pub const REC_INSTANCE: &str = "band";
 /// What the recording watch says of a Live set (#172).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecWatch {
-    /// Stopped with nothing armed, or playing with neither armed tracks nor
-    /// the record button: nothing to record, nothing missing.
+    /// Stopped with the record button off, or playing with neither armed
+    /// tracks nor the record button: nothing to record, nothing missing.
     Off,
-    /// Stopped with armed tracks.
+    /// Stopped with the record button on: the owner reads the button here.
     Ready,
     /// Playing, the record button on, a track armed.
     Recording,
@@ -619,11 +619,11 @@ impl RecWatch {
     /// What `playing`, the record button and `armed` tracks make.
     pub fn of(playing: bool, record_mode: bool, armed: usize) -> Self {
         match (playing, record_mode, armed > 0) {
-            (false, _, true) => Self::Ready,
+            (false, true, _) => Self::Ready,
             (true, true, true) => Self::Recording,
             (true, false, true) => Self::NotRec,
             (true, true, false) => Self::NoArm,
-            (_, _, false) => Self::Off,
+            (_, false, _) => Self::Off,
         }
     }
 
