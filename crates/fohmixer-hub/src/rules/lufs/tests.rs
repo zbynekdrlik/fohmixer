@@ -365,6 +365,17 @@ fn an_input_points_spring_follows_v_and_a_change_of_v_alone_is_told() {
 }
 
 #[test]
+fn a_moving_v_tells_at_most_one_item_per_datagram() {
+    let mut lufs = matched(Some(-25));
+    let mut items = 0;
+    for n in 0..20 {
+        let acts = lufs.reading(&on_vox(-253, -301 - n), 30 + 200 * n as u64);
+        items += told(&acts).len();
+    }
+    assert_eq!(items, 20);
+}
+
+#[test]
 fn a_problem_tells_no_voice() {
     let mut lufs = matched(Some(-25));
     assert_eq!(lufs.items()[0].voice, Some(-300));

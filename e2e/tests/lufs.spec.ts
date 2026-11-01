@@ -462,6 +462,12 @@ test.describe("The LUFS reading on a strip", () => {
           // `−25.9` fits its own box: no scroll.
           expect(await lufs.evaluate((e) => e.scrollWidth <= e.clientWidth), `${kind} ${px} px: the number fits`).toBe(true);
         }
+        // The spring stays clear of the info column at every width.
+        if (kind === "IN") {
+          const goal = (await s.getByTestId("spring-goal").boundingBox())!;
+          const col = (await s.getByTestId("strip-col").boundingBox())!;
+          expect(goal.x, `${px} px: the target's line clear of the column`).toBeGreaterThanOrEqual(col.x + col.width);
+        }
         // Never over the group's name (Vox 1 is its run's first strip).
         const side = s.getByTestId("group-side");
         if ((await side.count()) > 0) {

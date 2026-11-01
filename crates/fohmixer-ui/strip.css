@@ -249,6 +249,12 @@
     background: rgba(255, 255, 255, 0.5);
 }
 
+/* A narrow strip: the target's line starts clear of the info column. */
+:is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .lufs-spring .goal {
+    left: var(--left);
+    width: 18px;
+}
+
 .lufs-spring .now {
     top: var(--now);
     left: var(--left);
