@@ -398,6 +398,7 @@ mod tests {
 
     use super::super::tests::{attach, offline_router, records};
     use super::*;
+    use crate::live::client::LiveError;
     use fohmixer_proto::client::RecTrack;
 
     fn item(sub: &str, value: Option<Value>, error: Option<&str>) -> ValueItem {
@@ -543,6 +544,86 @@ mod tests {
         router.states.get_mut(REC_INSTANCE).unwrap().online = false;
         router.handle(RouterMsg::RecModeRetry);
         assert_eq!(router.rec.mode_key, None);
+    }
+
+    /// Whether a `RecModeRetry` comes within two delays.
+    async fn mode_retry_comes(rx: &mut tokio::sync::mpsc::UnboundedReceiver<RouterMsg>) -> bool {
+        tokio::time::sleep(Duration::from_millis(2 * RETRY_MS)).await;
+        std::iter::from_fn(|| rx.try_recv().ok()).any(|m| matches!(m, RouterMsg::RecModeRetry))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_record_buttons_retry_comes_only_within_the_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, mut rx, _records) = offline_router(dir.path());
+        router.rec_mode_failed("no listener");
+        assert!(mode_retry_comes(&mut rx).await, "within the bound");
+        router.rec.mode_failures = CONNECT_RETRIES;
+        router.rec_mode_failed("no listener");
+        assert!(!mode_retry_comes(&mut rx).await, "past the bound");
+    }
+
+    #[tokio::test]
+    async fn every_read_has_a_number_of_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, _rx, _records) = offline_router(dir.path());
+        router.rec.list = Some(json!([]));
+        router.rec_read();
+        assert_eq!(router.rec.reading, Some(1));
+        router.rec_read();
+        assert_eq!(router.rec.reading, Some(2));
+    }
+
+    #[tokio::test]
+    async fn a_failed_read_waits_for_its_retry_only_while_live_may_still_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, _rx, _records) = offline_router(dir.path());
+        router.rec.list = Some(json!([]));
+        router.rec_read();
+        router.rec_read_done(1, Err(LiveError::Timeout.to_string()));
+        assert_eq!(router.rec.reading, Some(1), "a retry comes");
+        assert_eq!(router.rec.failures, 1);
+        router.rec_read_done(1, Err(LiveError::Timeout.to_string()));
+        assert_eq!(router.rec.failures, 2);
+        router.rec_read_done(1, Err("refused".to_string()));
+        assert_eq!(router.rec.reading, None, "a refusal ends it");
+    }
+
+    #[tokio::test]
+    async fn no_change_tells_the_pages_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, _rx, _records) = offline_router(dir.path());
+        settled(&mut router);
+        let page = attach(&mut router, 1);
+        let _ = page.take();
+        router.rec_changed("arm");
+        assert_eq!(page.take(), Some(Vec::new()));
+    }
+
+    #[tokio::test]
+    async fn a_due_retry_reads_only_the_newest_read_of_a_live_online() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, _rx, _records) = offline_router(dir.path());
+        router.rec.list = Some(json!([]));
+        router.rec_read();
+        router.rec_retry(1);
+        assert_eq!(router.rec.reading, Some(1), "offline: no new read");
+        online(&mut router);
+        router.rec_retry(7);
+        assert_eq!(router.rec.reading, Some(1), "another read: no new read");
+        router.rec_retry(1);
+        assert_eq!(router.rec.reading, Some(2), "read again");
+    }
+
+    #[tokio::test]
+    async fn an_offline_live_ends_every_arm_subscription() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut router, _rx, _records) = offline_router(dir.path());
+        settled(&mut router);
+        assert!(router.subs.clients_of(&arm_key(0)).contains(&REC_CLIENT));
+        router.rec_offline(REC_INSTANCE);
+        assert!(router.rec.arms.is_empty());
+        assert!(!router.subs.clients_of(&arm_key(0)).contains(&REC_CLIENT));
     }
 
     #[test]

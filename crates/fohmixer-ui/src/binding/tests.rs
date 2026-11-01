@@ -1075,6 +1075,12 @@ fn a_stage_with_aut_reads_its_lives_transport_too() {
         "master|live_set|is_playing|false"
     );
     assert_eq!(record_spec().key(), "band|live_set|record_mode|false");
+    assert_eq!(
+        arm_spec(&track("Klavir #", None))
+            .map(|s| s.key())
+            .as_deref(),
+        Some("band|live_set tracks[name=Klavir #]|arm|false")
+    );
 }
 
 #[test]
