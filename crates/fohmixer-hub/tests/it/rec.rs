@@ -195,6 +195,46 @@ fn a_track_list_change_reads_the_armable_tracks_again() {
 }
 
 #[test]
+fn a_track_list_change_never_shows_a_false_state() {
+    let _guard = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = Host::start("band");
+        let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        let mut client = hub.client().await;
+        rec_until(&mut client, |s| s.tracks.len() == ARMABLE).await;
+        client.set("band", TRACK, "arm", json!(true)).await;
+        rec_until(&mut client, |s| s.armed() == 1).await;
+        client.clear();
+
+        // Every state told through the change holds the one armed track.
+        assert!(host.delete_track(0) >= 0);
+        let deadline = std::time::Instant::now() + SECS_5;
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let msg = client.next_message(left).await.expect("the new list");
+            if let ServerMsg::Rec(s) = msg {
+                assert_eq!(s.armed(), 1, "{s:?}");
+                if s.tracks.len() == ARMABLE - 1 {
+                    break;
+                }
+            }
+        }
+        // The armed track never changed: no record says it went.
+        let all = records(&hub);
+        assert!(
+            !all.iter()
+                .any(|r| r["prev"] == "ready" && r["state"] == "off"),
+            "{all:?}"
+        );
+
+        client.close().await;
+        hub.stop().await;
+        host.stop();
+    });
+}
+
+#[test]
 fn a_lost_live_forgets_the_state_and_logs_it() {
     let _guard = serial();
     runtime().block_on(async {

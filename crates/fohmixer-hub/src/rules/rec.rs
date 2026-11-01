@@ -18,6 +18,8 @@ pub struct Rec {
     record_mode: Option<bool>,
     /// The armable tracks by index: name and `arm` (none until heard).
     tracks: BTreeMap<u32, (String, Option<bool>)>,
+    /// How many tracks can be armed, heard or not.
+    armable: usize,
 }
 
 impl Rec {
@@ -29,12 +31,29 @@ impl Rec {
         self.record_mode = record_mode;
     }
 
-    /// The armable tracks now: every `arm` starts unheard.
+    /// The armable tracks now. A track that stays keeps its `arm`: one of
+    /// that name at that index, else the only one of that name (a moved
+    /// track). Any other starts unheard.
     pub fn set_tracks(&mut self, tracks: Vec<(u32, String)>) {
+        self.armable = tracks.len();
+        let old = std::mem::take(&mut self.tracks);
         self.tracks = tracks
             .into_iter()
-            .map(|(index, name)| (index, (name, None)))
+            .map(|(index, name)| {
+                let arm = kept_arm(&old, index, &name);
+                (index, (name, arm))
+            })
             .collect();
+    }
+
+    /// How many tracks can be armed, heard or not.
+    pub fn armable(&self) -> usize {
+        self.armable
+    }
+
+    /// Whether track `index`'s `arm` is known.
+    pub fn arm_known(&self, index: u32) -> bool {
+        self.tracks.get(&index).is_some_and(|t| t.1.is_some())
     }
 
     /// Track `index`'s `arm` (none: not known any more).
@@ -66,6 +85,20 @@ impl Rec {
                 })
                 .collect(),
         }
+    }
+}
+
+/// The `arm` a track of the new list keeps from the old one.
+fn kept_arm(old: &BTreeMap<u32, (String, Option<bool>)>, index: u32, name: &str) -> Option<bool> {
+    if let Some((same, arm)) = old.get(&index)
+        && same == name
+    {
+        return *arm;
+    }
+    let mut named = old.values().filter(|(same, _)| same == name);
+    match (named.next(), named.next()) {
+        (Some((_, arm)), None) => *arm,
+        _ => None,
     }
 }
 
@@ -106,7 +139,12 @@ pub fn silent(before: &RecState, now: &RecState) -> bool {
 /// The `rec` record of a change from `before` to `now` (`why`: what
 /// changed): none while the transport, the record button and the armed
 /// tracks all stay (they make the watch), or while the watch is [`silent`].
-pub fn change_fields(before: &RecState, now: &RecState, why: &str) -> Option<Value> {
+pub fn change_fields(
+    before: &RecState,
+    now: &RecState,
+    armable: usize,
+    why: &str,
+) -> Option<Value> {
     let same = silent(before, now)
         || before.playing == now.playing
             && before.record_mode == now.record_mode
@@ -120,7 +158,7 @@ pub fn change_fields(before: &RecState, now: &RecState, why: &str) -> Option<Val
             "record_mode": now.record_mode,
             "armed": now.armed(),
             "armed_tracks": armed_names(now),
-            "armable": now.tracks.len(),
+            "armable": armable,
         })
     })
 }
@@ -162,10 +200,47 @@ mod tests {
         );
         rec.set_arm(4, None);
         assert!(rec.state().tracks.is_empty(), "known no more");
-        // A new list starts every arm unheard.
+        assert!(!rec.arm_known(4));
         rec.set_arm(1, Some(false));
-        rec.set_tracks(vec![(1, "Vox 1".into())]);
-        assert!(rec.state().tracks.is_empty());
+        assert!(rec.arm_known(1));
+    }
+
+    #[test]
+    fn a_track_that_stays_keeps_its_arm_through_a_new_list() {
+        let mut rec = rec();
+        rec.set_arm(1, Some(true));
+        rec.set_arm(4, Some(false));
+        // Vox 1 moved to index 0, Vox 2 stayed, a new track and a new name
+        // at Vox 1's old index start unheard.
+        rec.set_tracks(vec![
+            (0, "Vox 1".into()),
+            (1, "New".into()),
+            (4, "Vox 2".into()),
+        ]);
+        assert_eq!(rec.armable(), 3);
+        assert_eq!(rec.state().armed(), 1);
+        assert!(rec.arm_known(0) && rec.arm_known(4));
+        assert!(!rec.arm_known(1));
+        // Two of one name: only the one at its own index is known to stay.
+        let mut twin = Rec::default();
+        twin.set_tracks(vec![(1, "Keys".into()), (5, "Keys".into())]);
+        twin.set_arm(1, Some(true));
+        twin.set_arm(5, Some(false));
+        twin.set_tracks(vec![(1, "Keys".into()), (3, "Keys".into())]);
+        assert!(twin.arm_known(1));
+        assert!(!twin.arm_known(3));
+    }
+
+    #[test]
+    fn the_armable_count_holds_tracks_whose_arm_is_not_heard_yet() {
+        let mut rec = rec();
+        rec.set_arm(1, Some(true));
+        assert_eq!(rec.armable(), 2);
+        assert_eq!(rec.state().tracks.len(), 1);
+        let fields = change_fields(&RecState::default(), &rec.state(), rec.armable(), "tracks");
+        assert_eq!(fields.unwrap()["armable"], json!(2));
+        rec.clear();
+        assert_eq!(rec.armable(), 0);
     }
 
     #[test]
@@ -220,7 +295,7 @@ mod tests {
         let before = state(true, true, &["Vox 1", "Vox 2"]);
         let now = state(false, true, &["Vox 1", "Vox 2"]);
         assert_eq!(
-            change_fields(&before, &now, "transport"),
+            change_fields(&before, &now, 2, "transport"),
             Some(json!({
                 "state": "ready",
                 "prev": "recording",
@@ -243,12 +318,12 @@ mod tests {
             tracks: Vec::new(),
         };
         assert!(silent(&unheard, &playing));
-        assert_eq!(change_fields(&unheard, &playing, "transport"), None);
+        assert_eq!(change_fields(&unheard, &playing, 0, "transport"), None);
         // A set that was heard and went is news; so is its first word.
         let heard = state(false, false, &[]);
         assert!(!silent(&heard, &unheard));
         assert!(!silent(&unheard, &heard));
-        assert!(change_fields(&heard, &unheard, "offline").is_some());
+        assert!(change_fields(&heard, &unheard, 0, "offline").is_some());
         let tracks = RecState {
             playing: None,
             record_mode: None,
@@ -260,14 +335,14 @@ mod tests {
     #[test]
     fn each_input_makes_a_record_and_nothing_else_does() {
         let base = state(false, false, &["Vox 1"]);
-        assert_eq!(change_fields(&base, &base.clone(), "arm"), None);
+        assert_eq!(change_fields(&base, &base.clone(), 1, "arm"), None);
         // Armed tracks swapped: same count, same watch.
-        assert!(change_fields(&base, &state(false, false, &["Vox 2"]), "arm").is_some());
+        assert!(change_fields(&base, &state(false, false, &["Vox 2"]), 1, "arm").is_some());
         // The record button while stopped: the watch stays Ready.
-        assert!(change_fields(&base, &state(false, true, &["Vox 1"]), "record_mode").is_some());
+        assert!(change_fields(&base, &state(false, true, &["Vox 1"]), 1, "record_mode").is_some());
         // The transport with nothing armed: the watch stays Off.
         let idle = state(false, false, &[]);
-        assert!(change_fields(&idle, &state(true, false, &[]), "transport").is_some());
+        assert!(change_fields(&idle, &state(true, false, &[]), 0, "transport").is_some());
         // Not armed, but one more armable track: no record.
         let mut more = base.clone();
         more.tracks.push(RecTrack {
@@ -275,7 +350,7 @@ mod tests {
             name: "Vox 3".into(),
             arm: false,
         });
-        assert_eq!(change_fields(&base, &more, "tracks"), None);
+        assert_eq!(change_fields(&base, &more, 2, "tracks"), None);
         // An arm that turns a playing set into a recording.
         assert!(
             change_fields(

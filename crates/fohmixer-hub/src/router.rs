@@ -472,6 +472,8 @@ pub enum RouterMsg {
     RecRetry {
         read: u64,
     },
+    /// A failed `record_mode` subscription is due again (#172).
+    RecModeRetry,
     /// A LUFS device's reading the listener took (#151, `lufs_udp.rs`).
     Lufs {
         reading: fohmixer_proto::lufs::wire::Reading,
@@ -1187,6 +1189,7 @@ impl Router {
             RouterMsg::SongMapRetry { instance, read_no } => self.songmap_retry(&instance, read_no),
             RouterMsg::RecRead { read, outcome } => self.rec_read_done(read, outcome),
             RouterMsg::RecRetry { read } => self.rec_retry(read),
+            RouterMsg::RecModeRetry => self.rec_mode_retry(),
             RouterMsg::Lufs { reading } => self.lufs_reading(&reading),
             RouterMsg::LufsTick => self.lufs_tick(),
             RouterMsg::LufsConfirmed {
@@ -1251,6 +1254,8 @@ impl Router {
                 self.songmap_connected(instance);
                 // LUFS reads the set's name (#151).
                 self.lufs_connected(instance);
+                // The recording watch follows the record button (#172).
+                self.rec_connected(instance);
                 self.broadcast_instance(instance);
             }
             LiveEvent::Closed { why } => {
