@@ -18,6 +18,7 @@ pub mod overlay;
 pub mod pan;
 pub mod params;
 pub mod rail;
+pub mod rec;
 pub mod strip;
 
 use fohmixer_proto::client::set_key;

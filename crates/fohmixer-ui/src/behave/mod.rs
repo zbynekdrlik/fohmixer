@@ -13,8 +13,9 @@
 //! fader link's marks and same-dB move (#130, `fader_link`), REVERB's
 //! button and the faders' marks (#130, `reverb`), AUTOTUNE's button
 //! (#104, D19, `autotune`), the strip's marks line (#151, `marks`) and
-//! its loudness reading (#151, `lufs`), and the sectors page's reorder
-//! mode, ARRANGE (#148, `arrange_drag`).
+//! its loudness reading (#151, `lufs`), the sectors page's reorder
+//! mode, ARRANGE (#148, `arrange_drag`), and the recording watch's looks
+//! (#172, `rec`).
 
 pub mod ableset;
 pub mod arrange_drag;
@@ -39,6 +40,7 @@ pub mod mute;
 pub mod pan;
 pub mod peak;
 pub mod rail;
+pub mod rec;
 pub mod reverb;
 pub mod scale;
 pub mod solo;

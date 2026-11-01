@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::mem::discriminant;
 
-use fohmixer_proto::client::{METER_PROPS, hub_key, set_key};
+use fohmixer_proto::client::{METER_PROPS, REC_INSTANCE, hub_key, set_key};
 use fohmixer_proto::layout::{
     Anchor, Binding, Control, Layout, MeterSource, Page, ParamTarget, Section, Strip, StripMark,
 };
@@ -285,6 +285,16 @@ pub fn mute_sub(binding: &Binding) -> Option<SubSpec> {
 /// second line follows it.
 pub fn transport_sub(instance: &str) -> SubSpec {
     SubSpec::new(instance, "live_set".into(), "is_playing", false)
+}
+
+/// Live's record button (#172): what the foot's REC key writes.
+pub fn record_spec() -> SubSpec {
+    SubSpec::new(REC_INSTANCE, "live_set".into(), "record_mode", false)
+}
+
+/// A strip's track's `arm` (#172): what its ARM key writes.
+pub fn arm_spec(binding: &Binding) -> Option<SubSpec> {
+    spec(binding, "", "arm", false)
 }
 
 /// The subscriptions of a former MIDI control's targets, in target order

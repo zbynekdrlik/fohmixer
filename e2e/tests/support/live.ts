@@ -404,6 +404,8 @@ export class LiveClient {
   reverb: any = null;
   /** The hub's last AUTOTUNE state (#104: `ServerMsg::Autotune`, told to every client). */
   autotune: any = null;
+  /** The hub's last recording watch (#172: `ServerMsg::Rec`, told to every client). */
+  rec: any = null;
   /** The hub's last fader sectors (#148: `ServerMsg::Sectors`, `{doc}`, told to every client). */
   sectors: any = null;
 
@@ -414,6 +416,7 @@ export class LiveClient {
       if (msg.type === "hub") this.hub.set(msg.key, msg.value);
       if (msg.type === "reverb") this.reverb = msg;
       if (msg.type === "autotune") this.autotune = msg;
+      if (msg.type === "rec") this.rec = msg;
       if (msg.type === "sectors") this.sectors = msg;
       if ((msg.type === "result" || msg.type === "error") && msg.id && this.waiting.has(msg.id)) {
         this.waiting.get(msg.id)!(msg);

@@ -531,10 +531,19 @@
         line-height: 9px;
     }
 
+    /* REC beside the version (#172), on the same row: the foot keeps its
+       two rows. */
+    .column .status-cluster .rec-key {
+        grid-row: 2;
+        grid-column: 2;
+        justify-self: end;
+        line-height: 9px;
+    }
+
     .column .status-cluster .version {
         grid-row: 2;
-        grid-column: 2 / 4;
-        justify-self: center;
+        grid-column: 3;
+        justify-self: start;
         line-height: 9px;
     }
 

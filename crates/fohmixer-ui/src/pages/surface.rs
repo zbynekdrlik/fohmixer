@@ -41,6 +41,7 @@ use crate::binding::{
 };
 use crate::components::detail::{DetailStrip, DetailView};
 use crate::components::eq::{EqNav, EqScreen, EqTarget};
+use crate::components::rec::RecKey;
 use crate::components::{ControlView, Settings, fail_flash, key_of, owns_surface, owns_touches};
 use crate::diag;
 use crate::diag::trace::{self, IemStep};
@@ -1694,6 +1695,7 @@ fn StatusCluster() -> impl IntoView {
             // `display: contents`), so a low phone's foot wraps a third
             // instance's badge under the others (#148 review).
             <span class="badges">{badges}</span>
+            <RecKey />
             <span class="version" data-testid="version">{version_text()}</span>
             <ManualChip />
         </div>

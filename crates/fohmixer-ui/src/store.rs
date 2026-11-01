@@ -33,7 +33,7 @@ mod live;
 
 use std::collections::BTreeMap;
 
-use fohmixer_proto::client::{AutotuneState, LufsItem, ReverbState};
+use fohmixer_proto::client::{AutotuneState, LufsItem, RecState, ReverbState};
 use fohmixer_proto::lufs::LufsProblem;
 use fohmixer_proto::sectors::SectorsDoc;
 use serde_json::{Value, json};
@@ -371,6 +371,9 @@ impl<T> HubTold<T> {
 
 /// REVERB's state as the hub last told it (#130).
 pub type HubReverb = HubTold<ReverbState>;
+
+/// The recording watch's state as the hub last told it (#172).
+pub type HubRec = HubTold<RecState>;
 
 /// AUTOTUNE's state as the hub last told it (#104).
 pub type HubAutotune = HubTold<AutotuneState>;

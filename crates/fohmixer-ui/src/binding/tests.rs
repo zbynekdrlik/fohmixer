@@ -1074,6 +1074,7 @@ fn a_stage_with_aut_reads_its_lives_transport_too() {
         transport_sub("master").key(),
         "master|live_set|is_playing|false"
     );
+    assert_eq!(record_spec().key(), "band|live_set|record_mode|false");
 }
 
 #[test]
