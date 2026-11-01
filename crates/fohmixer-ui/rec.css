@@ -120,7 +120,7 @@
 .rec-key::after {
     content: "";
     position: absolute;
-    inset: -5px -4px -8px;
+    inset: -5px -4px -4px;
 }
 
 .rec-key[data-state="ready"],

@@ -15,6 +15,8 @@ const SECS_5: Duration = Duration::from_secs(5);
 const TRACK: &str = "live_set tracks 1";
 /// Vocals Repro grp#, a group.
 const GROUP: u32 = 4;
+/// The fixture's tracks but its two groups.
+const ARMABLE: usize = 13;
 
 /// The first `rec` message that passes `check`.
 async fn rec_until(client: &mut Client, check: impl Fn(&RecState) -> bool) -> RecState {
@@ -55,7 +57,7 @@ fn the_watch_follows_a_recording_to_its_stop_and_logs_why() {
         let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
         let mut client = hub.client().await;
         // The armable tracks, a group's left out, every arm heard and off.
-        let told = rec_until(&mut client, |s| !s.tracks.is_empty()).await;
+        let told = rec_until(&mut client, |s| s.tracks.len() == ARMABLE).await;
         assert!(told.tracks.iter().all(|t| !t.arm), "{told:?}");
         assert!(
             told.tracks
@@ -160,23 +162,31 @@ fn a_track_list_change_reads_the_armable_tracks_again() {
         let mut host = Host::start("band");
         let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
         let mut client = hub.client().await;
-        rec_until(&mut client, |s| !s.tracks.is_empty()).await;
+        rec_until(&mut client, |s| s.tracks.len() == ARMABLE).await;
         client.set("band", TRACK, "arm", json!(true)).await;
         rec_until(&mut client, |s| s.armed() == 1).await;
 
         // Hand1 # goes: Hand2 #, armed, is index 0 now, and still followed.
         assert!(host.delete_track(0) >= 0);
         let moved = rec_until(&mut client, |s| {
-            s.tracks.iter().any(|t| t.index == 0 && t.arm)
+            s.tracks
+                .iter()
+                .any(|t| t.index == 0 && t.arm && t.name == "Hand2 #")
         })
         .await;
-        assert_eq!(moved.armed(), 1);
         assert_eq!(moved.tracks[0].name, "Hand2 #");
+        rec_until(&mut client, |s| {
+            s.armed() == 1 && s.tracks.len() == ARMABLE - 1
+        })
+        .await;
         client.clear();
         client
             .set("band", "live_set tracks 0", "arm", json!(false))
             .await;
-        rec_until(&mut client, |s| s.armed() == 0 && !s.tracks.is_empty()).await;
+        rec_until(&mut client, |s| {
+            s.armed() == 0 && s.tracks.len() == ARMABLE - 1
+        })
+        .await;
 
         client.close().await;
         hub.stop().await;
@@ -192,7 +202,7 @@ fn a_lost_live_forgets_the_state_and_logs_it() {
         let host = Host::start("band");
         let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
         let mut client = hub.client().await;
-        rec_until(&mut client, |s| !s.tracks.is_empty()).await;
+        rec_until(&mut client, |s| s.tracks.len() == ARMABLE).await;
         client.set("band", TRACK, "arm", json!(true)).await;
         rec_until(&mut client, |s| s.armed() == 1).await;
         client.clear();

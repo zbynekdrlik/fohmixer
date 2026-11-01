@@ -1732,9 +1732,7 @@ impl Router {
             self.lufs_lists();
             self.rec_lists();
         }
-        for item in rec_items {
-            self.rec_value(&item.sub, item.value.as_ref(), item.error.as_deref());
-        }
+        self.rec_values(rec_items);
         for item in lufs_items {
             self.lufs_value(&item.sub, item.value);
         }

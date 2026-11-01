@@ -96,13 +96,21 @@ pub fn armable(
     Ok(out)
 }
 
+/// Whether the watch has heard nothing of the set yet but the transport,
+/// which the `transport` record tells: nothing to say to a page or the log.
+pub fn silent(before: &RecState, now: &RecState) -> bool {
+    let blank = |s: &RecState| s.record_mode.is_none() && s.tracks.is_empty();
+    blank(before) && blank(now)
+}
+
 /// The `rec` record of a change from `before` to `now` (`why`: what
 /// changed): none while the transport, the record button and the armed
-/// tracks all stay (they make the watch).
+/// tracks all stay (they make the watch), or while the watch is [`silent`].
 pub fn change_fields(before: &RecState, now: &RecState, why: &str) -> Option<Value> {
-    let same = before.playing == now.playing
-        && before.record_mode == now.record_mode
-        && armed_names(before) == armed_names(now);
+    let same = silent(before, now)
+        || before.playing == now.playing
+            && before.record_mode == now.record_mode
+            && armed_names(before) == armed_names(now);
     (!same).then(|| {
         json!({
             "state": now.watch().name(),
@@ -224,6 +232,29 @@ mod tests {
                 "armable": 2,
             }))
         );
+    }
+
+    #[test]
+    fn the_transport_alone_says_nothing() {
+        let unheard = RecState::default();
+        let playing = RecState {
+            playing: Some(true),
+            record_mode: None,
+            tracks: Vec::new(),
+        };
+        assert!(silent(&unheard, &playing));
+        assert_eq!(change_fields(&unheard, &playing, "transport"), None);
+        // A set that was heard and went is news; so is its first word.
+        let heard = state(false, false, &[]);
+        assert!(!silent(&heard, &unheard));
+        assert!(!silent(&unheard, &heard));
+        assert!(change_fields(&heard, &unheard, "offline").is_some());
+        let tracks = RecState {
+            playing: None,
+            record_mode: None,
+            tracks: state(false, false, &["Vox 1"]).tracks,
+        };
+        assert!(!silent(&unheard, &tracks));
     }
 
     #[test]

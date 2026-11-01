@@ -8,8 +8,7 @@
 //!   (`retries.rs`);
 //! - follows `live_set record_mode` and each armable track's `arm` with its
 //!   own subscriber [`REC_CLIENT`] (in the `Status` `own` lists), so the
-//!   watch holds with no page open; the list's indexes may name other
-//!   tracks after a change, so every `arm` is followed afresh;
+//!   watch holds with no page open;
 //! - takes the transport from the rules' own (`on_transport`);
 //! - tells every page ([`ServerMsg::Rec`]) on a change and at attach, and
 //!   logs each change of the transport, the record button or the armed
@@ -22,7 +21,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use fohmixer_proto::client::{REC_INSTANCE, RecState, ServerMsg, hub_key};
+use fohmixer_proto::client::{REC_INSTANCE, RecState, ServerMsg, ValueItem, hub_key};
 use serde_json::Value;
 
 use super::lufs::{item_name, mute_of, read_again};
@@ -32,7 +31,7 @@ use super::{Router, RouterMsg};
 use crate::eq::walk::{answered, get};
 use crate::live::subs::{Cached, ClientId};
 use crate::outbox::Outbox;
-use crate::rules::rec::{Rec, armable, change_fields};
+use crate::rules::rec::{Rec, armable, change_fields, silent};
 
 /// The watch's own subscriber (`record_mode`, the tracks' `arm`).
 pub const REC_CLIENT: ClientId = ClientId::MAX - 6;
@@ -184,8 +183,7 @@ impl Router {
         }
     }
 
-    /// Follows the `arm` of `tracks`, the old ones dropped (an index may
-    /// name another track now).
+    /// Follows the `arm` of `tracks`, the old ones dropped.
     fn rec_follow(&mut self, tracks: Vec<(u32, String)>) {
         tracing::info!(armable = tracks.len(), "rec: the armable tracks are read");
         self.rec_unfollow();
@@ -218,18 +216,24 @@ impl Router {
         }
     }
 
-    /// A delivery of the watch's subscriptions.
-    pub(super) fn rec_value(&mut self, sub: &str, value: Option<&Value>, error: Option<&str>) {
-        if let Some(error) = error {
-            tracing::warn!(key = %sub, error = %error, "rec: a subscription failed");
+    /// The deliveries of one flush of the watch's subscriptions, told once.
+    pub(super) fn rec_values(&mut self, items: Vec<ValueItem>) {
+        let mut why = None;
+        for item in items {
+            if let Some(error) = &item.error {
+                tracing::warn!(key = %item.sub, error = %error, "rec: a subscription failed");
+            }
+            let heard = item.value.as_ref().and_then(mute_of);
+            if self.rec.mode_key.as_deref() == Some(item.sub.as_str()) {
+                self.rec.rule.set_record_mode(heard);
+                why = Some(RECORD_MODE);
+            } else if let Some(index) = self.rec.arms.get(&item.sub).copied() {
+                self.rec.rule.set_arm(index, heard);
+                why = why.or(Some("arm"));
+            }
         }
-        let heard = value.and_then(mute_of);
-        if self.rec.mode_key.as_deref() == Some(sub) {
-            self.rec.rule.set_record_mode(heard);
-            self.rec_changed(RECORD_MODE);
-        } else if let Some(index) = self.rec.arms.get(sub).copied() {
-            self.rec.rule.set_arm(index, heard);
-            self.rec_changed("arm");
+        if let Some(why) = why {
+            self.rec_changed(why);
         }
     }
 
@@ -271,12 +275,12 @@ impl Router {
             );
             self.io.events.record("rec", fields);
         }
-        if now != self.rec.told {
+        if now != self.rec.told && !silent(&self.rec.told, &now) {
             for outbox in self.clients.values() {
                 outbox.reply(ServerMsg::Rec(now.clone()));
             }
-            self.rec.told = now;
         }
+        self.rec.told = now;
     }
 
     /// A page's attach: the state now.
