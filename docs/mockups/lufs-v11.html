@@ -1811,7 +1811,7 @@ const T = {
     fl: { name: "Fill L", tc: "#A6BE00", gc: MASTER, db: -6, L: -16, R: -70, pk: -11 },
     fr: { name: "Fill R", tc: "#A6BE00", gc: MASTER, db: -6, L: -70, R: -16, pk: -11 },
     dly: { name: "Delay", tc: "#8BC5FF", gc: MASTER, db: -14, L: -33, R: -31, pk: -26 },
-    out: { name: "PA Out", tc: "#C4C4C4", gc: MASTER, db: 0, L: -8, R: -9, pk: -4, lufs: -17.8, target: -20, wide: true },
+    out: { name: "PA Out", tc: "#C4C4C4", gc: MASTER, db: 0, L: -8, R: -9, pk: -4, lufs: -17.8, target: -20, out: true, wide: true },
 };
 
 function linkMark(cls, state, n) {
@@ -1849,7 +1849,7 @@ function stripHead(m) {
     if ("lufs" in m) {
         const j = look(m.lufs, m.target);
         readout.append(el("span", "rl", { "data-l": j.l, text: j.text }));
-        readout.append(el("span", "rk", { "data-shown": String(j.l !== "none"), text: m.target === null ? "OUT" : "IN" }));
+        readout.append(el("span", "rk", { "data-shown": String(j.l !== "none"), text: (m.target === null || m.out) ? "OUT" : "IN" }));
     }
     readout.append(el("span", m.db === 0 ? "db unity" : "db", { text: dbText(m.db) }));
     info.append(readout);
@@ -1884,7 +1884,7 @@ function zone(m) {
     if ("lufs" in m) {
         const j = look(m.lufs, m.target);
         const cap = el("div", "lcap", { "data-shown": String(j.l !== "none") });
-        cap.append(el("span", "", { text: "LUFS" }), el("span", "", { text: m.target === null ? "OUT" : "IN" }));
+        cap.append(el("span", "", { text: "LUFS" }), el("span", "", { text: (m.target === null || m.out) ? "OUT" : "IN" }));
         // One span per character: the upright variants stack them.
         const n = el("div", "lufs", { "data-l": j.l });
         for (const ch of j.text) n.append(el("span", ch === "." ? "g dot" : ch === "−" ? "g sign" : "g", { text: ch }));
