@@ -73,11 +73,11 @@ fn the_watch_follows_a_recording_to_its_stop_and_logs_why() {
             .write("band", TRACK, "arm", json!(true), 1, true)
             .await;
         let armed = rec_until(&mut client, |s| s.armed() == 1).await;
-        assert_eq!(armed.watch(), RecWatch::Ready);
+        assert_eq!(armed.watch(), RecWatch::Off, "the record button is off");
         client
             .write("band", "live_set", "record_mode", json!(true), 2, true)
             .await;
-        rec_until(&mut client, |s| s.record_mode == Some(true)).await;
+        rec_until(&mut client, |s| s.watch() == RecWatch::Ready).await;
         transport(&mut client, "start_playing").await;
         rec_until(&mut client, |s| s.watch() == RecWatch::Recording).await;
 
@@ -119,7 +119,7 @@ fn the_watch_follows_a_recording_to_its_stop_and_logs_why() {
             })
             .collect();
         for step in [
-            ("ready", "arm"),
+            ("ready", "record_mode"),
             ("recording", "transport"),
             ("not_rec", "record_mode"),
             ("no_arm", "arm"),
@@ -225,7 +225,8 @@ fn a_track_list_change_never_shows_a_false_state() {
         let all = records(&hub);
         assert!(
             !all.iter()
-                .any(|r| r["prev"] == "ready" && r["state"] == "off"),
+                .skip_while(|r| r["armed"] != json!(1))
+                .any(|r| r["armed"] != json!(1)),
             "{all:?}"
         );
 
@@ -260,7 +261,7 @@ fn a_lost_live_forgets_the_state_and_logs_it() {
             .into_iter()
             .rfind(|r| r["ev"] == "rec")
             .expect("the record");
-        assert_eq!(logged["prev"], json!("ready"));
+        assert_eq!(logged["armed_tracks"], json!([]));
         assert_eq!(logged["armed"], json!(0));
         client.close().await;
         hub.stop().await;

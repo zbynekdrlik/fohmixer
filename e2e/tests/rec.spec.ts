@@ -64,7 +64,8 @@ test.describe("The recording watch", () => {
 
     await dispatchPointer(key, HOLD);
     await expect(key).toHaveAttribute("data-state", "armed");
-    await expect(recKey(page)).toHaveAttribute("data-state", "ready");
+    // The foot says the record button, which is off, whatever is armed.
+    await expect(recKey(page)).toHaveAttribute("data-state", "off");
     await expect(recKey(page)).toHaveText("REC");
     expect(await live.get("band", TRACK, "arm")).toBe(true);
     // No box: the dot alone, 6 px, on the invisible touch area.
@@ -104,6 +105,7 @@ test.describe("The recording watch", () => {
     await dispatchPointer(foot, TAP);
     await dispatchPointer(foot, HOLD);
     await until(() => live.get("band", "live_set", "record_mode"), (on) => on === true, "the record button on");
+    await expect(foot).toHaveAttribute("data-state", "ready");
 
     // Playing with the record button on and nothing armed.
     await live.call("band", "live_set", "start_playing");
@@ -127,7 +129,7 @@ test.describe("The recording watch", () => {
     expect(await live.get("band", "live_set", "record_mode")).toBe(false);
 
     await live.call("band", "live_set", "stop_playing");
-    await expect(foot).toHaveAttribute("data-state", "ready");
+    await expect(foot).toHaveAttribute("data-state", "off");
 
     const want = ["press", "tap", "press", "full", "hold", "press", "full", "hold"];
     expect(await steps("rec", since, (s) => s.length >= want.length)).toEqual(want);

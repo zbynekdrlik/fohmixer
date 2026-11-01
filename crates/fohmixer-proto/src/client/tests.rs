@@ -1982,9 +1982,9 @@ fn the_colors_status_reads_as_written_and_defaults_for_an_older_hub() {
 fn the_recording_watch_says_each_state() {
     let cases = [
         (false, false, 0, RecWatch::Off, "off"),
-        (false, true, 0, RecWatch::Off, "off"),
+        (false, false, 1, RecWatch::Off, "off"),
         (true, false, 0, RecWatch::Off, "off"),
-        (false, false, 1, RecWatch::Ready, "ready"),
+        (false, true, 0, RecWatch::Ready, "ready"),
         (false, true, 2, RecWatch::Ready, "ready"),
         (true, true, 1, RecWatch::Recording, "recording"),
         (true, false, 1, RecWatch::NotRec, "not_rec"),
