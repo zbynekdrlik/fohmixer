@@ -187,10 +187,12 @@ mod tests {
     fn the_foot_says_rec_not_rec_or_no_arm() {
         assert_eq!(foot_look(None), ("off", "REC"));
         assert_eq!(foot_look(Some(&RecState::default())), ("off", "REC"));
+        assert_eq!(foot_look(Some(&state(false, true, true))), ("ready", "REC"));
         assert_eq!(
-            foot_look(Some(&state(false, false, true))),
+            foot_look(Some(&state(false, true, false))),
             ("ready", "REC")
         );
+        assert_eq!(foot_look(Some(&state(false, false, true))), ("off", "REC"));
         assert_eq!(
             foot_look(Some(&state(true, true, true))),
             ("recording", "REC")
