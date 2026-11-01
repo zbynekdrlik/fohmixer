@@ -356,6 +356,7 @@ mod tests {
             change_fields(
                 &state(true, true, &[]),
                 &state(true, true, &["Vox 1"]),
+                1,
                 "arm"
             )
             .is_some()
