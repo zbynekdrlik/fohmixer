@@ -537,6 +537,17 @@ test.describe("The LUFS reading on a strip", () => {
       );
       const after = await until(steady, (v) => v.length === 2 && v.every((x, i) => x < before[i] - 0.02), "the bars fallen", 10_000);
       test.info().annotations.push({ type: "bars", description: `${before} -> ${after} at ${value2db(lowered).toFixed(1)} dB` });
+      // Muted (mockup muted-meter-v14): the same bars, grey; back in colour after.
+      const zones = vox.getByTestId("meter").locator(".meter-zones").first();
+      const coloured = await zones.evaluate((e) => getComputedStyle(e).backgroundImage);
+      expect(coloured).toContain("gradient");
+      await live.set("band", IN_TRACK, "mute", true);
+      await expect(zones).toHaveCSS("background-image", "none");
+      await expect(zones).toHaveCSS("background-color", "rgb(202, 202, 255)");
+      const muted = await until(steady, (v) => v.length === 2, "the muted strip's bars steady", 10_000);
+      muted.forEach((v, i) => expect(v).toBeCloseTo(after[i], 2));
+      await live.set("band", IN_TRACK, "mute", false);
+      await expect.poll(() => zones.evaluate((e) => getComputedStyle(e).backgroundImage)).toContain("gradient");
     } finally {
       await hostLine("band", "level track 1 off");
       await hostLine("band", "maxdev meter track 1 remove");

@@ -230,6 +230,11 @@
     grid-area: 1 / 1;
 }
 
+/* A muted channel's bars stay, grey (mockup muted-meter-v14). */
+.detail:has(.mute[data-muted="true"]) .meter-zones {
+    background: #5c5c78;
+}
+
 .detail-fz .meter {
     grid-area: 1 / 2;
 }

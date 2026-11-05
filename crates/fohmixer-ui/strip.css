@@ -75,6 +75,13 @@
     opacity: 0.4;
 }
 
+/* A muted strip's bars stay, grey (mockup muted-meter-v14, the owner): the
+   signal under the mute shows, never mistaken for a sounding strip. Light
+   here, because the track's 0.4 above dims it to the mockup's #5c5c78. */
+.strip:has(.mute[data-muted="true"]) .meter-zones {
+    background: #cacaff;
+}
+
 .strip:has(.mute[data-muted="true"]) .strip-sel {
     opacity: 0.6;
 }

@@ -433,9 +433,14 @@ fn an_armed_strips_meter_follows_its_fader() {
         let (l, r) = at(volume_of(-10.0));
         pair_until(&mut client, &left, &right, (l, r)).await;
         assert!((l - fohmixer_proto::meter::live_value(-22.0)).abs() < 1e-3);
-        // Muted: the floor.
+        // Muted: the same levels, read by a move under the mute.
         client.set("band", TRACK, "mute", json!(true)).await;
-        pair_until(&mut client, &left, &right, (0.0, 0.0)).await;
+        client
+            .set("band", &volume, "value", json!(volume_of(-16.0)))
+            .await;
+        let (l, r) = at(volume_of(-16.0));
+        pair_until(&mut client, &left, &right, (l, r)).await;
+        assert!(l > 0.0 && r > 0.0, "{l} {r}");
         let status = hub.status().await;
         assert!(
             status

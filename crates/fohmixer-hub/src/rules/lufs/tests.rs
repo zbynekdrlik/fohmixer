@@ -802,12 +802,21 @@ fn levels_follow_the_fader_and_pan() {
 }
 
 #[test]
-fn a_muted_track_reads_zero() {
+fn a_mute_keeps_the_levels() {
     let mut rule = armed();
+    rule.reading(&meter_reading(7, -120, -120), 45);
     let mut fader = open_fader(0.0, 0.0, true);
     fader.mute = Some(true);
     let acts = rule.fader("band", "live_set tracks 1", fader, 50);
-    assert_eq!(levels(&acts), vec![Some((0.0, 0.0))]);
+    assert!(levels(&acts).is_empty(), "the bars do not move: {acts:?}");
+    let open = fohmixer_proto::meter::post_fader(
+        -120,
+        -120,
+        fohmixer_proto::volume::volume_of(0.0),
+        0.0,
+        false,
+    );
+    assert_eq!(levels_of(-120, -120, fader), Some(open));
 }
 
 #[test]
@@ -829,7 +838,7 @@ fn the_levels_need_the_mute_the_volume_and_the_pan() {
         pan: None,
         arm: None,
     };
-    assert_eq!(levels_of(-120, -120, muted), Some((0.0, 0.0)));
+    assert_eq!(levels_of(-120, -120, muted), None);
     assert_eq!(
         levels_of(-120, -180, all),
         Some(fohmixer_proto::meter::post_fader(
@@ -1213,8 +1222,8 @@ fn a_muted_strips_peak_says_muted_with_the_device_still_loud() {
     let lines = peak_lines(&rule.tick(10_025));
     let meter = &lines[0]["meters"][0];
     assert_eq!(meter["left_db"], -6.0);
-    assert_eq!(meter["level_left"], 0.0);
-    assert_eq!(meter["level_right"], 0.0);
+    assert!(meter["level_left"].as_f64().is_some_and(|v| v > 0.0));
+    assert!(meter["level_right"].as_f64().is_some_and(|v| v > 0.0));
     assert_eq!(meter["muted"], true);
 }
 
@@ -1240,5 +1249,12 @@ fn a_peak_reads_its_own_strip_of_its_own_live() {
     let lines = peak_lines(&rule.tick(10_010));
     let meter = &lines[0]["meters"][0];
     assert_eq!(meter["muted"], false);
-    assert!(meter["level_left"].as_f64().is_some_and(|v| v > 0.0));
+    let want = fohmixer_proto::meter::post_fader(
+        -120,
+        -180,
+        fohmixer_proto::volume::volume_of(0.0),
+        0.0,
+        false,
+    );
+    assert_eq!(meter["level_left"], want.0);
 }

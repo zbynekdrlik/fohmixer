@@ -170,12 +170,13 @@ pub fn voice_of(spec: LufsSpec, second: i16) -> Option<i16> {
 }
 
 /// A meter device's L/R peaks (tenths of dBFS) as Live's meter values after
-/// the track's fader, pan and mute: `(0, 0)` while muted, none until the
-/// mute, the volume and the pan are known (the keys stay Live's).
+/// the track's fader and pan, none until the mute, the volume and the pan
+/// are known (the keys stay Live's). A mute changes nothing (mockup
+/// muted-meter-v14, the owner): the signal stays visible, and the page draws
+/// a muted strip's bars grey.
 pub fn levels_of(left: i16, right: i16, fader: Fader) -> Option<(f64, f64)> {
     match (fader.mute, fader.volume, fader.pan) {
-        (Some(true), _, _) => Some((0.0, 0.0)),
-        (Some(false), Some(volume), Some(pan)) => {
+        (Some(_), Some(volume), Some(pan)) => {
             Some(meter::post_fader(left, right, volume, pan, false))
         }
         _ => None,
