@@ -414,7 +414,7 @@ fn an_armed_strips_meter_follows_its_fader() {
         assert_eq!(host.maxdev("level track 1 -120 -180"), 2);
         // The expected levels from the volume Live holds (volume_of's
         // bisection is not exactly 0 dB).
-        let at = |volume: f64| post_fader(-120, -180, volume, 0.0, false);
+        let at = |volume: f64| post_fader(-120, -180, volume, 0.0);
         let (l, r) = at(volume_of(0.0));
         pair_until(&mut client, &left, &right, (l, r)).await;
         assert!((l - fohmixer_proto::meter::live_value(-12.0)).abs() < 1e-3);
@@ -469,7 +469,7 @@ fn live_values_never_interleave_while_the_device_is_fresh_and_come_back_after() 
         input_point(&hub, &mut host, &mut client).await;
         let left = client.sub_key("band", TRACK, LEFT, false).await;
         // From the volume Live holds (volume_of's bisection is not exactly 0 dB).
-        let want = post_fader(-120, -180, volume_of(0.0), 0.0, false).0;
+        let want = post_fader(-120, -180, volume_of(0.0), 0.0).0;
         // Live's own values flow before the device.
         let before = values_for(&mut client, &left, Duration::from_millis(500)).await;
         assert!(

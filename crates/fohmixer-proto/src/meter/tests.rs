@@ -71,14 +71,9 @@ fn pan_centre_and_extremes() {
 }
 
 #[test]
-fn muted_is_zero() {
-    assert_eq!(post_fader(-60, -60, UNITY, 0.0, true), (0.0, 0.0));
-}
-
-#[test]
 fn fader_at_unity_adds_nothing() {
     assert!(close(value2db(UNITY), 0.0, 1e-9));
-    let (l, r) = post_fader(-120, -180, UNITY, 0.0, false);
+    let (l, r) = post_fader(-120, -180, UNITY, 0.0);
     assert!(close(l, live_value(-12.0), 1e-9), "{l}");
     assert!(close(r, live_value(-18.0), 1e-9), "{r}");
 }
@@ -86,26 +81,26 @@ fn fader_at_unity_adds_nothing() {
 #[test]
 fn the_fader_and_the_pan_add_their_db() {
     // 10 dB down: 40·v − 34 = −10 at v = 0.6.
-    let (l, r) = post_fader(-120, -120, 0.6, 0.0, false);
+    let (l, r) = post_fader(-120, -120, 0.6, 0.0);
     assert!(close(l, live_value(-22.0), 1e-9), "{l}");
     assert!(close(r, live_value(-22.0), 1e-9), "{r}");
     let (gl, gr) = pan_gains_db(-0.5);
-    let (l, r) = post_fader(-120, -120, UNITY, -0.5, false);
+    let (l, r) = post_fader(-120, -120, UNITY, -0.5);
     assert!(close(l, live_value(-12.0 + gl), 1e-9), "{l}");
     assert!(close(r, live_value(-12.0 + gr), 1e-9), "{r}");
     // Hard left: the right side reads nothing.
-    assert_eq!(post_fader(-120, -120, UNITY, -1.0, false).1, 0.0);
+    assert_eq!(post_fader(-120, -120, UNITY, -1.0).1, 0.0);
 }
 
 #[test]
 fn the_devices_silence_stays_silent() {
     // −70 dB from the device plus +6 dB of fader and +3 dB of pan is still
     // silence, never 9 dB above the floor.
-    assert_eq!(post_fader(-700, -700, 1.0, -1.0, false), (0.0, 0.0));
-    assert_eq!(post_fader(-701, -699, 1.0, 0.0, false).0, 0.0);
-    assert!(post_fader(-701, -699, 1.0, 0.0, false).1 > 0.0);
+    assert_eq!(post_fader(-700, -700, 1.0, -1.0), (0.0, 0.0));
+    assert_eq!(post_fader(-701, -699, 1.0, 0.0).0, 0.0);
+    assert!(post_fader(-701, -699, 1.0, 0.0).1 > 0.0);
     // A fader at −∞ silences both sides.
-    assert_eq!(post_fader(0, 0, 0.0, 0.0, false), (0.0, 0.0));
+    assert_eq!(post_fader(0, 0, 0.0, 0.0), (0.0, 0.0));
 }
 
 #[test]

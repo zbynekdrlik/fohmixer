@@ -71,13 +71,11 @@ fn side(tenths: i16, fader_db: f64, pan_db: f64) -> f64 {
     live_value(f64::from(tenths) / 10.0 + fader_db + pan_db)
 }
 
-/// The meter values Live would show after the track's mixer for a meter
+/// The meter values after the track's fader and pan for a meter
 /// device's L/R peaks (`dev_l`, `dev_r`, tenths of dBFS), the track's
-/// volume value (0..1), its pan (−1..+1) and mute: `(0, 0)` when muted.
-pub fn post_fader(dev_l: i16, dev_r: i16, volume_value: f64, pan: f64, muted: bool) -> (f64, f64) {
-    if muted {
-        return (0.0, 0.0);
-    }
+/// volume value (0..1) and its pan (−1..+1). A mute changes nothing: a muted
+/// strip keeps its signal, in grey (mockup muted-meter-v14).
+pub fn post_fader(dev_l: i16, dev_r: i16, volume_value: f64, pan: f64) -> (f64, f64) {
     let fader_db = value2db(volume_value);
     let (pan_l, pan_r) = pan_gains_db(pan);
     (side(dev_l, fader_db, pan_l), side(dev_r, fader_db, pan_r))

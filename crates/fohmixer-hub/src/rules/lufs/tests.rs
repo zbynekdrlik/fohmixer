@@ -768,7 +768,7 @@ fn levels_follow_the_fader_and_pan() {
     let acts = rule.fader("band", "live_set tracks 1", open_fader(0.0, 0.0, true), 40);
     let got = levels(&acts);
     assert_eq!(got.len(), 1);
-    let want = fohmixer_proto::meter::post_fader(-120, -180, unity, 0.0, false);
+    let want = fohmixer_proto::meter::post_fader(-120, -180, unity, 0.0);
     assert!(close_pair(got[0].unwrap(), want), "{got:?}");
     // The fader 10 dB down.
     let acts = rule.fader(
@@ -779,7 +779,7 @@ fn levels_follow_the_fader_and_pan() {
     );
     // From the volume given (volume_of's bisection is not exactly -10 dB).
     let ten_down = fohmixer_proto::volume::volume_of(-10.0);
-    let want = fohmixer_proto::meter::post_fader(-120, -180, ten_down, 0.0, false);
+    let want = fohmixer_proto::meter::post_fader(-120, -180, ten_down, 0.0);
     assert!(close_pair(levels(&acts)[0].unwrap(), want));
     assert!((want.0 - fohmixer_proto::meter::live_value(-22.0)).abs() < 1e-3);
     // Panned half left.
@@ -790,15 +790,29 @@ fn levels_follow_the_fader_and_pan() {
         60,
     );
     let volume = fohmixer_proto::volume::volume_of(-10.0);
-    let want = fohmixer_proto::meter::post_fader(-120, -180, volume, -0.5, false);
+    let want = fohmixer_proto::meter::post_fader(-120, -180, volume, -0.5);
     assert!(close_pair(levels(&acts)[0].unwrap(), want));
     // A new reading moves them; the same reading again sends nothing.
     let acts = rule.reading(&meter_reading(7, -60, -60), 70);
-    let want = fohmixer_proto::meter::post_fader(-60, -60, volume, -0.5, false);
+    let want = fohmixer_proto::meter::post_fader(-60, -60, volume, -0.5);
     assert!(close_pair(levels(&acts)[0].unwrap(), want));
     assert!(levels(&rule.reading(&meter_reading(7, -60, -60), 80)).is_empty());
     // Only the meter keys: the LUFS reading is unchanged.
     assert_eq!(plain(rule.items()), vec![item("band", 1, Some(-253))]);
+}
+
+#[test]
+fn an_output_points_bars_stay_under_a_mute_and_its_number_goes_silent() {
+    let mut rule = matched(None);
+    match_meter(&mut rule, 7, 25);
+    let mut fader = open_fader(0.0, 0.0, false);
+    fader.mute = Some(true);
+    let got = levels(&rule.fader("band", "live_set tracks 1", fader, 40));
+    let want =
+        fohmixer_proto::meter::post_fader(-120, -180, fohmixer_proto::volume::volume_of(0.0), 0.0);
+    assert_eq!(got.len(), 1);
+    assert!(close_pair(got[0].unwrap(), want), "{got:?}");
+    assert_eq!(rule.items()[0].tenths, Some(SILENT_TENTHS));
 }
 
 #[test]
@@ -809,13 +823,8 @@ fn a_mute_keeps_the_levels() {
     fader.mute = Some(true);
     let acts = rule.fader("band", "live_set tracks 1", fader, 50);
     assert!(levels(&acts).is_empty(), "the bars do not move: {acts:?}");
-    let open = fohmixer_proto::meter::post_fader(
-        -120,
-        -120,
-        fohmixer_proto::volume::volume_of(0.0),
-        0.0,
-        false,
-    );
+    let open =
+        fohmixer_proto::meter::post_fader(-120, -120, fohmixer_proto::volume::volume_of(0.0), 0.0);
     assert_eq!(levels_of(-120, -120, fader), Some(open));
 }
 
@@ -832,21 +841,13 @@ fn the_levels_need_the_mute_the_volume_and_the_pan() {
         }
         assert_eq!(levels_of(-120, -120, fader), None, "missing {missing}");
     }
-    let muted = Fader {
-        volume: None,
-        mute: Some(true),
-        pan: None,
-        arm: None,
-    };
-    assert_eq!(levels_of(-120, -120, muted), None);
     assert_eq!(
         levels_of(-120, -180, all),
         Some(fohmixer_proto::meter::post_fader(
             -120,
             -180,
             fohmixer_proto::volume::volume_of(0.0),
-            0.0,
-            false
+            0.0
         ))
     );
 }
@@ -1195,13 +1196,8 @@ fn a_peak_holds_the_levels_the_hub_sent_beside_the_devices_values() {
     let mut rule = armed();
     let acts = rule.reading(&meter_reading(7, -60, -90), 50);
     let sent = levels(&acts)[0].unwrap();
-    let want = fohmixer_proto::meter::post_fader(
-        -60,
-        -90,
-        fohmixer_proto::volume::volume_of(0.0),
-        0.0,
-        false,
-    );
+    let want =
+        fohmixer_proto::meter::post_fader(-60, -90, fohmixer_proto::volume::volume_of(0.0), 0.0);
     assert!(close_pair(sent, want));
     let lines = peak_lines(&rule.tick(10_025));
     let meter = &lines[0]["meters"][0];
@@ -1249,12 +1245,7 @@ fn a_peak_reads_its_own_strip_of_its_own_live() {
     let lines = peak_lines(&rule.tick(10_010));
     let meter = &lines[0]["meters"][0];
     assert_eq!(meter["muted"], false);
-    let want = fohmixer_proto::meter::post_fader(
-        -120,
-        -180,
-        fohmixer_proto::volume::volume_of(0.0),
-        0.0,
-        false,
-    );
+    let want =
+        fohmixer_proto::meter::post_fader(-120, -180, fohmixer_proto::volume::volume_of(0.0), 0.0);
     assert_eq!(meter["level_left"], want.0);
 }

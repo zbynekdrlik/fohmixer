@@ -5,7 +5,7 @@
 //! [`PERIOD_MS`] that starts at the first value above silence, and given out
 //! as one `lufs` `meter_peak` record ([`peak_line`]) at the router's tick,
 //! beside the loudest levels the hub put on the strip's meter keys for them
-//! (after the fader, pan and mute) and whether the strip was muted, so the
+//! (after the fader and pan) and whether the strip was muted, so the
 //! log proves the bars follow them. Silence holds nothing, so an idle hub
 //! adds no line.
 //!
@@ -57,8 +57,8 @@ pub fn louder(held: Option<(f64, f64)>, new: Option<(f64, f64)>) -> Option<(f64,
 /// peaks in tenths of dBFS; whether it was matched to a strip (at the latest
 /// reading; only a matched device reaches the bars); the levels the hub sends
 /// (left, right, Live's 0..1; none: it sends none, the bars are Live's own);
-/// whether the strip was muted (at any reading above silence of the period:
-/// with levels above 0 beside it, the mute covered only a part).
+/// whether the strip was muted at any reading above silence of the period.
+/// The levels stay above 0 under a mute: the bars show the signal, grey.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sample {
     pub left: i16,

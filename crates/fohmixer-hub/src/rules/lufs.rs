@@ -36,7 +36,7 @@
 //!   input point with no matched `FohMixer Meter` after the same grace.
 //! - **The armed tracks' levels** (§3.4, Task 13): a point whose track holds
 //!   exactly one matched, fresh `FohMixer Meter` gets the device's L/R peaks
-//!   after its fader, pan and mute (`fohmixer_proto::meter::post_fader`,
+//!   after its fader and pan (`fohmixer_proto::meter::post_fader`,
 //!   [`levels_of`]) as [`Act::Levels`] on every change; when that ends (the
 //!   key stale at [`METER_STALE_MS`], unmatched, the Live offline, the point
 //!   gone, the fader not known) [`Act::LevelsGone`] gives the strip's meter
@@ -169,16 +169,14 @@ pub fn voice_of(spec: LufsSpec, second: i16) -> Option<i16> {
     spec.target.map(|_| second)
 }
 
-/// A meter device's L/R peaks (tenths of dBFS) as Live's meter values after
-/// the track's fader and pan, none until the mute, the volume and the pan
+/// A meter device's L/R peaks (tenths of dBFS) as meter values after the
+/// track's fader and pan, none until the mute, the volume and the pan
 /// are known (the keys stay Live's). A mute changes nothing (mockup
 /// muted-meter-v14, the owner): the signal stays visible, and the page draws
 /// a muted strip's bars grey.
 pub fn levels_of(left: i16, right: i16, fader: Fader) -> Option<(f64, f64)> {
     match (fader.mute, fader.volume, fader.pan) {
-        (Some(_), Some(volume), Some(pan)) => {
-            Some(meter::post_fader(left, right, volume, pan, false))
-        }
+        (Some(_), Some(volume), Some(pan)) => Some(meter::post_fader(left, right, volume, pan)),
         _ => None,
     }
 }
