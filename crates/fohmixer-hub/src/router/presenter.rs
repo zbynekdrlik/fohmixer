@@ -5,7 +5,13 @@
 //! `presenter_switch` goes to the link's `POST /stage/layout` unless
 //! [`switch_refusal`] refuses it; either way the page gets a
 //! `presenter_ack` and the switch is one `presenter_switch` record with the
-//! page that asked.
+//! page that asked. A page has at most one switch on its way. The layout on
+//! stage comes only from the link (Presenter tells every switch on its live
+//! socket, the hub's own included), never from a switch's answer, which can
+//! arrive after a newer switch's event.
+
+use std::collections::HashSet;
+use std::time::Instant;
 
 use fohmixer_proto::client::{ServerMsg, StageLayout};
 use serde_json::{Value, json};
@@ -14,7 +20,11 @@ use tokio::sync::mpsc;
 use super::{ClientId, Router};
 use crate::outbox::Outbox;
 use crate::presenter::link::{LinkEvent, MAX_CODE, SwitchRequest};
-use crate::ration::clip;
+use crate::ration::{Ration, clip};
+
+/// Warn lines about refused or failed switches per `ration::GAP` (a page in
+/// a loop never floods the hub's log); the rest at debug.
+pub const SWITCH_LINES: u32 = 8;
 
 /// Presenter's stage as the router tells it, and where switches go.
 pub(super) struct PresenterIo {
@@ -22,6 +32,10 @@ pub(super) struct PresenterIo {
     layouts: Vec<StageLayout>,
     current: Option<String>,
     switches: mpsc::UnboundedSender<SwitchRequest>,
+    /// The pages with a switch on its way to Presenter.
+    in_flight: HashSet<ClientId>,
+    /// The warn lines' ration ([`SWITCH_LINES`]).
+    lines: Ration,
 }
 
 impl PresenterIo {
@@ -36,11 +50,19 @@ impl PresenterIo {
 }
 
 /// Why a page's switch to `code` is refused before Presenter is asked
-/// (pure): Presenter not up, or a code it does not list (or one too long to
-/// be any of its).
-pub fn switch_refusal(online: Option<bool>, layouts: &[StageLayout], code: &str) -> Option<String> {
+/// (pure): Presenter not up, the page's previous switch still on its way
+/// (`busy`), or a code it does not list (or one too long to be any of its).
+pub fn switch_refusal(
+    online: Option<bool>,
+    busy: bool,
+    layouts: &[StageLayout],
+    code: &str,
+) -> Option<String> {
     if online != Some(true) {
         return Some("Presenter can't be reached".to_string());
+    }
+    if busy {
+        return Some("this page's previous switch is still on its way".to_string());
     }
     let listed = code.chars().count() <= MAX_CODE && layouts.iter().any(|l| l.code == code);
     (!listed).then(|| format!("Presenter does not list {:?}", clip(code)))
@@ -78,6 +100,8 @@ impl Router {
             layouts: Vec::new(),
             current: None,
             switches,
+            in_flight: HashSet::new(),
+            lines: Ration::default(),
         });
         self
     }
@@ -122,35 +146,37 @@ impl Router {
 
     /// A page's held key: to Presenter, or refused at once.
     pub(super) fn presenter_switch(&mut self, client: ClientId, code: String, seq: u64) {
-        let Some(io) = self.presenter.as_ref() else {
+        let Some(io) = self.presenter.as_mut() else {
             return;
         };
         let from = io.current.clone();
-        match switch_refusal(io.online, &io.layouts, &code) {
-            Some(why) => {
-                tracing::warn!(client, code = ?clip(&code), "presenter: switch refused: {why}");
-                self.presenter_switched(client, seq, (code, from), Err(why), None);
+        let busy = io.in_flight.contains(&client);
+        if let Some(why) = switch_refusal(io.online, busy, &io.layouts, &code) {
+            self.presenter_switched(client, seq, (code, from), Err(why), None);
+            return;
+        }
+        let request = SwitchRequest {
+            client,
+            seq,
+            code,
+            from,
+        };
+        match io.switches.send(request) {
+            Ok(()) => {
+                io.in_flight.insert(client);
             }
-            None => {
-                let request = SwitchRequest {
-                    client,
-                    seq,
-                    code,
-                    from,
-                };
-                if let Err(e) = io.switches.send(request) {
-                    let SwitchRequest { code, from, .. } = e.0;
-                    let why = "the hub's link to Presenter has stopped".to_string();
-                    self.presenter_switched(client, seq, (code, from), Err(why), None);
-                }
+            Err(e) => {
+                let SwitchRequest { code, from, .. } = e.0;
+                let why = "the hub's link to Presenter has stopped".to_string();
+                self.presenter_switched(client, seq, (code, from), Err(why), None);
             }
         }
     }
 
     /// A switch's outcome (`asked`: the code and the layout on stage when
     /// the page asked; `ms`: Presenter's time, none: the hub refused it):
-    /// its record, the page's `presenter_ack`, and on success every page
-    /// told the layout on stage.
+    /// its record and the page's `presenter_ack`; the page may switch again.
+    /// The layout on stage is the link's to tell (module doc).
     pub(super) fn presenter_switched(
         &mut self,
         client: ClientId,
@@ -162,12 +188,21 @@ impl Router {
         let (code, from) = asked;
         let peer = self.peers.get(&client).map(String::as_str);
         let fields = switch_fields(client, peer, &code, from.as_deref(), &result, ms);
-        match &result {
-            Ok(on_stage) => {
-                tracing::info!(client, code = %on_stage, from = ?from, ms, "presenter: switched");
+        let due = self.presenter.as_mut().and_then(|io| {
+            if ms.is_some() {
+                io.in_flight.remove(&client);
             }
-            Err(why) => {
-                tracing::warn!(client, code = ?clip(&code), "presenter: switch failed: {why}")
+            io.lines.take(Instant::now(), SWITCH_LINES)
+        });
+        match (&result, due) {
+            (Ok(on_stage), _) => {
+                tracing::info!(client, code = ?on_stage, from = ?from, ms, "presenter: switched");
+            }
+            (Err(why), Some(skipped)) => {
+                tracing::warn!(client, code = ?clip(&code), ms, skipped, "presenter: switch failed: {why}");
+            }
+            (Err(why), None) => {
+                tracing::debug!(client, code = ?clip(&code), ms, "presenter: switch failed: {why}");
             }
         }
         self.io.events.record("presenter_switch", fields);
@@ -178,9 +213,6 @@ impl Router {
                 ok: result.is_ok(),
                 error: result.as_ref().err().cloned(),
             });
-        }
-        if let Ok(on_stage) = result {
-            self.presenter_link(LinkEvent::Layout { code: on_stage });
         }
     }
 }
@@ -194,7 +226,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::super::{Router, RouterIo, RouterMsg};
-    use super::{switch_fields, switch_refusal};
+    use super::{SWITCH_LINES, switch_fields, switch_refusal};
     use crate::events::EventLog;
     use crate::outbox::Outbox;
     use crate::presenter::link::{LinkEvent, SwitchRequest};
@@ -376,22 +408,17 @@ mod tests {
             result: Ok("timer".into()),
             ms: 12,
         });
+        // The answer is the page's alone: the stage comes from the link.
         assert_eq!(
             told(&page),
-            [
-                ServerMsg::PresenterAck {
-                    seq: 7,
-                    code: "timer".into(),
-                    ok: true,
-                    error: None,
-                },
-                stage(Some(true), &["worship", "timer"], Some("timer")),
-            ]
+            [ServerMsg::PresenterAck {
+                seq: 7,
+                code: "timer".into(),
+                ok: true,
+                error: None,
+            }]
         );
-        assert_eq!(
-            told(&other),
-            [stage(Some(true), &["worship", "timer"], Some("timer"))]
-        );
+        assert!(told(&other).is_empty());
         let written = record(&mut bed);
         assert_eq!(written["ev"], "presenter_switch");
         assert_eq!(written["client"], 3);
@@ -549,26 +576,119 @@ mod tests {
     }
 
     #[test]
-    fn a_switch_is_refused_unless_presenter_is_up_and_lists_the_code() {
+    fn a_switch_is_refused_unless_presenter_is_up_the_page_free_and_the_code_listed() {
         let layouts = [layout("timer")];
-        assert_eq!(switch_refusal(Some(true), &layouts, "timer"), None);
+        assert_eq!(switch_refusal(Some(true), false, &layouts, "timer"), None);
         for online in [None, Some(false)] {
             assert_eq!(
-                switch_refusal(online, &layouts, "timer").as_deref(),
+                switch_refusal(online, false, &layouts, "timer").as_deref(),
                 Some("Presenter can't be reached")
             );
         }
         assert_eq!(
-            switch_refusal(Some(true), &layouts, "TIMER").as_deref(),
+            switch_refusal(Some(true), true, &layouts, "timer").as_deref(),
+            Some("this page's previous switch is still on its way")
+        );
+        assert_eq!(
+            switch_refusal(Some(true), false, &layouts, "TIMER").as_deref(),
             Some("Presenter does not list \"TIMER\"")
         );
         // Up to 64 characters may be a code; one more is none.
         let longest = "x".repeat(64);
         let long = [layout(&longest)];
-        assert_eq!(switch_refusal(Some(true), &long, &longest), None);
+        assert_eq!(switch_refusal(Some(true), false, &long, &longest), None);
         let longer = "x".repeat(65);
         let longer_list = [layout(&longer)];
-        assert!(switch_refusal(Some(true), &longer_list, &longer).is_some());
+        assert!(switch_refusal(Some(true), false, &longer_list, &longer).is_some());
+        assert_eq!(SWITCH_LINES, 8);
+    }
+
+    #[test]
+    fn a_page_has_one_switch_on_its_way_and_may_switch_again_after_its_answer() {
+        let mut bed = bed();
+        let page = attach(&mut bed.router, 3);
+        let other = attach(&mut bed.router, 4);
+        up(&mut bed.router);
+        told(&page);
+        let ask = |router: &mut Router, client: u64, seq: u64| {
+            router.handle(RouterMsg::PresenterSwitch {
+                client,
+                code: "timer".into(),
+                seq,
+            });
+        };
+        ask(&mut bed.router, 3, 1);
+        ask(&mut bed.router, 3, 2);
+        ask(&mut bed.router, 4, 1);
+        let sent: Vec<(u64, u64)> = std::iter::from_fn(|| bed.switches.try_recv().ok())
+            .map(|r| (r.client, r.seq))
+            .collect();
+        assert_eq!(sent, [(3, 1), (4, 1)], "another page is not held back");
+        assert_eq!(
+            told(&page),
+            [ServerMsg::PresenterAck {
+                seq: 2,
+                code: "timer".into(),
+                ok: false,
+                error: Some("this page's previous switch is still on its way".into()),
+            }]
+        );
+        told(&other);
+        // A refusal by the hub frees nothing: the first is still on its way.
+        ask(&mut bed.router, 3, 3);
+        assert!(bed.switches.try_recv().is_err());
+        bed.router.handle(RouterMsg::PresenterSwitched {
+            client: 3,
+            seq: 1,
+            code: "timer".into(),
+            from: Some("worship".into()),
+            result: Err("Presenter does not list \"timer\"".into()),
+            ms: 4,
+        });
+        ask(&mut bed.router, 3, 4);
+        assert_eq!(bed.switches.try_recv().unwrap().seq, 4);
+    }
+
+    #[test]
+    fn a_late_answer_never_puts_back_an_older_layout() {
+        let mut bed = bed();
+        let page = attach(&mut bed.router, 3);
+        up(&mut bed.router);
+        bed.router.handle(RouterMsg::PresenterSwitch {
+            client: 3,
+            code: "timer".into(),
+            seq: 1,
+        });
+        // Presenter tells this switch, then someone else's, then answers.
+        for code in ["timer", "worship"] {
+            bed.router.handle(RouterMsg::PresenterLink {
+                event: LinkEvent::Layout { code: code.into() },
+            });
+        }
+        told(&page);
+        bed.router.handle(RouterMsg::PresenterSwitched {
+            client: 3,
+            seq: 1,
+            code: "timer".into(),
+            from: Some("worship".into()),
+            result: Ok("timer".into()),
+            ms: 40,
+        });
+        assert_eq!(
+            told(&page),
+            [ServerMsg::PresenterAck {
+                seq: 1,
+                code: "timer".into(),
+                ok: true,
+                error: None,
+            }],
+            "worship stays on stage"
+        );
+        let late = attach(&mut bed.router, 5);
+        assert_eq!(
+            told(&late),
+            [stage(Some(true), &["worship", "timer"], Some("worship"))]
+        );
     }
 
     #[test]
