@@ -16,7 +16,15 @@
 //!   slides, Bible, clears) is never reachable through fohmixer, the
 //!   internet path included; the one write is the hub's own
 //!   `POST /stage/layout` for a page's held key ([`link`]). NDI video in the
-//!   preview (WHEP is a POST) therefore does not play there.
+//!   preview (WHEP is a POST) therefore does not play there. The socket is a
+//!   byte tunnel both ways: what Presenter's live socket takes from a client
+//!   (its source, `presenter-server/src/live.rs` `InboundMessage`) is a
+//!   stage display's presence, heartbeat, diagnostics and goodbye, for its
+//!   count of stage displays, nothing that changes what the stage shows.
+//! - **Presenter's content on fohmixer's origin** ([`frame_headers`]): its
+//!   stage page and assets run as the page's own (the site's app); every
+//!   other answer is [`SANDBOXED`] when opened as a document, and no answer
+//!   passes a header acting on the whole origin ([`ORIGIN_WIDE`]).
 //! - **Its own layers** ([`router`]): the host check, the redirect to HTTPS
 //!   (the plain listener) and fohmixer's Access check, as fohmixer's own
 //!   routes; on every answer [`frame_headers`]: only fohmixer's own page may
@@ -558,18 +566,46 @@ pub fn down_answer(dest: Option<&str>, timed_out: bool) -> Response {
 /// page only.
 pub const FRAME_ANCESTORS: &str = "frame-ancestors 'self'";
 
-/// Every answer's headers on Presenter's paths: framed by fohmixer's own
-/// page only (`X-Frame-Options: SAMEORIGIN`, Presenter's own
-/// `frame-ancestors` out and [`FRAME_ANCESTORS`] in), no CORS grant,
-/// cookies host-only, `nosniff`, fohmixer's `Referrer-Policy`
-/// (`ableset::framing`, `ableset::answer_policy`).
-pub fn frame_headers(headers: &mut axum::http::HeaderMap) {
+/// The policy of every answer on Presenter's paths but its stage page and
+/// its assets ([`runs_as_page`]): opened as a document, Presenter's content
+/// (a library's file, a presentation's) runs sandboxed on an opaque origin
+/// with nothing to load, never as fohmixer's own page; fetched by the stage
+/// page (JSON, an image, a video) it changes nothing.
+pub const SANDBOXED: &str = "sandbox; default-src 'none'";
+
+/// Headers of Presenter's answers that act on fohmixer's whole origin (its
+/// storage, the service worker's scope, a timed navigation): never passed.
+pub const ORIGIN_WIDE: [&str; 3] = ["clear-site-data", "service-worker-allowed", "refresh"];
+
+/// Whether `path` is Presenter's stage page or its build's assets: the one
+/// app the hub runs on fohmixer's origin (the site's own, from Presenter's
+/// own build).
+pub fn runs_as_page(path: &str) -> bool {
+    path == "/stage" || path.starts_with("/ui-pkg/")
+}
+
+/// Every answer's headers on Presenter's paths (`path`, the request's):
+/// framed by fohmixer's own page only (`X-Frame-Options: SAMEORIGIN`,
+/// Presenter's own `frame-ancestors` out and [`FRAME_ANCESTORS`] in), no
+/// CORS grant, cookies host-only, `nosniff`, fohmixer's `Referrer-Policy`
+/// (`ableset::framing`, `ableset::answer_policy`), no [`ORIGIN_WIDE`]
+/// header, and [`SANDBOXED`] on all but the stage page and its assets.
+pub fn frame_headers(path: &str, headers: &mut axum::http::HeaderMap) {
     ableset::framing(headers, &HeaderValue::from_static(FRAME_ANCESTORS));
     headers.insert(
         header::X_FRAME_OPTIONS,
         HeaderValue::from_static("SAMEORIGIN"),
     );
     ableset::answer_policy(headers);
+    for name in ORIGIN_WIDE {
+        headers.remove(name);
+    }
+    if !runs_as_page(path) {
+        headers.append(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(SANDBOXED),
+        );
+    }
 }
 
 /// The state of [`dispatch`]: Presenter's router.
@@ -605,12 +641,14 @@ pub fn router(site: Arc<Presenter>, hub: Hub, redirect: bool) -> Router {
         app = app.layer(from_fn_with_state(hub.clone(), routes::https_redirect));
     }
     app.layer(from_fn_with_state(hub, routes::check_host))
-        .layer(axum::middleware::map_response(framed))
+        .layer(axum::middleware::from_fn(framed))
 }
 
-/// [`frame_headers`] on an answer.
-async fn framed(mut response: Response) -> Response {
-    frame_headers(response.headers_mut());
+/// [`frame_headers`] on the answer to `request`.
+async fn framed(request: Request, next: Next) -> Response {
+    let path = request.uri().path().to_string();
+    let mut response = next.run(request).await;
+    frame_headers(&path, response.headers_mut());
     response
 }
 
@@ -636,8 +674,13 @@ async fn forward(State(site): State<Arc<Presenter>>, request: Request) -> Respon
             let why = Failure::Upgrade("an upgrade on a path that takes none".to_string());
             return site.failed(&method, &path, dest, why);
         }
-        Pass::Path | Pass::No => {
+        Pass::Path => {
             let why = Failure::Target("a path with a dot segment".to_string());
+            return site.failed(&method, &path, dest, why);
+        }
+        Pass::No => {
+            // `dispatch` sends only Presenter's paths here.
+            let why = Failure::Target("not one of Presenter's paths".to_string());
             return site.failed(&method, &path, dest, why);
         }
     }
@@ -652,19 +695,10 @@ async fn forward(State(site): State<Arc<Presenter>>, request: Request) -> Respon
     match site.exchange(sent).await {
         Ok(answer) => {
             tracing::debug!(method = %method, path = ?clip(&path), status = answer.status().as_u16(), "presenter: proxied");
-            ableset::proxy::answer(answer).map(|body| held(body, slot))
+            ableset::proxy::answer(answer).map(|body| ableset::held(body, slot))
         }
         Err(failure) => site.failed(&method, &path, dest, failure),
     }
-}
-
-/// `body`, holding its request's slot until it ends or is dropped.
-fn held(body: Body, slot: OwnedSemaphorePermit) -> Body {
-    use http_body_util::BodyExt as _;
-    Body::new(body.map_frame(move |frame| {
-        let _slot = &slot;
-        frame
-    }))
 }
 
 /// The stage page's socket: refused before it takes a slot when it
@@ -708,7 +742,7 @@ async fn tunnel(
             ableset::upgrade_headers(&mut parts.headers);
             Response::from_parts(parts, Body::empty())
         }
-        Ok(answer) => ableset::proxy::answer(answer).map(|body| held(body, slot)),
+        Ok(answer) => ableset::proxy::answer(answer).map(|body| ableset::held(body, slot)),
         Err(failure) => site.failed(&Method::GET, path, dest, failure),
     }
 }

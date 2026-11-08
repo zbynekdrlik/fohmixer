@@ -211,27 +211,63 @@ fn presenter_down_is_a_page_for_a_navigation_and_json_for_anything_else() {
 
 #[test]
 fn every_answer_is_framed_by_fohmixers_own_page_only() {
-    let mut headers = HeaderMap::new();
-    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
-    headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static("default-src 'self'; frame-ancestors 'none'"),
-    );
-    headers.insert(
-        header::ACCESS_CONTROL_ALLOW_ORIGIN,
-        HeaderValue::from_static("*"),
-    );
-    frame_headers(&mut headers);
-    assert_eq!(headers[header::X_FRAME_OPTIONS], "SAMEORIGIN");
-    let policies: Vec<&str> = headers
-        .get_all(header::CONTENT_SECURITY_POLICY)
-        .iter()
-        .map(|v| v.to_str().unwrap())
-        .collect();
-    assert_eq!(policies, ["default-src 'self'", "frame-ancestors 'self'"]);
-    assert!(!headers.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
-    assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+    for path in ["/stage", "/stage/layout", "/ui-pkg/a.js", "/libraries/1"] {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src 'self'; frame-ancestors 'none'"),
+        );
+        headers.insert(
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            HeaderValue::from_static("*"),
+        );
+        for name in ORIGIN_WIDE {
+            headers.insert(name, HeaderValue::from_static("x"));
+        }
+        frame_headers(path, &mut headers);
+        assert_eq!(headers[header::X_FRAME_OPTIONS], "SAMEORIGIN", "{path}");
+        let policies: Vec<&str> = headers
+            .get_all(header::CONTENT_SECURITY_POLICY)
+            .iter()
+            .map(|v| v.to_str().unwrap())
+            .collect();
+        let mut wanted = vec!["default-src 'self'", "frame-ancestors 'self'"];
+        if !runs_as_page(path) {
+            wanted.push("sandbox; default-src 'none'");
+        }
+        assert_eq!(policies, wanted, "{path}");
+        assert!(!headers.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
+        for name in ORIGIN_WIDE {
+            assert!(!headers.contains_key(name), "{path}: {name}");
+        }
+        assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+    }
     assert_eq!(FRAME_ANCESTORS, "frame-ancestors 'self'");
+    assert_eq!(SANDBOXED, "sandbox; default-src 'none'");
+    assert_eq!(
+        ORIGIN_WIDE,
+        ["clear-site-data", "service-worker-allowed", "refresh"]
+    );
+}
+
+#[test]
+fn only_the_stage_page_and_its_assets_run_as_a_page() {
+    for path in ["/stage", "/ui-pkg/presenter-ui-0123.js", "/ui-pkg/a.wasm"] {
+        assert!(runs_as_page(path), "{path}");
+    }
+    for path in [
+        "/stage/layout",
+        "/stages",
+        "/stage-displays",
+        "/ui-pkg",
+        "/libraries/1/file.svg",
+        "/presentations/2",
+        "/bible/active-slide",
+        "/live/ws",
+    ] {
+        assert!(!runs_as_page(path), "{path}");
+    }
 }
 
 #[test]

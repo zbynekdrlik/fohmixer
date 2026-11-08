@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use crate::support::TestHub;
 use fohmixer_hub::ableset::{CLOSE_BOUND, STOPPED};
-use fohmixer_hub::config::{AbleSetCfg, Config, TlsCfg};
+use fohmixer_hub::config::{AbleSetCfg, Config, PresenterCfg, TlsCfg};
 use fohmixer_proto::client::ServerMsg;
 use futures_util::{SinkExt, StreamExt};
 use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair};
@@ -225,6 +225,46 @@ async fn the_public_name_is_served_over_https_next_to_plain_http() {
         (200, Some(fohmixer_proto::VERSION))
     );
     hub.stop().await;
+}
+
+#[tokio::test]
+async fn presenters_stage_page_is_served_over_https_and_its_name_redirected_on_plain_http() {
+    // #90: Presenter's paths have their own router; it redirects the public
+    // name on the plain listener as fohmixer's own routes do.
+    let fake = crate::support::presenter::FakePresenter::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (ca, chain, key) = certificate();
+    let tls_dir = dir.path().join("tls");
+    std::fs::create_dir_all(&tls_dir).unwrap();
+    std::fs::write(tls_dir.join("cert.pem"), &chain).unwrap();
+    std::fs::write(tls_dir.join("key.pem"), &key).unwrap();
+    let mut config = Config::defaults(dir.path());
+    config.instances.clear();
+    config.tls = Some(TlsCfg {
+        name: NAME.into(),
+        port: 0,
+        redirect_http: true,
+    });
+    config.presenter = Some(PresenterCfg { url: fake.url() });
+    let hub = TestHub::start_config(config).await;
+    let port = hub.status().await.remote.https.unwrap().port;
+    let (code, head, _) = get(tls(port, &ca).await, NAME, "/stage?preview=1", &[]).await;
+    assert_eq!(code, 200, "{head}");
+    assert!(head.contains("x-frame-options: sameorigin"), "{head}");
+    let host = format!("{NAME}:{}", hub.addr.port());
+    let plain = TcpStream::connect(hub.addr).await.unwrap();
+    let (code, head, _) = get(plain, &host, "/stage?preview=1", &[]).await;
+    assert_eq!(code, 307, "{head}");
+    assert!(
+        head.contains(&format!("location: https://{NAME}:{port}/stage?preview=1")),
+        "{head}"
+    );
+    // By address it is the emergency path: served, never redirected.
+    let plain = TcpStream::connect(hub.addr).await.unwrap();
+    let (code, _, _) = get(plain, &hub.addr.to_string(), "/stage", &[]).await;
+    assert_eq!(code, 200);
+    hub.stop().await;
+    fake.stop().await;
 }
 
 #[tokio::test]

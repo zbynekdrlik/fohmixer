@@ -336,6 +336,58 @@ async fn the_stage_page_is_read_on_the_hubs_origin_and_nothing_of_presenter_is_w
 }
 
 #[tokio::test]
+async fn presenters_paths_keep_fohmixers_host_access_and_origin_checks() {
+    let fake = FakePresenter::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let hub = hub(dir.path(), Some(fake.url())).await;
+    let addr = hub.addr;
+    // The hub's own link first: its socket and its two reads.
+    let mut page = hub.client().await;
+    stage_until(&mut page, |online, _, _| online == Some(true)).await;
+    let linked = fake.seen().len();
+    // An internet request (the tunnel's header) without Access: refused,
+    // whatever the path, and Presenter never asked.
+    for path in ["/stage", "/stage-displays", "/ui-pkg/a.js"] {
+        let (code, _, body) =
+            raw(addr, &get(addr, path, "cf-connecting-ip: 203.0.113.7\r\n")).await;
+        assert_eq!(code, 403, "{path}");
+        assert!(body.contains("ACCESS_DENIED"), "{path}: {body}");
+    }
+    // A Host the hub does not answer for (DNS rebinding): 421.
+    let request = "GET /stage HTTP/1.1\r\nHost: rebind.example.org\r\nConnection: close\r\n\r\n";
+    let (code, _, _) = raw(addr, request).await;
+    assert_eq!(code, 421);
+    // Another site's page may not open the stage page's socket.
+    let upgrade = "Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\
+                   Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nOrigin: http://evil.example.org\r\n";
+    let (code, _, _) = raw(
+        addr,
+        &get(addr, "/live/ws?surface=stage&preview=1", upgrade),
+    )
+    .await;
+    assert_eq!(code, 403);
+    assert_eq!(
+        fake.seen().len(),
+        linked,
+        "nothing refused reached Presenter: {:?}",
+        fake.seen()
+    );
+    // Presenter's content other than its stage page is sandboxed as a
+    // document; the stage page is not.
+    let (code, head, _) = raw(addr, &get(addr, "/stage-displays", "")).await;
+    assert_eq!(code, 200);
+    assert!(
+        head.contains("content-security-policy: sandbox; default-src 'none'"),
+        "{head}"
+    );
+    let (_, head, _) = raw(addr, &get(addr, "/stage", "")).await;
+    assert!(!head.contains("sandbox"), "{head}");
+    page.close().await;
+    hub.stop().await;
+    fake.stop().await;
+}
+
+#[tokio::test]
 async fn the_stage_pages_socket_is_tunneled_to_presenter_both_ways() {
     let fake = FakePresenter::start().await;
     let dir = tempfile::tempdir().unwrap();

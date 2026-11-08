@@ -352,7 +352,13 @@ where
 {
     loop {
         let why = session(&site, &api, &tell).await;
-        tracing::debug!(why = %why, "presenter: the session ended");
+        // A session that was up ending is news; a try that failed while
+        // Presenter is down (every RETRY) only at debug.
+        if site.status().online == Some(true) {
+            tracing::info!(why = %why, "presenter: the session ended");
+        } else {
+            tracing::debug!(why = %why, "presenter: the try failed");
+        }
         if let Some(up) = site.noted(News::Failed(why)) {
             tell(LinkEvent::Online(up));
         }

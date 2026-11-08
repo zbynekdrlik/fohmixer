@@ -994,7 +994,7 @@ pub fn signed_in_target(parent: &str, host: Option<&str>) -> String {
 
 /// `body`, holding its request's slot until it ends or is dropped (the
 /// client gone): a long poll or a large file counts while it streams.
-fn held(body: Body, slot: OwnedSemaphorePermit) -> Body {
+pub(crate) fn held(body: Body, slot: OwnedSemaphorePermit) -> Body {
     Body::new(body.map_frame(move |frame| {
         let _slot = &slot;
         frame
