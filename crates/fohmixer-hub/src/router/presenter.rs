@@ -355,6 +355,34 @@ mod tests {
     }
 
     #[test]
+    fn a_new_session_tells_the_pages_a_changed_list_or_a_changed_layout_on_stage() {
+        let mut bed = bed();
+        let page = attach(&mut bed.router, 1);
+        up(&mut bed.router);
+        told(&page);
+        // The same list, another layout on stage (switched while the hub
+        // was away): news.
+        bed.router.handle(RouterMsg::PresenterLink {
+            event: LinkEvent::Listed {
+                layouts: vec![layout("worship"), layout("timer")],
+                current: "timer".into(),
+            },
+        });
+        assert_eq!(
+            told(&page),
+            [stage(Some(true), &["worship", "timer"], Some("timer"))]
+        );
+        // Another list, the same layout on stage: news.
+        bed.router.handle(RouterMsg::PresenterLink {
+            event: LinkEvent::Listed {
+                layouts: vec![layout("timer")],
+                current: "timer".into(),
+            },
+        });
+        assert_eq!(told(&page), [stage(Some(true), &["timer"], Some("timer"))]);
+    }
+
+    #[test]
     fn a_page_without_presenter_is_told_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let (events, _) = EventLog::channel(64);

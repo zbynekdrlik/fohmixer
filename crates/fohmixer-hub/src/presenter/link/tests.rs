@@ -137,6 +137,13 @@ fn a_change_is_its_record_and_says_whether_presenter_is_up() {
 }
 
 #[test]
+fn only_the_end_of_a_session_that_was_up_is_news() {
+    assert_eq!(ended_news(Some(true)), Some("the session ended"));
+    assert_eq!(ended_news(Some(false)), None);
+    assert_eq!(ended_news(None), None);
+}
+
+#[test]
 fn the_links_bounds_are_as_documented() {
     assert_eq!(RETRY, Duration::from_secs(2));
     assert_eq!(READ_TIMEOUT, Duration::from_secs(5));

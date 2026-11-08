@@ -306,7 +306,9 @@ where
     if let Some(up) = site.noted(News::Up) {
         tell(LinkEvent::Online(up));
     }
-    let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + PING_EVERY, PING_EVERY);
+    // Its first tick is at once: one ping as the session starts, then one
+    // every PING_EVERY.
+    let mut ping = tokio::time::interval(PING_EVERY);
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // The last frame of any kind (a pong too): the silence counts from it,
     // never from the last ping, which goes out whatever the far end does.
@@ -352,10 +354,8 @@ where
 {
     loop {
         let why = session(&site, &api, &tell).await;
-        // A session that was up ending is news; a try that failed while
-        // Presenter is down (every RETRY) only at debug.
-        if site.status().online == Some(true) {
-            tracing::info!(why = %why, "presenter: the session ended");
+        if let Some(what) = ended_news(site.status().online) {
+            tracing::info!(why = %why, "presenter: {what}");
         } else {
             tracing::debug!(why = %why, "presenter: the try failed");
         }
@@ -364,6 +364,13 @@ where
         }
         tokio::time::sleep(RETRY).await;
     }
+}
+
+/// Whether a session's end is news for the hub's log, and its words: a
+/// session of a link that was up (pure); a try that failed while Presenter
+/// is down (every [`RETRY`]) is none, a debug line.
+pub fn ended_news(online: Option<bool>) -> Option<&'static str> {
+    (online == Some(true)).then_some("the session ended")
 }
 
 /// A page's switch the router hands to [`switches`].

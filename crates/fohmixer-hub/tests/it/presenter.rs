@@ -423,6 +423,12 @@ async fn the_stage_pages_socket_is_tunneled_to_presenter_both_ways() {
     );
     let status = hub.status().await.presenter.unwrap();
     assert_eq!(status.sockets, 1);
+    // An upgrade Presenter answers without switching goes back as it came,
+    // its body too, and opens no tunnel.
+    let refused = "Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\
+                   Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n";
+    let (code, _, body) = raw(hub.addr, &get(hub.addr, "/live/ws?refuse=1", refused)).await;
+    assert_eq!((code, body.as_str()), (403, "refused by the fake"));
     socket.close(None).await.unwrap();
     let records = hub
         .events_until(WAIT, |r| {
@@ -435,9 +441,50 @@ async fn the_stage_pages_socket_is_tunneled_to_presenter_both_ways() {
         .find(|r| r["ev"] == "presenter_ws" && r["what"] == "open")
         .expect("an open record");
     assert_eq!(open["peer"], "127.0.0.1");
+    // Tunnels are numbered from 1, each its own; the refused upgrade opened none.
+    assert_eq!(open["client"], 1, "{open}");
+    let opens = records
+        .iter()
+        .filter(|r| r["ev"] == "presenter_ws" && r["what"] == "open")
+        .count();
+    assert_eq!(opens, 1);
     assert!(fake.seen().contains(&"GET /live/ws".to_string()));
     page.close().await;
     hub.stop().await;
+    fake.stop().await;
+}
+
+#[tokio::test]
+async fn the_hubs_stop_ends_an_open_stage_socket_and_records_it() {
+    let fake = FakePresenter::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let hub = hub(dir.path(), Some(fake.url())).await;
+    let url = format!("ws://{}/live/ws?surface=stage&preview=1", hub.addr);
+    let (mut socket, _) = tokio_tungstenite::connect_async(url.as_str())
+        .await
+        .unwrap();
+    socket.send(Message::Text("hello".into())).await.unwrap();
+    let echoed = tokio::time::timeout(WAIT, socket.next())
+        .await
+        .expect("the echo");
+    assert!(matches!(echoed, Some(Ok(Message::Text(_)))), "{echoed:?}");
+    let dir_path = hub.dir.clone();
+    let stopped = std::time::Instant::now();
+    hub.stop().await;
+    // The tunnel is the hub's to end at its stop: the page's socket ends
+    // with it, Presenter still up.
+    let ended = tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(Ok(_)) = socket.next().await {}
+    })
+    .await;
+    assert!(ended.is_ok(), "the stage socket outlived the hub's stop");
+    assert!(stopped.elapsed() < Duration::from_secs(5));
+    let records = crate::support::events_in(&dir_path);
+    let close = records
+        .iter()
+        .find(|r| r["ev"] == "presenter_ws" && r["what"] == "close")
+        .expect("the socket's close record");
+    assert_eq!(close["why"], fohmixer_hub::ableset::STOPPED, "{close}");
     fake.stop().await;
 }
 

@@ -6,12 +6,15 @@
 //! `POST /stage/layout {"code"}` (`{code, layout}`; 400 empty, 404 unknown),
 //! `POST /stage/state` (a write the hub must never pass), and `/live/ws`,
 //! whose every client gets `{"type": "stage_layout", "code"}` at each switch
-//! and its own text back (`echo: …`, so a tunnel's both ways show). Every
+//! and its own text back (`echo: …`, so a tunnel's both ways show; with
+//! `?refuse` a 403 instead of the switch, with `?flood` 64 KiB frames as
+//! fast as they go). Every
 //! request is counted by method and path; [`FakePresenter::stop`] takes it
 //! off the network (its sockets closed, its port refused) and
 //! [`FakePresenter::start_on`] brings it back on the same port.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use axum::Router;
@@ -39,6 +42,7 @@ struct Shared {
     seen: Arc<Mutex<Vec<String>>>,
     events: broadcast::Sender<String>,
     down: watch::Receiver<bool>,
+    pushed: Arc<AtomicU64>,
 }
 
 /// A running fake Presenter.
@@ -49,6 +53,8 @@ pub struct FakePresenter {
     events: broadcast::Sender<String>,
     down: watch::Sender<bool>,
     task: tokio::task::JoinHandle<()>,
+    /// The bytes a `?flood` socket wrote so far.
+    pub pushed: Arc<AtomicU64>,
 }
 
 impl FakePresenter {
@@ -68,6 +74,7 @@ impl FakePresenter {
             seen: Arc::default(),
             events: events.clone(),
             down: down_rx.clone(),
+            pushed: Arc::default(),
         };
         let app = Router::new()
             .route(
@@ -100,6 +107,7 @@ impl FakePresenter {
             events,
             down,
             task,
+            pushed: shared.pushed,
         }
     }
 
@@ -176,8 +184,27 @@ async fn set_layout(State(shared): State<Shared>, axum::Json(body): axum::Json<V
     axum::Json(json!({"code": code, "layout": found})).into_response()
 }
 
-async fn live(State(shared): State<Shared>, ws: WebSocketUpgrade) -> Response {
+async fn live(State(shared): State<Shared>, uri: Uri, ws: WebSocketUpgrade) -> Response {
+    // `?refuse` (tests): Presenter answers the upgrade without switching.
+    if uri.query().is_some_and(|q| q.contains("refuse")) {
+        return (StatusCode::FORBIDDEN, "refused by the fake").into_response();
+    }
+    // `?flood` (tests): 64 KiB frames to the page as fast as they go.
+    if uri.query().is_some_and(|q| q.contains("flood")) {
+        return ws.on_upgrade(move |socket| flood(socket, shared.pushed));
+    }
     ws.on_upgrade(move |socket| serve_socket(socket, shared))
+}
+
+async fn flood(mut socket: WebSocket, pushed: Arc<AtomicU64>) {
+    let frame = vec![7_u8; 65_536];
+    while socket
+        .send(Message::Binary(frame.clone().into()))
+        .await
+        .is_ok()
+    {
+        pushed.fetch_add(frame.len() as u64, Ordering::Relaxed);
+    }
 }
 
 async fn serve_socket(mut socket: WebSocket, shared: Shared) {
