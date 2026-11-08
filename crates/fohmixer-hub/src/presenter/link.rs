@@ -308,24 +308,32 @@ where
     }
     let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + PING_EVERY, PING_EVERY);
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // The last frame of any kind (a pong too): the silence counts from it,
+    // never from the last ping, which goes out whatever the far end does.
+    let mut heard = tokio::time::Instant::now();
     loop {
         tokio::select! {
-            frame = tokio::time::timeout(SILENCE, socket.next()) => match frame {
-                Err(_) => return format!("the live socket was silent for {} ms", SILENCE.as_millis()),
-                Ok(None) => return "Presenter closed its live socket".to_string(),
-                Ok(Some(Err(e))) => return format!("the live socket: {e}"),
-                Ok(Some(Ok(Message::Close(frame)))) => {
-                    return format!("Presenter closed its live socket: {frame:?}");
-                }
-                Ok(Some(Ok(Message::Text(text)))) => {
-                    if let Some(code) = stage_layout_event(&text) {
-                        tracing::info!(code = %code, "presenter: the stage layout changed");
-                        site.seen(None, Some(&code));
-                        tell(LinkEvent::Layout { code });
+            () = tokio::time::sleep_until(heard + SILENCE) => {
+                return format!("the live socket was silent for {} ms", SILENCE.as_millis());
+            }
+            frame = socket.next() => {
+                heard = tokio::time::Instant::now();
+                match frame {
+                    None => return "Presenter closed its live socket".to_string(),
+                    Some(Err(e)) => return format!("the live socket: {e}"),
+                    Some(Ok(Message::Close(frame))) => {
+                        return format!("Presenter closed its live socket: {frame:?}");
                     }
+                    Some(Ok(Message::Text(text))) => {
+                        if let Some(code) = stage_layout_event(&text) {
+                            tracing::info!(code = ?code, "presenter: the stage layout changed");
+                            site.seen(None, Some(&code));
+                            tell(LinkEvent::Layout { code });
+                        }
+                    }
+                    Some(Ok(_)) => {}
                 }
-                Ok(Some(Ok(_))) => {}
-            },
+            }
             _ = ping.tick() => {
                 if let Err(e) = socket.send(Message::Ping(Bytes::new())).await {
                     return format!("the live socket's ping: {e}");

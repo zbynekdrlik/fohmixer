@@ -196,8 +196,9 @@ async fn every_switch_is_carried_on_its_own_and_its_outcome_handed_back() {
 
 /// A Presenter that answers the session's two reads and opens its live
 /// socket, then neither reads nor writes on it again (gone without a close:
-/// a power cut, a Wi-Fi drop): its address.
-async fn silent_presenter() -> std::net::SocketAddr {
+/// a power cut, a Wi-Fi drop), or (`answers`) only answers its pings: its
+/// address.
+async fn quiet_presenter(answers: bool) -> std::net::SocketAddr {
     use axum::extract::ws::WebSocketUpgrade;
     use axum::routing::get;
     let app = axum::Router::new()
@@ -211,11 +212,15 @@ async fn silent_presenter() -> std::net::SocketAddr {
         )
         .route(
             "/live/ws",
-            get(|ws: WebSocketUpgrade| async move {
-                ws.on_upgrade(|socket| async move {
-                    // Held, never read: no pong ever answers a ping.
-                    let _kept = socket;
-                    std::future::pending::<()>().await;
+            get(move |ws: WebSocketUpgrade| async move {
+                ws.on_upgrade(move |mut socket| async move {
+                    if answers {
+                        // Read: axum answers each ping with a pong.
+                        while let Some(Ok(_)) = socket.recv().await {}
+                    } else {
+                        // Held, never read: no pong ever answers a ping.
+                        std::future::pending::<()>().await;
+                    }
                 })
             }),
         );
@@ -227,7 +232,7 @@ async fn silent_presenter() -> std::net::SocketAddr {
 
 #[tokio::test(start_paused = true)]
 async fn a_live_socket_silent_for_15_s_ends_its_session_though_the_pings_still_go_out() {
-    let addr = silent_presenter().await;
+    let addr = quiet_presenter(false).await;
     let base = format!("http://{addr}");
     let (events, _) = crate::events::EventLog::channel(16);
     let site = Presenter::new(&base, events);
@@ -251,4 +256,18 @@ async fn a_live_socket_silent_for_15_s_ends_its_session_though_the_pings_still_g
         "{told:?}"
     );
     assert_eq!(told.get(1), Some(&LinkEvent::Online(true)));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_live_socket_that_only_answers_the_pings_keeps_its_session() {
+    let addr = quiet_presenter(true).await;
+    let base = format!("http://{addr}");
+    let (events, _) = crate::events::EventLog::channel(16);
+    let site = Presenter::new(&base, events);
+    let api = Api::new(&base);
+    let tell = |_| {};
+    let session = session(&site, &api, &tell);
+    // Every pong is a frame heard: no silence however long nothing happens.
+    let lived = tokio::time::timeout(SILENCE * 4, session).await;
+    assert!(lived.is_err(), "the session ended: {lived:?}");
 }
