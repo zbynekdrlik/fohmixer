@@ -537,7 +537,7 @@ fn ablesets_message_round_trips_and_a_message_this_page_does_not_know_is_ignored
     // with any fields, reads as `Unknown` (the page ignores it), never as
     // an error; a known type still has to be whole.
     for newer in [
-        json!({"type": "presenter", "stage": {"rows": 2}, "online": true}),
+        json!({"type": "lyrics_page", "stage": {"rows": 2}, "online": true}),
         json!({"type": "a_later_message"}),
     ] {
         let read = serde_json::from_value::<ServerMsg>(newer.clone());
