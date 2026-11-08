@@ -322,11 +322,20 @@ async fn the_stop_waits_for_a_presenter_stage_socket_to_close_and_record_it() {
         waited >= CLOSE_BOUND,
         "serve_until returned before the socket closed: {waited:?}"
     );
-    let records = crate::support::events_in(dir.path());
-    let close = records
-        .iter()
-        .find(|r| r["ev"] == "presenter_ws" && r["what"] == "close")
-        .expect("the close record, written before the stop returned");
+    // Its close was recorded before that (the socket's slot comes back only
+    // after its record); the event log's writer thread puts it on disk.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let close = loop {
+        let records = crate::support::events_in(dir.path());
+        let close = records
+            .into_iter()
+            .find(|r| r["ev"] == "presenter_ws" && r["what"] == "close");
+        if let Some(close) = close {
+            break close;
+        }
+        assert!(Instant::now() < deadline, "no close record");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
     assert_eq!(close["why"], STOPPED);
     assert!(close["down"].as_u64().is_some_and(|d| d > 0), "{close}");
     drop(page);

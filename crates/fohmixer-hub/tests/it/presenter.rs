@@ -479,11 +479,19 @@ async fn the_hubs_stop_ends_an_open_stage_socket_and_records_it() {
     .await;
     assert!(ended.is_ok(), "the stage socket outlived the hub's stop");
     assert!(stopped.elapsed() < Duration::from_secs(5));
-    let records = crate::support::events_in(&dir_path);
-    let close = records
-        .iter()
-        .find(|r| r["ev"] == "presenter_ws" && r["what"] == "close")
-        .expect("the socket's close record");
+    // The event log's writer thread puts the record on disk.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let close = loop {
+        let records = crate::support::events_in(&dir_path);
+        let close = records
+            .into_iter()
+            .find(|r| r["ev"] == "presenter_ws" && r["what"] == "close");
+        if let Some(close) = close {
+            break close;
+        }
+        assert!(std::time::Instant::now() < deadline, "no close record");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
     assert_eq!(close["why"], fohmixer_hub::ableset::STOPPED, "{close}");
     fake.stop().await;
 }
