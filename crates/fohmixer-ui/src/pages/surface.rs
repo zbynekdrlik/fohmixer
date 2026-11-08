@@ -33,6 +33,7 @@ use crate::arrange::{
 use crate::behave::ableset::tab_dot;
 use crate::behave::arrange_drag::Arrange;
 use crate::behave::iem::alive_after;
+use crate::behave::presenter::TAB_TITLE as PRESENTER_TAB;
 use crate::behave::solo::soloed;
 use crate::binding::sectors::{PICKS_KEY, Picks, Sectored, parse_picks, sectors_on};
 use crate::binding::{
@@ -51,6 +52,7 @@ use crate::manual::manual_parts;
 use crate::pages::ableset::{AbleSetView, take_return};
 use crate::pages::deck::DeckView;
 use crate::pages::iem::{IemPane, IemTab};
+use crate::pages::presenter::PresenterView;
 use crate::pages::sectors::SectorsView;
 use crate::store::{Badge, LiveStore, Slot};
 
@@ -78,6 +80,8 @@ pub(crate) enum Extra {
     /// iemmixer's own page (#166): its frame is `IemPane`'s, which outlives
     /// the tab, so `ExtraPane` draws nothing for it.
     Iem,
+    /// Presenter's stage display and its layouts (#90).
+    Presenter,
 }
 
 impl Extra {
@@ -88,6 +92,7 @@ impl Extra {
             Extra::Deck => "deck",
             Extra::AbleSet => "ableset",
             Extra::Iem => "iem",
+            Extra::Presenter => "presenter",
         }
     }
 
@@ -733,16 +738,23 @@ fn TabBar(
             }
         })
         .collect_view();
-    // The Stream Deck's tab (#52), AbleSet's (#90), then iemmixer's (#166)
-    // end the pages' bar, each from a hub with one.
+    // The Stream Deck's tab (#52), AbleSet's (#90), iemmixer's (#166), then
+    // Presenter's (#90) end the pages' bar, each from a hub with one.
     let extra_tabs = (level == 0).then(|| {
         let has_deck = move || nav.store.deck.with(Option::is_some);
         let has_ableset = move || nav.store.ableset.with(Option::is_some);
         let has_iem = move || nav.store.iem.try_with(Option::is_some).unwrap_or(false);
+        let has_presenter = move || {
+            nav.store
+                .presenter
+                .try_with(Option::is_some)
+                .unwrap_or(false)
+        };
         view! {
             <Show when=has_deck><DeckTab /></Show>
             <Show when=has_ableset><AbleSetTab /></Show>
             <Show when=has_iem><IemTab /></Show>
+            <Show when=has_presenter><PresenterTab /></Show>
         }
     });
     view! {
@@ -770,6 +782,7 @@ pub(crate) fn ExtraPane() -> impl IntoView {
         Extra::None | Extra::Iem => None,
         Extra::Deck => Some(view! { <DeckView viewport=viewport /> }.into_any()),
         Extra::AbleSet => Some(view! { <AbleSetView /> }.into_any()),
+        Extra::Presenter => Some(view! { <PresenterView viewport=viewport /> }.into_any()),
     }
 }
 
@@ -933,6 +946,41 @@ fn AbleSetTab() -> impl IntoView {
             {title}
             <Show when=offline>
                 <i class="ableset-dot" data-testid="ableset-dot"></i>
+            </Show>
+        </button>
+    }
+}
+
+/// Presenter's tab, under IEM MIXER's in the column (the mockup's): a small
+/// red dot while Presenter (or the hub) is unreachable, no words.
+#[component]
+fn PresenterTab() -> impl IntoView {
+    let nav = expect_context::<Nav>();
+    let store = nav.store;
+    let offline = move || {
+        let online = store
+            .presenter
+            .try_with(|p| p.as_ref().and_then(|p| p.online))
+            .flatten();
+        online == Some(false) || !store.connected.try_get().unwrap_or(false)
+    };
+    let lit = move || nav.shown.try_get().unwrap_or_default() == Extra::Presenter;
+    // A tab owns its touches (#43 PR G); it writes no key.
+    let no_keys: Vec<String> = Vec::new();
+    view! {
+        <button
+            type="button"
+            class="tab extra-tab presenter-tab"
+            use:owns_touches=no_keys
+            class:selected=lit
+            data-testid="presenter-tab"
+            data-selected=move || lit().to_string()
+            data-offline=move || offline().to_string()
+            on:pointerdown=move |_| nav.show_extra(Extra::Presenter)
+        >
+            {PRESENTER_TAB}
+            <Show when=offline>
+                <i class="presenter-dot" data-testid="presenter-dot"></i>
             </Show>
         </button>
     }
@@ -1724,13 +1772,16 @@ mod tests {
         assert!(Extra::AbleSet.pager_tabs(true));
         assert!(!Extra::Iem.pager_tabs(false));
         assert!(Extra::Iem.pager_tabs(true));
+        assert!(Extra::Presenter.covers_left());
+        assert!(!Extra::Presenter.pager_tabs(false));
+        assert!(Extra::Presenter.pager_tabs(true));
     }
 
     #[test]
     fn iemmixers_close_leaves_its_own_tab_and_no_other() {
         // #166: its ✕ ends the frame; under another tab nothing else moves.
         assert_eq!(Extra::Iem.after_iem_closed(), Extra::None);
-        for other in [Extra::None, Extra::Deck, Extra::AbleSet] {
+        for other in [Extra::None, Extra::Deck, Extra::AbleSet, Extra::Presenter] {
             assert_eq!(other.after_iem_closed(), other);
         }
     }
@@ -1742,6 +1793,7 @@ mod tests {
         assert_eq!(Extra::Deck.name(), "deck");
         assert_eq!(Extra::AbleSet.name(), "ableset");
         assert_eq!(Extra::Iem.name(), "iem");
+        assert_eq!(Extra::Presenter.name(), "presenter");
         assert_eq!(Extra::default().name(), "none");
     }
 

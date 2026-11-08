@@ -13,6 +13,7 @@ mod detail_layouts;
 pub mod eq;
 pub mod fader;
 mod fader_link;
+pub mod hold_key;
 pub mod meter;
 pub mod overlay;
 pub mod pan;

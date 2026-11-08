@@ -157,7 +157,7 @@ pub fn takes_batch(buffered: u32) -> bool {
 /// what went, a write's intent changes, PR G's system gestures and zooms,
 /// #52's Stream Deck presses, #71's channel detail steps and the Pro-Q 4
 /// screen's fingers and undos, #51's idle turns, #90's AbleSet tab, #166's
-/// IEM frame, the
+/// IEM frame, #90's PRESENTER tab, the
 /// rail buttons' presses, #104/#130); rank 0, first, for the
 /// round-trip summaries, long frames and any other kind; rank 1, last, for
 /// the moves (the only per-frame data of a drag the hub cannot see). A
@@ -166,7 +166,7 @@ pub fn drop_rank(ev: &str) -> Option<u8> {
     match ev {
         "touch" | "dropout" | "reset" | "sock" | "visibility" | "overflow" | "intent" | "sys"
         | "zoom" | "deck" | "detail" | "eq_touch" | "eq_mv" | "eq_lat" | "eq_view" | "eq_undo"
-        | "idle" | "ableset_view" | "ableset" | "iem" | "rail" => None,
+        | "idle" | "ableset_view" | "ableset" | "iem" | "presenter" | "rail" => None,
         "mv" => Some(1),
         _ => Some(0),
     }
@@ -278,6 +278,41 @@ pub fn iem(t: f64, step: IemStep) -> Value {
         IemStep::Open => json!({"ev": "iem", "t": t, "what": "open"}),
         IemStep::Load { ms } => json!({"ev": "iem", "t": t, "what": "load", "ms": ms.round()}),
         IemStep::Close => json!({"ev": "iem", "t": t, "what": "close"}),
+    }
+}
+
+/// A step of Presenter's stage tab (#90).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PresenterStep<'a> {
+    /// The tab opened.
+    Open,
+    /// The tab closed (another tab, or the page's own).
+    Close,
+    /// The preview's frame mounted (the tab's open, or Presenter back).
+    Frame,
+    /// The frame's page loaded, `ms` after its mount.
+    Load { ms: f64 },
+    /// The offline panel shows: Presenter can't be reached.
+    Down,
+    /// A switch's answer was a failure, and why.
+    Failed { code: &'a str, why: &'a str },
+}
+
+/// Presenter's stage tab's step at `t` (#90): `what`, the load's time in
+/// whole ms, a failed switch's layout and words. A key's press is the
+/// `rail` step of its `button` `presenter`.
+pub fn presenter(t: f64, step: PresenterStep<'_>) -> Value {
+    match step {
+        PresenterStep::Open => json!({"ev": "presenter", "t": t, "what": "open"}),
+        PresenterStep::Close => json!({"ev": "presenter", "t": t, "what": "close"}),
+        PresenterStep::Frame => json!({"ev": "presenter", "t": t, "what": "frame"}),
+        PresenterStep::Load { ms } => {
+            json!({"ev": "presenter", "t": t, "what": "load", "ms": ms.round()})
+        }
+        PresenterStep::Down => json!({"ev": "presenter", "t": t, "what": "down"}),
+        PresenterStep::Failed { code, why } => {
+            json!({"ev": "presenter", "t": t, "what": "failed", "code": code, "why": why})
+        }
     }
 }
 

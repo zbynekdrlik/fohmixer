@@ -36,6 +36,7 @@ use crate::behave::ableset::AbleSetInfo;
 use crate::behave::idle::IdleWatch;
 use crate::behave::iem::IemInfo;
 use crate::behave::link::{Counter, DropoutWatch};
+use crate::behave::presenter::PresenterInfo;
 use crate::binding::SubSpec;
 use crate::diag::trace::fingers::EqUndos;
 use crate::diag::{self, trace};
@@ -47,6 +48,7 @@ mod deck;
 mod eq;
 mod idle;
 mod link;
+mod presenter;
 mod sectors;
 mod writes;
 
@@ -100,6 +102,9 @@ struct Inner {
     deck: DeckWaiting<FailFn>,
     /// The Stream Deck tab is open (#52): told again after each hello.
     deck_viewing: bool,
+    /// Presenter's stage switches waiting for their answer (#90): the
+    /// deck's waiting presses' kind, numbered on their own.
+    presenter: DeckWaiting<FailFn>,
     /// Where the open Pro-Q 4 editor's frames go (#71 PR E): the screen's
     /// painter while it is mounted.
     eq_frames: Option<FrameSink>,
@@ -132,6 +137,7 @@ impl Inner {
             watch: DropoutWatch::default(),
             deck: DeckWaiting::default(),
             deck_viewing: false,
+            presenter: DeckWaiting::default(),
             eq_frames: None,
             eq_inputs: Inputs::default(),
             eq_undos: EqUndos::default(),
@@ -204,6 +210,9 @@ pub struct LiveStore {
     /// iemmixer's page (#166): none from a hub without one (no tab); kept
     /// through a reconnect until the hub's next `iem`.
     pub iem: RwSignal<Option<IemInfo>>,
+    /// Presenter's stage (#90): none from a hub without `[presenter]` (no
+    /// tab); kept through a reconnect until the hub's next `presenter`.
+    pub presenter: RwSignal<Option<PresenterInfo>>,
     /// The latest list of a strip's Pro-Q 4 instances (#71 PR E).
     pub eq_list: RwSignal<Option<EqListView>>,
     /// The held Pro-Q 4 editors, as the hub last said.
@@ -239,6 +248,7 @@ impl LiveStore {
             deck_keys: RwSignal::new(BTreeMap::new()),
             ableset: RwSignal::new(None),
             iem: RwSignal::new(None),
+            presenter: RwSignal::new(None),
             eq_list: RwSignal::new(None),
             eq_locks: RwSignal::new(Vec::new()),
             eq: RwSignal::new(None),
@@ -516,6 +526,7 @@ impl LiveStore {
             }
         });
         self.deck_closed();
+        self.presenter_closed();
         self.eq_socket_closed();
         // The controls keep Live's last values, stale, and take touches (L2).
         self.mark_stale();
@@ -716,6 +727,18 @@ impl LiveStore {
             ServerMsg::Iem { url, title } => {
                 let _ = self.iem.try_set(Some(IemInfo { title, url }));
             }
+            // Presenter's stage (#90): its tab and its keys.
+            ServerMsg::Presenter {
+                online,
+                layouts,
+                current,
+            } => self.on_presenter(online, layouts, current),
+            ServerMsg::PresenterAck {
+                seq,
+                code,
+                ok,
+                error,
+            } => self.on_presenter_ack(seq, &code, ok, error),
             // The fader sectors (#148): the sectors page, the LAYOUTS block,
             // and the detail's ticks read them.
             ServerMsg::Sectors { doc } => {
