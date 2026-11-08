@@ -193,3 +193,62 @@ async fn every_switch_is_carried_on_its_own_and_its_outcome_handed_back() {
         .expect("it ends with its channel")
         .unwrap();
 }
+
+/// A Presenter that answers the session's two reads and opens its live
+/// socket, then neither reads nor writes on it again (gone without a close:
+/// a power cut, a Wi-Fi drop): its address.
+async fn silent_presenter() -> std::net::SocketAddr {
+    use axum::extract::ws::WebSocketUpgrade;
+    use axum::routing::get;
+    let app = axum::Router::new()
+        .route(
+            "/stage-displays",
+            get(|| async { axum::Json(json!([{"code": "timer", "name": "TIMER"}])) }),
+        )
+        .route(
+            "/stage/layout",
+            get(|| async { axum::Json(json!({"code": "timer", "layout": {}})) }),
+        )
+        .route(
+            "/live/ws",
+            get(|ws: WebSocketUpgrade| async move {
+                ws.on_upgrade(|socket| async move {
+                    // Held, never read: no pong ever answers a ping.
+                    let _kept = socket;
+                    std::future::pending::<()>().await;
+                })
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_live_socket_silent_for_15_s_ends_its_session_though_the_pings_still_go_out() {
+    let addr = silent_presenter().await;
+    let base = format!("http://{addr}");
+    let (events, _) = crate::events::EventLog::channel(16);
+    let site = Presenter::new(&base, events);
+    let api = Api::new(&base);
+    let told = std::sync::Mutex::new(Vec::new());
+    let started = tokio::time::Instant::now();
+    let tell = |event| told.lock().unwrap().push(event);
+    let session = session(&site, &api, &tell);
+    let why = tokio::time::timeout(Duration::from_secs(120), session)
+        .await
+        .expect("the session ends once the socket stays silent");
+    let after = started.elapsed();
+    assert_eq!(why, "the live socket was silent for 15000 ms");
+    assert!(
+        after >= SILENCE && after < SILENCE + PING_EVERY,
+        "ended after {after:?}"
+    );
+    let told = told.into_inner().unwrap();
+    assert!(
+        matches!(told.first(), Some(LinkEvent::Listed { current, .. }) if current == "timer"),
+        "{told:?}"
+    );
+    assert_eq!(told.get(1), Some(&LinkEvent::Online(true)));
+}
