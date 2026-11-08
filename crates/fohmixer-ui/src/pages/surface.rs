@@ -33,7 +33,7 @@ use crate::arrange::{
 use crate::behave::ableset::tab_dot;
 use crate::behave::arrange_drag::Arrange;
 use crate::behave::iem::alive_after;
-use crate::behave::presenter::TAB_TITLE as PRESENTER_TAB;
+use crate::behave::presenter::{TAB_TITLE as PRESENTER_TAB, tab_dot as presenter_tab_dot};
 use crate::behave::solo::soloed;
 use crate::binding::sectors::{PICKS_KEY, Picks, Sectored, parse_picks, sectors_on};
 use crate::binding::{
@@ -962,7 +962,7 @@ fn PresenterTab() -> impl IntoView {
             .presenter
             .try_with(|p| p.as_ref().and_then(|p| p.online))
             .flatten();
-        online == Some(false) || !store.connected.try_get().unwrap_or(false)
+        presenter_tab_dot(online, store.connected.try_get().unwrap_or(false))
     };
     let lit = move || nav.shown.try_get().unwrap_or_default() == Extra::Presenter;
     // A tab owns its touches (#43 PR G); it writes no key.

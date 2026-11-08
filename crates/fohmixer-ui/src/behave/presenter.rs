@@ -162,6 +162,12 @@ pub fn switch_to(code: &str, ready: bool) -> Option<String> {
     ready.then(|| code.to_string())
 }
 
+/// The tab's red dot: Presenter down, or the page's own link to the hub
+/// (not known yet is no dot).
+pub fn tab_dot(online: Option<bool>, connected: bool) -> bool {
+    online == Some(false) || !connected
+}
+
 /// The keys' rows for `n` layouts in [`COLUMNS`] columns (at least one).
 pub fn rows(n: usize) -> usize {
     n.div_ceil(COLUMNS).max(1)
@@ -255,6 +261,15 @@ mod tests {
         assert!(!can_switch(Some(true), true, true));
         assert_eq!(switch_to("timer", true).as_deref(), Some("timer"));
         assert_eq!(switch_to("timer", false), None);
+    }
+
+    #[test]
+    fn the_tab_shows_its_dot_while_presenter_or_the_page_is_down() {
+        assert!(!tab_dot(Some(true), true));
+        assert!(!tab_dot(None, true), "not known yet");
+        assert!(tab_dot(Some(false), true));
+        assert!(tab_dot(Some(true), false));
+        assert!(tab_dot(None, false));
     }
 
     #[test]

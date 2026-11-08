@@ -212,6 +212,17 @@
     border-color: var(--danger);
 }
 
+/* A low screen (a phone on its side): the pages' bar keeps the three rows
+   it had before this tab (page.css: FOH, STREAM DECK beside ABLESET, IEM
+   with its ✕), PRESENTER beside IEM MIXER: a fourth row took the rail's last
+   button (reverb.spec.ts's phone rail, 844 x 390). */
+@media (max-height: 520px) {
+    .column .seg[data-level="0"]:has(.presenter-tab) .iem-row {
+        flex: 1 1 0;
+        min-width: 0;
+    }
+}
+
 /* Phones: the keys' second line goes, the names keep their row. */
 @media (max-height: 520px), (max-width: 520px) {
     .pst-note,
