@@ -9,7 +9,7 @@
         [--fake-ableset-port N --ableset-name NAME --ableset-cert FILE
          --ableset-key FILE [--ableset-aud AUD]]
         [--fake-iem-port N --iem-url URL --iem-cert FILE --iem-key FILE
-         [--iem-ancestors ORIGIN]]
+         [--iem-ancestors ORIGIN]] [--fake-presenter-port N]
 
 It starts ``sim/host.py`` for ``band`` and ``master`` (the real FohMixer script on
 SimLive), writes the hub's config and layout into the data folder, starts the hub
@@ -95,6 +95,14 @@ what only the harness can do:
     GET  /iem                            the fake iemmixer's state (#166,
                                          ``--fake-iem-port``): ``port``, ``loads``, ``hits``
     POST /iem/clear                      the hits forgotten
+    GET  /presenter                      the fake Presenter's state (#90, the stage
+                                         tab, ``--fake-presenter-port``): ``port``,
+                                         ``down``, ``current``, ``sockets``, ``hits``
+    POST /presenter/down                 Presenter stopped (a connect is refused)
+    POST /presenter/up                   Presenter listening again
+    POST /presenter/switch {"code": C}   the operator switches the stage to C in
+                                         Presenter itself
+    POST /presenter/clear                the hits forgotten
     POST /hub/iem {"on": <bool>}         the hub's config with or without ``[iem]``,
                                          and the hub restarted; {"iem": what it now
                                          holds}: false without ``--iem-url``
@@ -123,6 +131,10 @@ public name the hub's config gets ``[ableset]`` (that name, the fake as its
 upstream, ``--ableset-aud`` as its Access audience) and the name's own
 certificate (``--ableset-cert``, ``--ableset-key``) goes into its store
 ``tls/ableset/``.
+
+Presenter's stage (#90): with ``--fake-presenter-port`` the harness starts
+``fake_presenter.py`` there (0: any free port) and the hub's config gets
+``[presenter]`` with the fake's address.
 
 iemmixer's page (#166): with ``--fake-iem-port`` the harness starts
 ``fake_iem.py`` there over TLS (``--iem-cert``, ``--iem-key``; 0: any free
@@ -157,6 +169,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import fake_ableset
 import fake_companion
 import fake_iem
+import fake_presenter
 import impair
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -209,6 +222,7 @@ def hub_config(
     ableset=None,
     lufs_port=None,
     iem=None,
+    presenter=None,
 ):
     """The hub's ``fohmixer-hub.toml`` for the two hosts (layout polled fast) and
     the Pro-Q 4 screen on the simulated window backend (#71 PR E), with the
@@ -218,7 +232,8 @@ def hub_config(
     ``[ableset]`` of ``ableset`` (``name``, ``upstream``, ``aud``) beside a
     ``[tls]`` name (#90), ``[lufs]`` on ``lufs_port`` when given (#151:
     the LUFS devices' UDP port, where both hosts' SimLive devices send), and
-    ``[iem]`` of ``iem``, its page's address, when given (#166)."""
+    ``[iem]`` of ``iem``, its page's address, when given (#166), and
+    ``[presenter]`` of ``presenter``, its server's address (#90)."""
     text = (
         f"http_port = {http_port}\n"
         'layout = "layout.json"\n'
@@ -251,6 +266,8 @@ def hub_config(
             text += f'access_aud = ["{ableset["aud"]}"]\n'
     if iem:
         text += f'[iem]\nurl = "{iem}"\n'
+    if presenter:
+        text += f'[presenter]\nurl = "{presenter}"\n'
     return text
 
 
@@ -443,6 +460,14 @@ def on_of(body, route):
     if not isinstance(on, bool):
         raise BadRequest(f'{route} wants {{"on": true|false}}, not {body!r}')
     return on
+
+
+def code_of(body):
+    """The ``code`` of a body: a layout code (word characters and ``-``)."""
+    code = body.get("code")
+    if not isinstance(code, str) or not code or not code.replace("-", "").isalnum():
+        raise BadRequest(f'/presenter/switch wants {{"code": "<layout code>"}}, not {body!r}')
+    return code
 
 
 def companion_of(args, fake):
@@ -649,6 +674,10 @@ class Harness:
             self.iem_fake.start()
         self.iem = args.iem_url
         self.iem_on = self.iem is not None
+        self.presenter_fake = None
+        if args.fake_presenter_port is not None:
+            self.presenter_fake = fake_presenter.Child(args.fake_presenter_port)
+            self.presenter_fake.start()
         if self.ableset and args.ableset_cert:
             tls = os.path.join(self.data, "tls", "ableset")
             copy_cert(args.ableset_cert, args.ableset_key, tls)
@@ -685,8 +714,15 @@ class Harness:
                     self.ableset if self.ableset_on else None,
                     self.lufs_port,
                     self.iem if self.iem_on else None,
+                    self.presenter_url(),
                 )
             )
+
+    def presenter_url(self):
+        """``[presenter] url`` (#90): the fake's address, else none."""
+        if self.presenter_fake is None:
+            return None
+        return f"http://127.0.0.1:{self.presenter_fake.port}"
 
     def set_companion(self, on):
         """The hub's config with or without ``[companion]``; answers what it now
@@ -769,6 +805,9 @@ class Harness:
         if method == "GET" and parts == ["ableset"]:
             fake = self.ableset_fake
             return (200, fake.state()) if fake else (404, {"error": "no fake AbleSet"})
+        if method == "GET" and parts == ["presenter"]:
+            fake = self.presenter_fake
+            return (200, fake.state()) if fake else (404, {"error": "no fake Presenter"})
         if method == "GET" and parts == ["iem"]:
             fake = self.iem_fake
             return (200, fake.state()) if fake else (404, {"error": "no fake iemmixer"})
@@ -838,6 +877,17 @@ class Harness:
                 return 200, self.ableset_fake.up()
             if parts == ["ableset", "clear"]:
                 return 200, self.ableset_fake.clear()
+        if parts and parts[0] == "presenter":
+            if self.presenter_fake is None:
+                return 404, {"error": "no fake Presenter"}
+            if parts == ["presenter", "down"]:
+                return 200, self.presenter_fake.down()
+            if parts == ["presenter", "up"]:
+                return 200, self.presenter_fake.up()
+            if parts == ["presenter", "clear"]:
+                return 200, self.presenter_fake.clear()
+            if parts == ["presenter", "switch"]:
+                return 200, self.presenter_fake.switch(code_of(body))
         if parts == ["iem", "clear"]:
             if self.iem_fake is None:
                 return 404, {"error": "no fake iemmixer"}
@@ -869,6 +919,8 @@ class Harness:
             parts.append(("the fake AbleSet", self.ableset_fake))
         if self.iem_fake is not None:
             parts.append(("the fake iemmixer", self.iem_fake))
+        if self.presenter_fake is not None:
+            parts.append(("the fake Presenter", self.presenter_fake))
         parts += [(f"host {name}", host) for name, host in self.hosts.items()]
         failures = []
         for what, part in parts:
@@ -953,6 +1005,7 @@ def fixed_ports(args):
         args.fake_companion_port,
         args.fake_ableset_port,
         args.fake_iem_port,
+        args.fake_presenter_port,
     ]
 
 
@@ -1012,6 +1065,8 @@ def parse_args(argv):
     parser.add_argument("--iem-cert", default=None)
     parser.add_argument("--iem-key", default=None)
     parser.add_argument("--iem-ancestors", default="*")
+    # Presenter's stage (#90): a fake Presenter on this port (0: any) and [presenter].
+    parser.add_argument("--fake-presenter-port", type=int, default=None)
     return parser.parse_args(argv)
 
 

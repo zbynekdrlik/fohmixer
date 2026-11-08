@@ -547,9 +547,11 @@ jobs:
           # Stream Deck tab), the fake AbleSet (#90, 127.0.0.1:39193: the
           # hub's [ableset] upstream, its name ableset.e2e.test), the fake
           # iemmixer (#166, https://iem.e2e.test:39194: the hub's [iem]; the
-          # browser reaches it directly) and the harness's control API for the
+          # browser reaches it directly), the fake Presenter (#90,
+          # 127.0.0.1:39195: the hub's [presenter]; the stage tab's preview
+          # reaches it through the hub) and the harness's control API for the
           # tests (127.0.0.1:39190).
-          # The harness's fixed ports (39101-39194) sit in the runner's
+          # The harness's fixed ports (39101-39195) sit in the runner's
           # ephemeral range: reserve them, or an outbound connection can take
           # one before the harness binds it (EADDRINUSE; the harness checks).
           sudo sysctl -w net.ipv4.ip_local_reserved_ports=39100-39199
@@ -568,6 +570,7 @@ jobs:
             --fake-iem-port 39194 --iem-url https://iem.e2e.test:39194/ \
             --iem-cert "$E2E_REMOTE_DIR/iem-cert.pem" --iem-key "$E2E_REMOTE_DIR/iem-key.pem" \
             --iem-ancestors https://foh.e2e.test:8443 \
+            --fake-presenter-port 39195 \
             --log-dir "$RUNNER_TEMP/e2e-logs" > "$RUNNER_TEMP/e2e-logs/harness.log" 2>&1 &
           for i in $(seq 1 60); do
             if curl -sf http://127.0.0.1:39190/health > /dev/null \
@@ -575,7 +578,8 @@ jobs:
               && curl -sf http://127.0.0.1:8481/api/version > /dev/null \
               && curl -sf https://foh.e2e.test:8443/api/version > /dev/null \
               && curl -sf https://ableset.e2e.test:8443/static/app.css > /dev/null \
-              && curl -sf https://iem.e2e.test:39194/ > /dev/null; then
+              && curl -sf https://iem.e2e.test:39194/ > /dev/null \
+              && curl -sf http://127.0.0.1:8480/stage-displays > /dev/null; then
               echo "harness ready after ${i}s"
               exit 0
             fi

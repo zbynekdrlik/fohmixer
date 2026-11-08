@@ -237,7 +237,9 @@ test.describe("AbleSet's tab (the LAN path, fohmixer's own https page)", () => {
     // is a row of its own, the page tabs' larger), no red dot.
     const bar = page.locator('[data-testid="tabbar"][data-level="0"]');
     const ids = await bar.locator(":scope > button").evaluateAll((tabs) => tabs.map((t) => t.getAttribute("data-testid")));
-    expect(ids.slice(-2)).toEqual(["deck-tab", "ableset-tab"]);
+    // Presenter's tab (#90) ends the bar since the stage tab, after IEM
+    // MIXER's row (a div, not a button).
+    expect(ids.slice(-3)).toEqual(["deck-tab", "ableset-tab", "presenter-tab"]);
     const tab = page.getByTestId("ableset-tab");
     await expect(tab).toHaveText("AbleSet");
     await expect(tab).toHaveAttribute("data-offline", "false");

@@ -538,6 +538,18 @@ class HarnessTest(unittest.TestCase):
         )
         self.assertLess(both.index("[companion]"), both.index("[tls]"))
 
+    def test_the_presenter_table_of_the_hub_config(self):
+        text = harness.hub_config(8480, 1, 2, presenter="http://127.0.0.1:39195")
+        self.assertEqual(
+            text, harness.hub_config(8480, 1, 2) + '[presenter]\nurl = "http://127.0.0.1:39195"\n'
+        )
+
+    def test_a_switch_names_a_layout_code(self):
+        self.assertEqual(harness.code_of({"code": "api-video"}), "api-video")
+        for body in [{}, {"code": ""}, {"code": 3}, {"code": "a b"}, {"code": "x;y"}]:
+            with self.assertRaises(harness.BadRequest, msg=repr(body)):
+                harness.code_of(body)
+
     def test_the_ableset_table_of_the_hub_config(self):
         remote = {"name": "foh.e2e.test", "https_port": 8443}
         ableset = {"name": "ableset.e2e.test", "upstream": "http://127.0.0.1:39193", "aud": "a-1"}
@@ -632,12 +644,12 @@ class EphemeralPorts(unittest.TestCase):
             [
                 *("--data", "d", "--layout", "l", "--link-port", "8481"),
                 *("--fake-companion-port", "39192", "--fake-ableset-port", "39193"),
-                *("--fake-iem-port", "39194"),
+                *("--fake-iem-port", "39194", "--fake-presenter-port", "39195"),
             ]
         )
         self.assertEqual(
             sorted(p for p in harness.fixed_ports(args) if p),
-            [8443, 8480, 8481, 39101, 39102, 39190, 39192, 39193, 39194],
+            [8443, 8480, 8481, 39101, 39102, 39190, 39192, 39193, 39194, 39195],
         )
 
 
