@@ -88,6 +88,7 @@ pub mod pepper;
 pub mod pin_hash;
 pub mod pin_store;
 pub mod plugwin;
+pub mod presenter;
 pub mod provision;
 pub mod ration;
 pub mod remote;
@@ -185,6 +186,11 @@ pub struct HubInner {
     pub deny_lines: access::DenyLines,
     /// AbleSet's name behind the hub (#90, `[ableset]`).
     pub ableset: Option<Arc<ableset::AbleSet>>,
+    /// Presenter's stage page behind the hub (#90, `[presenter]`).
+    pub presenter: Option<Arc<presenter::Presenter>>,
+    /// Where the router hands a page's stage switch (#90): taken by the
+    /// served hub's switch task (`start_presenter`).
+    presenter_switches: Mutex<Option<mpsc::UnboundedReceiver<presenter::link::SwitchRequest>>>,
     /// Remote access's live state for `/api/status`.
     pub remote: Arc<RemoteState>,
     /// The host names a request may name besides addresses (`check_host`).
@@ -243,6 +249,10 @@ impl HubInner {
         // AbleSet's WebSocket tunnels (#90 B2): an upgraded connection is
         // no longer the listener's, so its drain never waits for one.
         if let Some(site) = &self.ableset {
+            site.stop();
+        }
+        // Presenter's stage sockets (#90) likewise.
+        if let Some(site) = &self.presenter {
             site.stop();
         }
         for task in self
@@ -318,6 +328,19 @@ impl HubInner {
         {
             tracing::warn!(
                 wait_ms = ableset::CLOSED_WAIT.as_millis() as u64,
+                "{warning}"
+            );
+        }
+    }
+
+    /// Waits up to [`presenter::CLOSED_WAIT`] for Presenter's stage sockets
+    /// to end after a stop (#90), as AbleSet's tunnels.
+    pub async fn presenter_closed(&self) {
+        if let Some(site) = &self.presenter
+            && let Some(warning) = presenter_warning(site.closed(presenter::CLOSED_WAIT).await)
+        {
+            tracing::warn!(
+                wait_ms = presenter::CLOSED_WAIT.as_millis() as u64,
                 "{warning}"
             );
         }
@@ -422,6 +445,7 @@ impl HubInner {
             remote: self.remote.snapshot(&self.config, https, now),
             companion: self.companion.as_ref().map(CompanionHandle::status),
             ableset,
+            presenter: self.presenter.as_ref().map(|site| site.status()),
             sectors: router.sectors,
             colors: router.colors,
         }
@@ -458,6 +482,11 @@ impl Hub {
                     events.clone(),
                 ))
             });
+        // Presenter's stage page (#90): its proxy and the link's state.
+        let presenter = config
+            .presenter
+            .as_ref()
+            .map(|cfg| Arc::new(presenter::Presenter::new(cfg.base(), events.clone())));
         if let Some(cfg) = &config.tunnel {
             tasks.push(tunnel::spawn(
                 remote_http()?,
@@ -519,6 +548,7 @@ impl Hub {
             public_name = config.tls.as_ref().map(|t| t.name.as_str()).unwrap_or("-"),
             ableset = config.ableset.as_ref().map(|a| a.name.as_str()).unwrap_or("-"),
             iem = config.iem.as_ref().map(|i| i.url.as_str()).unwrap_or("-"),
+            presenter = config.presenter.as_ref().map(|p| p.base()).unwrap_or("-"),
             access = config.access.is_some(),
             companion = config.companion.is_some(),
             eq = ?config.eq_backend(),
@@ -556,6 +586,14 @@ impl Hub {
         if let Some(cfg) = &config.iem {
             router = router.with_iem(cfg);
         }
+        // Presenter's stage (#90): every page is told of it; its switches
+        // wait for the served hub's switch task.
+        let mut presenter_switches = None;
+        if presenter.is_some() {
+            let (tx, rx) = mpsc::unbounded_channel();
+            router = router.with_presenter(tx);
+            presenter_switches = Some(rx);
+        }
         tokio::spawn(router.run(router_rx));
         // The LUFS devices' listener (#151): 127.0.0.1 only; a port taken
         // is recorded and shown, and the hub runs on without it.
@@ -590,6 +628,8 @@ impl Hub {
             policy_rev: revision,
             deny_lines: access::DenyLines::default(),
             ableset,
+            presenter,
+            presenter_switches: Mutex::new(presenter_switches),
             remote,
             trusted_hosts,
             https: std::sync::OnceLock::new(),
@@ -743,6 +783,7 @@ pub fn page_policy(config: &Config) -> String {
     page_csp(
         framed.map(|(a, tls)| (a.name.as_str(), tls.port)),
         iem.as_deref(),
+        config.presenter.is_some(),
     )
 }
 
@@ -764,13 +805,20 @@ pub fn policy_rev(policy: &str) -> String {
 /// port) AbleSet's origins may be framed and probed as an image. With
 /// `[iem]` (#166; `iem`: its page's origin) that origin may be framed: it is
 /// fohmixer's own page saying what it frames, nothing of iemmixer's answers.
-pub fn page_csp(framed: Option<(&str, u16)>, iem: Option<&str>) -> String {
+/// With `[presenter]` (#90) the page may frame its own origin (`'self'`):
+/// Presenter's stage page on the hub's own paths (`presenter.rs`).
+pub fn page_csp(framed: Option<(&str, u16)>, iem: Option<&str>, presenter: bool) -> String {
     let ableset = framed.map(|(name, port)| ableset::https_origins(name, port));
     let img = ableset
         .as_ref()
         .map(|origins| format!(" {origins}"))
         .unwrap_or_default();
-    let frames: Vec<&str> = ableset.as_deref().into_iter().chain(iem).collect();
+    let own = presenter.then_some("'self'");
+    let frames: Vec<&str> = own
+        .into_iter()
+        .chain(ableset.as_deref())
+        .chain(iem)
+        .collect();
     let frame = if frames.is_empty() {
         String::new()
     } else {
@@ -830,6 +878,21 @@ fn router(hub: Hub, redirect: bool) -> Router {
         .layer(referrer_policy)
         .layer(csp)
         .with_state(hub.clone());
+    // Presenter's stage page (#90): its paths go to its own router (its
+    // host check, redirect and Access check, its framing) before any of
+    // fohmixer's own layers.
+    let app = match hub.presenter.clone() {
+        Some(site) => {
+            let to = presenter::Dispatch {
+                router: presenter::router(site, hub.clone(), redirect),
+            };
+            app.layer(axum::middleware::from_fn_with_state(
+                to,
+                presenter::dispatch,
+            ))
+        }
+        None => app,
+    };
     match hub.ableset.clone() {
         Some(site) => {
             let redirect = if redirect { Some(hub.clone()) } else { None };
@@ -932,6 +995,7 @@ where
         start_https(&hub, at, &name, HTTPS_BIND_RETRY);
     }
     start_link(&hub, ableset::link::PERIOD);
+    start_presenter(&hub);
     tracing::info!(
         addr = %local,
         version = %fohmixer_proto::full_version(),
@@ -981,6 +1045,7 @@ where
     hub.companion_stopped().await;
     hub.plugwin_stopped().await;
     hub.ableset_closed().await;
+    hub.presenter_closed().await;
     if let Some(https) = hub.https.get() {
         // It took the stop with the HTTP server and ends its connections
         // STOP_DRAIN after it; this bound is only the backstop.
@@ -1002,6 +1067,47 @@ fn plugwin_stop_warning(ended: bool) -> Option<&'static str> {
 /// wait (`ended`: whether they had).
 fn tunnels_warning(ended: bool) -> Option<&'static str> {
     (!ended).then_some("AbleSet's WebSocket tunnels did not all end within the stop's wait")
+}
+
+/// The warning when Presenter's stage sockets had not all ended within the
+/// stop's wait (`ended`: whether they had).
+fn presenter_warning(ended: bool) -> Option<&'static str> {
+    (!ended).then_some("Presenter's stage sockets did not all end within the stop's wait")
+}
+
+/// Presenter's link (#90): with `[presenter]`, the served hub follows
+/// Presenter (`presenter::link::follow`) and carries the pages' switches
+/// (`presenter::link::switches`), both through the router. A hub only built
+/// (`Hub::start`, the router tests) never talks to Presenter by itself.
+fn start_presenter(hub: &Hub) {
+    let Some(site) = &hub.presenter else {
+        return;
+    };
+    let api = presenter::link::Api::new(&site.base);
+    let router = hub.router.clone();
+    let follow = presenter::link::follow(Arc::clone(site), api.clone(), move |event| {
+        let _ = router.send(RouterMsg::PresenterLink { event });
+    });
+    hub.add_task(tokio::spawn(follow));
+    let requests = hub
+        .presenter_switches
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
+    if let Some(requests) = requests {
+        let router = hub.router.clone();
+        let switches = presenter::link::switches(api, requests, move |(request, result, ms)| {
+            let _ = router.send(RouterMsg::PresenterSwitched {
+                client: request.client,
+                seq: request.seq,
+                code: request.code,
+                from: request.from,
+                result,
+                ms,
+            });
+        });
+        hub.add_task(tokio::spawn(switches));
+    }
 }
 
 /// The warning when the HTTPS listener had not ended within the backstop
@@ -1269,9 +1375,9 @@ mod tests {
     #[test]
     fn the_page_may_frame_ablesets_origins_only_with_ableset() {
         let today = "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self'";
-        assert_eq!(page_csp(None, None), today);
+        assert_eq!(page_csp(None, None, false), today);
         assert_eq!(
-            page_csp(Some(("ableset.example.org", 8443)), None),
+            page_csp(Some(("ableset.example.org", 8443)), None, false),
             "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; \
              img-src 'self' data: blob: https://ableset.example.org https://ableset.example.org:8443; font-src 'self'; \
              frame-src https://ableset.example.org https://ableset.example.org:8443"
@@ -1283,14 +1389,15 @@ mod tests {
         // #166: without it `default-src 'self'` refuses the frame. It is no
         // image source: the IEM tab probes nothing.
         assert_eq!(
-            page_csp(None, Some("https://iem.example.org:8443")),
+            page_csp(None, Some("https://iem.example.org:8443"), false),
             "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; \
              img-src 'self' data: blob:; font-src 'self'; frame-src https://iem.example.org:8443"
         );
         assert_eq!(
             page_csp(
                 Some(("ableset.example.org", 443)),
-                Some("https://iem.example.org")
+                Some("https://iem.example.org"),
+                false
             ),
             "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; \
              img-src 'self' data: blob: https://ableset.example.org; font-src 'self'; \
@@ -1300,7 +1407,33 @@ mod tests {
         let config = |text: &str| Config::parse(text, data).unwrap();
         let with = "[iem]\nurl = \"https://iem.example.org:8443/mix\"\n";
         let policy = page_policy(&config(with));
-        assert_eq!(policy, page_csp(None, Some("https://iem.example.org:8443")));
+        assert_eq!(
+            policy,
+            page_csp(None, Some("https://iem.example.org:8443"), false)
+        );
+        // A page open across a restart that adds it reloads for the frame.
+        assert_ne!(policy_rev(&policy), policy_rev(&page_policy(&config(""))));
+    }
+
+    #[test]
+    fn the_page_may_frame_its_own_origin_only_with_presenter() {
+        // #90: Presenter's stage page is on the hub's own paths, so the
+        // frame is 'self', first, beside the other frames.
+        assert_eq!(
+            page_csp(None, None, true),
+            "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; \
+             img-src 'self' data: blob:; font-src 'self'; frame-src 'self'"
+        );
+        assert_eq!(
+            page_csp(None, Some("https://iem.example.org"), true),
+            "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; \
+             img-src 'self' data: blob:; font-src 'self'; frame-src 'self' https://iem.example.org"
+        );
+        let data = std::path::Path::new("data");
+        let config = |text: &str| Config::parse(text, data).unwrap();
+        let with = "[presenter]\nurl = \"http://10.0.0.9:8080\"\n";
+        let policy = page_policy(&config(with));
+        assert_eq!(policy, page_csp(None, None, true));
         // A page open across a restart that adds it reloads for the frame.
         assert_ne!(policy_rev(&policy), policy_rev(&page_policy(&config(""))));
     }
@@ -1320,11 +1453,11 @@ mod tests {
         };
         let with = ableset(8443, "AbleSet");
         // The policy is the page's CSP of the config.
-        assert_eq!(page_policy(&config(tls)), page_csp(None, None));
-        assert_eq!(page_policy(&config("")), page_csp(None, None));
+        assert_eq!(page_policy(&config(tls)), page_csp(None, None, false));
+        assert_eq!(page_policy(&config("")), page_csp(None, None, false));
         assert_eq!(
             page_policy(&config(&with)),
-            page_csp(Some(("ableset.example.org", 8443)), None)
+            page_csp(Some(("ableset.example.org", 8443)), None, false)
         );
         let rev = |text: &str| policy_rev(&page_policy(&config(text)));
         // The same config: the same revision, so a plain restart reloads nothing.

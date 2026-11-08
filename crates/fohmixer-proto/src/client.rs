@@ -191,6 +191,12 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         why: Option<String>,
     },
+    /// A Presenter stage layout's switch (#90, the stage tab): the page's
+    /// held key on `code` (an item of the `presenter` message's `layouts`)
+    /// lifted once full. `seq` is the page's own counter of switches.
+    /// Answered by `presenter_ack`; never queued, never resent (a stage
+    /// display must not switch late).
+    PresenterSwitch { code: String, seq: u64 },
     /// The Pro-Q 4 instances of a strip's track (#71 PR E): `binding` is the
     /// strip's (its track by name or by index); answered by `eq_list`. Read
     /// when asked (a detail opening), never followed.
@@ -544,6 +550,28 @@ pub enum ServerMsg {
     /// address, framed directly (no proxy: iemmixer itself allows the
     /// frame), `title` the tab's title.
     Iem { url: String, title: String },
+    /// Presenter's stage display (#90, the stage tab): sent on attach and
+    /// at every change, only by a hub with `[presenter]` (a page without it
+    /// shows no PRESENTER tab). `online` is the hub's link to Presenter
+    /// (`null`: not known yet), `layouts` Presenter's stage layouts in its
+    /// order (`GET /stage-displays`), `current` the one on stage now (none
+    /// while not known). Kept as the hub last read them while Presenter is
+    /// down.
+    Presenter {
+        online: Option<bool>,
+        layouts: Vec<StageLayout>,
+        current: Option<String>,
+    },
+    /// The answer to `presenter_switch` (#90): the switch's `seq` and
+    /// `code`, done (Presenter answered with the layout on stage) or why
+    /// not (`error`: Presenter down, a code it does not list, its refusal).
+    PresenterAck {
+        seq: u64,
+        code: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// REVERB (#130, D18): REVERB AUT, whether the reverb faders are
     /// lowered and why, the followed transport, the stop's wait, and each
     /// fader's return level and hand; at attach and on every change.
@@ -567,6 +595,16 @@ pub enum ServerMsg {
     /// message never breaks an older page.
     #[serde(other)]
     Unknown,
+}
+
+/// One of Presenter's stage layouts (#90, `GET /stage-displays`): its code,
+/// the name the operator sees and Presenter's own description.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StageLayout {
+    pub code: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
 }
 
 /// The most writes one [`ClientMsg::Sets`] carries (#127 review M3): far
@@ -1555,6 +1593,10 @@ pub struct HubStatus {
     /// hub's answer).
     #[serde(default)]
     pub ableset: Option<AbleSetStatus>,
+    /// Presenter's stage display (#90); none without `[presenter]` (and in
+    /// an older hub's answer).
+    #[serde(default)]
+    pub presenter: Option<PresenterStatus>,
     /// REVERB (#130, D18); the defaults in an older hub's answer.
     #[serde(default)]
     pub reverb: ReverbStatus,
@@ -1579,6 +1621,24 @@ pub struct HubStatus {
     /// The strips' colours (#164); the defaults in an older hub's answer.
     #[serde(default)]
     pub colors: ColorsStatus,
+}
+
+/// `/api/status` `presenter` (#90): Presenter's address (`[presenter]
+/// url`), the hub's link to it (none: not known yet), why it last failed,
+/// how many stage layouts it lists and the one on stage, and the open
+/// tunnels of its stage pages' sockets.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PresenterStatus {
+    pub url: String,
+    pub online: Option<bool>,
+    #[serde(default)]
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub layouts: usize,
+    #[serde(default)]
+    pub current: Option<String>,
+    #[serde(default)]
+    pub sockets: usize,
 }
 
 /// `/api/status` `colors` (#164): how many faders have a colour, how many

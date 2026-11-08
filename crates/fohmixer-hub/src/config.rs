@@ -309,6 +309,26 @@ impl IemCfg {
     }
 }
 
+/// `[presenter]` (#90, the stage tab): Presenter's server on the LAN,
+/// `http://<address>[:port]` ([`is_presenter_url`]). The hub follows its
+/// stage layout, switches it for a page's held key and passes its stage
+/// page's own paths on fohmixer's origin (`presenter.rs`). The address is
+/// site data: the installer writes it (`-PresenterUrl`), never this
+/// repository.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PresenterCfg {
+    pub url: String,
+}
+
+impl PresenterCfg {
+    /// The server's base (`http://<address>[:port]`, a trailing `/` cut):
+    /// what the hub's requests to Presenter start with.
+    pub fn base(&self) -> &str {
+        self.url.strip_suffix('/').unwrap_or(&self.url)
+    }
+}
+
 /// `[companion]` (#52): the Stream Deck tab. The hub registers with
 /// Bitfocus Companion's Satellite API at `host:port` as one Stream Deck of
 /// `columns` x `rows` keys whose images Companion draws `bitmap_px` square;
@@ -509,6 +529,28 @@ pub fn is_iem_url(url: &str) -> bool {
         })
 }
 
+/// Whether `url` may be Presenter's server (#90): `http://`, a loopback or
+/// private address (`access::is_private_ip`) or `localhost`, an optional
+/// port and at most a `/` after it; no credentials. Presenter has no TLS
+/// and no login, so the hub talks to it on the LAN only, and only to its
+/// server, never a path of its choosing.
+pub fn is_presenter_url(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let rest = rest.strip_suffix('/').unwrap_or(rest);
+    let Ok(authority) = rest.parse::<axum::http::uri::Authority>() else {
+        return false;
+    };
+    let host = authority.host();
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    let local = host.eq_ignore_ascii_case("localhost")
+        || bare
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(crate::access::is_private_ip);
+    !rest.contains('@') && local && port_ok(&authority)
+}
+
 /// The hub's configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -539,6 +581,9 @@ pub struct Config {
     /// iemmixer's page (#166); none: no IEM tab.
     #[serde(default)]
     pub iem: Option<IemCfg>,
+    /// Presenter's stage tab (#90); none: no PRESENTER tab.
+    #[serde(default)]
+    pub presenter: Option<PresenterCfg>,
     /// The Stream Deck tab (#52); none: no tab.
     #[serde(default)]
     pub companion: Option<CompanionCfg>,
@@ -569,6 +614,7 @@ impl Config {
             tunnel: None,
             ableset: None,
             iem: None,
+            presenter: None,
             companion: None,
             eq: None,
             lufs: LufsCfg::default(),
@@ -788,6 +834,14 @@ impl Config {
             if !(1..=24).contains(&iem.title.chars().count()) {
                 bail!("[iem] title {:?}: 1..=24 characters", iem.title);
             }
+        }
+        if let Some(presenter) = &self.presenter
+            && !is_presenter_url(&presenter.url)
+        {
+            bail!(
+                "[presenter] url {:?}: http://, a LAN address with an optional port and nothing after it, like http://10.0.0.9:8080",
+                presenter.url
+            );
         }
         Ok(())
     }
@@ -1159,6 +1213,75 @@ mod tests {
                 error.contains("[ableset] title") && error.contains("1..=24 characters"),
                 "{rest}: {error}"
             );
+        }
+    }
+
+    #[test]
+    fn presenters_server_is_read_and_needs_its_url() {
+        let table = "[presenter]\nurl = \"http://10.0.0.9:8080\"\n";
+        let presenter = Config::parse(table, &data()).unwrap().presenter;
+        assert_eq!(
+            presenter,
+            Some(PresenterCfg {
+                url: "http://10.0.0.9:8080".into(),
+            })
+        );
+        assert_eq!(presenter.unwrap().base(), "http://10.0.0.9:8080");
+        let slash = PresenterCfg {
+            url: "http://10.0.0.9:8080/".into(),
+        };
+        assert_eq!(slash.base(), "http://10.0.0.9:8080");
+        assert_eq!(Config::parse("", &data()).unwrap().presenter, None);
+        let error = Config::parse("[presenter]\n", &data()).unwrap_err();
+        assert!(format!("{error:#}").contains("url"), "{error:#}");
+        let error = Config::parse(&format!("{table}title = \"x\"\n"), &data()).unwrap_err();
+        assert!(format!("{error:#}").contains("title"), "{error:#}");
+        let error = Config::parse("[presenter]\nurl = \"https://10.0.0.9/\"\n", &data());
+        let error = format!("{:#}", error.unwrap_err());
+        assert!(
+            error.contains("[presenter] url") && error.contains("http://"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn presenters_url_is_plain_http_to_a_lan_address_and_nothing_after_it() {
+        for url in [
+            "http://10.0.0.9",
+            "http://10.0.0.9/",
+            "http://10.0.0.9:8080",
+            "http://10.0.0.9:8080/",
+            "http://192.168.1.20:65535",
+            "http://172.16.0.1:80",
+            "http://127.0.0.1:8080",
+            "http://localhost:8080",
+            "http://LOCALHOST:8080",
+            "http://[::1]:8080",
+            "http://[fd00::9]:8080/",
+            "http://100.64.0.1:8080",
+        ] {
+            assert!(is_presenter_url(url), "{url}");
+        }
+        for url in [
+            "https://10.0.0.9:8080",
+            "ftp://10.0.0.9",
+            "10.0.0.9:8080",
+            "http://8.8.8.8:8080",
+            "http://192.0.2.7:8080",
+            "http://presenter.example.org:8080",
+            "http://user@10.0.0.9:8080",
+            "http://user:pw@10.0.0.9:8080",
+            "http://10.0.0.9:0",
+            "http://10.0.0.9:65536",
+            "http://10.0.0.9:",
+            "http://10.0.0.9:8080/stage",
+            "http://10.0.0.9:8080//",
+            "http://10.0.0.9:8080/?a=1",
+            "http://10.0.0.9:8080?a=1",
+            "http://",
+            "",
+        ] {
+            assert!(!is_presenter_url(url), "{url}");
         }
     }
 

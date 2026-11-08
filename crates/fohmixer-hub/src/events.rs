@@ -218,6 +218,8 @@ pub fn is_warn(record: &Value) -> bool {
                 | "eq"
                 | "idle"
                 | "ableset_link"
+                | "presenter_link"
+                | "presenter_switch"
                 | "transport"
                 | "stage_aut"
                 | "reverb"
@@ -247,7 +249,7 @@ fn holds_warn_event(record: &Value) -> bool {
             events.iter().any(|e| {
                 matches!(
                     e.get("ev").and_then(Value::as_str),
-                    Some("dropout" | "reset" | "ableset_view" | "rail")
+                    Some("dropout" | "reset" | "ableset_view" | "presenter" | "rail")
                 )
             })
         })

@@ -469,6 +469,10 @@ fn handle_text(hub: &Hub, conn: &mut Conn, text: &str) {
             hub_ms: crate::live::wall_ms().unwrap_or(0.0),
             offset_ms: conn.offset,
         }),
+        // Presenter's stage tab (#90): a held layout key.
+        Ok(ClientMsg::PresenterSwitch { code, seq }) => {
+            hub.route(RouterMsg::PresenterSwitch { client, code, seq });
+        }
         Ok(ClientMsg::EqList { binding }) => hub.route(RouterMsg::EqList { client, binding }),
         Ok(ClientMsg::EqOpen {
             instance,
