@@ -487,14 +487,11 @@ fn presenters_messages_round_trip_and_a_switch_is_whole_or_refused() {
     round_trip_server(
         ServerMsg::Presenter {
             online: Some(true),
-            layouts: vec![
-                layout("worship-snv", "WORSHIP SNV"),
-                layout("timer", "TIMER"),
-            ],
+            layouts: vec![layout("worship", "WORSHIP"), layout("timer", "TIMER")],
             current: Some("timer".into()),
         },
         json!({"type": "presenter", "online": true, "current": "timer", "layouts": [
-            {"code": "worship-snv", "name": "WORSHIP SNV", "description": "WORSHIP SNV shown"},
+            {"code": "worship", "name": "WORSHIP", "description": "WORSHIP shown"},
             {"code": "timer", "name": "TIMER", "description": "TIMER shown"}]}),
     );
     round_trip_server(
@@ -747,7 +744,7 @@ fn api_bodies_round_trip() {
             online: Some(true),
             last_error: None,
             layouts: 9,
-            current: Some("worship-snv".into()),
+            current: Some("worship".into()),
             sockets: 1,
         }),
         reverb: ReverbStatus::default(),

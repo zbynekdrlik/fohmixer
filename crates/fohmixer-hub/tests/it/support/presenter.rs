@@ -25,7 +25,7 @@ use tokio::sync::{broadcast, watch};
 
 /// The layouts the fake lists (Presenter's own names, invented descriptions).
 pub const LAYOUTS: [(&str, &str); 3] = [
-    ("worship-snv", "WORSHIP SNV"),
+    ("worship", "WORSHIP"),
     ("timer", "TIMER"),
     ("preach", "PREACH"),
 ];
@@ -52,9 +52,9 @@ pub struct FakePresenter {
 }
 
 impl FakePresenter {
-    /// A fake on an ephemeral port, `worship-snv` on stage.
+    /// A fake on an ephemeral port, `worship` on stage.
     pub async fn start() -> Self {
-        Self::start_on(SocketAddr::from(([127, 0, 0, 1], 0)), "worship-snv").await
+        Self::start_on(SocketAddr::from(([127, 0, 0, 1], 0)), "worship").await
     }
 
     /// A fake on `addr` with `current` on stage.

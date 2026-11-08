@@ -100,12 +100,12 @@ async fn the_pages_are_told_the_layouts_the_one_on_stage_and_every_switch_made_i
         ServerMsg::Presenter {
             online: Some(true),
             layouts: layouts(),
-            current: Some("worship-snv".into()),
+            current: Some("worship".into()),
         }
     );
     let mut second = hub.client().await;
     stage_until(&mut second, |online, list, current| {
-        online == Some(true) && list.len() == 3 && current == Some("worship-snv")
+        online == Some(true) && list.len() == 3 && current == Some("worship")
     })
     .await;
     // The operator switches in Presenter: both pages follow.
@@ -197,7 +197,7 @@ async fn a_page_switches_the_stage_with_its_held_key_and_each_switch_is_recorded
         .collect();
     assert_eq!(switches[0]["ok"], true);
     assert_eq!(switches[0]["code"], "timer");
-    assert_eq!(switches[0]["from"], "worship-snv");
+    assert_eq!(switches[0]["from"], "worship");
     assert_eq!(switches[0]["on_stage"], "timer");
     assert_eq!(switches[0]["peer"], "127.0.0.1");
     assert!(switches[0]["ms"].is_u64(), "{}", switches[0]);
@@ -224,7 +224,7 @@ async fn the_pages_see_presenter_go_down_and_come_back_by_itself() {
         ServerMsg::Presenter {
             online: Some(false),
             layouts: layouts(),
-            current: Some("worship-snv".into()),
+            current: Some("worship".into()),
         }
     );
     page.send(&ClientMsg::PresenterSwitch {

@@ -1486,6 +1486,12 @@ mod tests {
     fn only_ablesets_tunnels_still_open_are_warned_about() {
         assert_eq!(tunnels_warning(true), None);
         assert!(tunnels_warning(false).unwrap().contains("did not all end"));
+        assert_eq!(presenter_warning(true), None);
+        assert!(
+            presenter_warning(false)
+                .unwrap()
+                .contains("did not all end")
+        );
     }
 
     #[test]
