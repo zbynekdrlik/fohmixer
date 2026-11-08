@@ -188,22 +188,32 @@ impl Router {
         let (code, from) = asked;
         let peer = self.peers.get(&client).map(String::as_str);
         let fields = switch_fields(client, peer, &code, from.as_deref(), &result, ms);
-        let due = self.presenter.as_mut().and_then(|io| {
-            if ms.is_some() {
-                io.in_flight.remove(&client);
-            }
-            io.lines.take(Instant::now(), SWITCH_LINES)
-        });
-        match (&result, due) {
-            (Ok(on_stage), _) => {
+        if ms.is_some()
+            && let Some(io) = self.presenter.as_mut()
+        {
+            io.in_flight.remove(&client);
+        }
+        match &result {
+            Ok(on_stage) => {
                 tracing::info!(client, code = ?on_stage, from = ?from, ms, "presenter: switched");
             }
-            (Err(why), Some(skipped)) => {
-                tracing::warn!(client, code = ?clip(&code), ms, skipped, "presenter: switch failed: {why}");
-            }
-            (Err(why), None) => {
-                tracing::debug!(client, code = ?clip(&code), ms, "presenter: switch failed: {why}");
-            }
+            // Only the refused and failed switches take from the ration.
+            Err(why) => match self
+                .presenter
+                .as_mut()
+                .and_then(|io| io.lines.take(Instant::now(), SWITCH_LINES))
+            {
+                Some(skipped) => tracing::warn!(
+                    client,
+                    code = ?clip(&code),
+                    ms,
+                    skipped,
+                    "presenter: switch failed: {why}"
+                ),
+                None => {
+                    tracing::debug!(client, code = ?clip(&code), ms, "presenter: switch failed: {why}");
+                }
+            },
         }
         self.io.events.record("presenter_switch", fields);
         if let Some(outbox) = self.clients.get(&client) {
