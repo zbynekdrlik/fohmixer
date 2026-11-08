@@ -217,8 +217,9 @@
    with its ✕), PRESENTER beside IEM MIXER: a fourth row took the rail's last
    button (reverb.spec.ts's phone rail, 844 x 390). */
 @media (max-height: 520px) {
-    .column .seg[data-level="0"]:has(.presenter-tab) .iem-row {
-        flex: 1 1 0;
+    .column .seg[data-level="0"]:has(.presenter-tab) > .extra-tab,
+    .column .seg[data-level="0"]:has(.presenter-tab) > .iem-row {
+        flex: 1 1 40%;
         min-width: 0;
     }
 }
