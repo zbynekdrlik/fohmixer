@@ -89,10 +89,22 @@ impl FakePresenter {
             .route("/stage/layout", get(layout).post(set_layout))
             .route("/stage/state", post(|| async { StatusCode::NO_CONTENT }))
             .route("/live/ws", get(live))
-            .route("/whep/{stream}", post(whep_offer))
+            // Presenter's own writes under `/ndi/` (its `router.rs`, #90):
+            // the stage page's WHEP and its client stats.
+            .route("/ndi/whep/{source}", post(whep_offer))
             .route(
-                "/whep/{stream}/{session}",
-                axum::routing::patch(whep_patch).delete(|| async { StatusCode::OK }),
+                "/ndi/whep/{source}/{session}",
+                post(|| async { StatusCode::NOT_IMPLEMENTED })
+                    .patch(whep_patch)
+                    .delete(|| async { StatusCode::NO_CONTENT }),
+            )
+            .route(
+                "/ndi/client-stats",
+                post(|| async { StatusCode::NO_CONTENT }),
+            )
+            .route(
+                "/ndi/sessions/{session}/client-stats",
+                post(|| async { StatusCode::NO_CONTENT }),
             )
             .layer(axum::middleware::from_fn_with_state(shared.clone(), count))
             .with_state(shared.clone());
@@ -245,11 +257,15 @@ async fn serve_socket(mut socket: WebSocket, shared: Shared) {
 }
 
 /// WHEP's offer (#90, the stage's video): `201 Created`, the SDP answer
-/// (the offer echoed after `answer to:`) and the session's resource as an
-/// absolute `Location` at this fake's own address, as a server that knows
-/// only its own address writes it.
+/// (the offer echoed after `answer to:`, its query told back) and the
+/// session's resource as Presenter writes it (`presenter-ndi`
+/// `manager/whep.rs`): the path `/ndi/whep/<source>/<session>`; for the
+/// source `absolute` an absolute `Location` at this fake's own address, as a
+/// server that knows only its own address would write it, and for `foreign`
+/// one at a name the hub does not know Presenter by.
 async fn whep_offer(
-    axum::extract::Path(stream): axum::extract::Path<String>,
+    axum::extract::Path(source): axum::extract::Path<String>,
+    uri: Uri,
     headers: axum::http::HeaderMap,
     body: String,
 ) -> Response {
@@ -263,12 +279,19 @@ async fn whep_offer(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
+    let resource = format!("/ndi/whep/{source}/s1");
+    let location = match source.as_str() {
+        "absolute" => format!("http://{host}{resource}"),
+        "foreign" => format!("http://elsewhere.invalid:1{resource}"),
+        _ => resource,
+    };
     (
         StatusCode::CREATED,
         [
             ("content-type", "application/sdp".to_string()),
-            ("location", format!("http://{host}/whep/{stream}/s1")),
+            ("location", location),
             ("x-offer-type", kind),
+            ("x-offer-query", uri.query().unwrap_or("").to_string()),
         ],
         format!("answer to: {body}"),
     )

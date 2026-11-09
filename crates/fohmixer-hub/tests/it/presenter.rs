@@ -280,6 +280,9 @@ async fn the_pages_see_presenter_go_down_and_come_back_by_itself() {
 
 #[tokio::test]
 async fn the_stage_video_starts_and_ends_through_whep_and_nothing_else_is_written() {
+    // Presenter's own routes (its `router.rs`, #90's FINDING of 2026-11-09):
+    // `POST /ndi/whep/{source}`, `POST|PATCH|DELETE /ndi/whep/{source}/{session}`,
+    // `POST /ndi/client-stats`, `POST /ndi/sessions/{session}/client-stats`.
     let fake = FakePresenter::start().await;
     let dir = tempfile::tempdir().unwrap();
     let hub = hub(dir.path(), Some(fake.url())).await;
@@ -293,21 +296,42 @@ async fn the_stage_video_starts_and_ends_through_whep_and_nothing_else_is_writte
     };
     let request =
         |method: &str, path: &str, body: &str| typed(method, path, "application/sdp", body);
-    // The offer reaches Presenter as it was sent; its answer comes back
-    // whole, its Location a path on fohmixer's own origin.
-    let (code, head, body) = raw(addr, &request("POST", "/whep/ndi-1", offer)).await;
+    // The offer reaches Presenter as it was sent, its query too; its answer
+    // comes back whole, Presenter's own Location (a path) as it is.
+    let (code, head, body) = raw(
+        addr,
+        &request("POST", "/ndi/whep/ndi-1?profile=compat", offer),
+    )
+    .await;
     assert_eq!(code, 201, "{head}");
     assert_eq!(body, format!("answer to: {offer}"));
     assert!(head.contains("content-type: application/sdp"), "{head}");
     assert!(head.contains("x-offer-type: application/sdp"), "{head}");
-    assert!(head.contains("location: /whep/ndi-1/s1\r\n"), "{head}");
+    assert!(head.contains("x-offer-query: profile=compat"), "{head}");
+    assert!(head.contains("location: /ndi/whep/ndi-1/s1\r\n"), "{head}");
+    // An absolute Location at Presenter's address becomes a path on
+    // fohmixer's origin.
+    let (code, head, _) = raw(addr, &request("POST", "/ndi/whep/absolute", offer)).await;
+    assert_eq!(code, 201, "{head}");
+    assert!(
+        head.contains("location: /ndi/whep/absolute/s1\r\n"),
+        "{head}"
+    );
     assert!(
         !head.contains(&fake.url()),
         "Presenter's address never reaches the page: {head}"
     );
+    // On a WHEP answer any absolute Location is Presenter's resource,
+    // whatever name it gives itself.
+    let (code, head, _) = raw(addr, &request("POST", "/ndi/whep/foreign", offer)).await;
+    assert_eq!(code, 201, "{head}");
+    assert!(
+        head.contains("location: /ndi/whep/foreign/s1\r\n"),
+        "{head}"
+    );
     let ice = typed(
         "PATCH",
-        "/whep/ndi-1/s1",
+        "/ndi/whep/ndi-1/s1",
         "application/trickle-ice-sdpfrag",
         "a=candidate",
     );
@@ -318,31 +342,69 @@ async fn the_stage_video_starts_and_ends_through_whep_and_nothing_else_is_writte
         "{head}"
     );
     assert!(head.contains("x-patch-body: a=candidate"), "{head}");
-    let (code, head, _) = raw(addr, &request("DELETE", "/whep/ndi-1/s1", "")).await;
-    assert_eq!(code, 200, "{head}");
-    // A write anywhere else is still the hub's 405, WHEP's methods included.
+    // A session's re-offer is Presenter's to answer (501 there).
+    let (code, head, _) = raw(addr, &request("POST", "/ndi/whep/ndi-1/s1", offer)).await;
+    assert_eq!(code, 501, "{head}");
+    let (code, head, _) = raw(addr, &request("DELETE", "/ndi/whep/ndi-1/s1", "")).await;
+    assert_eq!(code, 204, "{head}");
+    // The stage page's client stats.
+    let stats = |path: &str| typed("POST", path, "application/json", "{}");
+    let (code, head, _) = raw(addr, &stats("/ndi/client-stats")).await;
+    assert_eq!(code, 204, "{head}");
+    let (code, head, _) = raw(addr, &stats("/ndi/sessions/s1/client-stats")).await;
+    assert_eq!(code, 204, "{head}");
+    // `/whep/` is no path of Presenter's (1.38.0 opened writes there): none
+    // reaches it (`seen` below).
     for (method, path) in [
-        ("POST", "/stage/layout"),
+        ("POST", "/whep/ndi-1"),
+        ("PATCH", "/whep/ndi-1/s1"),
+        ("DELETE", "/whep/ndi-1/s1"),
+    ] {
+        let (code, head, _) = raw(addr, &request(method, path, "{}")).await;
+        assert_ne!(code, 201, "{method} {path}: {head}");
+    }
+    // A write anywhere else under Presenter's paths is the hub's 405:
+    // another route under `/ndi/`, a method a route does not take,
+    // Presenter's write API.
+    for (method, path) in [
+        ("POST", "/ndi/status"),
+        ("POST", "/ndi/snapshot/ndi-1"),
         ("PATCH", "/ndi/x"),
+        ("POST", "/ndi/whep/ndi-1/s1/x"),
+        ("PATCH", "/ndi/whep/ndi-1"),
+        ("DELETE", "/ndi/whep/ndi-1"),
+        ("PUT", "/ndi/whep/ndi-1/s1"),
+        ("PATCH", "/ndi/client-stats"),
+        ("DELETE", "/ndi/sessions/s1/client-stats"),
+        ("POST", "/stage/layout"),
         ("DELETE", "/stage/state"),
-        ("PUT", "/whep/ndi-1"),
     ] {
         let (code, head, _) = raw(addr, &request(method, path, "{}")).await;
         assert_eq!(code, 405, "{method} {path}: {head}");
     }
-    // WHEP's own path names WHEP's methods in its 405.
-    let (code, head, _) = raw(addr, &request("PUT", "/whep/ndi-1", "{}")).await;
+    // A write route's 405 names its own methods.
+    let (code, head, _) = raw(addr, &request("PUT", "/ndi/whep/ndi-1", "{}")).await;
+    assert!(head.contains("allow: get, head, post\r\n"), "{code} {head}");
+    let (code, head, _) = raw(addr, &request("PUT", "/ndi/whep/ndi-1/s1", "{}")).await;
     assert!(
-        head.contains("allow: get, head, post, patch, delete"),
+        head.contains("allow: get, head, post, patch, delete\r\n"),
         "{code} {head}"
     );
+    let (code, head, _) = raw(addr, &request("PUT", "/ndi/client-stats", "{}")).await;
+    assert!(head.contains("allow: get, head, post\r\n"), "{code} {head}");
+    // Elsewhere, only reads.
+    let (code, head, _) = raw(addr, &request("POST", "/stage/layout", "{}")).await;
+    assert!(head.contains("allow: get, head\r\n"), "{code} {head}");
     // An encoded separator never reaches Presenter, nor a body announced
     // over 64 KiB.
-    let sneaky = request("POST", "/whep/%2e%2e%2fstage%2flayout", offer);
+    let sneaky = request("POST", "/ndi/whep/%2e%2e%2fstage%2flayout", offer);
+    let (code, head, _) = raw(addr, &sneaky).await;
+    assert_eq!(code, 400, "{head}");
+    let sneaky = stats("/ndi/sessions/a%2Fb/client-stats");
     let (code, head, _) = raw(addr, &sneaky).await;
     assert_eq!(code, 400, "{head}");
     let large = "a".repeat(65_537);
-    let (code, head, _) = raw(addr, &request("POST", "/whep/ndi-1", &large)).await;
+    let (code, head, _) = raw(addr, &request("POST", "/ndi/whep/ndi-1", &large)).await;
     assert_eq!(code, 413, "{head}");
     let seen = fake.seen();
     assert_eq!(
@@ -351,11 +413,16 @@ async fn the_stage_video_starts_and_ends_through_whep_and_nothing_else_is_writte
             .cloned()
             .collect::<Vec<_>>(),
         vec![
-            "POST /whep/ndi-1".to_string(),
-            "PATCH /whep/ndi-1/s1".to_string(),
-            "DELETE /whep/ndi-1/s1".to_string(),
+            "POST /ndi/whep/ndi-1".to_string(),
+            "POST /ndi/whep/absolute".to_string(),
+            "POST /ndi/whep/foreign".to_string(),
+            "PATCH /ndi/whep/ndi-1/s1".to_string(),
+            "POST /ndi/whep/ndi-1/s1".to_string(),
+            "DELETE /ndi/whep/ndi-1/s1".to_string(),
+            "POST /ndi/client-stats".to_string(),
+            "POST /ndi/sessions/s1/client-stats".to_string(),
         ],
-        "only WHEP's requests reached Presenter: {seen:?}"
+        "only the stage page's own writes reached Presenter: {seen:?}"
     );
 }
 
