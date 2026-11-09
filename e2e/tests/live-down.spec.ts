@@ -179,6 +179,64 @@ test.describe("A Live that is down (#178)", () => {
     );
   });
 
+  // The 1.38.0 check on the PC (#178 reopened): the hint ran over the fader
+  // scale's numbers ("Start Live on6", "themselves.12"). A down strip's hint
+  // never meets a visible scale label of its own strip, on the iPad and on a
+  // phone on its side, both Lives not running and the band's set missing.
+  test("a down strip's hint never runs over its fader scale's numbers (iPad, phone on its side)", async ({ page }) => {
+    await page.setViewportSize(IPAD);
+    await openSurface(page);
+    await expect(foot(page, "band")).toHaveAttribute("data-live", "on", { timeout: UP });
+
+    /** Per down strip on screen: its hint inside the zone, and the visible
+     * scale labels it meets (their text; none is right). */
+    const clashes = () =>
+      page.locator('[data-testid="strip"][data-live]').evaluateAll((strips) =>
+        strips
+          .filter((s) => s.getBoundingClientRect().width > 0)
+          .map((s) => {
+            const hint = s.querySelector('[data-testid="strip-hint"]');
+            const zone = s.querySelector(".strip-zone")!.getBoundingClientRect();
+            if (!hint) return { track: s.getAttribute("data-track"), hint: false, inside: false, meets: [] as string[] };
+            const h = hint.getBoundingClientRect();
+            const meets = [...s.querySelectorAll(".scale .tick")]
+              .filter((t) => {
+                const cs = getComputedStyle(t);
+                const r = t.getBoundingClientRect();
+                const shown = cs.visibility !== "hidden" && cs.display !== "none" && r.width > 0 && r.height > 0;
+                const crosses = r.left < h.right && r.right > h.left && r.top < h.bottom && r.bottom > h.top;
+                return shown && crosses;
+              })
+              .map((t) => t.textContent ?? "");
+            const inside = h.left >= zone.left - 0.5 && h.right <= zone.right + 0.5 && h.top >= zone.top && h.bottom <= zone.bottom;
+            return { track: s.getAttribute("data-track"), hint: true, inside, meets };
+          }),
+      );
+
+    const check = async (live: string) => {
+      for (const size of [IPAD, { width: 844, height: 390 }]) {
+        await page.setViewportSize(size);
+        await stripsSay(page, "band", live);
+        const seen = await clashes();
+        expect(seen.length, `down strips on screen at ${size.width}x${size.height}`).toBeGreaterThan(0);
+        for (const strip of seen) {
+          expect(strip, `${live} at ${size.width}x${size.height}`).toEqual({ track: strip.track, hint: true, inside: true, meets: [] });
+        }
+      }
+      await page.setViewportSize(IPAD);
+    };
+
+    await host("band", "stop");
+    await host("master", "stop");
+    await stripsSay(page, "master", "off");
+    await check("off");
+
+    await host("master", "start");
+    await host("band", "start", "empty");
+    await stripsSay(page, "master", null);
+    await check("noset");
+  });
+
   test("every Live on: one line per Live beside the counter, the rail keeps its room", async ({ page }) => {
     await page.setViewportSize(IPAD);
     await openSurface(page);
