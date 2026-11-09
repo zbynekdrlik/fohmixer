@@ -97,13 +97,13 @@ pub const EXACT: [&str; 5] = [
 
 /// Presenter's path prefixes the hub passes: the stage's own calls, the
 /// page's assets (Trunk's `public_url`), Bible output, NDI, presentations
-/// and libraries (a song's slides on stage).
-pub const UNDER: [&str; 7] = [
+/// and libraries (a song's slides on stage). Presenter has no `/whep/`
+/// (its WHEP is under `/ndi/whep/`, #90 1.38.1).
+pub const UNDER: [&str; 6] = [
     "/stage/",
     "/ui-pkg/",
     "/bible/",
     "/ndi/",
-    "/whep/",
     "/presentations/",
     "/libraries/",
 ];

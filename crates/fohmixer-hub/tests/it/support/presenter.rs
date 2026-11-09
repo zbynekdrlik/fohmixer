@@ -261,7 +261,8 @@ async fn serve_socket(mut socket: WebSocket, shared: Shared) {
 /// session's resource as Presenter writes it (`presenter-ndi`
 /// `manager/whep.rs`): the path `/ndi/whep/<source>/<session>`; for the
 /// source `absolute` an absolute `Location` at this fake's own address, as a
-/// server that knows only its own address would write it.
+/// server that knows only its own address would write it, and for `foreign`
+/// one at a name the hub does not know Presenter by.
 async fn whep_offer(
     axum::extract::Path(source): axum::extract::Path<String>,
     uri: Uri,
@@ -279,10 +280,10 @@ async fn whep_offer(
         .unwrap_or("")
         .to_string();
     let resource = format!("/ndi/whep/{source}/s1");
-    let location = if source == "absolute" {
-        format!("http://{host}{resource}")
-    } else {
-        resource
+    let location = match source.as_str() {
+        "absolute" => format!("http://{host}{resource}"),
+        "foreign" => format!("http://elsewhere.invalid:1{resource}"),
+        _ => resource,
     };
     (
         StatusCode::CREATED,

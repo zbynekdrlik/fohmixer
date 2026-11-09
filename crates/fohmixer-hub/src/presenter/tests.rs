@@ -20,7 +20,7 @@ fn presenters_paths_are_its_stage_pages_own_and_nothing_else() {
         "/ui-pkg/presenter-ui-0123456789abcdef.js",
         "/bible/active-slide",
         "/ndi/time",
-        "/whep/resource/1",
+        "/ndi/whep/ndi-1/s1",
         "/presentations/42",
         "/libraries/7",
     ] {
@@ -43,6 +43,8 @@ fn presenters_paths_are_its_stage_pages_own_and_nothing_else() {
         "/libraries",
         "/fohmixer-ui-0123456789ab.js",
         "/sw.js",
+        "/whep/ndi-1",
+        "/whep/",
         "",
     ] {
         assert!(!is_presenter_path(path), "{path}");
@@ -148,8 +150,7 @@ fn presenters_own_ndi_writes_pass_with_their_methods_and_nothing_else() {
             assert_eq!(pass(&method, path, false), want, "{method} {path}");
         }
     }
-    // Any other path under Presenter's, `/whep/` included (Presenter has
-    // no such route), is read only.
+    // Any other path under Presenter's is read only.
     for path in [
         "/ndi/x",
         "/ndi/whep",
@@ -169,8 +170,6 @@ fn presenters_own_ndi_writes_pass_with_their_methods_and_nothing_else() {
         "/ndi/time",
         "/ndi/ice-servers",
         "/ndi/sources",
-        "/whep/ndi-1",
-        "/whep/ndi-1/s1",
         "/stage/layout",
         "/stage/ndi/whep/a",
         "/bible/ndi/client-stats",
@@ -184,6 +183,11 @@ fn presenters_own_ndi_writes_pass_with_their_methods_and_nothing_else() {
     // Not one of Presenter's paths: fohmixer's own router.
     assert_eq!(pass(&Method::POST, "/ndiwhep/a", false), Pass::No);
     assert_eq!(pass(&Method::POST, "/api/ndi/whep/a", false), Pass::No);
+    // Presenter has no `/whep/` (1.38.0 opened writes there): fohmixer's own.
+    for method in METHODS {
+        assert_eq!(pass(&method, "/whep/ndi-1", false), Pass::No, "{method}");
+        assert_eq!(pass(&method, "/whep/ndi-1/s1", false), Pass::No, "{method}");
+    }
     // A write route's path with an encoded separator is refused, whatever
     // the method; a read elsewhere under `/ndi/` passes as it is.
     for path in [
@@ -529,21 +533,24 @@ fn a_location_at_presenter_itself_becomes_a_path_on_fohmixers_origin() {
     let at: axum::http::uri::Authority = "10.0.0.5:8080".parse().unwrap();
     let local = |l: &str| local_location(l, &at, false);
     assert_eq!(
-        local("http://10.0.0.5:8080/whep/ndi-1/s7?x=1").as_deref(),
-        Some("/whep/ndi-1/s7?x=1")
+        local("http://10.0.0.5:8080/ndi/whep/ndi-1/s7?x=1").as_deref(),
+        Some("/ndi/whep/ndi-1/s7?x=1")
     );
     assert_eq!(
-        local("HTTP://10.0.0.5:8080/whep/a").as_deref(),
-        Some("/whep/a")
+        local("HTTP://10.0.0.5:8080/ndi/whep/a").as_deref(),
+        Some("/ndi/whep/a")
     );
     assert_eq!(local("http://10.0.0.5:8080").as_deref(), Some("/"));
-    assert_eq!(local("//10.0.0.5:8080/whep/a").as_deref(), Some("/whep/a"));
+    assert_eq!(
+        local("//10.0.0.5:8080/ndi/whep/a").as_deref(),
+        Some("/ndi/whep/a")
+    );
     // Another host or port, or a relative one: as it came.
-    assert_eq!(local("http://10.0.0.6:8080/whep/a"), None);
-    assert_eq!(local("http://10.0.0.5:8081/whep/a"), None);
-    assert_eq!(local("http://10.0.0.5/whep/a"), None);
-    assert_eq!(local("//10.0.0.6:8080/whep/a"), None);
-    assert_eq!(local("/whep/a"), None);
+    assert_eq!(local("http://10.0.0.6:8080/ndi/whep/a"), None);
+    assert_eq!(local("http://10.0.0.5:8081/ndi/whep/a"), None);
+    assert_eq!(local("http://10.0.0.5/ndi/whep/a"), None);
+    assert_eq!(local("//10.0.0.6:8080/ndi/whep/a"), None);
+    assert_eq!(local("/ndi/whep/a"), None);
     assert_eq!(local("not a uri at all"), None);
     // A host name in any case.
     let named: axum::http::uri::Authority = "presenter:8080".parse().unwrap();
@@ -554,10 +561,10 @@ fn a_location_at_presenter_itself_becomes_a_path_on_fohmixers_origin() {
     // A port left out is the scheme's: 80, or 443 for https.
     let plain: axum::http::uri::Authority = "10.0.0.5".parse().unwrap();
     for (location, local) in [
-        ("http://10.0.0.5:80/whep/a", Some("/whep/a")),
-        ("http://10.0.0.5/whep/a", Some("/whep/a")),
-        ("https://10.0.0.5/whep/a", None),
-        ("https://10.0.0.5:80/whep/a", Some("/whep/a")),
+        ("http://10.0.0.5:80/ndi/whep/a", Some("/ndi/whep/a")),
+        ("http://10.0.0.5/ndi/whep/a", Some("/ndi/whep/a")),
+        ("https://10.0.0.5/ndi/whep/a", None),
+        ("https://10.0.0.5:80/ndi/whep/a", Some("/ndi/whep/a")),
     ] {
         assert_eq!(
             local_location(location, &plain, false).as_deref(),
@@ -573,10 +580,10 @@ fn a_location_at_presenter_itself_becomes_a_path_on_fohmixers_origin() {
     assert_eq!(local_location("http://10.0.0.5/a", &tls, false), None);
     // On a WHEP answer any absolute Location is Presenter's resource.
     assert_eq!(
-        local_location("http://presenter.lan:9000/whep/a/s1", &at, true).as_deref(),
-        Some("/whep/a/s1")
+        local_location("http://presenter.lan:9000/ndi/whep/a/s1", &at, true).as_deref(),
+        Some("/ndi/whep/a/s1")
     );
-    assert_eq!(local_location("/whep/a/s1", &at, true), None);
+    assert_eq!(local_location("/ndi/whep/a/s1", &at, true), None);
 }
 
 #[test]

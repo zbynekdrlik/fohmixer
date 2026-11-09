@@ -321,6 +321,14 @@ async fn the_stage_video_starts_and_ends_through_whep_and_nothing_else_is_writte
         !head.contains(&fake.url()),
         "Presenter's address never reaches the page: {head}"
     );
+    // On a WHEP answer any absolute Location is Presenter's resource,
+    // whatever name it gives itself.
+    let (code, head, _) = raw(addr, &request("POST", "/ndi/whep/foreign", offer)).await;
+    assert_eq!(code, 201, "{head}");
+    assert!(
+        head.contains("location: /ndi/whep/foreign/s1\r\n"),
+        "{head}"
+    );
     let ice = typed(
         "PATCH",
         "/ndi/whep/ndi-1/s1",
@@ -345,13 +353,20 @@ async fn the_stage_video_starts_and_ends_through_whep_and_nothing_else_is_writte
     assert_eq!(code, 204, "{head}");
     let (code, head, _) = raw(addr, &stats("/ndi/sessions/s1/client-stats")).await;
     assert_eq!(code, 204, "{head}");
-    // A write anywhere else is the hub's 405: `/whep/` (no route of
-    // Presenter's), another route under `/ndi/`, a method a route does not
-    // take, Presenter's write API.
+    // `/whep/` is no path of Presenter's (1.38.0 opened writes there): none
+    // reaches it (`seen` below).
     for (method, path) in [
         ("POST", "/whep/ndi-1"),
         ("PATCH", "/whep/ndi-1/s1"),
         ("DELETE", "/whep/ndi-1/s1"),
+    ] {
+        let (code, head, _) = raw(addr, &request(method, path, "{}")).await;
+        assert_ne!(code, 201, "{method} {path}: {head}");
+    }
+    // A write anywhere else under Presenter's paths is the hub's 405:
+    // another route under `/ndi/`, a method a route does not take,
+    // Presenter's write API.
+    for (method, path) in [
         ("POST", "/ndi/status"),
         ("POST", "/ndi/snapshot/ndi-1"),
         ("PATCH", "/ndi/x"),
@@ -400,6 +415,7 @@ async fn the_stage_video_starts_and_ends_through_whep_and_nothing_else_is_writte
         vec![
             "POST /ndi/whep/ndi-1".to_string(),
             "POST /ndi/whep/absolute".to_string(),
+            "POST /ndi/whep/foreign".to_string(),
             "PATCH /ndi/whep/ndi-1/s1".to_string(),
             "POST /ndi/whep/ndi-1/s1".to_string(),
             "DELETE /ndi/whep/ndi-1/s1".to_string(),
