@@ -92,8 +92,7 @@ impl FakePresenter {
             .route("/whep/{stream}", post(whep_offer))
             .route(
                 "/whep/{stream}/{session}",
-                axum::routing::patch(|| async { StatusCode::NO_CONTENT })
-                    .delete(|| async { StatusCode::OK }),
+                axum::routing::patch(whep_patch).delete(|| async { StatusCode::OK }),
             )
             .layer(axum::middleware::from_fn_with_state(shared.clone(), count))
             .with_state(shared.clone());
@@ -272,6 +271,20 @@ async fn whep_offer(
             ("x-offer-type", kind),
         ],
         format!("answer to: {body}"),
+    )
+        .into_response()
+}
+
+/// WHEP's ICE (#90): `204`, the fragment and its type told back in headers.
+async fn whep_patch(headers: axum::http::HeaderMap, body: String) -> Response {
+    let kind = headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    (
+        StatusCode::NO_CONTENT,
+        [("x-patch-type", kind), ("x-patch-body", body)],
     )
         .into_response()
 }
