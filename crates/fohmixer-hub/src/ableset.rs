@@ -994,7 +994,7 @@ pub fn signed_in_target(parent: &str, host: Option<&str>) -> String {
 
 /// `body`, holding its request's slot until it ends or is dropped (the
 /// client gone): a long poll or a large file counts while it streams.
-fn held(body: Body, slot: OwnedSemaphorePermit) -> Body {
+pub(crate) fn held(body: Body, slot: OwnedSemaphorePermit) -> Body {
     Body::new(body.map_frame(move |frame| {
         let _slot = &slot;
         frame
@@ -1304,7 +1304,12 @@ where
 /// has no use for half a connection); at the hub's stop both ends are shut
 /// down together (#90 review 8), bounded by [`CLOSE_BOUND`]. How it ended,
 /// with the bytes each way so far.
-async fn pipe<P, A>(page: P, ableset: A, stop: &mut watch::Receiver<bool>, grace: Duration) -> Ended
+pub(crate) async fn pipe<P, A>(
+    page: P,
+    ableset: A,
+    stop: &mut watch::Receiver<bool>,
+    grace: Duration,
+) -> Ended
 where
     P: AsyncRead + AsyncWrite,
     A: AsyncRead + AsyncWrite,
@@ -1356,7 +1361,7 @@ where
 /// head bound, [`proxy::HEAD_TIMEOUT`]): a page whose upgrade never
 /// completes holds no slot for good. Else why not: the upgrade failed, did
 /// not complete in time, or the hub stopped.
-async fn upgraded<P, A, T, E>(
+pub(crate) async fn upgraded<P, A, T, E>(
     page: P,
     ableset: A,
     bound: Duration,

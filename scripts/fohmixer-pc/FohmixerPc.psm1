@@ -345,11 +345,13 @@ function New-FohHubToml {
     # then $Eq (Get-FohInstalledEqToml: the Pro-Q 4 screen's table, #71, kept
     # from the installed file, never written by the install itself), then
     # $Companion (Get-FohCompanionToml: the Stream Deck tab, #52), then
+    # $Presenter (Get-FohPresenterToml: Presenter's stage tab, #90), then
     # $Remote (Get-FohRemoteToml: the remote-access tables, #17, always last:
     # Get-FohInstalledRemoteToml reads from [tls] to the end).
     # There is no data_dir key: the hub's data folder is FOHMIXER_DATA.
     param([Parameter(Mandatory)][int]$HttpPort, [Parameter(Mandatory)][int]$BandPort, [Parameter(Mandatory)][int]$MasterPort,
-          [AllowEmptyString()][string]$Eq = '', [AllowEmptyString()][string]$Companion = '', [AllowEmptyString()][string]$Remote = '')
+          [AllowEmptyString()][string]$Eq = '', [AllowEmptyString()][string]$Companion = '', [AllowEmptyString()][string]$Remote = '',
+          [AllowEmptyString()][string]$Presenter = '')
     $lines = @(
         '# fohmixer-hub configuration, written by Install-Fohmixer.ps1: run the install again to change it.',
         ('http_port = {0}' -f $HttpPort),
@@ -362,7 +364,7 @@ function New-FohHubToml {
         '[[instances]]',
         'name = "master"',
         ('port = {0}' -f $MasterPort))
-    return (($lines -join "`r`n") + "`r`n" + $Eq + $Companion + $Remote)
+    return (($lines -join "`r`n") + "`r`n" + $Eq + $Companion + $Presenter + $Remote)
 }
 
 function Get-FohInstalledEqToml {
@@ -433,6 +435,42 @@ function Resolve-FohCompanion {
     $toml = Join-Path (Resolve-FohPath $DataDir) 'fohmixer-hub.toml'
     if (-not (Test-Path -LiteralPath $toml -PathType Leaf)) { return '' }
     return (Get-FohInstalledCompanionToml -Text ([IO.File]::ReadAllText($toml)))
+}
+
+function Get-FohPresenterToml {
+    # The [presenter] table of fohmixer-hub.toml (#90, the stage tab; CRLF
+    # lines, '' without -Url): Presenter's server on the LAN as
+    # http://<address>[:port]. The hub checks the address (config check:
+    # plain http, a LAN address, nothing after the port); here only what
+    # could break the TOML line is refused.
+    param([AllowEmptyString()][string]$Url = '')
+    if (-not $Url) { return '' }
+    if ($Url -notmatch '\Ahttp://[^\s"\\]+\z') {
+        throw "Presenter address refused: [$Url] (http://<LAN address>[:port])"
+    }
+    $lines = @('', '[presenter]', ('url = "{0}"' -f $Url))
+    return (($lines -join "`r`n") + "`r`n")
+}
+
+function Get-FohInstalledPresenterToml {
+    # The [presenter] table of an installed fohmixer-hub.toml's text (#90),
+    # from the line end before it to the next table or the end, exactly as
+    # Get-FohPresenterToml wrote it; '' without one.
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+    $m = [regex]::Match($Text, '(?s)\r?\n\[presenter\]\r?\n.*?(?=\r?\n\[|\z)')
+    if ($m.Success) { return $m.Value }
+    return ''
+}
+
+function Resolve-FohPresenter {
+    # The [presenter] table of an install (#90), checked before any change:
+    # from -PresenterUrl when given, else the installed toml's as it is (a
+    # routine update keeps the stage tab), else ''.
+    param([Parameter(Mandatory)][string]$DataDir, [AllowEmptyString()][string]$PresenterUrl = '')
+    if ($PresenterUrl) { return (Get-FohPresenterToml -Url $PresenterUrl) }
+    $toml = Join-Path (Resolve-FohPath $DataDir) 'fohmixer-hub.toml'
+    if (-not (Test-Path -LiteralPath $toml -PathType Leaf)) { return '' }
+    return (Get-FohInstalledPresenterToml -Text ([IO.File]::ReadAllText($toml)))
 }
 
 function Test-FohHubToml {
@@ -712,7 +750,8 @@ function Invoke-FohInstall {
     # the tasks, the firewall rule, the start and the readiness poll. $Remote
     # is Resolve-FohRemote's plan (#17), resolved and checked by the caller;
     # $Companion is the [companion] table (#52, Resolve-FohCompanion); $Eq the
-    # installed [eq] table kept (#71, Resolve-FohEq).
+    # installed [eq] table kept (#71, Resolve-FohEq); $Presenter the
+    # [presenter] table (#90, Resolve-FohPresenter).
     param(
         [Parameter(Mandatory)][string]$BundleZip,
         [Parameter(Mandatory)][string]$BandUser,
@@ -731,6 +770,7 @@ function Invoke-FohInstall {
         [int]$ReadyTimeoutSeconds = 20,
         [AllowEmptyString()][string]$Companion = '',
         [AllowEmptyString()][string]$Eq = '',
+        [AllowEmptyString()][string]$Presenter = '',
         $Remote = $null
     )
     # ---- checks ----
@@ -781,7 +821,7 @@ function Invoke-FohInstall {
     $trayWasRunning = $false
     try {
         # The new config, checked by the new hub before anything else changes.
-        $tomlText = New-FohHubToml -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Eq $Eq -Companion $Companion -Remote $remoteToml
+        $tomlText = New-FohHubToml -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Eq $Eq -Companion $Companion -Presenter $Presenter -Remote $remoteToml
         $accepted = Test-FohHubToml -Exe (Join-Path $unpacked.dir $script:HubExe) -Text $tomlText -Dir (Split-Path -Parent $unpacked.dir)
         Write-Host "fohmixer install: the new hub accepts the config ($accepted)"
         # The layout it will serve (the new one, else the one in place), checked by
@@ -899,7 +939,7 @@ function Invoke-FohInstall {
     }
     return [pscustomobject]@{
         version = $unpacked.version; app = $app.dir; app_changed = $app.changed; config_changed = $toml
-        layout_changed = $layoutChanged; copies = $copies; hub = $answer; tray = $trayPid; remote = $remoteResult; companion = [bool]$Companion
+        layout_changed = $layoutChanged; copies = $copies; hub = $answer; tray = $trayPid; remote = $remoteResult; companion = [bool]$Companion; presenter = [bool]$Presenter
         eq = [bool]$Eq
     }
 }

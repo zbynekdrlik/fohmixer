@@ -99,6 +99,7 @@ fn what_a_touch_and_an_outage_need_is_essential_moves_round_trips_and_long_frame
         "ableset_view",
         "ableset",
         "iem",
+        "presenter",
     ] {
         assert!(is_essential(ev), "{ev}");
     }
@@ -783,6 +784,40 @@ fn iemmixers_frame_and_its_steps_are_page_events() {
     assert_eq!(
         iem(7.0, IemStep::Close),
         json!({"ev": "iem", "t": 7.0, "what": "close"})
+    );
+}
+
+#[test]
+fn presenters_tab_and_its_steps_are_page_events() {
+    assert_eq!(
+        presenter(1.0, PresenterStep::Open),
+        json!({"ev": "presenter", "t": 1.0, "what": "open"})
+    );
+    assert_eq!(
+        presenter(2.0, PresenterStep::Close),
+        json!({"ev": "presenter", "t": 2.0, "what": "close"})
+    );
+    assert_eq!(
+        presenter(3.0, PresenterStep::Frame),
+        json!({"ev": "presenter", "t": 3.0, "what": "frame"})
+    );
+    assert_eq!(
+        presenter(4.0, PresenterStep::Load { ms: 120.4 }),
+        json!({"ev": "presenter", "t": 4.0, "what": "load", "ms": 120.0})
+    );
+    assert_eq!(
+        presenter(5.0, PresenterStep::Down),
+        json!({"ev": "presenter", "t": 5.0, "what": "down"})
+    );
+    assert_eq!(
+        presenter(
+            6.0,
+            PresenterStep::Failed {
+                code: "timer",
+                why: "no"
+            }
+        ),
+        json!({"ev": "presenter", "t": 6.0, "what": "failed", "code": "timer", "why": "no"})
     );
 }
 

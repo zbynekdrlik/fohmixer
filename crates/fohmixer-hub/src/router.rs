@@ -84,6 +84,7 @@ mod lufs;
 mod markers;
 #[path = "router/markers_io.rs"]
 mod markers_io;
+mod presenter;
 #[path = "router/rec.rs"]
 mod rec;
 mod retries;
@@ -353,6 +354,25 @@ pub enum RouterMsg {
     /// The hub's link to AbleSet went up or down (#90 B3).
     AbleSetLink {
         online: bool,
+    },
+    /// News of the hub's link to Presenter (#90, the stage tab).
+    PresenterLink {
+        event: crate::presenter::link::LinkEvent,
+    },
+    /// A page's held stage-layout key (#90).
+    PresenterSwitch {
+        client: ClientId,
+        code: String,
+        seq: u64,
+    },
+    /// Presenter's answer to a page's switch, and how long it took (ms).
+    PresenterSwitched {
+        client: ClientId,
+        seq: u64,
+        code: String,
+        from: Option<String>,
+        result: Result<String, String>,
+        ms: u64,
     },
     /// REVERB's wake `generation` came (#130, D18: the stop's wait ended or
     /// a glide's next step is due); a newer armed wake makes it stale.
@@ -646,6 +666,8 @@ pub struct Router {
     ableset: Option<ableset::AbleSetIo>,
     /// iemmixer's page as a page is told of it (#166); none without `[iem]`.
     iem: Option<ServerMsg>,
+    /// Presenter's stage (#90); none without `[presenter]`.
+    presenter: Option<presenter::PresenterIo>,
     /// Keeps the strips' groups unfolded (#58).
     unfold: unfold::Keeper,
     /// Finds the Tuner markers (#68).
@@ -754,6 +776,7 @@ impl Router {
             eq: None,
             ableset: None,
             iem: None,
+            presenter: None,
             unfold: unfold::Keeper::default(),
             markers: markers::Keeper::default(),
             layout_store: None,
@@ -821,6 +844,7 @@ impl Router {
                 self.eq_attach(client, &outbox);
                 self.ableset_attach(&outbox, lan);
                 self.iem_attach(&outbox);
+                self.presenter_attach(&outbox);
                 self.clients.insert(client, outbox);
                 self.peers.insert(client, peer);
                 self.lan.insert(client, lan);
@@ -1131,6 +1155,18 @@ impl Router {
             } => self.eq_closed(&key, session, outcome),
             RouterMsg::EqWorker { event } => self.eq_worker(event),
             RouterMsg::AbleSetLink { online } => self.ableset_link(online),
+            RouterMsg::PresenterLink { event } => self.presenter_link(event),
+            RouterMsg::PresenterSwitch { client, code, seq } => {
+                self.presenter_switch(client, code, seq);
+            }
+            RouterMsg::PresenterSwitched {
+                client,
+                seq,
+                code,
+                from,
+                result,
+                ms,
+            } => self.presenter_switched(client, seq, (code, from), result, Some(ms)),
             RouterMsg::ReverbWake { generation } => self.reverb_wake(generation),
             RouterMsg::AutotuneFound { key, walk, outcome } => {
                 self.autotune_found(&key, walk, outcome);

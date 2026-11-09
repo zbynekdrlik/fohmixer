@@ -39,6 +39,7 @@ pub mod meter;
 pub mod mute;
 pub mod pan;
 pub mod peak;
+pub mod presenter;
 pub mod rail;
 pub mod rec;
 pub mod reverb;

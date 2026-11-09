@@ -36,6 +36,9 @@
 #   iemmixer's page (#166): [iem] last in the toml, its title only when not the
 #   hub's default, the hub refusing a plain-http address, an update keeping it
 #   and an install taking it out;
+# - Presenter's stage tab (#90): [presenter] after [companion], before the
+#   remote tables, read back from an installed toml, checked by the hub (a
+#   public address refused), written by -PresenterUrl and kept by an update;
 # - the Pro-Q 4 screen's [eq] table (#71): read back from an installed toml
 #   (as the install writes it and as written by hand: no blank line, LF,
 #   trailing blanks, a UTF-8 byte order mark; never after [tls]), checked by
@@ -524,6 +527,26 @@ try {
     $badDeck = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Companion ($wantCompanion + "columns = 17`r`n")
     Assert ((ErrorOf { Test-FohHubToml -Exe $HubExe -Text $badDeck -Dir $checkDir }) -like '*refused by the hub (exit 2)*columns 17*') 'hub-toml-check-refuses-a-bad-companion-table'
     Assert (@(Get-ChildItem -LiteralPath $checkDir -Force).Count -eq 0) 'hub-toml-check-of-the-companion-table-leaves-no-file'
+    # ---- Presenter's stage tab (#90): the [presenter] table ----
+    $wantP = "`r`n[presenter]`r`nurl = `"http://10.0.0.9:8080`"`r`n"
+    Assert ((Get-FohPresenterToml -Url 'http://10.0.0.9:8080') -ceq $wantP) 'presenter-toml'
+    Assert ((Get-FohPresenterToml -Url '') -ceq '') 'presenter-toml-empty-without-an-address'
+    foreach ($bad in @('10.0.0.9:8080', 'https://10.0.0.9', 'http://10.0.0.9/"x', 'http://a b')) {
+        Assert ((ErrorOf { Get-FohPresenterToml -Url $bad }) -like '*Presenter address refused*') "presenter-toml-refuses-[$bad]"
+    }
+    $withP = New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3 -Companion $wantCompanion -Presenter $wantP -Remote $gotRemote
+    Assert (($withP.IndexOf('[companion]') -lt $withP.IndexOf('[presenter]')) -and ($withP.IndexOf('[presenter]') -lt $withP.IndexOf('[tls]'))) 'presenter-table-after-companion-before-the-remote-tables'
+    Assert ((Get-FohInstalledPresenterToml -Text $withP) -ceq $wantP) 'installed-presenter-table-read-back-before-tls'
+    Assert ((Get-FohInstalledCompanionToml -Text $withP) -ceq $wantCompanion -and (Get-FohInstalledRemoteToml -Text $withP) -ceq $gotRemote) 'installed-companion-and-remote-tables-unchanged-by-presenter'
+    Assert ((Get-FohInstalledPresenterToml -Text ((New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3) + $wantP)) -ceq $wantP) 'installed-presenter-table-read-back-at-the-end'
+    Assert ((Get-FohInstalledPresenterToml -Text $withBoth) -ceq '') 'installed-presenter-none-without-the-table'
+    $stageToml = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Presenter $wantP -Remote $gotRemote
+    Assert ((Test-FohHubToml -Exe $HubExe -Text $stageToml -Dir $checkDir) -like '*: OK*') 'hub-toml-check-accepts-the-presenter-table'
+    $publicP = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Presenter (Get-FohPresenterToml -Url 'http://8.8.8.8:8080')
+    $publicError = ErrorOf { Test-FohHubToml -Exe $HubExe -Text $publicP -Dir $checkDir }
+    # .Contains, not -like: [ ] are a wildcard's class.
+    Assert (($publicError -like '*refused by the hub (exit 2)*') -and $publicError.Contains('[presenter] url')) 'hub-toml-check-refuses-a-public-presenter-address'
+    Assert (@(Get-ChildItem -LiteralPath $checkDir -Force).Count -eq 0) 'hub-toml-check-of-the-presenter-table-leaves-no-file'
     # ---- the Pro-Q 4 screen (#71): an installed [eq] table is kept ----
     $baseToml = New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3
     $wantEq = "`r`n[eq]`r`nbackend = `"windows`"`r`n"
@@ -961,6 +984,18 @@ try {
     $noneC = Join-Path $base 'data-companion-refused'
     $res = Invoke-Ps $install (Get-InstallArgs @{ DataDir = $noneC; CompanionHost = 'host:0' })
     Assert ($res.code -ne 0 -and $res.out -like '*Companion endpoint refused*' -and -not (Test-Path -LiteralPath $noneC)) 'install-refuses-a-bad-companion-host-before-any-change'
+    # ---- install 9b: Presenter's stage tab (#90): -PresenterUrl writes [presenter], an update keeps it ----
+    $dataP = Join-Path $base 'data-presenter'
+    $rP = Invoke-Ps $install (Get-InstallArgs @{ DataDir = $dataP; PresenterUrl = 'http://10.0.0.9:8080' })
+    Assert ($rP.code -eq 0) "install-9b-presenter-exits-0 ($($rP.out))"
+    $wantPT = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Presenter (Get-FohPresenterToml -Url 'http://10.0.0.9:8080')
+    Assert ([IO.File]::ReadAllText((Join-Path $dataP 'fohmixer-hub.toml')) -ceq $wantPT) 'install-9b-toml-has-the-presenter-table'
+    $rP2 = Invoke-Ps $install (Get-InstallArgs @{ DataDir = $dataP })
+    Assert ($rP2.code -eq 0) 'install-9b-without-presenter-url-exits-0'
+    Assert ([IO.File]::ReadAllText((Join-Path $dataP 'fohmixer-hub.toml')) -ceq $wantPT) 'install-9b-without-presenter-url-keeps-the-table'
+    $noneP = Join-Path $base 'data-presenter-refused'
+    $res = Invoke-Ps $install (Get-InstallArgs @{ DataDir = $noneP; PresenterUrl = 'http://8.8.8.8:8080' })
+    Assert ($res.code -ne 0 -and $res.out.Contains('[presenter] url') -and -not (Test-Path -LiteralPath (Join-Path $noneP 'fohmixer-hub.toml'))) 'install-refuses-a-public-presenter-address-before-any-change'
     # ---- install 10 (#71): an [eq] table written by hand, as the deploy rule's steps do, is kept ----
     $tomlC = Join-Path $dataC 'fohmixer-hub.toml'
     $instancesEnd = "port = 39182`r`n"

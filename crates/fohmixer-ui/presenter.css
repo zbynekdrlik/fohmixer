@@ -1,0 +1,238 @@
+/* Presenter's stage tab (#90; the owner's approved
+   docs/mockups/presenter-stage-v1.html): over the page's left half (page.css
+   .extra-pane), the header, the live preview of the stage display, the
+   caption and the layout keys. Colours and sizes are the mockup's. The
+   preview takes no touch (it only shows, as Presenter's own preview); the
+   keys own theirs. */
+
+.presenter-tab {
+    position: relative;
+}
+
+.presenter-dot {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--danger);
+}
+
+.presenter-page {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #101218;
+}
+
+.pst-head {
+    display: flex;
+    flex: none;
+    align-items: baseline;
+    gap: 8px;
+    padding: 9px 12px 7px;
+}
+
+.pst-head b {
+    font: 700 18px/1.2 var(--display);
+    letter-spacing: 0.04em;
+}
+
+.pst-gap {
+    flex: 1;
+}
+
+.pst-now {
+    color: var(--muted);
+    font: 600 12px/1.2 var(--ui);
+}
+
+/* 16:9, the stage display's shape; the frame inside is laid out at
+   1920 x 1080 and scaled to this width from its top left corner. Its width
+   is set, not stretched: WebKit took a stretched item's height from the
+   pane's width before the margins (17:10, measured on the iPad project). */
+.pst-stage {
+    position: relative;
+    flex: none;
+    align-self: center;
+    width: calc(100% - 20px);
+    aspect-ratio: 16 / 9;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #000;
+    pointer-events: none;
+}
+
+.pst-stage[data-preview="down"] {
+    background: #0c0c12;
+}
+
+.pst-frame {
+    position: absolute;
+    top: 0;
+    left: 0;
+    display: block;
+    border: 0;
+    transform-origin: 0 0;
+    pointer-events: none;
+}
+
+.pst-down {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+}
+
+.pst-down-title {
+    color: var(--danger);
+    font: 700 20px/1.2 var(--display);
+    letter-spacing: 0.04em;
+}
+
+.pst-down-text {
+    color: var(--muted);
+    font: 600 13px/1.2 var(--ui);
+}
+
+.pst-caption {
+    flex: none;
+    padding: 12px 12px 6px;
+    color: var(--faint);
+    font: 600 10px/1.2 var(--ui);
+    letter-spacing: 0.12em;
+}
+
+.pst-keys {
+    display: grid;
+    flex: 1;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-rows: repeat(var(--pst-rows, 3), minmax(0, 1fr));
+    gap: 6px;
+    min-height: 0;
+    padding: 0 10px 10px;
+}
+
+.pst-key {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    padding: 6px 10px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: var(--panel);
+    color: var(--text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    touch-action: none;
+}
+
+.pst-name {
+    position: relative;
+    overflow: hidden;
+    color: var(--text);
+    font: 700 17px/1.1 var(--display);
+    letter-spacing: 0.05em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pst-note,
+.pst-release {
+    position: relative;
+    margin-top: 3px;
+    overflow: hidden;
+    color: var(--faint);
+    font: 600 10.5px/1.25 var(--ui);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pst-release {
+    display: none;
+    color: #a9c8ff;
+}
+
+.pst-key[data-full="true"] .pst-note {
+    display: none;
+}
+
+.pst-key[data-full="true"] .pst-release {
+    display: block;
+}
+
+/* The one on stage: lit, the mockup's teal. */
+.pst-key[data-state="on"] {
+    border-color: #2fc79a;
+    background: #1d1f33;
+    box-shadow: inset 0 -3px 0 #2fc79a;
+}
+
+.pst-key[data-state="on"] .pst-note {
+    color: #2fc79a;
+}
+
+/* Presenter (or the page's link) down: dim, and no touch acts. */
+.pst-key[data-state="dim"] {
+    opacity: 0.4;
+    pointer-events: none;
+}
+
+/* The hold fills the key from the left: one transition while
+   `data-holding` (a press that can act), its time `RAIL_HOLD_MS` (1 s). */
+.pst-fill {
+    position: absolute;
+    inset: 0;
+    background: rgba(63, 140, 255, 0.32);
+    clip-path: inset(0 100% 0 0);
+    pointer-events: none;
+}
+
+.pst-key[data-holding="true"] .pst-fill {
+    clip-path: inset(0 0 0 0);
+    transition: clip-path 1s linear;
+}
+
+/* A switch that failed flashes the key (states.css .failed). */
+.pst-key.failed {
+    border-color: var(--danger);
+}
+
+/* A low screen (a phone on its side): the pages' bar keeps the three rows
+   it had before this tab (page.css: FOH, STREAM DECK beside ABLESET, IEM
+   with its ✕), PRESENTER beside IEM MIXER: a fourth row took the rail's last
+   button (reverb.spec.ts's phone rail, 844 x 390). */
+@media (max-height: 520px) {
+    .column .seg[data-level="0"]:has(.presenter-tab) > .extra-tab,
+    .column .seg[data-level="0"]:has(.presenter-tab) > .iem-row {
+        flex: 1 1 40%;
+        min-width: 0;
+    }
+}
+
+/* Phones: the keys' second line goes, the names keep their row. */
+@media (max-height: 520px), (max-width: 520px) {
+    .pst-note,
+    .pst-release,
+    .pst-key[data-full="true"] .pst-release {
+        display: none;
+    }
+
+    .pst-name {
+        font-size: 14px;
+    }
+}

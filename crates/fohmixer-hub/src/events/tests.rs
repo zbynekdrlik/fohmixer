@@ -137,6 +137,24 @@ fn warn_class_records_are_socket_link_cap_dropped_and_errors() {
     assert!(!is_warn(
         &json!({"ev": "deck_key", "key": 3, "pressed": true, "color": "#00aa00"})
     ));
+    // Presenter's link changes and every stage switch outlive the cap
+    // (#90): a few per service, and they explain what the stage showed; a
+    // client's proxy fault and a socket's open or close stay bulk, a
+    // Presenter outage's proxy record carries `error`; a page's trace with
+    // its PRESENTER tab's steps outlives it too.
+    for ev in ["presenter_link", "presenter_switch"] {
+        assert!(is_warn(&json!({"ev": ev})), "{ev}");
+    }
+    assert!(!is_warn(
+        &json!({"ev": "presenter_proxy", "why": "POST is never passed"})
+    ));
+    assert!(is_warn(
+        &json!({"ev": "presenter_proxy", "error": "Presenter does not answer"})
+    ));
+    assert!(!is_warn(&json!({"ev": "presenter_ws", "what": "open"})));
+    assert!(is_warn(
+        &json!({"ev": "trace", "events": [{"ev": "presenter", "what": "open"}]})
+    ));
     assert!(is_warn(&json!({"ev": "applied", "errors": 1})));
     // AbleSet's name (#90 B3h): its outage outlives the cap, a client's
     // fault and a tunnel's open and close do not.

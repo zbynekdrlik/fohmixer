@@ -70,6 +70,9 @@ The Stream Deck tab (#52), only with -CompanionHost: the toml gets [companion]
 (Bitfocus Companion's Satellite API as host or host:port, default port 16622);
 the hub registers there as one more Stream Deck ("fohmixer"). A run without
 -CompanionHost keeps an installed [companion] table as it is.
+Presenter's stage tab (#90), only with -PresenterUrl: the toml gets [presenter]
+(Presenter's server on the LAN as http://<address>[:port]; the hub checks it).
+A run without -PresenterUrl keeps an installed [presenter] table as it is.
 The data folder gets a protected DACL: SYSTEM, Administrators and the band user.
 When a step after the stop fails, the hub and tray tasks that ran are started again.
 -NoTask (the self-test) leaves out steps 1, 6, 7 and the DACL.
@@ -137,7 +140,10 @@ param(
     [string]$IemTitle = '',
     # The Stream Deck tab (#52): Bitfocus Companion's Satellite API as host or host:port
     # (default port 16622). Without it an installed [companion] table is kept.
-    [string]$CompanionHost = ''
+    [string]$CompanionHost = '',
+    # Presenter's stage tab (#90): Presenter's server as http://<LAN address>[:port].
+    # Without it an installed [presenter] table is kept.
+    [string]$PresenterUrl = ''
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -154,13 +160,15 @@ try {
         -MasterPort $MasterPort @remoteArgs
     # The Stream Deck tab (#52): checked before any change, kept when not given.
     $companion = Resolve-FohCompanion -DataDir $DataDir -CompanionHost $CompanionHost
+    # Presenter's stage tab (#90): checked before any change, kept when not given.
+    $presenter = Resolve-FohPresenter -DataDir $DataDir -PresenterUrl $PresenterUrl
     # The Pro-Q 4 screen (#71): an installed [eq] table is kept as it is.
     $eq = Resolve-FohEq -DataDir $DataDir
     $result = Invoke-FohInstall -BundleZip $BundleZip -BandUser $BandUser -MasterUser $MasterUser -DataDir $DataDir `
         -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Layout $Layout `
         -BandUserLibrary $BandUserLibrary -MasterUserLibrary $MasterUserLibrary `
         -BandAbletonPrefs $BandAbletonPrefs -MasterAbletonPrefs $MasterAbletonPrefs -NoTask:$NoTask -Companion $companion `
-        -Eq $eq -Remote $remote
+        -Eq $eq -Presenter $presenter -Remote $remote
     ConvertTo-Json -InputObject $result -Depth 5
 } catch {
     # One unwrapped line (a 5.1 error record wraps at the console width), then where it failed.

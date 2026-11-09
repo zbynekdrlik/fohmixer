@@ -478,6 +478,72 @@ fn deck_messages_round_trip() {
 }
 
 #[test]
+fn presenters_messages_round_trip_and_a_switch_is_whole_or_refused() {
+    let layout = |code: &str, name: &str| StageLayout {
+        code: code.into(),
+        name: name.into(),
+        description: format!("{name} shown"),
+    };
+    round_trip_server(
+        ServerMsg::Presenter {
+            online: Some(true),
+            layouts: vec![layout("worship", "WORSHIP"), layout("timer", "TIMER")],
+            current: Some("timer".into()),
+        },
+        json!({"type": "presenter", "online": true, "current": "timer", "layouts": [
+            {"code": "worship", "name": "WORSHIP", "description": "WORSHIP shown"},
+            {"code": "timer", "name": "TIMER", "description": "TIMER shown"}]}),
+    );
+    round_trip_server(
+        ServerMsg::Presenter {
+            online: None,
+            layouts: vec![],
+            current: None,
+        },
+        json!({"type": "presenter", "online": null, "layouts": [], "current": null}),
+    );
+    // Presenter's own list may leave a description out.
+    let bare = json!({"code": "api", "name": "API"});
+    assert_eq!(
+        serde_json::from_value::<StageLayout>(bare).unwrap(),
+        StageLayout {
+            code: "api".into(),
+            name: "API".into(),
+            description: String::new(),
+        }
+    );
+    round_trip_server(
+        ServerMsg::PresenterAck {
+            seq: 4,
+            code: "timer".into(),
+            ok: true,
+            error: None,
+        },
+        json!({"type": "presenter_ack", "seq": 4, "code": "timer", "ok": true}),
+    );
+    round_trip_server(
+        ServerMsg::PresenterAck {
+            seq: 5,
+            code: "nope".into(),
+            ok: false,
+            error: Some("Presenter does not list nope".into()),
+        },
+        json!({"type": "presenter_ack", "seq": 5, "code": "nope", "ok": false,
+               "error": "Presenter does not list nope"}),
+    );
+    round_trip_client(
+        ClientMsg::PresenterSwitch {
+            code: "preach".into(),
+            seq: 3,
+        },
+        json!({"type": "presenter_switch", "code": "preach", "seq": 3}),
+    );
+    // A switch never guesses its layout.
+    let no_code = json!({"type": "presenter_switch", "seq": 3});
+    assert!(serde_json::from_value::<ClientMsg>(no_code).is_err());
+}
+
+#[test]
 fn iemmixers_message_round_trips_and_is_whole_or_refused() {
     round_trip_server(
         ServerMsg::Iem {
@@ -537,7 +603,7 @@ fn ablesets_message_round_trips_and_a_message_this_page_does_not_know_is_ignored
     // with any fields, reads as `Unknown` (the page ignores it), never as
     // an error; a known type still has to be whole.
     for newer in [
-        json!({"type": "presenter", "stage": {"rows": 2}, "online": true}),
+        json!({"type": "lyrics_page", "stage": {"rows": 2}, "online": true}),
         json!({"type": "a_later_message"}),
     ] {
         let read = serde_json::from_value::<ServerMsg>(newer.clone());
@@ -672,6 +738,14 @@ fn api_bodies_round_trip() {
                 last_issued: Some(1_790_000_000),
             },
             sockets: 2,
+        }),
+        presenter: Some(PresenterStatus {
+            url: "http://10.0.0.9:8080".into(),
+            online: Some(true),
+            last_error: None,
+            layouts: 9,
+            current: Some("worship".into()),
+            sockets: 1,
         }),
         reverb: ReverbStatus::default(),
         fader_links: Vec::new(),
@@ -1863,6 +1937,7 @@ fn an_older_hubs_status_reads_with_default_sectors() {
         client_reports: vec![],
         companion: None,
         ableset: None,
+        presenter: None,
         reverb: ReverbStatus::default(),
         fader_links: vec![],
         autotune: AutotuneStatus::default(),

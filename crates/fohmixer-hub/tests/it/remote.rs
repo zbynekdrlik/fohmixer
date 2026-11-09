@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use crate::support::TestHub;
 use fohmixer_hub::ableset::{CLOSE_BOUND, STOPPED};
-use fohmixer_hub::config::{AbleSetCfg, Config, TlsCfg};
+use fohmixer_hub::config::{AbleSetCfg, Config, PresenterCfg, TlsCfg};
 use fohmixer_proto::client::ServerMsg;
 use futures_util::{SinkExt, StreamExt};
 use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair};
@@ -225,6 +225,121 @@ async fn the_public_name_is_served_over_https_next_to_plain_http() {
         (200, Some(fohmixer_proto::VERSION))
     );
     hub.stop().await;
+}
+
+#[tokio::test]
+async fn presenters_stage_page_is_served_over_https_and_its_name_redirected_on_plain_http() {
+    // #90: Presenter's paths have their own router; it redirects the public
+    // name on the plain listener as fohmixer's own routes do.
+    let fake = crate::support::presenter::FakePresenter::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (ca, chain, key) = certificate();
+    let tls_dir = dir.path().join("tls");
+    std::fs::create_dir_all(&tls_dir).unwrap();
+    std::fs::write(tls_dir.join("cert.pem"), &chain).unwrap();
+    std::fs::write(tls_dir.join("key.pem"), &key).unwrap();
+    let mut config = Config::defaults(dir.path());
+    config.instances.clear();
+    config.tls = Some(TlsCfg {
+        name: NAME.into(),
+        port: 0,
+        redirect_http: true,
+    });
+    config.presenter = Some(PresenterCfg { url: fake.url() });
+    let hub = TestHub::start_config(config).await;
+    let port = hub.status().await.remote.https.unwrap().port;
+    let (code, head, _) = get(tls(port, &ca).await, NAME, "/stage?preview=1", &[]).await;
+    assert_eq!(code, 200, "{head}");
+    assert!(head.contains("x-frame-options: sameorigin"), "{head}");
+    let host = format!("{NAME}:{}", hub.addr.port());
+    let plain = TcpStream::connect(hub.addr).await.unwrap();
+    let (code, head, _) = get(plain, &host, "/stage?preview=1", &[]).await;
+    assert_eq!(code, 307, "{head}");
+    assert!(
+        head.contains(&format!("location: https://{NAME}:{port}/stage?preview=1")),
+        "{head}"
+    );
+    // By address it is the emergency path: served, never redirected.
+    let plain = TcpStream::connect(hub.addr).await.unwrap();
+    let (code, _, _) = get(plain, &hub.addr.to_string(), "/stage", &[]).await;
+    assert_eq!(code, 200);
+    hub.stop().await;
+    fake.stop().await;
+}
+
+#[tokio::test]
+async fn the_stop_waits_for_a_presenter_stage_socket_to_close_and_record_it() {
+    // #90, as AbleSet's tunnel above: an upgraded connection left the
+    // listener, so serve_until waits for its close and record itself.
+    let fake = crate::support::presenter::FakePresenter::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (ca, chain, key) = certificate();
+    let tls_dir = dir.path().join("tls");
+    std::fs::create_dir_all(&tls_dir).unwrap();
+    std::fs::write(tls_dir.join("cert.pem"), &chain).unwrap();
+    std::fs::write(tls_dir.join("key.pem"), &key).unwrap();
+    let mut config = Config::defaults(dir.path());
+    config.instances.clear();
+    config.tls = Some(TlsCfg {
+        name: NAME.into(),
+        port: 0,
+        redirect_http: true,
+    });
+    config.presenter = Some(PresenterCfg { url: fake.url() });
+    let hub = TestHub::start_config(config).await;
+    let port = hub.status().await.remote.https.unwrap().port;
+    // A page that never reads, on a 4 KiB receive buffer.
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    let tcp = socket
+        .connect(SocketAddr::from(([127, 0, 0, 1], port)))
+        .await
+        .unwrap();
+    let tls = tls_over(tcp, &ca, NAME).await;
+    let url = format!("wss://{NAME}:{port}/live/ws?flood=1");
+    let (page, _) = tokio_tungstenite::client_async(url, tls)
+        .await
+        .expect("a wss tunnel to Presenter");
+    // Presenter fills the way to the page until its sends stall.
+    let (mut last, mut still) = (0, 0);
+    for _ in 0..400 {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let now = fake.pushed.load(Ordering::Relaxed);
+        if now > 0 && now == last {
+            still += 1;
+            if still == 12 {
+                break;
+            }
+        } else {
+            (last, still) = (now, 0);
+        }
+    }
+    assert_eq!(still, 12, "Presenter's sends never stalled: {last} bytes");
+    let stopping = Instant::now();
+    hub.stop().await;
+    let waited = stopping.elapsed();
+    assert!(
+        waited >= CLOSE_BOUND,
+        "serve_until returned before the socket closed: {waited:?}"
+    );
+    // Its close was recorded before that (the socket's slot comes back only
+    // after its record); the event log's writer thread puts it on disk.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let close = loop {
+        let records = crate::support::events_in(dir.path());
+        let close = records
+            .into_iter()
+            .find(|r| r["ev"] == "presenter_ws" && r["what"] == "close");
+        if let Some(close) = close {
+            break close;
+        }
+        assert!(Instant::now() < deadline, "no close record");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert_eq!(close["why"], STOPPED);
+    assert!(close["down"].as_u64().is_some_and(|d| d > 0), "{close}");
+    drop(page);
+    fake.stop().await;
 }
 
 #[tokio::test]

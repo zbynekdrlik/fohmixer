@@ -161,11 +161,18 @@ impl Fill {
 /// The fill of a press `filling` (down, before its hold) or `full` (past
 /// it): only a press that can act shows one (`hold_value`).
 pub fn fill_of(filling: bool, full: bool, aut: Option<bool>, connected: bool) -> Fill {
-    match (hold_value(aut, connected), full, filling) {
-        (None, _, _) => Fill::None,
-        (Some(_), true, _) => Fill::Full,
-        (Some(_), false, true) => Fill::Filling,
-        (Some(_), false, false) => Fill::None,
+    press_fill(filling, full, hold_value(aut, connected).is_some())
+}
+
+/// The fill of a key's press (`components::hold_key`, #172, #90): `filling`
+/// (down, before its hold) or `full` (past it), shown only when the key
+/// `can` act.
+pub fn press_fill(filling: bool, full: bool, can: bool) -> Fill {
+    match (can, full, filling) {
+        (false, _, _) => Fill::None,
+        (true, true, _) => Fill::Full,
+        (true, false, true) => Fill::Filling,
+        (true, false, false) => Fill::None,
     }
 }
 
@@ -563,6 +570,17 @@ mod tests {
         assert!(cancels(Some(3), 3));
         assert!(!cancels(Some(3), 4));
         assert!(!cancels(None, 3));
+    }
+
+    #[test]
+    fn a_keys_press_shows_its_fill_only_when_the_key_can_act() {
+        assert_eq!(press_fill(true, false, true), Fill::Filling);
+        assert_eq!(press_fill(false, true, true), Fill::Full);
+        assert_eq!(press_fill(true, true, true), Fill::Full);
+        assert_eq!(press_fill(false, false, true), Fill::None);
+        for (filling, full) in [(true, false), (false, true), (true, true), (false, false)] {
+            assert_eq!(press_fill(filling, full, false), Fill::None);
+        }
     }
 
     #[test]

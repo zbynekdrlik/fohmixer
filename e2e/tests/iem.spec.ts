@@ -84,7 +84,8 @@ test.describe("The IEM tab (fohmixer's own https page)", () => {
     await openSurface(page);
     const bar = page.locator('[data-testid="tabbar"][data-level="0"]');
     const rows = await bar.evaluate((b) => [...b.children].map((c) => c.getAttribute("data-testid")));
-    expect(rows.slice(-3)).toEqual(["deck-tab", "ableset-tab", "iem-row"]);
+    // Presenter's tab (#90) comes under it since the stage tab.
+    expect(rows.slice(-4)).toEqual(["deck-tab", "ableset-tab", "iem-row", "presenter-tab"]);
     const tab = page.getByTestId("iem-tab");
     await expect(tab).toHaveText("IEM MIXER");
     await expect(tab).toHaveAttribute("data-alive", "false");
