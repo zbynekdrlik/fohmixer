@@ -36,7 +36,7 @@ use crate::behave::ableset::AbleSetInfo;
 use crate::behave::idle::IdleWatch;
 use crate::behave::iem::IemInfo;
 use crate::behave::link::{Counter, DropoutWatch};
-use crate::behave::live_down::LiveWord;
+use crate::behave::live_down::{LiveWord, rejudges};
 use crate::behave::presenter::PresenterInfo;
 use crate::binding::SubSpec;
 use crate::diag::trace::fingers::EqUndos;
@@ -509,6 +509,8 @@ impl LiveStore {
         let _ = diag::with_trace(trace::Recorder::requeue);
         self.show_counter();
         if !closed.reconnect {
+            // No hub any more: no word of any Live (#178).
+            let _ = self.live.try_set(BTreeMap::new());
             return;
         }
         dom::log(&format!(
@@ -887,15 +889,19 @@ impl LiveStore {
         let Some(signal) = signal else {
             return true;
         };
-        // An error of a Live with no set arrives quiet (#178); a slot that
-        // changes class judges its Live again.
-        let instance = self.instance_of(key);
-        let no_set = instance.as_deref().is_some_and(|i| self.no_set(i));
-        let slot = slot.quieted(no_set);
+        // An error of a Live with no set arrives quiet (#178), and a slot
+        // that changes class may judge its Live again; a value of an
+        // unchanged class (a meter's) asks nothing of either.
         let before = signal.try_with_untracked(Slot::class);
         let after = slot.class();
-        let _ = signal.try_set(slot);
-        if before != Some(after)
+        if !slot.is_error() && before == Some(after) {
+            let _ = signal.try_set(slot);
+            return true;
+        }
+        let instance = self.instance_of(key);
+        let word = instance.as_deref().and_then(|i| self.word_of(i));
+        let _ = signal.try_set(slot.quieted(word == Some(LiveWord::NoSet)));
+        if rejudges(word, before, after)
             && let Some(instance) = instance
         {
             self.judge(&instance);

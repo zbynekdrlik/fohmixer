@@ -145,6 +145,15 @@
     margin-top: 2px;
 }
 
+.column .status-cluster .version {
+    font-size: 9px;
+}
+
+.column .status-cluster .manual-chip {
+    font-size: 8.5px;
+    line-height: 12px;
+}
+
 .column .seg {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
@@ -560,6 +569,17 @@
 
     .column .status-cluster .live-hint {
         display: none;
+    }
+
+    /* A Live that is on keeps the dot's footprint here: its name alone, in
+       the word's green (the foot's two rows hold no more); a Live that is
+       down says so in words. */
+    .column .status-cluster .badge[data-live="on"] .badge-word {
+        display: none;
+    }
+
+    .column .status-cluster .badge[data-live="on"] .badge-name {
+        color: #2fc79a;
     }
 
     /* REC beside the version (#172), on the same row: the foot keeps its

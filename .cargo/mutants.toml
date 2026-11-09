@@ -108,14 +108,14 @@ exclude_re = [
   # eq.spec.ts draws the frames.
   "fohmixer-ui/src/store/live\\.rs.*(replace|in) LiveStore::(new|start|stop|stopped|token|logout|connect|retry|show_layout|open_socket|watch|drop_socket|on_close|heard|on_text|on_binary|on_hello|on_instance|on_layout|apply|mark_pending|slots_of|mark_stale|forget_unwanted|send|send_text|send_sub|slot|slot_signal|set_wanted|cmd|finish|set_hub|range|fetch_ranges|fetch_range)( |$)",
   # store/live/live_down.rs (#178): a Live that is down, the store's glue,
-  # one function at a time: no_set and instance_of (reads of the store's
+  # one function at a time: word_of and instance_of (reads of the store's
   # signals), judging_slots (the wanted slots whose target judges_set, the
   # tested decision), judge_all and judge (each Live's word from
   # behave::live_down::live_word, the tested decision, written into the
   # store's `live` signal, its errors turned quiet through the tested
   # Slot::quieted). live-down.spec.ts drives them: Lives stopped, a Live on
   # an empty set, both back.
-  "fohmixer-ui/src/store/live/live_down\\.rs.*(replace|in) LiveStore::(no_set|instance_of|judging_slots|judge_all|judge)( |$)",
+  "fohmixer-ui/src/store/live/live_down\\.rs.*(replace|in) LiveStore::(word_of|instance_of|judging_slots|judge_all|judge)( |$)",
   # store/live/link.rs (#43 PR C): the link's glue, one function at a time:
   # tick_link (the dropout watch's 100 ms timer), collect_dropouts (the
   # watch's finished reports into the flight recorder), upload (the

@@ -13,14 +13,15 @@ use leptos::prelude::*;
 use super::LiveStore;
 use crate::behave::live_down::{LiveWord, Seen, judges_set, live_word};
 use crate::dom;
-use crate::store::{Slot, SlotClass};
+use crate::store::Slot;
 
 impl LiveStore {
-    /// Whether `instance` has no set now (its errors arrive quiet).
-    pub(super) fn no_set(self, instance: &str) -> bool {
+    /// The word of `instance` now (its errors arrive quiet while it has
+    /// no set).
+    pub(super) fn word_of(self, instance: &str) -> Option<LiveWord> {
         self.live
-            .try_with_untracked(|all| all.get(instance) == Some(&LiveWord::NoSet))
-            .unwrap_or(false)
+            .try_with_untracked(|all| all.get(instance).copied())
+            .flatten()
     }
 
     /// The instance of a wanted key.
@@ -66,14 +67,11 @@ impl LiveStore {
             .try_with_untracked(|all| all.get(instance).map(|v| v.online))
             .flatten();
         let signals = self.slots_of(Some(instance));
-        let mut seen = Seen::default();
-        for signal in self.judging_slots(instance) {
-            match signal.try_with_untracked(Slot::class) {
-                Some(SlotClass::Resolved) => seen.resolved = true,
-                Some(SlotClass::Unresolved) => seen.unresolved = true,
-                _ => {}
-            }
-        }
+        let seen = Seen::of(
+            self.judging_slots(instance)
+                .iter()
+                .filter_map(|signal| signal.try_with_untracked(Slot::class)),
+        );
         let word = live_word(connected, online, seen);
         if let Some(word) = word {
             let no_set = word == LiveWord::NoSet;

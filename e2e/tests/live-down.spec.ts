@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./support/fixtures";
-import { harness, openSurface } from "./support/live";
+import { harness, hubStatus, openSurface, token, until } from "./support/live";
 
 // A Live that is down, said in words (#178; the owner's approved
 // docs/mockups/live-down-v2.html): no card or overlay anywhere. A strip of a
@@ -33,11 +33,27 @@ async function redIn(page: Page, scope: string): Promise<number> {
 
 const foot = (page: Page, instance: string) => page.locator(`[data-testid="badge"][data-instance="${instance}"]`);
 
+/** The hosts a test stopped or moved, started again on the test site. */
+const changed = new Set<string>();
+
+async function host(name: string, how: "stop" | "start", site?: string) {
+  changed.add(name);
+  await harness(`/host/${name}/${how}`, site ? { site } : {});
+}
+
 test.describe("A Live that is down (#178)", () => {
   test.afterEach(async () => {
-    // Both hosts back on the test site (a running one is restarted).
-    await harness("/host/band/start");
-    await harness("/host/master/start");
+    for (const name of changed) await harness(`/host/${name}/start`);
+    changed.clear();
+    // The hub has both Lives back before the next spec opens a page (one
+    // token: every login hashes the PIN).
+    const bearer = await token();
+    await until(
+      () => hubStatus(bearer),
+      (s) => s.instances.every((i: any) => i.online && i.set_name === "Test Site"),
+      "both Lives online on the test site",
+      15_000,
+    );
   });
 
   test("Lives not running: the strips and the foot say so in words, nothing red, and it clears by itself", async ({ page }) => {
@@ -49,8 +65,8 @@ test.describe("A Live that is down (#178)", () => {
     const masterZone = page.locator('[data-testid="strip"][data-instance="master"] .strip-zone').first();
     const travel = (await masterZone.boundingBox())!.height;
 
-    await harness("/host/band/stop");
-    await harness("/host/master/stop");
+    await host("band", "stop");
+    await host("master", "stop");
     for (const instance of ["band", "master"]) {
       await stripsSay(page, instance, "off");
       await expect(foot(page, instance)).toHaveAttribute("data-live", "off");
@@ -78,8 +94,8 @@ test.describe("A Live that is down (#178)", () => {
     await page.locator('[data-testid="tab"][data-page="foh"]').click();
     await expect(page.getByTestId("page")).toHaveAttribute("data-extra", "none");
 
-    await harness("/host/band/start");
-    await harness("/host/master/start");
+    await host("band", "start");
+    await host("master", "start");
     for (const instance of ["band", "master"]) {
       await stripsSay(page, instance, null);
       await expect(foot(page, instance)).toHaveAttribute("data-live", "on", { timeout: UP });
@@ -93,9 +109,13 @@ test.describe("A Live that is down (#178)", () => {
     await page.setViewportSize(IPAD);
     await openSurface(page);
     await expect(foot(page, "master")).toHaveAttribute("data-live", "on", { timeout: UP });
+    // The fixture's master set has bindings that do not resolve (I5, red),
+    // and so may the band's: the test needs the master's to be some.
     const masterRed = await redIn(page, '[data-testid="strip"][data-instance="master"]');
+    expect(masterRed).toBeGreaterThan(0);
+    const bandRed = await redIn(page, '[data-testid="strip"][data-instance="band"]');
 
-    await harness("/host/band/start", { site: "empty" });
+    await host("band", "start", "empty");
     await stripsSay(page, "band", "noset");
     await expect(foot(page, "band")).toHaveAttribute("data-live", "noset");
     await expect(foot(page, "band").getByTestId("badge-word")).toHaveText("no set");
@@ -109,10 +129,17 @@ test.describe("A Live that is down (#178)", () => {
     expect(await redIn(page, '[data-testid="strip"][data-instance="master"]')).toBe(masterRed);
     await expect(foot(page, "master").getByTestId("badge-word")).toHaveText("on");
 
-    await harness("/host/band/start");
+    await host("band", "start");
     await stripsSay(page, "band", null);
     await expect(foot(page, "band")).toHaveAttribute("data-live", "on", { timeout: UP });
     await expect(page.getByTestId("live-hint")).toHaveCount(0);
+    // A bad binding of the loaded set is red again (I5).
+    await until(
+      () => redIn(page, '[data-testid="strip"][data-instance="band"]'),
+      (n) => n === bandRed,
+      "the band's own red bindings back",
+      UP,
+    );
   });
 
   test("every Live on: the words take the dots' place and the rail keeps its room", async ({ page }) => {
