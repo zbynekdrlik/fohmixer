@@ -252,7 +252,7 @@
     gap: 3px;
     padding: 4px;
     overflow: hidden;
-    border: 1px solid var(--line-soft);
+    border: 1px solid var(--line);
     border-radius: 9px;
     background: #101218;
     cursor: pointer;

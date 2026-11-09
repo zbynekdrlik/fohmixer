@@ -97,9 +97,11 @@ test.describe("Presenter's stage tab", () => {
     await expect(keyOf(page, "timer").locator(".pst-note")).toHaveText("Countdown to the start");
     const tops = await keys.evaluateAll((all) => all.map((k) => Math.round(k.getBoundingClientRect().top)));
     expect(new Set(tops).size).toBe(3);
-    // The hub's own socket and the frame's are Presenter's previews: two
-    // sockets, both through the hub.
-    await until(fakeState, (s) => s.sockets >= 2, "the hub's and the frame's sockets");
+    // The hub's own socket and the pane's frame are Presenter's previews:
+    // two sockets, both through the hub (the column's miniature, and its
+    // socket, are gone while the tab is open).
+    await expect(mini(page)).toHaveCount(0);
+    await until(fakeState, (s) => s.sockets === 2, "the hub's and the pane's sockets");
   });
 
   test("a key's 1 s hold switches the stage at the lift, a tap does nothing, and every page follows", async ({ page }) => {
@@ -352,17 +354,25 @@ test.describe("Presenter's stage miniature in the column", () => {
     });
   });
 
-  test.describe("on a phone", () => {
-    test.use({ viewport: { width: 844, height: 390 } });
+  // 520 x 1000 is a phone by its width (the 520 px query, inclusive) whose
+  // open column has room for it (the rail 600 px of room, 475 needed): only
+  // the phone's rule keeps it out there.
+  for (const size of [
+    { width: 844, height: 390 },
+    { width: 520, height: 1000 },
+  ]) {
+    test.describe(`on a phone, ${size.width}×${size.height}`, () => {
+      test.use({ viewport: size });
 
-    test("is never in the column behind ☰", async ({ page }) => {
-      await restore();
-      await openSurface(page);
-      await page.getByTestId("thin-burger").dispatchEvent("pointerdown");
-      await expect(page.getByTestId("page")).toHaveAttribute("data-column-open", "true");
-      await frames(page, 4);
-      await expect(mini(page)).toHaveCount(0);
-      await expect(page.getByTestId("mini-frame")).toHaveCount(0);
+      test("is never in the column behind ☰", async ({ page }) => {
+        await restore();
+        await openSurface(page);
+        await page.getByTestId("thin-burger").dispatchEvent("pointerdown");
+        await expect(page.getByTestId("page")).toHaveAttribute("data-column-open", "true");
+        await frames(page, 4);
+        await expect(mini(page)).toHaveCount(0);
+        await expect(page.getByTestId("mini-frame")).toHaveCount(0);
+      });
     });
-  });
+  }
 });

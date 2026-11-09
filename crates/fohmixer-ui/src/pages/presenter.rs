@@ -149,7 +149,7 @@ pub(crate) fn PresenterView(viewport: RwSignal<(f64, f64)>) -> impl IntoView {
 /// `width`; mounted while Presenter is up, in the PRESENTER pane or the
 /// column's miniature (`place`: its class, test id and recorder steps).
 #[component]
-pub(crate) fn StageFrame(width: RwSignal<f64>, place: Place) -> impl IntoView {
+pub(crate) fn StageFrame(#[prop(into)] width: Signal<f64>, place: Place) -> impl IntoView {
     let (mount, load): (PresenterStep, fn(f64) -> PresenterStep<'static>) = match place {
         Place::Pane => (PresenterStep::Frame, |ms| PresenterStep::Load { ms }),
         Place::Column => (PresenterStep::MiniFrame, |ms| PresenterStep::MiniLoad {
@@ -190,12 +190,18 @@ type RailObserver = (web_sys::ResizeObserver, Closure<dyn FnMut()>);
 
 /// The miniature's picture width if it fits the rail's free room
 /// (`behave::presenter::mini_fits`): the rail less its foot and the gap is
-/// the buttons' room, the rows are `.rail-main`'s resolved tracks.
+/// the buttons' room, the rows are `.rail-main`'s resolved tracks. The boxes
+/// are read unrounded (`getBoundingClientRect`): a whole-px `clientHeight`
+/// rounded up could fit a miniature half a px too tall.
 fn measure_rail(rail: &web_sys::HtmlDivElement) -> Option<f64> {
     let main = rail.query_selector(".rail-main").ok()??;
-    let foot: web_sys::HtmlElement = rail.query_selector(".rail-foot").ok()??.dyn_into().ok()?;
-    let width = mini_width(f64::from(rail.client_width()))?;
-    let room = f64::from(rail.client_height()) - f64::from(foot.offset_height()) - RAIL_GAP;
+    let foot = rail.query_selector(".rail-foot").ok()??;
+    let (box_, foot) = (
+        rail.get_bounding_client_rect(),
+        foot.get_bounding_client_rect(),
+    );
+    let width = mini_width(box_.width())?;
+    let room = box_.height() - foot.height() - RAIL_GAP;
     let rows = track_count(&dom::computed(&main, "grid-template-rows").unwrap_or_default());
     mini_fits(room, rows, mini_height(width)).then_some(width)
 }
@@ -228,7 +234,12 @@ pub(crate) fn StageMini(rail: NodeRef<html::Div>) -> impl IntoView {
             }
         }) as Box<dyn FnMut()>);
         if let Ok(watch) = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()) {
+            // The rail, and its foot: a foot that grows (TECHALERT's words, a
+            // late font) leaves the rail's size as it was.
             watch.observe(&el);
+            if let Ok(Some(foot)) = el.query_selector(".rail-foot") {
+                watch.observe(&foot);
+            }
             if let Some(Some((old, _))) =
                 observer.try_update_value(|o| o.replace((watch, callback)))
             {
@@ -261,13 +272,7 @@ pub(crate) fn StageMini(rail: NodeRef<html::Div>) -> impl IntoView {
 fn MiniBox(fit: RwSignal<Option<f64>>) -> impl IntoView {
     let nav = expect_context::<Nav>();
     let store = nav.store;
-    let width = RwSignal::new(0.0_f64);
-    Effect::new(move |_| {
-        let w = fit.try_get().flatten().unwrap_or(0.0);
-        if width.try_get_untracked() != Some(w) {
-            let _ = width.try_set(w);
-        }
-    });
+    let width = Signal::derive(move || fit.try_get().flatten().unwrap_or(0.0));
     let note = Memo::new(move |_| {
         store
             .presenter
