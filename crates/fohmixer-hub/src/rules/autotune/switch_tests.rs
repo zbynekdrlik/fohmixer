@@ -567,3 +567,26 @@ fn a_selector_left_dry_is_another_writers_until_the_reset() {
     guard.reset();
     assert!(!guard.another());
 }
+
+#[test]
+fn only_a_stops_dry_writes_are_spread_40_ms_apart() {
+    assert_eq!(STOP_SPREAD_MS, 40);
+    assert!(spreads(Cause::Transport, Some(false)), "a stop");
+    assert!(spreads(Cause::Transport, None), "an unknown transport");
+    assert!(!spreads(Cause::Transport, Some(true)), "a start: one batch");
+    for cause in [
+        Cause::Position,
+        Cause::Key,
+        Cause::Flag,
+        Cause::Singer,
+        Cause::Found,
+        Cause::Guard,
+        Cause::Release,
+        Cause::Hold,
+        Cause::Safe,
+        Cause::Layout,
+        Cause::Written,
+    ] {
+        assert!(!spreads(cause, Some(false)), "{cause:?}");
+    }
+}

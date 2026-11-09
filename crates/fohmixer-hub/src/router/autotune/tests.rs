@@ -604,6 +604,8 @@ async fn a_found_target_is_followed_and_told_to_every_page() {
                 on: false,
                 why: SwitchWhy::Aut,
             }),
+            // Its DRY write is on its way (#140: the status says so).
+            writing: true,
         }]
     );
     // A later value off its on value: off.

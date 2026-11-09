@@ -409,6 +409,12 @@ pub enum RouterMsg {
         selectors: Vec<(String, String, bool)>,
         outcome: Result<Vec<Value>, String>,
     },
+    /// The next turn `generation` of `instance`'s stop spread of its DRY
+    /// writes is due (#140); void once a newer turn or none is armed.
+    AutotuneSpread {
+        instance: String,
+        generation: u64,
+    },
     /// The answer to AUTOTUNE's registration `seq` of `instance`'s DRY
     /// writes with its script, `targets` of them (#140 PR 3a): the one
     /// command's slot, or why there is none.
@@ -1181,6 +1187,10 @@ impl Router {
                 selectors,
                 outcome,
             } => self.autotune_written(&instance, write, &selectors, &outcome),
+            RouterMsg::AutotuneSpread {
+                instance,
+                generation,
+            } => self.autotune_spread_turn(&instance, generation),
             RouterMsg::AutotuneSafe {
                 instance,
                 seq,

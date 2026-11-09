@@ -699,3 +699,36 @@ fn a_target_given_up_is_recorded_and_warns() {
                "problem": "no result within 3 s", "tries": 25})
     );
 }
+
+#[test]
+fn a_stops_spread_is_recorded_and_logged() {
+    // #140: the stop's DRY writes spread out, and the ones dropped.
+    let spread = Step::Spread {
+        instance: "band".into(),
+        targets: vec!["#8".into(), "Vox 3".into()],
+        ms: 40,
+    };
+    let unspread = Step::Unspread {
+        instance: "band".into(),
+        targets: vec!["#8".into()],
+        why: "start".into(),
+    };
+    assert_eq!(
+        step_line(&spread),
+        "AUTOTUNE spreads band's stop: 2 more selectors to DRY, one per 40 ms (#8, Vox 3)"
+    );
+    assert_eq!(
+        step_line(&unspread),
+        "AUTOTUNE drops 1 of band's spread DRY writes (start): #8"
+    );
+    assert_eq!(
+        serde_json::to_value(&spread).unwrap(),
+        json!({"step": "spread", "instance": "band", "targets": ["#8", "Vox 3"], "ms": 40})
+    );
+    assert_eq!(
+        serde_json::to_value(&unspread).unwrap(),
+        json!({"step": "unspread", "instance": "band", "targets": ["#8"], "why": "start"})
+    );
+    assert!(!step_warn(&spread));
+    assert!(!step_warn(&unspread));
+}

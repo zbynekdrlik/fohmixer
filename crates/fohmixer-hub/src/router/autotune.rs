@@ -99,6 +99,8 @@ mod key_writes;
 #[path = "autotune/safe.rs"]
 mod safe;
 use safe::Safe;
+#[path = "autotune/spread.rs"]
+mod spread;
 #[path = "autotune/switch.rs"]
 mod switch;
 
@@ -256,6 +258,11 @@ pub(super) struct AutotuneIo {
     /// Each Live set's DRY writes of targets let go, on their way: its
     /// registration waits for their answers (PR #147 review I3).
     pub retiring: BTreeMap<String, BTreeSet<u64>>,
+    /// Each Live set's stop spread still running (#140): its DRY writes
+    /// still to come.
+    pub spreads: BTreeMap<String, spread::Spread>,
+    /// The spreads' turns' own counter (a stale turn does nothing).
+    pub spread_turns: u64,
 }
 
 impl AutotuneIo {
@@ -280,6 +287,8 @@ impl AutotuneIo {
             map_texts: BTreeMap::new(),
             selects: 0,
             retiring: BTreeMap::new(),
+            spreads: BTreeMap::new(),
+            spread_turns: 0,
         };
         io.told = Some(io.state());
         io
@@ -361,6 +370,7 @@ impl AutotuneIo {
                     problem: t.problem.clone(),
                     key: t.key.as_ref().map(|k| key_status(k, t.values, &t.keyt)),
                     decision: t.decision,
+                    writing: !t.writing.is_empty(),
                 })
                 .collect(),
             keys: self
@@ -788,6 +798,15 @@ impl Router {
         for set in unsettled {
             self.autotune_hold(&set, "markers");
         }
+        // A stop's DRY still to come for them goes now, in this batch (#140).
+        let spread: BTreeSet<String> = keys
+            .iter()
+            .filter_map(|key| self.autotune.targets.get(key))
+            .map(|t| t.instance.clone())
+            .collect();
+        for set in spread {
+            self.autotune_unspread(&set, Some(keys), "retire");
+        }
         let mut sets: BTreeMap<String, Vec<switch::Going>> = BTreeMap::new();
         for key in keys {
             let Some(target) = self.autotune.targets.get(key) else {
@@ -1189,6 +1208,8 @@ impl Router {
     /// every ref, value and decision it found dropped and the rule told;
     /// its next session starts afresh (the script made its DRY writes).
     pub(super) fn autotune_offline(&mut self, instance: &str) {
+        // A stop's DRY still to come: the script made it (#140).
+        self.autotune_unspread(instance, None, "offline");
         let keys = self.autotune.keys_of(Some(instance), false);
         for key in &keys {
             self.autotune.walks += 1;
@@ -1250,6 +1271,9 @@ impl Router {
         {
             return;
         }
+        // A stop's DRY still to come goes now, in the hold's batch (#140: a
+        // hold's DRY is immediate).
+        self.autotune_unspread(instance, None, "hold");
         let going = self.autotune_judge(instance, Cause::Hold, true);
         self.autotune_select(instance, Cause::Hold, going, false);
         self.autotune.held.insert(instance.to_string());
@@ -1309,6 +1333,11 @@ impl Router {
     /// again, the key in force judged, every target decided (a stop is DRY
     /// at once).
     pub(super) fn autotune_transport(&mut self, instance: &str, playing: bool) {
+        // A start drops a stop's DRY still to come: its selectors are
+        // decided afresh (#140).
+        if playing {
+            self.autotune_unspread(instance, None, "start");
+        }
         self.autotune.rule.on_playing(instance, playing);
         for key in self.autotune.keys_of(Some(instance), true) {
             self.autotune_walk(&key);

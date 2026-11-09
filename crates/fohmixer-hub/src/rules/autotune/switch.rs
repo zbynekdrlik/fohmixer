@@ -20,9 +20,26 @@
 
 use fohmixer_proto::songmap::Key;
 
+use super::Cause;
 use super::keys::{InForce, KeyState};
 
 pub use fohmixer_proto::client::{Decision, SwitchWhy};
+
+/// How far apart a stop's DRY writes go, one selector each (#140, the
+/// DECIDED comment of 2026-11-09): dasio measured band Live's audio
+/// callback at 5.8-11.5 ms at every stop while the hub wrote all ~12
+/// selectors in one batch (each swaps a rack's chain, all in one audio
+/// block; 11.45 ms dropped a block, a click), about 3 ms without them. 12
+/// selectors take about half a second.
+pub const STOP_SPREAD_MS: u64 = 40;
+
+/// Whether a decision's DRY writes are spread out ([`STOP_SPREAD_MS`]): a
+/// stop's only (`transport` while not playing, an unknown transport too).
+/// A start's switch-on stays one batch (a later tune-on would cut the
+/// first notes), and so do a hold's and every other cause's.
+pub fn spreads(cause: Cause, playing: Option<bool>) -> bool {
+    cause == Cause::Transport && playing != Some(true)
+}
 
 /// A second move of a selector by another writer within this many ms of
 /// the first makes the hub stop writing it (spec §7).

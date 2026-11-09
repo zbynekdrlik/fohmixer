@@ -20,9 +20,12 @@
 //!   confirmed for the key in force, so the read-back decides it (`key`).
 //!   A track the rule already selected stays on through a key change until
 //!   its read-back disagrees.
-//! - **DRY at once** at a stop, AUT off, a singer off by hand, a problem,
-//!   a registration of the DRY writes not kept (PR #146 review I2), and
-//!   before a hold through the last known refs (`autotune_hold`).
+//! - **DRY at once** at AUT off, a singer off by hand, a problem, a
+//!   registration of the DRY writes not kept (PR #146 review I2), and
+//!   before a hold through the last known refs (`autotune_hold`). **A
+//!   stop's DRY is spread** one selector per `STOP_SPREAD_MS` in Live's
+//!   order (#140, `spread.rs`): a batch of every selector made band Live's
+//!   audio callback drop a block.
 //! - **Another writer** (`autotune_heard`): a move of a selector the hub
 //!   did not write, away from its decision, while the set is not held. To
 //!   the chain while the hub wants DRY: DRY again once, then the guard
@@ -45,7 +48,7 @@ use super::{AutotuneIo, Target, may_write, state_of, write_commands};
 use crate::rules::autotune::keys::{KeyState, shows as key_shows};
 use crate::rules::autotune::switch::{
     Flying, GuardAct, KeyCheck, TrackInput, another_move, decide, key_check, needs_write,
-    refused_decision,
+    refused_decision, spreads,
 };
 use crate::rules::autotune::{Cause, Step, WriterAct, shows};
 
@@ -368,7 +371,11 @@ impl Router {
             self.autotune_hold(set, "markers");
             return;
         }
-        self.autotune_select(set, cause, going, false);
+        if spreads(cause, self.autotune.rule.playing(set)) {
+            self.autotune_spread(set, cause, going);
+        } else {
+            self.autotune_select(set, cause, going, false);
+        }
     }
 
     /// Each found target of `set`'s decision (`held`: as while its writes
@@ -461,15 +468,26 @@ impl Router {
         going: Vec<Going>,
         retire: bool,
     ) {
-        if going.is_empty() {
+        if going.is_empty() || !self.live.contains_key(set) {
             return;
         }
-        let Some(live) = self.live.get(set).cloned() else {
-            return;
-        };
+        let write = self.autotune_on_its_way(&going);
+        if retire {
+            self.autotune
+                .retiring
+                .entry(set.to_string())
+                .or_default()
+                .insert(write);
+        }
+        self.autotune_send(set, cause, &going, write);
+    }
+
+    /// Numbers one selector write and puts it on its way for each of
+    /// `going`'s targets (a stop's spread does so before it goes: #140).
+    pub(super) fn autotune_on_its_way(&mut self, going: &[Going]) -> u64 {
         self.autotune.selects += 1;
         let write = self.autotune.selects;
-        for g in &going {
+        for g in going {
             if let Some(target) = self.autotune.targets.get_mut(&g.key) {
                 target.writing.push(Flying {
                     write,
@@ -478,13 +496,15 @@ impl Router {
                 });
             }
         }
-        if retire {
-            self.autotune
-                .retiring
-                .entry(set.to_string())
-                .or_default()
-                .insert(write);
-        }
+        write
+    }
+
+    /// Sends selector write `write` of `going` (already on its way): its
+    /// `write` record, the rule's count, the call and its answer.
+    pub(super) fn autotune_send(&mut self, set: &str, cause: Cause, going: &[Going], write: u64) {
+        let Some(live) = self.live.get(set).cloned() else {
+            return;
+        };
         let labels = |on: bool| -> Vec<String> {
             going
                 .iter()
