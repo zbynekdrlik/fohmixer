@@ -379,8 +379,9 @@ pub enum Step {
     },
     /// A stop's DRY writes spread out (#140, dasio's measurement of
     /// 2026-11-09: a batch of every selector in one Live tick made band
-    /// Live's audio callback drop a block): the first went, `targets` (their
-    /// labels, Live's order) follow one per `ms`.
+    /// Live's audio callback drop a block): `targets` (their labels, Live's
+    /// order) queued, one per `ms` (after the stop's first, which went at
+    /// once, or behind a spread already running).
     Spread {
         instance: String,
         targets: Vec<String>,
@@ -610,7 +611,7 @@ pub fn step_line(step: &Step) -> String {
             targets,
             ms,
         } => format!(
-            "AUTOTUNE spreads {instance}'s stop: {} more selectors to DRY, one per {ms} ms ({})",
+            "AUTOTUNE queues {} of {instance}'s stop DRY writes, one per {ms} ms ({})",
             targets.len(),
             targets.join(", ")
         ),

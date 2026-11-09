@@ -450,12 +450,14 @@ test.describe("Presenter's stage miniature in the column", () => {
   // its button or not drawn, and the row keeps its name and AUTO mark.
   // 1024 x 640 too: shorter rows still (CI's 1024 x 700 rows are about 33 px
   // with every extra tab in the column; a harness without some of them has
-  // taller rows there).
+  // taller rows there), and the iPad's 1194 x 834, whose 44 px rows draw it.
+  // Drawn exactly while the row's content box has the 28 px it needs.
   for (const size of [
+    { width: 1194, height: 834 },
     { width: 1024, height: 700 },
     { width: 1024, height: 640 },
   ]) {
-    test.describe(`on a shorter screen, ${size.width}×${size.height}, the rail's second lines`, () => {
+    test.describe(`at ${size.width}×${size.height}, the rail's second lines`, () => {
       test.use({ viewport: size });
 
       test("are whole inside their row or not drawn, never cut", async ({ page }) => {
@@ -467,12 +469,16 @@ test.describe("Presenter's stage miniature in the column", () => {
           await openSurface(page);
           await expect(mini(page)).toBeVisible();
           await expect(page.getByTestId("stage-mics")).toHaveAttribute("data-aut", /run|held/);
-          // Rows under 44 px: the miniature takes their room.
           const rows = (await heights(page)).rows.split(" ").map((t) => parseFloat(t));
-          expect(Math.max(...rows)).toBeLessThan(44);
+          // 44 px rows on the iPad's screen; shorter ones give the miniature their room.
+          if (size.height === 834) expect(Math.min(...rows)).toBe(44);
+          else expect(Math.max(...rows)).toBeLessThan(44);
           const looks = await page.locator('[data-testid="rail"] .rule-btn').evaluateAll((all) =>
             all.map((b) => {
               const box = b.getBoundingClientRect();
+              const style = getComputedStyle(b);
+              const content =
+                b.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
               const sub = b.querySelector(".btn-sub") as HTMLElement;
               const subBox = sub.getBoundingClientRect();
               const label = (b.querySelector(".btn-text") as HTMLElement).getBoundingClientRect();
@@ -485,6 +491,7 @@ test.describe("Presenter's stage miniature in the column", () => {
                 whole: sub.scrollHeight <= sub.clientHeight && subBox.top >= box.top && subBox.bottom <= box.bottom,
                 sub: [subBox.top, subBox.bottom, sub.clientHeight, sub.scrollHeight],
                 box: [box.top, box.bottom],
+                content,
                 label: label.height > 0 && label.top >= box.top - 1 && label.bottom <= box.bottom + 1,
                 badge: badge ? badge.height > 0 && badge.top >= box.top && badge.bottom <= box.bottom : null,
               };
@@ -493,8 +500,11 @@ test.describe("Presenter's stage miniature in the column", () => {
           test.info().annotations.push({ type: `rule rows ${size.width}x${size.height}`, description: `${JSON.stringify(rows)} ${JSON.stringify(looks)}` });
           expect(looks.length).toBeGreaterThan(0);
           expect(looks.find((l) => l.id === "stage-mics")?.text).not.toBe("");
+          if (size.height === 834) expect(looks.every((l) => l.drawn && l.whole)).toBe(true);
+          if (size.height === 640) expect(looks.some((l) => !l.drawn)).toBe(true);
           for (const l of looks) {
             expect(!l.drawn || l.whole, `${l.id}'s second line ${JSON.stringify(l)}`).toBe(true);
+            expect(l.drawn, `${l.id}'s second line drawn exactly with room for it ${JSON.stringify(l)}`).toBe(l.content >= 28 && l.text !== "");
             expect(l.label, `${l.id}'s name inside its row`).toBe(true);
             if (l.badge !== null) expect(l.badge, `${l.id}'s AUTO mark inside its row`).toBe(true);
           }

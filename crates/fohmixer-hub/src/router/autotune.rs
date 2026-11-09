@@ -370,7 +370,7 @@ impl AutotuneIo {
                     problem: t.problem.clone(),
                     key: t.key.as_ref().map(|k| key_status(k, t.values, &t.keyt)),
                     decision: t.decision,
-                    writing: !t.writing.is_empty(),
+                    writing: t.writing.iter().any(|f| !f.answered),
                 })
                 .collect(),
             keys: self

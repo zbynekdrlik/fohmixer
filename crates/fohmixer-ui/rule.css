@@ -126,10 +126,10 @@
    28 with a margin for the faces' rounding (a row under 38 px: 4 px
    padding and 1 px border each side). */
 .rail .rule-btn {
-    container-type: size;
+    container: rule-btn / size;
 }
 
-@container (height < 28px) {
+@container rule-btn (height < 28px) {
     .rule-btn .btn-sub {
         display: none;
     }

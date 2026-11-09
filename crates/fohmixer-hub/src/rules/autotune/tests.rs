@@ -715,7 +715,7 @@ fn a_stops_spread_is_recorded_and_logged() {
     };
     assert_eq!(
         step_line(&spread),
-        "AUTOTUNE spreads band's stop: 2 more selectors to DRY, one per 40 ms (#8, Vox 3)"
+        "AUTOTUNE queues 2 of band's stop DRY writes, one per 40 ms (#8, Vox 3)"
     );
     assert_eq!(
         step_line(&unspread),

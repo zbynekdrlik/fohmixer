@@ -988,8 +988,8 @@ pub struct AutotuneTargetStatus {
     /// its rack is found).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<Decision>,
-    /// Whether a write of its selector is on its way (#140: a stop's spread
-    /// DRY still to come counts).
+    /// Whether a write of its selector is on its way, unanswered (#140: a
+    /// stop's spread DRY still to come counts).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub writing: bool,
 }

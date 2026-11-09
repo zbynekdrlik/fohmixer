@@ -62,18 +62,16 @@ fn owed(found: Option<&str>, writing: &[Flying], pending: &Pending) -> bool {
 }
 
 impl Router {
-    /// A stop's DRY writes of `set` (`going`, Live's order): the first now,
-    /// the rest one per [`STOP_SPREAD_MS`]; while a spread runs, all wait
-    /// behind it.
+    /// A stop's DRY writes of `set` (`going`, Live's order; its decision
+    /// never hands over none): the first now, the rest one per
+    /// [`STOP_SPREAD_MS`]; while a spread runs, all wait behind it (a lost
+    /// transport within a stop's spread: never two writes in one turn).
     pub(super) fn autotune_spread(&mut self, set: &str, cause: Cause, mut going: Vec<Going>) {
-        if going.is_empty() || !self.live.contains_key(set) {
-            return;
-        }
         let running = self.autotune.spreads.contains_key(set);
         let rest = if running {
             going
         } else {
-            let rest = going.split_off(1);
+            let rest = going.split_off(going.len().min(1));
             self.autotune_select(set, cause, going, false);
             rest
         };

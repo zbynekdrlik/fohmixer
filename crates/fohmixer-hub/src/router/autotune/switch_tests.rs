@@ -2709,3 +2709,65 @@ async fn a_spread_turn_that_meets_the_markers_unsettled_holds_the_set_dry_at_onc
         ]
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_stop_start_stop_spreads_again_and_the_first_spreads_turn_does_nothing() {
+    // The first spread's timer still fires after a start dropped it: its
+    // turn is stale (its generation), and the second stop's own turn comes
+    // 40 ms after that stop, never sooner.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, rx) = tuning(dir.path()).await;
+    let ms = std::time::Duration::from_millis;
+    transport(&mut router, false);
+    live.settle(&mut router).await;
+    assert_eq!(live.written(), vec![batch(&[("p6", 127.0)])]);
+    // The stream's DRY is on its way, unanswered: the status says so.
+    let writing: Vec<bool> = status(&mut router)
+        .autotune
+        .targets
+        .iter()
+        .map(|t| t.writing)
+        .collect();
+    assert_eq!(writing, [false, true]);
+    pass(&mut router, &mut live, ms(20)).await;
+    transport(&mut router, true);
+    live.settle(&mut router).await;
+    assert_eq!(live.written(), vec![batch(&[("p6", 0.0)])]);
+    pass(&mut router, &mut live, ms(10)).await;
+    transport(&mut router, false);
+    live.settle(&mut router).await;
+    assert_eq!(live.written(), vec![batch(&[("p6", 127.0)])]);
+    // The first spread's 40 ms (10 ms after the second stop): nothing.
+    pass(&mut router, &mut live, ms(10)).await;
+    assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new());
+    pass(&mut router, &mut live, ms(29)).await;
+    assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new(), "39 ms");
+    pass(&mut router, &mut live, ms(1)).await;
+    assert_eq!(live.written(), vec![batch(&[("p7", 0.0)])], "40 ms");
+    pass(&mut router, &mut live, SPREAD * 5).await;
+    assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new());
+    assert_eq!(
+        decisions(&mut router),
+        [off(SwitchWhy::Stop), off(SwitchWhy::Stop)]
+    );
+    assert_eq!(of(&steps(&rx), "spread").len(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stop_with_one_selector_to_write_writes_it_and_spreads_nothing() {
+    // Another writer took the stream to DRY while it tuned (left so): the
+    // stop has only the PA's DRY to write, at once, and queues nothing.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, rx) = tuning(dir.path()).await;
+    by_hand(&mut router, &mut live, "p7", 0.0);
+    live.settle(&mut router).await;
+    let _ = live.written();
+    let _ = steps(&rx);
+    transport(&mut router, false);
+    live.settle(&mut router).await;
+    assert_eq!(live.written(), vec![batch(&[("p6", 127.0)])]);
+    assert!(router.autotune.spreads.is_empty());
+    pass(&mut router, &mut live, SPREAD * 3).await;
+    assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new());
+    assert_eq!(of(&steps(&rx), "spread"), Vec::<Value>::new());
+}

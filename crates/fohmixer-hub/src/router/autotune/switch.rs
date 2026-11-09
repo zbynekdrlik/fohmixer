@@ -25,7 +25,9 @@
 //!   before a hold through the last known refs (`autotune_hold`). **A
 //!   stop's DRY is spread** one selector per `STOP_SPREAD_MS` in Live's
 //!   order (#140, `spread.rs`): a batch of every selector made band Live's
-//!   audio callback drop a block.
+//!   audio callback drop a block. A selector whose spread DRY is still to
+//!   come counts as written, so AUT off, a singer off or a problem within
+//!   the spread leaves it to its turn (DRY within the spread's half second).
 //! - **Another writer** (`autotune_heard`): a move of a selector the hub
 //!   did not write, away from its decision, while the set is not held. To
 //!   the chain while the hub wants DRY: DRY again once, then the guard
