@@ -96,7 +96,30 @@ fn only_reads_and_presenters_socket_pass() {
             Pass::Method,
             "{method}"
         );
+        assert_eq!(pass(&method, "/ndi/x", false), Pass::Method, "{method}");
     }
+    // The stage's video (#90): WHEP's offer, ICE and end under /whep/ only.
+    for method in [Method::POST, Method::PATCH, Method::DELETE] {
+        assert_eq!(pass(&method, "/whep/ndi-1", false), Pass::Page, "{method}");
+        assert!(whep_write(&method, "/whep/a"), "{method}");
+        assert!(!whep_write(&method, "/whepx/a"), "{method}");
+        assert!(!whep_write(&method, "/stage/whep/a"), "{method}");
+    }
+    for method in [
+        Method::PUT,
+        Method::OPTIONS,
+        Method::CONNECT,
+        Method::TRACE,
+        Method::GET,
+    ] {
+        assert!(!whep_write(&method, "/whep/a"), "{method}");
+        assert_ne!(pass(&method, "/whep/a", false), Pass::Socket);
+    }
+    assert_eq!(pass(&Method::PUT, "/whep/a", false), Pass::Method);
+    assert_eq!(
+        pass(&Method::POST, "/whep/../stage/layout", false),
+        Pass::Path
+    );
     assert_eq!(pass(&Method::GET, "/stage/../api/auth", false), Pass::Path);
     assert_eq!(pass(&Method::POST, "/stage/../x", false), Pass::Path);
     assert_eq!(pass(&Method::GET, "/stage/../live/ws", true), Pass::Path);
@@ -400,4 +423,35 @@ async fn a_failed_request_is_recorded_within_its_ration_and_answered() {
     assert_eq!(WS_RECORDS, 8);
     assert!(site.warn_due("other"), "a kind of its own");
     assert!(!site.warn_due("other"), "once per gap");
+}
+
+#[test]
+fn a_location_at_presenter_itself_becomes_a_path_on_fohmixers_origin() {
+    let at: axum::http::uri::Authority = "10.0.0.5:8080".parse().unwrap();
+    let local = |l: &str| local_location(l, &at);
+    assert_eq!(
+        local("http://10.0.0.5:8080/whep/ndi-1/s7?x=1").as_deref(),
+        Some("/whep/ndi-1/s7?x=1")
+    );
+    assert_eq!(
+        local("HTTP://10.0.0.5:8080/whep/a").as_deref(),
+        Some("/whep/a")
+    );
+    assert_eq!(local("http://10.0.0.5:8080").as_deref(), Some("/"));
+    // Another host or port, or a relative one: as it came.
+    assert_eq!(local("http://10.0.0.6:8080/whep/a"), None);
+    assert_eq!(local("http://10.0.0.5:8081/whep/a"), None);
+    assert_eq!(local("http://10.0.0.5/whep/a"), None);
+    assert_eq!(local("/whep/a"), None);
+    assert_eq!(local("not a uri at all"), None);
+    // A default port on either side is 80.
+    let plain: axum::http::uri::Authority = "10.0.0.5".parse().unwrap();
+    assert_eq!(
+        local_location("http://10.0.0.5:80/whep/a", &plain).as_deref(),
+        Some("/whep/a")
+    );
+    assert_eq!(
+        local_location("http://10.0.0.5/whep/a", &plain).as_deref(),
+        Some("/whep/a")
+    );
 }

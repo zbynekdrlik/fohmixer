@@ -9,14 +9,20 @@
 //!   listeners, only with `[presenter]`. No fohmixer route uses them. The
 //!   tab's frame (`/stage?preview=1`) is then the page's own origin: no
 //!   mixed content on the https page, no CORS, the same Access check.
-//! - **Reads only** ([`pass`]): GET and HEAD, and the `/live/ws` upgrade (a
-//!   byte tunnel, `ableset::pipe`, as AbleSet's socket); any other method is
-//!   405 and any other upgrade 400 by the hub itself, and a path with a dot
-//!   segment 400. Presenter has no login, so its write API (layouts,
-//!   slides, Bible, clears) is never reachable through fohmixer, the
-//!   internet path included; the one write is the hub's own
-//!   `POST /stage/layout` for a page's held key ([`link`]). NDI video in the
-//!   preview (WHEP is a POST) therefore does not play there. The socket is a
+//! - **Reads, and the stage's video** ([`pass`]): GET and HEAD, the
+//!   `/live/ws` upgrade (a byte tunnel, `ableset::pipe`, as AbleSet's
+//!   socket) and, under [`WHEP`] only, POST, PATCH and DELETE (#90, the
+//!   owner's ruling of 2026-11-09: the preview shows what the stage displays
+//!   show, NDI video included; the stage page starts its video with WHEP, an
+//!   SDP offer `POST`ed, then `PATCH`/`DELETE` on the resource the answer's
+//!   `Location` names, [`local_location`]); any other method is 405 and any
+//!   other upgrade 400 by the hub itself, and a path with a dot segment 400.
+//!   Presenter has no login, so its write API (layouts, slides, Bible,
+//!   clears) is never reachable through fohmixer, the internet path
+//!   included (fohmixer's origin is behind its Access check and its token
+//!   as well); the one write of it is the hub's own `POST /stage/layout` for
+//!   a page's held key ([`link`]). WHEP sessions start and end the video
+//!   only, nothing on stage. The socket is a
 //!   byte tunnel both ways: what Presenter's live socket takes from a client
 //!   (its source, `presenter-server/src/live.rs` `InboundMessage`) is a
 //!   stage display's presence, heartbeat, diagnostics and goodbye, for its
@@ -89,6 +95,10 @@ pub const UNDER: [&str; 7] = [
     "/libraries/",
 ];
 
+/// The stage's video (WHEP, #90): the one prefix that takes POST, PATCH and
+/// DELETE ([`pass`]).
+pub const WHEP: &str = "/whep/";
+
 /// The one socket path ([`Pass::Socket`]).
 pub const SOCKET: &str = "/live/ws";
 
@@ -127,7 +137,7 @@ pub const CLOSED_WAIT: Duration = ableset::CLOSED_WAIT;
 pub enum Pass {
     /// Not Presenter's: fohmixer's own router.
     No,
-    /// A read passed to Presenter.
+    /// A read, or a WHEP request under [`WHEP`], passed to Presenter.
     Page,
     /// The stage page's socket, tunneled to Presenter.
     Socket,
@@ -167,8 +177,32 @@ pub fn pass(method: &Method, path: &str, upgrade: bool) -> Pass {
         (true, true) => Pass::Socket,
         (true, false) => Pass::Upgrade,
         (false, _) if *method == Method::GET || *method == Method::HEAD => Pass::Page,
+        (false, _) if whep_write(method, path) => Pass::Page,
         (false, _) => Pass::Method,
     }
+}
+
+/// Whether `method` on `path` is the stage video's WHEP exchange (#90): an
+/// offer `POST`ed, the session's `PATCH` (ICE) and `DELETE`, under [`WHEP`]
+/// only.
+pub fn whep_write(method: &Method, path: &str) -> bool {
+    path.starts_with(WHEP)
+        && (*method == Method::POST || *method == Method::PATCH || *method == Method::DELETE)
+}
+
+/// An answer's `Location` as the page must follow it (#90, WHEP's resource):
+/// an absolute one at Presenter's own `authority` becomes its path and query
+/// on fohmixer's origin (the page never reaches Presenter's address);
+/// `None` keeps any other as it came (a relative one already is the page's).
+pub fn local_location(location: &str, authority: &Authority) -> Option<String> {
+    let uri: Uri = location.parse().ok()?;
+    let theirs = uri.authority()?;
+    let same = theirs.host().eq_ignore_ascii_case(authority.host())
+        && theirs.port_u16().unwrap_or(80) == authority.port_u16().unwrap_or(80);
+    same.then(|| {
+        uri.path_and_query()
+            .map_or_else(|| "/".to_string(), |p| p.as_str().to_string())
+    })
 }
 
 /// Presenter's side of the hub: the proxy of its stage page and the link's
@@ -320,6 +354,19 @@ impl Presenter {
             .map_err(|e| Failure::Target(format!("the Host: {e}")))?;
         parts.headers.insert(header::HOST, host);
         Ok(Request::from_parts(parts, body))
+    }
+
+    /// An answer's absolute `Location` at Presenter itself as a path on
+    /// fohmixer's origin ([`local_location`]).
+    fn localize(&self, headers: &mut axum::http::HeaderMap) {
+        let local = headers
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|location| local_location(location, &self.authority))
+            .and_then(|path| HeaderValue::from_str(&path).ok());
+        if let Some(path) = local {
+            headers.insert(header::LOCATION, path);
+        }
     }
 
     /// Sends `request` to Presenter: its answer's head within
@@ -699,7 +746,9 @@ async fn forward(State(site): State<Arc<Presenter>>, request: Request) -> Respon
     match site.exchange(sent).await {
         Ok(answer) => {
             tracing::debug!(method = %method, path = ?clip(&path), status = answer.status().as_u16(), "presenter: proxied");
-            ableset::proxy::answer(answer).map(|body| ableset::held(body, slot))
+            let mut answer = ableset::proxy::answer(answer).map(|body| ableset::held(body, slot));
+            site.localize(answer.headers_mut());
+            answer
         }
         Err(failure) => site.failed(&method, &path, dest, failure),
     }

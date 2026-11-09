@@ -279,6 +279,60 @@ async fn the_pages_see_presenter_go_down_and_come_back_by_itself() {
 }
 
 #[tokio::test]
+async fn the_stage_video_starts_and_ends_through_whep_and_nothing_else_is_written() {
+    let fake = FakePresenter::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let hub = hub(dir.path(), Some(fake.url())).await;
+    let addr = hub.addr;
+    let offer = "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\n";
+    let request = |method: &str, path: &str, body: &str| {
+        format!(
+            "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nContent-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    };
+    // The offer reaches Presenter as it was sent; its answer comes back
+    // whole, its Location a path on fohmixer's own origin.
+    let (code, head, body) = raw(addr, &request("POST", "/whep/ndi-1", offer)).await;
+    assert_eq!(code, 201, "{head}");
+    assert_eq!(body, format!("answer to: {offer}"));
+    assert!(head.contains("content-type: application/sdp"), "{head}");
+    assert!(head.contains("x-offer-type: application/sdp"), "{head}");
+    assert!(head.contains("location: /whep/ndi-1/s1\r\n"), "{head}");
+    assert!(
+        !head.contains(&fake.url()),
+        "Presenter's address never reaches the page: {head}"
+    );
+    let (code, head, _) = raw(addr, &request("PATCH", "/whep/ndi-1/s1", "a=candidate")).await;
+    assert_eq!(code, 204, "{head}");
+    let (code, head, _) = raw(addr, &request("DELETE", "/whep/ndi-1/s1", "")).await;
+    assert_eq!(code, 200, "{head}");
+    // A write anywhere else is still the hub's 405, WHEP's methods included.
+    for (method, path) in [
+        ("POST", "/stage/layout"),
+        ("PATCH", "/ndi/x"),
+        ("DELETE", "/stage/state"),
+        ("PUT", "/whep/ndi-1"),
+    ] {
+        let (code, head, _) = raw(addr, &request(method, path, "{}")).await;
+        assert_eq!(code, 405, "{method} {path}: {head}");
+    }
+    let seen = fake.seen();
+    assert_eq!(
+        seen.iter()
+            .filter(|s| !s.starts_with("GET "))
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![
+            "POST /whep/ndi-1".to_string(),
+            "PATCH /whep/ndi-1/s1".to_string(),
+            "DELETE /whep/ndi-1/s1".to_string(),
+        ],
+        "only WHEP's requests reached Presenter: {seen:?}"
+    );
+}
+
+#[tokio::test]
 async fn the_stage_page_is_read_on_the_hubs_origin_and_nothing_of_presenter_is_written() {
     let fake = FakePresenter::start().await;
     let dir = tempfile::tempdir().unwrap();
