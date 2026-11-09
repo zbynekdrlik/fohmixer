@@ -240,7 +240,9 @@ class HarnessTest(unittest.TestCase):
         old = self.harness.hosts["master"].proc
         self.assertEqual(self.post("/host/master/stop"), (200, {"ok": True}))
         self.assertEqual(old.returncode, 0, "stopped cleanly on SIGTERM")
-        self.assertEqual(self.post("/host/master/stop"), (200, {"ok": True}), "a stopped host stays so")
+        self.assertEqual(
+            self.post("/host/master/stop"), (200, {"ok": True}), "a stopped host stays so"
+        )
         with self.assertRaises(harness.BadRequest):
             self.post("/host/master/start", {"site": "nowhere"})
         status, answer = self.post("/host/master/start", {"site": "empty"})
