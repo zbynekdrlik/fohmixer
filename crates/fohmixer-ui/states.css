@@ -119,8 +119,11 @@
 /* The fader is dead while its Live is down, so its scale's numbers go
    (hidden, the zone's layout untouched) and the hint has the fader area's
    width to itself: on 1.38.0 it ran over them ("Start Live on6",
-   #178 reopened). */
-.strip[data-live] .strip-zone > .scale {
+   #178 reopened). The group's name on a group's first strip goes too: the
+   hint crosses the info column there (the review of 1.38.2); the strip's
+   word and the foot's line still say which Live is down. */
+.strip[data-live] .strip-zone > .scale,
+.strip[data-live] .strip-zone .group-side {
     visibility: hidden;
 }
 
