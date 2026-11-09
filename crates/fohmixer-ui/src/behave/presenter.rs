@@ -4,9 +4,9 @@
 //! panel, the header's words), each layout key's look and words, and when a
 //! key's 1 s hold may switch the stage. `pages/presenter.rs` carries it out.
 //! Since 1.37.0 also the column's stage miniature (way A of the owner's
-//! approved `docs/mockups/presenter-stage-v2.html`): whether it shows (in
-//! the rail's free room, shrunk to it since 1.38.2, so nothing gets
-//! shorter), its size and its caption.
+//! approved `docs/mockups/presenter-stage-v2.html`): whether it shows and
+//! its size (since 1.38.2 never under its least picture: the rail's rows
+//! give it room, the faders never) and its caption.
 
 use fohmixer_proto::client::StageLayout;
 
@@ -295,9 +295,10 @@ pub fn rows_height(rows: usize) -> f64 {
 /// 2026-11-09 evening, option A): 16:9, as wide as the rail allows, as high
 /// as the room the rail's rows leave at their full 44 px (less the
 /// miniature's box and its 6 px gap), a whole px high when that room cuts
-/// it, and never under `MINI_MIN_PICTURE`: below it the rows give the room
-/// up (`page.css` lets them shrink to 24 px); the faders never. None only
-/// for a rail with no width for a picture.
+/// it, and never under `MINI_MIN_PICTURE` (unless the rail is too narrow for
+/// it: its width at 16:9): below it the rows give the room up (`page.css`
+/// lets them shrink to 24 px); the faders never. None only for a rail with
+/// no width for a picture.
 pub fn mini_picture(rail: RailRoom) -> Option<(f64, f64)> {
     let widest = mini_width(rail.width)?;
     let full = widest * STAGE_H / STAGE_W;

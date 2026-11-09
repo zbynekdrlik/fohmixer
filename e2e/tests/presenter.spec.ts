@@ -373,6 +373,17 @@ test.describe("Presenter's stage miniature in the column", () => {
         await expect(miniFrame(page).locator("#fake-stage")).toHaveText("worship");
         await expect(page.getByTestId("mini-note")).toHaveText("WORSHIP");
         const rail = page.getByTestId("rail");
+        // The settled size: the drawn picture equal to the page's last shown mini_fit (a first measure can come before the column settles).
+        const lastShown = async () =>
+          pageEvents(await hubEvents())
+            .filter((e) => e.ev === "presenter" && e.what === "mini_fit" && e.t >= since && e.vw === size.width && e.vh === size.height && e.w !== undefined)
+            .at(-1);
+        await until(
+          async () => ({ fit: await lastShown(), box: await page.getByTestId("mini-stage").boundingBox() }),
+          ({ fit, box }) => !!fit && !!box && Math.abs(fit.w - box.width) < 0.6 && Math.abs(fit.h - box.height) < 0.6,
+          "the drawn picture at the last mini_fit's size",
+          15000,
+        );
         const railBox = (await rail.boundingBox())!;
         const area = (await page.getByTestId("mini-stage").boundingBox())!;
         test.info().annotations.push({ type: `mini ${size.width}x${size.height}`, description: `${area.width.toFixed(1)} x ${area.height.toFixed(1)} in a ${railBox.width.toFixed(1)} px rail` });
@@ -416,6 +427,9 @@ test.describe("Presenter's stage miniature in the column", () => {
           "the miniature's mini_fit records",
           15000,
         );
+        // The box mounted once: a new size restyles it, its frame is not mounted again (the tab's own record came after it).
+        const miniFrames = pageEvents(await hubEvents()).filter((e) => e.ev === "presenter" && e.what === "mini_frame" && e.t >= since);
+        expect(miniFrames.length, "one mini_frame since the open").toBe(1);
         // The last shown decision (a first measure can come before the column settles).
         const shownFit = fits.filter((e) => e.w !== undefined).at(-1)!;
         expect(Math.abs(shownFit.w - area.width)).toBeLessThan(0.6);
