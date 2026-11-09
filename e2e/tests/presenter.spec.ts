@@ -375,4 +375,16 @@ test.describe("Presenter's stage miniature in the column", () => {
       });
     });
   }
+
+  // One px wider is a tablet: the same rail has room, and it is there.
+  test.describe("just past a phone, 521×1000", () => {
+    test.use({ viewport: { width: 521, height: 1000 } });
+
+    test("is in the column", async ({ page }) => {
+      await restore();
+      await openSurface(page);
+      await expect(mini(page)).toBeVisible();
+      await expect(miniFrame(page).locator("#fake-stage")).toHaveText("worship");
+    });
+  });
 });

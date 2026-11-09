@@ -104,8 +104,9 @@ pub const MAX_REQUESTS: usize = 64;
 
 /// Stage page sockets at a time: a page's PRESENTER pane and, since 1.37.0,
 /// its column's miniature (one at a time: the miniature is gone while the
-/// tab is open), a few pages at once. A closed page's tunnel ends at once
-/// (both ends close).
+/// tab is open), a few pages at once. A closed page's tunnel ends when
+/// Presenter answers the close, else within [`HALF_CLOSE_GRACE`]; a page's
+/// remount overlaps its old and new miniature's sockets that long.
 pub const MAX_SOCKETS: usize = 16;
 
 /// A tunnel's other end gets this long after one end's close
