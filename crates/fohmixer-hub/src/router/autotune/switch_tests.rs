@@ -873,15 +873,15 @@ async fn a_stop_mid_song_writes_dry_at_once() {
     let dir = tempfile::tempdir().unwrap();
     let (mut router, mut live, rx) = tuning(dir.path()).await;
     transport(&mut router, false);
-    // At once, before any read-back: the call is on its way already.
+    // At once, before any read-back: the call is on its way already (the
+    // first selector; the rest follow one per 40 ms since #140, see
+    // `a_stop_writes_its_dry_one_selector_per_40_ms_in_lives_order`).
     let dry = live.next("the stop's DRY", is_selector_write);
     assert_eq!(
         dry.commands,
         vec![
             json!({"target": {"$ref": "p6", "class": "DeviceParameter"}, "name": "set_prop",
                    "args": {"prop": "value", "value": 127.0}}),
-            json!({"target": {"$ref": "p7", "class": "DeviceParameter"}, "name": "set_prop",
-                   "args": {"prop": "value", "value": 0.0}}),
         ]
     );
     assert_eq!(
@@ -896,13 +896,6 @@ async fn a_stop_mid_song_writes_dry_at_once() {
             select(7, false, "stop", "transport")
         ]
     );
-    // A lost transport is no play either.
-    drop(dry);
-    let lost = tempfile::tempdir().unwrap();
-    let (mut router, mut live, _rx) = tuning(lost.path()).await;
-    router.transport_failed(TRANSPORT, "not observable");
-    live.settle(&mut router).await;
-    assert_eq!(live.written(), vec![batch(&[("p6", 127.0), ("p7", 0.0)])]);
 }
 
 #[tokio::test]
@@ -1790,12 +1783,13 @@ fn selector_commands(writes: &[(&str, f64)]) -> Vec<Value> {
         .collect()
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_stop_before_the_switch_on_landed_writes_dry_at_once() {
     // PR #147 review I1 (a): Live stopped before it took the switch-on, so
     // it still shows DRY while the chain's write is on its way; DRY is
     // written at once, and Live takes both in one tick (both answers, then
-    // one value per selector, the last).
+    // one value per selector, the last). Since #140 the stop's DRY is
+    // spread: the PA's at once, the stream's 40 ms later.
     let dir = tempfile::tempdir().unwrap();
     let (mut router, mut live, rx) = ready(dir.path(), HubState::default()).await;
     aut_on(&mut router);
@@ -1803,19 +1797,17 @@ async fn a_stop_before_the_switch_on_landed_writes_dry_at_once() {
     let switch_on = live.next("the switch-on", is_selector_write);
     transport(&mut router, false);
     let dry = live.next("the stop's DRY", is_selector_write);
-    assert_eq!(
-        dry.commands,
-        selector_commands(&[("p6", 127.0), ("p7", 0.0)])
-    );
+    assert_eq!(dry.commands, selector_commands(&[("p6", 127.0)]));
     assert_eq!(
         decisions(&mut router),
         [off(SwitchWhy::Stop), off(SwitchWhy::Stop)]
     );
-    let _ = live.answer_quiet(switch_on);
+    let first = live.answer_quiet(switch_on);
     let last = live.answer_quiet(dry);
     written_handled(&mut router, &mut live).await;
     written_handled(&mut router, &mut live).await;
-    for (id, value) in &last {
+    // The stream's chain lands (its DRY still to come), then the PA's DRY.
+    for (id, value) in first.iter().filter(|(id, _)| id == "p7").chain(&last) {
         deliver_macro(&mut router, id, *value);
     }
     live.settle(&mut router).await;
@@ -1823,9 +1815,11 @@ async fn a_stop_before_the_switch_on_landed_writes_dry_at_once() {
         live.written(),
         vec![
             batch(&[("p6", 0.0), ("p7", 127.0)]),
-            batch(&[("p6", 127.0), ("p7", 0.0)])
+            batch(&[("p6", 127.0)])
         ]
     );
+    pass(&mut router, &mut live, SPREAD).await;
+    assert_eq!(live.written(), vec![batch(&[("p7", 0.0)])]);
     assert_eq!(of(&steps(&rx), "selector_writer"), Vec::<Value>::new());
     assert!(router.autotune.targets[PA].writing.is_empty());
     assert!(router.autotune.targets[STREAM].writing.is_empty());
@@ -1835,21 +1829,21 @@ async fn a_stop_before_the_switch_on_landed_writes_dry_at_once() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_start_before_the_stops_dry_landed_writes_the_chain_at_once() {
     // PR #147 review I1, the other direction: Live plays again before it
     // took the stop's DRY; each write in its own tick, one echo after its
-    // answer and the other before it. No echo is another writer.
+    // answer and the other before it. No echo is another writer. Since
+    // #140 the stop wrote only the PA's DRY before the start (the stream's
+    // was still to come): the start drops it, and Live still shows the
+    // stream's chain, so the start writes the PA's chain only.
     let dir = tempfile::tempdir().unwrap();
     let (mut router, mut live, rx) = tuning(dir.path()).await;
     transport(&mut router, false);
     let dry = live.next("the stop's DRY", is_selector_write);
     transport(&mut router, true);
     let chain = live.next("the start's chain", is_selector_write);
-    assert_eq!(
-        chain.commands,
-        selector_commands(&[("p6", 0.0), ("p7", 127.0)])
-    );
+    assert_eq!(chain.commands, selector_commands(&[("p6", 0.0)]));
     // The DRY's tick: its answer, then its values.
     let echoes = live.answer_quiet(dry);
     written_handled(&mut router, &mut live).await;
@@ -1862,17 +1856,15 @@ async fn a_start_before_the_stops_dry_landed_writes_the_chain_at_once() {
         deliver_macro(&mut router, id, *value);
     }
     written_handled(&mut router, &mut live).await;
-    live.settle(&mut router).await;
+    pass(&mut router, &mut live, SPREAD * 5).await;
     assert_eq!(
         live.written(),
-        vec![
-            batch(&[("p6", 127.0), ("p7", 0.0)]),
-            batch(&[("p6", 0.0), ("p7", 127.0)])
-        ]
+        vec![batch(&[("p6", 127.0)]), batch(&[("p6", 0.0)])]
     );
     assert_eq!(of(&steps(&rx), "selector_writer"), Vec::<Value>::new());
     assert_eq!(decisions(&mut router), [on(), on()]);
     assert!(router.autotune.targets[PA].writing.is_empty());
+    assert!(router.autotune.targets[STREAM].writing.is_empty());
 }
 
 #[tokio::test]
@@ -2333,9 +2325,10 @@ async fn a_target_let_go_while_the_markers_are_unsettled_is_held_dry_first() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_stop_after_a_switch_on_live_did_not_answer_writes_dry_at_once() {
-    // PR #147 re-review R3: Live may still take the switch-on.
+    // PR #147 re-review R3: Live may still take the switch-on. Since #140
+    // the stop's DRY is spread: the PA's at once, the stream's 40 ms later.
     let dir = tempfile::tempdir().unwrap();
     let (mut router, mut live, rx) = ready(dir.path(), HubState::default()).await;
     aut_on(&mut router);
@@ -2350,11 +2343,10 @@ async fn a_stop_after_a_switch_on_live_did_not_answer_writes_dry_at_once() {
     assert_eq!(target.walk, walk, "not walked");
     transport(&mut router, false);
     let dry = live.next("the stop's DRY", is_selector_write);
-    assert_eq!(
-        dry.commands,
-        selector_commands(&[("p6", 127.0), ("p7", 0.0)])
-    );
+    assert_eq!(dry.commands, selector_commands(&[("p6", 127.0)]));
     assert_eq!(of(&steps(&rx), "failed").len(), 2);
+    pass(&mut router, &mut live, SPREAD).await;
+    assert_eq!(live.written().last(), Some(&batch(&[("p7", 0.0)])));
 }
 
 #[tokio::test]
@@ -2477,11 +2469,13 @@ async fn a_walk_that_gives_up_unconfirmed_leaves_its_target_out_of_the_registere
     assert!(live.written().iter().flatten().all(|(id, _)| id != "p8"));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_stop_after_a_lost_write_and_an_answered_one_writes_dry_at_once() {
     // PR #147 re-review R9: the stop's DRY goes unanswered, the start's
     // chain is answered, and its value comes while the markers are
-    // unsettled (no decision then); the next stop writes DRY.
+    // unsettled (no decision then); the next stop writes DRY. Since #140
+    // the stop's DRY is spread: the PA's at once; the start drops the
+    // stream's still to come (Live still shows its chain).
     let dir = tempfile::tempdir().unwrap();
     let (mut router, mut live, _rx) = tuning(dir.path()).await;
     transport(&mut router, false);
@@ -2491,10 +2485,7 @@ async fn a_stop_after_a_lost_write_and_an_answered_one_writes_dry_at_once() {
     assert_eq!(router.autotune.targets[PA].writing_now(), Some(false));
     transport(&mut router, true);
     let chain = live.next("the start's chain", is_selector_write);
-    assert_eq!(
-        chain.commands,
-        selector_commands(&[("p6", 0.0), ("p7", 127.0)])
-    );
+    assert_eq!(chain.commands, selector_commands(&[("p6", 0.0)]));
     let echoes = live.answer_quiet(chain);
     written_handled(&mut router, &mut live).await;
     router.markers_pending = Some(Vec::new());
@@ -2506,8 +2497,150 @@ async fn a_stop_after_a_lost_write_and_an_answered_one_writes_dry_at_once() {
     router.markers_pending = None;
     transport(&mut router, false);
     let dry = live.next("the second stop's DRY", is_selector_write);
+    assert_eq!(dry.commands, selector_commands(&[("p6", 127.0)]));
+    pass(&mut router, &mut live, SPREAD).await;
+    assert_eq!(live.written().last(), Some(&batch(&[("p7", 0.0)])));
+}
+
+/// The stop's spread of its DRY writes (#140, the DECIDED comment of
+/// 2026-11-09): one selector per this many ms.
+const SPREAD: std::time::Duration = std::time::Duration::from_millis(40);
+
+/// `by` of Live's time passes; every message the hub's own timers or Live's
+/// answers sent meanwhile is handled (a walk's is dropped: each test
+/// answers the walks itself), every call answered.
+async fn pass(router: &mut Router, live: &mut Live, by: std::time::Duration) {
+    tokio::time::advance(by).await;
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    while let Ok(msg) = live.own.try_recv() {
+        if !matches!(
+            msg,
+            RouterMsg::AutotuneFound { .. }
+                | RouterMsg::AutotuneWalkFailed { .. }
+                | RouterMsg::AutotuneWalkRetry { .. }
+        ) {
+            router.handle(msg);
+        }
+    }
+    live.settle(router).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stop_writes_its_dry_one_selector_per_40_ms_in_lives_order() {
+    // #140 (dasio's measurement of 2026-11-09): the stop's batch of every
+    // selector made band Live's audio callback take 5.8-11.5 ms, a click.
+    // One selector per batch, 40 ms apart, in Live's order.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, rx) = tuning(dir.path()).await;
+    transport(&mut router, false);
+    live.settle(&mut router).await;
+    assert_eq!(live.written(), vec![batch(&[("p6", 127.0)])], "the first");
+    // The next one is still on its way: it counts as written, so the
+    // answer's decision writes nothing more.
+    assert_eq!(router.autotune.targets[STREAM].writing_now(), Some(false));
     assert_eq!(
-        dry.commands,
-        selector_commands(&[("p6", 127.0), ("p7", 0.0)])
+        decisions(&mut router),
+        [off(SwitchWhy::Stop), off(SwitchWhy::Stop)]
     );
+    pass(&mut router, &mut live, SPREAD - std::time::Duration::from_millis(1)).await;
+    assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new(), "not yet");
+    pass(&mut router, &mut live, std::time::Duration::from_millis(1)).await;
+    assert_eq!(live.written(), vec![batch(&[("p7", 0.0)])], "40 ms later");
+    pass(&mut router, &mut live, SPREAD * 5).await;
+    assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new(), "no more");
+    assert!(router.autotune.targets[PA].writing.is_empty());
+    assert!(router.autotune.targets[STREAM].writing.is_empty());
+    let got = steps(&rx);
+    assert_eq!(
+        of(&got, "write"),
+        vec![
+            json!({"step": "write", "instance": "band", "cause": "transport", "on": [],
+                   "off": ["Vox 2"]}),
+            json!({"step": "write", "instance": "band", "cause": "transport", "on": [],
+                   "off": ["#8"]}),
+        ]
+    );
+    assert_eq!(
+        of(&got, "spread"),
+        vec![json!({"step": "spread", "instance": "band", "targets": ["#8"], "ms": 40})]
+    );
+    // A lost transport is a stop too.
+    let lost = tempfile::tempdir().unwrap();
+    let (mut router, mut live, _rx) = tuning(lost.path()).await;
+    router.transport_failed(TRANSPORT, "not observable");
+    live.settle(&mut router).await;
+    assert_eq!(live.written(), vec![batch(&[("p6", 127.0)])]);
+    pass(&mut router, &mut live, SPREAD).await;
+    assert_eq!(live.written(), vec![batch(&[("p7", 0.0)])]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_start_within_the_stops_spread_drops_its_rest_and_decides_afresh() {
+    // The stream selector's DRY is still to come when Live plays again: it
+    // is never written, and the start writes the chain only where the stop
+    // took it (one batch).
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, rx) = tuning(dir.path()).await;
+    transport(&mut router, false);
+    live.settle(&mut router).await;
+    assert_eq!(live.written(), vec![batch(&[("p6", 127.0)])]);
+    pass(&mut router, &mut live, SPREAD / 2).await;
+    transport(&mut router, true);
+    live.settle(&mut router).await;
+    assert_eq!(live.written(), vec![batch(&[("p6", 0.0)])], "one batch");
+    pass(&mut router, &mut live, SPREAD * 5).await;
+    assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new());
+    assert_eq!(decisions(&mut router), [on(), on()]);
+    assert!(router.autotune.targets[STREAM].writing.is_empty());
+    assert_eq!(
+        of(&steps(&rx), "unspread"),
+        vec![json!({"step": "unspread", "instance": "band", "targets": ["#8"],
+                    "why": "start"})]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_hold_within_the_stops_spread_writes_its_rest_dry_at_once() {
+    // A hold's DRY stays immediate: a track-list change within the spread
+    // writes the selectors still to come in its own batch, through their
+    // last refs, and nothing more comes after it.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, rx) = tuning(dir.path()).await;
+    transport(&mut router, false);
+    live.settle(&mut router).await;
+    assert_eq!(live.written(), vec![batch(&[("p6", 127.0)])]);
+    router.autotune_tracks("band");
+    live.settle(&mut router).await;
+    assert_eq!(live.written(), vec![batch(&[("p7", 0.0)])], "at once");
+    pass(&mut router, &mut live, SPREAD * 5).await;
+    assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new());
+    let got = steps(&rx);
+    assert_eq!(
+        of(&got, "unspread"),
+        vec![json!({"step": "unspread", "instance": "band", "targets": ["#8"],
+                    "why": "hold"})]
+    );
+    assert_eq!(
+        of(&got, "write").last(),
+        Some(&json!({"step": "write", "instance": "band", "cause": "hold", "on": [],
+                     "off": ["#8"]}))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_layout_without_a_target_within_the_spread_writes_it_dry_at_once() {
+    // A target let go while its spread DRY is still to come is written DRY
+    // first, as any target let go (PR #147 review I3), never left on.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, _rx) = tuning(dir.path()).await;
+    transport(&mut router, false);
+    live.settle(&mut router).await;
+    assert_eq!(live.written(), vec![batch(&[("p6", 127.0)])]);
+    router.handle(layout(2, vec![pa()]));
+    live.settle(&mut router).await;
+    assert_eq!(live.written(), vec![batch(&[("p7", 0.0)])], "at once");
+    pass(&mut router, &mut live, SPREAD * 5).await;
+    assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new());
 }
