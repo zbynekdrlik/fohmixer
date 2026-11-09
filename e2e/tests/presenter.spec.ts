@@ -305,6 +305,17 @@ test.describe("Presenter's stage miniature in the column", () => {
         15000,
       );
       expect(whats.indexOf("mini_tap")).toBeLessThan(whats.indexOf("open"));
+      // At the iPad's full size the picture is the rail's whole width (less its 10 px box).
+      const shownFits = await until(
+        async () =>
+          pageEvents(await hubEvents()).filter((e) => e.ev === "presenter" && e.what === "mini_fit" && e.t >= since && e.w !== undefined && e.vw === 1194),
+        (f) => f.length > 0,
+        "a shown mini_fit at 1194 x 834",
+        15000,
+      );
+      const fit = shownFits.at(-1)!;
+      expect(fit.w).toBeCloseTo(railBox.width - 10, 0);
+      expect(fit.vh).toBe(834);
     });
 
     test("follows a switch of the stage's layout", async ({ page }) => {
@@ -339,20 +350,83 @@ test.describe("Presenter's stage miniature in the column", () => {
     });
   });
 
-  test.describe("where the rail has no free room", () => {
-    test.use({ viewport: { width: 1280, height: 720 } });
+  // Shorter screens (#90, 1.38.2: the owner's iPad over the internet never
+  // showed it; Safari's bars take height, another model is smaller; the
+  // main session's option A): the miniature never goes below its least
+  // picture (40 px high, 16:9, narrower than the rail), the rail's rows give
+  // that room up (shorter than 44 px, never under their 24 px floor), and
+  // the faders keep their height.
+  for (const size of [
+    { width: 1180, height: 740 },
+    { width: 1024, height: 700 },
+  ]) {
+    test.describe(`on a shorter screen, ${size.width}×${size.height}`, () => {
+      test.use({ viewport: size });
 
-    test("is not there and the rail keeps its full rows", async ({ page }) => {
-      await restore();
-      await openSurface(page);
-      await expect(page.getByTestId("rail")).toBeVisible();
-      await frames(page, 4);
-      await expect(mini(page)).toHaveCount(0);
-      await expect(page.getByTestId("mini-frame")).toHaveCount(0);
-      const { rows } = await heights(page);
-      expect(rows.split(" ").every((t) => t === "44px"), rows).toBe(true);
+      test("is there at least at its least size, the rail's rows give up room, the faders keep their height", async ({ page }) => {
+        await restore();
+        // Page times are epoch ms on the runner's one clock (performance.timeOrigin + now).
+        const since = Date.now();
+        await openSurface(page);
+        const box = mini(page);
+        await expect(box).toBeVisible();
+        await expect(miniFrame(page).locator("#fake-stage")).toHaveText("worship");
+        await expect(page.getByTestId("mini-note")).toHaveText("WORSHIP");
+        const rail = page.getByTestId("rail");
+        const railBox = (await rail.boundingBox())!;
+        const area = (await page.getByTestId("mini-stage").boundingBox())!;
+        test.info().annotations.push({ type: `mini ${size.width}x${size.height}`, description: `${area.width.toFixed(1)} x ${area.height.toFixed(1)} in a ${railBox.width.toFixed(1)} px rail` });
+        // Smaller than the rail's width less the box (10 px), at least 40 px high, 16:9.
+        expect(area.width).toBeLessThan(railBox.width - 10 - 1);
+        expect(area.height).toBeGreaterThanOrEqual(39.9);
+        expect(Math.abs(area.width / area.height - 16 / 9)).toBeLessThan(0.02);
+        // Centred under the caption, the stage scaled to the picture.
+        const at = (await box.boundingBox())!;
+        expect(Math.abs(area.x + area.width / 2 - (at.x + at.width / 2))).toBeLessThan(1);
+        const shown = (await page.getByTestId("mini-frame").boundingBox())!;
+        expect(Math.abs(shown.width - area.width)).toBeLessThan(1.5);
+        expect(Math.abs(shown.height - area.height)).toBeLessThan(1.5);
+        // Between the buttons and TECHALERT; the rows shorter than 44 px for it, never under 24 px.
+        const main = (await rail.locator(".rail-main").boundingBox())!;
+        const foot = (await rail.locator(".rail-foot").boundingBox())!;
+        expect(at.y).toBeGreaterThanOrEqual(main.y + main.height - 0.5);
+        expect(at.y + at.height).toBeLessThanOrEqual(foot.y + 0.5);
+        const withMini = await heights(page);
+        const rows = withMini.rows.split(" ").map((t) => parseFloat(t));
+        test.info().annotations.push({ type: `rows ${size.width}x${size.height}`, description: withMini.rows });
+        expect(rows.length).toBeGreaterThan(0);
+        for (const r of rows) {
+          expect(r).toBeGreaterThanOrEqual(24);
+          expect(r).toBeLessThan(44);
+        }
+        // The faders' height does not depend on it: PRESENTER open (the miniature gone) leaves the right half's as they were.
+        await page.getByTestId("presenter-tab").click();
+        await expect(page.getByTestId("page")).toHaveAttribute("data-extra", "presenter");
+        await expect(mini(page)).toHaveCount(0);
+        const right = await page
+          .locator('.slot[data-side="right"] [data-testid="fader"]')
+          .evaluateAll((all) => all.map((f) => f.getBoundingClientRect().height));
+        expect(right.length).toBeGreaterThan(0);
+        for (const h of right) expect(withMini.travel).toContain(h);
+        // The recorder: the decision with the viewport, the rail and the picture, then the tab's.
+        const fits = await until(
+          async () =>
+            pageEvents(await hubEvents()).filter((e) => e.ev === "presenter" && e.what === "mini_fit" && e.t >= since && e.vw === size.width && e.vh === size.height),
+          (f) => f.some((e) => e.hide === "open") && f.some((e) => e.w !== undefined),
+          "the miniature's mini_fit records",
+          15000,
+        );
+        // The last shown decision (a first measure can come before the column settles).
+        const shownFit = fits.filter((e) => e.w !== undefined).at(-1)!;
+        expect(Math.abs(shownFit.w - area.width)).toBeLessThan(0.6);
+        expect(Math.abs(shownFit.h - area.height)).toBeLessThan(0.6);
+        expect(shownFit.rows).toBe(withMini.rows.split(" ").length);
+        expect(shownFit.rail_w).toBeCloseTo(railBox.width, 0);
+        expect(shownFit.h).toBeGreaterThanOrEqual(40);
+        expect(shownFit.hide).toBeUndefined();
+      });
     });
-  });
+  }
 
   // 520 x 1000 is a phone by its width (the 520 px query, inclusive) whose
   // open column has room for it (the rail 600 px of room, 475 needed): only

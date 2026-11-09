@@ -240,7 +240,7 @@
 /* The column's stage miniature (1.37.0; way A of the owner's approved
    docs/mockups/presenter-stage-v2.html): in the rail's free room above
    TECHALERT, the same stage frame as the pane, scaled to the rail's width
-   (its size set by `pages/presenter.rs` from `behave::presenter`, whose
+   or, since 1.38.2, shrunk to the room left (its size set by `pages/presenter.rs` from `behave::presenter`, whose
    MINI_* constants are this box: 1 px border + 4 px padding a side, an
    11 px caption, 3 px under it). Calm: dim text, no fill, no lit colour;
    only `offline` is red. The picture takes no touch; the box opens the
@@ -286,6 +286,9 @@
 .mini-stage {
     position: relative;
     flex: none;
+    /* Shrunk to the rail's room (1.38.2), the picture is narrower than the
+       box: centred under the caption. */
+    align-self: center;
     overflow: hidden;
     border-radius: 4px;
     background: #000;

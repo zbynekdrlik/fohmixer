@@ -834,6 +834,45 @@ fn presenters_tab_and_its_steps_are_page_events() {
 }
 
 #[test]
+fn the_miniatures_decision_names_the_viewport_the_rail_and_the_picture_or_why() {
+    use crate::behave::presenter::{MiniFit, MiniHide, RailRoom};
+    let rail = RailRoom {
+        width: 117.96,
+        room: 230.04,
+        rows: 3,
+    };
+    assert_eq!(
+        presenter(
+            10.0,
+            PresenterStep::MiniFit {
+                vw: 1180.0,
+                vh: 739.95,
+                rail: Some(rail),
+                fit: MiniFit::Shown {
+                    width: 106.66,
+                    height: 60.0
+                },
+            }
+        ),
+        json!({"ev": "presenter", "t": 10.0, "what": "mini_fit", "vw": 1180.0, "vh": 740.0,
+            "rail_w": 118.0, "room": 230.0, "rows": 3, "w": 106.7, "h": 60.0})
+    );
+    assert_eq!(
+        presenter(
+            11.0,
+            PresenterStep::MiniFit {
+                vw: 844.0,
+                vh: 390.0,
+                rail: None,
+                fit: MiniFit::Hidden(MiniHide::Phone),
+            }
+        ),
+        json!({"ev": "presenter", "t": 11.0, "what": "mini_fit", "vw": 844.0, "vh": 390.0,
+            "hide": "phone"})
+    );
+}
+
+#[test]
 fn ablesets_tab_and_its_steps_are_page_events() {
     assert_eq!(
         ableset_view(5.0, true),

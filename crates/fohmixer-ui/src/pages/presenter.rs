@@ -29,9 +29,9 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
 use crate::behave::presenter::{
-    CAPTION, DOWN_TEXT, DOWN_TITLE, FRAME_URL, HEAD, KeyLook, MINI_HEAD, Place, Preview, RAIL_GAP,
-    RELEASE_TEXT, STAGE_H, STAGE_W, can_switch, key_look, key_note, key_of, mini_fits, mini_height,
-    mini_note, mini_shows, mini_width, name_of, on_stage, phone, preview, rows, scale, switch_to,
+    CAPTION, DOWN_TEXT, DOWN_TITLE, FRAME_URL, HEAD, KeyLook, MINI_HEAD, MiniFit, Place, Preview,
+    RAIL_GAP, RELEASE_TEXT, RailRoom, STAGE_H, STAGE_W, can_switch, key_look, key_note, key_of,
+    mini_fit, mini_fit_noted, mini_note, name_of, on_stage, phone, preview, rows, scale, switch_to,
     track_count,
 };
 use crate::components::hold_key::{Flash, HoldKey};
@@ -188,39 +188,43 @@ pub(crate) fn StageFrame(#[prop(into)] width: Signal<f64>, place: Place) -> impl
 /// while the miniature's place lives.
 type RailObserver = (web_sys::ResizeObserver, Closure<dyn FnMut()>);
 
-/// The miniature's picture width if it fits the rail's free room
-/// (`behave::presenter::mini_fits`): the rail less its foot and the gap is
-/// the buttons' room, the rows are `.rail-main`'s resolved tracks. The boxes
-/// are read unrounded (`getBoundingClientRect`): a whole-px `clientHeight`
-/// rounded up could fit a miniature half a px too tall.
-fn measure_rail(rail: &web_sys::HtmlDivElement) -> Option<f64> {
+/// The rail as it is laid out (`behave::presenter::RailRoom`): its width,
+/// the buttons' room without the miniature (the rail less its foot and the
+/// gap) and `.rail-main`'s resolved rows. The boxes are read unrounded
+/// (`getBoundingClientRect`): a whole-px `clientHeight` rounded up could fit
+/// a miniature half a px too tall.
+fn measure_rail(rail: &web_sys::HtmlDivElement) -> Option<RailRoom> {
     let main = rail.query_selector(".rail-main").ok()??;
     let foot = rail.query_selector(".rail-foot").ok()??;
     let (box_, foot) = (
         rail.get_bounding_client_rect(),
         foot.get_bounding_client_rect(),
     );
-    let width = mini_width(box_.width())?;
-    let room = box_.height() - foot.height() - RAIL_GAP;
-    let rows = track_count(&dom::computed(&main, "grid-template-rows").unwrap_or_default());
-    mini_fits(room, rows, mini_height(width)).then_some(width)
+    Some(RailRoom {
+        width: box_.width(),
+        room: box_.height() - foot.height() - RAIL_GAP,
+        rows: track_count(&dom::computed(&main, "grid-template-rows").unwrap_or_default()),
+    })
 }
 
 /// The column's stage miniature (1.37.0; way A of the owner's approved
 /// `docs/mockups/presenter-stage-v2.html`): the same stage frame as the
-/// PRESENTER pane, scaled to the rail's width, in the rail's free room
-/// above TECHALERT (`rail`: the `.rail` it lies in, measured on every
-/// resize). A dim `STAGE` caption with the layout on stage, `offline` in
-/// red and the picture dimmed while Presenter is down. A tap opens the
-/// PRESENTER tab; while it is open, on a phone, or where the rail has no
-/// free room it is not there at all (nothing gets shorter for it); with no
-/// `[presenter]` neither. The frame takes no touch; the box owns its
-/// touches.
+/// PRESENTER pane, in the rail's free room above TECHALERT (`rail`: the
+/// `.rail` it lies in, measured on every resize), as wide as the rail or,
+/// since 1.38.2, shrunk to the room left after the rail's rows at their full
+/// 44 px (`behave::presenter::mini_fit`; hidden below the least picture). A
+/// dim `STAGE` caption with the layout on stage, `offline` in red and the
+/// picture dimmed while Presenter is down. A tap opens the PRESENTER tab;
+/// while it is open, on a phone, or below the least picture it is not there
+/// at all (nothing gets shorter for it); with no `[presenter]` neither. Each
+/// change of the decision is recorded (`mini_fit`: the viewport, the rail's
+/// room and rows, the picture or why it hides). The frame takes no touch;
+/// the box owns its touches.
 #[component]
 pub(crate) fn StageMini(rail: NodeRef<html::Div>) -> impl IntoView {
     let nav = expect_context::<Nav>();
     let store = nav.store;
-    let fit = RwSignal::new(None::<f64>);
+    let measured = RwSignal::new(None::<RailRoom>);
     let observer = StoredValue::new_local(None::<RailObserver>);
     Effect::new(move |_| {
         let Some(el) = rail.get() else {
@@ -228,9 +232,9 @@ pub(crate) fn StageMini(rail: NodeRef<html::Div>) -> impl IntoView {
         };
         let observed = el.clone();
         let callback = Closure::wrap(Box::new(move || {
-            let measured = measure_rail(&observed);
-            if fit.try_get_untracked() != Some(measured) {
-                let _ = fit.try_set(measured);
+            let now = measure_rail(&observed);
+            if measured.try_get_untracked() != Some(now) {
+                let _ = measured.try_set(now);
             }
         }) as Box<dyn FnMut()>);
         if let Ok(watch) = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()) {
@@ -252,27 +256,47 @@ pub(crate) fn StageMini(rail: NodeRef<html::Div>) -> impl IntoView {
             watch.disconnect();
         }
     });
-    let shows = Memo::new(move |_| {
+    let fit = Memo::new(move |_| {
         let configured = store.presenter.try_with(Option::is_some).unwrap_or(false);
         let open = nav.shown_extra() == Extra::Presenter;
         let (w, h) = nav.viewport.try_get().unwrap_or_default();
-        let fits = fit.try_get().flatten().is_some();
-        mini_shows(configured, open, phone(w, h), fits)
+        mini_fit(configured, open, phone(w, h), measured.try_get().flatten())
     });
+    Effect::new(move |_| {
+        let Some(now) = fit.try_get() else {
+            return;
+        };
+        if mini_fit_noted(now) {
+            let (vw, vh) = nav.viewport.try_get_untracked().unwrap_or_default();
+            let rail = measured.try_get_untracked().flatten();
+            diag::record(&trace::presenter(
+                dom::epoch_now(),
+                PresenterStep::MiniFit {
+                    vw,
+                    vh,
+                    rail,
+                    fit: now,
+                },
+            ));
+        }
+    });
+    let picture = Memo::new(move |_| fit.try_get().and_then(MiniFit::picture));
     move || {
-        shows
+        picture
             .try_get()
-            .unwrap_or(false)
-            .then(|| view! { <MiniBox fit=fit /> })
+            .flatten()
+            .is_some()
+            .then(|| view! { <MiniBox picture=picture /> })
     }
 }
 
 /// The miniature's box: the caption and the picture; a tap opens PRESENTER.
 #[component]
-fn MiniBox(fit: RwSignal<Option<f64>>) -> impl IntoView {
+fn MiniBox(picture: Memo<Option<(f64, f64)>>) -> impl IntoView {
     let nav = expect_context::<Nav>();
     let store = nav.store;
-    let width = Signal::derive(move || fit.try_get().flatten().unwrap_or(0.0));
+    let size_of = move || picture.try_get().flatten().unwrap_or((0.0, 0.0));
+    let width = Signal::derive(move || size_of().0);
     let note = Memo::new(move |_| {
         store
             .presenter
@@ -293,8 +317,8 @@ fn MiniBox(fit: RwSignal<Option<f64>>) -> impl IntoView {
             .then(|| view! { <StageFrame width=width place=Place::Column /> })
     };
     let size = move || {
-        let w = width.try_get().unwrap_or(0.0);
-        format!("width: {w}px; height: {}px", w * STAGE_H / STAGE_W)
+        let (w, h) = size_of();
+        format!("width: {w}px; height: {h}px")
     };
     let tap = move |_: web_sys::PointerEvent| {
         diag::record(&trace::presenter(dom::epoch_now(), PresenterStep::MiniTap));
