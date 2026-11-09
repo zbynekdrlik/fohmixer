@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./support/fixtures";
-import { harness, hubStatus, openSurface, token, until } from "./support/live";
+import { frames, harness, hubStatus, openSurface, token, until } from "./support/live";
 
 // A Live that is down, said in words (#178; the owner's approved
 // docs/mockups/live-down-v2.html): no card or overlay anywhere. A strip of a
@@ -177,6 +177,84 @@ test.describe("A Live that is down (#178)", () => {
       "the band's own red bindings back",
       UP,
     );
+  });
+
+  // The 1.38.0 check on the PC (#178 reopened): the hint ran over the fader
+  // scale's numbers ("Start Live on6", "themselves.12"). A down strip's hint
+  // never meets a visible scale label of its own strip, on the iPad and on a
+  // phone on its side, both Lives not running and the band's set missing.
+  test("a down strip's hint never runs over its fader scale's numbers (iPad, phone on its side)", async ({ page }) => {
+    await page.setViewportSize(IPAD);
+    await openSurface(page);
+    await expect(foot(page, "band")).toHaveAttribute("data-live", "on", { timeout: UP });
+
+    /** Per down strip on screen: its hint inside the zone, and the visible
+     * texts of the zone it meets (the scale's labels, the group's name, the
+     * LUFS reading; their text: none is right). */
+    const clashes = () =>
+      page.locator('[data-testid="strip"][data-live]').evaluateAll((strips) =>
+        strips
+          .filter((s) => s.getBoundingClientRect().width > 0)
+          .map((s) => {
+            const hint = s.querySelector('[data-testid="strip-hint"]');
+            const zone = s.querySelector(".strip-zone")!.getBoundingClientRect();
+            if (!hint) return { track: s.getAttribute("data-track"), hint: false, inside: false, meets: [] as string[] };
+            const h = hint.getBoundingClientRect();
+            const meets = [...s.querySelectorAll(".scale .tick, .group-side, .lufs, .lufs-cap")]
+              .filter((t) => {
+                const cs = getComputedStyle(t);
+                const r = t.getBoundingClientRect();
+                const shown = cs.visibility !== "hidden" && cs.display !== "none" && r.width > 0 && r.height > 0;
+                const crosses = r.left < h.right && r.right > h.left && r.top < h.bottom && r.bottom > h.top;
+                return shown && crosses;
+              })
+              .map((t) => `${t.className}: ${t.textContent ?? ""}`);
+            const inside = h.left >= zone.left - 0.5 && h.right <= zone.right + 0.5 && h.top >= zone.top && h.bottom <= zone.bottom;
+            return { track: s.getAttribute("data-track"), hint: true, inside, meets };
+          }),
+      );
+
+    // Both sizes measured before any assert, so a failure shows each.
+    const check = async (live: string) => {
+      const found: Record<string, Awaited<ReturnType<typeof clashes>>> = {};
+      for (const size of [IPAD, { width: 844, height: 390 }]) {
+        await page.setViewportSize(size);
+        await stripsSay(page, "band", live);
+        // The page sets --strip-w and its narrow flags in its own resize handling.
+        await frames(page, 2);
+        found[`${live} at ${size.width}x${size.height}`] = await clashes();
+      }
+      await page.setViewportSize(IPAD);
+      for (const [where, seen] of Object.entries(found)) {
+        expect(seen.length, `down strips on screen, ${where}`).toBeGreaterThan(0);
+        const bad = seen.filter((s) => !s.hint || !s.inside || s.meets.length > 0);
+        expect(bad, where).toEqual([]);
+      }
+    };
+
+    /** The scale labels of `instance`'s strips that are not shown (a Live that is on keeps every one). */
+    const hiddenTicks = (instance: string) =>
+      page
+        .locator(`[data-testid="strip"][data-instance="${instance}"] .scale .tick`)
+        .evaluateAll((ticks) => ticks.filter((t) => getComputedStyle(t).visibility !== "visible").length);
+
+    await host("band", "stop");
+    await host("master", "stop");
+    await stripsSay(page, "master", "off");
+    await check("off");
+
+    await host("master", "start");
+    await host("band", "start", "empty");
+    await stripsSay(page, "master", null);
+    await check("noset");
+    // Only a down strip loses its numbers: the master Live is on.
+    expect(await page.locator('[data-testid="strip"][data-instance="master"] .scale .tick').count()).toBeGreaterThan(0);
+    expect(await hiddenTicks("master")).toBe(0);
+
+    await host("band", "start");
+    await stripsSay(page, "band", null);
+    expect(await page.locator('[data-testid="strip"][data-instance="band"] .scale .tick').count()).toBeGreaterThan(0);
+    expect(await hiddenTicks("band")).toBe(0);
   });
 
   test("every Live on: one line per Live beside the counter, the rail keeps its room", async ({ page }) => {

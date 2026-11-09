@@ -82,6 +82,7 @@ use fohmixer_proto::client::ClientMsg;
 use serde_json::{Map, Value, json};
 
 use crate::behave::idle::IDLE_FRAME_MS;
+use crate::behave::presenter::{MiniFit, RailRoom};
 
 pub mod eq_lat;
 pub mod fingers;
@@ -302,6 +303,20 @@ pub enum PresenterStep<'a> {
     MiniLoad { ms: f64 },
     /// A tap on the miniature opened the tab.
     MiniTap,
+    /// The miniature's decision changed (1.38.2): the viewport (`vw`, `vh`),
+    /// the rail as measured (none before its first measure) and the
+    /// decision (the picture's size, or why it hides).
+    MiniFit {
+        vw: f64,
+        vh: f64,
+        rail: Option<RailRoom>,
+        fit: MiniFit,
+    },
+}
+
+/// A length for the recorder: to 0.1 px.
+fn tenth(px: f64) -> f64 {
+    (px * 10.0).round() / 10.0
 }
 
 /// Presenter's stage tab's step at `t` (#90): `what`, the load's time in
@@ -324,6 +339,24 @@ pub fn presenter(t: f64, step: PresenterStep<'_>) -> Value {
             json!({"ev": "presenter", "t": t, "what": "mini_load", "ms": ms.round()})
         }
         PresenterStep::MiniTap => json!({"ev": "presenter", "t": t, "what": "mini_tap"}),
+        PresenterStep::MiniFit { vw, vh, rail, fit } => {
+            let mut e = json!({
+                "ev": "presenter", "t": t, "what": "mini_fit", "vw": tenth(vw), "vh": tenth(vh),
+            });
+            if let Some(rail) = rail {
+                e["rail_w"] = json!(tenth(rail.width));
+                e["room"] = json!(tenth(rail.room));
+                e["rows"] = json!(rail.rows);
+            }
+            match fit {
+                MiniFit::Shown { width, height } => {
+                    e["w"] = json!(tenth(width));
+                    e["h"] = json!(tenth(height));
+                }
+                MiniFit::Hidden(why) => e["hide"] = json!(why.name()),
+            }
+            e
+        }
     }
 }
 

@@ -4,9 +4,9 @@
 //! panel, the header's words), each layout key's look and words, and when a
 //! key's 1 s hold may switch the stage. `pages/presenter.rs` carries it out.
 //! Since 1.37.0 also the column's stage miniature (way A of the owner's
-//! approved `docs/mockups/presenter-stage-v2.html`): whether it shows (only
-//! in the rail's free room, so nothing gets shorter), its size and its
-//! caption.
+//! approved `docs/mockups/presenter-stage-v2.html`): whether it shows and
+//! its size (since 1.38.2 never under its least picture: the rail's rows
+//! give it room, the faders never) and its caption.
 
 use fohmixer_proto::client::StageLayout;
 
@@ -248,6 +248,11 @@ pub fn phone(width: f64, height: f64) -> bool {
     width <= PHONE_MAX || height <= PHONE_MAX
 }
 
+/// The least picture the miniature shows (px high, #90's DECIDED of
+/// 2026-11-09 evening: the caption and about 40 px of picture); with less
+/// room the rail's rows shrink for it.
+pub const MINI_MIN_PICTURE: f64 = 40.0;
+
 /// The miniature's picture width in a rail `rail_width` px wide (none when
 /// there is no room for one).
 pub fn mini_width(rail_width: f64) -> Option<f64> {
@@ -255,10 +260,10 @@ pub fn mini_width(rail_width: f64) -> Option<f64> {
     (width > 0.0).then_some(width)
 }
 
-/// The miniature's whole height for a picture `width` px wide: the stage's
-/// 16:9 and the box around it.
-pub fn mini_height(width: f64) -> f64 {
-    2.0 * MINI_EDGE + MINI_CAPTION + MINI_CAPTION_GAP + width * STAGE_H / STAGE_W
+/// The miniature's box around a picture `height` px high: its border and
+/// padding, its caption's line and the gap under it.
+pub fn mini_height(height: f64) -> f64 {
+    2.0 * MINI_EDGE + MINI_CAPTION + MINI_CAPTION_GAP + height
 }
 
 /// The rail's rows from its resolved `grid-template-rows` (each track a
@@ -270,25 +275,115 @@ pub fn track_count(tracks: &str) -> usize {
         .count()
 }
 
-/// Whether the miniature, `mini` px high, fits the rail's free room: `room`
-/// is what the rail's buttons have without it (the rail less its foot and
-/// the gap between them), `rows` the buttons' rows. With the miniature and
-/// its gap taken out, every row must still get its full height, else it
-/// stays hidden (the owner's rule: nothing gets shorter for it).
-pub fn mini_fits(room: f64, rows: usize, mini: f64) -> bool {
-    let need = if rows == 0 {
-        0.0
-    } else {
-        rows as f64 * RAIL_ROW + (rows - 1) as f64 * RAIL_ROW_GAP
-    };
-    room - mini - RAIL_GAP >= need
+/// The rail as measured: its width, the room its buttons have without the
+/// miniature (the rail less its foot and the gap between them) and the
+/// buttons' rows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RailRoom {
+    pub width: f64,
+    pub room: f64,
+    pub rows: usize,
 }
 
-/// Whether the column shows the miniature: a hub with `[presenter]`
-/// (`configured`), the PRESENTER tab not open (its big preview is beside
-/// it), not a phone (its column lies behind ☰) and room in the rail.
-pub fn mini_shows(configured: bool, tab_open: bool, phone: bool, fits: bool) -> bool {
-    configured && !tab_open && !phone && fits
+/// The rows' height at their full 44 px, 4 px apart.
+pub fn rows_height(rows: usize) -> f64 {
+    let gaps = rows.saturating_sub(1);
+    rows as f64 * RAIL_ROW + gaps as f64 * RAIL_ROW_GAP
+}
+
+/// The miniature's picture (width, height) in the rail (#90's DECIDED of
+/// 2026-11-09 evening, option A): 16:9, as wide as the rail allows, as high
+/// as the room the rail's rows leave at their full 44 px (less the
+/// miniature's box and its 6 px gap), a whole px high when that room cuts
+/// it, and never under `MINI_MIN_PICTURE` (unless the rail is too narrow for
+/// it: its width at 16:9): below it the rows give the room up (`page.css`
+/// lets them shrink to 24 px); the faders never. None only for a rail with
+/// no width for a picture.
+pub fn mini_picture(rail: RailRoom) -> Option<(f64, f64)> {
+    let widest = mini_width(rail.width)?;
+    let full = widest * STAGE_H / STAGE_W;
+    let room = rail.room - rows_height(rail.rows) - RAIL_GAP - mini_height(0.0);
+    if room >= full {
+        return Some((widest, full));
+    }
+    let height = room.floor().max(MINI_MIN_PICTURE).min(full);
+    Some((height * STAGE_W / STAGE_H, height))
+}
+
+/// Why the miniature is not there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MiniHide {
+    /// The hub has no `[presenter]`.
+    Unconfigured,
+    /// The PRESENTER tab is open (its big preview is beside it).
+    Open,
+    /// A phone: its column lies behind ☰.
+    Phone,
+    /// The rail not measured yet.
+    Unmeasured,
+    /// A rail with no width for a picture.
+    Room,
+}
+
+impl MiniHide {
+    /// The recorder's word.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unconfigured => "unconfigured",
+            Self::Open => "open",
+            Self::Phone => "phone",
+            Self::Unmeasured => "unmeasured",
+            Self::Room => "room",
+        }
+    }
+}
+
+/// Whether the column shows the miniature, and its picture's size.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MiniFit {
+    Shown { width: f64, height: f64 },
+    Hidden(MiniHide),
+}
+
+impl MiniFit {
+    /// The picture's size while it shows.
+    pub fn picture(self) -> Option<(f64, f64)> {
+        match self {
+            Self::Shown { width, height } => Some((width, height)),
+            Self::Hidden(_) => None,
+        }
+    }
+}
+
+/// The column's miniature (#90): with `[presenter]` (`configured`), the
+/// PRESENTER tab shut, not a phone and a measured rail, at `mini_picture`'s
+/// size; the first reason that fails, in that order.
+pub fn mini_fit(configured: bool, tab_open: bool, phone: bool, rail: Option<RailRoom>) -> MiniFit {
+    if !configured {
+        return MiniFit::Hidden(MiniHide::Unconfigured);
+    }
+    if tab_open {
+        return MiniFit::Hidden(MiniHide::Open);
+    }
+    if phone {
+        return MiniFit::Hidden(MiniHide::Phone);
+    }
+    let Some(rail) = rail else {
+        return MiniFit::Hidden(MiniHide::Unmeasured);
+    };
+    mini_picture(rail).map_or(MiniFit::Hidden(MiniHide::Room), |(width, height)| {
+        MiniFit::Shown { width, height }
+    })
+}
+
+/// Whether the recorder notes a decision (`mini_fit`): every one but the
+/// moments before the hub told of Presenter (a page's first, and every
+/// page of a hub without `[presenter]`) and before the rail is measured.
+pub fn mini_fit_noted(fit: MiniFit) -> bool {
+    !matches!(
+        fit,
+        MiniFit::Hidden(MiniHide::Unconfigured | MiniHide::Unmeasured)
+    )
 }
 
 /// The miniature's caption on its right, and whether it is the red
@@ -439,17 +534,17 @@ mod tests {
     }
 
     #[test]
-    fn the_miniature_is_the_rails_width_less_its_box_and_16_by_9() {
+    fn the_miniatures_box_is_the_rails_width_less_its_edges_and_its_caption() {
         assert_eq!(mini_width(118.0), Some(108.0));
         assert_eq!(mini_width(10.5), Some(0.5));
         assert_eq!(mini_width(10.0), None);
         assert_eq!(mini_width(0.0), None);
-        // 10 for the box, 11 + 3 for the caption, 192 x 108 for the picture.
-        assert_eq!(mini_height(192.0), 132.0);
+        // 10 for the box, 11 + 3 for the caption, then the picture.
+        assert_eq!(mini_height(108.0), 132.0);
         assert_eq!(mini_height(0.0), 24.0);
         assert_eq!(
-            (MINI_EDGE, MINI_CAPTION, MINI_CAPTION_GAP),
-            (5.0, 11.0, 3.0)
+            (MINI_EDGE, MINI_CAPTION, MINI_CAPTION_GAP, MINI_MIN_PICTURE),
+            (5.0, 11.0, 3.0, 40.0)
         );
     }
 
@@ -463,26 +558,141 @@ mod tests {
     }
 
     #[test]
-    fn the_miniature_fits_only_where_every_rail_row_keeps_its_full_height() {
-        // Three rows: 3 x 44 + 2 x 4 = 140; a 100 px miniature and its 6 px gap.
-        assert!(mini_fits(246.0, 3, 100.0));
-        assert!(!mini_fits(245.9, 3, 100.0));
-        // One row: no gap between rows.
-        assert!(mini_fits(150.0, 1, 100.0));
-        assert!(!mini_fits(149.9, 1, 100.0));
-        // No buttons: only the miniature and its gap.
-        assert!(mini_fits(106.0, 0, 100.0));
-        assert!(!mini_fits(105.9, 0, 100.0));
+    fn the_rows_keep_44_px_each_and_4_px_between() {
+        assert_eq!(rows_height(0), 0.0);
+        assert_eq!(rows_height(1), 44.0);
+        assert_eq!(rows_height(3), 140.0);
         assert_eq!((RAIL_ROW, RAIL_ROW_GAP, RAIL_GAP), (44.0, 4.0, 6.0));
     }
 
+    fn rail(width: f64, room: f64, rows: usize) -> RailRoom {
+        RailRoom { width, room, rows }
+    }
+
     #[test]
-    fn the_miniature_shows_with_presenter_set_up_its_tab_shut_on_a_tablet_with_room() {
-        assert!(mini_shows(true, false, false, true));
-        assert!(!mini_shows(false, false, false, true));
-        assert!(!mini_shows(true, true, false, true));
-        assert!(!mini_shows(true, false, true, true));
-        assert!(!mini_shows(true, false, false, false));
+    fn with_room_the_picture_is_the_rails_whole_width() {
+        // 118 px rail: a 108 x 60.75 picture, its box 84.75 px. Three rows
+        // 140 px, the gap 6: 230.75 px of room is exactly enough.
+        assert_eq!(mini_picture(rail(118.0, 230.75, 3)), Some((108.0, 60.75)));
+        assert_eq!(mini_picture(rail(118.0, 500.0, 3)), Some((108.0, 60.75)));
+    }
+
+    #[test]
+    fn with_less_room_the_picture_shrinks_to_a_whole_px_high_16_by_9() {
+        // 230.5 px: 60.5 px of picture height left, floored to 60.
+        assert_eq!(
+            mini_picture(rail(118.0, 230.5, 3)),
+            Some((60.0 * 16.0 / 9.0, 60.0))
+        );
+        // 50 px of room left for the picture.
+        assert_eq!(
+            mini_picture(rail(118.0, 220.0, 3)),
+            Some((50.0 * 16.0 / 9.0, 50.0))
+        );
+        // 40.99 px left: 40.
+        assert_eq!(
+            mini_picture(rail(118.0, 210.99, 3)),
+            Some((40.0 * 16.0 / 9.0, 40.0))
+        );
+    }
+
+    #[test]
+    fn under_the_least_picture_the_rows_give_up_the_room() {
+        let least = Some((40.0 * 16.0 / 9.0, 40.0));
+        // Exactly the least picture after 3 rows at 44 px.
+        assert_eq!(mini_picture(rail(118.0, 210.0, 3)), least);
+        // Less: still the least picture, the rows shrink.
+        assert_eq!(mini_picture(rail(118.0, 209.99, 3)), least);
+        assert_eq!(mini_picture(rail(118.0, 100.0, 8)), least);
+        assert_eq!(mini_picture(rail(118.0, 0.0, 0)), least);
+        // One row, no gap between rows: 44 + 6 + 24 + 41 = 115.
+        assert_eq!(
+            mini_picture(rail(118.0, 115.0, 1)),
+            Some((41.0 * 16.0 / 9.0, 41.0))
+        );
+        // No buttons: 6 + 24 + 41 = 71.
+        assert_eq!(
+            mini_picture(rail(118.0, 71.0, 0)),
+            Some((41.0 * 16.0 / 9.0, 41.0))
+        );
+    }
+
+    #[test]
+    fn a_narrow_rail_caps_the_picture_by_its_width() {
+        // 90 px rail: at most 80 x 45; with no room the least picture.
+        assert_eq!(mini_picture(rail(90.0, 500.0, 0)), Some((80.0, 45.0)));
+        assert_eq!(
+            mini_picture(rail(90.0, 0.0, 8)),
+            Some((40.0 * 16.0 / 9.0, 40.0))
+        );
+        // A rail narrower than the least picture: its width, under 40 px high.
+        assert_eq!(mini_picture(rail(50.0, 0.0, 0)), Some((40.0, 22.5)));
+        assert_eq!(mini_picture(rail(10.0, 500.0, 0)), None);
+    }
+
+    #[test]
+    fn the_miniature_hides_for_the_first_reason_in_order() {
+        let roomy = Some(rail(118.0, 500.0, 3));
+        let shown = MiniFit::Shown {
+            width: 108.0,
+            height: 60.75,
+        };
+        assert_eq!(mini_fit(true, false, false, roomy), shown);
+        assert_eq!(shown.picture(), Some((108.0, 60.75)));
+        assert_eq!(
+            mini_fit(false, true, true, None),
+            MiniFit::Hidden(MiniHide::Unconfigured)
+        );
+        assert_eq!(
+            mini_fit(true, true, true, None),
+            MiniFit::Hidden(MiniHide::Open)
+        );
+        assert_eq!(
+            mini_fit(true, false, true, None),
+            MiniFit::Hidden(MiniHide::Phone)
+        );
+        assert_eq!(
+            mini_fit(true, false, false, None),
+            MiniFit::Hidden(MiniHide::Unmeasured)
+        );
+        assert_eq!(
+            mini_fit(true, false, false, Some(rail(118.0, 100.0, 3))),
+            MiniFit::Shown {
+                width: 40.0 * 16.0 / 9.0,
+                height: 40.0
+            }
+        );
+        assert_eq!(
+            mini_fit(true, false, false, Some(rail(10.0, 500.0, 3))),
+            MiniFit::Hidden(MiniHide::Room)
+        );
+        assert_eq!(MiniFit::Hidden(MiniHide::Room).picture(), None);
+    }
+
+    #[test]
+    fn every_decision_but_the_unmeasured_rail_is_noted_by_its_word() {
+        assert!(mini_fit_noted(MiniFit::Shown {
+            width: 1.0,
+            height: 1.0
+        }));
+        assert!(mini_fit_noted(MiniFit::Hidden(MiniHide::Room)));
+        assert!(mini_fit_noted(MiniFit::Hidden(MiniHide::Open)));
+        assert!(mini_fit_noted(MiniFit::Hidden(MiniHide::Phone)));
+        assert!(!mini_fit_noted(MiniFit::Hidden(MiniHide::Unmeasured)));
+        assert!(!mini_fit_noted(MiniFit::Hidden(MiniHide::Unconfigured)));
+        let words: Vec<_> = [
+            MiniHide::Unconfigured,
+            MiniHide::Open,
+            MiniHide::Phone,
+            MiniHide::Unmeasured,
+            MiniHide::Room,
+        ]
+        .map(MiniHide::name)
+        .into();
+        assert_eq!(
+            words,
+            ["unconfigured", "open", "phone", "unmeasured", "room"]
+        );
     }
 
     #[test]

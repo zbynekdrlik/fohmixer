@@ -198,11 +198,11 @@ exclude_re = [
   "fohmixer-ui/src/pages/presenter\\.rs.*(replace|in) ready( |$)",
   # pages/presenter.rs (1.37.0): measure_rail, the column's stage
   # miniature's measure (the rail's box, its foot's height and .rail-main's
-  # resolved grid-template-rows read from the DOM, handed to the tested
-  # behave::presenter::mini_width / mini_height / track_count / mini_fits).
+  # resolved grid-template-rows read from the DOM into a RailRoom, handed
+  # to the tested behave::presenter::mini_fit / mini_picture / track_count).
   # presenter.spec.ts drives it: the miniature shows on the iPad's screen
-  # with every rail row at 44 px, and is not there at 1280 x 720, where the
-  # rail has no free room.
+  # with every rail row at 44 px, shrunk at 1180 x 740 and 1024 x 700, and
+  # its mini_fit records name the rail's room and rows.
   "fohmixer-ui/src/pages/presenter\\.rs.*(replace|in) measure_rail( |$)",
   # store/live/eq.rs (#71 PR E): the Pro-Q 4 screen's glue, one function at
   # a time: on_eq_list, on_eq_locks and on_eq (the hub's messages into the
