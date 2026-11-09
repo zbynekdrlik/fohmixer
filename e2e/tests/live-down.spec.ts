@@ -213,18 +213,27 @@ test.describe("A Live that is down (#178)", () => {
           }),
       );
 
+    // Both sizes measured before any assert, so a failure shows each.
     const check = async (live: string) => {
+      const found: Record<string, Awaited<ReturnType<typeof clashes>>> = {};
       for (const size of [IPAD, { width: 844, height: 390 }]) {
         await page.setViewportSize(size);
         await stripsSay(page, "band", live);
-        const seen = await clashes();
-        expect(seen.length, `down strips on screen at ${size.width}x${size.height}`).toBeGreaterThan(0);
-        for (const strip of seen) {
-          expect(strip, `${live} at ${size.width}x${size.height}`).toEqual({ track: strip.track, hint: true, inside: true, meets: [] });
-        }
+        found[`${live} at ${size.width}x${size.height}`] = await clashes();
       }
       await page.setViewportSize(IPAD);
+      for (const [where, seen] of Object.entries(found)) {
+        expect(seen.length, `down strips on screen, ${where}`).toBeGreaterThan(0);
+        const bad = seen.filter((s) => !s.hint || !s.inside || s.meets.length > 0);
+        expect(bad, where).toEqual([]);
+      }
     };
+
+    /** The scale labels of `instance`'s strips that are not shown (a Live that is on keeps every one). */
+    const hiddenTicks = (instance: string) =>
+      page
+        .locator(`[data-testid="strip"][data-instance="${instance}"] .scale .tick`)
+        .evaluateAll((ticks) => ticks.filter((t) => getComputedStyle(t).visibility !== "visible").length);
 
     await host("band", "stop");
     await host("master", "stop");
@@ -235,6 +244,13 @@ test.describe("A Live that is down (#178)", () => {
     await host("band", "start", "empty");
     await stripsSay(page, "master", null);
     await check("noset");
+    // Only a down strip loses its numbers: the master Live is on.
+    expect(await page.locator('[data-testid="strip"][data-instance="master"] .scale .tick').count()).toBeGreaterThan(0);
+    expect(await hiddenTicks("master")).toBe(0);
+
+    await host("band", "start");
+    await stripsSay(page, "band", null);
+    expect(await hiddenTicks("band")).toBe(0);
   });
 
   test("every Live on: one line per Live beside the counter, the rail keeps its room", async ({ page }) => {
