@@ -2655,3 +2655,57 @@ async fn a_layout_without_a_target_within_the_spread_writes_it_dry_at_once() {
     pass(&mut router, &mut live, SPREAD * 5).await;
     assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new());
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_spread_write_live_already_shows_is_dropped_at_its_turn() {
+    // Another writer (or Live) puts the stream selector on DRY before its
+    // turn: the write is owed no more, so its turn sends nothing.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, rx) = tuning(dir.path()).await;
+    transport(&mut router, false);
+    live.settle(&mut router).await;
+    assert_eq!(live.written(), vec![batch(&[("p6", 127.0)])]);
+    by_hand(&mut router, &mut live, "p7", 0.0);
+    assert!(router.autotune.targets[STREAM].writing.is_empty());
+    pass(&mut router, &mut live, SPREAD).await;
+    assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new());
+    assert!(router.autotune.spreads.is_empty());
+    assert_eq!(
+        of(&steps(&rx), "unspread"),
+        vec![
+            json!({"step": "unspread", "instance": "band", "targets": ["#8"],
+                    "why": "owed"})
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_spread_turn_that_meets_the_markers_unsettled_holds_the_set_dry_at_once() {
+    // A composition waits when the stream selector's turn comes: the set is
+    // held, and the hold's own batch writes it DRY (never by the spread).
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, rx) = tuning(dir.path()).await;
+    transport(&mut router, false);
+    live.settle(&mut router).await;
+    assert_eq!(live.written(), vec![batch(&[("p6", 127.0)])]);
+    router.markers_pending = Some(Vec::new());
+    pass(&mut router, &mut live, SPREAD).await;
+    assert_eq!(live.written(), vec![batch(&[("p7", 0.0)])]);
+    assert!(router.autotune.held.contains("band"));
+    assert!(router.autotune.spreads.is_empty());
+    let got = steps(&rx);
+    assert_eq!(
+        of(&got, "write").last(),
+        Some(
+            &json!({"step": "write", "instance": "band", "cause": "hold", "on": [],
+                     "off": ["#8"]})
+        )
+    );
+    assert_eq!(
+        of(&got, "unspread"),
+        vec![
+            json!({"step": "unspread", "instance": "band", "targets": ["#8"],
+                    "why": "hold"})
+        ]
+    );
+}
