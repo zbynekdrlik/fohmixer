@@ -98,26 +98,8 @@ fn only_reads_and_presenters_socket_pass() {
         );
         assert_eq!(pass(&method, "/ndi/x", false), Pass::Method, "{method}");
     }
-    // The stage's video (#90): WHEP's offer, ICE and end under /whep/ only.
-    for method in [Method::POST, Method::PATCH, Method::DELETE] {
-        assert_eq!(pass(&method, "/whep/ndi-1", false), Pass::Page, "{method}");
-        assert!(whep_write(&method, "/whep/a"), "{method}");
-        assert!(!whep_write(&method, "/whepx/a"), "{method}");
-        assert!(!whep_write(&method, "/stage/whep/a"), "{method}");
-    }
-    for method in [
-        Method::PUT,
-        Method::OPTIONS,
-        Method::CONNECT,
-        Method::TRACE,
-        Method::GET,
-    ] {
-        assert!(!whep_write(&method, "/whep/a"), "{method}");
-        assert_ne!(pass(&method, "/whep/a", false), Pass::Socket);
-    }
-    assert_eq!(pass(&Method::PUT, "/whep/a", false), Pass::Method);
     assert_eq!(
-        pass(&Method::POST, "/whep/../stage/layout", false),
+        pass(&Method::POST, "/ndi/whep/../../stage/layout", false),
         Pass::Path
     );
     assert_eq!(pass(&Method::GET, "/stage/../api/auth", false), Pass::Path);
@@ -128,6 +110,95 @@ fn only_reads_and_presenters_socket_pass() {
     assert_eq!(pass(&Method::GET, "/api/status", false), Pass::No);
     assert_eq!(pass(&Method::POST, "/api/auth", false), Pass::No);
     assert_eq!(pass(&Method::GET, "/ws", true), Pass::No);
+}
+
+/// Every method a test tries on a path.
+const METHODS: [Method; 9] = [
+    Method::GET,
+    Method::HEAD,
+    Method::POST,
+    Method::PUT,
+    Method::PATCH,
+    Method::DELETE,
+    Method::OPTIONS,
+    Method::CONNECT,
+    Method::TRACE,
+];
+
+#[test]
+fn presenters_own_ndi_writes_pass_with_their_methods_and_nothing_else() {
+    // Presenter's router (`presenter-server/src/router.rs`, #90's FINDING
+    // of 2026-11-09): the stage page's only writes, each with its methods.
+    let post = [Method::POST];
+    let session = [Method::POST, Method::PATCH, Method::DELETE];
+    for (path, takes) in [
+        ("/ndi/whep/ndi-1", &post[..]),
+        ("/ndi/whep/a%20b", &post[..]),
+        ("/ndi/whep/ndi-1/s1", &session[..]),
+        ("/ndi/client-stats", &post[..]),
+        ("/ndi/sessions/s1/client-stats", &post[..]),
+    ] {
+        for method in METHODS {
+            let read = method == Method::GET || method == Method::HEAD;
+            let want = if read || takes.contains(&method) {
+                Pass::Page
+            } else {
+                Pass::Method
+            };
+            assert_eq!(pass(&method, path, false), want, "{method} {path}");
+        }
+    }
+    // Any other path under Presenter's, `/whep/` included (Presenter has
+    // no such route), is read only.
+    for path in [
+        "/ndi/x",
+        "/ndi/whep",
+        "/ndi/whep/",
+        "/ndi/whep//s1",
+        "/ndi/whep/a/",
+        "/ndi/whep/a/s1/x",
+        "/ndi/whep/a/s1/",
+        "/ndi/client-stats/x",
+        "/ndi/client-stats/",
+        "/ndi/sessions/s1",
+        "/ndi/sessions//client-stats",
+        "/ndi/sessions/s1/client-stats/x",
+        "/ndi/sessions/s1/x/client-stats",
+        "/ndi/snapshot/a",
+        "/ndi/status",
+        "/ndi/time",
+        "/ndi/ice-servers",
+        "/ndi/sources",
+        "/whep/ndi-1",
+        "/whep/ndi-1/s1",
+        "/stage/layout",
+        "/stage/ndi/whep/a",
+        "/bible/ndi/client-stats",
+    ] {
+        for method in METHODS {
+            let read = method == Method::GET || method == Method::HEAD;
+            let want = if read { Pass::Page } else { Pass::Method };
+            assert_eq!(pass(&method, path, false), want, "{method} {path}");
+        }
+    }
+    // Not one of Presenter's paths: fohmixer's own router.
+    assert_eq!(pass(&Method::POST, "/ndiwhep/a", false), Pass::No);
+    assert_eq!(pass(&Method::POST, "/api/ndi/whep/a", false), Pass::No);
+    // A write route's path with an encoded separator is refused, whatever
+    // the method; a read elsewhere under `/ndi/` passes as it is.
+    for path in [
+        "/ndi/whep/%2e%2e%2fstage%2flayout",
+        "/ndi/whep/a%2Fb/s1",
+        "/ndi/whep/a/s%5c1",
+        "/ndi/sessions/a%2fb/client-stats",
+    ] {
+        for method in [Method::GET, Method::POST, Method::PATCH] {
+            assert_eq!(pass(&method, path, false), Pass::Path, "{method} {path}");
+        }
+    }
+    assert_eq!(pass(&Method::GET, "/ndi/snapshot/a%2Fb", false), Pass::Page);
+    // Only the live socket upgrades.
+    assert_eq!(pass(&Method::GET, "/ndi/whep/a", true), Pass::Upgrade);
 }
 
 #[test]
@@ -507,19 +578,19 @@ fn a_location_at_presenter_itself_becomes_a_path_on_fohmixers_origin() {
 }
 
 #[test]
-fn a_whep_path_with_an_encoded_separator_is_refused() {
-    assert!(encoded_separator("/whep/%2e%2e%2fstage%2flayout"));
-    assert!(encoded_separator("/whep/a%2Fb"));
-    assert!(encoded_separator("/whep/a%5cb"));
-    assert!(encoded_separator("/whep/a%5Cb"));
-    assert!(encoded_separator("/whep/a\\b"));
-    assert!(!encoded_separator("/whep/ndi-1/s1"));
-    assert!(!encoded_separator("/whep/a%20b"));
+fn a_write_routes_path_with_an_encoded_separator_is_refused() {
+    assert!(encoded_separator("/ndi/whep/%2e%2e%2fstage%2flayout"));
+    assert!(encoded_separator("/ndi/whep/a%2Fb"));
+    assert!(encoded_separator("/ndi/whep/a%5cb"));
+    assert!(encoded_separator("/ndi/whep/a%5Cb"));
+    assert!(encoded_separator("/ndi/whep/a\\b"));
+    assert!(!encoded_separator("/ndi/whep/ndi-1/s1"));
+    assert!(!encoded_separator("/ndi/whep/a%20b"));
     assert_eq!(
-        pass(&Method::POST, "/whep/%2e%2e%2fstage%2flayout", false),
+        pass(&Method::POST, "/ndi/whep/%2e%2e%2fstage%2flayout", false),
         Pass::Path
     );
-    assert_eq!(pass(&Method::GET, "/whep/a%2Fb", false), Pass::Path);
+    assert_eq!(pass(&Method::GET, "/ndi/whep/a%2Fb", false), Pass::Path);
     // Elsewhere an encoded slash is Presenter's own business (a read).
     assert_eq!(pass(&Method::GET, "/bible/a%2Fb", false), Pass::Page);
 }
