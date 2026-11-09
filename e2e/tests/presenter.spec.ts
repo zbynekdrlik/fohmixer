@@ -1,6 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./support/fixtures";
-import { HARNESS, dispatchPointer, frames, harness, hubEvents, openSurface, pageEvents, rightHalfLive, until } from "./support/live";
+import { HARNESS, LiveClient, dispatchPointer, frames, harness, hubEvents, openSurface, pageEvents, rightHalfLive, until } from "./support/live";
 
 // Presenter's stage tab (#90; the owner's approved
 // docs/mockups/presenter-stage-v1.html): the PRESENTER tab under IEM MIXER
@@ -438,6 +438,71 @@ test.describe("Presenter's stage miniature in the column", () => {
         expect(shownFit.rail_w).toBeCloseTo(railBox.width, 0);
         expect(shownFit.h).toBeGreaterThanOrEqual(40);
         expect(shownFit.hide).toBeUndefined();
+      });
+    });
+  }
+
+  // #90's DECIDED of 2026-11-09 (the live check of 1.38.2 at 1024 x 700):
+  // rows shrunk for the miniature cut STAGE's second line (`STOP · open`) in
+  // half (the grid squeezes the line's box under its 12 px and its own clip
+  // cuts the letters). A row shorter than its second line needs hides that
+  // line whole: every visible rail row's second line is either whole inside
+  // its button or not drawn, and the row keeps its name and AUTO mark.
+  // 1024 x 640 too: shorter rows still (CI's 1024 x 700 rows are about 33 px
+  // with every extra tab in the column; a harness without some of them has
+  // taller rows there).
+  for (const size of [
+    { width: 1024, height: 700 },
+    { width: 1024, height: 640 },
+  ]) {
+    test.describe(`on a shorter screen, ${size.width}×${size.height}, the rail's second lines`, () => {
+      test.use({ viewport: size });
+
+      test("are whole inside their row or not drawn, never cut", async ({ page }) => {
+        await restore();
+        const live = await LiveClient.open();
+        try {
+          live.setHub("stage_aut", true);
+          await until(async () => live.hub.get("stage_aut"), (v) => v === true, "STAGE AUT on");
+          await openSurface(page);
+          await expect(mini(page)).toBeVisible();
+          await expect(page.getByTestId("stage-mics")).toHaveAttribute("data-aut", /run|held/);
+          // Rows under 44 px: the miniature takes their room.
+          const rows = (await heights(page)).rows.split(" ").map((t) => parseFloat(t));
+          expect(Math.max(...rows)).toBeLessThan(44);
+          const looks = await page.locator('[data-testid="rail"] .rule-btn').evaluateAll((all) =>
+            all.map((b) => {
+              const box = b.getBoundingClientRect();
+              const sub = b.querySelector(".btn-sub") as HTMLElement;
+              const subBox = sub.getBoundingClientRect();
+              const label = (b.querySelector(".btn-text") as HTMLElement).getBoundingClientRect();
+              const badge = b.querySelector(".aut-badge")?.getBoundingClientRect();
+              return {
+                id: b.getAttribute("data-testid"),
+                text: sub.textContent,
+                drawn: getComputedStyle(sub).display !== "none" && getComputedStyle(sub).visibility !== "hidden",
+                // Whole: its box holds its line (no clip of its own cuts it) and lies inside the button.
+                whole: sub.scrollHeight <= sub.clientHeight && subBox.top >= box.top && subBox.bottom <= box.bottom,
+                sub: [subBox.top, subBox.bottom, sub.clientHeight, sub.scrollHeight],
+                box: [box.top, box.bottom],
+                label: label.height > 0 && label.top >= box.top - 1 && label.bottom <= box.bottom + 1,
+                badge: badge ? badge.height > 0 && badge.top >= box.top && badge.bottom <= box.bottom : null,
+              };
+            }),
+          );
+          test.info().annotations.push({ type: `rule rows ${size.width}x${size.height}`, description: `${JSON.stringify(rows)} ${JSON.stringify(looks)}` });
+          expect(looks.length).toBeGreaterThan(0);
+          expect(looks.find((l) => l.id === "stage-mics")?.text).not.toBe("");
+          for (const l of looks) {
+            expect(!l.drawn || l.whole, `${l.id}'s second line ${JSON.stringify(l)}`).toBe(true);
+            expect(l.label, `${l.id}'s name inside its row`).toBe(true);
+            if (l.badge !== null) expect(l.badge, `${l.id}'s AUTO mark inside its row`).toBe(true);
+          }
+        } finally {
+          live.setHub("stage_aut", false);
+          await until(async () => live.hub.get("stage_aut"), (v) => v === false, "STAGE AUT off");
+          live.close();
+        }
       });
     });
   }
