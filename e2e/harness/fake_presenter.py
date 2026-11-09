@@ -108,6 +108,9 @@ SCRIPT = """\
     .then((answer) => {
       show(answer.code);
       body.dataset.app = "loaded";
+    })
+    .catch(() => {
+      body.dataset.app = "failed";
     });
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   const socket = new WebSocket(scheme + "//" + location.host + "/live/ws?surface=stage&preview=1");

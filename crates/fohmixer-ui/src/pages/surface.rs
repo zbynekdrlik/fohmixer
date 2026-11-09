@@ -52,7 +52,7 @@ use crate::manual::manual_parts;
 use crate::pages::ableset::{AbleSetView, take_return};
 use crate::pages::deck::DeckView;
 use crate::pages::iem::{IemPane, IemTab};
-use crate::pages::presenter::PresenterView;
+use crate::pages::presenter::{PresenterView, StageMini};
 use crate::pages::sectors::SectorsView;
 use crate::store::{Badge, LiveStore, Slot};
 
@@ -291,6 +291,12 @@ impl Nav {
     /// iemmixer's frame lives (#166), read tracked.
     pub(crate) fn iem_alive(self) -> bool {
         self.iem_frame.try_get().unwrap_or(false)
+    }
+
+    /// The extra tab shown, read tracked (the column's stage miniature hides
+    /// while PRESENTER is open, 1.37.0).
+    pub(crate) fn shown_extra(self) -> Extra {
+        self.shown.try_get().unwrap_or_default()
     }
 
     /// iemmixer's tab is the one shown (#166), read tracked.
@@ -997,6 +1003,7 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
     let body_ref = NodeRef::<html::Div>::new();
     let column_ref = NodeRef::<html::Nav>::new();
     let thin_ref = NodeRef::<html::Div>::new();
+    let rail_ref = NodeRef::<html::Div>::new();
     let measured = measure_page(nav.viewport, body_ref, column_ref, thin_ref);
     // Each line's window (a line that does not fit), from the column's
     // arrows, kept by the line's key (`PageModel::line_key`: its rows, and
@@ -1158,8 +1165,9 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
                         children=shift
                     />
                 </div>
-                <div class="rail" data-testid="rail">
+                <div class="rail" data-testid="rail" node_ref=rail_ref>
                     <div class="rail-main">{rail}</div>
+                    <StageMini rail=rail_ref />
                     <div class="rail-foot">{global}</div>
                 </div>
                 <ColumnFoot />

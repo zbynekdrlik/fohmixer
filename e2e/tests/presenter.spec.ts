@@ -1,6 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./support/fixtures";
-import { HARNESS, dispatchPointer, harness, hubEvents, openSurface, pageEvents, rightHalfLive, until } from "./support/live";
+import { HARNESS, dispatchPointer, frames, harness, hubEvents, openSurface, pageEvents, rightHalfLive, until } from "./support/live";
 
 // Presenter's stage tab (#90; the owner's approved
 // docs/mockups/presenter-stage-v1.html): the PRESENTER tab under IEM MIXER
@@ -97,9 +97,11 @@ test.describe("Presenter's stage tab", () => {
     await expect(keyOf(page, "timer").locator(".pst-note")).toHaveText("Countdown to the start");
     const tops = await keys.evaluateAll((all) => all.map((k) => Math.round(k.getBoundingClientRect().top)));
     expect(new Set(tops).size).toBe(3);
-    // The hub's own socket and the frame's are Presenter's previews: two
-    // sockets, both through the hub.
-    await until(fakeState, (s) => s.sockets >= 2, "the hub's and the frame's sockets");
+    // The hub's own socket and the pane's frame are Presenter's previews:
+    // two sockets, both through the hub (the column's miniature, and its
+    // socket, are gone while the tab is open).
+    await expect(mini(page)).toHaveCount(0);
+    await until(fakeState, (s) => s.sockets === 2, "the hub's and the pane's sockets");
   });
 
   test("a key's 1 s hold switches the stage at the lift, a tap does nothing, and every page follows", async ({ page }) => {
@@ -208,5 +210,181 @@ test.describe("Presenter's stage tab", () => {
     );
     expect(whats.indexOf("down")).toBeGreaterThan(whats.indexOf("frame"));
     expect(whats.lastIndexOf("frame")).toBeGreaterThan(whats.indexOf("down"));
+  });
+});
+
+// The column's stage miniature (1.37.0; way A of the owner's approved
+// docs/mockups/presenter-stage-v2.html): the same stage frame as the
+// PRESENTER pane, scaled to the column's width, in the rail's free room
+// above TECHALERT; a dim STAGE caption with the layout on stage; a tap
+// opens PRESENTER, and while it is open the miniature is not there. Where
+// the rail has no free room, and on a phone, it is not there either:
+// nothing gets shorter for it.
+const mini = (page: Page) => page.getByTestId("stage-mini");
+const miniFrame = (page: Page) => page.frameLocator('[data-testid="mini-frame"]');
+
+/** The rail's rows (its resolved tracks) and the travel of every fader on the screen (px). */
+async function heights(page: Page): Promise<{ rows: string; travel: number[] }> {
+  const rows = await page.locator('[data-testid="rail"] .rail-main').evaluate((m) => getComputedStyle(m).gridTemplateRows);
+  const travel = await page
+    .getByTestId("fader")
+    .evaluateAll((all) => all.filter((f) => f.getBoundingClientRect().height > 0).map((f) => f.getBoundingClientRect().height));
+  return { rows, travel };
+}
+
+test.describe("Presenter's stage miniature in the column", () => {
+  test.afterEach(restore);
+
+  test.describe("on the iPad's screen", () => {
+    test.use({ viewport: { width: 1194, height: 834 } });
+
+    test("shows the stage above TECHALERT, a tap opens PRESENTER, hidden while it is open, nothing shorter", async ({ page }) => {
+      await restore();
+      await openSurface(page);
+      const box = mini(page);
+      await expect(box).toBeVisible();
+      await expect(box.locator(".mini-cap span")).toHaveText("STAGE");
+      await expect(page.getByTestId("mini-note")).toHaveText("WORSHIP");
+      await expect(box).toHaveAttribute("data-offline", "false");
+      // Calm: dim text, no fill.
+      expect(await box.evaluate((b) => getComputedStyle(b).backgroundColor)).toBe("rgb(16, 18, 24)");
+      // The stage page through the hub, scaled from 1920 x 1080, no touch.
+      const frame = page.getByTestId("mini-frame");
+      await expect(frame).toHaveAttribute("src", "/stage?preview=1");
+      expect(await frame.getAttribute("sandbox")).toBeNull();
+      await expect(miniFrame(page).locator("body")).toHaveAttribute("data-app", "loaded");
+      await expect(miniFrame(page).locator("#fake-stage")).toHaveText("worship");
+      expect(await frame.evaluate((f) => getComputedStyle(f).pointerEvents)).toBe("none");
+      const area = (await page.getByTestId("mini-stage").boundingBox())!;
+      expect(Math.abs(area.width / area.height - 16 / 9)).toBeLessThan(0.02);
+      const shown = (await frame.boundingBox())!;
+      expect(Math.abs(shown.width - area.width)).toBeLessThan(1.5);
+      expect(Math.abs(shown.height - area.height)).toBeLessThan(1.5);
+      // In the rail, between its buttons and TECHALERT, the column's width.
+      const rail = page.getByTestId("rail");
+      await expect(rail.getByTestId("stage-mini")).toHaveCount(1);
+      const at = (await box.boundingBox())!;
+      const main = (await rail.locator(".rail-main").boundingBox())!;
+      const foot = (await rail.locator(".rail-foot").boundingBox())!;
+      const railBox = (await rail.boundingBox())!;
+      expect(at.y).toBeGreaterThanOrEqual(main.y + main.height);
+      expect(at.y + at.height).toBeLessThanOrEqual(foot.y);
+      expect(Math.abs(at.width - railBox.width)).toBeLessThan(1);
+      // Every rail row at its full 44 px with it there.
+      const withMini = await heights(page);
+      expect(withMini.rows.split(" ").every((t) => t === "44px"), withMini.rows).toBe(true);
+      // A tap opens PRESENTER; the miniature goes while it is open.
+      const pageTab = page.locator('[data-testid="tabbar"][data-level="0"] [data-testid="tab"][data-selected="true"]');
+      await expect(pageTab).toHaveCount(1);
+      const pageId = (await pageTab.getAttribute("data-page"))!;
+      const since = await pageNow(page);
+      await box.dispatchEvent("pointerdown");
+      await expect(page.getByTestId("presenter-tab")).toHaveAttribute("data-selected", "true");
+      await expect(page.getByTestId("page")).toHaveAttribute("data-extra", "presenter");
+      await expect(mini(page)).toHaveCount(0);
+      await expect(page.getByTestId("mini-frame")).toHaveCount(0);
+      // Nothing changed height: the rail's rows and the right half's faders.
+      const open = await heights(page);
+      expect(open.rows).toBe(withMini.rows);
+      const right = await page
+        .locator('.slot[data-side="right"] [data-testid="fader"]')
+        .evaluateAll((all) => all.map((f) => f.getBoundingClientRect().height));
+      expect(right.length).toBeGreaterThan(0);
+      for (const h of right) expect(withMini.travel).toContain(h);
+      // Back to the mixer page: the miniature again.
+      await page.locator(`[data-testid="tabbar"][data-level="0"] [data-testid="tab"][data-page="${pageId}"]`).dispatchEvent("pointerdown");
+      await expect(page.getByTestId("page")).toHaveAttribute("data-extra", "none");
+      await expect(mini(page)).toBeVisible();
+      await expect(miniFrame(page).locator("#fake-stage")).toHaveText("worship");
+      expect(await heights(page)).toEqual(withMini);
+      // The page's recorder: the miniature's frame and its tap.
+      const whats = await until(
+        async () => pageEvents(await hubEvents()).filter((e) => e.ev === "presenter" && e.t >= since).map((e) => e.what),
+        (w) => w.includes("mini_tap") && w.includes("mini_frame"),
+        "the miniature's steps",
+        15000,
+      );
+      expect(whats.indexOf("mini_tap")).toBeLessThan(whats.indexOf("open"));
+    });
+
+    test("follows a switch of the stage's layout", async ({ page }) => {
+      await restore();
+      await openSurface(page);
+      await expect(miniFrame(page).locator("#fake-stage")).toHaveText("worship");
+      await harness("/presenter/switch", { code: "timer" });
+      await expect(page.getByTestId("mini-note")).toHaveText("TIMER");
+      await expect(miniFrame(page).locator("#fake-stage")).toHaveText("timer");
+      await harness("/presenter/switch", { code: "bible" });
+      await expect(page.getByTestId("mini-note")).toHaveText("BIBLE");
+      await expect(miniFrame(page).locator("#fake-stage")).toHaveText("bible");
+    });
+
+    test("with Presenter down says offline in red and dims, and comes back by itself", async ({ page }) => {
+      await restore();
+      await openSurface(page);
+      await expect(miniFrame(page).locator("body")).toHaveAttribute("data-app", "loaded");
+      await harness("/presenter/down");
+      const box = mini(page);
+      await expect(box).toHaveAttribute("data-offline", "true", { timeout: 15000 });
+      await expect(page.getByTestId("mini-note")).toHaveText("offline");
+      expect(await page.getByTestId("mini-note").evaluate((e) => getComputedStyle(e).color)).toBe("rgb(255, 59, 48)");
+      await expect(page.getByTestId("mini-frame")).toHaveCount(0);
+      const stage = page.getByTestId("mini-stage");
+      await expect(stage).toHaveAttribute("data-preview", "down");
+      expect(await stage.evaluate((s) => getComputedStyle(s).opacity)).toBe("0.35");
+      await harness("/presenter/up");
+      await expect(miniFrame(page).locator("body")).toHaveAttribute("data-app", "loaded", { timeout: 15000 });
+      await expect(box).toHaveAttribute("data-offline", "false");
+      await expect(page.getByTestId("mini-note")).toHaveText("WORSHIP");
+    });
+  });
+
+  test.describe("where the rail has no free room", () => {
+    test.use({ viewport: { width: 1280, height: 720 } });
+
+    test("is not there and the rail keeps its full rows", async ({ page }) => {
+      await restore();
+      await openSurface(page);
+      await expect(page.getByTestId("rail")).toBeVisible();
+      await frames(page, 4);
+      await expect(mini(page)).toHaveCount(0);
+      await expect(page.getByTestId("mini-frame")).toHaveCount(0);
+      const { rows } = await heights(page);
+      expect(rows.split(" ").every((t) => t === "44px"), rows).toBe(true);
+    });
+  });
+
+  // 520 x 1000 is a phone by its width (the 520 px query, inclusive) whose
+  // open column has room for it (the rail 600 px of room, 475 needed): only
+  // the phone's rule keeps it out there.
+  for (const size of [
+    { width: 844, height: 390 },
+    { width: 520, height: 1000 },
+  ]) {
+    test.describe(`on a phone, ${size.width}×${size.height}`, () => {
+      test.use({ viewport: size });
+
+      test("is never in the column behind ☰", async ({ page }) => {
+        await restore();
+        await openSurface(page);
+        await page.getByTestId("thin-burger").dispatchEvent("pointerdown");
+        await expect(page.getByTestId("page")).toHaveAttribute("data-column-open", "true");
+        await frames(page, 4);
+        await expect(mini(page)).toHaveCount(0);
+        await expect(page.getByTestId("mini-frame")).toHaveCount(0);
+      });
+    });
+  }
+
+  // One px wider is a tablet: the same rail has room, and it is there.
+  test.describe("just past a phone, 521×1000", () => {
+    test.use({ viewport: { width: 521, height: 1000 } });
+
+    test("is in the column", async ({ page }) => {
+      await restore();
+      await openSurface(page);
+      await expect(mini(page)).toBeVisible();
+      await expect(miniFrame(page).locator("#fake-stage")).toHaveText("worship");
+    });
   });
 });

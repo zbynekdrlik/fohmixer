@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Presenter stage miniature</title>
+<style>
+/* The app's fonts, by relative path (.claude/rules/public-repo-hygiene.md). */
+@font-face { font-family: "Barlow Condensed"; font-weight: 700; font-display: block; src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 600; font-display: block; src: url("../../crates/fohmixer-ui/fonts/barlow-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-weight: 500; font-display: block; src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2"); }
+:root { --bg:#0a0b10; --bar:#14141e; --panel:#181824; --line:#2a2a3a; --text:#e2e2ec; --dim:#8a8a9c; --faint:#5e5e72; --sel:#1d1f33; --teal:#2fc79a; --gold:#e0b84a; --red:#e0555f; --blue:#3f8cff; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 16px; background: #05050a; color: var(--text); font: 600 15px/1.45 "Barlow", sans-serif; }
+h1 { font: 700 26px/1.1 "Barlow Condensed", sans-serif; letter-spacing: .04em; margin: 0 0 6px; }
+h2 { font: 700 20px/1.2 "Barlow Condensed", sans-serif; letter-spacing: .03em; margin: 26px 0 4px; }
+p { margin: 4px 0 10px; color: var(--dim); max-width: 74ch; }
+.scroll { overflow-x: auto; }
+.ipad { width: 1194px; height: 834px; background: var(--bg); display: grid; grid-template-columns: 1fr 132px 1fr; gap: 6px; padding: 6px; border: 2px solid #333; border-radius: 14px; flex: none; }
+.half { display: grid; grid-template-rows: 1fr 1fr; gap: 6px; min-width: 0; }
+.row { display: flex; gap: 6px; min-height: 0; }
+.strip { flex: 1; min-width: 0; background: var(--panel); border-radius: 10px; display: flex; flex-direction: column; align-items: center; padding: 8px 0; color: var(--text); }
+.strip b { font: 700 19px/1 "Barlow Condensed", sans-serif; letter-spacing: .04em; }
+.strip .v { font: 500 12px "JetBrains Mono", monospace; margin-top: 8px; }
+.strip .t { flex: 1; width: 8px; margin: 12px 0; background: #0c0c13; border-radius: 3px; position: relative; }
+.strip .t::after { content: ""; position: absolute; left: -22px; right: -22px; top: 15%; height: 22px; border-radius: 5px; background: #33354a; }
+.strip .s { font: 700 13px "Barlow Condensed", sans-serif; color: var(--dim); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; }
+.column { background: var(--bar); border: 1px solid var(--line); border-radius: 12px; padding: 8px 6px; display: flex; flex-direction: column; gap: 8px; }
+.pages { border: 1px solid var(--line); border-radius: 10px; padding: 4px; display: grid; gap: 2px; }
+.tab { text-align: center; border-radius: 7px; padding: 6px 3px; color: var(--faint); font: 600 10px/1.1 "Barlow", sans-serif; letter-spacing: .06em; border-bottom: 2px solid transparent; }
+.tab.big { font: 700 19px/1.05 "Barlow Condensed", sans-serif; letter-spacing: .08em; color: var(--text); }
+.tab.on { background: var(--sel); color: var(--text); border-bottom-color: var(--teal); }
+.iemrow { display: grid; grid-template-columns: 1fr 26px; align-items: stretch; gap: 2px; }
+.iemrow .tab { display: flex; align-items: center; justify-content: center; gap: 5px; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--teal); }
+.x { display: grid; place-items: center; color: var(--dim); font: 600 13px "Barlow", sans-serif; border-radius: 6px; }
+.cap { color: var(--faint); font-size: 9px; letter-spacing: .12em; text-align: center; }
+.block { flex: 0 0 150px; border: 1px solid var(--line); border-radius: 10px; }
+.btn { background: var(--panel); border-radius: 9px; padding: 11px 9px; font: 600 12px "Barlow", sans-serif; color: var(--dim); }
+.grow { flex: 1; }
+.foot { font: 500 9px "JetBrains Mono", monospace; color: var(--faint); text-align: center; }
+.iem { background: #101218; border: 1px solid var(--line); border-radius: 10px; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+.iemhead { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.iemhead b { font: 700 18px "Barlow Condensed", sans-serif; letter-spacing: .04em; }
+.iemhead .sp { flex: 1; }
+.chip { font: 700 14px "Barlow Condensed", sans-serif; padding: 8px 14px; border-radius: 8px; background: #20222e; color: var(--text); }
+.chip.listen { background: #16463a; color: #7cf0c8; }
+.chip.talk { background: #4a1d22; color: #ffb3b8; }
+.mix { flex: 1; display: grid; grid-template-columns: repeat(6, 1fr); gap: 5px; padding: 8px; min-height: 0; }
+.mix .strip { background: #171a22; }
+.note { font: 500 11px "JetBrains Mono", monospace; color: var(--faint); padding: 7px 12px; border-top: 1px solid var(--line); }
+.tag { display: inline-block; background: #2a2a3a; color: var(--text); padding: 1px 6px; border-radius: 4px; font-size: 13px; }
+.pp { background: #101218; border: 1px solid var(--line); border-radius: 10px; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+.pphead { display: flex; align-items: baseline; gap: 8px; padding: 9px 12px 7px; }
+.pphead b { font: 700 18px "Barlow Condensed", sans-serif; letter-spacing: .04em; }
+.pphead .sp { flex: 1; }
+.pphead .now { font: 600 12px "Barlow", sans-serif; color: var(--dim); }
+.pphead .now em { font-style: normal; color: var(--teal); }
+.stage { margin: 0 10px; aspect-ratio: 16 / 9; background: #000; border-radius: 6px; border: 1px solid var(--line); position: relative; overflow: hidden; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 10px; }
+.stage .grp { position: absolute; top: 9px; left: 12px; font: 700 12px "Barlow Condensed", sans-serif; letter-spacing: .1em; color: #f0c040; }
+.stage .cur { font: 700 34px/1.1 "Barlow Condensed", sans-serif; color: #fff; text-align: center; }
+.stage .nxt { font: 700 22px/1.1 "Barlow Condensed", sans-serif; color: #6c6c7c; text-align: center; }
+.stage .clock { position: absolute; bottom: 7px; right: 10px; font: 500 11px "JetBrains Mono", monospace; color: #6c6c7c; }
+.stage.off { background: #0c0c12; }
+.stage .msg { font: 700 20px "Barlow Condensed", sans-serif; color: var(--red); letter-spacing: .04em; }
+.stage .msg2 { font: 600 13px "Barlow", sans-serif; color: var(--dim); }
+.cap2 { color: var(--faint); font: 600 10px "Barlow", sans-serif; letter-spacing: .12em; padding: 12px 12px 6px; }
+.lays { flex: 1; display: grid; grid-template-columns: repeat(3, 1fr); grid-auto-rows: 1fr; gap: 6px; padding: 0 10px 10px; min-height: 0; }
+.lay { position: relative; overflow: hidden; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; display: flex; flex-direction: column; justify-content: center; padding: 6px 10px; }
+.lay b { font: 700 17px/1.1 "Barlow Condensed", sans-serif; letter-spacing: .05em; color: var(--text); position: relative; }
+.lay small { font: 600 10.5px/1.25 "Barlow", sans-serif; color: var(--faint); margin-top: 3px; position: relative; }
+.lay.on { background: var(--sel); border-color: var(--teal); box-shadow: inset 0 -3px 0 var(--teal); }
+.lay.on small { color: var(--teal); }
+.lay .fill { position: absolute; inset: 0; background: rgba(63,140,255,.32); }
+.lay.full small { color: #a9c8ff; }
+.lay.dis { opacity: .4; }
+
+.mini { border: 1px solid var(--line); border-radius: 9px; padding: 5px; display: flex; flex-direction: column; gap: 4px; background: #101218; }
+.mini .mcap { font: 600 9px "Barlow", sans-serif; letter-spacing: .1em; color: var(--faint); display: flex; justify-content: space-between; }
+.mini .mcap em { font-style: normal; color: var(--dim); }
+.mstage { aspect-ratio: 16 / 9; background: #000; border-radius: 4px; position: relative; overflow: hidden; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 3px; }
+.mstage .g { position: absolute; top: 3px; left: 4px; font: 700 4px "Barlow Condensed", sans-serif; color: #f0c040; }
+.mstage .c { font: 700 6px/1 "Barlow Condensed", sans-serif; color: #fff; text-align: center; padding: 0 4px; }
+.mstage .n { font: 700 4px/1 "Barlow Condensed", sans-serif; color: #6c6c7c; }
+.mtext { background: #000; border-radius: 4px; padding: 5px 6px; display: flex; flex-direction: column; gap: 3px; }
+.mtext .g { font: 700 9px "Barlow Condensed", sans-serif; letter-spacing: .08em; color: #c9a640; }
+.mtext .c { font: 700 13px/1.1 "Barlow Condensed", sans-serif; color: #e8e8f0; }
+.mtext .n { font: 600 10px/1.15 "Barlow", sans-serif; color: var(--faint); }
+.mini.off .mstage, .mini.off .mtext { opacity: .35; }
+.mini.off .mcap em { color: var(--red); }
+.grow2 { flex: 1; }
+</style>
+</head>
+<body>
+<h1>PRESENTER: zmenšenina pódiovej obrazovky v strednom stĺpci</h1>
+<p>Návrh na schválenie (#90). V strednom stĺpci, v prázdnom mieste nad TECHALERT, je stále vidieť, čo je na pódiovej obrazovke. Ťuknutie naň otvorí záložku PRESENTER. Keď je záložka PRESENTER otvorená, zmenšenina sa skryje, lebo veľký náhľad je vedľa. Faderom sa nič nezmenší. Text piesne je vymyslený, plocha iPadu 1194 × 834.</p>
+<h2>A · Skutočná zmenšenina (obrázok pódia)</h2>
+<p>Presne to, čo je na pódiu, zmenšené na šírku stĺpca (asi 120 × 68 bodov, 1/16). Vidno, ktorý layout svieti a či je na ňom text, ale text sa prečítať nedá: písmená vyjdú okolo 5 bodov.</p>
+<div class="scroll"><div class="ipad">
+  <div class="half">
+    <div class="row"><div class="strip"><b>DRUMS</b><span class="v">-12.8</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>BASS</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>GTR</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>PA BAND</b><span class="v">-20.0</span><i class="t"></i><span class="s">SEL</span></div></div>
+    <div class="row"><div class="strip"><b>KLAVIR</b><span class="v">-19.3</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>VOX 1</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>VOX 2</b><span class="v">-31.5</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>REPROM</b><span class="v">-13.5</span><i class="t"></i><span class="s">SEL</span></div></div>
+  </div>
+  <nav class="column">
+    <div class="pages">
+      <div class="tab big on">FOH</div>
+      <div class="tab">STREAM DECK</div>
+      <div class="tab">ABLESET</div>
+      <div class="tab">IEM MIXER</div>
+      <div class="tab">PRESENTER</div>
+    </div>
+    <div class="cap">LAYOUTS</div><div class="block"></div>
+    <div class="btn">ARRANGE</div><div class="btn">STAGE</div><div class="btn">REVERB</div><div class="btn">AUTOTUNE</div><div class="btn">TALKBACK</div>
+    <div class="grow2"></div>
+    <div class="mini"><div class="mcap"><span>STAGE</span><em>WORSHIP SNV</em></div>
+      <div class="mstage"><span class="g">VERSE 1</span><div class="c">Line of the song shown now</div><div class="n">the next line comes here</div></div></div>
+    <div class="btn">TECHALERT</div><div class="foot">BAND · MASTER · v1.37.0</div>
+  </nav>
+  <div class="half">
+    <div class="row"><div class="strip"><b>KEYS</b><span class="v">-12.8</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>VOCALS</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>BACKING</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>PA BAND</b><span class="v">-20.0</span><i class="t"></i><span class="s">SEL</span></div></div>
+    <div class="row"><div class="strip"><b>CG</b><span class="v">-19.3</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>HAND1</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>HAND2</b><span class="v">-31.5</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>REPROM</b><span class="v">-13.5</span><i class="t"></i><span class="s">SEL</span></div></div>
+  </div>
+</div></div>
+
+<h2>B · Čitateľný text z Presentera</h2>
+<p>Fohmixer si od Presentera berie, čo je práve na pódiu (skupina, aktuálny riadok, ďalší riadok), a píše to čitateľným písmom. Nie je to obrázok obrazovky, ale vidno, čo speváci práve čítajú. Pri layoutoch bez textu (TIMER, PREACH) by tu bol čas.</p>
+<div class="scroll"><div class="ipad">
+  <div class="half">
+    <div class="row"><div class="strip"><b>DRUMS</b><span class="v">-12.8</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>BASS</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>GTR</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>PA BAND</b><span class="v">-20.0</span><i class="t"></i><span class="s">SEL</span></div></div>
+    <div class="row"><div class="strip"><b>KLAVIR</b><span class="v">-19.3</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>VOX 1</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>VOX 2</b><span class="v">-31.5</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>REPROM</b><span class="v">-13.5</span><i class="t"></i><span class="s">SEL</span></div></div>
+  </div>
+  <nav class="column">
+    <div class="pages">
+      <div class="tab big on">FOH</div>
+      <div class="tab">STREAM DECK</div>
+      <div class="tab">ABLESET</div>
+      <div class="tab">IEM MIXER</div>
+      <div class="tab">PRESENTER</div>
+    </div>
+    <div class="cap">LAYOUTS</div><div class="block"></div>
+    <div class="btn">ARRANGE</div><div class="btn">STAGE</div><div class="btn">REVERB</div><div class="btn">AUTOTUNE</div><div class="btn">TALKBACK</div>
+    <div class="grow2"></div>
+    <div class="mini"><div class="mcap"><span>STAGE</span><em>WORSHIP SNV</em></div>
+      <div class="mtext"><span class="g">VERSE 1</span><span class="c">Line of the song shown now</span><span class="n">the next line comes here</span></div></div>
+    <div class="btn">TECHALERT</div><div class="foot">BAND · MASTER · v1.37.0</div>
+  </nav>
+  <div class="half">
+    <div class="row"><div class="strip"><b>KEYS</b><span class="v">-12.8</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>VOCALS</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>BACKING</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>PA BAND</b><span class="v">-20.0</span><i class="t"></i><span class="s">SEL</span></div></div>
+    <div class="row"><div class="strip"><b>CG</b><span class="v">-19.3</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>HAND1</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>HAND2</b><span class="v">-31.5</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>REPROM</b><span class="v">-13.5</span><i class="t"></i><span class="s">SEL</span></div></div>
+  </div>
+</div></div>
+
+<h2>B · Presenter nedostupný</h2>
+<p>Keď Presenter neodpovedá, rámik stmavne a namiesto layoutu je napísané offline.</p>
+<div class="scroll"><div class="ipad">
+  <div class="half">
+    <div class="row"><div class="strip"><b>DRUMS</b><span class="v">-12.8</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>BASS</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>GTR</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>PA BAND</b><span class="v">-20.0</span><i class="t"></i><span class="s">SEL</span></div></div>
+    <div class="row"><div class="strip"><b>KLAVIR</b><span class="v">-19.3</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>VOX 1</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>VOX 2</b><span class="v">-31.5</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>REPROM</b><span class="v">-13.5</span><i class="t"></i><span class="s">SEL</span></div></div>
+  </div>
+  <nav class="column">
+    <div class="pages">
+      <div class="tab big on">FOH</div>
+      <div class="tab">STREAM DECK</div>
+      <div class="tab">ABLESET</div>
+      <div class="tab">IEM MIXER</div>
+      <div class="tab">PRESENTER</div>
+    </div>
+    <div class="cap">LAYOUTS</div><div class="block"></div>
+    <div class="btn">ARRANGE</div><div class="btn">STAGE</div><div class="btn">REVERB</div><div class="btn">AUTOTUNE</div><div class="btn">TALKBACK</div>
+    <div class="grow2"></div>
+    <div class="mini off"><div class="mcap"><span>STAGE</span><em>offline</em></div>
+      <div class="mtext"><span class="g">VERSE 1</span><span class="c">Line of the song shown now</span><span class="n">the next line comes here</span></div></div>
+    <div class="btn">TECHALERT</div><div class="foot">BAND · MASTER · v1.37.0</div>
+  </nav>
+  <div class="half">
+    <div class="row"><div class="strip"><b>KEYS</b><span class="v">-12.8</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>VOCALS</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>BACKING</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>PA BAND</b><span class="v">-20.0</span><i class="t"></i><span class="s">SEL</span></div></div>
+    <div class="row"><div class="strip"><b>CG</b><span class="v">-19.3</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>HAND1</b><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>HAND2</b><span class="v">-31.5</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>REPROM</b><span class="v">-13.5</span><i class="t"></i><span class="s">SEL</span></div></div>
+  </div>
+</div></div>
+
+</body>
+</html>

@@ -187,6 +187,14 @@ exclude_re = [
   # down, the tab and the keys through Presenter's return).
   "fohmixer-ui/src/store/live/presenter\\.rs.*(replace|in) LiveStore::(on_presenter|on_presenter_ack|presenter_closed|presenter_switch)( |$)",
   "fohmixer-ui/src/pages/presenter\\.rs.*(replace|in) ready( |$)",
+  # pages/presenter.rs (1.37.0): measure_rail, the column's stage
+  # miniature's measure (the rail's box, its foot's height and .rail-main's
+  # resolved grid-template-rows read from the DOM, handed to the tested
+  # behave::presenter::mini_width / mini_height / track_count / mini_fits).
+  # presenter.spec.ts drives it: the miniature shows on the iPad's screen
+  # with every rail row at 44 px, and is not there at 1280 x 720, where the
+  # rail has no free room.
+  "fohmixer-ui/src/pages/presenter\\.rs.*(replace|in) measure_rail( |$)",
   # store/live/eq.rs (#71 PR E): the Pro-Q 4 screen's glue, one function at
   # a time: on_eq_list, on_eq_locks and on_eq (the hub's messages into the
   # signals, the list numbered), on_frame (a binary message's header read
@@ -355,6 +363,10 @@ exclude_re = [
   # recorder told); iem.spec.ts opens the tab, finds the dot and the hidden
   # frame behind FOH, and taps the ✕ from both.
   "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::iem_alive|Nav::iem_shown|Nav::close_iem)( |$)",
+  # 1.37.0: Nav::shown_extra (the nav.shown memo read, tracked) hides the
+  # column's stage miniature while PRESENTER is open; presenter.spec.ts
+  # taps the miniature and finds it gone while the tab is open.
+  "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) Nav::shown_extra( |$)",
   # The fader sectors' glue (#148), one function at a time. pages/surface.rs:
   # Nav::pick (a sector's layout tab: the picks' signal, written only on a
   # change, and localStorage under binding::sectors::PICKS_KEY),

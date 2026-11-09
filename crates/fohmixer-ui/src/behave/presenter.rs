@@ -3,6 +3,10 @@
 //! Presenter's stage, what the pane shows (the live preview or the offline
 //! panel, the header's words), each layout key's look and words, and when a
 //! key's 1 s hold may switch the stage. `pages/presenter.rs` carries it out.
+//! Since 1.37.0 also the column's stage miniature (way A of the owner's
+//! approved `docs/mockups/presenter-stage-v2.html`): whether it shows (only
+//! in the rail's free room, so nothing gets shorter), its size and its
+//! caption.
 
 use fohmixer_proto::client::StageLayout;
 
@@ -184,6 +188,125 @@ pub fn key_of(code: &str) -> String {
     format!("presenter|{code}")
 }
 
+/// Where a stage frame is shown: the PRESENTER tab's pane, or the column's
+/// miniature (both the same frame, `pages::presenter::StageFrame`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    /// The PRESENTER tab's preview.
+    Pane,
+    /// The column's miniature, above TECHALERT.
+    Column,
+}
+
+impl Place {
+    /// The frame's class.
+    pub fn class(self) -> &'static str {
+        match self {
+            Self::Pane => "pst-frame",
+            Self::Column => "pst-frame mini-frame",
+        }
+    }
+
+    /// The frame's `data-testid`.
+    pub fn testid(self) -> &'static str {
+        match self {
+            Self::Pane => "presenter-frame",
+            Self::Column => "mini-frame",
+        }
+    }
+}
+
+/// The miniature's caption on its left (the mockup's).
+pub const MINI_HEAD: &str = "STAGE";
+
+/// The miniature's caption on its right while Presenter can't be reached.
+pub const MINI_OFFLINE: &str = "offline";
+
+/// A rail button's row at its full height and the rows' gap (`page.css`
+/// `.rail-main`: `minmax(24px, 44px)`, 4 px apart): with less room the rows
+/// shrink, which the miniature must never cause.
+pub const RAIL_ROW: f64 = 44.0;
+pub const RAIL_ROW_GAP: f64 = 4.0;
+
+/// The gap between the rail's parts (`page.css` `.rail`): the miniature
+/// adds one.
+pub const RAIL_GAP: f64 = 6.0;
+
+/// The miniature's box around its picture (`presenter.css` `.stage-mini`):
+/// its border and padding on each side, its caption's line and the gap
+/// under it.
+pub const MINI_EDGE: f64 = 5.0;
+pub const MINI_CAPTION: f64 = 11.0;
+pub const MINI_CAPTION_GAP: f64 = 3.0;
+
+/// The widest screen that is a phone (`page.css`: `max-width: 520px` or
+/// `max-height: 520px`, the thin strip with ☰ in the column's place).
+pub const PHONE_MAX: f64 = 520.0;
+
+/// Whether the viewport (`width`, `height`) is a phone's layout.
+pub fn phone(width: f64, height: f64) -> bool {
+    width <= PHONE_MAX || height <= PHONE_MAX
+}
+
+/// The miniature's picture width in a rail `rail_width` px wide (none when
+/// there is no room for one).
+pub fn mini_width(rail_width: f64) -> Option<f64> {
+    let width = rail_width - 2.0 * MINI_EDGE;
+    (width > 0.0).then_some(width)
+}
+
+/// The miniature's whole height for a picture `width` px wide: the stage's
+/// 16:9 and the box around it.
+pub fn mini_height(width: f64) -> f64 {
+    2.0 * MINI_EDGE + MINI_CAPTION + MINI_CAPTION_GAP + width * STAGE_H / STAGE_W
+}
+
+/// The rail's rows from its resolved `grid-template-rows` (each track a
+/// length in px; `none` for an empty rail).
+pub fn track_count(tracks: &str) -> usize {
+    tracks
+        .split_whitespace()
+        .filter(|t| t.ends_with("px"))
+        .count()
+}
+
+/// Whether the miniature, `mini` px high, fits the rail's free room: `room`
+/// is what the rail's buttons have without it (the rail less its foot and
+/// the gap between them), `rows` the buttons' rows. With the miniature and
+/// its gap taken out, every row must still get its full height, else it
+/// stays hidden (the owner's rule: nothing gets shorter for it).
+pub fn mini_fits(room: f64, rows: usize, mini: f64) -> bool {
+    let need = if rows == 0 {
+        0.0
+    } else {
+        rows as f64 * RAIL_ROW + (rows - 1) as f64 * RAIL_ROW_GAP
+    };
+    room - mini - RAIL_GAP >= need
+}
+
+/// Whether the column shows the miniature: a hub with `[presenter]`
+/// (`configured`), the PRESENTER tab not open (its big preview is beside
+/// it), not a phone (its column lies behind ☰) and room in the rail.
+pub fn mini_shows(configured: bool, tab_open: bool, phone: bool, fits: bool) -> bool {
+    configured && !tab_open && !phone && fits
+}
+
+/// The miniature's caption on its right, and whether it is the red
+/// `offline`: the layout on stage by its name, `—` while it is not known.
+pub fn mini_note(info: &PresenterInfo) -> (String, bool) {
+    match info.online {
+        Some(false) => (MINI_OFFLINE.to_string(), true),
+        Some(true) => (
+            info.current.as_deref().map_or_else(
+                || "\u{2014}".to_string(),
+                |code| name_of(&info.layouts, code),
+            ),
+            false,
+        ),
+        None => ("\u{2014}".to_string(), false),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,5 +419,95 @@ mod tests {
         assert_eq!(DOWN_TEXT, "trying again\u{2026}");
         assert_eq!(FRAME_URL, "/stage?preview=1");
         assert_eq!(key_of("timer"), "presenter|timer");
+    }
+    #[test]
+    fn a_frame_is_named_by_its_place() {
+        assert_eq!(Place::Pane.class(), "pst-frame");
+        assert_eq!(Place::Column.class(), "pst-frame mini-frame");
+        assert_eq!(Place::Pane.testid(), "presenter-frame");
+        assert_eq!(Place::Column.testid(), "mini-frame");
+    }
+
+    #[test]
+    fn a_phone_is_520_px_or_less_either_way() {
+        assert!(!phone(1194.0, 834.0));
+        assert!(!phone(521.0, 521.0));
+        assert!(phone(520.0, 834.0));
+        assert!(phone(1194.0, 520.0));
+        assert!(phone(390.0, 844.0));
+        assert!(phone(844.0, 390.0));
+    }
+
+    #[test]
+    fn the_miniature_is_the_rails_width_less_its_box_and_16_by_9() {
+        assert_eq!(mini_width(118.0), Some(108.0));
+        assert_eq!(mini_width(10.5), Some(0.5));
+        assert_eq!(mini_width(10.0), None);
+        assert_eq!(mini_width(0.0), None);
+        // 10 for the box, 11 + 3 for the caption, 192 x 108 for the picture.
+        assert_eq!(mini_height(192.0), 132.0);
+        assert_eq!(mini_height(0.0), 24.0);
+        assert_eq!(
+            (MINI_EDGE, MINI_CAPTION, MINI_CAPTION_GAP),
+            (5.0, 11.0, 3.0)
+        );
+    }
+
+    #[test]
+    fn the_rails_rows_are_its_resolved_tracks() {
+        assert_eq!(track_count("44px 44px 44px"), 3);
+        assert_eq!(track_count("43.5px"), 1);
+        assert_eq!(track_count("none"), 0);
+        assert_eq!(track_count(""), 0);
+        assert_eq!(track_count("[a] 44px [b] 24px"), 2);
+    }
+
+    #[test]
+    fn the_miniature_fits_only_where_every_rail_row_keeps_its_full_height() {
+        // Three rows: 3 x 44 + 2 x 4 = 140; a 100 px miniature and its 6 px gap.
+        assert!(mini_fits(246.0, 3, 100.0));
+        assert!(!mini_fits(245.9, 3, 100.0));
+        // One row: no gap between rows.
+        assert!(mini_fits(150.0, 1, 100.0));
+        assert!(!mini_fits(149.9, 1, 100.0));
+        // No buttons: only the miniature and its gap.
+        assert!(mini_fits(106.0, 0, 100.0));
+        assert!(!mini_fits(105.9, 0, 100.0));
+        assert_eq!((RAIL_ROW, RAIL_ROW_GAP, RAIL_GAP), (44.0, 4.0, 6.0));
+    }
+
+    #[test]
+    fn the_miniature_shows_with_presenter_set_up_its_tab_shut_on_a_tablet_with_room() {
+        assert!(mini_shows(true, false, false, true));
+        assert!(!mini_shows(false, false, false, true));
+        assert!(!mini_shows(true, true, false, true));
+        assert!(!mini_shows(true, false, true, true));
+        assert!(!mini_shows(true, false, false, false));
+    }
+
+    #[test]
+    fn the_miniatures_caption_names_the_layout_or_says_offline() {
+        assert_eq!(
+            mini_note(&info(Some(true), Some("preach"))),
+            ("PREACH".to_string(), false)
+        );
+        assert_eq!(
+            mini_note(&info(Some(true), Some("api"))),
+            ("api".to_string(), false)
+        );
+        assert_eq!(
+            mini_note(&info(Some(true), None)),
+            ("\u{2014}".to_string(), false)
+        );
+        assert_eq!(
+            mini_note(&info(Some(false), Some("preach"))),
+            ("offline".to_string(), true)
+        );
+        assert_eq!(
+            mini_note(&info(None, Some("preach"))),
+            ("\u{2014}".to_string(), false)
+        );
+        assert_eq!(MINI_HEAD, "STAGE");
+        assert_eq!(PHONE_MAX, 520.0);
     }
 }

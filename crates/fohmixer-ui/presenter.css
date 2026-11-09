@@ -236,3 +236,70 @@
         font-size: 14px;
     }
 }
+
+/* The column's stage miniature (1.37.0; way A of the owner's approved
+   docs/mockups/presenter-stage-v2.html): in the rail's free room above
+   TECHALERT, the same stage frame as the pane, scaled to the rail's width
+   (its size set by `pages/presenter.rs` from `behave::presenter`, whose
+   MINI_* constants are this box: 1 px border + 4 px padding a side, an
+   11 px caption, 3 px under it). Calm: dim text, no fill, no lit colour;
+   only `offline` is red. The picture takes no touch; the box opens the
+   PRESENTER tab. */
+.stage-mini {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    gap: 3px;
+    padding: 4px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: #101218;
+    cursor: pointer;
+    touch-action: none;
+}
+
+.mini-cap {
+    display: flex;
+    justify-content: space-between;
+    gap: 4px;
+    overflow: hidden;
+    color: var(--faint);
+    font: 600 9px/11px var(--ui);
+    letter-spacing: 0.1em;
+    white-space: nowrap;
+}
+
+.mini-cap em {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--muted);
+    font-style: normal;
+    letter-spacing: 0.04em;
+    text-overflow: ellipsis;
+}
+
+.stage-mini[data-offline="true"] .mini-cap em {
+    color: var(--danger);
+}
+
+.mini-stage {
+    position: relative;
+    flex: none;
+    overflow: hidden;
+    border-radius: 4px;
+    background: #000;
+    pointer-events: none;
+}
+
+.mini-stage[data-preview="down"] {
+    opacity: 0.35;
+}
+
+/* A phone: its column lies behind ☰, so the miniature is never there
+   (`behave::presenter::phone` decides the same; this is the backstop). */
+@media (max-height: 520px), (max-width: 520px) {
+    .stage-mini {
+        display: none;
+    }
+}
