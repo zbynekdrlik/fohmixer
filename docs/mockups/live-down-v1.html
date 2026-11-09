@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live not running</title>
+<style>
+/* The app's fonts, by relative path (.claude/rules/public-repo-hygiene.md). */
+@font-face { font-family: "Barlow Condensed"; font-weight: 700; font-display: block; src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 600; font-display: block; src: url("../../crates/fohmixer-ui/fonts/barlow-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-weight: 500; font-display: block; src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2"); }
+:root { --bg:#0a0b10; --bar:#14141e; --panel:#181824; --line:#2a2a3a; --text:#e2e2ec; --dim:#8a8a9c; --faint:#5e5e72; --sel:#1d1f33; --teal:#2fc79a; --gold:#e0b84a; --red:#e0555f; --blue:#3f8cff; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 16px; background: #05050a; color: var(--text); font: 600 15px/1.45 "Barlow", sans-serif; }
+h1 { font: 700 26px/1.1 "Barlow Condensed", sans-serif; letter-spacing: .04em; margin: 0 0 6px; }
+h2 { font: 700 20px/1.2 "Barlow Condensed", sans-serif; letter-spacing: .03em; margin: 26px 0 4px; }
+p { margin: 4px 0 10px; color: var(--dim); max-width: 74ch; }
+.scroll { overflow-x: auto; }
+.ipad { width: 1194px; height: 834px; background: var(--bg); display: grid; grid-template-columns: 1fr 132px 1fr; gap: 6px; padding: 6px; border: 2px solid #333; border-radius: 14px; flex: none; }
+.half { display: grid; grid-template-rows: 1fr 1fr; gap: 6px; min-width: 0; }
+.row { display: flex; gap: 6px; min-height: 0; }
+.strip { flex: 1; min-width: 0; background: var(--panel); border-radius: 10px; display: flex; flex-direction: column; align-items: center; padding: 8px 0; color: var(--text); }
+.strip b { font: 700 19px/1 "Barlow Condensed", sans-serif; letter-spacing: .04em; }
+.strip .v { font: 500 12px "JetBrains Mono", monospace; margin-top: 8px; }
+.strip .t { flex: 1; width: 8px; margin: 12px 0; background: #0c0c13; border-radius: 3px; position: relative; }
+.strip .t::after { content: ""; position: absolute; left: -22px; right: -22px; top: 15%; height: 22px; border-radius: 5px; background: #33354a; }
+.strip .s { font: 700 13px "Barlow Condensed", sans-serif; color: var(--dim); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; }
+.column { background: var(--bar); border: 1px solid var(--line); border-radius: 12px; padding: 8px 6px; display: flex; flex-direction: column; gap: 8px; }
+.pages { border: 1px solid var(--line); border-radius: 10px; padding: 4px; display: grid; gap: 2px; }
+.tab { text-align: center; border-radius: 7px; padding: 6px 3px; color: var(--faint); font: 600 10px/1.1 "Barlow", sans-serif; letter-spacing: .06em; border-bottom: 2px solid transparent; }
+.tab.big { font: 700 19px/1.05 "Barlow Condensed", sans-serif; letter-spacing: .08em; color: var(--text); }
+.tab.on { background: var(--sel); color: var(--text); border-bottom-color: var(--teal); }
+.iemrow { display: grid; grid-template-columns: 1fr 26px; align-items: stretch; gap: 2px; }
+.iemrow .tab { display: flex; align-items: center; justify-content: center; gap: 5px; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--teal); }
+.x { display: grid; place-items: center; color: var(--dim); font: 600 13px "Barlow", sans-serif; border-radius: 6px; }
+.cap { color: var(--faint); font-size: 9px; letter-spacing: .12em; text-align: center; }
+.block { flex: 0 0 150px; border: 1px solid var(--line); border-radius: 10px; }
+.btn { background: var(--panel); border-radius: 9px; padding: 11px 9px; font: 600 12px "Barlow", sans-serif; color: var(--dim); }
+.grow { flex: 1; }
+.foot { font: 500 9px "JetBrains Mono", monospace; color: var(--faint); text-align: center; }
+.iem { background: #101218; border: 1px solid var(--line); border-radius: 10px; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+.iemhead { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.iemhead b { font: 700 18px "Barlow Condensed", sans-serif; letter-spacing: .04em; }
+.iemhead .sp { flex: 1; }
+.chip { font: 700 14px "Barlow Condensed", sans-serif; padding: 8px 14px; border-radius: 8px; background: #20222e; color: var(--text); }
+.chip.listen { background: #16463a; color: #7cf0c8; }
+.chip.talk { background: #4a1d22; color: #ffb3b8; }
+.mix { flex: 1; display: grid; grid-template-columns: repeat(6, 1fr); gap: 5px; padding: 8px; min-height: 0; }
+.mix .strip { background: #171a22; }
+.note { font: 500 11px "JetBrains Mono", monospace; color: var(--faint); padding: 7px 12px; border-top: 1px solid var(--line); }
+.tag { display: inline-block; background: #2a2a3a; color: var(--text); padding: 1px 6px; border-radius: 4px; font-size: 13px; }
+.pp { background: #101218; border: 1px solid var(--line); border-radius: 10px; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+.pphead { display: flex; align-items: baseline; gap: 8px; padding: 9px 12px 7px; }
+.pphead b { font: 700 18px "Barlow Condensed", sans-serif; letter-spacing: .04em; }
+.pphead .sp { flex: 1; }
+.pphead .now { font: 600 12px "Barlow", sans-serif; color: var(--dim); }
+.pphead .now em { font-style: normal; color: var(--teal); }
+.stage { margin: 0 10px; aspect-ratio: 16 / 9; background: #000; border-radius: 6px; border: 1px solid var(--line); position: relative; overflow: hidden; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 10px; }
+.stage .grp { position: absolute; top: 9px; left: 12px; font: 700 12px "Barlow Condensed", sans-serif; letter-spacing: .1em; color: #f0c040; }
+.stage .cur { font: 700 34px/1.1 "Barlow Condensed", sans-serif; color: #fff; text-align: center; }
+.stage .nxt { font: 700 22px/1.1 "Barlow Condensed", sans-serif; color: #6c6c7c; text-align: center; }
+.stage .clock { position: absolute; bottom: 7px; right: 10px; font: 500 11px "JetBrains Mono", monospace; color: #6c6c7c; }
+.stage.off { background: #0c0c12; }
+.stage .msg { font: 700 20px "Barlow Condensed", sans-serif; color: var(--red); letter-spacing: .04em; }
+.stage .msg2 { font: 600 13px "Barlow", sans-serif; color: var(--dim); }
+.cap2 { color: var(--faint); font: 600 10px "Barlow", sans-serif; letter-spacing: .12em; padding: 12px 12px 6px; }
+.lays { flex: 1; display: grid; grid-template-columns: repeat(3, 1fr); grid-auto-rows: 1fr; gap: 6px; padding: 0 10px 10px; min-height: 0; }
+.lay { position: relative; overflow: hidden; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; display: flex; flex-direction: column; justify-content: center; padding: 6px 10px; }
+.lay b { font: 700 17px/1.1 "Barlow Condensed", sans-serif; letter-spacing: .05em; color: var(--text); position: relative; }
+.lay small { font: 600 10.5px/1.25 "Barlow", sans-serif; color: var(--faint); margin-top: 3px; position: relative; }
+.lay.on { background: var(--sel); border-color: var(--teal); box-shadow: inset 0 -3px 0 var(--teal); }
+.lay.on small { color: var(--teal); }
+.lay .fill { position: absolute; inset: 0; background: rgba(63,140,255,.32); }
+.lay.full small { color: #a9c8ff; }
+.lay.dis { opacity: .4; }
+
+.strip.off { opacity: .35; }
+.strip.off .v { color: var(--faint); }
+.strip .who { font: 600 9px "Barlow", sans-serif; letter-spacing: .1em; color: var(--faint); margin-top: 3px; }
+.surf { position: relative; display: grid; grid-template-columns: 1fr 132px 1fr; gap: 6px; height: 100%; }
+.ipad { display: block; }
+.notice { position: absolute; left: 25%; top: 50%; transform: translate(-50%, -50%); width: 480px; pointer-events: none; background: rgba(16,18,24,.96); border: 1px solid #6a5420; border-radius: 14px; padding: 18px 22px; z-index: 2; box-shadow: 0 10px 40px rgba(0,0,0,.6); }
+.notice .row2 { display: flex; align-items: baseline; gap: 12px; padding: 6px 0; }
+.notice .row2 + .row2 { border-top: 1px solid var(--line); }
+.notice b { font: 700 24px/1.1 "Barlow Condensed", sans-serif; letter-spacing: .05em; color: var(--gold); min-width: 92px; }
+.notice span { font: 700 22px/1.15 "Barlow Condensed", sans-serif; letter-spacing: .03em; color: var(--text); }
+.notice small { display: block; font: 600 13px "Barlow", sans-serif; color: var(--dim); margin-top: 8px; }
+.foot2 { font: 600 9.5px/1.5 "Barlow", sans-serif; letter-spacing: .06em; color: var(--faint); text-align: center; }
+.foot2 .bad { color: var(--gold); }
+.foot2 .ok { color: var(--teal); }
+</style>
+</head>
+<body>
+<h1>Keď Ableton nebeží: jasná správa namiesto červenej</h1>
+<p>Návrh na schválenie (#178). Dnes ráno bol iPad celý červený, lebo Abletony práve štartovali a ešte nemali načítaný set. Červená vo fohmixeri znamená „jeden ovládač je zle napojený“, takže pri štarte Abletonu klamala. Namiesto nej: stopy daného Abletonu stmavnú a cez fadre je jedna správa, ktorá povie, ktorý Ableton nebeží a čo s tým. Správa je cez ľavú polovicu, ktorú tvoria hlavne stopy bandu. Neberie dotyk, takže fader pod ňou sa dá ďalej ťahať. Rozloženie sa nemení a nič sa neposúva. Správa zmizne sama, keď Ableton naskočí. Názvy stôp sú vymyslené, plocha iPadu 1194 × 834.</p>
+<h2>1 · Ableton po štarte PC ešte nebeží</h2>
+<p>Ani jeden Ableton sa nepripojil (napríklad hneď po reštarte PC). Všetky stopy sú stmavené, nič nesvieti načerveno.</p>
+<div class="scroll"><div class="ipad"><div class="surf">
+<div class="half"><div class="row"><div class="strip off"><b>DRUMS</b><span class="who">BAND</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div><div class="strip off"><b>BASS</b><span class="who">BAND</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div><div class="strip off"><b>GTR</b><span class="who">BAND</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div><div class="strip off"><b>KEYS</b><span class="who">BAND</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div></div><div class="row"><div class="strip off"><b>REVERB</b><span class="who">BAND</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div><div class="strip off"><b>REVERB</b><span class="who">MASTER</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div><div class="strip off"><b>BACKING</b><span class="who">BAND</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div><div class="strip off"><b>KLAVIR</b><span class="who">BAND</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div></div></div>
+<nav class="column">
+    <div class="pages"><div class="tab big on">FOH</div><div class="tab">STREAM DECK</div><div class="tab">ABLESET</div><div class="tab">IEM MIXER</div><div class="tab">PRESENTER</div></div>
+    <div class="cap">LAYOUTS</div><div class="block"></div>
+    <div class="btn">ARRANGE</div><div class="btn">STAGE</div><div class="btn">REVERB</div><div class="btn">AUTOTUNE</div><div class="btn">TALKBACK</div>
+    <div class="grow"></div><div class="btn">TECHALERT</div>
+    <div class="foot2"><span class="bad">● BAND not running</span><br><span class="bad">● MASTER not running</span><br>v1.38.0</div>
+  </nav>
+<div class="half"><div class="row"><div class="strip off"><b>MAIN</b><span class="who">MASTER</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div><div class="strip off"><b>VOX 1</b><span class="who">MASTER</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div><div class="strip off"><b>VOX 2</b><span class="who">MASTER</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div><div class="strip off"><b>PA BAND</b><span class="who">MASTER</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div></div><div class="row"><div class="strip off"><b>HAND 1</b><span class="who">MASTER</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div><div class="strip off"><b>HAND 2</b><span class="who">MASTER</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div><div class="strip off"><b>ECHO</b><span class="who">MASTER</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div><div class="strip off"><b>REPROM</b><span class="who">MASTER</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div></div></div>
+<div class="notice"><div class="row2"><b>BAND</b><span>Live is not running</span></div><div class="row2"><b>MASTER</b><span>Live is not running</span></div><small>Start both Lives on the FOH PC. The faders come back by themselves.</small></div>
+</div></div></div>
+
+<h2>2 · Ableton beží, ale set sa ešte načítava</h2>
+<p>Toto bol dnešný ranný stav. Ableton je zapnutý, ale set ešte nie je otvorený, takže žiadna stopa sa nenašla. Doteraz bolo všetko červené, teraz je to stmavené a so správou.</p>
+<div class="scroll"><div class="ipad"><div class="surf">
+<div class="half"><div class="row"><div class="strip off"><b>DRUMS</b><span class="who">BAND</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div><div class="strip off"><b>BASS</b><span class="who">BAND</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div><div class="strip off"><b>GTR</b><span class="who">BAND</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div><div class="strip off"><b>KEYS</b><span class="who">BAND</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div></div><div class="row"><div class="strip off"><b>REVERB</b><span class="who">BAND</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>REVERB</b><span class="who">MASTER</span><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip off"><b>BACKING</b><span class="who">BAND</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div><div class="strip off"><b>KLAVIR</b><span class="who">BAND</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div></div></div>
+<nav class="column">
+    <div class="pages"><div class="tab big on">FOH</div><div class="tab">STREAM DECK</div><div class="tab">ABLESET</div><div class="tab">IEM MIXER</div><div class="tab">PRESENTER</div></div>
+    <div class="cap">LAYOUTS</div><div class="block"></div>
+    <div class="btn">ARRANGE</div><div class="btn">STAGE</div><div class="btn">REVERB</div><div class="btn">AUTOTUNE</div><div class="btn">TALKBACK</div>
+    <div class="grow"></div><div class="btn">TECHALERT</div>
+    <div class="foot2"><span class="bad">● BAND no set</span><br><span class="ok">● MASTER on</span><br>v1.38.0</div>
+  </nav>
+<div class="half"><div class="row"><div class="strip"><b>MAIN</b><span class="who">MASTER</span><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>VOX 1</b><span class="who">MASTER</span><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>VOX 2</b><span class="who">MASTER</span><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>PA BAND</b><span class="who">MASTER</span><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div></div><div class="row"><div class="strip"><b>HAND 1</b><span class="who">MASTER</span><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>HAND 2</b><span class="who">MASTER</span><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>ECHO</b><span class="who">MASTER</span><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>REPROM</b><span class="who">MASTER</span><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div></div></div>
+<div class="notice"><div class="row2"><b>BAND</b><span>Live is open, set not loaded</span></div><small>Open the band set in Live. The faders come back by themselves.</small></div>
+</div></div></div>
+
+<h2>3 · Beží iba jeden Ableton</h2>
+<p>Master beží, band nie. Stopy mastra fungujú normálne, stopy bandu sú stmavené. V stĺpci dole je pri každom Abletone slovom napísaný stav, nielen farebná bodka.</p>
+<div class="scroll"><div class="ipad"><div class="surf">
+<div class="half"><div class="row"><div class="strip off"><b>DRUMS</b><span class="who">BAND</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div><div class="strip off"><b>BASS</b><span class="who">BAND</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div><div class="strip off"><b>GTR</b><span class="who">BAND</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div><div class="strip off"><b>KEYS</b><span class="who">BAND</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div></div><div class="row"><div class="strip off"><b>REVERB</b><span class="who">BAND</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>REVERB</b><span class="who">MASTER</span><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip off"><b>BACKING</b><span class="who">BAND</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div><div class="strip off"><b>KLAVIR</b><span class="who">BAND</span><span class="v">—</span><i class="t"></i><span class="s">SEL</span></div></div></div>
+<nav class="column">
+    <div class="pages"><div class="tab big on">FOH</div><div class="tab">STREAM DECK</div><div class="tab">ABLESET</div><div class="tab">IEM MIXER</div><div class="tab">PRESENTER</div></div>
+    <div class="cap">LAYOUTS</div><div class="block"></div>
+    <div class="btn">ARRANGE</div><div class="btn">STAGE</div><div class="btn">REVERB</div><div class="btn">AUTOTUNE</div><div class="btn">TALKBACK</div>
+    <div class="grow"></div><div class="btn">TECHALERT</div>
+    <div class="foot2"><span class="bad">● BAND not running</span><br><span class="ok">● MASTER on</span><br>v1.38.0</div>
+  </nav>
+<div class="half"><div class="row"><div class="strip"><b>MAIN</b><span class="who">MASTER</span><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>VOX 1</b><span class="who">MASTER</span><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>VOX 2</b><span class="who">MASTER</span><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>PA BAND</b><span class="who">MASTER</span><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div></div><div class="row"><div class="strip"><b>HAND 1</b><span class="who">MASTER</span><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>HAND 2</b><span class="who">MASTER</span><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>ECHO</b><span class="who">MASTER</span><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div><div class="strip"><b>REPROM</b><span class="who">MASTER</span><span class="v">0.0</span><i class="t"></i><span class="s">SEL</span></div></div></div>
+<div class="notice"><div class="row2"><b>BAND</b><span>Live is not running</span></div><small>Start the band Live on the FOH PC. The master faders work as usual.</small></div>
+</div></div></div>
+
+</body>
+</html>
