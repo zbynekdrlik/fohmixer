@@ -2544,7 +2544,12 @@ async fn a_stop_writes_its_dry_one_selector_per_40_ms_in_lives_order() {
         decisions(&mut router),
         [off(SwitchWhy::Stop), off(SwitchWhy::Stop)]
     );
-    pass(&mut router, &mut live, SPREAD - std::time::Duration::from_millis(1)).await;
+    pass(
+        &mut router,
+        &mut live,
+        SPREAD - std::time::Duration::from_millis(1),
+    )
+    .await;
     assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new(), "not yet");
     pass(&mut router, &mut live, std::time::Duration::from_millis(1)).await;
     assert_eq!(live.written(), vec![batch(&[("p7", 0.0)])], "40 ms later");
@@ -2596,8 +2601,10 @@ async fn a_start_within_the_stops_spread_drops_its_rest_and_decides_afresh() {
     assert!(router.autotune.targets[STREAM].writing.is_empty());
     assert_eq!(
         of(&steps(&rx), "unspread"),
-        vec![json!({"step": "unspread", "instance": "band", "targets": ["#8"],
-                    "why": "start"})]
+        vec![
+            json!({"step": "unspread", "instance": "band", "targets": ["#8"],
+                    "why": "start"})
+        ]
     );
 }
 
@@ -2619,13 +2626,17 @@ async fn a_hold_within_the_stops_spread_writes_its_rest_dry_at_once() {
     let got = steps(&rx);
     assert_eq!(
         of(&got, "unspread"),
-        vec![json!({"step": "unspread", "instance": "band", "targets": ["#8"],
-                    "why": "hold"})]
+        vec![
+            json!({"step": "unspread", "instance": "band", "targets": ["#8"],
+                    "why": "hold"})
+        ]
     );
     assert_eq!(
         of(&got, "write").last(),
-        Some(&json!({"step": "write", "instance": "band", "cause": "hold", "on": [],
-                     "off": ["#8"]}))
+        Some(
+            &json!({"step": "write", "instance": "band", "cause": "hold", "on": [],
+                     "off": ["#8"]})
+        )
     );
 }
 
