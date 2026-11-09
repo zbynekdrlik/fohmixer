@@ -33,6 +33,7 @@ use crate::arrange::{
 use crate::behave::ableset::tab_dot;
 use crate::behave::arrange_drag::Arrange;
 use crate::behave::iem::alive_after;
+use crate::behave::live_down::LiveWord;
 use crate::behave::presenter::{TAB_TITLE as PRESENTER_TAB, tab_dot as presenter_tab_dot};
 use crate::behave::solo::soloed;
 use crate::binding::sectors::{PICKS_KEY, Picks, Sectored, parse_picks, sectors_on};
@@ -1716,19 +1717,28 @@ fn DropoutCounter() -> impl IntoView {
     }
 }
 
-/// The dropout counter, the connection badges (per instance: online, busy,
-/// offline; every one offline while the page has no hub connection, so no
-/// dot of its own says that, #63) and the version, at the top of the column.
+/// The dropout counter, one short line per Live in words (#178, the owner's
+/// approved mockup live-down-v2 with the main session's ruling: `BAND not
+/// running` / `no set` / `on`; `—` while the page has no hub connection,
+/// which the counter shows; a busy Live's word in the warning colour), and
+/// the version, at the column's foot. The foot keeps its height in every
+/// state, so the rail and the stage miniature never lose room to it; the
+/// hint lives on the down strips.
 #[component]
 fn StatusCluster() -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let badges = move || {
+        let words = store.live.try_get().unwrap_or_default();
         store
             .instances
-            .get()
+            .try_get()
+            .unwrap_or_default()
             .into_iter()
             .map(|(name, instance)| {
                 let state = Badge::of(&instance).name();
+                let word = words.get(&name).copied();
+                let live = word.map(LiveWord::name);
+                let text = word.map_or("—", LiveWord::word);
                 let instance_name = name.clone();
                 view! {
                     <span
@@ -1736,9 +1746,10 @@ fn StatusCluster() -> impl IntoView {
                         data-testid="badge"
                         data-instance=instance_name
                         data-state=state
+                        data-live=live
                     >
-                        <i class="badge-dot"></i>
-                        {name}
+                        <span class="badge-name">{name}</span>
+                        <span class="badge-word" data-testid="badge-word">{text}</span>
                     </span>
                 }
             })

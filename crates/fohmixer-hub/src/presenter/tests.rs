@@ -96,7 +96,30 @@ fn only_reads_and_presenters_socket_pass() {
             Pass::Method,
             "{method}"
         );
+        assert_eq!(pass(&method, "/ndi/x", false), Pass::Method, "{method}");
     }
+    // The stage's video (#90): WHEP's offer, ICE and end under /whep/ only.
+    for method in [Method::POST, Method::PATCH, Method::DELETE] {
+        assert_eq!(pass(&method, "/whep/ndi-1", false), Pass::Page, "{method}");
+        assert!(whep_write(&method, "/whep/a"), "{method}");
+        assert!(!whep_write(&method, "/whepx/a"), "{method}");
+        assert!(!whep_write(&method, "/stage/whep/a"), "{method}");
+    }
+    for method in [
+        Method::PUT,
+        Method::OPTIONS,
+        Method::CONNECT,
+        Method::TRACE,
+        Method::GET,
+    ] {
+        assert!(!whep_write(&method, "/whep/a"), "{method}");
+        assert_ne!(pass(&method, "/whep/a", false), Pass::Socket);
+    }
+    assert_eq!(pass(&Method::PUT, "/whep/a", false), Pass::Method);
+    assert_eq!(
+        pass(&Method::POST, "/whep/../stage/layout", false),
+        Pass::Path
+    );
     assert_eq!(pass(&Method::GET, "/stage/../api/auth", false), Pass::Path);
     assert_eq!(pass(&Method::POST, "/stage/../x", false), Pass::Path);
     assert_eq!(pass(&Method::GET, "/stage/../live/ws", true), Pass::Path);
@@ -116,6 +139,27 @@ fn every_failure_has_its_words_kind_side_and_answer() {
             false,
             StatusCode::METHOD_NOT_ALLOWED,
             "PRESENTER_METHOD",
+        ),
+        (
+            Failure::WhepMethod("w".into()),
+            "method",
+            false,
+            StatusCode::METHOD_NOT_ALLOWED,
+            "PRESENTER_METHOD",
+        ),
+        (
+            Failure::TooLarge("l".into()),
+            "too_large",
+            false,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "PRESENTER_TOO_LARGE",
+        ),
+        (
+            Failure::BrokenBody("b".into()),
+            "broken_body",
+            false,
+            StatusCode::BAD_REQUEST,
+            "PRESENTER_BROKEN_BODY",
         ),
         (
             Failure::Upgrade("u".into()),
@@ -164,6 +208,11 @@ fn every_failure_has_its_words_kind_side_and_answer() {
     }
     let answer = Failure::Method("m".into()).answer(None);
     assert_eq!(answer.headers()[header::ALLOW], "GET, HEAD");
+    let answer = Failure::WhepMethod("w".into()).answer(None);
+    assert_eq!(
+        answer.headers()[header::ALLOW],
+        "GET, HEAD, POST, PATCH, DELETE"
+    );
 }
 
 fn body_text(answer: Response) -> String {
@@ -400,4 +449,122 @@ async fn a_failed_request_is_recorded_within_its_ration_and_answered() {
     assert_eq!(WS_RECORDS, 8);
     assert!(site.warn_due("other"), "a kind of its own");
     assert!(!site.warn_due("other"), "once per gap");
+}
+
+#[test]
+fn a_location_at_presenter_itself_becomes_a_path_on_fohmixers_origin() {
+    let at: axum::http::uri::Authority = "10.0.0.5:8080".parse().unwrap();
+    let local = |l: &str| local_location(l, &at, false);
+    assert_eq!(
+        local("http://10.0.0.5:8080/whep/ndi-1/s7?x=1").as_deref(),
+        Some("/whep/ndi-1/s7?x=1")
+    );
+    assert_eq!(
+        local("HTTP://10.0.0.5:8080/whep/a").as_deref(),
+        Some("/whep/a")
+    );
+    assert_eq!(local("http://10.0.0.5:8080").as_deref(), Some("/"));
+    assert_eq!(local("//10.0.0.5:8080/whep/a").as_deref(), Some("/whep/a"));
+    // Another host or port, or a relative one: as it came.
+    assert_eq!(local("http://10.0.0.6:8080/whep/a"), None);
+    assert_eq!(local("http://10.0.0.5:8081/whep/a"), None);
+    assert_eq!(local("http://10.0.0.5/whep/a"), None);
+    assert_eq!(local("//10.0.0.6:8080/whep/a"), None);
+    assert_eq!(local("/whep/a"), None);
+    assert_eq!(local("not a uri at all"), None);
+    // A host name in any case.
+    let named: axum::http::uri::Authority = "presenter:8080".parse().unwrap();
+    assert_eq!(
+        local_location("http://PRESENTER:8080/x", &named, false).as_deref(),
+        Some("/x")
+    );
+    // A port left out is the scheme's: 80, or 443 for https.
+    let plain: axum::http::uri::Authority = "10.0.0.5".parse().unwrap();
+    for (location, local) in [
+        ("http://10.0.0.5:80/whep/a", Some("/whep/a")),
+        ("http://10.0.0.5/whep/a", Some("/whep/a")),
+        ("https://10.0.0.5/whep/a", None),
+        ("https://10.0.0.5:80/whep/a", Some("/whep/a")),
+    ] {
+        assert_eq!(
+            local_location(location, &plain, false).as_deref(),
+            local,
+            "{location}"
+        );
+    }
+    let tls: axum::http::uri::Authority = "10.0.0.5:443".parse().unwrap();
+    assert_eq!(
+        local_location("https://10.0.0.5/a", &tls, false).as_deref(),
+        Some("/a")
+    );
+    assert_eq!(local_location("http://10.0.0.5/a", &tls, false), None);
+    // On a WHEP answer any absolute Location is Presenter's resource.
+    assert_eq!(
+        local_location("http://presenter.lan:9000/whep/a/s1", &at, true).as_deref(),
+        Some("/whep/a/s1")
+    );
+    assert_eq!(local_location("/whep/a/s1", &at, true), None);
+}
+
+#[test]
+fn a_whep_path_with_an_encoded_separator_is_refused() {
+    assert!(encoded_separator("/whep/%2e%2e%2fstage%2flayout"));
+    assert!(encoded_separator("/whep/a%2Fb"));
+    assert!(encoded_separator("/whep/a%5cb"));
+    assert!(encoded_separator("/whep/a%5Cb"));
+    assert!(encoded_separator("/whep/a\\b"));
+    assert!(!encoded_separator("/whep/ndi-1/s1"));
+    assert!(!encoded_separator("/whep/a%20b"));
+    assert_eq!(
+        pass(&Method::POST, "/whep/%2e%2e%2fstage%2flayout", false),
+        Pass::Path
+    );
+    assert_eq!(pass(&Method::GET, "/whep/a%2Fb", false), Pass::Path);
+    // Elsewhere an encoded slash is Presenter's own business (a read).
+    assert_eq!(pass(&Method::GET, "/bible/a%2Fb", false), Pass::Page);
+}
+
+#[test]
+fn a_body_too_large_or_broken_is_the_clients_never_an_outage() {
+    use std::io;
+    // A body one byte over its limit, as the hub's Limited reports it.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let large = runtime
+        .block_on(http_body_util::BodyExt::collect(
+            http_body_util::Limited::new(
+                http_body_util::Full::new(axum::body::Bytes::from_static(b"ab")),
+                1,
+            ),
+        ))
+        .unwrap_err();
+    let failure = super::failure(large.as_ref());
+    assert!(matches!(failure, Failure::TooLarge(_)), "{failure:?}");
+    assert!(failure.why().contains("65536"), "{failure:?}");
+    let broken = crate::ableset::proxy::ClientBody(axum::Error::new(io::Error::other("cut")));
+    let failure = super::failure(&broken);
+    assert!(matches!(failure, Failure::BrokenBody(_)), "{failure:?}");
+    assert!(failure.why().contains("cut"), "{failure:?}");
+    let failure = super::failure(&io::Error::other("refused"));
+    assert_eq!(
+        failure,
+        Failure::Down("Presenter does not answer: refused".into())
+    );
+    assert_eq!(MAX_BODY, 65_536);
+}
+
+#[test]
+fn a_body_announced_over_64_kib_is_refused_before_presenter() {
+    let mut headers = HeaderMap::new();
+    assert_eq!(announced_over(&headers), None);
+    for (length, over) in [
+        ("65536", None),
+        ("65537", Some(65_537)),
+        (" 70000 ", Some(70_000)),
+        ("x", None),
+    ] {
+        headers.insert(header::CONTENT_LENGTH, HeaderValue::from_static(length));
+        assert_eq!(announced_over(&headers), over, "{length}");
+    }
 }

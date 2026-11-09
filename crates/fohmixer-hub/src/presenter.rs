@@ -9,14 +9,25 @@
 //!   listeners, only with `[presenter]`. No fohmixer route uses them. The
 //!   tab's frame (`/stage?preview=1`) is then the page's own origin: no
 //!   mixed content on the https page, no CORS, the same Access check.
-//! - **Reads only** ([`pass`]): GET and HEAD, and the `/live/ws` upgrade (a
-//!   byte tunnel, `ableset::pipe`, as AbleSet's socket); any other method is
-//!   405 and any other upgrade 400 by the hub itself, and a path with a dot
-//!   segment 400. Presenter has no login, so its write API (layouts,
-//!   slides, Bible, clears) is never reachable through fohmixer, the
-//!   internet path included; the one write is the hub's own
-//!   `POST /stage/layout` for a page's held key ([`link`]). NDI video in the
-//!   preview (WHEP is a POST) therefore does not play there. The socket is a
+//! - **Reads, and the stage's video** ([`pass`]): GET and HEAD, the
+//!   `/live/ws` upgrade (a byte tunnel, `ableset::pipe`, as AbleSet's
+//!   socket) and, under [`WHEP`] only, POST, PATCH and DELETE (#90, the
+//!   owner's ruling of 2026-11-09: the preview shows what the stage displays
+//!   show, NDI video included; the stage page starts its video with WHEP, an
+//!   SDP offer `POST`ed, then `PATCH`/`DELETE` on the resource the answer's
+//!   `Location` names, [`local_location`]); any other method is 405 and any
+//!   other upgrade 400 by the hub itself, and a path with a dot segment 400.
+//!   Presenter has no login, so its write API (layouts, slides, Bible,
+//!   clears) is never reachable through fohmixer, the internet path
+//!   included; the one write of it is the hub's own `POST /stage/layout`
+//!   for a page's held key ([`link`]). WHEP's requests start and end the
+//!   video only, nothing on stage; they are as open as Presenter itself on
+//!   the LAN and behind Cloudflare Access on the internet path, cross-site
+//!   writes refused by the Origin guard, a body at most [`MAX_BODY`], a
+//!   path with an encoded `/` or `\\` refused ([`encoded_separator`]). An
+//!   answer's absolute `Location` (on every proxied answer, WHEP's above all)
+//!   never sends the page to Presenter's address ([`local_location`]). The
+//!   socket is a
 //!   byte tunnel both ways: what Presenter's live socket takes from a client
 //!   (its source, `presenter-server/src/live.rs` `InboundMessage`) is a
 //!   stage display's presence, heartbeat, diagnostics and goodbye, for its
@@ -51,6 +62,7 @@ use axum::http::{HeaderValue, Method, StatusCode, Uri, Version, header};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use fohmixer_proto::client::PresenterStatus;
+use http_body_util::{BodyExt as _, Limited};
 use hyper::upgrade::Upgraded;
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
@@ -88,6 +100,15 @@ pub const UNDER: [&str; 7] = [
     "/presentations/",
     "/libraries/",
 ];
+
+/// The stage's video (WHEP, #90): the one prefix that takes POST, PATCH and
+/// DELETE ([`pass`]).
+pub const WHEP: &str = "/whep/";
+
+/// The largest request body sent to Presenter: WHEP's SDP offer and its ICE
+/// fragments are a few KiB (64 KiB, a literal so cargo-mutants has no
+/// operator to mutate).
+pub const MAX_BODY: u64 = 65_536;
 
 /// The one socket path ([`Pass::Socket`]).
 pub const SOCKET: &str = "/live/ws";
@@ -127,7 +148,7 @@ pub const CLOSED_WAIT: Duration = ableset::CLOSED_WAIT;
 pub enum Pass {
     /// Not Presenter's: fohmixer's own router.
     No,
-    /// A read passed to Presenter.
+    /// A read, or a WHEP request under [`WHEP`], passed to Presenter.
     Page,
     /// The stage page's socket, tunneled to Presenter.
     Socket,
@@ -160,15 +181,60 @@ pub fn pass(method: &Method, path: &str, upgrade: bool) -> Pass {
     if !is_presenter_path(path) {
         return Pass::No;
     }
-    if dot_segment(path) {
+    if dot_segment(path) || (path.starts_with(WHEP) && encoded_separator(path)) {
         return Pass::Path;
     }
     match (upgrade, path == SOCKET) {
         (true, true) => Pass::Socket,
         (true, false) => Pass::Upgrade,
         (false, _) if *method == Method::GET || *method == Method::HEAD => Pass::Page,
+        (false, _) if whep_write(method, path) => Pass::Page,
         (false, _) => Pass::Method,
     }
+}
+
+/// Whether `path` holds an encoded `/` or `\\` (`%2f`, `%5c`, any case) or
+/// a raw `\\`: a WHEP path keeps its segments as it came (Presenter decodes
+/// its stream's name, so `%2e%2e%2f` would name another path there).
+pub fn encoded_separator(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.contains("%2f") || lower.contains("%5c") || lower.contains('\\')
+}
+
+/// Whether `method` on `path` is the stage video's WHEP exchange (#90): an
+/// offer `POST`ed, the session's `PATCH` (ICE) and `DELETE`, under [`WHEP`]
+/// only.
+pub fn whep_write(method: &Method, path: &str) -> bool {
+    path.starts_with(WHEP)
+        && (*method == Method::POST || *method == Method::PATCH || *method == Method::DELETE)
+}
+
+/// An answer's `Location` as the page must follow it (#90, WHEP's resource):
+/// an absolute one (or a scheme-relative `//host/…`) at Presenter's own
+/// `authority`, or any absolute one on a WHEP answer (`whep`: the resource
+/// is always Presenter's, whatever name it gives itself), becomes its path
+/// and query on fohmixer's origin, so the page never reaches Presenter's
+/// address; `None` keeps any other as it came (a relative one already is the
+/// page's). A port left out is the scheme's (80, 443 for https).
+pub fn local_location(location: &str, authority: &Authority, whep: bool) -> Option<String> {
+    let full = if location.starts_with("//") {
+        format!("http:{location}")
+    } else {
+        location.to_string()
+    };
+    let uri: Uri = full.parse().ok()?;
+    let theirs = uri.authority()?;
+    let default = if uri.scheme() == Some(&Scheme::HTTPS) {
+        443
+    } else {
+        80
+    };
+    let same = theirs.host().eq_ignore_ascii_case(authority.host())
+        && theirs.port_u16().unwrap_or(default) == authority.port_u16().unwrap_or(80);
+    (whep || same).then(|| {
+        uri.path_and_query()
+            .map_or_else(|| "/".to_string(), |p| p.as_str().to_string())
+    })
 }
 
 /// Presenter's side of the hub: the proxy of its stage page and the link's
@@ -319,7 +385,27 @@ impl Presenter {
         let host = HeaderValue::from_str(self.authority.as_str())
             .map_err(|e| Failure::Target(format!("the Host: {e}")))?;
         parts.headers.insert(header::HOST, host);
+        // WHEP's bodies (#90): at most MAX_BODY, the page's own errors marked
+        // so a broken offer is never taken for Presenter down.
+        let body = Body::new(Limited::new(
+            body.map_err(ableset::proxy::ClientBody),
+            MAX_BODY as usize,
+        ));
         Ok(Request::from_parts(parts, body))
+    }
+
+    /// An answer's absolute `Location` at Presenter itself (any on a WHEP
+    /// answer to `path`) as a path on fohmixer's origin ([`local_location`]).
+    fn localize(&self, path: &str, headers: &mut axum::http::HeaderMap) {
+        let whep = path.starts_with(WHEP);
+        let local = headers
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|location| local_location(location, &self.authority, whep))
+            .and_then(|path| HeaderValue::from_str(&path).ok());
+        if let Some(path) = local {
+            headers.insert(header::LOCATION, path);
+        }
     }
 
     /// Sends `request` to Presenter: its answer's head within
@@ -330,10 +416,7 @@ impl Presenter {
     ) -> Result<axum::http::Response<hyper::body::Incoming>, Failure> {
         match tokio::time::timeout(HEAD_TIMEOUT, self.client.request(request)).await {
             Ok(Ok(answer)) => Ok(answer),
-            Ok(Err(e)) => Err(Failure::Down(format!(
-                "Presenter does not answer: {}",
-                crate::ableset::proxy::chain(&e)
-            ))),
+            Ok(Err(e)) => Err(failure(&e)),
             Err(_) => Err(Failure::Timeout(format!(
                 "Presenter did not answer within {} ms",
                 HEAD_TIMEOUT.as_millis()
@@ -416,11 +499,43 @@ impl Presenter {
     }
 }
 
+/// A request's announced body length when it is over [`MAX_BODY`] (pure):
+/// refused before anything reaches Presenter.
+pub fn announced_over(headers: &axum::http::HeaderMap) -> Option<u64> {
+    headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|length| *length > MAX_BODY)
+}
+
+/// Why a request Presenter did not answer failed (pure): its body over
+/// [`MAX_BODY`], or broken by the page (both the client's), else Presenter
+/// down.
+pub fn failure(error: &(dyn std::error::Error + 'static)) -> Failure {
+    let chain = crate::ableset::proxy::chain(error);
+    if crate::ableset::proxy::over_limit(error) {
+        Failure::TooLarge(format!(
+            "a request body went over the {MAX_BODY} bytes Presenter is sent"
+        ))
+    } else if crate::ableset::proxy::broke_off(error) {
+        Failure::BrokenBody(format!("the page's request body broke off: {chain}"))
+    } else {
+        Failure::Down(format!("Presenter does not answer: {chain}"))
+    }
+}
+
 /// Why the hub answered a request itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
     /// A method never passed (405).
     Method(String),
+    /// A method WHEP's path does not take (405, its `Allow` WHEP's).
+    WhepMethod(String),
+    /// A request body over [`MAX_BODY`] (413).
+    TooLarge(String),
+    /// The page's request body broke off (400).
+    BrokenBody(String),
     /// An upgrade on a path that takes none (400).
     Upgrade(String),
     /// A path with a dot segment, or one that makes no URI (400).
@@ -438,6 +553,9 @@ impl Failure {
     pub fn why(&self) -> &str {
         match self {
             Self::Method(why)
+            | Self::WhepMethod(why)
+            | Self::TooLarge(why)
+            | Self::BrokenBody(why)
             | Self::Upgrade(why)
             | Self::Target(why)
             | Self::Busy(why)
@@ -449,7 +567,9 @@ impl Failure {
     /// Its kind, as its records are counted.
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::Method(_) => "method",
+            Self::Method(_) | Self::WhepMethod(_) => "method",
+            Self::TooLarge(_) => "too_large",
+            Self::BrokenBody(_) => "broken_body",
             Self::Upgrade(_) => "upgrade",
             Self::Target(_) => "target",
             Self::Busy(_) => "busy",
@@ -476,6 +596,25 @@ impl Failure {
                 ),
             )
                 .into_response(),
+            Self::WhepMethod(_) => (
+                [(header::ALLOW, "GET, HEAD, POST, PATCH, DELETE")],
+                error(
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "PRESENTER_METHOD",
+                    "Presenter's stage video takes WHEP's methods only",
+                ),
+            )
+                .into_response(),
+            Self::TooLarge(_) => error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "PRESENTER_TOO_LARGE",
+                "The request body is too large for Presenter",
+            ),
+            Self::BrokenBody(_) => error(
+                StatusCode::BAD_REQUEST,
+                "PRESENTER_BROKEN_BODY",
+                "The request body broke off",
+            ),
             Self::Upgrade(_) => error(
                 StatusCode::BAD_REQUEST,
                 "PRESENTER_UPGRADE",
@@ -671,7 +810,12 @@ async fn forward(State(site): State<Arc<Presenter>>, request: Request) -> Respon
         Pass::Page => {}
         Pass::Socket => return tunnel(site, request, &path, dest).await,
         Pass::Method => {
-            let why = Failure::Method(format!("{method} is never passed to Presenter"));
+            let why = format!("{method} is never passed to Presenter");
+            let why = if path.starts_with(WHEP) {
+                Failure::WhepMethod(why)
+            } else {
+                Failure::Method(why)
+            };
             return site.failed(&method, &path, dest, why);
         }
         Pass::Upgrade => {
@@ -688,6 +832,11 @@ async fn forward(State(site): State<Arc<Presenter>>, request: Request) -> Respon
             return site.failed(&method, &path, dest, why);
         }
     }
+    if let Some(length) = announced_over(request.headers()) {
+        let why =
+            format!("a request body of {length} bytes, over the {MAX_BODY} Presenter is sent");
+        return site.failed(&method, &path, dest, Failure::TooLarge(why));
+    }
     let Ok(slot) = Arc::clone(&site.slots).try_acquire_owned() else {
         let busy = Failure::Busy("every request slot for Presenter is taken".to_string());
         return site.failed(&method, &path, dest, busy);
@@ -699,7 +848,9 @@ async fn forward(State(site): State<Arc<Presenter>>, request: Request) -> Respon
     match site.exchange(sent).await {
         Ok(answer) => {
             tracing::debug!(method = %method, path = ?clip(&path), status = answer.status().as_u16(), "presenter: proxied");
-            ableset::proxy::answer(answer).map(|body| ableset::held(body, slot))
+            let mut answer = ableset::proxy::answer(answer).map(|body| ableset::held(body, slot));
+            site.localize(&path, answer.headers_mut());
+            answer
         }
         Err(failure) => site.failed(&method, &path, dest, failure),
     }

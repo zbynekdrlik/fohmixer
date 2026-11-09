@@ -26,6 +26,12 @@ what only the harness can do:
                                          ``tuner``: a Tuner marker, #68);
                                          {"answer": <its answer line or null>}
     POST /host/<name>/restart            the host stopped (SIGTERM) and started
+    POST /host/<name>/stop               the host stopped (SIGTERM), left stopped:
+                                         Live not running (#178)
+    POST /host/<name>/start {"site"}     a stopped host started again, with the
+                                         test site or ``"empty"``: a Live with
+                                         a new, empty set (#178); a running
+                                         host is restarted with it
     POST /hub/restart {"rotate_secret"}  the hub stopped and started; with
                                          ``rotate_secret`` its JWT secret is new,
                                          so every token it issued is refused
@@ -184,6 +190,12 @@ ACCESS_KID = "e2e-kid"
 CERTS_PATH = "/cdn-cgi/access/certs"
 HOST = os.path.join(REPO, "sim", "host.py")
 SITE = os.path.join(REPO, "sim", "fixtures", "test-site.json")
+# The sets a stopped host can start with again (#178): the test site, or a
+# Live with a new, empty set (none of the layout's names resolve).
+SITES = {
+    "test": SITE,
+    "empty": os.path.join(REPO, "sim", "fixtures", "empty-set.json"),
+}
 TIMELINE = os.path.join(REPO, "tools", "forensics", "timeline.py")
 # The longest a timeline run may take (it reads the window's day files only).
 TIMELINE_S = 120
@@ -519,6 +531,7 @@ class Host:
         self.lock = threading.Lock()
         self.proc = None
         self.lines = None
+        self.site = SITE
         self.start()
 
     def start(self):
@@ -532,7 +545,7 @@ class Host:
                 "--instance",
                 self.name,
                 "--site",
-                SITE,
+                self.site,
                 "--meters-hz",
                 str(self.meters_hz),
                 "--log-dir",
@@ -581,6 +594,21 @@ class Host:
     def restart(self):
         with self.lock:
             self.stop()
+            self.start()
+
+    def halt(self):
+        """Stops the host and leaves it stopped (a stopped one stays so)."""
+        with self.lock:
+            self.stop()
+
+    def resume(self, site):
+        """Starts the host again on ``site`` (a key of ``SITES``), stopping it
+        first when it runs."""
+        if site not in SITES:
+            raise BadRequest(f"/host/<name>/start wants a site of {sorted(SITES)}, not {site!r}")
+        with self.lock:
+            self.stop()
+            self.site = SITES[site]
             self.start()
 
     def stop(self):
@@ -821,6 +849,12 @@ class Harness:
                 return 200, {"answer": host.line(body.get("line", ""))}
             if parts[2] == "restart":
                 host.restart()
+                return 200, {"port": host.port}
+            if parts[2] == "stop":
+                host.halt()
+                return 200, {"ok": True}
+            if parts[2] == "start":
+                host.resume(body.get("site", "test"))
                 return 200, {"port": host.port}
         if parts == ["hub", "restart"] and self.hub is not None:
             self.hub.restart(bool(body.get("rotate_secret")))

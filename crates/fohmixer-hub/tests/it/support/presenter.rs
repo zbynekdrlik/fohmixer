@@ -89,6 +89,11 @@ impl FakePresenter {
             .route("/stage/layout", get(layout).post(set_layout))
             .route("/stage/state", post(|| async { StatusCode::NO_CONTENT }))
             .route("/live/ws", get(live))
+            .route("/whep/{stream}", post(whep_offer))
+            .route(
+                "/whep/{stream}/{session}",
+                axum::routing::patch(whep_patch).delete(|| async { StatusCode::OK }),
+            )
             .layer(axum::middleware::from_fn_with_state(shared.clone(), count))
             .with_state(shared.clone());
         let mut stop = down_rx;
@@ -237,4 +242,49 @@ async fn serve_socket(mut socket: WebSocket, shared: Shared) {
             },
         }
     }
+}
+
+/// WHEP's offer (#90, the stage's video): `201 Created`, the SDP answer
+/// (the offer echoed after `answer to:`) and the session's resource as an
+/// absolute `Location` at this fake's own address, as a server that knows
+/// only its own address writes it.
+async fn whep_offer(
+    axum::extract::Path(stream): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+    body: String,
+) -> Response {
+    let host = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("presenter")
+        .to_string();
+    let kind = headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    (
+        StatusCode::CREATED,
+        [
+            ("content-type", "application/sdp".to_string()),
+            ("location", format!("http://{host}/whep/{stream}/s1")),
+            ("x-offer-type", kind),
+        ],
+        format!("answer to: {body}"),
+    )
+        .into_response()
+}
+
+/// WHEP's ICE (#90): `204`, the fragment and its type told back in headers.
+async fn whep_patch(headers: axum::http::HeaderMap, body: String) -> Response {
+    let kind = headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    (
+        StatusCode::NO_CONTENT,
+        [("x-patch-type", kind), ("x-patch-body", body)],
+    )
+        .into_response()
 }

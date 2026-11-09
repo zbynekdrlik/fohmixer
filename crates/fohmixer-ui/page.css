@@ -80,7 +80,7 @@
 
 /* The status at the column's foot (#148): small and dim, so it never
    competes with the controls; a red state stays red (the counter while a
-   dropout lasts, a badge's dot of a Live that is down). */
+   dropout lasts; a Live that is down says so in words, #178). */
 .column-foot {
     flex: none;
 }
@@ -88,7 +88,9 @@
 .column .status-cluster {
     flex-wrap: wrap;
     justify-content: center;
-    gap: 2px 6px;
+    /* 4 px between parts: the counter and both Lives' words (#178) share
+       one row, as the counter and the dots did. */
+    gap: 2px 4px;
     color: var(--faint);
     font-size: 9px;
     letter-spacing: 0.6px;
@@ -107,18 +109,22 @@
     color: var(--danger);
 }
 
+/* The Lives in words (#178, mockup live-down-v2 and the main session's
+   ruling): one short line per Live (`BAND not running`, `MASTER on`), the
+   lines stacked beside the counter where the dots sat, so the foot keeps
+   its two rows in every state and the rail and the stage miniature never
+   lose room to it. No box and no hint here: a down strip says what to do. */
+.column .status-cluster .badges {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+    min-width: 0;
+}
+
 .column .status-cluster .badge {
-    gap: 4px;
-}
-
-/* The badges' box is no box on a tablet: they wrap with the status. */
-.status-cluster .badges {
-    display: contents;
-}
-
-.column .status-cluster .badge-dot {
-    width: 6px;
-    height: 6px;
+    gap: 3px;
+    line-height: 9px;
+    white-space: nowrap;
 }
 
 .column .status-cluster .version {
@@ -522,13 +528,27 @@
         justify-content: center;
         grid-row: 1;
         grid-column: 2 / 4;
+        flex-direction: row;
+        align-items: center;
         gap: 0 3px;
         min-width: 0;
     }
 
+    /* A Live in words here too (#178), side by side in the foot's 9 px
+       face. */
     .column .status-cluster .badge {
-        gap: 3px;
         line-height: 9px;
+    }
+
+    /* A Live that is on keeps the dot's footprint here: its name alone, in
+       the word's green (the foot's two rows hold no more); a Live that is
+       down says so in words. */
+    .column .status-cluster .badge[data-live="on"] .badge-word {
+        display: none;
+    }
+
+    .column .status-cluster .badge[data-live="on"] .badge-name {
+        color: #2fc79a;
     }
 
     /* REC beside the version (#172), on the same row: the foot keeps its

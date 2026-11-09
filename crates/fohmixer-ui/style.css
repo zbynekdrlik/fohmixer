@@ -385,25 +385,21 @@ body {
     gap: 6px;
 }
 
-.badge-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--faint);
+/* A Live's word (#178, the owner's approved mockup live-down-v2): calm,
+   in words, never a red dot; `on` in the mockup's green, a Live that is
+   down (or busy) in the warning colour. Static. */
+.badge-word {
+    color: var(--faint);
+    letter-spacing: 0;
+    text-transform: none;
 }
 
-/* Static: an endless animation repaints every frame (#21: the CI's WebKit
-   drew 2.5 fps with them, 15 without). */
-.badge.online .badge-dot {
-    background: var(--ok);
+.badge[data-live="on"] .badge-word {
+    color: #2fc79a;
 }
 
-.badge.busy .badge-dot {
-    background: var(--warn);
-}
-
-.badge.offline .badge-dot {
-    background: var(--danger);
+.badge:is([data-live="off"], [data-live="noset"], .busy) .badge-word {
+    color: var(--warn);
 }
 
 .version {

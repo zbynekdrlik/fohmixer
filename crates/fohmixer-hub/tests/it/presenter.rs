@@ -279,6 +279,87 @@ async fn the_pages_see_presenter_go_down_and_come_back_by_itself() {
 }
 
 #[tokio::test]
+async fn the_stage_video_starts_and_ends_through_whep_and_nothing_else_is_written() {
+    let fake = FakePresenter::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let hub = hub(dir.path(), Some(fake.url())).await;
+    let addr = hub.addr;
+    let offer = "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\n";
+    let typed = |method: &str, path: &str, kind: &str, body: &str| {
+        format!(
+            "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    };
+    let request =
+        |method: &str, path: &str, body: &str| typed(method, path, "application/sdp", body);
+    // The offer reaches Presenter as it was sent; its answer comes back
+    // whole, its Location a path on fohmixer's own origin.
+    let (code, head, body) = raw(addr, &request("POST", "/whep/ndi-1", offer)).await;
+    assert_eq!(code, 201, "{head}");
+    assert_eq!(body, format!("answer to: {offer}"));
+    assert!(head.contains("content-type: application/sdp"), "{head}");
+    assert!(head.contains("x-offer-type: application/sdp"), "{head}");
+    assert!(head.contains("location: /whep/ndi-1/s1\r\n"), "{head}");
+    assert!(
+        !head.contains(&fake.url()),
+        "Presenter's address never reaches the page: {head}"
+    );
+    let ice = typed(
+        "PATCH",
+        "/whep/ndi-1/s1",
+        "application/trickle-ice-sdpfrag",
+        "a=candidate",
+    );
+    let (code, head, _) = raw(addr, &ice).await;
+    assert_eq!(code, 204, "{head}");
+    assert!(
+        head.contains("x-patch-type: application/trickle-ice-sdpfrag"),
+        "{head}"
+    );
+    assert!(head.contains("x-patch-body: a=candidate"), "{head}");
+    let (code, head, _) = raw(addr, &request("DELETE", "/whep/ndi-1/s1", "")).await;
+    assert_eq!(code, 200, "{head}");
+    // A write anywhere else is still the hub's 405, WHEP's methods included.
+    for (method, path) in [
+        ("POST", "/stage/layout"),
+        ("PATCH", "/ndi/x"),
+        ("DELETE", "/stage/state"),
+        ("PUT", "/whep/ndi-1"),
+    ] {
+        let (code, head, _) = raw(addr, &request(method, path, "{}")).await;
+        assert_eq!(code, 405, "{method} {path}: {head}");
+    }
+    // WHEP's own path names WHEP's methods in its 405.
+    let (code, head, _) = raw(addr, &request("PUT", "/whep/ndi-1", "{}")).await;
+    assert!(
+        head.contains("allow: get, head, post, patch, delete"),
+        "{code} {head}"
+    );
+    // An encoded separator never reaches Presenter, nor a body announced
+    // over 64 KiB.
+    let sneaky = request("POST", "/whep/%2e%2e%2fstage%2flayout", offer);
+    let (code, head, _) = raw(addr, &sneaky).await;
+    assert_eq!(code, 400, "{head}");
+    let large = "a".repeat(65_537);
+    let (code, head, _) = raw(addr, &request("POST", "/whep/ndi-1", &large)).await;
+    assert_eq!(code, 413, "{head}");
+    let seen = fake.seen();
+    assert_eq!(
+        seen.iter()
+            .filter(|s| !s.starts_with("GET "))
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![
+            "POST /whep/ndi-1".to_string(),
+            "PATCH /whep/ndi-1/s1".to_string(),
+            "DELETE /whep/ndi-1/s1".to_string(),
+        ],
+        "only WHEP's requests reached Presenter: {seen:?}"
+    );
+}
+
+#[tokio::test]
 async fn the_stage_page_is_read_on_the_hubs_origin_and_nothing_of_presenter_is_written() {
     let fake = FakePresenter::start().await;
     let dir = tempfile::tempdir().unwrap();

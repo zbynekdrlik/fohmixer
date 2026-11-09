@@ -288,6 +288,16 @@ impl Conn {
         self.wanted.keys_of(instance)
     }
 
+    /// The instance of a wanted key (#178).
+    pub fn instance_of(&self, key: &str) -> Option<String> {
+        self.wanted.instance_of(key).map(str::to_string)
+    }
+
+    /// The target of a wanted key (#178).
+    pub fn target_of(&self, key: &str) -> Option<String> {
+        self.wanted.target_of(key).map(str::to_string)
+    }
+
     /// Whether a page wants `key` now (a value for any other key is dropped,
     /// #43).
     pub fn wants(&self, key: &str) -> bool {

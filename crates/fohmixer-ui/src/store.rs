@@ -64,6 +64,21 @@ pub enum Slot {
     /// The binding does not resolve (a missing or ambiguous name): red and
     /// disabled (I5).
     Error(String),
+    /// The binding does not resolve while its Live has no set (#178,
+    /// `behave::live_down`): nothing of that Live resolves, so this is no
+    /// single bad binding. Disabled and dimmed as a slot that waits, never
+    /// red; the strip and the column's foot say why.
+    NoSet(String),
+}
+
+/// What a slot holds, as the Live's word reads it (#178): the store judges
+/// a Live again only when one of its slots changes class, never on every
+/// value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotClass {
+    Waiting,
+    Resolved,
+    Unresolved,
 }
 
 impl Slot {
@@ -119,6 +134,26 @@ impl Slot {
 
     pub fn is_error(&self) -> bool {
         matches!(self, Self::Error(_))
+    }
+
+    /// The slot's class for its Live's word (#178): a quiet error is still
+    /// an unresolved binding.
+    pub fn class(&self) -> SlotClass {
+        match self {
+            Self::Pending => SlotClass::Waiting,
+            Self::Value { .. } | Self::Stale { .. } => SlotClass::Resolved,
+            Self::Error(_) | Self::NoSet(_) => SlotClass::Unresolved,
+        }
+    }
+
+    /// The slot with its Live's `no_set` (#178): an error turns quiet while
+    /// the Live has no set and red again once it has; anything else stays.
+    pub fn quieted(self, no_set: bool) -> Self {
+        match self {
+            Self::Error(why) if no_set => Self::NoSet(why),
+            Self::NoSet(why) if !no_set => Self::Error(why),
+            other => other,
+        }
     }
 
     pub fn value(&self) -> Option<&Value> {
@@ -181,7 +216,7 @@ impl Readiness {
     pub fn of_slot(slot: &Slot) -> Self {
         match slot {
             Slot::Value { .. } | Slot::Stale { .. } => Self::Ready,
-            Slot::Pending => Self::Waiting,
+            Slot::Pending | Slot::NoSet(_) => Self::Waiting,
             Slot::Error(_) => Self::Unresolved,
         }
     }
@@ -267,6 +302,16 @@ impl Wanted {
 
     pub fn len(&self) -> usize {
         self.specs.len()
+    }
+
+    /// The instance of a wanted key (#178), none for a key not wanted.
+    pub fn instance_of(&self, key: &str) -> Option<&str> {
+        self.specs.get(key).map(|s| s.instance.as_str())
+    }
+
+    /// The target of a wanted key (#178), none for a key not wanted.
+    pub fn target_of(&self, key: &str) -> Option<&str> {
+        self.specs.get(key).map(|s| s.target.as_str())
     }
 
     pub fn is_empty(&self) -> bool {
