@@ -819,6 +819,18 @@ fn presenters_tab_and_its_steps_are_page_events() {
         ),
         json!({"ev": "presenter", "t": 6.0, "what": "failed", "code": "timer", "why": "no"})
     );
+    assert_eq!(
+        presenter(7.0, PresenterStep::MiniFrame),
+        json!({"ev": "presenter", "t": 7.0, "what": "mini_frame"})
+    );
+    assert_eq!(
+        presenter(8.0, PresenterStep::MiniLoad { ms: 80.6 }),
+        json!({"ev": "presenter", "t": 8.0, "what": "mini_load", "ms": 81.0})
+    );
+    assert_eq!(
+        presenter(9.0, PresenterStep::MiniTap),
+        json!({"ev": "presenter", "t": 9.0, "what": "mini_tap"})
+    );
 }
 
 #[test]
