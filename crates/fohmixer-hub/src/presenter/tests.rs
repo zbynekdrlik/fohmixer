@@ -212,7 +212,7 @@ fn every_failure_has_its_words_kind_side_and_answer() {
             "PRESENTER_METHOD",
         ),
         (
-            Failure::WhepMethod("w".into()),
+            Failure::WriteMethod("w".into(), Writes::Session),
             "method",
             false,
             StatusCode::METHOD_NOT_ALLOWED,
@@ -279,11 +279,13 @@ fn every_failure_has_its_words_kind_side_and_answer() {
     }
     let answer = Failure::Method("m".into()).answer(None);
     assert_eq!(answer.headers()[header::ALLOW], "GET, HEAD");
-    let answer = Failure::WhepMethod("w".into()).answer(None);
+    let answer = Failure::WriteMethod("w".into(), Writes::Session).answer(None);
     assert_eq!(
         answer.headers()[header::ALLOW],
         "GET, HEAD, POST, PATCH, DELETE"
     );
+    let answer = Failure::WriteMethod("w".into(), Writes::Post).answer(None);
+    assert_eq!(answer.headers()[header::ALLOW], "GET, HEAD, POST");
 }
 
 fn body_text(answer: Response) -> String {

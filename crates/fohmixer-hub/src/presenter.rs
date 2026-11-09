@@ -11,20 +11,27 @@
 //!   mixed content on the https page, no CORS, the same Access check.
 //! - **Reads, and the stage's video** ([`pass`]): GET and HEAD, the
 //!   `/live/ws` upgrade (a byte tunnel, `ableset::pipe`, as AbleSet's
-//!   socket) and, under [`WHEP`] only, POST, PATCH and DELETE (#90, the
-//!   owner's ruling of 2026-11-09: the preview shows what the stage displays
-//!   show, NDI video included; the stage page starts its video with WHEP, an
-//!   SDP offer `POST`ed, then `PATCH`/`DELETE` on the resource the answer's
-//!   `Location` names, [`local_location`]); any other method is 405 and any
-//!   other upgrade 400 by the hub itself, and a path with a dot segment 400.
+//!   socket) and Presenter's own write routes under [`NDI`] with exactly
+//!   their methods ([`writes`], read from Presenter's `router.rs`): the
+//!   stage page's WHEP (`POST /ndi/whep/{source}`, `POST|PATCH|DELETE
+//!   /ndi/whep/{source}/{session}`) and its client stats (`POST
+//!   /ndi/client-stats`, `POST /ndi/sessions/{session}/client-stats`) (#90,
+//!   the owner's ruling of 2026-11-09: the preview shows what the stage
+//!   displays show, NDI video included; the stage page starts its video
+//!   with WHEP, an SDP offer `POST`ed, then `PATCH`/`DELETE` on the resource
+//!   the answer's `Location` names, Presenter's own path,
+//!   [`local_location`]); any other method is 405 and any other upgrade 400
+//!   by the hub itself, and a path with a dot segment 400.
 //!   Presenter has no login, so its write API (layouts, slides, Bible,
 //!   clears) is never reachable through fohmixer, the internet path
 //!   included; the one write of it is the hub's own `POST /stage/layout`
-//!   for a page's held key ([`link`]). WHEP's requests start and end the
-//!   video only, nothing on stage; they are as open as Presenter itself on
+//!   for a page's held key ([`link`]). The stage page's writes start and
+//!   end the video and tell its stats only, nothing on stage; they are as
+//!   open as Presenter itself on
 //!   the LAN and behind Cloudflare Access on the internet path, cross-site
 //!   writes refused by the Origin guard, a body at most [`MAX_BODY`], a
-//!   path with an encoded `/` or `\\` refused ([`encoded_separator`]). An
+//!   write route's path with an encoded `/` or `\\` refused
+//!   ([`encoded_separator`]). An
 //!   answer's absolute `Location` (on every proxied answer, WHEP's above all)
 //!   never sends the page to Presenter's address ([`local_location`]). The
 //!   socket is a
@@ -101,9 +108,13 @@ pub const UNDER: [&str; 7] = [
     "/libraries/",
 ];
 
-/// The stage's video (WHEP, #90): the one prefix that takes POST, PATCH and
-/// DELETE ([`pass`]).
-pub const WHEP: &str = "/whep/";
+/// The prefix of Presenter's only routes the hub passes a write to
+/// ([`writes`], #90).
+pub const NDI: &str = "/ndi/";
+
+/// The stage's video (WHEP, #90): Presenter's WHEP resources, whose answers'
+/// absolute `Location` is always Presenter's ([`local_location`]).
+pub const WHEP: &str = "/ndi/whep/";
 
 /// The largest request body sent to Presenter: WHEP's SDP offer and its ICE
 /// fragments are a few KiB (64 KiB, a literal so cargo-mutants has no
@@ -148,7 +159,8 @@ pub const CLOSED_WAIT: Duration = ableset::CLOSED_WAIT;
 pub enum Pass {
     /// Not Presenter's: fohmixer's own router.
     No,
-    /// A read, or a WHEP request under [`WHEP`], passed to Presenter.
+    /// A read, or a write Presenter's route takes ([`writes`]), passed to
+    /// Presenter.
     Page,
     /// The stage page's socket, tunneled to Presenter.
     Socket,
@@ -181,32 +193,76 @@ pub fn pass(method: &Method, path: &str, upgrade: bool) -> Pass {
     if !is_presenter_path(path) {
         return Pass::No;
     }
-    if dot_segment(path) || (path.starts_with(WHEP) && encoded_separator(path)) {
+    let route = writes(path);
+    if dot_segment(path) || (route.is_some() && encoded_separator(path)) {
         return Pass::Path;
     }
     match (upgrade, path == SOCKET) {
         (true, true) => Pass::Socket,
         (true, false) => Pass::Upgrade,
         (false, _) if *method == Method::GET || *method == Method::HEAD => Pass::Page,
-        (false, _) if whep_write(method, path) => Pass::Page,
+        (false, _) if route.is_some_and(|route| route.takes(method)) => Pass::Page,
         (false, _) => Pass::Method,
     }
 }
 
 /// Whether `path` holds an encoded `/` or `\\` (`%2f`, `%5c`, any case) or
-/// a raw `\\`: a WHEP path keeps its segments as it came (Presenter decodes
-/// its stream's name, so `%2e%2e%2f` would name another path there).
+/// a raw `\\`: a write route's path keeps its segments as it came
+/// (Presenter decodes a source's or session's name, so `%2e%2e%2f` would
+/// name another path there).
 pub fn encoded_separator(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     lower.contains("%2f") || lower.contains("%5c") || lower.contains('\\')
 }
 
-/// Whether `method` on `path` is the stage video's WHEP exchange (#90): an
-/// offer `POST`ed, the session's `PATCH` (ICE) and `DELETE`, under [`WHEP`]
-/// only.
-pub fn whep_write(method: &Method, path: &str) -> bool {
-    path.starts_with(WHEP)
-        && (*method == Method::POST || *method == Method::PATCH || *method == Method::DELETE)
+/// A Presenter route that takes a write (#90, its `router.rs`): the stage
+/// page's only writes ([`writes`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Writes {
+    /// `POST` only: a WHEP offer (`/ndi/whep/{source}`) and the client
+    /// stats (`/ndi/client-stats`, `/ndi/sessions/{session}/client-stats`).
+    Post,
+    /// A WHEP session (`/ndi/whep/{source}/{session}`): its re-offer
+    /// `POST`, its ICE `PATCH`, its end `DELETE`.
+    Session,
+}
+
+impl Writes {
+    /// Whether the route takes `method` (a write; reads pass anyway).
+    pub fn takes(self, method: &Method) -> bool {
+        match self {
+            Self::Post => *method == Method::POST,
+            Self::Session => {
+                *method == Method::POST || *method == Method::PATCH || *method == Method::DELETE
+            }
+        }
+    }
+
+    /// The `Allow` of the hub's 405 on the route: the reads it passes and
+    /// the route's writes.
+    pub fn allow(self) -> &'static str {
+        match self {
+            Self::Post => "GET, HEAD, POST",
+            Self::Session => "GET, HEAD, POST, PATCH, DELETE",
+        }
+    }
+}
+
+/// Presenter's write route at `path` (pure; `path` without its query): the
+/// segments after [`NDI`], none empty, are `whep/{source}`, `client-stats`
+/// or `sessions/{session}/client-stats` ([`Writes::Post`]) or
+/// `whep/{source}/{session}` ([`Writes::Session`]); any other path takes no
+/// write.
+pub fn writes(path: &str) -> Option<Writes> {
+    let segments: Vec<&str> = path.strip_prefix(NDI)?.split('/').collect();
+    if segments.iter().any(|segment| segment.is_empty()) {
+        return None;
+    }
+    match segments.as_slice() {
+        ["whep", _] | ["client-stats"] | ["sessions", _, "client-stats"] => Some(Writes::Post),
+        ["whep", _, _] => Some(Writes::Session),
+        _ => None,
+    }
 }
 
 /// An answer's `Location` as the page must follow it (#90, WHEP's resource):
@@ -385,7 +441,7 @@ impl Presenter {
         let host = HeaderValue::from_str(self.authority.as_str())
             .map_err(|e| Failure::Target(format!("the Host: {e}")))?;
         parts.headers.insert(header::HOST, host);
-        // WHEP's bodies (#90): at most MAX_BODY, the page's own errors marked
+        // The stage page's write bodies (#90): at most MAX_BODY, its errors marked
         // so a broken offer is never taken for Presenter down.
         let body = Body::new(Limited::new(
             body.map_err(ableset::proxy::ClientBody),
@@ -530,8 +586,9 @@ pub fn failure(error: &(dyn std::error::Error + 'static)) -> Failure {
 pub enum Failure {
     /// A method never passed (405).
     Method(String),
-    /// A method WHEP's path does not take (405, its `Allow` WHEP's).
-    WhepMethod(String),
+    /// A method a write route does not take (405, its `Allow` the route's,
+    /// [`Writes::allow`]).
+    WriteMethod(String, Writes),
     /// A request body over [`MAX_BODY`] (413).
     TooLarge(String),
     /// The page's request body broke off (400).
@@ -553,7 +610,7 @@ impl Failure {
     pub fn why(&self) -> &str {
         match self {
             Self::Method(why)
-            | Self::WhepMethod(why)
+            | Self::WriteMethod(why, _)
             | Self::TooLarge(why)
             | Self::BrokenBody(why)
             | Self::Upgrade(why)
@@ -567,7 +624,7 @@ impl Failure {
     /// Its kind, as its records are counted.
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::Method(_) | Self::WhepMethod(_) => "method",
+            Self::Method(_) | Self::WriteMethod(..) => "method",
             Self::TooLarge(_) => "too_large",
             Self::BrokenBody(_) => "broken_body",
             Self::Upgrade(_) => "upgrade",
@@ -596,12 +653,12 @@ impl Failure {
                 ),
             )
                 .into_response(),
-            Self::WhepMethod(_) => (
-                [(header::ALLOW, "GET, HEAD, POST, PATCH, DELETE")],
+            Self::WriteMethod(_, route) => (
+                [(header::ALLOW, route.allow())],
                 error(
                     StatusCode::METHOD_NOT_ALLOWED,
                     "PRESENTER_METHOD",
-                    "Presenter's stage video takes WHEP's methods only",
+                    "Presenter's route takes the stage page's own methods only",
                 ),
             )
                 .into_response(),
@@ -811,10 +868,9 @@ async fn forward(State(site): State<Arc<Presenter>>, request: Request) -> Respon
         Pass::Socket => return tunnel(site, request, &path, dest).await,
         Pass::Method => {
             let why = format!("{method} is never passed to Presenter");
-            let why = if path.starts_with(WHEP) {
-                Failure::WhepMethod(why)
-            } else {
-                Failure::Method(why)
+            let why = match writes(&path) {
+                Some(route) => Failure::WriteMethod(why, route),
+                None => Failure::Method(why),
             };
             return site.failed(&method, &path, dest, why);
         }
