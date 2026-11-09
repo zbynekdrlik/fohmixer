@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./support/fixtures";
-import { harness, hubStatus, openSurface, token, until } from "./support/live";
+import { frames, harness, hubStatus, openSurface, token, until } from "./support/live";
 
 // A Live that is down, said in words (#178; the owner's approved
 // docs/mockups/live-down-v2.html): no card or overlay anywhere. A strip of a
@@ -189,7 +189,8 @@ test.describe("A Live that is down (#178)", () => {
     await expect(foot(page, "band")).toHaveAttribute("data-live", "on", { timeout: UP });
 
     /** Per down strip on screen: its hint inside the zone, and the visible
-     * scale labels it meets (their text; none is right). */
+     * texts of the zone it meets (the scale's labels, the group's name, the
+     * LUFS reading; their text: none is right). */
     const clashes = () =>
       page.locator('[data-testid="strip"][data-live]').evaluateAll((strips) =>
         strips
@@ -199,7 +200,7 @@ test.describe("A Live that is down (#178)", () => {
             const zone = s.querySelector(".strip-zone")!.getBoundingClientRect();
             if (!hint) return { track: s.getAttribute("data-track"), hint: false, inside: false, meets: [] as string[] };
             const h = hint.getBoundingClientRect();
-            const meets = [...s.querySelectorAll(".scale .tick")]
+            const meets = [...s.querySelectorAll(".scale .tick, .group-side, .lufs, .lufs-cap")]
               .filter((t) => {
                 const cs = getComputedStyle(t);
                 const r = t.getBoundingClientRect();
@@ -207,7 +208,7 @@ test.describe("A Live that is down (#178)", () => {
                 const crosses = r.left < h.right && r.right > h.left && r.top < h.bottom && r.bottom > h.top;
                 return shown && crosses;
               })
-              .map((t) => t.textContent ?? "");
+              .map((t) => `${t.className}: ${t.textContent ?? ""}`);
             const inside = h.left >= zone.left - 0.5 && h.right <= zone.right + 0.5 && h.top >= zone.top && h.bottom <= zone.bottom;
             return { track: s.getAttribute("data-track"), hint: true, inside, meets };
           }),
@@ -219,6 +220,8 @@ test.describe("A Live that is down (#178)", () => {
       for (const size of [IPAD, { width: 844, height: 390 }]) {
         await page.setViewportSize(size);
         await stripsSay(page, "band", live);
+        // The page sets --strip-w and its narrow flags in its own resize handling.
+        await frames(page, 2);
         found[`${live} at ${size.width}x${size.height}`] = await clashes();
       }
       await page.setViewportSize(IPAD);
@@ -250,6 +253,7 @@ test.describe("A Live that is down (#178)", () => {
 
     await host("band", "start");
     await stripsSay(page, "band", null);
+    expect(await page.locator('[data-testid="strip"][data-instance="band"] .scale .tick').count()).toBeGreaterThan(0);
     expect(await hiddenTicks("band")).toBe(0);
   });
 
