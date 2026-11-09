@@ -45,6 +45,7 @@ use crate::binding::sectors::{
 };
 use crate::components::{ControlView, down_of, owns_touches};
 use crate::dom;
+use crate::pages::presenter::StageMini;
 use crate::pages::surface::{
     ColumnFoot, ColumnHead, Head, Nav, ThinStrip, extra_attr, measure_page,
 };
@@ -256,6 +257,7 @@ pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
     let body_ref = NodeRef::<html::Div>::new();
     let column_ref = NodeRef::<html::Nav>::new();
     let thin_ref = NodeRef::<html::Div>::new();
+    let rail_ref = NodeRef::<html::Div>::new();
     let measured = measure_page(nav.viewport, body_ref, column_ref, thin_ref);
     let doc = Memo::new(move |_| {
         store
@@ -434,8 +436,9 @@ pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
                         children=shift_view
                     />
                 </div>
-                <div class="rail" data-testid="rail">
+                <div class="rail" data-testid="rail" node_ref=rail_ref>
                     <div class="rail-main">{rail}</div>
+                    <StageMini rail=rail_ref />
                     <div class="rail-foot">{global}</div>
                 </div>
                 <ColumnFoot />

@@ -25,16 +25,21 @@
 
 use leptos::html;
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 
 use crate::behave::presenter::{
-    CAPTION, DOWN_TEXT, DOWN_TITLE, FRAME_URL, HEAD, KeyLook, Preview, RELEASE_TEXT, STAGE_H,
-    STAGE_W, can_switch, key_look, key_note, key_of, name_of, on_stage, preview, rows, scale,
-    switch_to,
+    CAPTION, DOWN_TEXT, DOWN_TITLE, FRAME_URL, HEAD, KeyLook, MINI_HEAD, Place, Preview, RAIL_GAP,
+    RELEASE_TEXT, STAGE_H, STAGE_W, can_switch, key_look, key_note, key_of, mini_fits, mini_height,
+    mini_note, mini_shows, mini_width, name_of, on_stage, phone, preview, rows, scale, switch_to,
+    track_count,
 };
 use crate::components::hold_key::{Flash, HoldKey};
+use crate::components::owns_touches;
 use crate::diag;
 use crate::diag::trace::{self, PresenterStep};
 use crate::dom;
+use crate::pages::surface::{Extra, Nav};
 use crate::store::LiveStore;
 
 /// Whether the page may switch the stage now (`behave::presenter::
@@ -81,7 +86,7 @@ pub(crate) fn PresenterView(viewport: RwSignal<(f64, f64)>) -> impl IntoView {
         }
     });
     let stage = move || match shows.try_get().unwrap_or(Preview::Waiting) {
-        Preview::Frame => Some(view! { <StageFrame width=width /> }.into_any()),
+        Preview::Frame => Some(view! { <StageFrame width=width place=Place::Pane /> }.into_any()),
         Preview::Down => {
             diag::record(&trace::presenter(dom::epoch_now(), PresenterStep::Down));
             Some(
@@ -140,19 +145,23 @@ pub(crate) fn PresenterView(viewport: RwSignal<(f64, f64)>) -> impl IntoView {
     }
 }
 
-/// The preview's frame: Presenter's stage page at 1920 × 1080, scaled to the
-/// pane's width; mounted while Presenter is up.
+/// A stage frame (#90): Presenter's stage page at 1920 × 1080, scaled to
+/// `width`; mounted while Presenter is up, in the PRESENTER pane or the
+/// column's miniature (`place`: its class, test id and recorder steps).
 #[component]
-fn StageFrame(width: RwSignal<f64>) -> impl IntoView {
-    diag::record(&trace::presenter(dom::epoch_now(), PresenterStep::Frame));
+pub(crate) fn StageFrame(width: RwSignal<f64>, place: Place) -> impl IntoView {
+    let (mount, load): (PresenterStep, fn(f64) -> PresenterStep<'static>) = match place {
+        Place::Pane => (PresenterStep::Frame, |ms| PresenterStep::Load { ms }),
+        Place::Column => (PresenterStep::MiniFrame, |ms| PresenterStep::MiniLoad {
+            ms,
+        }),
+    };
+    diag::record(&trace::presenter(dom::epoch_now(), mount));
     let mounted = StoredValue::new(Some(dom::now()));
     let loaded = move |_: web_sys::Event| {
         if let Some(Some(at)) = mounted.try_update_value(Option::take) {
             let ms = dom::now() - at;
-            diag::record(&trace::presenter(
-                dom::epoch_now(),
-                PresenterStep::Load { ms },
-            ));
+            diag::record(&trace::presenter(dom::epoch_now(), load(ms)));
         }
     };
     let style = move || {
@@ -161,8 +170,8 @@ fn StageFrame(width: RwSignal<f64>) -> impl IntoView {
     };
     view! {
         <iframe
-            class="pst-frame"
-            data-testid="presenter-frame"
+            class=place.class()
+            data-testid=place.testid()
             title="Stage display"
             src=FRAME_URL
             referrerpolicy="no-referrer"
@@ -172,6 +181,145 @@ fn StageFrame(width: RwSignal<f64>) -> impl IntoView {
             style=style
             on:load=loaded
         ></iframe>
+    }
+}
+
+/// The rail's free room watcher: a `ResizeObserver` and its callback, kept
+/// while the miniature's place lives.
+type RailObserver = (web_sys::ResizeObserver, Closure<dyn FnMut()>);
+
+/// The miniature's picture width if it fits the rail's free room
+/// (`behave::presenter::mini_fits`): the rail less its foot and the gap is
+/// the buttons' room, the rows are `.rail-main`'s resolved tracks.
+fn measure_rail(rail: &web_sys::HtmlDivElement) -> Option<f64> {
+    let main = rail.query_selector(".rail-main").ok()??;
+    let foot: web_sys::HtmlElement = rail.query_selector(".rail-foot").ok()??.dyn_into().ok()?;
+    let width = mini_width(f64::from(rail.client_width()))?;
+    let room = f64::from(rail.client_height()) - f64::from(foot.offset_height()) - RAIL_GAP;
+    let rows = track_count(&dom::computed(&main, "grid-template-rows").unwrap_or_default());
+    mini_fits(room, rows, mini_height(width)).then_some(width)
+}
+
+/// The column's stage miniature (1.37.0; way A of the owner's approved
+/// `docs/mockups/presenter-stage-v2.html`): the same stage frame as the
+/// PRESENTER pane, scaled to the rail's width, in the rail's free room
+/// above TECHALERT (`rail`: the `.rail` it lies in, measured on every
+/// resize). A dim `STAGE` caption with the layout on stage, `offline` in
+/// red and the picture dimmed while Presenter is down. A tap opens the
+/// PRESENTER tab; while it is open, on a phone, or where the rail has no
+/// free room it is not there at all (nothing gets shorter for it); with no
+/// `[presenter]` neither. The frame takes no touch; the box owns its
+/// touches.
+#[component]
+pub(crate) fn StageMini(rail: NodeRef<html::Div>) -> impl IntoView {
+    let nav = expect_context::<Nav>();
+    let store = nav.store;
+    let fit = RwSignal::new(None::<f64>);
+    let observer = StoredValue::new_local(None::<RailObserver>);
+    Effect::new(move |_| {
+        let Some(el) = rail.get() else {
+            return;
+        };
+        let observed = el.clone();
+        let callback = Closure::wrap(Box::new(move || {
+            let measured = measure_rail(&observed);
+            if fit.try_get_untracked() != Some(measured) {
+                let _ = fit.try_set(measured);
+            }
+        }) as Box<dyn FnMut()>);
+        if let Ok(watch) = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()) {
+            watch.observe(&el);
+            if let Some(Some((old, _))) =
+                observer.try_update_value(|o| o.replace((watch, callback)))
+            {
+                old.disconnect();
+            }
+        }
+    });
+    on_cleanup(move || {
+        if let Some(Some((watch, _))) = observer.try_update_value(Option::take) {
+            watch.disconnect();
+        }
+    });
+    let shows = Memo::new(move |_| {
+        let configured = store.presenter.try_with(Option::is_some).unwrap_or(false);
+        let open = nav.shown_extra() == Extra::Presenter;
+        let (w, h) = nav.viewport.try_get().unwrap_or_default();
+        let fits = fit.try_get().flatten().is_some();
+        mini_shows(configured, open, phone(w, h), fits)
+    });
+    move || {
+        shows
+            .try_get()
+            .unwrap_or(false)
+            .then(|| view! { <MiniBox fit=fit /> })
+    }
+}
+
+/// The miniature's box: the caption and the picture; a tap opens PRESENTER.
+#[component]
+fn MiniBox(fit: RwSignal<Option<f64>>) -> impl IntoView {
+    let nav = expect_context::<Nav>();
+    let store = nav.store;
+    let width = RwSignal::new(0.0_f64);
+    Effect::new(move |_| {
+        let w = fit.try_get().flatten().unwrap_or(0.0);
+        if width.try_get_untracked() != Some(w) {
+            let _ = width.try_set(w);
+        }
+    });
+    let note = Memo::new(move |_| {
+        store
+            .presenter
+            .try_with(|p| p.as_ref().map(mini_note))
+            .flatten()
+            .unwrap_or_default()
+    });
+    let shows = Memo::new(move |_| {
+        preview(
+            store
+                .presenter
+                .try_with(|p| p.as_ref().and_then(|p| p.online))
+                .flatten(),
+        )
+    });
+    let picture = move || {
+        (shows.try_get() == Some(Preview::Frame))
+            .then(|| view! { <StageFrame width=width place=Place::Column /> })
+    };
+    let size = move || {
+        let w = width.try_get().unwrap_or(0.0);
+        format!("width: {w}px; height: {}px", w * STAGE_H / STAGE_W)
+    };
+    let tap = move |_: web_sys::PointerEvent| {
+        diag::record(&trace::presenter(dom::epoch_now(), PresenterStep::MiniTap));
+        nav.show_extra(Extra::Presenter);
+    };
+    // The box owns its touches (#43 PR G); it writes no key.
+    let no_keys: Vec<String> = Vec::new();
+    view! {
+        <div
+            class="stage-mini"
+            role="button"
+            aria-label="Open PRESENTER"
+            use:owns_touches=no_keys
+            data-testid="stage-mini"
+            data-offline=move || note.try_with(|n| n.1).unwrap_or(false).to_string()
+            on:pointerdown=tap
+        >
+            <div class="mini-cap">
+                <span>{MINI_HEAD}</span>
+                <em data-testid="mini-note">{move || note.try_with(|n| n.0.clone()).unwrap_or_default()}</em>
+            </div>
+            <div
+                class="mini-stage"
+                data-testid="mini-stage"
+                data-preview=move || shows.try_get().unwrap_or(Preview::Waiting).name()
+                style=size
+            >
+                {picture}
+            </div>
+        </div>
     }
 }
 

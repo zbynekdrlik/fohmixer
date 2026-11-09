@@ -806,8 +806,13 @@ export async function textSize(el: Locator): Promise<{ w: number; h: number }> {
   });
 }
 
-/** The page's hub socket (`page.routeWebSocket(HUB_SOCKET, …)`). */
-export const HUB_SOCKET = /\/ws\?/;
+/**
+ * The page's hub socket (`page.routeWebSocket(HUB_SOCKET, …)`): the hub's
+ * own `/ws?` at the origin's root only. Since 1.37.0 the column's stage
+ * miniature frames Presenter's stage page, whose `/live/ws?…` socket
+ * (through the hub) a bare `/ws?` matched too.
+ */
+export const HUB_SOCKET = /^wss?:\/\/[^/]+\/ws\?/;
 
 /**
  * Routes the page's sockets to the hub: the first one as it is, every later

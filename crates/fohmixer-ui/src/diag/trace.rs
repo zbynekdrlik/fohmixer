@@ -296,6 +296,12 @@ pub enum PresenterStep<'a> {
     Down,
     /// A switch's answer was a failure, and why.
     Failed { code: &'a str, why: &'a str },
+    /// The column's miniature (1.37.0) mounted its frame.
+    MiniFrame,
+    /// The miniature's frame loaded, `ms` after its mount.
+    MiniLoad { ms: f64 },
+    /// A tap on the miniature opened the tab.
+    MiniTap,
 }
 
 /// Presenter's stage tab's step at `t` (#90): `what`, the load's time in
@@ -313,6 +319,11 @@ pub fn presenter(t: f64, step: PresenterStep<'_>) -> Value {
         PresenterStep::Failed { code, why } => {
             json!({"ev": "presenter", "t": t, "what": "failed", "code": code, "why": why})
         }
+        PresenterStep::MiniFrame => json!({"ev": "presenter", "t": t, "what": "mini_frame"}),
+        PresenterStep::MiniLoad { ms } => {
+            json!({"ev": "presenter", "t": t, "what": "mini_load", "ms": ms.round()})
+        }
+        PresenterStep::MiniTap => json!({"ev": "presenter", "t": t, "what": "mini_tap"}),
     }
 }
 
