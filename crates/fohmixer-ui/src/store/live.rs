@@ -36,6 +36,7 @@ use crate::behave::ableset::AbleSetInfo;
 use crate::behave::idle::IdleWatch;
 use crate::behave::iem::IemInfo;
 use crate::behave::link::{Counter, DropoutWatch};
+use crate::behave::live_down::LiveWord;
 use crate::behave::presenter::PresenterInfo;
 use crate::binding::SubSpec;
 use crate::diag::trace::fingers::EqUndos;
@@ -48,6 +49,7 @@ mod deck;
 mod eq;
 mod idle;
 mod link;
+mod live_down;
 mod presenter;
 mod sectors;
 mod writes;
@@ -171,6 +173,9 @@ pub struct LiveStore {
     pub layout_note: RwSignal<Option<String>>,
     /// The instances, by name.
     pub instances: RwSignal<BTreeMap<String, InstanceView>>,
+    /// Each Live's word (#178, `behave::live_down`): not running, no set or
+    /// on; none for an instance while the page has no hub connection.
+    pub live: RwSignal<BTreeMap<String, LiveWord>>,
     /// The hub values (STAGE AUT), as the hub last sent them: kept through
     /// an outage, stale until the next connection sends them (#104 M4).
     pub hub: RwSignal<HubValues>,
@@ -233,6 +238,7 @@ impl LiveStore {
             layout: RwSignal::new(None),
             layout_note: RwSignal::new(None),
             instances: RwSignal::new(BTreeMap::new()),
+            live: RwSignal::new(BTreeMap::new()),
             hub: RwSignal::new(HubValues::default()),
             reverb: RwSignal::new(HubReverb::default()),
             autotune: RwSignal::new(HubAutotune::default()),
@@ -530,6 +536,8 @@ impl LiveStore {
         self.eq_socket_closed();
         // The controls keep Live's last values, stale, and take touches (L2).
         self.mark_stale();
+        // No hub, no news of Live: no word (#178).
+        self.judge_all();
         for done in pending.into_values() {
             done(Err(super::CONNECTION_CLOSED.to_string()));
         }
@@ -826,6 +834,7 @@ impl LiveStore {
         if back {
             self.resend(&name);
         }
+        self.judge(&name);
     }
 
     fn on_layout(self, rev: u64) {
@@ -875,16 +884,35 @@ impl LiveStore {
             .inner
             .try_with_value(|i| i.slots.get(key).cloned())
             .flatten();
-        if let Some(signal) = signal {
-            let _ = signal.try_set(slot);
+        let Some(signal) = signal else {
+            return true;
+        };
+        // An error of a Live with no set arrives quiet (#178); a slot that
+        // changes class judges its Live again.
+        let instance = self.instance_of(key);
+        let no_set = instance.as_deref().is_some_and(|i| self.no_set(i));
+        let slot = slot.quieted(no_set);
+        let before = signal.try_with_untracked(Slot::class);
+        let after = slot.class();
+        let _ = signal.try_set(slot);
+        if before != Some(after)
+            && let Some(instance) = instance
+        {
+            self.judge(&instance);
         }
         true
     }
 
     /// Every wanted slot (of one instance) back to `Pending` (I8).
     fn mark_pending(self, instance: Option<&str>) {
-        let signals: Vec<ArcRwSignal<Slot>> = self
-            .inner
+        for signal in self.slots_of(instance) {
+            let _ = signal.try_set(Slot::Pending);
+        }
+    }
+
+    /// The wanted slots (of one instance).
+    fn slots_of(self, instance: Option<&str>) -> Vec<ArcRwSignal<Slot>> {
+        self.inner
             .try_with_value(|i| {
                 i.conn
                     .keys_of(instance)
@@ -892,10 +920,7 @@ impl LiveStore {
                     .filter_map(|k| i.slots.get(k).cloned())
                     .collect()
             })
-            .unwrap_or_default();
-        for signal in signals {
-            let _ = signal.try_set(Slot::Pending);
-        }
+            .unwrap_or_default()
     }
 
     /// Every wanted slot keeps its value, marked stale (#43, §4.2): the hub
@@ -993,6 +1018,8 @@ impl LiveStore {
                 .slot_signal(key)
                 .try_update(|slot| *slot = std::mem::replace(slot, Slot::Pending).rewanted(ready));
         }
+        // Another page's bindings: each Live judged on them (#178).
+        self.judge_all();
     }
 
     /// The hub is connected again: a slot no page wants now (left during the

@@ -212,6 +212,12 @@ fn every_hello_resubscribes() {
     assert_eq!(c.keys_of(Some("band")), vec![spec("Hand2 #", "mute").key()]);
     assert_eq!(c.keys_of(Some("master")), Vec::<String>::new());
     assert_eq!(c.keys_of(None), vec![spec("Hand2 #", "mute").key()]);
+    // A key's instance and target (#178: each Live judged on its own).
+    let key = spec("Hand2 #", "mute").key();
+    assert_eq!(c.instance_of(&key).as_deref(), Some("band"));
+    assert_eq!(c.target_of(&key), Some(spec("Hand2 #", "mute").target));
+    assert_eq!(c.instance_of("band|x|y|false"), None);
+    assert_eq!(c.target_of("band|x|y|false"), None);
 }
 
 #[test]

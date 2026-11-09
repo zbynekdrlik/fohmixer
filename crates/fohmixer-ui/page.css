@@ -80,7 +80,7 @@
 
 /* The status at the column's foot (#148): small and dim, so it never
    competes with the controls; a red state stays red (the counter while a
-   dropout lasts, a badge's dot of a Live that is down). */
+   dropout lasts; a Live that is down says so in words, #178). */
 .column-foot {
     flex: none;
 }
@@ -88,7 +88,9 @@
 .column .status-cluster {
     flex-wrap: wrap;
     justify-content: center;
-    gap: 2px 6px;
+    /* 4 px between parts: the counter and both Lives' words (#178) share
+       one row, as the counter and the dots did. */
+    gap: 2px 4px;
     color: var(--faint);
     font-size: 9px;
     letter-spacing: 0.6px;
@@ -107,27 +109,40 @@
     color: var(--danger);
 }
 
-.column .status-cluster .badge {
-    gap: 4px;
-}
-
-/* The badges' box is no box on a tablet: they wrap with the status. */
-.status-cluster .badges {
+/* The Lives in words (#178, mockup live-down-v2). While every Live is on
+   the words sit where the dots sat, in the counter's row (`BAND on`), so
+   the rail keeps its room (the stage miniature fits only with every rail
+   row at 44 px). While one is down the foot spells each Live out in a box
+   of its own, one line per Live (its name left, its word right), with the
+   hint under them; the counter, REC, the version and TAGS wrap around it. */
+.column .status-cluster .badges {
     display: contents;
 }
 
-.column .status-cluster .badge-dot {
-    width: 6px;
-    height: 6px;
+.column .status-cluster .badge {
+    gap: 3px;
 }
 
-.column .status-cluster .version {
-    font-size: 9px;
+.column .status-cluster .badges[data-down="true"] {
+    display: flex;
+    flex: 1 0 100%;
+    flex-direction: column;
+    min-width: 0;
+    padding: 3px 6px;
+    border: 1px solid var(--line-soft);
+    border-radius: 8px;
 }
 
-.column .status-cluster .manual-chip {
-    font-size: 8.5px;
-    line-height: 12px;
+.column .status-cluster .badges[data-down="true"] .badge {
+    justify-content: space-between;
+    gap: 4px;
+    color: var(--text);
+    font: 700 11px/14px var(--display);
+    letter-spacing: 0.05em;
+}
+
+.column .status-cluster .live-hint {
+    margin-top: 2px;
 }
 
 .column .seg {
@@ -516,19 +531,35 @@
     /* The badges share the middle columns over the version and wrap
        there (a third Live set's badge goes under the others, the row
        grows): never an implicit column past the counter and TAGS. */
-    .column .status-cluster .badges {
+    .column .status-cluster .badges,
+    .column .status-cluster .badges[data-down="true"] {
         display: flex;
         flex-wrap: wrap;
         justify-content: center;
         grid-row: 1;
         grid-column: 2 / 4;
+        flex-direction: row;
         gap: 0 3px;
         min-width: 0;
+        flex: none;
+        padding: 0;
+        border: 0;
     }
 
-    .column .status-cluster .badge {
+    /* A Live in words here too (#178), in the foot's own 9 px face; the
+       hint stays off a phone on its side (the strips say NOT RUNNING / NO
+       SET), so the foot keeps its rows. */
+    .column .status-cluster .badge,
+    .column .status-cluster .badges[data-down="true"] .badge {
+        justify-content: flex-start;
         gap: 3px;
+        color: inherit;
+        font: inherit;
         line-height: 9px;
+    }
+
+    .column .status-cluster .live-hint {
+        display: none;
     }
 
     /* REC beside the version (#172), on the same row: the foot keeps its

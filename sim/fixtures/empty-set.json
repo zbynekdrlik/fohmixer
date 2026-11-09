@@ -1,0 +1,13 @@
+{
+  "name": "",
+  "live_version": [12, 2, 5],
+  "tracks": [
+    {"name": "1-MIDI"},
+    {"name": "2-Audio"}
+  ],
+  "returns": [
+    {"name": "A-Reverb"},
+    {"name": "B-Delay"}
+  ],
+  "master": {"name": "Main"}
+}

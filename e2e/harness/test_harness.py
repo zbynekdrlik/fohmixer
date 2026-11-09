@@ -236,6 +236,26 @@ class HarnessTest(unittest.TestCase):
             {"answer": "LISTENERS 0"},
         )
 
+    def test_a_stopped_host_stays_stopped_until_started_on_a_site(self):
+        old = self.harness.hosts["master"].proc
+        self.assertEqual(self.post("/host/master/stop"), (200, {"ok": True}))
+        self.assertEqual(old.returncode, 0, "stopped cleanly on SIGTERM")
+        self.assertEqual(self.post("/host/master/stop"), (200, {"ok": True}), "a stopped host stays so")
+        with self.assertRaises(harness.BadRequest):
+            self.post("/host/master/start", {"site": "nowhere"})
+        status, answer = self.post("/host/master/start", {"site": "empty"})
+        host = self.harness.hosts["master"]
+        self.assertEqual((status, answer), (200, {"port": host.port}))
+        self.assertIsNone(host.proc.poll())
+        self.assertTrue(host.site.endswith("empty-set.json"))
+        status, _ = self.post("/host/master/start")
+        self.assertEqual(status, 200)
+        self.assertTrue(host.site.endswith("test-site.json"), "the test site by default")
+        self.assertEqual(
+            self.post("/host/master/line", {"line": "listeners mute live_set tracks 0"})[1],
+            {"answer": "LISTENERS 0"},
+        )
+
     def test_the_layout_file_is_replaced_and_reset(self):
         path = os.path.join(self.data, "layout.json")
         with open(LAYOUT, encoding="utf-8") as f:

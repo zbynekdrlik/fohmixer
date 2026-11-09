@@ -540,3 +540,61 @@ fn a_refusal_is_heard_and_a_result_is_not() {
     on_refusal(Box::new(move |why| sink.borrow_mut().push(why)))(Ok(Vec::new()));
     assert_eq!(*heard.borrow(), vec!["FULL".to_string()]);
 }
+
+#[test]
+fn a_quiet_error_waits_never_red_and_turns_red_again_once_its_live_has_a_set() {
+    let error = Slot::Error("no track".into());
+    let quiet = error.clone().quieted(true);
+    assert_eq!(quiet, Slot::NoSet("no track".into()));
+    assert_eq!(Readiness::of_slot(&quiet), Readiness::Waiting);
+    assert_eq!(Readiness::of_slot(&error), Readiness::Unresolved);
+    assert!(!quiet.is_error() && !quiet.is_ready());
+    assert_eq!(quiet.clone().quieted(true), quiet);
+    assert_eq!(quiet.quieted(false), error);
+    assert_eq!(error.clone().quieted(false), error);
+    // Only an error turns quiet.
+    let value = Slot::Value {
+        value: json!(1),
+        display: None,
+        at: 1.0,
+    };
+    for other in [Slot::Pending, value.clone(), value.into_stale()] {
+        assert_eq!(other.clone().quieted(true), other);
+        assert_eq!(other.clone().quieted(false), other);
+    }
+    // A quiet error stays quiet through an outage.
+    assert_eq!(
+        Slot::NoSet("x".into()).into_stale(),
+        Slot::NoSet("x".into())
+    );
+}
+
+#[test]
+fn a_slots_class_for_its_lives_word() {
+    let value = Slot::Value {
+        value: json!(1),
+        display: None,
+        at: 1.0,
+    };
+    assert_eq!(Slot::Pending.class(), SlotClass::Waiting);
+    assert_eq!(value.clone().class(), SlotClass::Resolved);
+    assert_eq!(value.into_stale().class(), SlotClass::Resolved);
+    assert_eq!(Slot::Error("x".into()).class(), SlotClass::Unresolved);
+    assert_eq!(Slot::NoSet("x".into()).class(), SlotClass::Unresolved);
+}
+
+#[test]
+fn a_wanted_key_names_its_instance() {
+    let mut wanted = Wanted::default();
+    let band = spec("band", "Vox 1", "mute");
+    let master = spec("master", "Main", "mute");
+    wanted.replace(vec![band.clone(), master.clone()]);
+    assert_eq!(wanted.instance_of(&band.key()), Some("band"));
+    assert_eq!(wanted.instance_of(&master.key()), Some("master"));
+    assert_eq!(wanted.instance_of("band|x|y|false"), None);
+    assert_eq!(
+        wanted.target_of(&band.key()),
+        Some("live_set tracks[name=Vox 1]")
+    );
+    assert_eq!(wanted.target_of("band|x|y|false"), None);
+}

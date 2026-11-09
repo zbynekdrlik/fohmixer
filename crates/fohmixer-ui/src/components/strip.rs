@@ -32,6 +32,7 @@ use crate::behave::db_text::db_text;
 use crate::behave::fader::{UNITY, VolumeLaw};
 use crate::behave::hold::{HINT_MS, HOLD_MS, Hold, Lift};
 use crate::behave::label::{mark_look, shown_label};
+use crate::behave::live_down::LiveWord;
 use crate::behave::lufs::{
     COIL, LufsLook, SpringLook, glyphs, kind_name, look as lufs_look_of, point_key, spring,
 };
@@ -492,6 +493,31 @@ pub fn StripView(
     let mark_word = look.map(|(_, word)| {
         view! { <span class="strip-mark" data-testid="strip-mark">{word}</span> }
     });
+    // A Live that is down (#178, mockup live-down-v2): the strip dimmed,
+    // the word under its name in the marks line's place, `—` on the
+    // readout, never red.
+    let live_of = instance.clone();
+    let down = Memo::new(move |_| {
+        store
+            .live
+            .try_with(|all| all.get(&live_of).copied())
+            .flatten()
+            .filter(|w| *w != LiveWord::On)
+    });
+    let live_attr = move || down.try_get().flatten().map(LiveWord::name);
+    let why = move || {
+        down.try_get()
+            .flatten()
+            .and_then(LiveWord::strip_word)
+            .map(|word| {
+                view! { <span class="strip-why" data-testid="strip-why">{word}</span> }
+            })
+    };
+    let down_db = move || {
+        down.try_get().flatten().map(|_| {
+            view! { <span class="db-down" data-testid="strip-down-db">"—"</span> }
+        })
+    };
     let kind = format!("{:?}", strip.strip_kind).to_lowercase();
     // Each attribute its own copy (the macro may move a value into a child
     // before an attribute reads it).
@@ -516,14 +542,17 @@ pub fn StripView(
             data-flink=flink_attr
             data-lufs=lufs_kind
             data-lufs-problem=lufs_problem
+            data-live=live_attr
         >
             <div class="strip-head">
                 {mute_view}
+                {why}
                 <div class="strip-info">
                     <div class="strip-readout" data-testid="strip-readout" data-aut=readout_aut>
                         <StatusView slots=all />
                         {db}
                         {mark_word}
+                        {down_db}
                     </div>
                 </div>
             </div>

@@ -106,3 +106,38 @@
         animation: none;
     }
 }
+
+/* A Live that is down (#178, the owner's approved mockup live-down-v2):
+   its strips dimmed with the word under the name (NOT RUNNING / NO SET)
+   in the marks line's place, `—` on the readout, never red: no status
+   light, no dB, no mark's word. The word is the strip's only full-strength
+   part. No height changes. */
+.strip[data-live] .strip-zone > * {
+    opacity: 0.35;
+}
+
+.strip[data-live] .strip-head > .mute .strip-marks,
+.strip[data-live] .strip-readout > :not(.db-down) {
+    display: none;
+}
+
+.strip-why {
+    position: absolute;
+    top: 24px;
+    left: 3px;
+    right: -1px;
+    height: 10px;
+    overflow: hidden;
+    color: var(--warn);
+    font: 700 7px/10px var(--ui);
+    letter-spacing: 0.3px;
+    text-align: left;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    pointer-events: none;
+}
+
+.db-down {
+    color: var(--faint);
+    font: 600 12px/17px var(--mono);
+}
