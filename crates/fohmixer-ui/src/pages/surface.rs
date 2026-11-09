@@ -33,7 +33,7 @@ use crate::arrange::{
 use crate::behave::ableset::tab_dot;
 use crate::behave::arrange_drag::Arrange;
 use crate::behave::iem::alive_after;
-use crate::behave::live_down::{LiveWord, hint};
+use crate::behave::live_down::LiveWord;
 use crate::behave::presenter::{TAB_TITLE as PRESENTER_TAB, tab_dot as presenter_tab_dot};
 use crate::behave::solo::soloed;
 use crate::binding::sectors::{PICKS_KEY, Picks, Sectored, parse_picks, sectors_on};
@@ -1717,11 +1717,13 @@ fn DropoutCounter() -> impl IntoView {
     }
 }
 
-/// The dropout counter, one line per Live in words (#178, the owner's
-/// approved mockup live-down-v2: `BAND not running` / `no set` / `on`; `—`
-/// while the page has no hub connection, which the counter shows; a busy
-/// Live's word in the warning colour) with a one-line hint while a Live is
-/// down, and the version, at the column's foot.
+/// The dropout counter, one short line per Live in words (#178, the owner's
+/// approved mockup live-down-v2 with the main session's ruling: `BAND not
+/// running` / `no set` / `on`; `—` while the page has no hub connection,
+/// which the counter shows; a busy Live's word in the warning colour), and
+/// the version, at the column's foot. The foot keeps its height in every
+/// state, so the rail and the stage miniature never lose room to it; the
+/// hint lives on the down strips.
 #[component]
 fn StatusCluster() -> impl IntoView {
     let store = expect_context::<LiveStore>();
@@ -1753,29 +1755,13 @@ fn StatusCluster() -> impl IntoView {
             })
             .collect_view()
     };
-    // While a Live is down the foot spells each Live out on a line of its
-    // own with the hint (the mockup's box); while every Live is on, the
-    // words sit in the row the dots had, so the rail keeps its room.
-    let down = move || {
-        store
-            .live
-            .try_with(|all| all.values().any(|w| *w != LiveWord::On).to_string())
-            .unwrap_or_else(|| "false".to_string())
-    };
-    let hint_text = move || {
-        store
-            .live
-            .try_with(|all| hint(all.values().copied()))
-            .flatten()
-            .map(|text| view! { <span class="live-hint" data-testid="live-hint">{text}</span> })
-    };
     view! {
         <div class="status-cluster">
             <DropoutCounter />
             // The badges in a box of their own (no box on a tablet:
             // `display: contents`), so a low phone's foot wraps a third
             // instance's badge under the others (#148 review).
-            <span class="badges" data-down=down>{badges} {hint_text}</span>
+            <span class="badges">{badges}</span>
             <RecKey />
             <span class="version" data-testid="version">{version_text()}</span>
             <ManualChip />

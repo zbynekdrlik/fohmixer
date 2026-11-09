@@ -513,6 +513,14 @@ pub fn StripView(
                 view! { <span class="strip-why" data-testid="strip-why">{word}</span> }
             })
     };
+    let hint = move || {
+        down.try_get()
+            .flatten()
+            .and_then(LiveWord::hint)
+            .map(|text| {
+                view! { <span class="strip-hint" data-testid="strip-hint">{text}</span> }
+            })
+    };
     let down_db = move || {
         down.try_get().flatten().map(|_| {
             view! { <span class="db-down" data-testid="strip-down-db">"—"</span> }
@@ -558,6 +566,7 @@ pub fn StripView(
             </div>
             {tag}
             <div class="strip-zone" style=unity>
+                {hint}
                 <InfoColumn group_name=group_name lufs=lufs_look kind=lufs_kind />
                 <ScaleView law=law />
                 {spring_view}

@@ -5,7 +5,8 @@
 //! one) or is `on`. A Live that has no set is not a fault of one binding,
 //! so its bindings are not drawn red (I5 stays for a single bad binding
 //! while that Live's set is loaded): they wait, dimmed, and the strips and
-//! the column's foot say why. Nothing covers any page.
+//! the column's foot say why, the strips also what to do. Nothing covers
+//! any page.
 
 use crate::store::SlotClass;
 
@@ -37,6 +38,17 @@ impl LiveWord {
             Self::NotRunning => "not running",
             Self::NoSet => "no set",
             Self::On => "on",
+        }
+    }
+
+    /// What to do about it, dim in a down strip's fader area (#178, the
+    /// main session's ruling: the column's foot keeps its height, so the
+    /// hint lives on the strips; none while on).
+    pub fn hint(self) -> Option<&'static str> {
+        match self {
+            Self::NotRunning => Some(NOT_RUNNING_HINT),
+            Self::NoSet => Some(NO_SET_HINT),
+            Self::On => None,
         }
     }
 
@@ -112,20 +124,6 @@ pub fn live_word(connected: bool, online: Option<bool>, seen: Seen) -> Option<Li
         true if seen.no_set() => Some(LiveWord::NoSet),
         true => Some(LiveWord::On),
     }
-}
-
-/// The foot's hint line under the instances: what to do about the Live
-/// that is down, a Live not running first (it covers a missing set too).
-pub fn hint(words: impl IntoIterator<Item = LiveWord>) -> Option<&'static str> {
-    let mut no_set = false;
-    for word in words {
-        match word {
-            LiveWord::NotRunning => return Some(NOT_RUNNING_HINT),
-            LiveWord::NoSet => no_set = true,
-            LiveWord::On => {}
-        }
-    }
-    no_set.then_some(NO_SET_HINT)
 }
 
 /// The hint while a Live is not running (the mockup's words).
@@ -259,15 +257,10 @@ mod tests {
     }
 
     #[test]
-    fn the_hint_names_a_live_not_running_first() {
-        use LiveWord::*;
-        assert_eq!(hint([]), None);
-        assert_eq!(hint([On, On]), None);
-        assert_eq!(hint([On, NoSet]), Some(NO_SET_HINT));
-        assert_eq!(hint([NoSet, On]), Some(NO_SET_HINT));
-        assert_eq!(hint([NoSet, NotRunning]), Some(NOT_RUNNING_HINT));
-        assert_eq!(hint([NotRunning, NoSet]), Some(NOT_RUNNING_HINT));
-        assert_eq!(hint([On, NotRunning]), Some(NOT_RUNNING_HINT));
+    fn a_down_strip_says_what_to_do() {
+        assert_eq!(LiveWord::NotRunning.hint(), Some(NOT_RUNNING_HINT));
+        assert_eq!(LiveWord::NoSet.hint(), Some(NO_SET_HINT));
+        assert_eq!(LiveWord::On.hint(), None);
         assert_eq!(
             NOT_RUNNING_HINT,
             "Start Live on the FOH PC. The faders come back by themselves."

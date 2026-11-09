@@ -31,6 +31,22 @@ async function redIn(page: Page, scope: string): Promise<number> {
   return page.locator(`${scope} [data-binding="unresolved"], ${scope}[data-binding="unresolved"]`).count();
 }
 
+/** The column's room: the foot's height, the rail's rows and the stage
+ * miniature's presence (#178: the foot never takes the rail's room, so the
+ * miniature never goes because a Live is down). */
+async function room(page: Page) {
+  const foot = (await page.getByTestId("column-foot").boundingBox())!.height;
+  const rows = await page.locator(".rail-main").evaluate((e) => getComputedStyle(e).gridTemplateRows.split(" "));
+  return { foot, rows, mini: await page.getByTestId("stage-mini").count() };
+}
+
+async function roomKept(page: Page) {
+  const now = await room(page);
+  expect(now.foot, "the foot keeps its two rows").toBeLessThanOrEqual(34);
+  for (const row of now.rows) expect(row, "every rail row keeps 44 px").toBe("44px");
+  expect(now.mini, "the stage miniature stays").toBe(1);
+}
+
 const foot = (page: Page, instance: string) => page.locator(`[data-testid="badge"][data-instance="${instance}"]`);
 
 /** The hosts a test stopped or moved, started again on the test site. */
@@ -61,7 +77,8 @@ test.describe("A Live that is down (#178)", () => {
     await openSurface(page);
     await expect(foot(page, "band")).toHaveAttribute("data-live", "on", { timeout: UP });
     await expect(foot(page, "band").getByTestId("badge-word")).toHaveText("on");
-    await expect(page.getByTestId("live-hint")).toHaveCount(0);
+    await expect(page.getByTestId("strip-hint")).toHaveCount(0);
+    await roomKept(page);
     const masterZone = page.locator('[data-testid="strip"][data-instance="master"] .strip-zone').first();
     const travel = (await masterZone.boundingBox())!.height;
 
@@ -77,7 +94,25 @@ test.describe("A Live that is down (#178)", () => {
     await expect(first.getByTestId("strip-down-db")).toHaveText("—");
     await expect(first.getByTestId("strip-down-db")).toBeVisible();
     await expect(first.getByTestId("db")).toBeHidden();
-    await expect(page.getByTestId("live-hint")).toHaveText("Start Live on the FOH PC. The faders come back by themselves.");
+    // What to do, dim on each down strip (no pill), never in the foot.
+    const hint = first.getByTestId("strip-hint");
+    await expect(hint).toHaveText("Start Live on the FOH PC. The faders come back by themselves.");
+    await expect(page.getByTestId("strip-hint")).toHaveCount(await page.locator('[data-testid="strip"][data-live]').count());
+    const look = await hint.evaluate((e) => {
+      const cs = getComputedStyle(e);
+      const zone = e.parentElement!.getBoundingClientRect();
+      const box = e.getBoundingClientRect();
+      return {
+        color: cs.color,
+        background: cs.backgroundColor,
+        border: cs.borderTopWidth,
+        opacity: cs.opacity,
+        inside: box.left >= zone.left - 0.5 && box.right <= zone.right + 0.5 && box.top >= zone.top && box.bottom <= zone.bottom,
+      };
+    });
+    expect(look).toEqual({ color: "rgb(154, 154, 180)", background: "rgba(0, 0, 0, 0)", border: "0px", opacity: "1", inside: true });
+    await expect(page.getByTestId("column-foot").getByTestId("strip-hint")).toHaveCount(0);
+    await roomKept(page);
     // Not red: no control, no TechAlert frame, no status light, no badge dot.
     expect(await redIn(page, "body")).toBe(0);
     await expect(page.locator(".status:visible")).toHaveCount(0);
@@ -90,7 +125,7 @@ test.describe("A Live that is down (#178)", () => {
     const tab = page.getByTestId("presenter-tab");
     await tab.click();
     await expect(page.getByTestId("page")).toHaveAttribute("data-extra", "presenter");
-    await expect(page.getByTestId("live-hint")).toBeVisible();
+    await expect(page.getByTestId("stage-mini")).toHaveCount(0);
     await page.locator('[data-testid="tab"][data-page="foh"]').click();
     await expect(page.getByTestId("page")).toHaveAttribute("data-extra", "none");
 
@@ -100,8 +135,9 @@ test.describe("A Live that is down (#178)", () => {
       await stripsSay(page, instance, null);
       await expect(foot(page, instance)).toHaveAttribute("data-live", "on", { timeout: UP });
     }
-    await expect(page.getByTestId("live-hint")).toHaveCount(0);
+    await expect(page.getByTestId("strip-hint")).toHaveCount(0);
     await expect(page.getByTestId("strip-why")).toHaveCount(0);
+    await roomKept(page);
     await expect(first.getByTestId("db")).toBeVisible();
   });
 
@@ -120,7 +156,8 @@ test.describe("A Live that is down (#178)", () => {
     await expect(foot(page, "band")).toHaveAttribute("data-live", "noset");
     await expect(foot(page, "band").getByTestId("badge-word")).toHaveText("no set");
     await expect(page.locator('[data-testid="strip"][data-instance="band"]').first().getByTestId("strip-why")).toHaveText("NO SET");
-    await expect(page.getByTestId("live-hint")).toHaveText("Open the set in Live.");
+    await expect(page.locator('[data-testid="strip"][data-instance="band"]').first().getByTestId("strip-hint")).toHaveText("Open the set in Live.");
+    await roomKept(page);
     // The band Live answers, yet none of its strips is red (it was all red,
     // #178's report); the master Live's own bindings keep I5 as they were.
     expect(await redIn(page, '[data-testid="strip"][data-instance="band"]')).toBe(0);
@@ -132,7 +169,7 @@ test.describe("A Live that is down (#178)", () => {
     await host("band", "start");
     await stripsSay(page, "band", null);
     await expect(foot(page, "band")).toHaveAttribute("data-live", "on", { timeout: UP });
-    await expect(page.getByTestId("live-hint")).toHaveCount(0);
+    await expect(page.getByTestId("strip-hint")).toHaveCount(0);
     // A bad binding of the loaded set is red again (I5).
     await until(
       () => redIn(page, '[data-testid="strip"][data-instance="band"]'),
@@ -142,22 +179,19 @@ test.describe("A Live that is down (#178)", () => {
     );
   });
 
-  test("every Live on: the words take the dots' place and the rail keeps its room", async ({ page }) => {
+  test("every Live on: one line per Live beside the counter, the rail keeps its room", async ({ page }) => {
     await page.setViewportSize(IPAD);
     await openSurface(page);
     await expect(foot(page, "band")).toHaveAttribute("data-live", "on", { timeout: UP });
     await expect(foot(page, "master")).toHaveAttribute("data-live", "on");
-    // The foot keeps the two rows it had with the dots, so every rail row
-    // keeps its 44 px and the stage miniature its place.
-    const height = (await page.getByTestId("column-foot").boundingBox())!.height;
-    expect(height).toBeLessThanOrEqual(34);
-    const rows = await page.locator(".rail-main").evaluate((e) => getComputedStyle(e).gridTemplateRows.split(" "));
-    for (const row of rows) expect(row).toBe("44px");
-    // Both words on the counter's row.
+    await roomKept(page);
+    // One line per Live, stacked beside the counter where the dots sat.
     const counter = (await page.getByTestId("dropouts").boundingBox())!;
-    for (const instance of ["band", "master"]) {
-      const b = (await foot(page, instance).boundingBox())!;
-      expect(Math.abs(b.y + b.height / 2 - (counter.y + counter.height / 2))).toBeLessThan(2);
-    }
+    const lines = (await page.locator(".column .badges").boundingBox())!;
+    expect(Math.abs(lines.y + lines.height / 2 - (counter.y + counter.height / 2))).toBeLessThan(2);
+    const band = (await foot(page, "band").boundingBox())!;
+    const master = (await foot(page, "master").boundingBox())!;
+    expect(master.y).toBeGreaterThanOrEqual(band.y + band.height - 0.5);
+    expect(lines.x).toBeGreaterThan(counter.x + counter.width);
   });
 });

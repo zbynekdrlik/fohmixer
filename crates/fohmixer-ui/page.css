@@ -109,40 +109,22 @@
     color: var(--danger);
 }
 
-/* The Lives in words (#178, mockup live-down-v2). While every Live is on
-   the words sit where the dots sat, in the counter's row (`BAND on`), so
-   the rail keeps its room (the stage miniature fits only with every rail
-   row at 44 px). While one is down the foot spells each Live out in a box
-   of its own, one line per Live (its name left, its word right), with the
-   hint under them; the counter, REC, the version and TAGS wrap around it. */
+/* The Lives in words (#178, mockup live-down-v2 and the main session's
+   ruling): one short line per Live (`BAND not running`, `MASTER on`), the
+   lines stacked beside the counter where the dots sat, so the foot keeps
+   its two rows in every state and the rail and the stage miniature never
+   lose room to it. No box and no hint here: a down strip says what to do. */
 .column .status-cluster .badges {
-    display: contents;
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+    min-width: 0;
 }
 
 .column .status-cluster .badge {
     gap: 3px;
-}
-
-.column .status-cluster .badges[data-down="true"] {
-    display: flex;
-    flex: 1 0 100%;
-    flex-direction: column;
-    min-width: 0;
-    padding: 3px 6px;
-    border: 1px solid var(--line-soft);
-    border-radius: 8px;
-}
-
-.column .status-cluster .badges[data-down="true"] .badge {
-    justify-content: space-between;
-    gap: 4px;
-    color: var(--text);
-    font: 700 11px/14px var(--display);
-    letter-spacing: 0.05em;
-}
-
-.column .status-cluster .live-hint {
-    margin-top: 2px;
+    line-height: 9px;
+    white-space: nowrap;
 }
 
 .column .status-cluster .version {
@@ -540,35 +522,22 @@
     /* The badges share the middle columns over the version and wrap
        there (a third Live set's badge goes under the others, the row
        grows): never an implicit column past the counter and TAGS. */
-    .column .status-cluster .badges,
-    .column .status-cluster .badges[data-down="true"] {
+    .column .status-cluster .badges {
         display: flex;
         flex-wrap: wrap;
         justify-content: center;
         grid-row: 1;
         grid-column: 2 / 4;
         flex-direction: row;
+        align-items: center;
         gap: 0 3px;
         min-width: 0;
-        flex: none;
-        padding: 0;
-        border: 0;
     }
 
-    /* A Live in words here too (#178), in the foot's own 9 px face; the
-       hint stays off a phone on its side (the strips say NOT RUNNING / NO
-       SET), so the foot keeps its rows. */
-    .column .status-cluster .badge,
-    .column .status-cluster .badges[data-down="true"] .badge {
-        justify-content: flex-start;
-        gap: 3px;
-        color: inherit;
-        font: inherit;
+    /* A Live in words here too (#178), side by side in the foot's 9 px
+       face. */
+    .column .status-cluster .badge {
         line-height: 9px;
-    }
-
-    .column .status-cluster .live-hint {
-        display: none;
     }
 
     /* A Live that is on keeps the dot's footprint here: its name alone, in

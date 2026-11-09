@@ -110,10 +110,28 @@
 /* A Live that is down (#178, the owner's approved mockup live-down-v2):
    its strips dimmed with the word under the name (NOT RUNNING / NO SET)
    in the marks line's place, `—` on the readout, never red: no status
-   light, no dB, no mark's word. The word is the strip's only full-strength
-   part. No height changes. */
-.strip[data-live] .strip-zone > * {
+   light, no dB, no mark's word; what to do in the fader area. No height
+   changes. */
+.strip[data-live] .strip-zone > :not(.strip-hint) {
     opacity: 0.35;
+}
+
+/* What to do (#178, the main session's ruling: the column's foot keeps its
+   height, so the hint is the down strip's own), dim text across the empty
+   fader area, a third down from the zone's top; no pill, no touch. */
+.strip-hint {
+    z-index: 3;
+    grid-area: 1 / 1;
+    align-self: start;
+    justify-self: center;
+    width: calc(100% - 8px);
+    position: relative;
+    top: 28%;
+    color: var(--muted);
+    font: 600 9px/1.3 var(--ui);
+    text-align: center;
+    overflow-wrap: break-word;
+    pointer-events: none;
 }
 
 .strip[data-live] .strip-head > .mute .strip-marks,
