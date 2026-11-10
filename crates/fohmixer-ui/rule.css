@@ -114,6 +114,27 @@
     display: none;
 }
 
+/* A rail row shrunk under what its second line needs (#90, the DECIDED of
+   2026-11-09: the stage miniature takes the rows' room down to their 24 px
+   floor, page.css `.rail-main`) hides that line whole, never half-drawn:
+   the grid squeezed its box under its 12 px line and its own clip cut the
+   letters. The row keeps its name and AUTO mark. The button is a size
+   container (its size comes from the rail's grid alone: `minmax(24px,
+   44px)` rows, `minmax(0, 1fr)` columns, so the containment changes no
+   size), and its content box needs the label's line (11.5 px at 1.15, the
+   pill's 13 px line beside it), the 2 px gap and this 12 px line: 27.2 px,
+   28 with a margin for the faces' rounding (a row under 38 px: 4 px
+   padding and 1 px border each side). */
+.rail .rule-btn {
+    container: rule-btn / size;
+}
+
+@container rule-btn (height < 28px) {
+    .rule-btn .btn-sub {
+        display: none;
+    }
+}
+
 .btn.on .btn-sub {
     color: var(--text);
 }

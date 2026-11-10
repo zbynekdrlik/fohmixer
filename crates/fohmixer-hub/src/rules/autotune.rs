@@ -377,6 +377,26 @@ pub enum Step {
         why: SwitchWhy,
         cause: Cause,
     },
+    /// A stop's DRY writes spread out (#140, dasio's measurement of
+    /// 2026-11-09: a batch of every selector in one Live tick made band
+    /// Live's audio callback drop a block): `targets` (their labels, Live's
+    /// order) queued, one per `ms` (after the stop's first, which went at
+    /// once, or behind a spread already running).
+    Spread {
+        instance: String,
+        targets: Vec<String>,
+        ms: u64,
+    },
+    /// A spread's writes still to come that the hub drops (`targets`), and
+    /// why: a `start` decides afresh, a `hold` and a target let go
+    /// (`retire`) write DRY at once, `offline`, or a write no longer owed
+    /// when its turn came (`owed`: its target's writes were dropped or
+    /// another write of it landed).
+    Unspread {
+        instance: String,
+        targets: Vec<String>,
+        why: String,
+    },
     /// Another writer moved a target's selector, and what the hub did.
     SelectorWriter {
         instance: String,
@@ -585,6 +605,24 @@ pub fn step_line(step: &Step) -> String {
             if *on { "on" } else { "to DRY" },
             why_word(*why),
             cause.word()
+        ),
+        Step::Spread {
+            instance,
+            targets,
+            ms,
+        } => format!(
+            "AUTOTUNE queues {} of {instance}'s stop DRY writes, one per {ms} ms ({})",
+            targets.len(),
+            targets.join(", ")
+        ),
+        Step::Unspread {
+            instance,
+            targets,
+            why,
+        } => format!(
+            "AUTOTUNE drops {} of {instance}'s spread DRY writes ({why}): {}",
+            targets.len(),
+            targets.join(", ")
         ),
         Step::SelectorWriter {
             instance,

@@ -775,6 +775,7 @@ fn api_bodies_round_trip() {
                         on: true,
                         why: SwitchWhy::Play,
                     }),
+                    writing: true,
                 },
                 AutotuneTargetStatus {
                     instance: "band".into(),
@@ -786,6 +787,7 @@ fn api_bodies_round_trip() {
                     problem: Some("no rack named Latencies".into()),
                     key: None,
                     decision: None,
+                    writing: false,
                 },
             ],
             keys: vec![KeyInForce {
@@ -890,7 +892,7 @@ fn api_bodies_round_trip() {
              "key": {"device": "gridder", "path": "live_set tracks 6 devices 0 chains 0 devices 0",
                      "values": [0.5, 1.0 / 28.0], "shows": "F#m", "problem": null,
                      "want": "F#m", "state": "confirmed"},
-             "decision": {"on": true, "why": "play"}},
+             "decision": {"on": true, "why": "play"}, "writing": true},
             {"instance": "band", "track": "live_set tracks 8", "label": "#9", "on": 127,
              "state": "missing", "problem": "no rack named Latencies"}],
             "keys": [{"instance": "band", "song": 31, "key": "G", "time": 22897.5,
@@ -910,10 +912,18 @@ fn api_bodies_round_trip() {
         .as_object_mut()
         .unwrap()
         .remove("decision");
+    before_rule["targets"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("writing");
     let before_rule = serde_json::from_value::<AutotuneStatus>(before_rule).unwrap();
     assert!(before_rule.singers_off.is_empty());
     assert_eq!(before_rule.taps, 0);
     assert_eq!(before_rule.targets[0].decision, None);
+    assert!(
+        !before_rule.targets[0].writing,
+        "a hub before #140's spread"
+    );
     // Every why's name.
     assert_eq!(
         serde_json::to_value([

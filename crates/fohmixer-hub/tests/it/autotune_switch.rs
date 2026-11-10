@@ -264,19 +264,45 @@ fn a_song_played_with_aut_on_tunes_after_the_keys_and_a_stop_goes_dry() {
         // Back into song 2: the keys again, then the chains.
         assert_eq!(host.song_time(125.0), 125.0);
         macros_until(&mut a, TUNING, SECS_10).await;
-        // A stop mid-song: DRY at once, no read-back waited for.
+        // A stop mid-song: DRY at once, no read-back waited for, one
+        // selector per batch 40 ms apart (#140: a batch of every selector
+        // made band Live's audio callback drop a block).
+        let stop = now_ts();
         transport(&mut a, "stop_playing").await;
         let dry = macros_until(&mut a, DRY, Duration::from_secs(2)).await;
         println!(
             "every selector on DRY {} ms after the stop",
             dry.as_millis()
         );
-        // Live's setter saw exactly the hub's batches: on, DRY, on, DRY; none
+        assert!(
+            dry >= Duration::from_millis(80),
+            "three selectors, 40 ms apart: {dry:?}"
+        );
+        let records = hub
+            .events_until(SECS_10, |r| {
+                steps_of(&since(r, stop), "write")
+                    .iter()
+                    .filter(|w| w["cause"] == "transport")
+                    .count()
+                    >= 3
+            })
+            .await;
+        let writes: Vec<Value> = steps_of(&since(&records, stop), "write")
+            .into_iter()
+            .filter(|w| w["cause"] == "transport")
+            .collect();
+        let offs: Vec<usize> = writes
+            .iter()
+            .map(|w| w["off"].as_array().map_or(0, Vec::len))
+            .collect();
+        assert_eq!(offs, [1, 1, 1], "one selector per batch: {writes:?}");
+        // Live's setter saw exactly the hub's writes: on, DRY, on, DRY; none
         // of Stream B's.
         let sets: Vec<i64> = MACROS.iter().map(|p| host.sets("value", p)).collect();
         assert_eq!(sets, [4, 0, 4, 4]);
+        // The batches: on, DRY out of the song, on, and the stop's three.
         let status = hub.status().await;
-        assert_eq!(status.autotune.writes, 4);
+        assert_eq!(status.autotune.writes, 6);
         a.close().await;
         hub.stop().await;
         host.stop();
