@@ -249,6 +249,15 @@ struct Instance {
     read: bool,
 }
 
+/// Whether a read answer drops the markers the store remembered of its
+/// instance (#178): the instance's `first` read since the hub started,
+/// now `read` whole, `reported` no new set (a new set goes to the store
+/// anyway, where the router keeps only unread instances' remembered
+/// markers), and the store holds `remembered` markers of it.
+pub fn drops_remembered(first: bool, read: bool, reported: bool, remembered: bool) -> bool {
+    first && read && !reported && remembered
+}
+
 /// The names of a list value's items (the script encodes a track as an
 /// object with its `name`); none for an item without one.
 fn item_names(list: Option<&Value>) -> Vec<Option<&str>> {
@@ -719,8 +728,8 @@ impl Keeper {
         (row, device)
     }
 
-    /// The markers found now (for the tests).
-    #[cfg(test)]
+    /// The markers found now (#178: the router hands them to the store
+    /// after an instance's first read that changed none of them).
     pub fn found(&self) -> &[Found] {
         &self.found
     }

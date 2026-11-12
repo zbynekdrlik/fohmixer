@@ -52,6 +52,15 @@ impl LiveWord {
         }
     }
 
+    /// Whether this Live's bindings that do not resolve are quiet (waiting,
+    /// dimmed) rather than red: I5's red is for a single bad binding while
+    /// the Live's set is loaded, never for a Live that is down (#178: a hub
+    /// started while the Lives were down drew the `+CTRL` rail buttons and
+    /// TechAlert's frame red).
+    pub fn quiets(self) -> bool {
+        self != Self::On
+    }
+
     /// The word a strip of this Live shows under its name (none while on).
     pub fn strip_word(self) -> Option<&'static str> {
         match self {
@@ -266,5 +275,14 @@ mod tests {
             "Start Live on the FOH PC. The faders come back by themselves."
         );
         assert_eq!(NO_SET_HINT, "Open the set in Live.");
+    }
+
+    #[test]
+    fn a_down_live_is_never_red_only_a_live_that_is_on_is() {
+        // #178: a hub started while the Lives were down drew the `+CTRL`
+        // rail buttons and TechAlert's frame red.
+        assert!(LiveWord::NotRunning.quiets());
+        assert!(LiveWord::NoSet.quiets());
+        assert!(!LiveWord::On.quiets());
     }
 }

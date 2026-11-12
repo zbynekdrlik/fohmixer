@@ -889,7 +889,7 @@ impl LiveStore {
         let Some(signal) = signal else {
             return true;
         };
-        // An error of a Live with no set arrives quiet (#178), and a slot
+        // An error of a Live with no set or not running arrives quiet (#178), and a slot
         // that changes class may judge its Live again; a value of an
         // unchanged class (a meter's) asks nothing of either.
         let before = signal.try_with_untracked(Slot::class);
@@ -900,7 +900,7 @@ impl LiveStore {
         }
         let instance = self.instance_of(key);
         let word = instance.as_deref().and_then(|i| self.word_of(i));
-        let _ = signal.try_set(slot.quieted(word == Some(LiveWord::NoSet)));
+        let _ = signal.try_set(slot.quieted(word.is_some_and(LiveWord::quiets)));
         if rejudges(word, before, after)
             && let Some(instance) = instance
         {

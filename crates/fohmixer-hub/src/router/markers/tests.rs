@@ -1040,3 +1040,22 @@ fn has_read_holds_once_a_whole_read_answered_and_stays_through_a_disconnect() {
     k.disconnected("band");
     assert!(k.has_read("band"), "since the hub started");
 }
+
+#[test]
+fn only_a_first_whole_read_that_reported_nothing_drops_the_remembered_markers() {
+    // #178: the store's remembered markers of an instance go once it is read.
+    assert!(drops_remembered(true, true, false, true));
+    assert!(!drops_remembered(false, true, false, true), "read before");
+    assert!(
+        !drops_remembered(true, false, false, true),
+        "the read failed"
+    );
+    assert!(
+        !drops_remembered(true, true, true, true),
+        "a new set goes anyway"
+    );
+    assert!(
+        !drops_remembered(true, true, false, false),
+        "nothing remembered"
+    );
+}

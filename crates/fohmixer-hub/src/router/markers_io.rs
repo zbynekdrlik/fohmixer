@@ -229,6 +229,22 @@ impl Router {
         });
     }
 
+    /// After a read answer of `instance` (#178): when it was the first
+    /// whole read since the hub started and changed none of the keeper's
+    /// markers (`reported` none), the store still composes the markers it
+    /// remembered of that instance, so they go now, replaced by what the
+    /// read found ([`markers::drops_remembered`]).
+    pub(super) fn markers_first_read(&mut self, instance: &str, first: bool, reported: bool) {
+        let Some(store) = &self.layout_store else {
+            return;
+        };
+        let remembered = store.markers().iter().any(|f| f.instance == instance);
+        if markers::drops_remembered(first, self.markers.has_read(instance), reported, remembered) {
+            let found = self.markers.found().to_vec();
+            self.markers_found(found);
+        }
+    }
+
     /// The markers changed: they wait `SETTLE_MS` for the next change (a
     /// set load or a burst of edits is one new layout).
     pub(super) fn markers_found(&mut self, found: Vec<Found>) {
@@ -256,6 +272,15 @@ impl Router {
         else {
             return;
         };
+        // A Live not read since the hub started keeps the markers the store
+        // remembered of it (#178: the hub started while it was down).
+        let unread = self
+            .live
+            .keys()
+            .filter(|name| !self.markers.has_read(name))
+            .cloned()
+            .collect();
+        let found = crate::layout::kept_markers(found, &store.markers(), &unread);
         tracing::info!(found = found.len(), "the Tuner markers changed");
         if let Some(rev) = store.set_markers(found) {
             let (served, stage_ctrl) = store.served();

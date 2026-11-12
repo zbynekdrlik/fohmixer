@@ -15,6 +15,13 @@
 //! (`fohmixer_proto::markers::compose`). A new marker set bumps the revision
 //! only when the composition changed (I10); each such composition is kept
 //! as `layout-backups/served.json.<UTC time>`, the newest 30.
+//!
+//! The markers are remembered across the hub's own restart (#178):
+//! `markers.json` in the data folder holds the set last composed, read at
+//! start, so a hub that starts while a Live is down still serves that Live's
+//! strips and controls (dimmed, NOT RUNNING) instead of an empty frame. The
+//! router keeps a Live's remembered markers until the keeper has read that
+//! Live ([`kept_markers`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -33,6 +40,8 @@ pub const MAX_BACKUPS: usize = 30;
 pub const BACKUP_DIR: &str = "layout-backups";
 /// The backups' name of a served composition (#68).
 pub const SERVED: &str = "served.json";
+/// The markers last composed, in the data folder (#178).
+pub const MARKERS_FILE: &str = "markers.json";
 
 /// How many following milliseconds a backup's name may move to when its
 /// own is taken (`LayoutStore::free_backup_name`).
@@ -66,6 +75,9 @@ struct State {
 pub struct LayoutStore {
     path: PathBuf,
     backups: PathBuf,
+    /// Where the markers last composed are remembered (#178); none: not
+    /// remembered.
+    remembered: Option<PathBuf>,
     instances: Vec<String>,
     state: Mutex<State>,
 }
@@ -208,9 +220,33 @@ impl LayoutStore {
         Self {
             path,
             backups,
+            remembered: None,
             instances,
             state: Mutex::new(State::default()),
         }
+    }
+
+    /// The same store remembering its markers in `file` (#178): the markers
+    /// it holds there now are composed from the first poll on.
+    pub fn remembering(mut self, file: PathBuf) -> Self {
+        let markers = read_remembered(&file);
+        tracing::info!(
+            markers = markers.len(),
+            file = %file.display(),
+            "the Tuner markers remembered from the last run: served until each Live is read"
+        );
+        self.state
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .markers = markers;
+        self.remembered = Some(file);
+        self
+    }
+
+    /// The markers composed now (#178: the router keeps a Live's until the
+    /// keeper has read it).
+    pub fn markers(&self) -> Vec<Found> {
+        self.lock().markers.clone()
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -240,6 +276,9 @@ impl LayoutStore {
     /// `Some(rev)` when the composition changed (I10).
     pub fn set_markers(&self, found: Vec<Found>) -> Option<u64> {
         let mut state = self.lock();
+        if state.markers != found {
+            self.remember(&found);
+        }
         state.markers = found;
         let before = state.layout.clone();
         serve(&mut state);
@@ -405,6 +444,20 @@ impl LayoutStore {
         self.backup_named(&self.file_name(), text);
     }
 
+    /// Writes `markers` to the remembered file (#178), atomically; a failure
+    /// is logged and the markers are still served.
+    fn remember(&self, markers: &[Found]) {
+        let Some(file) = &self.remembered else {
+            return;
+        };
+        let written = serde_json::to_string_pretty(markers)
+            .map_err(std::io::Error::other)
+            .and_then(|text| crate::atomic_write(file, &text));
+        if let Err(e) = written {
+            tracing::error!(file = %file.display(), error = %e, "cannot remember the Tuner markers");
+        }
+    }
+
     /// Keeps a served composition (#68) as a dated `served.json` backup.
     fn backup_served(&self, served: Option<&Layout>) {
         if let Some(text) = served.and_then(|l| serde_json::to_vec_pretty(l).ok()) {
@@ -536,9 +589,50 @@ pub fn lonely_lines(links: &[LinkReport]) -> Vec<String> {
         .collect()
 }
 
-/// The store of a data folder: `layout` (relative to it) and its backups.
+/// The store of a data folder: `layout` (relative to it), its backups and
+/// the markers it remembers (#178).
 pub fn store_in(data_dir: &Path, layout: &Path, instances: Vec<String>) -> LayoutStore {
     LayoutStore::new(data_dir.join(layout), data_dir.join(BACKUP_DIR), instances)
+        .remembering(data_dir.join(MARKERS_FILE))
+}
+
+/// The markers remembered in `file` (#178): none when it is missing, and
+/// none, with a warn line, when it cannot be read or does not parse (the
+/// next read of each Live writes it again).
+fn read_remembered(file: &Path) -> Vec<Found> {
+    let text = match std::fs::read(file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(e) => {
+            tracing::warn!(file = %file.display(), error = %e, "cannot read the remembered Tuner markers");
+            return Vec::new();
+        }
+    };
+    serde_json::from_slice(&text).unwrap_or_else(|e| {
+        tracing::warn!(file = %file.display(), error = %e, "the remembered Tuner markers do not parse");
+        Vec::new()
+    })
+}
+
+/// The markers to compose (#178): the keeper's `found`, and the markers
+/// `before` held of every Live in `unread` (not read since the hub started:
+/// down, or still connecting), so one Live's first read never drops
+/// another's remembered strips. In `Found`'s order.
+pub fn kept_markers(
+    found: Vec<Found>,
+    before: &[Found],
+    unread: &std::collections::BTreeSet<String>,
+) -> Vec<Found> {
+    let remembered: Vec<Found> = before
+        .iter()
+        .filter(|f| unread.contains(&f.instance))
+        .filter(|f| !found.iter().any(|k| k.instance == f.instance))
+        .cloned()
+        .collect();
+    let mut kept = found;
+    kept.extend(remembered);
+    kept.sort();
+    kept
 }
 
 #[cfg(test)]
@@ -1170,5 +1264,157 @@ mod tests {
         write(dir.path(), &layout_json("FOH", "band"));
         assert_eq!(store.poll(), Some(1));
         assert!(store.backups().is_empty());
+    }
+
+    /// A marker of `instance` on track `index` (#178's tests).
+    fn marker(instance: &str, index: u32, name: &str) -> Found {
+        Found {
+            instance: instance.into(),
+            kind: TrackKind::Track,
+            index,
+            name: name.into(),
+            tuners: 1,
+        }
+    }
+
+    /// The labels of the served layout's strips, in order.
+    fn labels(store: &LayoutStore) -> Vec<String> {
+        let (_, served) = store.current();
+        served
+            .map(|l| {
+                l.controls()
+                    .into_iter()
+                    .filter_map(|c| match c {
+                        fohmixer_proto::layout::Control::Strip(s) => s.label.clone(),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn tags_frame() -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "schema": 2,
+            "default_page": "main",
+            "pages": [{"id": "main", "title": "M", "rows": [{"sections": [
+                {"kind": "group", "id": "g", "tags": "A"}]}]}]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn the_markers_last_composed_are_served_after_a_restart_before_any_read() {
+        // #178: the hub started while both Lives were down served an
+        // empty frame (no strip, every +CTRL control red).
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), &tags_frame());
+        let first = store(dir.path());
+        assert_eq!(first.poll(), Some(1));
+        let found = vec![
+            marker("band", 1, r#""Vox" +G:A"#),
+            marker("master", 2, r#""Key" +G:A"#),
+        ];
+        assert_eq!(first.set_markers(found.clone()), Some(2));
+        assert_eq!(labels(&first), vec!["Vox", "Key"]);
+        drop(first);
+        // The hub starts again: the first poll composes the remembered
+        // markers, nothing read from Live.
+        let again = store(dir.path());
+        assert_eq!(again.markers(), found);
+        assert_eq!(again.markers_status().found, 2);
+        assert_eq!(again.poll(), Some(1));
+        assert_eq!(labels(&again), vec!["Vox", "Key"]);
+        // A change is remembered too, the empty set included.
+        assert_eq!(again.set_markers(vec![found[1].clone()]), Some(2));
+        assert_eq!(store(dir.path()).markers(), vec![found[1].clone()]);
+        assert_eq!(again.set_markers(Vec::new()), Some(3));
+        assert_eq!(store(dir.path()).markers(), Vec::<Found>::new());
+        // A store without a file of its own remembers nothing.
+        let plain = LayoutStore::new(
+            dir.path().join("layout.json"),
+            dir.path().join(BACKUP_DIR),
+            vec!["band".into()],
+        );
+        assert_eq!(plain.markers(), Vec::<Found>::new());
+        let _ = plain.set_markers(found);
+        assert_eq!(store(dir.path()).markers(), Vec::<Found>::new());
+    }
+
+    #[test]
+    fn the_same_markers_leave_the_remembered_file_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = store(dir.path());
+        let found = vec![marker("band", 1, r#""Vox" +G:A"#)];
+        let _ = first.set_markers(found.clone());
+        let file = dir.path().join(MARKERS_FILE);
+        std::fs::write(&file, "[]").unwrap();
+        // Equal markers: no write (the file's hand-set content stays).
+        let _ = first.set_markers(found);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "[]");
+    }
+
+    #[test]
+    fn a_missing_or_bad_remembered_file_is_no_markers() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(store(dir.path()).markers(), Vec::<Found>::new());
+        std::fs::write(dir.path().join(MARKERS_FILE), "not json").unwrap();
+        assert_eq!(store(dir.path()).markers(), Vec::<Found>::new());
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let unreadable = LayoutStore::new(
+            dir.path().join("layout.json"),
+            dir.path().join(BACKUP_DIR),
+            vec!["band".into()],
+        )
+        .remembering(dir.path().join("sub"));
+        assert_eq!(unreadable.markers(), Vec::<Found>::new());
+        // A file that cannot be written is logged; the markers still serve.
+        write(dir.path(), &tags_frame());
+        assert_eq!(unreadable.poll(), Some(1));
+        assert_eq!(
+            unreadable.set_markers(vec![marker("band", 1, r#""Vox" +G:A"#)]),
+            Some(2)
+        );
+        assert_eq!(labels(&unreadable), vec!["Vox"]);
+    }
+
+    #[test]
+    fn a_live_not_read_since_the_start_keeps_its_remembered_markers() {
+        let before = vec![
+            marker("band", 1, "b1"),
+            marker("band", 3, "b3"),
+            marker("master", 0, "m0"),
+        ];
+        let unread = |names: &[&str]| -> std::collections::BTreeSet<String> {
+            names.iter().map(|n| n.to_string()).collect()
+        };
+        // The band read first, the master still down: the master's kept.
+        assert_eq!(
+            kept_markers(vec![marker("band", 2, "b2")], &before, &unread(&["master"])),
+            vec![marker("band", 2, "b2"), marker("master", 0, "m0")]
+        );
+        // Both read: only what the keeper found (an empty set too).
+        assert_eq!(
+            kept_markers(vec![marker("band", 2, "b2")], &before, &unread(&[])),
+            vec![marker("band", 2, "b2")]
+        );
+        assert_eq!(
+            kept_markers(Vec::new(), &before, &unread(&[])),
+            Vec::<Found>::new()
+        );
+        // Neither read: everything remembered, in order.
+        assert_eq!(
+            kept_markers(Vec::new(), &before, &unread(&["band", "master"])),
+            before
+        );
+        // A Live the keeper found something of keeps only what it found.
+        assert_eq!(
+            kept_markers(
+                vec![marker("master", 4, "m4"), marker("band", 0, "b0")],
+                &before,
+                &unread(&["band", "master"])
+            ),
+            vec![marker("band", 0, "b0"), marker("master", 4, "m4")]
+        );
     }
 }
