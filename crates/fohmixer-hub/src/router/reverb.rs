@@ -147,9 +147,6 @@ impl Router {
                 }
             }
         }
-        let now = self.now_ms();
-        let acts = self.reverb.rule.set_faders(faders, now);
-        self.reverb_apply(acts, None);
         // A Live not read since the hub started may hold remembered faders
         // whose indexes only its first read confirms (#178): its window
         // opens, and closes once its markers are settled (below, or at the
@@ -163,9 +160,12 @@ impl Router {
             .cloned()
             .collect();
         for name in unread {
-            let acts = self.reverb.rule.unread(&name);
+            let acts = self.reverb.rule.unread(&name, &faders);
             self.reverb_apply(acts, None);
         }
+        let now = self.now_ms();
+        let acts = self.reverb.rule.set_faders(faders, now);
+        self.reverb_apply(acts, None);
         // Every followed fader's value the table holds, the keys followed
         // before too: a fader the new layout put on another one's key has
         // none of its own yet (review N1).
