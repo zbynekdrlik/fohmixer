@@ -10,7 +10,7 @@ invented.
 - MBC Ableton (samostatný mix do streamu) sa ovláda z toho istého fohmixera (rovnaký program,
   rovnaký vzhľad). Fohmixer pobeží aj priamo na MBC PC, takže MBC funguje aj pri vypnutom FOH PC.
 - MBC operátor má vlastný tablet a vlastný PIN. Po prihlásení vidí len MBC rozloženie: pásy MBC,
-  veľké číslo LUFS streamu a pri každom zdroji zarovnanie oneskorenia. Do FOH vecí sa nedostane,
+  číslo LUFS na každom páse a veľké číslo LUFS streamu. Do FOH vecí sa nedostane,
   a to ani obídením stránky, lebo to stráži hub.
 - FOH zvukár so svojím PIN-om vidí všetko ako doteraz. Medzi rozloženiami má navyše MBC.
 - MBC tablet sa pripája na fohmixer na MBC PC. Fohmixer na FOH PC sa k nemu pripája cez sieť
@@ -26,7 +26,8 @@ The MBC Ableton is the stream mix: levels and balance of the main groups tuned
 independently of the PA, latency alignment of different sources (ambience mics, presenters,
 the band feed), and the stream master at -14 LUFS. Today it is run on its own tablet through
 TouchOSC and a modified AbletonOSC script; the loudness is read on the MBC PC's screen and the
-alignment is edited there too. The owner wants one fohmixer that does all of it (#184
+alignment is edited there too (and stays there: alignment is not part of this work). The
+owner wants one fohmixer that does what the TouchOSC page does, plus loudness (#184
 ROZHODNUTÉ, 2026-11-12):
 
 - the MBC Ableton becomes another instance of the same fohmixer, with its own layout;
@@ -44,8 +45,8 @@ ROZHODNUTÉ, 2026-11-12):
   the empty second page are not reproduced (the iPad shows its own battery; fohmixer needs
   no refresh, #58).
 - G3. More than parity, as the owner asked: the stream's loudness on the tablet (the
-  FohMixer LUFS device, target -14 LUFS shown), and the per-source latency alignment on the
-  tablet (in the channel detail, not on the main page).
+  FohMixer LUFS device, target -14 LUFS shown) and each strip's own loudness. Latency
+  alignment is NOT in scope (owner, #184, 2026-11-12: never on the TouchOSC, not asked for).
 - G4. Roles enforced by the hub: an `mbc` token can read and write only instance `mbc`, only
   see the MBC layout, and reach none of the FOH-only endpoints.
 - G5. A rollout in which the stream never loses control, then TouchOSC removed.
@@ -66,8 +67,6 @@ ROZHODNUTÉ, 2026-11-12):
 - A fohmixer test steals the TouchOSC tablet's updates during the parallel phase (AbletonOSCMBC
   pushes to whoever sent the last packet: fohmixer must never send OSC to it).
 - The stream has no working control at any moment of the rollout.
-- An alignment change makes an audible jump in the stream while it is live without the
-  operator knowing it will (§6.3).
 - The MBC page shows the FOH page's rail (STAGE, REVERB, AUTOTUNE, TALKBACK, TECHALERT) or
   the FOH Lives' status in red (#178's lesson).
 
@@ -182,16 +181,6 @@ See `mbc-layout-v1.html`. In fohmixer's look (dark, Barlow, the control column i
 - The column foot says only `MBC on` / `MBC not running` (no FOH Lives).
 - The column for an `mbc` login: the `MBC` page tab, the version, logout. No STREAM DECK,
   ABLESET, IEM MIXER, PRESENTER, no FOH layouts, no rail buttons.
-- **Alignment** in the channel detail (hold ☰, F27): a section `ZAROVNANIE` with
-  - `Delay` — the Delay device's time in ms (shown in ms, written as Live's seconds), ±1 ms
-    and ±10 ms steppers and a drag;
-  - `Jemne` — Align Delay's ms, ±0.1 ms steppers and a drag;
-  - for a source with two chains: a two-way switch with the chain names (e.g. `Ethernet` /
-    `Wifi`), the rack's chain selector;
-  - the total shown (`spolu 470.0 ms`).
-  Found per strip by device class in the strip track's chain: the first rack holding a Delay
-  device; in it the Delay and the Align Delay device; the rack's chain selector when it has
-  more than one chain. None found: the section is not shown.
 - The FOH engineer: `MBC` appears among LAYOUTS in the column; it opens the same page.
 
 ### 6.4 Roles
@@ -218,7 +207,7 @@ See `mbc-layout-v1.html`. In fohmixer's look (dark, Barlow, the control column i
 
 ### 6.6 Rollout (the stream never without control)
 
-1. Build and CI on SimLive (two hubs and the instance link, roles, alignment section, MBC page). Merge, deploy the hub.
+1. Build and CI on SimLive (two hubs and the instance link, roles, MBC page). Merge, deploy the hub.
 2. Install the MBC hub and the script on the MBC PC; select slot 2. TouchOSC keeps slot 1 and
    keeps working (fohmixer sends nothing to AbletonOSCMBC).
 3. Owner approves §6.2; markers and the LUFS chain inserted, set saved with a backup.
@@ -231,10 +220,9 @@ See `mbc-layout-v1.html`. In fohmixer's look (dark, Barlow, the control column i
 ## 7. What is left to the builder
 
 - Exact ports (39103, 39201 proposed), names of config keys, the MBC hub's install script.
-- The alignment section's visual details within the mockup.
 - How the LUFS frame is fed into `lufs_udp.rs` (a shared parse function, no copy).
 - Tests: instance-link auth and passthrough, a fader moved on either hub shown on both (unit + a two-hub test), roles on every endpoint
-  (a table-driven test over the router), the MBC page and the alignment section in
+  (a table-driven test over the router), the MBC page in
   Playwright on SimLive (Chromium + WebKit iPad), console clean.
 
 ## 8. Calls made by the main session (check while reading)
@@ -243,7 +231,6 @@ See `mbc-layout-v1.html`. In fohmixer's look (dark, Barlow, the control column i
   earlier thin relay (c) is dropped).
 - The script in Live's built-in folder rather than fixing MBC's User Library path (fixing it
   changes where MBC's presets and packs are looked up).
-- Alignment in the channel detail, not on the main page.
 - No `+PIN` strips, no rail on the MBC page.
 
 ## 9. Builder check (2026-11-12, done by the main session reading as the builder)
@@ -256,14 +243,12 @@ Minor, settled (my call):
 - The `mbc` role works on the LAN and through the internet path like the engineer's; who may
   pass Cloudflare Access from outside stays the owner's existing list.
 - One login page for both roles; the role follows the PIN.
-- The alignment writes go through the pages' setter (one batch in flight), like every write.
 
 The owner's:
-1. Is the FOH PC always on while the stream runs? The hub lives there; with it off, the MBC
-   tablet has no control (today's TouchOSC talks to the MBC PC directly).
-2. A `STREAM` fader (the whole stream's level) on the MBC page, yes or no.
-3. May the operator change the alignment during a live stream (an audible skip), or only
-   before it (fohmixer could lock it while the stream group plays)?
-4. Approval of the set change (§6.2): Tuner markers on the 11 tracks and the LUFS device in
-   the stream group's metering rack, saved with a backup.
-5. Approval of the look (`mbc-layout-v1.html`).
+1. ANSWERED: MBC must work with the FOH PC off (C9, §6.1).
+2. ANSWERED: no `STREAM` fader; every strip shows its own loudness, #151's display (§6.3).
+3. WITHDRAWN: alignment is out of scope.
+4. Approval of the set change (§6.2): Tuner markers with `+LUFS:<target>` on the 11 tracks,
+   a LUFS device per strip and one in the stream group's metering rack, saved with a backup.
+5. Approval of the look (mockup v2: v1 without the alignment section, with #151's loudness
+   on the strips).
