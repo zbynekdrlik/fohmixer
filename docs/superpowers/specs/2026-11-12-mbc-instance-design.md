@@ -146,7 +146,9 @@ on the FOH hub and still sees only MBC (§6.4).
 - **Strips:** a Tuner marker on each of the 11 tracks of today's page (12 strips: one
   track has two strips today, `Hand 1` and `Hand 1 sync`), label = today's TouchOSC strip
   name, `+G:MBC` in today's left-to-right order. Group tracks get the same. No `+PIN`.
-- **Loudness:** one `FohMixer LUFS` device in a new parallel chain of the stream group's
+- **Per-strip loudness:** one `FohMixer LUFS` device in a parallel chain on each strip's
+  track (a new rack with a dry chain where the track has none), `+LUFS:<target>` on its Tuner.
+- **Stream loudness:** one `FohMixer LUFS` device in a new parallel chain of the stream group's
   existing metering rack (the rack that already holds the loudness plug-in in parallel to a
   dry chain). The track's Tuner gets the tag that shows the LUFS reading on its strip
   (`+LUFS`, as on the FOH sets, #151). It reads the stream master's loudness at the point
@@ -167,8 +169,16 @@ See `mbc-layout-v1.html`. In fohmixer's look (dark, Barlow, the control column i
   a frame entry naming the instance and the device's track, no strip made).
 - No `STREAM` fader (owner, #184, 2026-11-12): the final and the local masterings expect each
   submaster at its own level, so loudness is fixed on the submaster that is off, never by a
-  global move. The `STREAM LUFS` readout is read-only. Whether each strip also shows its own
-  loudness is an owner question (asked 2026-11-12).
+  global move. The `STREAM LUFS` readout is read-only.
+- **Every strip shows its own loudness** (owner, #184, 2026-11-12), and it is fohmixer's
+  existing LUFS display from #151, unchanged, as tuned on the FOH surface: the strip's
+  `+LUFS:<target>` point, the one-decimal number with its caption in the info column, green
+  inside the band, the spring on the meter's scale showing where the value should sit
+  (`behave::lufs`, `fohmixer_proto::lufs`). Nothing about its look is redesigned for MBC.
+- The `STREAM LUFS` readout in the column uses the same `look` and band rule (target -14), no
+  new component.
+- Per-submaster targets are site values in the Tuner labels (`+LUFS:<target>`), proposed from
+  a read of today's levels and confirmed by the owner.
 - The column foot says only `MBC on` / `MBC not running` (no FOH Lives).
 - The column for an `mbc` login: the `MBC` page tab, the version, logout. No STREAM DECK,
   ABLESET, IEM MIXER, PRESENTER, no FOH layouts, no rail buttons.
