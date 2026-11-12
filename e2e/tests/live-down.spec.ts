@@ -1,6 +1,7 @@
+import { readFileSync } from "node:fs";
 import type { Page } from "@playwright/test";
 import { expect, test } from "./support/fixtures";
-import { frames, harness, hubStatus, openSurface, token, until } from "./support/live";
+import { FIXTURE_LAYOUT, frames, harness, hostLine, hubStatus, openSurface, selectPage, token, until } from "./support/live";
 
 // A Live that is down, said in words (#178; the owner's approved
 // docs/mockups/live-down-v2.html): no card or overlay anywhere. A strip of a
@@ -271,5 +272,122 @@ test.describe("A Live that is down (#178)", () => {
     const master = (await foot(page, "master").boundingBox())!;
     expect(master.y).toBeGreaterThanOrEqual(band.y + band.height - 0.5);
     expect(lines.x).toBeGreaterThan(counter.x + counter.width);
+  });
+});
+
+/**
+ * The site's kind of frame (#178's failed live check of 2026-11-12): the
+ * strips of a tags group (MARKERS), STAGE, the talkback toggle and
+ * TechAlert named by `+CTRL` ids, REVERB and AUTOTUNE, all made by Tuner
+ * markers in Live, never by a track's name.
+ */
+function markerFrame(): any {
+  const frame = JSON.parse(readFileSync(FIXTURE_LAYOUT, "utf-8"));
+  const foh = frame.pages.find((p: any) => p.id === "foh");
+  const ctrl = (id: string) => ({ instance: "band", anchor: { kind: "ctrl", id } });
+  foh.rows[1].sections.push({ kind: "group", id: "markers", title: "MARKERS", tags: "MARKERS" });
+  foh.rail.find((c: any) => c.kind === "stage").binding = ctrl("stage");
+  foh.rail.find((c: any) => c.label === "ZVUKAR").targets = [{ binding: ctrl("talkback"), prop: "mute", on: false, off: true }];
+  const at = foh.rail.findIndex((c: any) => c.kind === "param_toggle" && c.label === "AUTOTUNE");
+  foh.rail.splice(at, 1, { kind: "autotune", label: "AUTOTUNE" });
+  foh.rail.splice(foh.rail.findIndex((c: any) => c.kind === "stage") + 1, 0, { kind: "reverb", label: "REVERB" });
+  frame.global.find((c: any) => c.kind === "alert").binding = ctrl("alert");
+  return frame;
+}
+
+/** The Tuners of `markerFrame` (generic labels: a public repo), per Live. */
+const TUNERS: Record<string, [number, string][]> = {
+  band: [
+    [0, "+CTRL:talkback"],
+    [1, '"Hand two" +G:MARKERS'],
+    [2, '"Rev ST" +G:MARKERS +REVERB'],
+    [3, "+AUTOTUNE"],
+    [6, "+CTRL:stage"],
+    [7, "+CTRL:alert"],
+  ],
+  master: [[1, '"Master two" +G:MARKERS']],
+};
+const MARKER_TRACKS = Object.values(TUNERS).flat().length;
+
+// The PC's morning (#178, the owner's report and the failed live check of
+// 2026-11-12): the PC rebooted, the hub started while both Lives were still
+// down and has never heard them since. The page still draws every strip it
+// drew before, dimmed with NOT RUNNING and `—`, and nothing is red: no
+// control, no rail button, no TechAlert frame round the page.
+test.describe("A hub started while both Lives are down (#178)", () => {
+  test.afterEach(async () => {
+    // Both Lives back on the test site (their Tuners gone with the restart),
+    // the fixture served again, and the hub's markers read empty from both
+    // Lives before the next spec opens a page.
+    for (const name of ["band", "master"]) await harness(`/host/${name}/start`);
+    await harness("/hub/layout/reset");
+    const bearer = await token();
+    await until(
+      () => hubStatus(bearer),
+      (s) => s.instances.every((i: any) => i.online && i.set_name === "Test Site") && s.layout.markers.found === 0,
+      "both Lives online on the test site and no Tuner marker left",
+      20_000,
+    );
+  });
+
+  test("its strips are drawn NOT RUNNING, nothing is red, the foot says so", async ({ page }) => {
+    await harness("/hub/layout", { layout: markerFrame() });
+    for (const [instance, tuners] of Object.entries(TUNERS)) {
+      for (const [track, name] of tuners) expect(await hostLine(instance, `tuner track ${track} set '${name}'`)).toBe("TUNER 1");
+    }
+    // The hub has composed every marker (each +CTRL id on its one Tuner).
+    const bearer = await token();
+    await until(
+      () => hubStatus(bearer),
+      (s) => s.layout.markers.found === MARKER_TRACKS && s.layout.markers.ctrls.every((c: any) => c.tuners === 1),
+      "every Tuner marker composed",
+      15_000,
+    );
+    // Both Lives quit, then the PC's reboot: the hub starts with no Live.
+    await harness("/host/band/stop");
+    await harness("/host/master/stop");
+    await harness("/hub/restart", { rotate_secret: false });
+    await until(
+      () => hubStatus(),
+      (s) => s.instances.every((i: any) => !i.online),
+      "the restarted hub with both Lives down",
+      15_000,
+    );
+
+    // The iPad switched on.
+    await page.setViewportSize(IPAD);
+    await openSurface(page);
+    await selectPage(page, "foh");
+    for (const instance of ["band", "master"]) {
+      await expect(foot(page, instance)).toHaveAttribute("data-live", "off", { timeout: UP });
+      await expect(foot(page, instance).getByTestId("badge-word")).toHaveText("not running");
+    }
+    // Every strip the markers made is there, dimmed with its word and `—`.
+    const markers = page.locator('.slot[data-group="markers"] [data-testid="strip"]');
+    await expect(markers).toHaveCount(3, { timeout: UP });
+    for (const [label, instance] of [
+      ["Hand two", "band"],
+      ["Rev ST", "band"],
+      ["Master two", "master"],
+    ]) {
+      const strip = page.locator(`.slot[data-group="markers"] [data-testid="strip"][data-label="${label}"]`);
+      await expect(strip).toHaveAttribute("data-instance", instance);
+      await expect(strip).toHaveAttribute("data-live", "off");
+      await expect(strip.getByTestId("strip-why")).toHaveText("NOT RUNNING");
+      await expect(strip.getByTestId("strip-down-db")).toHaveText("—");
+    }
+    await stripsSay(page, "band", "off");
+    await stripsSay(page, "master", "off");
+    // Nothing red: the hub's answers for every binding are in (a second
+    // after the strips), no control is unresolved, no rail button and no
+    // TechAlert frame round the page.
+    await page.waitForTimeout(1000);
+    expect(await redIn(page, "body")).toBe(0);
+    for (const id of ["stage-mics", "reverb", "autotune"]) {
+      await expect(page.getByTestId(id)).not.toHaveAttribute("data-binding", "unresolved");
+    }
+    await expect(page.locator('[data-testid="param-toggle"][data-label="ZVUKAR"]')).not.toHaveAttribute("data-binding", "unresolved");
+    await expect(page.getByTestId("rail").getByTestId("alert-toggle")).not.toHaveAttribute("data-binding", "unresolved");
+    await expect(page.locator(".alert-wash")).not.toHaveAttribute("data-binding", "unresolved");
   });
 });
