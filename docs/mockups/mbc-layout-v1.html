@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MBC page v1</title>
+<style>
+/* The app's fonts, by relative path (.claude/rules/public-repo-hygiene.md); they resolve once this file sits in docs/mockups/. */
+@font-face { font-family: "Barlow Condensed"; font-weight: 700; font-display: block; src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 600; font-display: block; src: url("../../crates/fohmixer-ui/fonts/barlow-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-weight: 500; font-display: block; src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2"); }
+:root { --bg:#0a0b10; --bar:#14141e; --panel:#181824; --line:#2a2a3a; --text:#e2e2ec; --dim:#8a8a9c; --faint:#5e5e72; --sel:#1d1f33; --teal:#2fc79a; --gold:#e0b84a; --red:#e0555f; --blue:#3f8cff; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 16px; background: #05050a; color: var(--text); font: 600 15px/1.45 "Barlow", sans-serif; }
+h1 { font: 700 26px/1.1 "Barlow Condensed", sans-serif; letter-spacing: .04em; margin: 0 0 6px; }
+h2 { font: 700 20px/1.2 "Barlow Condensed", sans-serif; letter-spacing: .03em; margin: 26px 0 4px; }
+p, li { color: var(--dim); max-width: 80ch; }
+.scroll { overflow-x: auto; }
+.ipad { width: 1194px; height: 834px; background: var(--bg); display: grid; grid-template-columns: 1fr 132px 1fr; gap: 6px; padding: 6px; border: 2px solid #333; border-radius: 14px; }
+.half { display: flex; gap: 6px; min-width: 0; }
+.strip { flex: 1; min-width: 0; background: var(--panel); border-radius: 10px; display: flex; flex-direction: column; align-items: center; padding: 8px 4px; }
+.name { width: 100%; border-radius: 7px; padding: 6px 2px 5px; text-align: center; font: 700 16px/1 "Barlow Condensed", sans-serif; letter-spacing: .03em; color: #0a0b10; }
+.db { font: 500 12px "JetBrains Mono", monospace; margin-top: 7px; }
+.lufs { margin-top: 6px; text-align: center; }
+.lufs small { display: block; font: 600 9px "Barlow", sans-serif; letter-spacing: .1em; color: var(--faint); }
+.lufs b { font: 700 24px/1 "Barlow Condensed", sans-serif; color: var(--teal); }
+.lufs i { display: block; font: 500 10px "JetBrains Mono", monospace; font-style: normal; color: var(--dim); }
+.fz { flex: 1; width: 100%; display: flex; justify-content: center; gap: 6px; margin: 10px 0; position: relative; }
+.groove { width: 8px; background: #0c0c13; border-radius: 3px; position: relative; }
+.cap { position: absolute; left: -20px; width: 48px; height: 22px; border-radius: 5px; background: #33354a; border-top: 2px solid #8a8cab; }
+.meter { width: 5px; background: #0c0c13; border-radius: 2px; position: relative; overflow: hidden; }
+.meter::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: var(--m, 50%); background: linear-gradient(to top, var(--teal) 70%, var(--gold)); }
+.mute { font: 700 12px "Barlow Condensed", sans-serif; color: var(--dim); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; width: 90%; text-align: center; }
+.mute.on { background: #4a1d22; color: #ffb3b8; border-color: #6a2a30; }
+.pan { width: 90%; height: 18px; margin-top: 6px; border-radius: 9px; background: #10111a; border: 1px solid var(--line); position: relative; }
+.pan::after { content: ""; position: absolute; top: 3px; width: 10px; height: 10px; border-radius: 50%; background: var(--dim); left: calc(var(--p, 50%) - 5px); }
+.column { background: var(--bar); border: 1px solid var(--line); border-radius: 12px; padding: 8px 6px; display: flex; flex-direction: column; gap: 8px; }
+.tab { text-align: center; border-radius: 7px; padding: 8px 3px; font: 700 19px/1.05 "Barlow Condensed", sans-serif; letter-spacing: .08em; background: var(--sel); border-bottom: 2px solid var(--teal); }
+.grow { flex: 1; }
+.foot { font: 500 9px "JetBrains Mono", monospace; color: var(--faint); text-align: center; line-height: 1.6; }
+.foot em { font-style: normal; color: var(--teal); }
+.who { font: 600 10px "Barlow", sans-serif; color: var(--dim); text-align: center; border: 1px solid var(--line); border-radius: 8px; padding: 6px 2px; }
+/* the channel detail */
+.detail { width: 1194px; height: 834px; background: var(--bg); border: 2px solid #333; border-radius: 14px; padding: 14px; display: grid; grid-template-columns: 220px 1fr; gap: 14px; }
+.dstrip { background: var(--panel); border-radius: 10px; display: flex; flex-direction: column; align-items: center; padding: 12px 10px; }
+.sec { background: var(--panel); border-radius: 10px; padding: 16px 18px; }
+.sec h3 { margin: 0 0 12px; font: 700 18px "Barlow Condensed", sans-serif; letter-spacing: .1em; color: var(--dim); }
+.row { display: grid; grid-template-columns: 110px 1fr 220px; gap: 14px; align-items: center; margin: 14px 0; }
+.row .k { font: 700 18px "Barlow Condensed", sans-serif; letter-spacing: .04em; }
+.slider { height: 34px; border-radius: 8px; background: #10111a; border: 1px solid var(--line); position: relative; }
+.slider::after { content: ""; position: absolute; top: 4px; bottom: 4px; width: 20px; border-radius: 5px; background: #33354a; border-left: 2px solid #8a8cab; left: var(--x, 50%); }
+.val { font: 500 20px "JetBrains Mono", monospace; text-align: right; }
+.steps { display: flex; gap: 6px; justify-content: flex-end; }
+.steps span { font: 700 15px "Barlow Condensed", sans-serif; padding: 9px 11px; border-radius: 7px; background: #20222e; color: var(--text); }
+.seg { display: flex; gap: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; width: max-content; }
+.seg span { padding: 9px 22px; font: 700 16px "Barlow Condensed", sans-serif; letter-spacing: .05em; color: var(--dim); }
+.seg span.on { background: #16463a; color: #7cf0c8; }
+.total { margin-top: 18px; font: 500 15px "JetBrains Mono", monospace; color: var(--dim); }
+.total b { color: var(--text); font-weight: 500; }
+.warn { margin-top: 10px; font: 600 13px "Barlow", sans-serif; color: var(--gold); }
+.close { justify-self: end; }
+</style>
+</head>
+<body>
+<h1>MBC — stránka MBC operátora (návrh v1)</h1>
+<p>Projekt fohmixer, úloha #184: MBC Ableton (samostatný mix do streamu) sa ovláda z fohmixera. Mená sú vymyslené. Tablet MBC operátora, iPad naležato.</p>
+
+<h2>1. MBC operátor po prihlásení svojím PIN-om</h2>
+<p>Iba MBC: 12 pásov (hlasitosť, mute, pan, meter, dB). V strednom stĺpci je veľké číslo LUFS streamu s cieľom −14. V stĺpci nie sú FOH tlačidlá ani FOH rozloženia. Dole je len stav MBC Abletonu.</p>
+<div class="scroll"><div class="ipad">
+  <div class="half">
+    <div class="strip"><div class="name" style="background:#e0b84a">Hand 1</div><div class="db">−4.2</div><div class="fz"><div class="groove"><div class="cap" style="top:28%"></div></div><div class="meter" style="--m:46%"></div></div><div class="mute">MUTE</div><div class="pan"></div></div>
+    <div class="strip"><div class="name" style="background:#e0b84a">Hand 1 sync</div><div class="db">−∞</div><div class="fz"><div class="groove"><div class="cap" style="top:88%"></div></div><div class="meter" style="--m:0%"></div></div><div class="mute on">MUTE</div><div class="pan"></div></div>
+    <div class="strip"><div class="name" style="background:#e0b84a">Hand 2</div><div class="db">−2.0</div><div class="fz"><div class="groove"><div class="cap" style="top:24%"></div></div><div class="meter" style="--m:30%"></div></div><div class="mute">MUTE</div><div class="pan"></div></div>
+    <div class="strip"><div class="name" style="background:#e0b84a">Hand 3</div><div class="db">−6.0</div><div class="fz"><div class="groove"><div class="cap" style="top:33%"></div></div><div class="meter" style="--m:12%"></div></div><div class="mute">MUTE</div><div class="pan"></div></div>
+    <div class="strip"><div class="name" style="background:#e0b84a">Hand 4</div><div class="db">−6.0</div><div class="fz"><div class="groove"><div class="cap" style="top:33%"></div></div><div class="meter" style="--m:0%"></div></div><div class="mute">MUTE</div><div class="pan"></div></div>
+    <div class="strip"><div class="name" style="background:#7fb8ff">Moderator 1</div><div class="db">−1.5</div><div class="fz"><div class="groove"><div class="cap" style="top:23%"></div></div><div class="meter" style="--m:58%"></div></div><div class="mute">MUTE</div><div class="pan"></div></div>
+  </div>
+  <div class="column">
+    <div class="tab">MBC</div>
+    <div class="lufs" style="margin-top:14px"><small>STREAM LUFS</small><b style="font-size:34px">−14.3</b><i>cieľ −14</i></div>
+    <div class="grow"></div>
+    <div class="who">prihlásený: MBC<br>odhlásiť</div>
+    <div class="foot">MBC <em>on</em><br>v1.40.0</div>
+  </div>
+  <div class="half">
+    <div class="strip"><div class="name" style="background:#7fb8ff">Moderator 2</div><div class="db">−3.0</div><div class="fz"><div class="groove"><div class="cap" style="top:27%"></div></div><div class="meter" style="--m:20%"></div></div><div class="mute">MUTE</div><div class="pan"></div></div>
+    <div class="strip"><div class="name" style="background:#7fb8ff">Moderator 3</div><div class="db">−3.0</div><div class="fz"><div class="groove"><div class="cap" style="top:27%"></div></div><div class="meter" style="--m:0%"></div></div><div class="mute">MUTE</div><div class="pan"></div></div>
+    <div class="strip"><div class="name" style="background:#c79bff">CG</div><div class="db">−8.0</div><div class="fz"><div class="groove"><div class="cap" style="top:37%"></div></div><div class="meter" style="--m:40%"></div></div><div class="mute">MUTE</div><div class="pan"></div></div>
+    <div class="strip"><div class="name" style="background:#2fc79a">Band</div><div class="db">0.0</div><div class="fz"><div class="groove"><div class="cap" style="top:20%"></div></div><div class="meter" style="--m:66%"></div></div><div class="mute">MUTE</div><div class="pan"></div></div>
+    <div class="strip"><div class="name" style="background:#2fc79a">Band 2</div><div class="db">−10.0</div><div class="fz"><div class="groove"><div class="cap" style="top:42%"></div></div><div class="meter" style="--m:22%"></div></div><div class="mute">MUTE</div><div class="pan"></div></div>
+    <div class="strip"><div class="name" style="background:#ff9a5a">Ambience</div><div class="db">−12.0</div><div class="fz"><div class="groove"><div class="cap" style="top:45%"></div></div><div class="meter" style="--m:35%"></div></div><div class="mute">MUTE</div><div class="pan"></div></div>
+  </div>
+</div></div>
+<p>LUFS je hlasitosť celého streamu (skupina, ktorá ide do streamu), preto je v strednom stĺpci a nie na páse. Na zváženie: 13. pás <b>STREAM</b> s fadrom celého streamu.</p>
+
+<h2>2. Detail kanála (podržať ☰): zarovnanie oneskorenia</h2>
+<p>Hrubé oneskorenie (Ableton Delay), jemné doladenie (Align Delay) a pri moderátoroch prepínač Ethernet / Wifi. Zdroj bez zarovnávacieho racku túto časť nemá.</p>
+<div class="scroll"><div class="detail">
+  <div class="dstrip"><div class="name" style="background:#7fb8ff">Moderator 1</div><div class="db">−1.5</div><div class="fz"><div class="groove"><div class="cap" style="top:23%"></div></div><div class="meter" style="--m:58%"></div></div><div class="mute">MUTE</div><div class="pan"></div></div>
+  <div class="sec">
+    <h3>ZAROVNANIE</h3>
+    <div class="row"><div class="k">Cesta</div><div class="seg"><span class="on">Ethernet</span><span>Wifi</span></div><div></div></div>
+    <div class="row"><div class="k">Delay</div><div class="slider" style="--x:44%"></div><div class="steps"><span>−10</span><span>−1</span><span class="val">470 ms</span><span>+1</span><span>+10</span></div></div>
+    <div class="row"><div class="k">Jemne</div><div class="slider" style="--x:52%"></div><div class="steps"><span>−0.1</span><span class="val">0.4 ms</span><span>+0.1</span></div></div>
+    <div class="total">spolu <b>470.4 ms</b> · Wifi vetva má vlastné hodnoty (301 ms)</div>
+    <div class="warn">Zmena oneskorenia počas streamu je v streame počuť ako krátke preskočenie.</div>
+  </div>
+</div></div>
+
+<h2>3. FOH zvukár</h2>
+<ul>
+<li>So svojím PIN-om vidí všetko ako doteraz. V stĺpci pod LAYOUTS pribudne <b>MBC</b>, ktoré otvorí rovnakú stránku ako v bode 1.</li>
+<li>Dole v stĺpci pribudne tretí riadok: <code>MBC on</code> / <code>MBC not running</code>.</li>
+</ul>
+</body>
+</html>

@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::support::{Client, Host, TestHub, runtime, serial};
+use fohmixer_hub::rules::autotune::switch::STOP_SPREAD_MS;
 use fohmixer_proto::client::{
     ClientMsg, HubStatus, KeyState, SafeState, ServerMsg, SwitchWhy, TrackState,
 };
@@ -271,12 +272,8 @@ fn a_song_played_with_aut_on_tunes_after_the_keys_and_a_stop_goes_dry() {
         transport(&mut a, "stop_playing").await;
         let dry = macros_until(&mut a, DRY, Duration::from_secs(2)).await;
         println!(
-            "every selector on DRY {} ms after the stop",
+            "every selector on DRY {} ms after the stop's reply",
             dry.as_millis()
-        );
-        assert!(
-            dry >= Duration::from_millis(80),
-            "three selectors, 40 ms apart: {dry:?}"
         );
         let records = hub
             .events_until(SECS_10, |r| {
@@ -296,6 +293,20 @@ fn a_song_played_with_aut_on_tunes_after_the_keys_and_a_stop_goes_dry() {
             .map(|w| w["off"].as_array().map_or(0, Vec::len))
             .collect();
         assert_eq!(offs, [1, 1, 1], "one selector per batch: {writes:?}");
+        // The spread on the hub's own clock, its writes' `ts` (#186): the
+        // stop's reply reaches this client after the hub has heard the stop
+        // and written its first selector, so on a loaded runner a stopwatch
+        // started at the reply misses part of the spread. `ts` is the hub's
+        // wall clock: only a step of it within these 100 ms could skew a gap.
+        let gaps: Vec<i64> = writes
+            .windows(2)
+            .map(|w| w[1]["ts"].as_i64().unwrap() - w[0]["ts"].as_i64().unwrap())
+            .collect();
+        println!("the stop's writes {gaps:?} ms apart");
+        assert!(
+            gaps.iter().all(|&gap| gap >= STOP_SPREAD_MS as i64),
+            "three selectors, {STOP_SPREAD_MS} ms apart: {gaps:?} ms"
+        );
         // Live's setter saw exactly the hub's writes: on, DRY, on, DRY; none
         // of Stream B's.
         let sets: Vec<i64> = MACROS.iter().map(|p| host.sets("value", p)).collect();
