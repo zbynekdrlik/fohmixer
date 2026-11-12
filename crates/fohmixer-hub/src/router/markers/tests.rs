@@ -918,7 +918,10 @@ fn a_retry_while_the_instance_is_offline_reads_nothing_and_its_connect_reads() {
 fn the_markers_are_settled_once_a_read_since_a_failure_or_a_disconnect_answers_whole() {
     // #130 review M1, W2: REVERB's track-list window ends only then.
     let mut k = keeper();
-    assert!(k.settled("band"), "nothing read, nothing missed");
+    // #178: nothing read since the hub started is not settled: the store
+    // may compose markers it remembered from the last run, whose indexes
+    // only a read confirms.
+    assert!(!k.settled("band"), "nothing read since the start");
     assert!(k.settled("nobody"), "an instance it does not follow");
     let actions = k.value(&tracks_key("band"), Some(&list(1)));
     let mut applied = apply(&mut k, actions);
@@ -1039,4 +1042,23 @@ fn has_read_holds_once_a_whole_read_answered_and_stays_through_a_disconnect() {
     assert!(k.has_read("band"));
     k.disconnected("band");
     assert!(k.has_read("band"), "since the hub started");
+}
+
+#[test]
+fn only_a_first_whole_read_that_reported_nothing_drops_the_remembered_markers() {
+    // #178: the store's remembered markers of an instance go once it is read.
+    assert!(drops_remembered(true, true, false, true));
+    assert!(!drops_remembered(false, true, false, true), "read before");
+    assert!(
+        !drops_remembered(true, false, false, true),
+        "the read failed"
+    );
+    assert!(
+        !drops_remembered(true, true, true, true),
+        "a new set goes anyway"
+    );
+    assert!(
+        !drops_remembered(true, true, false, false),
+        "nothing remembered"
+    );
 }

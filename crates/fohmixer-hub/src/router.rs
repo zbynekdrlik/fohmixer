@@ -959,8 +959,13 @@ impl Router {
                 if let Err(error) = &outcome {
                     tracing::warn!(instance = %instance, error = %error, "the hub could not read the Tuner markers");
                 }
+                let first = !self.markers.has_read(&instance);
                 let actions = self.markers.read_done(&instance, seq, step, &outcome);
+                let reported = actions
+                    .iter()
+                    .any(|a| matches!(a, markers::Action::Found(_)));
                 self.markers_apply(actions);
+                self.markers_first_read(&instance, first, reported);
                 // A read that leaves every strip where it was ends REVERB's
                 // track-list window (#130 review W1, M1) and AUTOTUNE's
                 // hold (#104, PR #139 review I1).

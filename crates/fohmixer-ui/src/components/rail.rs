@@ -231,7 +231,19 @@ pub fn RuleButton(kind: RuleKind, label: String) -> impl IntoView {
                 .autotune
                 .try_with(|a| autotune_ready(a.shown()))
                 .flatten(),
-            (_, None) => store.reverb.try_with(|r| reverb_ready(r.shown())).flatten(),
+            (_, None) => {
+                // #178: waiting while every reverb fader's Live is down.
+                let down = |instance: &str| {
+                    store
+                        .live
+                        .try_with(|all| all.get(instance).is_some_and(|w| w.quiets()))
+                        .unwrap_or(false)
+                };
+                store
+                    .reverb
+                    .try_with(|r| reverb_ready(r.shown(), down))
+                    .flatten()
+            }
         };
         match ready {
             None => Readiness::Waiting,

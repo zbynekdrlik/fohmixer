@@ -147,6 +147,22 @@ impl Router {
                 }
             }
         }
+        // A Live not read since the hub started may hold remembered faders
+        // whose indexes only its first read confirms (#178): its window
+        // opens, and closes once its markers are settled (below, or at the
+        // read's answer).
+        // (Only where markers are composed at all: a router with no layout
+        // store has no remembered faders.)
+        let unread: Vec<String> = self
+            .live
+            .keys()
+            .filter(|name| self.layout_store.is_some() && !self.markers.has_read(name))
+            .cloned()
+            .collect();
+        for name in unread {
+            let acts = self.reverb.rule.unread(&name, &faders);
+            self.reverb_apply(acts, None);
+        }
         let now = self.now_ms();
         let acts = self.reverb.rule.set_faders(faders, now);
         self.reverb_apply(acts, None);

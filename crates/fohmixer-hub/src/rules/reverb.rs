@@ -1034,6 +1034,24 @@ impl Reverb {
         }
     }
 
+    /// `instance` has not been read since the hub started (#178): its
+    /// faders may be the ones the store remembered from the last run, at
+    /// indexes only a read confirms, so its window opens (closed by
+    /// `tracks_known` / `tracks_served` once its markers are settled).
+    /// Called BEFORE `set_faders` with the layout's `coming` faders, so a
+    /// return `set_faders` restores at once never writes such an index.
+    pub fn unread(&mut self, instance: &str, coming: &[RuleFader]) -> Vec<Act> {
+        let has = coming.iter().any(|f| f.instance == instance) || self.has_fader_in(instance);
+        if !has || !self.moved.insert(instance.to_string()) {
+            return Vec::new();
+        }
+        vec![Act::Step(Step::Window {
+            instance: instance.to_string(),
+            open: true,
+            why: "unread".to_string(),
+        })]
+    }
+
     /// An instance went offline: its glides stop, its values (and, for the
     /// followed one, the transport and the wait) are forgotten; what the
     /// rule holds stays. Its window opens (review W2): a set loaded or a

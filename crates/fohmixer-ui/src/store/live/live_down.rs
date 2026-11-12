@@ -1,8 +1,8 @@
 //! A Live that is down, said in words (#178): the store's glue. The
 //! decision is `behave::live_down::live_word` (not running / no set / on);
 //! this keeps each instance's word in `LiveStore.live` and, while a Live has
-//! no set, its wanted slots' errors quiet (`Slot::NoSet`: they wait, never
-//! red). A Live is judged again only when its word can change: its report,
+//! no set or is not running, its wanted slots' errors quiet (`Slot::NoSet`:
+//! they wait, never red). A Live is judged again only when its word can change: its report,
 //! a slot of it changing class (never every value), the wanted set, a hello
 //! and a close.
 
@@ -58,7 +58,7 @@ impl LiveStore {
     }
 
     /// One Live judged again: its word, and its errors quiet while it has
-    /// no set (red again once it has one). During an outage (no word) the
+    /// no set or is not running (red again once it is on, #178). During an outage (no word) the
     /// slots stay as they are.
     pub(super) fn judge(self, instance: &str) {
         let connected = self.connected.try_get_untracked().unwrap_or(false);
@@ -74,14 +74,14 @@ impl LiveStore {
         );
         let word = live_word(connected, online, seen);
         if let Some(word) = word {
-            let no_set = word == LiveWord::NoSet;
+            let quiet = word.quiets();
             for signal in signals {
                 let turns = signal
-                    .try_with_untracked(|slot| slot.clone().quieted(no_set) != *slot)
+                    .try_with_untracked(|slot| slot.clone().quieted(quiet) != *slot)
                     .unwrap_or(false);
                 if turns {
                     let _ = signal.try_update(|slot| {
-                        *slot = std::mem::replace(slot, Slot::Pending).quieted(no_set);
+                        *slot = std::mem::replace(slot, Slot::Pending).quieted(quiet);
                     });
                 }
             }
