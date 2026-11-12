@@ -1517,3 +1517,78 @@ async fn the_track_list_window_is_recorded_where_it_opens_and_where_it_ends() {
         ]
     );
 }
+
+#[tokio::test]
+async fn a_live_not_read_since_the_start_writes_nothing_by_its_remembered_faders() {
+    // #178: the hub starts with the reverb faders it remembered from the
+    // last run; until the band's first read confirms their indexes, a stop
+    // lowers nothing there.
+    let dir = tempfile::tempdir().unwrap();
+    let frame = json!({"schema": 2, "default_page": "p", "pages": [{"id": "p", "title": "P",
+        "rows": [{"sections": [{"kind": "group", "id": "fx", "title": "FX", "tags": "FX"}]}]}]});
+    std::fs::write(dir.path().join("layout.json"), frame.to_string()).unwrap();
+    let remembered = |index: u32, name: &str| fohmixer_proto::markers::Found {
+        instance: "band".into(),
+        kind: fohmixer_proto::markers::TrackKind::Track,
+        index,
+        name: name.into(),
+        tuners: 1,
+    };
+    std::fs::write(
+        dir.path().join(crate::layout::MARKERS_FILE),
+        serde_json::to_vec(&vec![remembered(0, ST_MARK), remembered(1, PA_MARK)]).unwrap(),
+    )
+    .unwrap();
+    let store = Arc::new(crate::layout::store_in(
+        dir.path(),
+        std::path::Path::new("layout.json"),
+        vec!["band".into()],
+    ));
+    assert_eq!(store.poll(), Some(1));
+    let (router, mut own, rx) = offline_router(dir.path());
+    let mut router = router.with_layout(Arc::clone(&store));
+    let (rev, served) = store.current();
+    let (_, ctrl) = store.served();
+    router.handle(layout_msg(rev, served.as_deref(), ctrl));
+    assert_eq!(router.reverb.rule.state().faders.len(), 2);
+    let _page = attach(&mut router, 1);
+    router.subs.connected("band");
+    answer(&mut router, |target, prop| match (target, prop) {
+        (_, "tracks") => slot("live_1.tracks", json!([1, 2])),
+        (_, "return_tracks") => slot("live_1.returns", json!([])),
+        (_, "is_playing") => slot("live_1.is_playing", json!(true)),
+        ("live_set tracks 0 mixer_device volume", "value") => slot("live_st.value", json!(0.85)),
+        ("live_set tracks 1 mixer_device volume", "value") => slot("live_pa.value", json!(0.6)),
+        _ => json!({"ok": true, "data": null}),
+    });
+    router.flush();
+    set_hub(&mut router, HUB_REVERB_AUT, json!(true));
+    // Live stops before the band's first read answers: past the wait,
+    // nothing is lowered.
+    router
+        .subs
+        .on_values("band", &[pushed("live_1.is_playing", json!(false))]);
+    router.flush();
+    tick_after(&mut router, crate::rules::reverb::STOP_WAIT_MS + 1000.0);
+    let got = records(&rx);
+    assert_eq!(rule_sets(&got), vec![], "{got:?}");
+    let windows = |got: &[Value]| -> Vec<(Value, Value, Value)> {
+        got.iter()
+            .filter(|r| r["ev"] == "reverb" && r["step"] == "window")
+            .map(|r| (r["instance"].clone(), r["open"].clone(), r["why"].clone()))
+            .collect()
+    };
+    assert_eq!(
+        windows(&got),
+        vec![(json!("band"), json!(true), json!("unread"))]
+    );
+    // The first read finds them where they were: the window closes.
+    let (seq, _) = next_read(&mut own).await;
+    read_answered(&mut router, &mut own, seq, 2, &[(0, ST_MARK), (1, PA_MARK)]).await;
+    settle(&mut router, &mut own).await;
+    let got = records(&rx);
+    assert!(
+        windows(&got).contains(&(json!("band"), json!(false), json!("settled"))),
+        "{got:?}"
+    );
+}

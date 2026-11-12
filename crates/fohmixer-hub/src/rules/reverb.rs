@@ -1034,6 +1034,14 @@ impl Reverb {
         }
     }
 
+    /// `instance` has not been read since the hub started (#178): its
+    /// faders may be the ones the store remembered from the last run, at
+    /// indexes only a read confirms, so its window opens (closed by
+    /// `tracks_known` / `tracks_served` once its markers are settled).
+    pub fn unread(&mut self, instance: &str) -> Vec<Act> {
+        self.open_window(instance, "unread")
+    }
+
     /// An instance went offline: its glides stop, its values (and, for the
     /// followed one, the transport and the wait) are forgotten; what the
     /// rule holds stays. Its window opens (review W2): a set loaded or a

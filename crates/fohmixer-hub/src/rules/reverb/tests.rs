@@ -1758,3 +1758,24 @@ fn a_window_opens_only_where_the_rule_has_a_reverb_fader() {
         serde_json::json!([window("band", true, "tracks")])
     );
 }
+
+#[test]
+fn a_live_not_read_since_the_start_opens_its_window_and_writes_nothing() {
+    // #178: the store may serve faders it remembered from the last run;
+    // their indexes are unconfirmed until the Live's first read.
+    let mut r = rule(true, Some(true));
+    assert_eq!(
+        recorded(&r.unread("band")),
+        serde_json::json!([window("band", true, "unread")])
+    );
+    assert_eq!(r.unread("band"), vec![], "opened once");
+    assert_eq!(r.unread("master"), vec![], "no reverb fader there");
+    // Live stops: nothing is lowered while the window is open.
+    let mut acts = r.transport("band", false, 10.0);
+    acts.extend(run(&mut r, 10.0, 3000.0));
+    assert_eq!(writes(&acts), vec![]);
+    assert_eq!(
+        recorded(&r.tracks_known("band", 3000.0))[0],
+        window("band", false, "settled")
+    );
+}
