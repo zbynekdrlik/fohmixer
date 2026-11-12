@@ -248,7 +248,8 @@ The owner's:
 1. ANSWERED: MBC must work with the FOH PC off (C9, §6.1).
 2. ANSWERED: no `STREAM` fader; every strip shows its own loudness, #151's display (§6.3).
 3. WITHDRAWN: alignment is out of scope.
-4. Approval of the set change (§6.2): Tuner markers with `+LUFS:<target>` on the 11 tracks,
+4. APPROVED (2026-11-12): the set change (§6.2), after the MBC hub runs, never during a
+   stream, backup first, latency read before and after. Was: the set change (§6.2): Tuner markers with `+LUFS:<target>` on the 11 tracks,
    a LUFS device per strip and one in the stream group's metering rack, saved with a backup.
 5. Approval of the look (mockup v2: v1 without the alignment section, with #151's loudness
    on the strips).
