@@ -18,9 +18,21 @@ use fohmixer_proto::volume::value2db;
 use super::rail::{Aut, Fill, RailLook, full_text, hold_text};
 
 /// Whether the REVERB button takes a tap: none before the hub's state
-/// (waiting); `Some(false)` without a reverb fader (red, I5).
-pub fn reverb_ready(state: Option<&ReverbState>) -> Option<bool> {
-    state.map(|s| !s.faders.is_empty())
+/// and while every reverb fader's Live is `down` (#178: waiting, dimmed,
+/// never red for a Live that is down); `Some(false)` without a reverb fader
+/// (red, I5).
+pub fn reverb_ready(state: Option<&ReverbState>, down: impl Fn(&str) -> bool) -> Option<bool> {
+    let s = state?;
+    if s.faders.is_empty() {
+        return Some(false);
+    }
+    let all_down = s.faders.iter().all(|f| down(instance_of_key(&f.key)));
+    (!all_down).then_some(true)
+}
+
+/// The Live instance of a write key (`instance|target|prop`).
+fn instance_of_key(key: &str) -> &str {
+    key.split('|').next().unwrap_or(key)
 }
 
 /// What a tap asks the hub for (`reverb_low`): down while at the song
@@ -213,12 +225,24 @@ mod tests {
 
     #[test]
     fn the_button_waits_for_the_hub_and_is_red_without_faders() {
-        assert_eq!(reverb_ready(None), None);
+        let up = |_: &str| false;
+        assert_eq!(reverb_ready(None, up), None);
         let mut s = state();
-        assert_eq!(reverb_ready(Some(&s)), Some(true));
+        assert_eq!(reverb_ready(Some(&s), up), Some(true));
         assert_eq!(tap_low(Some(&s)), Some(true));
+        // #178: every reverb fader's Live down: waiting, never red; one up:
+        // ready.
+        assert_eq!(reverb_ready(Some(&s), |i: &str| i == "band"), None);
+        assert_eq!(reverb_ready(Some(&s), |i: &str| i == "master"), Some(true));
+        s.faders[1].key = s.faders[1].key.replacen("band", "master", 1);
+        assert_eq!(reverb_ready(Some(&s), |i: &str| i == "band"), Some(true));
+        assert_eq!(
+            instance_of_key("master|live_set tracks 3 mixer_device volume|value"),
+            "master"
+        );
+        assert_eq!(instance_of_key("bare"), "bare");
         s.faders.clear();
-        assert_eq!(reverb_ready(Some(&s)), Some(false));
+        assert_eq!(reverb_ready(Some(&s), |_: &str| true), Some(false));
         assert_eq!(tap_low(Some(&s)), None);
         assert_eq!(tap_low(None), None);
         let lowered = with(false, Some(Low::Tap), None, false);

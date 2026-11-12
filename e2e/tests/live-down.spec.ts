@@ -383,11 +383,21 @@ test.describe("A hub started while both Lives are down (#178)", () => {
     // TechAlert frame round the page.
     await page.waitForTimeout(1000);
     expect(await redIn(page, "body")).toBe(0);
-    for (const id of ["stage-mics", "reverb", "autotune"]) {
-      await expect(page.getByTestId(id)).not.toHaveAttribute("data-binding", "unresolved");
+    // The rail buttons of a down Live wait, dimmed (the DECIDED calm look).
+    const rail = [
+      page.getByTestId("stage-mics"),
+      page.getByTestId("reverb"),
+      page.getByTestId("autotune"),
+      page.locator('[data-testid="param-toggle"][data-label="ZVUKAR"]'),
+      page.getByTestId("rail").getByTestId("alert-toggle"),
+    ];
+    for (const button of rail) {
+      await expect(button).toHaveCount(1);
+      await expect(button).toHaveAttribute("data-binding", "waiting");
+      await expect(button).toHaveAttribute("aria-disabled", "true");
     }
-    await expect(page.locator('[data-testid="param-toggle"][data-label="ZVUKAR"]')).not.toHaveAttribute("data-binding", "unresolved");
-    await expect(page.getByTestId("rail").getByTestId("alert-toggle")).not.toHaveAttribute("data-binding", "unresolved");
-    await expect(page.locator(".alert-wash")).not.toHaveAttribute("data-binding", "unresolved");
+    const wash = page.locator(".alert-wash");
+    await expect(wash).toHaveCount(1);
+    await expect(wash).not.toHaveAttribute("data-binding", "unresolved");
   });
 });

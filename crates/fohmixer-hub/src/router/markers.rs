@@ -507,7 +507,7 @@ impl Keeper {
     pub fn settled(&self, instance: &str) -> bool {
         self.instances
             .get(instance)
-            .is_none_or(|state| state.pending.is_none() && !state.unsure)
+            .is_none_or(|state| state.pending.is_none() && !state.unsure && state.read)
     }
 
     /// Whether a whole read of `instance` answered since the hub started

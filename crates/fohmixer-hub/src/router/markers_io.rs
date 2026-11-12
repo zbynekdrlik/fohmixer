@@ -302,3 +302,7 @@ impl Router {
         self.sectors_seed_if_due();
     }
 }
+
+#[cfg(test)]
+#[path = "markers_io/tests.rs"]
+mod tests;
