@@ -165,8 +165,10 @@ See `mbc-layout-v1.html`. In fohmixer's look (dark, Barlow, the control column i
   `cieľ −14`), not on a strip: the stream group is not one of today's 12 strips. Its source is
   the `FohMixer LUFS` device of §6.2, matched by a column binding in the MBC frame (builder:
   a frame entry naming the instance and the device's track, no strip made).
-- Optional 13th strip `STREAM` (the stream group's own fader) to set the overall stream level
-  against -14: an owner question (§9), not in today's TouchOSC.
+- No `STREAM` fader (owner, #184, 2026-11-12): the final and the local masterings expect each
+  submaster at its own level, so loudness is fixed on the submaster that is off, never by a
+  global move. The `STREAM LUFS` readout is read-only. Whether each strip also shows its own
+  loudness is an owner question (asked 2026-11-12).
 - The column foot says only `MBC on` / `MBC not running` (no FOH Lives).
 - The column for an `mbc` login: the `MBC` page tab, the version, logout. No STREAM DECK,
   ABLESET, IEM MIXER, PRESENTER, no FOH layouts, no rail buttons.
