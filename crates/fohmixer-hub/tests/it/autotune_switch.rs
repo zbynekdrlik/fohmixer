@@ -296,7 +296,8 @@ fn a_song_played_with_aut_on_tunes_after_the_keys_and_a_stop_goes_dry() {
         // The spread on the hub's own clock, its writes' `ts` (#186): the
         // stop's reply reaches this client after the hub has heard the stop
         // and written its first selector, so on a loaded runner a stopwatch
-        // started at the reply misses part of the spread.
+        // started at the reply misses part of the spread. `ts` is the hub's
+        // wall clock: only a step of it within these 100 ms could skew a gap.
         let gaps: Vec<i64> = writes
             .windows(2)
             .map(|w| w[1]["ts"].as_i64().unwrap() - w[0]["ts"].as_i64().unwrap())
