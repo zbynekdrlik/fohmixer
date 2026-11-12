@@ -7,14 +7,14 @@ invented.
 
 ## 0. Zhrnutie pre vlastníka
 
-- MBC Ableton (samostatný mix do streamu) sa ovláda z toho istého fohmixera. Pribudne ako
-  tretí Ableton vedľa band a master.
+- MBC Ableton (samostatný mix do streamu) sa ovláda z toho istého fohmixera (rovnaký program,
+  rovnaký vzhľad). Fohmixer pobeží aj priamo na MBC PC, takže MBC funguje aj pri vypnutom FOH PC.
 - MBC operátor má vlastný tablet a vlastný PIN. Po prihlásení vidí len MBC rozloženie: pásy MBC,
   veľké číslo LUFS streamu a pri každom zdroji zarovnanie oneskorenia. Do FOH vecí sa nedostane,
   a to ani obídením stránky, lebo to stráži hub.
 - FOH zvukár so svojím PIN-om vidí všetko ako doteraz. Medzi rozloženiami má navyše MBC.
-- Na MBC PC pribudne malý sprostredkovateľ (`fohmixer-hub relay`). Prepája Ableton na MBC PC
-  s hubom na FOH PC cez sieť a pýta si heslo.
+- MBC tablet sa pripája na fohmixer na MBC PC. Fohmixer na FOH PC sa k nemu pripája cez sieť
+  s heslom, aby FOH zvukár videl MBC na svojom tablete.
 - TouchOSC a jeho skript v MBC Abletone zrušíme až vtedy, keď fohmixer na MBC preukázateľne
   funguje počas bohoslužby. Stream nikdy neostane bez ovládania.
 - Schvaľuješ: pridanie značiek (Tuner) a zariadenia FohMixer LUFS do MBC setu; vzhľad MBC
@@ -37,7 +37,8 @@ ROZHODNUTÉ, 2026-11-12):
 
 ## 2. Goals
 
-- G1. A third Live instance `mbc`, on the MBC PC, served by the hub on the FOH PC.
+- G1. A third Live instance `mbc`, on the MBC PC, served by a hub on the MBC PC (works with the
+  FOH PC off, owner 2026-11-12) and reachable from the FOH hub.
 - G2. Parity with today's MBC TouchOSC page: 12 strips with volume (fohmixer's volume law,
   double tap to 0 dB), pan, mute, meter, dB readout. Today's battery widget, REFRESH ALL and
   the empty second page are not reproduced (the iPad shows its own battery; fohmixer needs
@@ -51,8 +52,8 @@ ROZHODNUTÉ, 2026-11-12):
 
 ## 3. Non-goals
 
-- A second fohmixer, a second hub, or a separate app for MBC (the owner: "nechcem samostatný
-  nový fohmixer").
+- A separate app or a different look for MBC (the owner: "nechcem samostatný nový fohmixer").
+  The MBC PC runs a second copy of the same hub binary and app, not a second product.
 - Sends, EQ screens, plug-in windows (#71) or the mastering chain's chain choice on the MBC
   page in this round. The generic LOM reaches them; they come by prompt later (D4).
 - Reading Sonible true:level's numbers (not Live parameters; §6.2).
@@ -87,50 +88,58 @@ ROZHODNUTÉ, 2026-11-12):
   Measuring devices output silence and sit only in a parallel chain of a rack (#151).
 - C7. Never save a Live set the session did not change on purpose; a set change is approved
   by the owner first, saved with a dated backup of the `.als` beside it.
-- C8. The hub keeps working with the MBC PC off: instance `mbc` shows `not running` on MBC
+- C8. The FOH hub keeps working with the MBC PC off: instance `mbc` shows `not running` on MBC
   strips only (the #178 words), nothing else changes.
+- C9. MBC control keeps working with the FOH PC off (owner, #184, 2026-11-12: "Asi by som bol
+  radsej keby vedel mbc bezat aj bez fohabl pc").
 
 ## 6. Design
 
 ### 6.1 Transport — Architektúra
 
-The hub's per-instance client today dials `ws://127.0.0.1:<port>`. A Live on another PC
-needs a path across the LAN. Candidates, read in the code:
+C9 rules out any design where the MBC tablet depends on the FOH PC. Candidates, read in the
+code:
 
-- **(a) The script listens on the LAN with a password.** The reference ableton-js transport
-  supports a password. Rejected: it breaks C1 (an unauthenticated-by-default LOM proxy on the
-  LAN, auth written in Live's Python on Live's thread), and the LUFS devices (C2) would still
-  need a separate path.
-- **(b) A second full hub on the MBC PC, the FOH hub federating it.** Rejected: two of
-  everything (auth, layout, versions), and the owner asked for one fohmixer.
-- **(c) A relay: `fohmixer-hub relay`, a subcommand of the same binary, on the MBC PC.**
-  **Chosen.** It dials the local FohMixer script on `127.0.0.1:<port>` and the local LUFS
-  UDP port `127.0.0.1:39110`, and serves ONE authenticated WebSocket on the LAN. The hub's
-  instance client dials that WebSocket instead of localhost. Why: the script and the LUFS
-  device stay exactly as they are (C1, C2); auth is Rust with tests; the relay reuses the
-  hub's stack (tokio, axum, tokio-tungstenite, the existing `live/client.rs` framing) and its
-  install/scheduled-task pattern (`scripts/fohmixer-pc/`); it carries only frames, no logic.
+- **(a) The script listens on the LAN with a password.** Rejected: it breaks C1 (an
+  unauthenticated-by-default LOM proxy on the LAN, auth in Live's Python on Live's thread),
+  the LUFS device (C2) would still need a path, and the MBC tablet would still need a hub.
+- **(c) A thin relay on the MBC PC, the hub only on the FOH PC.** Rejected by C9: with the
+  FOH PC off the MBC tablet has nothing to talk to.
+- **(b) A hub on the MBC PC too, the FOH hub reaching MBC through it.** **Chosen.** The MBC
+  PC runs the same `fohmixer-hub` binary and PWA with one instance (`mbc`), its own PIN store,
+  the MBC frame and its own LUFS listener on 127.0.0.1:39110. The MBC tablet opens that hub
+  (LAN; remote access is out of this round). The FOH hub's instance `mbc` is a remote
+  instance: it dials the MBC hub's **instance link**, an authenticated WebSocket that passes
+  the MBC Live's script frames and LUFS readings through. Why: C1, C2 and C9 hold; one binary,
+  one app (the owner's "one fohmixer"); the hub's existing stack (tokio, axum,
+  tokio-tungstenite, `live/client.rs` framing) and install pattern (`scripts/fohmixer-pc/`).
 
-The relay's contract:
+The MBC hub owns the MBC Live's script connection. Both hubs' writes reach the one Live; the
+MBC hub forwards the FOH hub's commands and fans the Live's replies and listener updates out
+to its own clients and the link, so a fader moved on either tablet shows on both.
 
-- Config on the MBC PC: `[relay] listen = "<LAN address>:39201"`, `script_port = 39103`,
-  `lufs_port = 39110`, `instance = "mbc"`. It binds the LAN address it is given, never
-  0.0.0.0.
-- Auth: the hub opens the WebSocket with `Authorization: Bearer <HS256 JWT>` signed by a
-  relay secret (32 random bytes, generated once by the hub install, copied to the relay
-  install, DPAPI-sealed on both PCs like the other secrets). `sub: "hub"`, `exp` 60 s, a new
-  token per connection. Anything else is refused with 401 and logged.
-- Frames: the script's JSON frames pass through unchanged, both ways. LUFS datagrams are
-  wrapped as `{"event":"lufs","osc":"<base64>"}` and the hub feeds them to its existing LUFS
-  parser as if they had arrived on its own UDP socket, tagged with instance `mbc`.
-- One hub connection at a time; a second is refused (no fan-out on the relay).
-- Liveness: the relay closes the hub side when the script side drops, so the hub sees the
-  instance offline exactly as with a local Live. The hub's backoff (250 ms → 2 s) applies.
-- Logs: every connect, refusal and drop, with the peer address in the PC's log only.
+The instance link's contract:
 
-Hub config: an instance may name a remote: `[[instances]] name = "mbc", relay =
-"ws://<MBC LAN address>:39201"`. `port` and `relay` are exclusive. The relay secret lives in
-the hub's secrets folder (`relay_secret`, sealed).
+- MBC hub config: `[link] listen = "<LAN address>:39201"`, `instance = "mbc"`. It binds the
+  LAN address it is given, never 0.0.0.0.
+- Auth: the FOH hub opens the WebSocket with `Authorization: Bearer <HS256 JWT>` signed by a
+  link secret (32 random bytes, generated once, DPAPI-sealed on both PCs like the other
+  secrets). `sub: "hub"`, `exp` 60 s, a new token per connection. Anything else: 401, logged.
+- Frames: the script's JSON frames pass through, both ways, with the MBC hub's request-id
+  mapping so the FOH hub's ids never collide with its own. LUFS readings are sent as
+  `{"event":"lufs","osc":"<base64>"}` and fed to the FOH hub's existing LUFS parser, tagged
+  instance `mbc`.
+- One FOH hub connection at a time; a second is refused.
+- Liveness: the link reports the MBC Live offline exactly as a local Live would; with the MBC
+  PC off the FOH hub shows `mbc` not running (C8). The hub's backoff (250 ms → 2 s) applies.
+- Logs: every connect, refusal and drop, peer address in the PCs' logs only.
+
+FOH hub config: `[[instances]] name = "mbc", link = "ws://<MBC LAN address>:39201"`. `port`
+and `link` are exclusive.
+
+Roles on two hubs: the MBC hub has an `mbc` PIN and an `engineer` PIN (the same engineer PIN as
+FOH, set on both by the install); the FOH hub has both too, so an MBC operator may also log in
+on the FOH hub and still sees only MBC (§6.4).
 
 ### 6.2 The MBC set: markers and loudness (a set change, owner approval)
 
@@ -192,13 +201,13 @@ See `mbc-layout-v1.html`. In fohmixer's look (dark, Barlow, the control column i
 - Copied into Live's built-in `MIDI Remote Scripts` folder (C5), as the working AbletonOSCMBC
   is; `Config.py`: `INSTANCE = "mbc"`, `PORT = 39103`. Selected in a free control-surface
   slot (slot 2) while AbletonOSCMBC keeps slot 1.
-- A Live update may replace that folder: the relay reports `script missing` when it cannot
+- A Live update may replace that folder: the MBC hub reports `script missing` when it cannot
   reach the script for 60 s with Live running, and the install script re-copies it.
 
 ### 6.6 Rollout (the stream never without control)
 
-1. Build and CI on SimLive (relay, roles, alignment section, MBC page). Merge, deploy the hub.
-2. Install the relay and the script on the MBC PC; select slot 2. TouchOSC keeps slot 1 and
+1. Build and CI on SimLive (two hubs and the instance link, roles, alignment section, MBC page). Merge, deploy the hub.
+2. Install the MBC hub and the script on the MBC PC; select slot 2. TouchOSC keeps slot 1 and
    keeps working (fohmixer sends nothing to AbletonOSCMBC).
 3. Owner approves §6.2; markers and the LUFS chain inserted, set saved with a backup.
 4. A service with both: the operator on fohmixer, TouchOSC still there as fallback. The
@@ -209,16 +218,17 @@ See `mbc-layout-v1.html`. In fohmixer's look (dark, Barlow, the control column i
 
 ## 7. What is left to the builder
 
-- Exact ports (39103, 39201 proposed), names of config keys, the relay's install script.
+- Exact ports (39103, 39201 proposed), names of config keys, the MBC hub's install script.
 - The alignment section's visual details within the mockup.
 - How the LUFS frame is fed into `lufs_udp.rs` (a shared parse function, no copy).
-- Tests: relay auth and passthrough (unit + a two-process test), roles on every endpoint
+- Tests: instance-link auth and passthrough, a fader moved on either hub shown on both (unit + a two-hub test), roles on every endpoint
   (a table-driven test over the router), the MBC page and the alignment section in
   Playwright on SimLive (Chromium + WebKit iPad), console clean.
 
 ## 8. Calls made by the main session (check while reading)
 
-- Relay (c) over a LAN-listening script (a) or a second hub (b).
+- A hub on the MBC PC with an instance link to the FOH hub (b), after the owner chose C9 (the
+  earlier thin relay (c) is dropped).
 - The script in Live's built-in folder rather than fixing MBC's User Library path (fixing it
   changes where MBC's presets and packs are looked up).
 - Alignment in the channel detail, not on the main page.
