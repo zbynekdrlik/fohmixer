@@ -10,7 +10,10 @@
 //! refusal is an `error` to the asker alone, with no record. Nothing
 //! reaches Live.
 
+use std::sync::Arc;
+
 use fohmixer_proto::client::{MuteAlarmsStatus, ServerMsg};
+use fohmixer_proto::layout::Layout;
 use fohmixer_proto::mute_alarms as model;
 use fohmixer_proto::sectors::{self as sectors_model, StripRef};
 use serde_json::{Value, json};
@@ -82,6 +85,13 @@ pub(super) fn unwritable_line(why: &str) -> String {
 }
 
 impl Router {
+    /// The served layout (the pool's), when a store serves one.
+    fn alarms_layout(&self) -> Option<Arc<Layout>> {
+        self.layout_store
+            .as_ref()
+            .and_then(|store| store.current().1)
+    }
+
     /// The document as the pages get it.
     fn alarms_message(&self) -> ServerMsg {
         ServerMsg::MuteAlarms {
@@ -111,10 +121,7 @@ impl Router {
 
     /// A page's switch of `strip`'s alarm to `on`.
     pub(super) fn alarms_set(&mut self, client: ClientId, id: String, strip: &StripRef, on: bool) {
-        let served = self
-            .layout_store
-            .as_ref()
-            .and_then(|store| store.current().1);
+        let served = self.alarms_layout();
         let pool = served
             .as_deref()
             .map(sectors_model::pool)
@@ -205,10 +212,7 @@ impl Router {
 
     /// `/api/status` `mute_alarms`.
     pub(super) fn alarms_status(&self) -> MuteAlarmsStatus {
-        let served = self
-            .layout_store
-            .as_ref()
-            .and_then(|store| store.current().1);
+        let served = self.alarms_layout();
         let pool = served
             .as_deref()
             .map(sectors_model::pool)

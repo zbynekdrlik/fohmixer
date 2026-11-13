@@ -51,9 +51,15 @@ function watchConsole(page: Page): string[] {
 type Look = {
   marked: string | null;
   muted: string | null;
+  /** The name button's own background (the dark red while alarming). */
   fill: string;
-  fillAnimation: string;
-  fillDuration: string;
+  /** Its bright layer (`::before`): colour, animation, period. */
+  bright: string;
+  brightAnimation: string;
+  brightDuration: string;
+  /** The strip's frame: the still dark one (`::before`) and the blinking bright one (`::after`). */
+  darkFrameWidth: string;
+  darkFrameColour: string;
   frameWidth: string;
   frameColour: string;
   frameAnimation: string;
@@ -64,13 +70,18 @@ async function lookOf(page: Page, name: string, instance = "band"): Promise<Look
   return strip(page, name, instance).evaluate((el) => {
     const mute = el.querySelector('[data-testid="mute"]') as HTMLElement;
     const button = getComputedStyle(mute);
+    const layer = getComputedStyle(mute, "::before");
+    const dark = getComputedStyle(el, "::before");
     const frame = getComputedStyle(el, "::after");
     return {
       marked: el.getAttribute("data-mute-alarm"),
       muted: mute.getAttribute("data-muted"),
       fill: button.backgroundColor,
-      fillAnimation: button.animationName,
-      fillDuration: button.animationDuration,
+      bright: layer.content === "none" ? "none" : layer.backgroundColor,
+      brightAnimation: layer.animationName,
+      brightDuration: layer.animationDuration,
+      darkFrameWidth: dark.content === "none" ? "none" : dark.borderTopWidth,
+      darkFrameColour: dark.borderTopColor,
       frameWidth: frame.borderTopWidth,
       frameColour: frame.borderTopColor,
       frameAnimation: frame.animationName,
@@ -79,18 +90,20 @@ async function lookOf(page: Page, name: string, instance = "band"): Promise<Look
 }
 
 /**
- * The name button's and the frame's colours at each `ms` of their 1 s
- * cycle (both animations moved to that time), and how far apart the two
- * animations run (ms).
+ * The bright layers' opacity (the button's and the frame's) at each `ms` of
+ * their 1 s cycle (both animations moved to that time), and how far apart
+ * the two animations run (ms).
  */
 async function cycle(page: Page, name: string, at: number[]): Promise<{ fill: string[]; frame: string[]; apart: number }> {
   return strip(page, name).evaluate((el, times) => {
     const mute = el.querySelector('[data-testid="mute"]') as HTMLElement;
     const all = document.getAnimations() as CSSAnimation[];
-    const fill = all.find((a) => a.animationName === "mute-alarm-fill" && (a.effect as KeyframeEffect).target === mute)!;
-    const frame = all.find(
-      (a) => a.animationName === "mute-alarm-frame" && (a.effect as KeyframeEffect).target === el,
-    )!;
+    const on = (a: CSSAnimation, target: Element, pseudo: string) =>
+      a.animationName === "mute-alarm" &&
+      (a.effect as KeyframeEffect).target === target &&
+      (a.effect as KeyframeEffect).pseudoElement === pseudo;
+    const fill = all.find((a) => on(a, mute, "::before"))!;
+    const frame = all.find((a) => on(a, el, "::after"))!;
     const apart = Math.abs(Number(fill.currentTime) - Number(frame.currentTime));
     const fills: string[] = [];
     const frames: string[] = [];
@@ -99,8 +112,8 @@ async function cycle(page: Page, name: string, at: number[]): Promise<{ fill: st
       frame.pause();
       fill.currentTime = t;
       frame.currentTime = t;
-      fills.push(getComputedStyle(mute).backgroundColor);
-      frames.push(getComputedStyle(el, "::after").borderTopColor);
+      fills.push(getComputedStyle(mute, "::before").opacity);
+      frames.push(getComputedStyle(el, "::after").opacity);
     }
     fill.play();
     frame.play();
@@ -189,7 +202,8 @@ test.describe("The mute alarm (#188)", () => {
       // Marked and sounding: like any other strip.
       const sounding = await lookOf(page, "Hand2 #");
       expect(sounding.muted).toBe("false");
-      expect(sounding.fillAnimation).toBe("none");
+      expect(sounding.bright).toBe("none");
+      expect(sounding.darkFrameWidth).toBe("none");
       expect(sounding.frameAnimation).toBe("none");
       expect(sounding.frameWidth).toBe("0px");
 
@@ -237,16 +251,21 @@ test.describe("The mute alarm (#188)", () => {
       await expect(strip(page, "Hand2 #").getByTestId("mute")).toHaveAttribute("data-muted", "true");
       await expect(strip(page, "Hand2 #", "master").getByTestId("mute")).toHaveAttribute("data-muted", "true");
 
+      // The dark red drawn still, the bright red a layer over it whose
+      // opacity blinks once a second (the compositor's work, no repaint).
       const alarm = await lookOf(page, "Hand2 #");
-      expect(alarm.fillAnimation).toBe("mute-alarm-fill");
-      expect(alarm.fillDuration).toBe("1s");
-      expect(alarm.frameAnimation).toBe("mute-alarm-frame");
-      expect(alarm.frameWidth).toBe("2px");
+      expect(alarm.fill).toBe(DARK);
+      expect(alarm.bright).toBe(BRIGHT);
+      expect(alarm.brightAnimation).toBe("mute-alarm");
+      expect(alarm.brightDuration).toBe("1s");
+      expect([alarm.darkFrameWidth, alarm.darkFrameColour]).toEqual(["2px", DARK]);
+      expect([alarm.frameWidth, alarm.frameColour]).toEqual(["2px", BRIGHT]);
+      expect(alarm.frameAnimation).toBe("mute-alarm");
       // Bright, dark, bright again over the second, the frame with the
       // button, both cycles together.
       const seen = await cycle(page, "Hand2 #", [0, 500, 1000]);
-      expect(seen.fill).toEqual([BRIGHT, DARK, BRIGHT]);
-      expect(seen.frame).toEqual([BRIGHT, DARK, BRIGHT]);
+      expect(seen.fill).toEqual(["1", "0", "1"]);
+      expect(seen.frame).toEqual(["1", "0", "1"]);
       expect(seen.apart, "the frame blinks in sync").toBeLessThan(50);
       // The name and MUTED in white.
       await expect(strip(page, "Hand2 #").getByTestId("mute")).toHaveCSS("color", "rgb(255, 255, 255)");
@@ -256,16 +275,32 @@ test.describe("The mute alarm (#188)", () => {
       const calm = await lookOf(page, "Hand2 #", "master");
       expect(calm.marked).toBeNull();
       expect(calm.fill).toBe(CALM_MUTED);
-      expect(calm.fillAnimation).toBe("none");
+      expect(calm.bright).toBe("none");
+      expect(calm.darkFrameWidth).toBe("none");
       expect(calm.frameAnimation).toBe("none");
       expect(calm.frameWidth).toBe("0px");
       await expect(strip(page, "Hand2 #", "master").getByTestId("mute-mark")).toHaveCSS("color", "rgb(168, 71, 79)");
+
+      // The detail's own MUTE keeps its look (detail.css: red while muted),
+      // with no blinking layer.
+      const detail = await openDetail(page, "Hand2 #");
+      const detailMute = detail.getByTestId("mute");
+      const own = await detailMute.evaluate((m) => ({
+        bg: getComputedStyle(m).backgroundColor,
+        layer: getComputedStyle(m, "::before").content,
+        animation: getComputedStyle(m, "::before").animationName,
+      }));
+      expect(own.layer).toBe("none");
+      expect(own.animation).toBe("none");
+      expect(own.bg).not.toBe(DARK);
+      await closeDetail(page);
 
       // Unmuted again: the alarm ends.
       await live.set("band", HAND2, "mute", false);
       await expect(strip(page, "Hand2 #").getByTestId("mute")).toHaveAttribute("data-muted", "false");
       const ended = await lookOf(page, "Hand2 #");
-      expect(ended.fillAnimation).toBe("none");
+      expect(ended.bright).toBe("none");
+      expect(ended.darkFrameWidth).toBe("none");
       expect(ended.frameWidth).toBe("0px");
       expect(await travel(page, "Hand2 #"), "nothing moves").toBeCloseTo(before, 1);
     } finally {
@@ -284,11 +319,13 @@ test.describe("The mute alarm (#188)", () => {
       await expect(strip(page, "Hand2 #").getByTestId("mute")).toHaveAttribute("data-muted", "true");
       await expect(strip(page, "Hand2 #")).toHaveAttribute("data-mute-alarm", "true");
       const look = await lookOf(page, "Hand2 #");
-      expect(look.fillAnimation).toBe("none");
+      expect(look.brightAnimation).toBe("none");
       expect(look.frameAnimation).toBe("none");
-      expect(look.fill).toBe(BRIGHT);
-      expect(look.frameWidth).toBe("2px");
-      expect(look.frameColour).toBe(BRIGHT);
+      // The bright layers stay whole over the dark red.
+      expect(look.bright).toBe(BRIGHT);
+      expect(await strip(page, "Hand2 #").getByTestId("mute").evaluate((m) => getComputedStyle(m, "::before").opacity)).toBe("1");
+      expect([look.frameWidth, look.frameColour]).toEqual(["2px", BRIGHT]);
+      expect(await strip(page, "Hand2 #").evaluate((s) => getComputedStyle(s, "::after").opacity)).toBe("1");
     } finally {
       await live.set("band", HAND2, "mute", false);
       await resetMuteAlarms();
