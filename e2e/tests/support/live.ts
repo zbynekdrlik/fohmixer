@@ -359,6 +359,31 @@ export async function resetColors() {
   await setColors({ colors: {} });
 }
 
+/** The mute alarm's marks as `mute_alarms.json` holds them (#188): instance → labels. */
+export type MuteAlarmsDoc = { mute_alarms: Record<string, string[]> };
+
+/**
+ * Writes `doc` as the hub's `mute_alarms.json` (#188, a hand edit) and
+ * returns once the hub serves as many marks as it holds (`/api/status`
+ * `mute_alarms`, no `error`). A spec that marks strips puts the empty
+ * document back with `resetMuteAlarms`.
+ */
+export async function setMuteAlarms(doc: MuteAlarmsDoc) {
+  const bearer = await token();
+  await harness("/hub/mute_alarms", { doc });
+  const n = Object.values(doc.mute_alarms).reduce((sum, labels) => sum + labels.length, 0);
+  await until(
+    async () => (await hubStatus(bearer)).mute_alarms,
+    (c: any) => c !== undefined && c.strips === n && !c.error,
+    "the hub serving the mute alarm's marks",
+  );
+}
+
+/** The harness's empty `mute_alarms.json` again (#188: no strip marked), served when this returns. */
+export async function resetMuteAlarms() {
+  await setMuteAlarms({ mute_alarms: {} });
+}
+
 /** A control line on a host's stdin (`stall <ms>`, `rename "<a>" "<b>"`): its answer. */
 export async function hostLine(instance: string, line: string): Promise<string | null> {
   return (await harness(`/host/${instance}/line`, { line })).answer;

@@ -41,6 +41,8 @@ what only the harness can do:
     POST /hub/sectors/reset              the empty sectors.json back (sectors off)
     POST /hub/colors {"doc": {...}}      a new colors.json (#164; the hub polls it)
     POST /hub/colors/reset               the empty colors.json back (every strip NONE)
+    POST /hub/mute_alarms {"doc": {...}} a new mute_alarms.json (#188; the hub polls it)
+    POST /hub/mute_alarms/reset          the empty mute_alarms.json back (no strip marked)
     GET  /hub/events                     {"events": [...]}: every record of the
                                          hub's event log (#43, ``logs/events-*.jsonl``
                                          in the data folder), oldest day first
@@ -665,6 +667,9 @@ SECTORS_EMPTY = {"rev": 0, "sectors": {}}
 # The strips' colours the hub starts with (#164): none, every strip NONE.
 COLORS_EMPTY = {"colors": {}}
 
+# The mute alarm's marks the hub starts with (#188): no strip marked.
+MUTE_ALARMS_EMPTY = {"mute_alarms": {}}
+
 
 class Harness:
     """The hosts, the hub and the layout file the control API acts on."""
@@ -721,6 +726,7 @@ class Harness:
         self.reset_layout()
         self.reset_sectors()
         self.reset_colors()
+        self.reset_mute_alarms()
         # The proxy needs no hub to listen; it is up before the hub starts. A
         # process of its own (#43): as a thread of this one it shared the
         # interpreter's lock, and a GET /hub/events held every page's link.
@@ -817,6 +823,17 @@ class Harness:
         """The empty document: every strip NONE, whatever a test chose (#164)."""
         self.write_colors(COLORS_EMPTY)
 
+    def write_mute_alarms(self, doc):
+        """Replaces mute_alarms.json whole (#188), as ``write_colors``."""
+        path = os.path.join(self.data, "mute_alarms.json")
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(doc, f, indent=1)
+        os.replace(path + ".tmp", path)
+
+    def reset_mute_alarms(self):
+        """The empty document: no strip marked, whatever a test switched (#188)."""
+        self.write_mute_alarms(MUTE_ALARMS_EMPTY)
+
     def handle(self, method, path, body):
         """One control request: (status, answer)."""
         parts = [p for p in path.split("/") if p]
@@ -873,6 +890,12 @@ class Harness:
             return 200, {"ok": True}
         if parts == ["hub", "colors", "reset"]:
             self.reset_colors()
+            return 200, {"ok": True}
+        if parts == ["hub", "mute_alarms"]:
+            self.write_mute_alarms(body["doc"])
+            return 200, {"ok": True}
+        if parts == ["hub", "mute_alarms", "reset"]:
+            self.reset_mute_alarms()
             return 200, {"ok": True}
         if parts == ["sim", "eq", "clear"]:
             clear_sim_eq(self.data)
