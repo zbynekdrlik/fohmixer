@@ -226,8 +226,20 @@ fn server_messages_round_trip() {
             online: true,
             busy: false,
             set_name: "Test Site".into(),
+            linked: false,
         },
         json!({"type": "instance", "name": "band", "online": true, "busy": false, "set_name": "Test Site"}),
+    );
+    round_trip_server(
+        ServerMsg::Instance {
+            name: "mbc".into(),
+            online: true,
+            busy: false,
+            set_name: "MBC".into(),
+            linked: true,
+        },
+        json!({"type": "instance", "name": "mbc", "online": true, "busy": false, "set_name": "MBC",
+               "linked": true}),
     );
     round_trip_server(
         ServerMsg::Hub {

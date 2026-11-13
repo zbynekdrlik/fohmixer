@@ -216,6 +216,8 @@ pub struct Snapshot {
 pub struct LiveHandle {
     name: String,
     port: u16,
+    /// Reached through another hub's instance link (#184).
+    linked: bool,
     tx: mpsc::UnboundedSender<Request>,
     snapshot: Arc<Mutex<Snapshot>>,
     requests: Arc<AtomicU64>,
@@ -253,6 +255,7 @@ impl LiveHandle {
         let handle = Self {
             name: cfg.name.clone(),
             port: cfg.port,
+            linked: cfg.link.is_some(),
             tx,
             snapshot: Arc::clone(&snapshot),
             requests: Arc::new(AtomicU64::new(0)),
@@ -267,6 +270,12 @@ impl LiveHandle {
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// Whether another hub holds this Live, reached through its instance
+    /// link (#184).
+    pub fn linked(&self) -> bool {
+        self.linked
     }
 
     /// The current state.
@@ -321,6 +330,7 @@ pub(crate) fn scripted(name: &str) -> (LiveHandle, Script) {
     let handle = LiveHandle {
         name: name.to_string(),
         port: 0,
+        linked: false,
         tx,
         snapshot: Arc::new(Mutex::new(Snapshot::default())),
         requests: Arc::new(AtomicU64::new(0)),

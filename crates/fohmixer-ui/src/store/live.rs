@@ -642,12 +642,14 @@ impl LiveStore {
                 online,
                 busy,
                 set_name,
+                linked,
             } => self.on_instance(
                 name,
                 InstanceView {
                     online,
                     busy,
                     set_name,
+                    linked,
                 },
             ),
             ServerMsg::Hub { key, value } => {

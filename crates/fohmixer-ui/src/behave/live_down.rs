@@ -8,7 +8,9 @@
 //! the column's foot say why, the strips also what to do. Nothing covers
 //! any page.
 
-use crate::store::SlotClass;
+use std::collections::BTreeMap;
+
+use crate::store::{InstanceView, SlotClass};
 
 /// What the page says about one Live instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,9 +143,51 @@ pub const NOT_RUNNING_HINT: &str = "Start Live on the FOH PC. The faders come ba
 /// The hint while a Live answers with no set.
 pub const NO_SET_HINT: &str = "Open the set in Live.";
 
+/// The Lives the column's foot names (#184, spec C8, mockup v3): every
+/// Live this hub holds; another hub's (`linked`, the FOH hub's `mbc`) only
+/// when the hub holds none itself (an MBC login on the FOH hub). A linked
+/// Live that is down says so on its own strips.
+pub fn foot_lives(instances: &BTreeMap<String, InstanceView>) -> Vec<String> {
+    let own: Vec<String> = instances
+        .iter()
+        .filter(|(_, view)| !view.linked)
+        .map(|(name, _)| name.clone())
+        .collect();
+    if own.is_empty() {
+        instances.keys().cloned().collect()
+    } else {
+        own
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn view(linked: bool) -> InstanceView {
+        InstanceView {
+            online: true,
+            busy: false,
+            set_name: String::new(),
+            linked,
+        }
+    }
+
+    #[test]
+    fn the_foot_names_this_hubs_lives_and_a_linked_one_only_alone() {
+        let all: BTreeMap<String, InstanceView> = [
+            ("band".to_string(), view(false)),
+            ("master".to_string(), view(false)),
+            ("mbc".to_string(), view(true)),
+        ]
+        .into();
+        assert_eq!(foot_lives(&all), ["band", "master"]);
+        let alone: BTreeMap<String, InstanceView> = [("mbc".to_string(), view(true))].into();
+        assert_eq!(foot_lives(&alone), ["mbc"]);
+        let local: BTreeMap<String, InstanceView> = [("mbc".to_string(), view(false))].into();
+        assert_eq!(foot_lives(&local), ["mbc"]);
+        assert!(foot_lives(&BTreeMap::new()).is_empty());
+    }
 
     const NONE: Seen = Seen {
         resolved: false,

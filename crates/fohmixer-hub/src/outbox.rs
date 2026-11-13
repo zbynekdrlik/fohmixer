@@ -625,6 +625,7 @@ mod tests {
             online,
             busy: false,
             set_name: String::new(),
+            linked: false,
         }
     }
 

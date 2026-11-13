@@ -1445,6 +1445,7 @@ impl Router {
                 online: state.online,
                 busy: state.busy,
                 set_name: state.set_name,
+                linked: self.live.get(name).is_some_and(LiveHandle::linked),
             },
         );
     }
@@ -2907,6 +2908,7 @@ mod tests {
             online: false,
             busy: true,
             set_name: String::new(),
+            linked: false,
         };
         for outbox in [&a, &b] {
             assert_eq!(outbox.take().unwrap(), vec![state.clone(), link(301.0)]);

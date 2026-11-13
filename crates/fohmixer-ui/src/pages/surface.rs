@@ -33,7 +33,7 @@ use crate::arrange::{
 use crate::behave::ableset::tab_dot;
 use crate::behave::arrange_drag::Arrange;
 use crate::behave::iem::alive_after;
-use crate::behave::live_down::LiveWord;
+use crate::behave::live_down::{LiveWord, foot_lives};
 use crate::behave::presenter::{TAB_TITLE as PRESENTER_TAB, tab_dot as presenter_tab_dot};
 use crate::behave::solo::soloed;
 use crate::binding::sectors::{PICKS_KEY, Picks, Sectored, parse_picks, sectors_on};
@@ -1745,11 +1745,12 @@ fn StatusCluster() -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let badges = move || {
         let words = store.live.try_get().unwrap_or_default();
-        store
-            .instances
-            .try_get()
-            .unwrap_or_default()
+        let instances = store.instances.try_get().unwrap_or_default();
+        // Another hub's Live (#184) is left out while this hub holds its own.
+        let shown = foot_lives(&instances);
+        instances
             .into_iter()
+            .filter(|(name, _)| shown.contains(name))
             .map(|(name, instance)| {
                 let state = Badge::of(&instance).name();
                 let word = words.get(&name).copied();

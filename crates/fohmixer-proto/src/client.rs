@@ -449,6 +449,11 @@ pub enum ServerMsg {
         online: bool,
         busy: bool,
         set_name: String,
+        /// Another hub holds this Live, reached through its instance link
+        /// (#184): the FOH page's foot leaves it out (spec C8, mockup v3);
+        /// absent (false) from an older hub.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        linked: bool,
     },
     /// A hub value (STAGE AUT).
     Hub { key: String, value: Value },

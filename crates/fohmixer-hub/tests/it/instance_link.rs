@@ -108,6 +108,15 @@ fn a_fader_moved_on_either_hub_shows_on_both() {
         assert!(link.peer.is_some());
         let mut on_foh = foh.client().await;
         let mut on_mbc = mbc_hub.client().await;
+        // The FOH hub tells its pages which Live is linked (its foot leaves
+        // it out); the MBC hub's own mbc is local.
+        let linked = |client_msg: &ServerMsg, want: &str| match client_msg {
+            ServerMsg::Instance { name, linked, .. } if name == want => Some(*linked),
+            _ => None,
+        };
+        assert!(on_foh.wait(SECS_5, |m| linked(m, "mbc")).await);
+        assert!(!on_foh.wait(SECS_5, |m| linked(m, "band")).await);
+        assert!(!on_mbc.wait(SECS_5, |m| linked(m, "mbc")).await);
         let foh_key = on_foh.sub_key("mbc", MBC_VOLUME, "value", false).await;
         let mbc_key = on_mbc.sub_key("mbc", MBC_VOLUME, "value", false).await;
         // Moved on the MBC hub: the FOH page sees it.
