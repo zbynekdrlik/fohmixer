@@ -147,16 +147,17 @@ pub fn live_running() -> bool {
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
         TH32CS_SNAPPROCESS,
     };
-    // SAFETY: a snapshot handle we own and close; the entry's size is set
-    // as the API asks.
+    // SAFETY: a snapshot handle we own and close; the entry is a plain C
+    // struct, all zeros a valid value, its size set as the API asks.
     unsafe {
         let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
             return false;
         };
-        let mut entry = PROCESSENTRY32W {
-            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
-            ..Default::default()
-        };
+        // Zeroed, then its size set (a plain C struct): a struct-update base
+        // would give cargo-mutants a field-deletion mutant its excludes do
+        // not reach (.claude/rules/hub-rust.md).
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
         let mut found = false;
         let mut more = Process32FirstW(snap, &mut entry).is_ok();
         while more && !found {
