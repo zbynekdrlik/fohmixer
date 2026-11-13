@@ -10,6 +10,8 @@
          --ableset-key FILE [--ableset-aud AUD]]
         [--fake-iem-port N --iem-url URL --iem-cert FILE --iem-key FILE
          [--iem-ancestors ORIGIN]] [--fake-presenter-port N]
+        [--mbc-hub-port N [--mbc-port 39103] [--mbc-link-port 39196]
+         [--mbc-lufs-port 39111]]
 
 It starts ``sim/host.py`` for ``band`` and ``master`` (the real FohMixer script on
 SimLive), writes the hub's config and layout into the data folder, starts the hub
@@ -153,6 +155,19 @@ browser reaches directly: the hub proxies nothing of it.
 The Pro-Q 4 screen (#71 PR E): the hub's config gets ``[eq] backend = "sim"``,
 the simulated window backend, whose records the tests read through ``/sim/eq``.
 
+The MBC hub (#184): with ``--mbc-hub-port`` (and ``--hub``) a third SimLive
+host ``mbc`` (the MBC set, ``sim/fixtures/mbc-site.json``, its devices sending
+to ``--mbc-lufs-port``) and a second hub on it (``<data>-mbc``: its own
+config with ``[link]`` on ``127.0.0.1:<--mbc-link-port>``, its frame
+``scripts/fohmixer-pc/mbc-frame.json``, the FOH hub's PIN store and pepper
+copied, so the same engineer and MBC PINs log in; no ``sectors.json``, so it
+seeds LU 6 + RU 6). The FOH hub's config gets ``mbc`` as a linked instance,
+and one generated link secret goes to both with ``link set-secret``.
+
+    POST /mbc-hub/stop                   the MBC hub stopped, left stopped
+    POST /mbc-hub/start                  the MBC hub started again (a running
+                                         one is left alone)
+
 Every process is stopped with SIGTERM and a bounded wait (spec I7). Prints
 ``HARNESS READY`` once everything answers; SIGTERM or SIGINT stops it all.
 """
@@ -192,6 +207,11 @@ ACCESS_KID = "e2e-kid"
 CERTS_PATH = "/cdn-cgi/access/certs"
 HOST = os.path.join(REPO, "sim", "host.py")
 SITE = os.path.join(REPO, "sim", "fixtures", "test-site.json")
+# The MBC set (#184) and the MBC hub's frame.
+MBC_SITE = os.path.join(REPO, "sim", "fixtures", "mbc-site.json")
+MBC_FRAME = os.path.join(REPO, "scripts", "fohmixer-pc", "mbc-frame.json")
+# What the MBC hub's data folder takes from the FOH hub's (#184): the PINs.
+PIN_FILES = ("pin_hashes.json", "pepper.test", "pepper.dpapi")
 # The sets a stopped host can start with again (#178): the test site, or a
 # Live with a new, empty set (none of the layout's names resolve).
 SITES = {
@@ -237,6 +257,7 @@ def hub_config(
     lufs_port=None,
     iem=None,
     presenter=None,
+    mbc_link=None,
 ):
     """The hub's ``fohmixer-hub.toml`` for the two hosts (layout polled fast) and
     the Pro-Q 4 screen on the simulated window backend (#71 PR E), with the
@@ -247,7 +268,9 @@ def hub_config(
     ``[tls]`` name (#90), ``[lufs]`` on ``lufs_port`` when given (#151:
     the LUFS devices' UDP port, where both hosts' SimLive devices send), and
     ``[iem]`` of ``iem``, its page's address, when given (#166), and
-    ``[presenter]`` of ``presenter``, its server's address (#90)."""
+    ``[presenter]`` of ``presenter``, its server's address (#90), and the
+    linked instance ``mbc`` at ``mbc_link`` (``ws://host:port``) when given
+    (#184)."""
     text = (
         f"http_port = {http_port}\n"
         'layout = "layout.json"\n'
@@ -258,9 +281,10 @@ def hub_config(
         "[[instances]]\n"
         'name = "master"\n'
         f"port = {master_port}\n"
-        "[eq]\n"
-        'backend = "sim"\n'
     )
+    if mbc_link:
+        text += f'[[instances]]\nname = "mbc"\nlink = "{mbc_link}"\n'
+    text += '[eq]\nbackend = "sim"\n'
     if lufs_port is not None:
         text += f"[lufs]\nport = {lufs_port}\n"
     if companion:
@@ -283,6 +307,53 @@ def hub_config(
     if presenter:
         text += f'[presenter]\nurl = "{presenter}"\n'
     return text
+
+
+def mbc_hub_config(http_port, mbc_port, link_port, lufs_port):
+    """The MBC hub's ``fohmixer-hub.toml`` (#184): its one local instance
+    ``mbc``, the instance link on ``127.0.0.1:<link_port>``, its own LUFS
+    listener, the layout polled fast."""
+    return (
+        f"http_port = {http_port}\n"
+        'layout = "layout.json"\n'
+        "layout_poll_ms = 200\n"
+        "[[instances]]\n"
+        'name = "mbc"\n'
+        f"port = {mbc_port}\n"
+        f"[lufs]\nport = {lufs_port}\n"
+        f'[link]\nlisten = "127.0.0.1:{link_port}"\ninstance = "mbc"\n'
+    )
+
+
+def link_secret_line():
+    """One new link secret (#184): 32 random bytes, a line of base64."""
+    return base64.b64encode(os.urandom(32)).decode() + "\n"
+
+
+def store_link_secret(binary, data, line):
+    """``fohmixer-hub link set-secret`` into the data folder ``data``; the
+    secret only on its stdin (never argv, never printed)."""
+    env = dict(os.environ, FOHMIXER_DATA=data)
+    done = subprocess.run(
+        [binary, "link", "set-secret"],
+        input=line,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    if done.returncode != 0:
+        raise RuntimeError(f"link set-secret: exit {done.returncode}: {done.stderr.strip()}")
+
+
+def copy_pins(src, dst):
+    """The FOH hub's PIN files into the MBC hub's ``secrets`` (#184): the
+    same engineer and MBC PINs on both; the ones that exist only."""
+    os.makedirs(dst, exist_ok=True)
+    for name in PIN_FILES:
+        path = os.path.join(src, name)
+        if os.path.exists(path):
+            shutil.copyfile(path, os.path.join(dst, name))
 
 
 def b64url(data):
@@ -523,7 +594,7 @@ def copy_cert(cert, key, folder):
 class Host:
     """One ``sim/host.py`` process with its stdin and stdout lines."""
 
-    def __init__(self, name, port, meters_hz, log_dir, lufs_port=None):
+    def __init__(self, name, port, meters_hz, log_dir, lufs_port=None, site=SITE):
         self.name = name
         self.port = port
         self.meters_hz = meters_hz
@@ -533,7 +604,7 @@ class Host:
         self.lock = threading.Lock()
         self.proc = None
         self.lines = None
-        self.site = SITE
+        self.site = site
         self.start()
 
     def start(self):
@@ -622,11 +693,11 @@ class Host:
 class Hub:
     """The hub binary on the data folder, its output in a log file."""
 
-    def __init__(self, binary, data, http_port, log_dir):
+    def __init__(self, binary, data, http_port, log_dir, log_name="hub.log"):
         self.binary = binary
         self.data = data
         self.http_port = http_port
-        self.log = os.path.join(log_dir, "hub.log")
+        self.log = os.path.join(log_dir, log_name)
         self.proc = None
         self.start()
 
@@ -686,6 +757,15 @@ class Harness:
         self.hosts["master"] = Host(
             "master", args.master_port, args.meters_hz, log_dir, args.lufs_port
         )
+        # The MBC hub (#184): its host on the MBC set, its data folder and
+        # its link.
+        self.mbc = args.mbc_hub_port is not None and args.hub is not None
+        self.mbc_link_port = args.mbc_link_port
+        self.mbc_hub = None
+        if self.mbc:
+            self.hosts["mbc"] = Host(
+                "mbc", args.mbc_port, args.meters_hz, log_dir, args.mbc_lufs_port, MBC_SITE
+            )
         self.jwks = access_jwks(args.access_key) if args.access_key else None
         remote = {
             "name": args.public_name,
@@ -732,7 +812,30 @@ class Harness:
         # interpreter's lock, and a GET /hub/events held every page's link.
         self.link = impair.Child(args.link_port, args.http_port)
         self.link.start()
+        if self.mbc:
+            self.start_mbc(args, log_dir)
         self.hub = Hub(args.hub, self.data, args.http_port, log_dir) if args.hub else None
+
+    def start_mbc(self, args, log_dir):
+        """The MBC hub's data folder and the hub itself (#184), before the
+        FOH hub so its link is up when the FOH hub dials it."""
+        data = self.data.rstrip(os.sep) + "-mbc"
+        os.makedirs(data, exist_ok=True)
+        copy_pins(os.path.join(self.data, "secrets"), os.path.join(data, "secrets"))
+        line = link_secret_line()
+        store_link_secret(args.hub, self.data, line)
+        store_link_secret(args.hub, data, line)
+        with open(os.path.join(data, "fohmixer-hub.toml"), "w", encoding="utf-8") as f:
+            f.write(
+                mbc_hub_config(
+                    args.mbc_hub_port,
+                    self.hosts["mbc"].port,
+                    args.mbc_link_port,
+                    args.mbc_lufs_port,
+                )
+            )
+        shutil.copyfile(MBC_FRAME, os.path.join(data, "layout.json"))
+        self.mbc_hub = Hub(args.hub, data, args.mbc_hub_port, log_dir, "hub-mbc.log")
 
     def write_config(self):
         """The hub's config, with ``[companion]``, ``[ableset]`` and ``[iem]`` while
@@ -749,6 +852,7 @@ class Harness:
                     self.lufs_port,
                     self.iem if self.iem_on else None,
                     self.presenter_url(),
+                    f"ws://127.0.0.1:{self.mbc_link_port}" if self.mbc else None,
                 )
             )
 
@@ -873,6 +977,14 @@ class Harness:
             if parts[2] == "start":
                 host.resume(body.get("site", "test"))
                 return 200, {"port": host.port}
+        if parts == ["mbc-hub", "stop"] and self.mbc_hub is not None:
+            self.mbc_hub.stop()
+            return 200, {"ok": True}
+        if parts == ["mbc-hub", "start"] and self.mbc_hub is not None:
+            # A running hub is left alone: a page open on it keeps its link.
+            if self.mbc_hub.proc.poll() is not None:
+                self.mbc_hub.start()
+            return 200, {"ok": True}
         if parts == ["hub", "restart"] and self.hub is not None:
             self.hub.restart(bool(body.get("rotate_secret")))
             return 200, {"ok": True}
@@ -970,6 +1082,8 @@ class Harness:
         # The hub before the fakes: its graceful REMOVE-DEVICE then reaches the fake.
         if self.hub is not None:
             parts.append(("the hub", self.hub))
+        if self.mbc_hub is not None:
+            parts.append(("the MBC hub", self.mbc_hub))
         if self.fake is not None:
             parts.append(("the fake Companion", self.fake))
         if self.ableset_fake is not None:
@@ -1063,6 +1177,11 @@ def fixed_ports(args):
         args.fake_ableset_port,
         args.fake_iem_port,
         args.fake_presenter_port,
+        *(
+            [args.mbc_hub_port, args.mbc_port, args.mbc_link_port, args.mbc_lufs_port]
+            if args.mbc_hub_port is not None
+            else []
+        ),
     ]
 
 
@@ -1124,6 +1243,12 @@ def parse_args(argv):
     parser.add_argument("--iem-ancestors", default="*")
     # Presenter's stage (#90): a fake Presenter on this port (0: any) and [presenter].
     parser.add_argument("--fake-presenter-port", type=int, default=None)
+    # The MBC hub (#184): its HTTP port turns it on; its SimLive host, its
+    # instance link and its LUFS listener.
+    parser.add_argument("--mbc-hub-port", type=int, default=None)
+    parser.add_argument("--mbc-port", type=int, default=39103)
+    parser.add_argument("--mbc-link-port", type=int, default=39196)
+    parser.add_argument("--mbc-lufs-port", type=int, default=39111)
     return parser.parse_args(argv)
 
 

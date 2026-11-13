@@ -1031,6 +1031,34 @@ mod tests {
     }
 
     #[test]
+    fn the_mbc_hubs_frame_is_a_frame_the_hub_serves() {
+        // #184: scripts/fohmixer-pc/mbc-frame.json, the MBC hub's frame (the
+        // E2E harness's and the MBC PC's): one page whose MBC group shows
+        // the MBC set's Tuner strips.
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/fohmixer-pc/mbc-frame.json");
+        let frame = check(&std::fs::read(path).unwrap(), &["mbc".to_string()]).unwrap();
+        let composed = compose_with(
+            &frame,
+            &[Found {
+                instance: "mbc".into(),
+                kind: TrackKind::Track,
+                index: 0,
+                name: r#""Hand 1" +G:MBC:1"#.into(),
+                tuners: 1,
+            }],
+            &BTreeSet::new(),
+        );
+        assert!(composed.problems.is_empty());
+        assert_eq!(
+            composed.layout.pages.len(),
+            1,
+            "no view: the frame places MBC"
+        );
+        assert_eq!(fohmixer_proto::sectors::pool(&composed.layout).len(), 1);
+    }
+
+    #[test]
     fn a_store_with_a_linked_live_composes_its_labels_apart() {
         // #184: the FOH hub's linked `mbc` is a label domain of its own,
         // its tag group a pool-only view.
