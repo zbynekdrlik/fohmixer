@@ -66,7 +66,7 @@ test.describe("Presenter's stage tab", () => {
     await openPresenter(page);
     // The column stays, the right half stays live.
     expect(await page.getByTestId("column").boundingBox()).toEqual(column);
-    await rightHalfLive(page, page.locator('.slot[data-side="right"] [data-testid="strip"]'));
+    await rightHalfLive(page, '.slot[data-side="right"] [data-testid="strip"]');
     const pane = (await page.getByTestId("presenter").boundingBox())!;
     expect(pane.x + pane.width).toBeLessThanOrEqual(column.x + 0.5);
     // The header and the caption are the mockup's.
@@ -226,11 +226,23 @@ const miniFrame = (page: Page) => page.frameLocator('[data-testid="mini-frame"]'
 /** The rail's rows (its resolved tracks) and the travel of every fader on the screen (px). */
 async function heights(page: Page): Promise<{ rows: string; travel: number[] }> {
   const rows = await page.locator('[data-testid="rail"] .rail-main').evaluate((m) => getComputedStyle(m).gridTemplateRows);
-  const travel = await page
-    .getByTestId("fader")
-    .evaluateAll((all) => all.filter((f) => f.getBoundingClientRect().height > 0).map((f) => f.getBoundingClientRect().height));
+  // One task inside the page (#198): a fader removed between
+  // `evaluateAll`'s query and its read measures 0 px and drops out.
+  const travel = await page.evaluate(() =>
+    [...document.querySelectorAll('[data-testid="fader"]')]
+      .filter((f) => f.getBoundingClientRect().height > 0)
+      .map((f) => f.getBoundingClientRect().height),
+  );
   return { rows, travel };
 }
+
+/** The travel of the right half's faders (px), read in one task inside the
+ * page (#198): opening a tab re-arranges the page, and a fader removed
+ * between `evaluateAll`'s query and its read measures 0 px. */
+const rightTravel = (page: Page): Promise<number[]> =>
+  page.evaluate(() =>
+    [...document.querySelectorAll('.slot[data-side="right"] [data-testid="fader"]')].map((f) => f.getBoundingClientRect().height),
+  );
 
 test.describe("Presenter's stage miniature in the column", () => {
   test.afterEach(restore);
@@ -286,9 +298,7 @@ test.describe("Presenter's stage miniature in the column", () => {
       // Nothing changed height: the rail's rows and the right half's faders.
       const open = await heights(page);
       expect(open.rows).toBe(withMini.rows);
-      const right = await page
-        .locator('.slot[data-side="right"] [data-testid="fader"]')
-        .evaluateAll((all) => all.map((f) => f.getBoundingClientRect().height));
+      const right = await rightTravel(page);
       expect(right.length).toBeGreaterThan(0);
       for (const h of right) expect(withMini.travel).toContain(h);
       // Back to the mixer page: the miniature again.
@@ -414,9 +424,7 @@ test.describe("Presenter's stage miniature in the column", () => {
         await page.getByTestId("presenter-tab").click();
         await expect(page.getByTestId("page")).toHaveAttribute("data-extra", "presenter");
         await expect(mini(page)).toHaveCount(0);
-        const right = await page
-          .locator('.slot[data-side="right"] [data-testid="fader"]')
-          .evaluateAll((all) => all.map((f) => f.getBoundingClientRect().height));
+        const right = await rightTravel(page);
         expect(right.length).toBeGreaterThan(0);
         for (const h of right) expect(withMini.travel).toContain(h);
         // The recorder: the decision with the viewport, the rail and the picture, then the tab's.

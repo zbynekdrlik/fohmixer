@@ -46,16 +46,24 @@ const HAND2 = track("Hand2 #");
  * Each meter bar as drawn (#151: no per-bar attribute is written each
  * frame): its level, 1 − its cover's `scaleY`, and its peak line's `--pk`.
  */
-async function drawn(bars: import("@playwright/test").Locator): Promise<{ level: number; peak: number }[]> {
-  return bars.evaluateAll((all) =>
-    all.map((b) => {
-      const cover = b.querySelector(".meter-cover") as HTMLElement;
-      const scale = /scaleY\(([-\d.]+)\)/.exec(cover.style.transform);
-      const peak = (b.querySelector(".meter-peak") as HTMLElement).style.getPropertyValue("--pk");
-      return { level: scale ? 1 - Number(scale[1]) : 0, peak: Number(peak || 0) };
-    }),
+async function drawn(page: import("@playwright/test").Page, bars: string): Promise<{ level: number; peak: number }[]> {
+  // `bars` is a CSS selector, queried and read in one task inside the page
+  // (#198): a layout change rebuilds the bars, and a bar removed between
+  // `evaluateAll`'s query and its read keeps its last level, frozen.
+  return page.evaluate(
+    (selector) =>
+      [...document.querySelectorAll(selector)].map((b) => {
+        const cover = b.querySelector(".meter-cover") as HTMLElement;
+        const scale = /scaleY\(([-\d.]+)\)/.exec(cover.style.transform);
+        const peak = (b.querySelector(".meter-peak") as HTMLElement).style.getPropertyValue("--pk");
+        return { level: scale ? 1 - Number(scale[1]) : 0, peak: Number(peak || 0) };
+      }),
+    bars,
   );
 }
+
+/** Hand2 #'s two meter bars, as CSS for `drawn`. */
+const HAND2_BARS = '[data-testid="strip"][data-track="Hand2 #"][data-instance="band"] [data-testid="meter"] [data-testid="meter-bar"]';
 
 /** A strip's calm name button (#151, mockup v8: `#15151f`). */
 const CALM = "rgb(21, 21, 31)";
@@ -163,8 +171,11 @@ test.describe("A strip", () => {
       // Every part of every strip on the page inside its strip (the meter's
       // moving layers are clipped by their bar, the cap's rail is a
       // transparent layer that takes no touch: the bar and the cap count).
-      const outside = await page.locator('[data-testid="strip"]').evaluateAll((all) =>
-        all.flatMap((node) => {
+      // Read in one task inside the page (#198): the layout change re-creates
+      // the strips, and one removed between `evaluateAll`'s query and its
+      // read measures all zeros.
+      const outside = await page.evaluate(() =>
+        [...document.querySelectorAll('[data-testid="strip"]')].flatMap((node) => {
           const s = node.getBoundingClientRect();
           const name = node.getAttribute("data-track");
           return Array.from(node.querySelectorAll("*"))
@@ -186,8 +197,10 @@ test.describe("A strip", () => {
           expect(await clipped(text), `${part} ${await text.textContent()}`).toEqual([]);
         }
       }
-      const scrolls = await page.getByTestId("line").evaluateAll((lines) =>
-        lines.filter((r) => r.scrollHeight > r.clientHeight).map((r) => `${r.scrollHeight} > ${r.clientHeight}`),
+      const scrolls = await page.evaluate(() =>
+        [...document.querySelectorAll('[data-testid="line"]')]
+          .filter((r) => r.scrollHeight > r.clientHeight)
+          .map((r) => `${r.scrollHeight} > ${r.clientHeight}`),
       );
       expect(scrolls, "lines with a vertical scroll range").toEqual([]);
     } finally {
@@ -361,7 +374,10 @@ test.describe("A strip", () => {
       await until(() => live.get("band", HAND2, "mute"), (v) => v === true, "muted");
       await expect(mute).toHaveAttribute("data-muted", "true");
       await expect(mute).toHaveCSS("background-color", "rgb(16, 16, 24)");
-      const looks = await page.getByTestId("mute").evaluateAll((all) => {
+      // One task inside the page (#198): a strip the page re-creates between
+      // `evaluateAll`'s query and its read has an empty computed style.
+      const looks = await page.evaluate(() => {
+        const all = [...document.querySelectorAll('[data-testid="mute"]')];
         const lum = (c: string) => {
           const m = (c.match(/[\d.]+/g) ?? []).map(Number);
           const lin = (v: number) => {
@@ -427,7 +443,10 @@ test.describe("A strip", () => {
     await expect(ticks).toHaveText(["+6", "0", "−6", "−12", "−18", "−24", "−30", "−40", "−60"]);
     // #151 (the owner, 27.10): the labels readable on the iPad, `--muted`,
     // the 0 dB label brighter.
-    const colours = await ticks.evaluateAll((all) => all.map((t) => getComputedStyle(t).color));
+    // The labels' looks and places read in one task inside the page (#198):
+    // a removed label's computed style is empty and its box all zeros.
+    const TICKS = '[data-testid="strip"][data-track="Hand2 #"][data-instance="band"] [data-testid="scale"] .tick';
+    const colours = await page.evaluate((selector) => [...document.querySelectorAll(selector)].map((t) => getComputedStyle(t).color), TICKS);
     expect(colours[1], "the 0 dB label").toBe("rgb(196, 196, 214)");
     for (const [i, c] of colours.entries()) if (i !== 1) expect(c, `label ${i}`).toBe("rgb(154, 154, 180)");
     const fader = s.getByTestId("fader");
@@ -439,7 +458,7 @@ test.describe("A strip", () => {
     expect(Math.abs(track.width - 12), `the track ${track.width} px wide`).toBeLessThan(0.5);
     expect(Math.abs(box.width - 17), `the scale ${box.width} px wide`).toBeLessThan(0.5);
     expect(Math.abs(box.x - (track.x + track.width) - 2), "the scale 2 px right of the track").toBeLessThan(0.5);
-    const left = await ticks.evaluateAll((all) => all.map((t) => t.getBoundingClientRect().left));
+    const left = await page.evaluate((selector) => [...document.querySelectorAll(selector)].map((t) => t.getBoundingClientRect().left), TICKS);
     for (const x of left) expect(Math.abs(x - box.x), "every label at the scale's left").toBeLessThan(0.5);
     const cap = (await s.getByTestId("fader-cap").boundingBox())!;
     const zero = (await ticks.nth(1).boundingBox())!;
@@ -471,7 +490,7 @@ test.describe("A strip", () => {
     await expect(bars).toHaveCount(2);
     try {
       expect(await hostLine("band", 'meter "Hand2 #" 0.6')).toBe("METER 1");
-      const pair = async () => (await drawn(bars)).map((b) => b.level);
+      const pair = async () => (await drawn(page, HAND2_BARS)).map((b) => b.level);
       const both = await until(pair, (v) => v[0] > 0.3 && Math.abs(v[0] - v[1]) < 1e-4, "both bars at the held level");
       expect(both[1]).toBeCloseTo(both[0], 4);
       const fader = s.getByTestId("fader");
@@ -493,7 +512,7 @@ test.describe("A strip", () => {
       // The peak line holds a while after the level falls (each bar's own).
       expect(await hostLine("band", 'meter "Hand2 #" 0.3')).toBe("METER 1");
       await until(pair, (v) => v[0] < 0.5 && v[1] < 0.5, "the bars down");
-      const peaks = (await drawn(bars)).map((b) => b.peak);
+      const peaks = (await drawn(page, HAND2_BARS)).map((b) => b.peak);
       for (const p of peaks) expect(p, "the peak held").toBeGreaterThan(0.9);
       await expect(page.getByTestId("clip")).toHaveCount(0);
       expect(await s.textContent()).not.toMatch(/CLIP|PEAK/);
@@ -557,7 +576,7 @@ test.describe("A strip", () => {
     const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
     await openSurface(page);
     const bars = () => strip(page, "Hand2 #").getByTestId("meter").getByTestId("meter-bar");
-    const pair = async () => (await drawn(bars())).map((b) => b.level);
+    const pair = async () => (await drawn(page, HAND2_BARS)).map((b) => b.level);
     await expect(bars()).toHaveCount(2);
     const lr = JSON.parse(readFileSync(LAYOUT, "utf-8"));
     lr.config.meter_source = "lr";
@@ -588,8 +607,10 @@ test.describe("A strip", () => {
     await openSurface(page);
     await expect(page.getByTestId("strip").first()).toBeVisible();
     await frames(page);
-    const travels = await page.getByTestId("strip").evaluateAll((all) =>
-      all
+    // One task inside the page (#198): a strip re-created between
+    // `evaluateAll`'s query and its read measures 0 px.
+    const travels = await page.evaluate(() =>
+      [...document.querySelectorAll('[data-testid="strip"]')]
         .filter((s) => !s.querySelector('[data-testid="strip-instance"]') && s.querySelector('[data-testid="fader"]'))
         .map((s) => ({ name: s.getAttribute("data-track"), h: s.querySelector('[data-testid="fader"]')!.getBoundingClientRect().height })),
     );
@@ -677,9 +698,11 @@ for (const size of [
       await openSurface(page);
       await expect(page.getByTestId("strip").first()).toBeVisible();
       await frames(page);
-      // A bound, unmarked track strip whole on the screen.
-      const pick = await page.getByTestId("strip").evaluateAll((all) => {
-        for (const s of all) {
+      // A bound, unmarked track strip whole on the screen, picked in one task
+      // inside the page (#198): a removed strip's box is all zeros, so
+      // "whole on the screen".
+      const pick = await page.evaluate(() => {
+        for (const s of document.querySelectorAll('[data-testid="strip"]')) {
           const r = s.getBoundingClientRect();
           const fader = s.querySelector('[data-testid="fader"]');
           const on = r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight;

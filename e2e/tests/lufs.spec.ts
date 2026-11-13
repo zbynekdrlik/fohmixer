@@ -106,16 +106,26 @@ async function quiet(el: Locator, colour: string) {
   await expect(el).toHaveCSS("box-shadow", "none");
 }
 
-/** Each bar's drawn level (1 − its cover's `scaleY`), as `strip.spec.ts` reads it. */
-async function drawnBars(bars: Locator): Promise<{ level: number }[]> {
-  return bars.evaluateAll((all) =>
-    all.map((b) => {
-      const cover = b.querySelector(".meter-cover") as HTMLElement;
-      const scale = /scaleY\(([-\d.]+)\)/.exec(cover.style.transform);
-      return { level: scale ? 1 - Number(scale[1]) : 0 };
-    }),
+/**
+ * Each bar's drawn level (1 − its cover's `scaleY`), as `strip.spec.ts`
+ * reads it. `bars` is a CSS selector, queried and read in one task inside
+ * the page (#198): a bar removed between `evaluateAll`'s query and its read
+ * keeps its last level, frozen, and so reads as steady.
+ */
+async function drawnBars(page: Page, bars: string): Promise<{ level: number }[]> {
+  return page.evaluate(
+    (selector) =>
+      [...document.querySelectorAll(selector)].map((b) => {
+        const cover = b.querySelector(".meter-cover") as HTMLElement;
+        const scale = /scaleY\(([-\d.]+)\)/.exec(cover.style.transform);
+        return { level: scale ? 1 - Number(scale[1]) : 0 };
+      }),
+    bars,
   );
 }
+
+/** The meter bars of the LUFS group's strip `label`, as CSS for `drawnBars`. */
+const barsOf = (label: string) => `.slot[data-group="lufs"] [data-testid="strip"][data-label="${label}"] [data-testid="meter"] [data-testid="meter-bar"]`;
 
 /** The caption's two lines. */
 async function captionOf(s: Locator): Promise<string[]> {
@@ -353,8 +363,10 @@ test.describe("The LUFS reading on a strip", () => {
     expect(await hostLine("band", "lufs track 2 -183 -700")).toBe("LUFS 2"); // the input's device sends too (SimLive counts every device sending)
     await expect(lufsStrip(page, "Vocals").getByTestId("lufs")).toHaveText("−18.3", { timeout: 10_000 });
     await frames(page);
-    const looks = await page.locator('[data-testid="strip"][data-lufs]').evaluateAll((all) =>
-      all
+    // One task inside the page (#198): a strip re-created between
+    // `evaluateAll`'s query and its read has an empty computed style.
+    const looks = await page.evaluate(() =>
+      [...document.querySelectorAll('[data-testid="strip"][data-lufs]')]
         .filter((s) => (s.querySelector('[data-testid="lufs"]')?.textContent ?? "") !== "")
         .map((s) => {
           const n = s.querySelector('[data-testid="lufs"]')!;
@@ -402,8 +414,8 @@ test.describe("The LUFS reading on a strip", () => {
       expect(l.db[1], `${l.label}: the dB's weight`).toBe("600");
     }
     // The travel: the reading costs the fader nothing.
-    const travels = await page.getByTestId("strip").evaluateAll((all) =>
-      all
+    const travels = await page.evaluate(() =>
+      [...document.querySelectorAll('[data-testid="strip"]')]
         .filter((s) => !s.querySelector('[data-testid="strip-instance"]') && s.querySelector('[data-testid="fader"]'))
         .map((s) => ({
           label: s.getAttribute("data-label"),
@@ -488,8 +500,8 @@ test.describe("The LUFS reading on a strip", () => {
     const pan = `${IN_TRACK} mixer_device panning`;
     const savedPan = await live.get("band", pan, "value");
     const vox = lufsStrip(page, "Vox 1");
-    const bars = () => vox.getByTestId("meter").getByTestId("meter-bar");
-    const out = lufsStrip(page, "Vocals").getByTestId("meter").getByTestId("meter-bar");
+    const bars = barsOf("Vox 1");
+    const out = barsOf("Vocals");
     try {
       await live.set("band", `${IN_TRACK} mixer_device volume`, "value", 0.85);
       await live.set("band", pan, "value", 0);
@@ -504,17 +516,17 @@ test.describe("The LUFS reading on a strip", () => {
       );
       // The bars settle on the device's level and stay there.
       const steady = async (): Promise<number[]> => {
-        const a = (await drawnBars(bars())).map((b) => b.level);
+        const a = (await drawnBars(page, bars)).map((b) => b.level);
         await page.waitForTimeout(250);
-        const b = (await drawnBars(bars())).map((b) => b.level);
+        const b = (await drawnBars(page, bars)).map((b) => b.level);
         return a.length === 2 && b.length === 2 && a.every((v, i) => v > 0 && Math.abs(v - b[i]) < 1e-3) ? b : [];
       };
       const before = await until(steady, (v) => v.length === 2, "the armed strip's bars steady on the device", 10_000);
       // A strip without a meter device keeps Live's moving meters.
       const moving = async () => {
-        const a = (await drawnBars(out)).map((b) => b.level);
+        const a = (await drawnBars(page, out)).map((b) => b.level);
         await page.waitForTimeout(250);
-        const b = (await drawnBars(out)).map((b) => b.level);
+        const b = (await drawnBars(page, out)).map((b) => b.level);
         return a.some((v, i) => Math.abs(v - b[i]) > 1e-3);
       };
       await until(moving, (m) => m, "Live's meters on the Vocals strip", 10_000);

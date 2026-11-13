@@ -165,8 +165,10 @@ test.describe("The page is its rows of sections around the control column", () =
     // The column sits between the sides: every left cell before it, every
     // right cell after it, on every line.
     const column = (await page.getByTestId("column").boundingBox())!;
-    const sides = await page.locator('[data-testid="line"] .slot').evaluateAll((slots) =>
-      slots.map((s) => {
+    // Geometry read in one task inside the page (#198): a cell the page
+    // re-creates between `evaluateAll`'s query and its read measures 0 px.
+    const sides = await page.evaluate(() =>
+      [...document.querySelectorAll('[data-testid="line"] .slot')].map((s) => {
         const r = s.getBoundingClientRect();
         return { side: s.getAttribute("data-side"), left: r.left, right: r.right };
       }),
@@ -180,9 +182,10 @@ test.describe("The page is its rows of sections around the control column", () =
     // Each line's right side starts right after the column (the page's 6 px
     // gap), however much of its left half the left side fills.
     for (let r = 0; r < expected.length; r++) {
-      const first = await page
-        .locator(`[data-testid="line"][data-line="${r}"] .slot[data-side="right"]`)
-        .evaluateAll((slots) => Math.min(...slots.map((s) => s.getBoundingClientRect().left)));
+      const first = await page.evaluate(
+        (selector) => Math.min(...[...document.querySelectorAll(selector)].map((s) => s.getBoundingClientRect().left)),
+        `[data-testid="line"][data-line="${r}"] .slot[data-side="right"]`,
+      );
       expect(Math.abs(first - (column.x + column.width + 6)), `row ${r}: its right side at the column`).toBeLessThan(1);
     }
     expect(await groups(page)).toEqual(expected.flat());
@@ -213,9 +216,11 @@ test.describe("The page is its rows of sections around the control column", () =
         if (section.color) {
           // #151 (mockup v8): one colour per strip, its track's own; a strip
           // draws no group-coloured top edge.
-          const edges = await page
-            .locator(`.slot[data-group="${section.id}"] [data-testid="strip"]`)
-            .evaluateAll((els) => els.map((e) => getComputedStyle(e, "::before").borderTopWidth));
+          // One task inside the page (#198): a removed strip's computed style is empty.
+          const edges = await page.evaluate(
+            (selector) => [...document.querySelectorAll(selector)].map((e) => getComputedStyle(e, "::before").borderTopWidth),
+            `.slot[data-group="${section.id}"] [data-testid="strip"]`,
+          );
           for (const edge of edges) expect(edge, `${section.id}'s strip: no top edge`).toBe("0px");
         }
       }
@@ -231,8 +236,10 @@ test.describe("The page is its rows of sections around the control column", () =
 
   test("every row's strips share one width, a wide strip is 1.1 of it, and nothing overflows", async ({ page }) => {
     await openSurface(page);
-    const widths = await page.locator('[data-testid="strip"]:not(.wide)').evaluateAll((els) =>
-      els.map((e) => e.getBoundingClientRect().width),
+    // One task inside the page (#198): a strip re-created between
+    // `evaluateAll`'s query and its read measures 0 px.
+    const widths = await page.evaluate(() =>
+      [...document.querySelectorAll('[data-testid="strip"]:not(.wide)')].map((e) => e.getBoundingClientRect().width),
     );
     expect(widths.length).toBeGreaterThan(3);
     for (const w of widths) expect(Math.abs(w - widths[0])).toBeLessThan(0.6);

@@ -125,7 +125,7 @@ test.describe("The IEM tab (fohmixer's own https page)", () => {
     expect(framed.width).toBeGreaterThan((viewport.width - column.width) / 2 - 30);
     // The left half's cells hide, the right half is live beside the frame.
     await expect(page.locator('.slot[data-side="left"] [data-testid="strip"]').first()).toBeHidden();
-    await rightHalfLive(page, page.locator('.slot[data-side="right"] [data-testid="strip"]'));
+    await rightHalfLive(page, '.slot[data-side="right"] [data-testid="strip"]');
     expect((await fakeIem.state()).loads).toBe(1);
   });
 
@@ -165,7 +165,7 @@ test.describe("The IEM tab (fohmixer's own https page)", () => {
     // once the page has its values again (the wanted set drops what an extra
     // tab covers).
     await expect(page.locator('.slot[data-side="left"] [data-testid="fader"][aria-disabled="false"]').first()).toBeVisible();
-    await rightHalfLive(page, page.locator('.slot[data-side="left"] [data-testid="strip"]'));
+    await rightHalfLive(page, '.slot[data-side="left"] [data-testid="strip"]');
 
     await tab.click();
     await expect(pane).toHaveAttribute("data-shown", "true");

@@ -331,7 +331,7 @@ test.describe("The Stream Deck tab", () => {
     await expect(page.locator('.slot[data-side="left"] [data-testid="strip"]').first()).toBeHidden();
     // The right half is live (#148 review): a cap there hit-tests as itself
     // and a real drag of it reaches the hub and Live.
-    await rightHalfLive(page, page.locator('.slot[data-side="right"] [data-testid="strip"]'));
+    await rightHalfLive(page, '.slot[data-side="right"] [data-testid="strip"]');
     await expect(page.getByTestId("deck-key")).toHaveCount(32);
     await expect(page.getByTestId("deck-tab")).toHaveAttribute("data-offline", "false");
     await expect(page.getByTestId("deck-dot")).toHaveCount(0);
