@@ -100,16 +100,12 @@ impl Router {
         self.autotune_decide(set, Cause::Transport);
     }
 
-    /// `going` of `set` less the writes its running wait holds back (each
-    /// logged at debug; its decision stays, so the wait's end writes it).
+    /// `going` of `set` less the writes its running wait holds back (their
+    /// decision stays, so the wait's end writes them; the `engage` records
+    /// and the end's `write` record trace them, no line per decision).
     pub(super) fn autotune_engage_filter(&self, set: &str, going: Vec<Going>) -> Vec<Going> {
         let waiting = self.autotune.engage.waiting.contains_key(set);
-        let (now, later) = now_and_later(going, waiting);
-        if !later.is_empty() {
-            let labels: Vec<&str> = later.iter().map(|g| g.label.as_str()).collect();
-            tracing::debug!(instance = %set, waiting = ?labels, "AUTOTUNE holds selector-on writes until the play start's wait ends");
-        }
-        now
+        now_and_later(going, waiting).0
     }
 
     /// The `engage` record of `set`'s wait.
