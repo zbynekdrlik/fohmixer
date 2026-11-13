@@ -338,6 +338,27 @@ async fn record_of_within(
     }
 }
 
+#[tokio::test]
+async fn a_request_that_is_no_upgrade_is_neither_a_link_nor_a_refusal() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let script = fake_script().await;
+    let served = serve(script.port, Some(secret(1)));
+    let mut plain = TcpStream::connect(served.addr).await.unwrap();
+    plain
+        .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        .await
+        .unwrap();
+    let mut answer = Vec::new();
+    let _ = tokio::time::timeout(WAIT, plain.read_to_end(&mut answer)).await;
+    let status = served.state.status();
+    assert_eq!((status.links, status.refusals), (0, 0), "{status:?}");
+    assert!(served.records.try_recv().is_err(), "no record");
+    // A real link still opens afterwards.
+    let mut link = open(served.addr, bearer(&secret(1))).await.unwrap();
+    next_text(&mut link).await;
+    served.task.abort();
+}
+
 #[test]
 fn admit_checks_the_token_first_then_one_link() {
     assert_eq!(admit(false, Ok(())), Admission::Accept);

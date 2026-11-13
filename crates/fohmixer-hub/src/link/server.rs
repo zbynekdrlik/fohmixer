@@ -235,7 +235,8 @@ impl Server {
 
     async fn serve(self, stream: TcpStream, peer: SocketAddr) {
         let now = crate::auth::now_secs();
-        let mut admission = Admission::Busy;
+        // None: the request never reached the check (no WebSocket upgrade).
+        let mut admission: Option<Admission> = None;
         // The callback's error type is tungstenite's own `ErrorResponse`.
         #[allow(clippy::result_large_err)]
         let callback = |request: &Request, response: Response| {
@@ -254,8 +255,9 @@ impl Server {
                     .open
                     .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                     .is_err();
-            admission = admit(open, check);
-            match admission {
+            let decided = admit(open, check);
+            admission = Some(decided);
+            match decided {
                 Admission::Accept => Ok(response),
                 Admission::Refuse(why) => Err(refusal(StatusCode::UNAUTHORIZED, why.text())),
                 Admission::Busy => Err(refusal(StatusCode::CONFLICT, "busy")),
@@ -263,14 +265,20 @@ impl Server {
         };
         let upgraded = tokio_tungstenite::accept_hdr_async(stream, callback).await;
         let link = match (admission, upgraded) {
-            (Admission::Accept, Ok(link)) => link,
-            (Admission::Accept, Err(e)) => {
+            (Some(Admission::Accept), Ok(link)) => link,
+            (Some(Admission::Accept), Err(e)) => {
                 self.state.open.store(false, Ordering::SeqCst);
                 tracing::warn!(peer = %peer, error = %e, "instance link: the upgrade failed");
                 return;
             }
-            (Admission::Refuse(why), _) => return self.refused(&peer, why.text()),
-            (Admission::Busy, _) => return self.refused(&peer, "busy"),
+            (Some(Admission::Refuse(why)), _) => return self.refused(&peer, why.text()),
+            (Some(Admission::Busy), _) => return self.refused(&peer, "busy"),
+            // Not a WebSocket upgrade (a port scan, a browser): nothing to
+            // refuse, nothing counted.
+            (None, Ok(_)) | (None, Err(_)) => {
+                tracing::debug!(peer = %peer, "instance link: not a WebSocket upgrade");
+                return;
+            }
         };
         let _guard = OpenGuard(Arc::clone(&self.state));
         self.state.with(|s| {
