@@ -1,8 +1,14 @@
 //! `script missing` (#184 PR D, spec §6.5): a Live update may replace the
 //! folder the FohMixer script was copied into, and Live then runs without
-//! it. While Live runs on this PC and a LOCAL instance (one with a port,
-//! never a linked one) has been offline for [`SCRIPT_MISSING_AFTER`], the
-//! hub says its script is missing: the router tells the pages
+//! it. On a hub with exactly one LOCAL instance (one with a port, never a
+//! linked one: the MBC hub; [`watched`]), once that instance has been
+//! offline for [`SCRIPT_MISSING_AFTER`] WHILE Live runs on this PC (Live's
+//! own start, which takes about a minute before its script answers, counts
+//! from Live's process, never from the outage before it), the hub says its
+//! script is missing. A hub with two local Lives (the FOH PC's band and
+//! master, two users) is not watched: one process probe cannot tell whose
+//! Live runs, and a closed master Live would read `no script`.
+//! The hub says it so: the router tells the pages
 //! (`ServerMsg::Instance.script_missing`), `/api/status` shows it and the
 //! event log gets one `script` record per change. The install copies the
 //! script again.
@@ -36,6 +42,12 @@ pub fn script_missing(live_running: bool, offline_for: Option<Duration>) -> bool
     live_running && offline_for.is_some_and(|d| d >= SCRIPT_MISSING_AFTER)
 }
 
+/// Whether a hub with `local` local instances is watched: exactly one, so a
+/// running Live is that instance's.
+pub fn watched(local: usize) -> bool {
+    local == 1
+}
+
 /// Whether a process's executable name is an Ableton Live (the band's or
 /// the master's renamed copy, `Ableton Live 12 Suite.exe`; Live's indexer,
 /// `Ableton Index.exe`, is not a Live). Case-insensitive, as the install's
@@ -45,8 +57,8 @@ pub fn is_live_exe(exe: &str) -> bool {
     lower.starts_with("ableton live") || lower.starts_with("abletonlive")
 }
 
-/// The watch's state: since when each instance is offline, and what it
-/// said last.
+/// The watch's state: since when each instance is offline while Live runs,
+/// and what it said last.
 #[derive(Debug, Default)]
 pub struct Watch {
     offline_since: BTreeMap<String, Instant>,
@@ -55,7 +67,8 @@ pub struct Watch {
 
 impl Watch {
     /// One look at `instance` at `now`: online or offline, and whether Live
-    /// runs. Returns the new verdict when it changed.
+    /// runs. The time counts only while both hold: online or Live not
+    /// running starts it over. Returns the new verdict when it changed.
     pub fn look(
         &mut self,
         instance: &str,
@@ -63,7 +76,7 @@ impl Watch {
         live_running: bool,
         now: Instant,
     ) -> Option<bool> {
-        let offline_for = if online {
+        let offline_for = if online || !live_running {
             self.offline_since.remove(instance);
             None
         } else {
@@ -91,9 +104,10 @@ pub fn change_msg(instance: &str, missing: bool) -> RouterMsg {
     }
 }
 
-/// The watch task: every `period` each LOCAL instance of `live` is looked
-/// at with `probe` (asked once per look); each change goes to the router.
-/// Ends when a change finds the router gone (the hub's stop aborts it).
+/// The watch task: every `period` the one LOCAL instance of `live` is
+/// looked at with `probe`; each change goes to the router. Ends at once
+/// unless [`watched`], and when a change finds the router gone (the hub's
+/// stop aborts it).
 pub async fn watch<P>(
     live: Vec<LiveHandle>,
     router: mpsc::UnboundedSender<RouterMsg>,
@@ -103,6 +117,9 @@ pub async fn watch<P>(
     P: Fn() -> bool + Send + 'static,
 {
     let local: Vec<LiveHandle> = live.into_iter().filter(|h| !h.linked()).collect();
+    if !watched(local.len()) {
+        return;
+    }
     let mut state = Watch::default();
     let mut tick = tokio::time::interval(period);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

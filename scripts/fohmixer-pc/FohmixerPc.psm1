@@ -672,6 +672,36 @@ function Test-FohUserName {
     }
 }
 
+function Test-FohFohInstallArgs {
+    # The FOH PC's install parameters checked before any change (two local
+    # accounts, distinct ports, both User Libraries there and the ones each
+    # Live uses, #9). Returns the User Libraries resolved.
+    param([string]$BandUser, [string]$MasterUser, [int]$HttpPort, [int]$BandPort, [int]$MasterPort,
+          [string]$BandUserLibrary, [string]$MasterUserLibrary, [string]$BandAbletonPrefs, [string]$MasterAbletonPrefs)
+    Test-FohUserName $BandUser
+    Test-FohUserName $MasterUser
+    if ($BandUser -eq $MasterUser) { throw 'the band and master users must be two accounts' }
+    foreach ($p in @($HttpPort, $BandPort, $MasterPort)) { if ($p -lt 1 -or $p -gt 65535) { throw "port $p refused" } }
+    if (@($HttpPort, $BandPort, $MasterPort | Select-Object -Unique).Count -ne 3) {
+        throw "the ports must differ: http $HttpPort, band $BandPort, master $MasterPort"
+    }
+    if (-not $BandUserLibrary) { $BandUserLibrary = Join-Path $env:SystemDrive "Users\$BandUser\Documents\Ableton\User Library" }
+    if (-not $MasterUserLibrary) { $MasterUserLibrary = Join-Path $env:SystemDrive "Users\$MasterUser\Documents\Ableton\User Library" }
+    $BandUserLibrary = Resolve-FohPath $BandUserLibrary
+    $MasterUserLibrary = Resolve-FohPath $MasterUserLibrary
+    if ($BandUserLibrary -eq $MasterUserLibrary) { throw "both users would share one User Library: $BandUserLibrary" }
+    foreach ($lib in @($BandUserLibrary, $MasterUserLibrary)) {
+        if (-not (Test-Path -LiteralPath $lib -PathType Container)) {
+            throw "Live's User Library not found: $lib (Live creates it at its first start; pass its folder with -BandUserLibrary or -MasterUserLibrary when Live keeps it elsewhere)"
+        }
+    }
+    if (-not $BandAbletonPrefs) { $BandAbletonPrefs = Join-Path $env:SystemDrive "Users\$BandUser\AppData\Roaming\Ableton" }
+    if (-not $MasterAbletonPrefs) { $MasterAbletonPrefs = Join-Path $env:SystemDrive "Users\$MasterUser\AppData\Roaming\Ableton" }
+    Test-FohLiveUserLibrary -User $BandUser -Prefs (Resolve-FohPath $BandAbletonPrefs) -UserLibrary $BandUserLibrary -Switch 'Band'
+    Test-FohLiveUserLibrary -User $MasterUser -Prefs (Resolve-FohPath $MasterAbletonPrefs) -UserLibrary $MasterUserLibrary -Switch 'Master'
+    return [pscustomobject]@{ bandLibrary = $BandUserLibrary; masterLibrary = $MasterUserLibrary }
+}
+
 function Invoke-FohInstall {
     # Design note section 3, in order. Every parameter is checked before
     # anything changes, and the bundle (against its SHA256SUMS, unpacked under
@@ -722,40 +752,19 @@ function Invoke-FohInstall {
     if (-not (Test-Path -LiteralPath $BundleZip -PathType Leaf)) { throw "bundle not found: $BundleZip" }
     $mbc = $Site -eq 'Mbc'
     if ($mbc) {
-        Test-FohUserName $MbcUser
         $hubUser = $MbcUser
         $accounts = @($MbcUser)
-        foreach ($p in @($HttpPort, $MbcPort)) { if ($p -lt 1 -or $p -gt 65535) { throw "port $p refused" } }
-        if ($HttpPort -eq $MbcPort) { throw "the ports must differ: http $HttpPort, mbc $MbcPort" }
-        $ScriptFolder = Resolve-FohPath $ScriptFolder
-        Test-FohScriptFolder -Path $ScriptFolder
-        # Its form is checked here; the hub checks the address itself below.
-        $null = New-FohMbcHubToml -HttpPort $HttpPort -MbcPort $MbcPort -LinkListen $LinkListen
-        $linkPort = [int]($LinkListen.Substring($LinkListen.LastIndexOf(':') + 1))
+        $checked = Test-FohMbcInstallArgs -MbcUser $MbcUser -HttpPort $HttpPort -MbcPort $MbcPort -LinkListen $LinkListen -ScriptFolder $ScriptFolder
+        $ScriptFolder = $checked.scriptFolder
+        $linkPort = $checked.linkPort
     } else {
-        Test-FohUserName $BandUser
-        Test-FohUserName $MasterUser
-        if ($BandUser -eq $MasterUser) { throw 'the band and master users must be two accounts' }
         $hubUser = $BandUser
         $accounts = @($BandUser, $MasterUser)
-        foreach ($p in @($HttpPort, $BandPort, $MasterPort)) { if ($p -lt 1 -or $p -gt 65535) { throw "port $p refused" } }
-        if (@($HttpPort, $BandPort, $MasterPort | Select-Object -Unique).Count -ne 3) {
-            throw "the ports must differ: http $HttpPort, band $BandPort, master $MasterPort"
-        }
-        if (-not $BandUserLibrary) { $BandUserLibrary = Join-Path $env:SystemDrive "Users\$BandUser\Documents\Ableton\User Library" }
-        if (-not $MasterUserLibrary) { $MasterUserLibrary = Join-Path $env:SystemDrive "Users\$MasterUser\Documents\Ableton\User Library" }
-        $BandUserLibrary = Resolve-FohPath $BandUserLibrary
-        $MasterUserLibrary = Resolve-FohPath $MasterUserLibrary
-        if ($BandUserLibrary -eq $MasterUserLibrary) { throw "both users would share one User Library: $BandUserLibrary" }
-        foreach ($lib in @($BandUserLibrary, $MasterUserLibrary)) {
-            if (-not (Test-Path -LiteralPath $lib -PathType Container)) {
-                throw "Live's User Library not found: $lib (Live creates it at its first start; pass its folder with -BandUserLibrary or -MasterUserLibrary when Live keeps it elsewhere)"
-            }
-        }
-        if (-not $BandAbletonPrefs) { $BandAbletonPrefs = Join-Path $env:SystemDrive "Users\$BandUser\AppData\Roaming\Ableton" }
-        if (-not $MasterAbletonPrefs) { $MasterAbletonPrefs = Join-Path $env:SystemDrive "Users\$MasterUser\AppData\Roaming\Ableton" }
-        Test-FohLiveUserLibrary -User $BandUser -Prefs (Resolve-FohPath $BandAbletonPrefs) -UserLibrary $BandUserLibrary -Switch 'Band'
-        Test-FohLiveUserLibrary -User $MasterUser -Prefs (Resolve-FohPath $MasterAbletonPrefs) -UserLibrary $MasterUserLibrary -Switch 'Master'
+        $checked = Test-FohFohInstallArgs -BandUser $BandUser -MasterUser $MasterUser -HttpPort $HttpPort -BandPort $BandPort `
+            -MasterPort $MasterPort -BandUserLibrary $BandUserLibrary -MasterUserLibrary $MasterUserLibrary `
+            -BandAbletonPrefs $BandAbletonPrefs -MasterAbletonPrefs $MasterAbletonPrefs
+        $BandUserLibrary = $checked.bandLibrary
+        $MasterUserLibrary = $checked.masterLibrary
     }
 
     if ($Layout) {

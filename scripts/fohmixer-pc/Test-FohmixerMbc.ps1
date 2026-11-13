@@ -96,7 +96,9 @@ foreach ($r in @(
         @{ over = @{ BandUser = 'band-user' }; says = '*FOH PC*'; what = 'a-band-user' },
         @{ over = @{ MbcLink = $link }; says = '*FOH PC*'; what = 'a-link-to-itself' },
         @{ over = @{ CompanionHost = 'companion.example.org' }; says = '*FOH PC*'; what = 'a-companion' },
-        @{ over = @{ MbcPort = 18491 }; says = '*the ports must differ*'; what = 'the-script-on-the-http-port' })) {
+        @{ over = @{ MbcPort = 18491 }; says = '*the ports must differ*'; what = 'the-script-on-the-http-port' },
+        @{ over = @{ LinkListen = '10.0.0.5:18491' }; says = '*the ports must differ*'; what = 'the-link-on-the-http-port' },
+        @{ over = @{ LinkListen = '10.0.0.5:39183' }; says = '*the ports must differ*'; what = 'the-link-on-the-script-port' })) {
     $o = $r.over.Clone()
     $o['DataDir'] = $noneM
     $res = Invoke-Ps $install (Get-MbcArgs $o)

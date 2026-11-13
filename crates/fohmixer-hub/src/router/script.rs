@@ -14,6 +14,12 @@ pub(super) fn script_fields(instance: &str, missing: bool) -> Value {
     json!({"instance": instance, "missing": missing})
 }
 
+/// Whether an instance is told and shown `script_missing`: only while it
+/// is offline (the watch's verdict trails a connect by up to one look).
+pub fn shown(online: bool, missing: bool) -> bool {
+    !online && missing
+}
+
 impl Router {
     /// The watch says `instance`'s script is (no longer) missing: kept,
     /// recorded and told only when it changes the kept verdict, and only
@@ -96,6 +102,14 @@ mod tests {
         assert!(router.handle(verdict("band", false)));
         assert_eq!(page.take().unwrap_or_default(), Vec::<ServerMsg>::new());
         assert!(records(&events).is_empty());
+    }
+
+    #[test]
+    fn script_missing_is_shown_only_while_offline() {
+        assert!(super::shown(false, true));
+        assert!(!super::shown(true, true));
+        assert!(!super::shown(false, false));
+        assert!(!super::shown(true, false));
     }
 
     #[tokio::test]

@@ -112,6 +112,26 @@ function Install-FohMbcScript {
             -Port $Port -LogDir (Join-Path $DataDir 'logs') -BackupDir (Join-Path $DataDir $script:ScriptBackups))
 }
 
+function Test-FohMbcInstallArgs {
+    # The MBC PC's install parameters checked before any change (#184): a
+    # local account, the HTTP, script and link ports all different (the
+    # hub's config check does not compare the link's with the others, and a
+    # taken link port is only retried), Live's own script folder, the link
+    # address's form (the hub checks the address itself). Returns the script
+    # folder resolved and the link's port.
+    param([string]$MbcUser, [int]$HttpPort, [int]$MbcPort, [string]$LinkListen, [string]$ScriptFolder)
+    Test-FohUserName $MbcUser
+    $null = New-FohMbcHubToml -HttpPort $HttpPort -MbcPort $MbcPort -LinkListen $LinkListen
+    $linkPort = [int]($LinkListen.Substring($LinkListen.LastIndexOf(':') + 1))
+    foreach ($p in @($HttpPort, $MbcPort, $linkPort)) { if ($p -lt 1 -or $p -gt 65535) { throw "port $p refused" } }
+    if (@($HttpPort, $MbcPort, $linkPort | Select-Object -Unique).Count -ne 3) {
+        throw "the ports must differ: http $HttpPort, mbc $MbcPort, link $linkPort"
+    }
+    $ScriptFolder = Resolve-FohPath $ScriptFolder
+    Test-FohScriptFolder -Path $ScriptFolder
+    return [pscustomobject]@{ scriptFolder = $ScriptFolder; linkPort = $linkPort }
+}
+
 function Test-FohSiteArgs {
     # The parameters of the other site refused before any change (#184):
     # $Given are the bound parameters' names, $Others the other site's.

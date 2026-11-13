@@ -92,6 +92,7 @@ mod retries;
 #[path = "router/reverb.rs"]
 mod reverb;
 mod script;
+pub use script::shown as script_shown;
 #[path = "router/sectors.rs"]
 mod sectors;
 
@@ -1463,7 +1464,7 @@ impl Router {
                 busy: state.busy,
                 set_name: state.set_name,
                 linked: self.live.get(name).is_some_and(LiveHandle::linked),
-                script_missing: self.script_missing.contains(name),
+                script_missing: script::shown(state.online, self.script_missing.contains(name)),
             },
         );
     }

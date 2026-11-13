@@ -33,13 +33,13 @@ fn a_live_is_any_ableton_live_exe_and_never_its_indexer() {
 }
 
 #[test]
-fn the_watch_counts_from_the_first_offline_look_and_says_each_change_once() {
+fn the_watch_counts_only_while_offline_with_live_running_and_says_each_change_once() {
     let start = Instant::now();
     let at = |s: u64| start + Duration::from_secs(s);
     let mut watch = Watch::default();
     // Online: nothing.
     assert_eq!(watch.look("mbc", true, true, at(0)), None);
-    // Offline from 5 s: still nothing at 64 s, missing at 65 s.
+    // Offline from 5 s with Live running: still nothing at 64 s, missing at 65 s.
     assert_eq!(watch.look("mbc", false, true, at(5)), None);
     assert_eq!(watch.look("mbc", false, true, at(64)), None);
     assert_eq!(watch.look("mbc", false, true, at(65)), Some(true));
@@ -47,15 +47,25 @@ fn the_watch_counts_from_the_first_offline_look_and_says_each_change_once() {
     assert_eq!(watch.look("mbc", false, true, at(70)), None);
     // Live closed: no longer missing (a closed Live is `not running`).
     assert_eq!(watch.look("mbc", false, false, at(75)), Some(false));
-    assert_eq!(watch.look("mbc", false, false, at(80)), None);
-    // Live started again while the instance stays offline: the offline
-    // time still counts from 5 s.
-    assert_eq!(watch.look("mbc", false, true, at(85)), Some(true));
+    assert_eq!(watch.look("mbc", false, false, at(200)), None);
+    // Live started again after a long outage: its own start counts from
+    // its first look (Live answers about a minute after it starts), never
+    // from the outage before it.
+    assert_eq!(watch.look("mbc", false, true, at(205)), None);
+    assert_eq!(watch.look("mbc", false, true, at(264)), None);
+    assert_eq!(watch.look("mbc", false, true, at(265)), Some(true));
     // Online: back, and the count starts over at the next offline look.
-    assert_eq!(watch.look("mbc", true, true, at(90)), Some(false));
-    assert_eq!(watch.look("mbc", false, true, at(95)), None);
-    assert_eq!(watch.look("mbc", false, true, at(154)), None);
-    assert_eq!(watch.look("mbc", false, true, at(155)), Some(true));
+    assert_eq!(watch.look("mbc", true, true, at(270)), Some(false));
+    assert_eq!(watch.look("mbc", false, true, at(275)), None);
+    assert_eq!(watch.look("mbc", false, true, at(334)), None);
+    assert_eq!(watch.look("mbc", false, true, at(335)), Some(true));
+}
+
+#[test]
+fn only_a_hub_with_one_local_live_is_watched() {
+    assert!(!watched(0));
+    assert!(watched(1));
+    assert!(!watched(2));
 }
 
 #[test]
@@ -136,12 +146,25 @@ async fn the_task_tells_the_router_of_a_local_instance_only_and_each_change() {
         }
         _ => panic!("no verdict"),
     }
-    // The router gone: the next change ends the task.
+    // The router gone: the next change (60 s after Live runs again) ends
+    // the task.
     drop(rx);
     running.store(true, Ordering::SeqCst);
-    tokio::time::sleep(CHECK_EVERY).await;
+    tokio::time::sleep(SCRIPT_MISSING_AFTER + CHECK_EVERY).await;
     tokio::time::timeout(SECOND, task)
         .await
         .expect("the task ends")
         .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_hub_with_two_local_lives_is_not_watched() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let live = vec![offline("band", None), offline("master", None)];
+    let task = tokio::spawn(watch(live, tx, || true, CHECK_EVERY));
+    tokio::time::timeout(SECOND, task)
+        .await
+        .expect("the task ends at once")
+        .unwrap();
+    assert!(rx.try_recv().is_err());
 }
