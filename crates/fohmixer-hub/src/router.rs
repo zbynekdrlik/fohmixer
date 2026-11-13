@@ -54,6 +54,7 @@ use fohmixer_proto::client::{
     SongMapReport, SongMapStatus, StageAutStatus, Unresolved, ValueItem,
 };
 use fohmixer_proto::layout::{AutotuneTarget, Binding, CtrlId, Layout, LinkId, RuleFader};
+use fohmixer_proto::roles::Role;
 use fohmixer_proto::sectors::{Sectors, StripRef};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
@@ -125,14 +126,16 @@ pub enum RouterMsg {
         instance: String,
         event: LiveEvent,
     },
-    /// A client connected: its outbox, its peer's address and whether its
+    /// A client connected: its outbox, its peer's address, whether its
     /// socket came over the LAN (the Access check's class,
-    /// `ws::Opener::is_lan`; AbleSet's page tells it so, #90).
+    /// `ws::Opener::is_lan`; AbleSet's page tells it so, #90) and its
+    /// login's role (#184: the documents' edits are checked by it).
     Attach {
         client: ClientId,
         outbox: Arc<Outbox>,
         peer: String,
         lan: bool,
+        role: Role,
     },
     Sub {
         client: ClientId,
@@ -653,6 +656,8 @@ pub struct Router {
     /// Whether each client's socket came over the LAN (#90: AbleSet's page
     /// message names it).
     lan: HashMap<ClientId, bool>,
+    /// Each client's login role (#184).
+    roles: HashMap<ClientId, Role>,
     live: BTreeMap<String, LiveHandle>,
     states: BTreeMap<String, InstanceState>,
     setters: BTreeMap<String, Setter>,
@@ -778,6 +783,7 @@ impl Router {
             // The REVERB rule's writes name it in the event log (#130).
             peers: HashMap::from([(reverb::REVERB_CLIENT, reverb::REVERB_PEER.to_string())]),
             lan: HashMap::new(),
+            roles: HashMap::new(),
             states: live
                 .keys()
                 .map(|k| (k.clone(), InstanceState::default()))
@@ -849,6 +855,12 @@ impl Router {
         tracing::info!("router stopped");
     }
 
+    /// A client's role; a client the router does not know is given the
+    /// least (#184).
+    pub(super) fn role_of(&self, client: ClientId) -> Role {
+        self.roles.get(&client).copied().unwrap_or(Role::Mbc)
+    }
+
     fn handle(&mut self, msg: RouterMsg) -> bool {
         match msg {
             RouterMsg::Live { instance, event } => self.live_event(&instance, event),
@@ -857,6 +869,7 @@ impl Router {
                 outbox,
                 peer,
                 lan,
+                role,
             } => {
                 for name in self.states.keys() {
                     self.send_instance(&outbox, name);
@@ -881,6 +894,7 @@ impl Router {
                 self.clients.insert(client, outbox);
                 self.peers.insert(client, peer);
                 self.lan.insert(client, lan);
+                self.roles.insert(client, role);
             }
             RouterMsg::Sub {
                 client,
@@ -1017,6 +1031,7 @@ impl Router {
                 self.clients.remove(&client);
                 self.peers.remove(&client);
                 self.lan.remove(&client);
+                self.roles.remove(&client);
                 for setter in self.setters.values_mut() {
                     setter.drop_client(client);
                 }
@@ -2072,12 +2087,17 @@ mod tests {
     }
 
     pub(super) fn attach(router: &mut Router, client: ClientId) -> Arc<Outbox> {
+        attach_as(router, client, Role::Engineer)
+    }
+
+    pub(super) fn attach_as(router: &mut Router, client: ClientId, role: Role) -> Arc<Outbox> {
         let outbox = Arc::new(Outbox::new());
         router.handle(RouterMsg::Attach {
             client,
             outbox: Arc::clone(&outbox),
             peer: format!("10.0.0.{client}"),
             lan: true,
+            role,
         });
         outbox
     }

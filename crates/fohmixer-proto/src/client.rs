@@ -420,6 +420,10 @@ pub enum ServerMsg {
         /// reloads. None from a hub before it; a page before it ignores it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         policy: Option<String>,
+        /// The role of the socket's login (#184): the page shows `logged
+        /// in: MBC`. None from a hub before it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<crate::roles::Role>,
     },
     /// The script's result slots for a `cmd`, in command order.
     Result { id: String, data: Vec<Value> },
@@ -1301,11 +1305,14 @@ pub struct AuthRequest {
     pub pin: String,
 }
 
-/// `POST /api/auth` answer: the engineer's token and its lifetime (s).
+/// `POST /api/auth` answer: the token, its lifetime (s) and, since #184,
+/// the role its PIN matched (none from an older hub: the engineer).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthResponse {
     pub token: String,
     pub expires_in: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<crate::roles::Role>,
 }
 
 /// The body of an API error.

@@ -6,8 +6,12 @@ use std::io::Write;
 use std::process::{Command, Output, Stdio};
 
 fn run_pin(dir: &std::path::Path, stdin: &str) -> Output {
+    run_pin_as(dir, "set-engineer", stdin)
+}
+
+fn run_pin_as(dir: &std::path::Path, command: &str, stdin: &str) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_fohmixer-hub"))
-        .args(["pin", "set-engineer"])
+        .args(["pin", command])
         .env("FOHMIXER_DATA", dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -25,9 +29,13 @@ fn run_pin(dir: &std::path::Path, stdin: &str) -> Output {
 }
 
 fn stored(dir: &std::path::Path) -> Option<String> {
+    stored_as(dir, "engineer")
+}
+
+fn stored_as(dir: &std::path::Path, role: &str) -> Option<String> {
     let text = std::fs::read_to_string(dir.join("secrets").join("pin_hashes.json")).ok()?;
     let json: serde_json::Value = serde_json::from_str(&text).unwrap();
-    json["engineer"].as_str().map(str::to_string)
+    json[role].as_str().map(str::to_string)
 }
 
 #[test]
@@ -80,4 +88,33 @@ fn a_lost_pepper_next_to_a_hash_is_an_error_with_exit_1() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+#[test]
+fn pin_set_mbc_stores_a_hash_and_exits_0() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(run_pin(dir.path(), "2468\n").status.success());
+    let out = run_pin_as(dir.path(), "set-mbc", "1357\n");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert!(stderr.contains("stored the MBC PIN hash"), "{stderr}");
+    let hash = stored_as(dir.path(), "mbc").expect("an MBC hash");
+    assert!(hash.starts_with("$argon2id$"), "{hash}");
+    assert_ne!(Some(hash), stored(dir.path()));
+    let text = std::fs::read_to_string(dir.path().join("secrets").join("pin_hashes.json")).unwrap();
+    assert!(!text.contains("\"1357\""));
+}
+
+#[test]
+fn pin_set_mbc_with_the_engineer_pin_exits_2() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(run_pin(dir.path(), "2468\n").status.success());
+    let out = run_pin_as(dir.path(), "set-mbc", "2468\n");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("the engineer and MBC PINs must differ"),
+        "{stderr}"
+    );
+    assert!(stored_as(dir.path(), "mbc").is_none());
 }

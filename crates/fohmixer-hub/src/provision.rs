@@ -1,11 +1,14 @@
-//! Engineer PIN provisioning for `fohmixer-hub pin set-engineer` (from
-//! iemmixer's `iem-server/src/provision.rs` @ 22372bc, engineer only): the
-//! PIN is read from stdin, never from argv (process listings, shell
+//! PIN provisioning for `fohmixer-hub pin set-engineer` and, since #184,
+//! `pin set-mbc` (from iemmixer's `iem-server/src/provision.rs` @ 22372bc):
+//! the PIN is read from stdin, never from argv (process listings, shell
 //! history), and only its argon2id hash is stored, peppered with the
-//! installation's pepper.
+//! installation's pepper. The two roles' PINs must differ: the login tells
+//! the role by the PIN alone.
 
 use std::io::BufRead;
 use std::path::Path;
+
+use fohmixer_proto::roles::Role;
 
 use crate::pepper;
 use crate::pin_hash::{PinHasher, is_valid_pin_format};
@@ -35,20 +38,45 @@ pub fn read_pin(mut input: impl BufRead) -> Result<String, ProvisionError> {
     }
 }
 
+/// The refusal of a PIN equal to the other role's.
+pub const SAME_PINS: &str = "the engineer and MBC PINs must differ";
+
+/// The role whose PIN must differ from `role`'s.
+fn other(role: Role) -> Role {
+    match role {
+        Role::Engineer => Role::Mbc,
+        Role::Mbc => Role::Engineer,
+    }
+}
+
 /// Hash `pin` with the installation's pepper and store it as the engineer
 /// PIN, in `<data_dir>/secrets/`.
 pub fn store_pin(data_dir: &Path, pin: &str) -> Result<(), ProvisionError> {
+    store_role_pin(data_dir, pin, Role::Engineer)
+}
+
+/// Hash `pin` and store it as `role`'s PIN; refused (nothing written) when
+/// it verifies against the other role's stored hash.
+pub fn store_role_pin(data_dir: &Path, pin: &str, role: Role) -> Result<(), ProvisionError> {
     let secrets_dir = data_dir.join(SECRETS_DIR);
     let hasher = PinHasher::new(pepper::load_or_create(&secrets_dir)?);
     let mut store = PinStore::load(&secrets_dir)?;
-    store.set_engineer_hash(hasher.hash(pin))?;
+    if hasher.verify_optional(pin, store.hash(other(role))) {
+        return Err(ProvisionError::Invalid(SAME_PINS.to_string()));
+    }
+    store.set_hash(role, hasher.hash(pin))?;
     Ok(())
 }
 
 /// The whole `pin set-engineer` command.
 pub fn run(data_dir: &Path, input: impl BufRead) -> Result<(), ProvisionError> {
+    run_role(data_dir, input, Role::Engineer)
+}
+
+/// The whole `pin set-<role>` command.
+pub fn run_role(data_dir: &Path, input: impl BufRead, role: Role) -> Result<(), ProvisionError> {
     let pin = read_pin(input)?;
-    store_pin(data_dir, &pin)
+    store_role_pin(data_dir, &pin, role)
 }
 
 #[cfg(test)]
@@ -77,6 +105,50 @@ mod tests {
         let store = PinStore::load(&secrets).unwrap();
         assert!(hasher.verify("2468", store.engineer_hash().unwrap()));
         assert!(!hasher.verify("1357", store.engineer_hash().unwrap()));
+    }
+
+    fn hashes(dir: &Path) -> Vec<u8> {
+        std::fs::read(
+            dir.join(SECRETS_DIR)
+                .join(crate::pin_store::PIN_HASHES_FILE),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn an_mbc_pin_is_stored_beside_the_engineers() {
+        let dir = tempfile::tempdir().unwrap();
+        run(dir.path(), "2468\n".as_bytes()).unwrap();
+        run_role(dir.path(), "1357\n".as_bytes(), Role::Mbc).unwrap();
+        let secrets = dir.path().join(SECRETS_DIR);
+        let hasher = PinHasher::new(pepper::load_or_create(&secrets).unwrap());
+        let store = PinStore::load(&secrets).unwrap();
+        assert!(hasher.verify("1357", store.hash(Role::Mbc).unwrap()));
+        assert!(hasher.verify("2468", store.hash(Role::Engineer).unwrap()));
+    }
+
+    #[test]
+    fn an_mbc_pin_equal_to_the_engineers_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        run(dir.path(), "2468\n".as_bytes()).unwrap();
+        let before = hashes(dir.path());
+        let err = run_role(dir.path(), "2468\n".as_bytes(), Role::Mbc).unwrap_err();
+        assert!(matches!(err, ProvisionError::Invalid(_)), "{err}");
+        assert_eq!(err.to_string(), SAME_PINS);
+        assert_eq!(hashes(dir.path()), before);
+    }
+
+    #[test]
+    fn an_engineer_pin_equal_to_the_mbcs_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        run_role(dir.path(), "1357\n".as_bytes(), Role::Mbc).unwrap();
+        run(dir.path(), "2468\n".as_bytes()).unwrap();
+        let before = hashes(dir.path());
+        let err = run(dir.path(), "1357\n".as_bytes()).unwrap_err();
+        assert_eq!(err.to_string(), SAME_PINS);
+        assert_eq!(hashes(dir.path()), before);
+        // The same role's PIN set again is no conflict.
+        run(dir.path(), "2468\n".as_bytes()).unwrap();
     }
 
     #[test]

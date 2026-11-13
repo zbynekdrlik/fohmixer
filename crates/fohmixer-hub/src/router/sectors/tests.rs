@@ -634,6 +634,8 @@ async fn the_status_counts_layouts_strips_and_unknown_refs() {
         )],
     );
     let (mut router, _own, _rx) = served(dir.path(), Some(&first));
+    // A page attached (#184: the router acts for attached clients by role).
+    attach(&mut router, 1);
     assert_eq!(
         status(&mut router).sectors,
         SectorsStatus {
@@ -942,4 +944,79 @@ async fn an_edit_renames_adds_and_removes_layouts_in_one_change() {
     assert_eq!(b.take().unwrap(), vec![], "nothing told");
     assert_eq!(sector_records(&rx), Vec::<Value>::new());
     assert_eq!(router.sectors.store.doc(), &back);
+}
+
+#[tokio::test]
+async fn an_mbc_arrange_save_on_a_mixed_document_is_refused_with_role() {
+    // #184: on the FOH hub an MBC login is served a derived view of the
+    // document, so it may change none of it.
+    let dir = tempfile::tempdir().unwrap();
+    let first = doc(
+        1,
+        vec![(SectorId::Lu, vec![layout("lu-1", "VOX", &["Vox 1"])])],
+    );
+    let (mut router, _own, rx) = served(dir.path(), Some(&first));
+    let mbc = super::super::tests::attach_as(&mut router, 1, fohmixer_proto::roles::Role::Mbc);
+    mbc.take();
+    let _ = records(&rx);
+    router.handle(tick(1, "t1", "lu-1", "Bass", true));
+    assert_eq!(answers(&mbc), vec![error("t1", "role")]);
+    let save = reordered(&first, &[("lu-1", vec!["", "Vox 1"])]);
+    router.handle(edit_msg(1, "e1", save.clone(), 1));
+    assert_eq!(answers(&mbc), vec![error("e1", "role")]);
+    assert_eq!(sector_records(&rx), Vec::<Value>::new());
+    assert_eq!(on_disk(dir.path(), SECTORS_FILE), first, "nothing written");
+    // The engineer's same save is taken.
+    let engineer = attach(&mut router, 2);
+    engineer.take();
+    router.handle(edit_msg(2, "e2", save, 1));
+    assert_eq!(answers(&engineer), vec![result("e2")]);
+}
+
+#[tokio::test]
+async fn an_mbc_tick_of_a_band_fader_into_an_empty_document_is_refused_with_role() {
+    // The FOH hub with no faders placed yet: its pool holds band faders, so
+    // an MBC login changes nothing there (#184 review).
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, _own, rx) = served(dir.path(), Some(&SectorsDoc::empty()));
+    let mbc = super::super::tests::attach_as(&mut router, 1, fohmixer_proto::roles::Role::Mbc);
+    mbc.take();
+    let _ = records(&rx);
+    router.handle(tick(1, "t1", "lu-1", "Bass", true));
+    assert_eq!(answers(&mbc), vec![error("t1", "role")]);
+    router.handle(RouterMsg::SectorTick {
+        client: 1,
+        id: "t2".into(),
+        layout: "lu-1".into(),
+        strip: StripRef {
+            instance: "mbc".into(),
+            label: "Hand 1".into(),
+        },
+        on: true,
+    });
+    assert_eq!(answers(&mbc), vec![error("t2", "role")]);
+    assert_eq!(sector_records(&rx), Vec::<Value>::new());
+}
+
+#[tokio::test]
+async fn an_mbc_change_on_a_hub_of_its_own_faders_passes_the_role() {
+    // The MBC hub: a pool of mbc faders only (here none: a bare router), so
+    // the role lets the change through to the document's own checks.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, _own, _rx) = offline_router(dir.path());
+    let mbc = super::super::tests::attach_as(&mut router, 1, fohmixer_proto::roles::Role::Mbc);
+    mbc.take();
+    router.handle(RouterMsg::SectorTick {
+        client: 1,
+        id: "t1".into(),
+        layout: "lu-1".into(),
+        strip: StripRef {
+            instance: "mbc".into(),
+            label: "Hand 1".into(),
+        },
+        on: true,
+    });
+    let got = answers(&mbc);
+    assert_eq!(got.len(), 1);
+    assert_ne!(got[0], error("t1", "role"));
 }

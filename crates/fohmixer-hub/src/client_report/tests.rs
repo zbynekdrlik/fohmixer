@@ -272,7 +272,10 @@ async fn post(hub: &Hub, body: String) -> StatusCode {
 }
 
 async fn status_json(hub: &Hub) -> Value {
-    let token = hub.auth.issue().unwrap();
+    let token = hub
+        .auth
+        .issue(fohmixer_proto::roles::Role::Engineer)
+        .unwrap();
     let response = lan(crate::app_router(hub.clone()))
         .oneshot(
             Request::get("/api/status")

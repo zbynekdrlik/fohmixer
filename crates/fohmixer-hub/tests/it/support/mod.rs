@@ -126,8 +126,12 @@ impl TestHub {
             .expect("the hub is ready within 10 s")
             .expect("the hub reports its address");
         let secret = std::fs::read_to_string(dir.join("secrets").join("jwt_secret")).unwrap();
-        let token =
-            fohmixer_hub::auth::issue_token(secret.trim(), fohmixer_hub::auth::now_secs()).unwrap();
+        let token = fohmixer_hub::auth::issue_token(
+            secret.trim(),
+            fohmixer_hub::auth::now_secs(),
+            fohmixer_proto::roles::Role::Engineer,
+        )
+        .unwrap();
         Self {
             addr,
             dir,
@@ -170,6 +174,15 @@ impl TestHub {
     /// A connected client (past its hello).
     pub async fn client(&self) -> Client {
         Client::connect(&self.ws_url()).await
+    }
+
+    /// A connected client of a login of `role` (#184), past its hello.
+    pub async fn client_as(&self, role: fohmixer_proto::roles::Role) -> Client {
+        let secret = std::fs::read_to_string(self.dir.join("secrets").join("jwt_secret")).unwrap();
+        let token =
+            fohmixer_hub::auth::issue_token(secret.trim(), fohmixer_hub::auth::now_secs(), role)
+                .unwrap();
+        Client::connect(&format!("ws://{}/ws?token={token}&proto=2", self.addr)).await
     }
 
     /// `GET path` with the token: the status code and the body.

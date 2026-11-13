@@ -33,6 +33,13 @@
 //! the client reports sends none, so for every socket that passes the
 //! protocol check these two lines are the only trace sure to name its
 //! client.
+//!
+//! Roles (#184): the socket's role is its token's; every message it sends
+//! passes [`role::inbound`] first and every message its writer writes
+//! passes [`role::outbound`], so an MBC login neither reaches nor sees the
+//! FOH side.
+
+pub mod role;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -48,6 +55,7 @@ use fohmixer_proto::client::{
     CLOSE_RELOAD, ClientMsg, LiveCommand, MIN_CLIENT_PROTO, Pace, ServerMsg, UI_PROTO, meter_pace,
     proto_ok,
 };
+use fohmixer_proto::roles::Role;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 
@@ -153,11 +161,11 @@ pub async fn ws_handler(
     headers: HeaderMap,
     Query(query): Query<WsQuery>,
 ) -> Response {
-    if hub.auth.claims(query.token.as_deref()).is_none() {
+    let Some(role) = hub.auth.role(query.token.as_deref()) else {
         return crate::auth::unauthorized();
-    }
+    };
     let who = opener(peer, &headers);
-    ws.on_upgrade(move |socket| session(socket, hub, query.proto, who))
+    ws.on_upgrade(move |socket| session(socket, hub, query.proto, who, role))
         .into_response()
 }
 
@@ -174,7 +182,7 @@ async fn close_reload(mut socket: WebSocket) {
         .await;
 }
 
-async fn session(mut socket: WebSocket, hub: Hub, proto: Option<u32>, who: Opener) {
+async fn session(mut socket: WebSocket, hub: Hub, proto: Option<u32>, who: Opener, role: Role) {
     let Some(proto) = proto else {
         tracing::info!("WebSocket without a protocol: asking the client to reload");
         close_reload(socket).await;
@@ -186,6 +194,7 @@ async fn session(mut socket: WebSocket, hub: Hub, proto: Option<u32>, who: Opene
         min_client_proto: MIN_CLIENT_PROTO,
         // #90: a page that loaded with another policy reloads.
         policy: Some(hub.policy_rev.clone()),
+        role: Some(role),
     };
     if socket.send(text(&hello)).await.is_err() {
         return;
@@ -202,6 +211,7 @@ async fn session(mut socket: WebSocket, hub: Hub, proto: Option<u32>, who: Opene
         outbox: Arc::clone(&outbox),
         peer: who.peer.clone(),
         lan: who.is_lan(),
+        role,
     });
     log_socket("client connected", client, &who);
     hub.events
@@ -212,8 +222,19 @@ async fn session(mut socket: WebSocket, hub: Hub, proto: Option<u32>, who: Opene
         tokio::spawn(async move {
             while let Some(batch) = outbox.next_batch().await {
                 // The messages, then the frame taken with them (PR I).
-                let frame = batch.frame.map(Message::Binary);
-                for message in batch.messages.iter().map(text).chain(frame) {
+                // The role's view of each (#184): an MBC login is sent
+                // nothing of the FOH side.
+                // A Pro-Q 4 frame reaches only an open editor's holder,
+                // and an MBC login opens none: kept from it all the same.
+                let frame = batch
+                    .frame
+                    .filter(|_| role == Role::Engineer)
+                    .map(Message::Binary);
+                let messages = batch
+                    .messages
+                    .into_iter()
+                    .filter_map(|m| role::outbound(role, m));
+                for message in messages.map(|m| text(&m)).chain(frame) {
                     if let Err(why) = deliver(&mut sink, message, client).await {
                         outbox.close();
                         return why;
@@ -231,6 +252,8 @@ async fn session(mut socket: WebSocket, hub: Hub, proto: Option<u32>, who: Opene
         clock: ClockSync::default(),
         offset: None,
         last_step_warn: None,
+        role,
+        refusals: crate::ration::Ration::default(),
     };
     let reason = loop {
         tokio::select! {
@@ -297,6 +320,10 @@ struct Conn {
     offset: Option<f64>,
     /// The hub time (UTC ms) of the last clock-step warn line (#54).
     last_step_warn: Option<f64>,
+    /// The socket's role (#184).
+    role: Role,
+    /// The ration of its `role refused` lines.
+    refusals: crate::ration::Ration,
 }
 
 /// The least time between two clock-step warn lines of one client (#54).
@@ -399,7 +426,14 @@ fn handle_text(hub: &Hub, conn: &mut Conn, text: &str) {
     if hub.hears_clients() {
         hub.route(RouterMsg::Heard { client });
     }
-    match serde_json::from_str::<ClientMsg>(text) {
+    let msg = serde_json::from_str::<ClientMsg>(text);
+    if let Ok(msg) = &msg
+        && let Err(word) = role::inbound(conn.role, msg)
+    {
+        refuse_role(conn, msg, word);
+        return;
+    }
+    match msg {
         Ok(ClientMsg::Cmd {
             id,
             instance,
@@ -570,6 +604,42 @@ fn handle_text(hub: &Hub, conn: &mut Conn, text: &str) {
                 message: format!("unreadable message: {e}"),
             });
         }
+    }
+}
+
+/// The fields of a `role refused` line: the role, the message's type and
+/// the Live set it named (none for one that names none).
+pub fn refused_fields(role: Role, msg: &ClientMsg) -> (String, Option<String>) {
+    let kind = serde_json::to_value(msg)
+        .ok()
+        .and_then(|v| v.get("type").and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_default();
+    let instance = match msg {
+        ClientMsg::Cmd { instance, .. }
+        | ClientMsg::Sub { instance, .. }
+        | ClientMsg::Set { instance, .. } => Some(instance.clone()),
+        _ => None,
+    };
+    (format!("{} {kind}", role.as_str()), instance)
+}
+
+/// Answers a message the socket's role may not send: the `error` with the
+/// message's id, and one info line, rationed per socket.
+fn refuse_role(conn: &mut Conn, msg: &ClientMsg, word: &'static str) {
+    conn.outbox.reply(role::refusal(msg, word));
+    if let Some(skipped) = conn
+        .refusals
+        .take(std::time::Instant::now(), role::REFUSED_LINES)
+    {
+        let (what, instance) = refused_fields(conn.role, msg);
+        tracing::info!(
+            client = conn.client,
+            peer = %conn.who.peer,
+            what = %what,
+            instance = ?instance,
+            skipped,
+            "role refused"
+        );
     }
 }
 

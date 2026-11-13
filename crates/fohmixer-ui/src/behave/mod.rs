@@ -34,6 +34,7 @@ pub mod iem;
 pub mod label;
 pub mod link;
 pub mod live_down;
+pub mod login;
 pub mod lufs;
 pub mod marks;
 pub mod meter;

@@ -15,6 +15,7 @@ use std::sync::Arc;
 use fohmixer_proto::client::{MuteAlarmsStatus, ServerMsg};
 use fohmixer_proto::layout::Layout;
 use fohmixer_proto::mute_alarms as model;
+use fohmixer_proto::roles;
 use fohmixer_proto::sectors::{self as sectors_model, StripRef};
 use serde_json::{Value, json};
 
@@ -121,6 +122,11 @@ impl Router {
 
     /// A page's switch of `strip`'s alarm to `on`.
     pub(super) fn alarms_set(&mut self, client: ClientId, id: String, strip: &StripRef, on: bool) {
+        if !roles::reaches_strip(self.role_of(client), strip) {
+            tracing::info!(client, "a strip's mute alarm is refused: role");
+            self.alarms_refuse(client, id, crate::ws::role::REFUSED.to_string());
+            return;
+        }
         let served = self.alarms_layout();
         let pool = served
             .as_deref()

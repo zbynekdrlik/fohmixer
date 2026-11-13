@@ -23,6 +23,7 @@ pub mod markers;
 pub mod meter;
 pub mod mute_alarms;
 pub mod path;
+pub mod roles;
 pub mod sectors;
 pub mod songmap;
 pub mod volume;

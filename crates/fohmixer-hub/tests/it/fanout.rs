@@ -633,7 +633,9 @@ fn the_handshake_is_hello_and_a_protocol_mismatch_closes_with_4001() {
                 build,
                 min_client_proto,
                 policy,
+                role,
             } => {
+                assert_eq!(*role, Some(fohmixer_proto::roles::Role::Engineer));
                 assert_eq!(*proto, UI_PROTO);
                 assert_eq!(build, fohmixer_proto::VERSION);
                 assert_eq!(*min_client_proto, 2);

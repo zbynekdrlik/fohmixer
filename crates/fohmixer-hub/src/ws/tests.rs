@@ -355,3 +355,63 @@ fn an_idle_line_says_how_the_pages_meters_go() {
     }
     assert_eq!(log.matches(" INFO ").count(), 4, "{log}");
 }
+
+/// A socket of `role` as `handle_text` sees it (#184).
+fn conn_of(role: Role) -> Conn {
+    Conn {
+        client: 7,
+        outbox: Arc::new(Outbox::new()),
+        who: opener(peer("10.0.0.5"), &headers(&[])),
+        clock: ClockSync::default(),
+        offset: None,
+        last_step_warn: None,
+        role,
+        refusals: crate::ration::Ration::default(),
+    }
+}
+
+#[test]
+fn a_refused_message_is_answered_and_logged_rationed() {
+    let msg: ClientMsg = serde_json::from_value(serde_json::json!({"type": "cmd", "id": "c1",
+        "instance": "band", "commands": []}))
+    .unwrap();
+    assert_eq!(
+        refused_fields(Role::Mbc, &msg),
+        ("mbc cmd".to_string(), Some("band".to_string()))
+    );
+    let hub_value: ClientMsg = serde_json::from_value(
+        serde_json::json!({"type": "set_hub", "key": "stage_aut", "value": true}),
+    )
+    .unwrap();
+    assert_eq!(
+        refused_fields(Role::Mbc, &hub_value),
+        ("mbc set_hub".to_string(), None)
+    );
+    let mut conn = conn_of(Role::Mbc);
+    let text = logged(|| {
+        for _ in 0..(role::REFUSED_LINES + 2) {
+            refuse_role(&mut conn, &msg, role::REFUSED);
+        }
+    });
+    assert_eq!(
+        text.matches("role refused").count(),
+        role::REFUSED_LINES as usize,
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            r#"role refused client=7 peer=10.0.0.5 what=mbc cmd instance=Some("band") skipped=0"#
+        ),
+        "{text}"
+    );
+    let answers = conn.outbox.take().unwrap();
+    assert_eq!(answers.len(), role::REFUSED_LINES as usize + 2);
+    assert_eq!(
+        answers[0],
+        ServerMsg::Error {
+            id: Some("c1".into()),
+            message: "role".into()
+        }
+    );
+    assert_eq!(role::REFUSED_LINES, 8);
+}
