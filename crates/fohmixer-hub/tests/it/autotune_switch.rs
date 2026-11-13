@@ -369,6 +369,87 @@ fn a_held_stream_slot_keeps_that_track_dry_and_the_pa_tunes() {
 }
 
 #[test]
+fn a_play_starts_switch_on_waits_the_engage_delay_and_a_stop_within_it_writes_none() {
+    // #190: `[autotune] engage_delay_ms = 1000` holds a play start's
+    // selector-on writes 1 s; a stop within the wait writes nothing; the
+    // stop's DRY stays immediate.
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = Host::start_site("band", &site(dir.path(), 10.0), 0, 0.0);
+        frame(dir.path());
+        let mut config = fohmixer_hub::config::Config::defaults(dir.path());
+        config.instances = vec![host.cfg()];
+        config.layout_poll_ms = 100;
+        config.lufs.port = 0;
+        config.autotune.engage_delay_ms = 1000;
+        let hub = TestHub::start_config(config).await;
+        let status = hub
+            .status_until(SECS_10, |s| ready(s) && keyed(s, "C"))
+            .await;
+        assert_eq!(status.autotune.engage_delay_ms, 1000);
+        let mut a = hub.client().await;
+        set_hub(&mut a, "autotune_aut", json!(true)).await;
+        hub.status_until(SECS_10, |s| s.autotune.aut).await;
+        let start = now_ts();
+        transport(&mut a, "start_playing").await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(macros(&mut a).await, DRY, "still DRY within the wait");
+        macros_until(&mut a, TUNING, SECS_10).await;
+        let records = hub
+            .events_until(SECS_10, |r| {
+                steps_of(&since(r, start), "write")
+                    .iter()
+                    .any(|w| w["on"].as_array().is_some_and(|on| !on.is_empty()))
+            })
+            .await;
+        let records = since(&records, start);
+        let engage: Vec<Value> = steps_of(&records, "engage");
+        assert_eq!(engage.len(), 2, "{engage:?}");
+        assert_eq!(
+            (&engage[0]["act"], &engage[0]["ms"], &engage[1]["act"]),
+            (&json!("waits"), &json!(1000), &json!("ends"))
+        );
+        let writes = steps_of(&records, "write");
+        assert_eq!(writes.len(), 1, "one batch: {writes:?}");
+        assert_eq!(writes[0]["cause"], "transport");
+        assert_eq!(writes[0]["on"].as_array().map(Vec::len), Some(3));
+        // On the hub's own clock (#186): the write at least 1 s after the
+        // wait began, which the play start's transport opened.
+        let waited = writes[0]["ts"].as_i64().unwrap() - engage[0]["ts"].as_i64().unwrap();
+        println!("the switch-on went {waited} ms after the play start's wait began");
+        assert!(waited >= 1000, "{waited} ms");
+        // A stop: DRY at once, as before.
+        transport(&mut a, "stop_playing").await;
+        macros_until(&mut a, DRY, Duration::from_secs(2)).await;
+        // A start and a stop within the wait: nothing written.
+        let again = now_ts();
+        transport(&mut a, "start_playing").await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        transport(&mut a, "stop_playing").await;
+        let records = hub
+            .events_until(SECS_10, |r| steps_of(&since(r, again), "engage").len() >= 2)
+            .await;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert_eq!(macros(&mut a).await, DRY);
+        let engage = steps_of(&since(&records, again), "engage");
+        assert_eq!(
+            (&engage[0]["act"], &engage[1]["act"]),
+            (&json!("waits"), &json!("stopped"))
+        );
+        let records = since(&hub.events(), again);
+        assert_eq!(steps_of(&records, "write"), Vec::<Value>::new());
+        assert_eq!(steps_of(&records, "engage").len(), 2, "no end");
+        // Live's setter saw on and the stop's DRY only.
+        let sets: Vec<i64> = MACROS.iter().map(|p| host.sets("value", p)).collect();
+        assert_eq!(sets, [2, 0, 2, 2]);
+        a.close().await;
+        hub.stop().await;
+        host.stop();
+    });
+}
+
+#[test]
 fn the_manual_off_survives_a_hub_restart() {
     let _serial = serial();
     runtime().block_on(async {

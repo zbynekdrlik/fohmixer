@@ -2771,3 +2771,7 @@ async fn a_stop_with_one_selector_to_write_writes_it_and_spreads_nothing() {
     assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new());
     assert_eq!(of(&steps(&rx), "spread"), Vec::<Value>::new());
 }
+
+/// A play start's wait of its selector-on writes (#190).
+#[path = "engage_tests.rs"]
+mod engage;
