@@ -22,6 +22,7 @@ mod fader_link;
 mod fanout;
 mod graceful_stop;
 mod iem;
+mod instance_link;
 mod layout;
 mod live_client;
 mod lufs;

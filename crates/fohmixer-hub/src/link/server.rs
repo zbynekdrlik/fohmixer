@@ -156,6 +156,8 @@ pub fn spawn(
     let listener = TcpListener::from_std(std_listener)?;
     let addr = listener.local_addr()?;
     let state = Arc::new(LinkState::new(cfg));
+    // The address bound (a test's port 0 names its port).
+    state.with(|s| s.listen = addr.to_string());
     if secret.is_none() {
         tracing::warn!(addr = %addr, "instance link: no link secret: every link is refused (`fohmixer-hub link set-secret`)");
     }
