@@ -462,6 +462,25 @@ async fn a_peer_that_sends_no_request_is_dropped_after_the_handshakes_bound() {
 }
 
 #[tokio::test]
+async fn a_silent_peer_never_frees_the_open_link() {
+    use tokio::io::AsyncReadExt;
+    let script = fake_script().await;
+    let served = serve(script.port, Some(secret(1))).await;
+    let mut first = open(served.addr, bearer(&secret(1))).await.unwrap();
+    next_text(&mut first).await;
+    // A peer that never upgrades is dropped at the handshake's bound; the
+    // link that is open stays the only one.
+    let mut silent = TcpStream::connect(served.addr).await.unwrap();
+    let mut buf = [0u8; 16];
+    let read = tokio::time::timeout(HANDSHAKE + WAIT, silent.read(&mut buf))
+        .await
+        .expect("closed by the hub");
+    assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
+    assert_eq!(open(served.addr, bearer(&secret(1))).await.err(), Some(409));
+    served.task.abort();
+}
+
+#[tokio::test]
 async fn a_listen_address_taken_is_tried_again_until_it_is_free() {
     let holder = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let taken = holder.local_addr().unwrap().to_string();

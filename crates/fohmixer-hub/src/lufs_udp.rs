@@ -371,6 +371,7 @@ mod tests {
         let (events, _records) = EventLog::channel(16);
         let linked = LinkedLufs::new(Arc::clone(&counters), events, tx);
         let t0 = Instant::now();
+        assert_eq!(linked.keys(), 0, "nothing heard yet");
         for _ in 0..11 {
             assert!(linked.take(&datagram(2), t0));
         }
@@ -388,10 +389,12 @@ mod tests {
         assert!(linked.take(&datagram(2), t0 + Duration::from_millis(1500)));
         assert_eq!(counters.status().taken, 11);
         assert_eq!(linked.keys(), 1);
+        assert!(linked.take(&datagram(4), t0 + Duration::from_millis(1500)));
+        assert_eq!(linked.keys(), 2, "a second device is a second key");
         // A key unheard for FORGET_MS is forgotten at the next sweep.
         let later = t0 + Duration::from_millis(1500 + FORGET_MS + 1);
         assert!(linked.take(&datagram(3), later));
-        assert_eq!(linked.keys(), 1, "device 2 forgotten, device 3 kept");
+        assert_eq!(linked.keys(), 1, "devices 2 and 4 forgotten, device 3 kept");
         drop(rx);
         assert!(!linked.take(&datagram(2), later + Duration::from_secs(3)));
     }
