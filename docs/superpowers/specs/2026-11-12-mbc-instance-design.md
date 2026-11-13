@@ -67,7 +67,7 @@ ROZHODNUTÉ, 2026-11-12):
 - A fohmixer test steals the TouchOSC tablet's updates during the parallel phase (AbletonOSCMBC
   pushes to whoever sent the last packet: fohmixer must never send OSC to it).
 - The stream has no working control at any moment of the rollout.
-- The MBC page shows the FOH page's rail (STAGE, REVERB, AUTOTUNE, TALKBACK, TECHALERT) or
+- The MBC hub's page shows the FOH page's rail (STAGE, REVERB, AUTOTUNE, TALKBACK, TECHALERT) or
   the FOH Lives' status in red (#178's lesson).
 
 ## 5. Constraints
@@ -156,32 +156,32 @@ on the FOH hub and still sees only MBC (§6.4).
   FOH), then the set is saved with a dated `.als` backup beside it. Before and after: the
   rack's `latency_in_samples` is read; it must not change (the device reports 0, #151).
 
-### 6.3 The MBC page
+### 6.3 The MBC faders in the four sectors (owner, #184, 2026-11-13: mockup v3 approved)
 
-See `mbc-layout-v1.html`. In fohmixer's look (dark, Barlow, the control column in the middle):
+See `mbc-layout-v3.html`. **No new page.** The owner: the MBC work must not break the
+four-sector design (#148); the FOH engineer never leaves it, so the rest stays under control.
 
-- One page of 12 strips, 6 on each side of the column: name button (Live's colour), dB
-  readout, fader with dB scale and meter, mute, pan.
-- The stream's loudness is a large readout in the control column (`STREAM LUFS`, short-term,
-  `cieľ −14`), not on a strip: the stream group is not one of today's 12 strips. Its source is
-  the `FohMixer LUFS` device of §6.2, matched by a column binding in the MBC frame (builder:
-  a frame entry naming the instance and the device's track, no strip made).
-- No `STREAM` fader (owner, #184, 2026-11-12): the final and the local masterings expect each
-  submaster at its own level, so loudness is fixed on the submaster that is off, never by a
-  global move. The `STREAM LUFS` readout is read-only.
-- **Every strip shows its own loudness** (owner, #184, 2026-11-12), and it is fohmixer's
-  existing LUFS display from #151, unchanged, as tuned on the FOH surface: the strip's
-  `+LUFS:<target>` point, the one-decimal number with its caption in the info column, green
-  inside the band, the spring on the meter's scale showing where the value should sit
-  (`behave::lufs`, `fohmixer_proto::lufs`). Nothing about its look is redesigned for MBC.
-- The `STREAM LUFS` readout in the column uses the same `look` and band rule (target -14), no
-  new component.
+- **The pool.** An MBC fader is a `StripRef` like any other (its Live set, `mbc`, and its
+  label), so the MBC strips join the sectors' pool and are placed exactly like band and master
+  faders: in ARRANGE a layout (e.g. `MBC`) is added to any sector and filled with MBC faders.
+  A tap on it in LAYOUTS pages that one sector on that device; the other three keep theirs.
+  Nothing in #148's sectors model changes.
+- **The strip** is today's strip unchanged (name button = MUTE, dB, fader, meter, scale, SEL;
+  pan in the channel detail as on FOH), with #151's LUFS display on each, unchanged (the
+  strip's `+LUFS:<target>` point, number and caption, green within ±1.0 LU, the spring).
+- **`STREAM LUFS`** (short-term, target −14, read-only, #151's look and band rule, no new
+  component) sits in the column under LAYOUTS/ARRANGE. On the FOH hub's page only while a
+  sector shows a layout that holds MBC faders (on the FOH column at 30 px so the rail keys
+  keep two lines); on the MBC hub's page always (40 px). Its source is the `FohMixer LUFS`
+  device of §6.2, matched by a column binding in the MBC frame. No `STREAM` fader (owner,
+  2026-11-12: the masterings expect each submaster at its own level).
+- **The MBC hub's page** (the MBC operator's tablet, works with the FOH PC off): the same
+  four-sector page, its own `sectors.json`, its pool only the MBC faders. The seed: LU 6 +
+  RU 6 of the 12 strips, LD/RD an empty `MAIN` layout. The column: LAYOUTS + ARRANGE,
+  `STREAM LUFS`, login line, logout, `MBC on` / `MBC not running` and the version; no STREAM
+  DECK, ABLESET, IEM MIXER, PRESENTER, no rail buttons.
 - Per-submaster targets are site values in the Tuner labels (`+LUFS:<target>`), proposed from
   a read of today's levels and confirmed by the owner.
-- The column foot says only `MBC on` / `MBC not running` (no FOH Lives).
-- The column for an `mbc` login: the `MBC` page tab, the version, logout. No STREAM DECK,
-  ABLESET, IEM MIXER, PRESENTER, no FOH layouts, no rail buttons.
-- The FOH engineer: `MBC` appears among LAYOUTS in the column; it opens the same page.
 
 ### 6.4 Roles
 
@@ -207,7 +207,7 @@ See `mbc-layout-v1.html`. In fohmixer's look (dark, Barlow, the control column i
 
 ### 6.6 Rollout (the stream never without control)
 
-1. Build and CI on SimLive (two hubs and the instance link, roles, MBC page). Merge, deploy the hub.
+1. Build and CI on SimLive (two hubs and the instance link, roles, MBC faders in the sectors, the MBC hub's page). Merge, deploy the hub.
 2. Install the MBC hub and the script on the MBC PC; select slot 2. TouchOSC keeps slot 1 and
    keeps working (fohmixer sends nothing to AbletonOSCMBC).
 3. Owner approves §6.2; markers and the LUFS chain inserted, set saved with a backup.
@@ -231,7 +231,7 @@ See `mbc-layout-v1.html`. In fohmixer's look (dark, Barlow, the control column i
   earlier thin relay (c) is dropped).
 - The script in Live's built-in folder rather than fixing MBC's User Library path (fixing it
   changes where MBC's presets and packs are looked up).
-- No `+PIN` strips, no rail on the MBC page.
+- No `+PIN` strips, no rail on the MBC hub's page.
 
 ## 9. Builder check (2026-11-12, done by the main session reading as the builder)
 
@@ -251,5 +251,5 @@ The owner's:
 4. APPROVED (2026-11-12): the set change (§6.2), after the MBC hub runs, never during a
    stream, backup first, latency read before and after. Was: the set change (§6.2): Tuner markers with `+LUFS:<target>` on the 11 tracks,
    a LUFS device per strip and one in the stream group's metering rack, saved with a backup.
-5. Approval of the look (mockup v2: v1 without the alignment section, with #151's loudness
-   on the strips).
+5. APPROVED (2026-11-13): mockup v3, the MBC faders in the four sectors (§6.3). v2's separate
+   MBC page was replaced at the owner's word: the four-sector design must not break.
