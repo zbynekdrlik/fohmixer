@@ -78,6 +78,53 @@ fn config_check_refuses_an_unspecified_link_listen() {
     assert!(stderr.contains("never every address"), "{stderr}");
 }
 
+fn link_secret(dir: &std::path::Path, stdin: &str) -> Output {
+    use std::io::Write;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fohmixer-hub"))
+        .args(["link", "set-secret"])
+        .env("FOHMIXER_DATA", dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn fohmixer-hub");
+    // The child may exit before reading stdin: the exit code is checked.
+    let _ = child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(stdin.as_bytes());
+    child.wait_with_output().expect("wait for fohmixer-hub")
+}
+
+#[test]
+fn link_set_secret_exits_2_on_a_short_secret() {
+    use base64::Engine as _;
+    let engine = base64::engine::general_purpose::STANDARD;
+    let dir = tempfile::tempdir().unwrap();
+    // Low-entropy secrets built at run time (never a secret-shaped literal).
+    let short = format!("{}\n", engine.encode([6u8; 31]));
+    let out = link_secret(dir.path(), &short);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("32 bytes in base64"));
+    assert!(!dir.path().join("secrets").exists(), "nothing stored");
+    let good = format!("{}\n", engine.encode([6u8; 32]));
+    let out = link_secret(dir.path(), &good);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("stored the link secret (sealed)"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains(good.trim()), "never printed");
+    assert!(out.stdout.is_empty());
+    let stored = fohmixer_hub::link::load(&dir.path().join("secrets")).unwrap();
+    assert_eq!(
+        stored,
+        Some(fohmixer_hub::link::LinkSecret::from_bytes([6; 32]))
+    );
+}
+
 fn layout_check(layout: &std::path::Path, config: &std::path::Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_fohmixer-hub"))
         .args(["layout", "check"])

@@ -892,8 +892,22 @@ fn api_bodies_round_trip() {
             unknown: 0,
             error: None,
         },
+        link: Some(LinkStatus {
+            listen: "10.0.0.5:39201".into(),
+            instance: "mbc".into(),
+            peer: Some("10.0.0.6:50000".into()),
+            connected_since_ms: Some(1_700_000_000_000),
+            links: 2,
+            refusals: 1,
+            last_refusal: Some("the token expired".into()),
+            lufs_dropped: 0,
+        }),
     };
     let json = serde_json::to_value(&status).unwrap();
+    assert_eq!(json["link"]["listen"], "10.0.0.5:39201");
+    assert_eq!(json["link"]["refusals"], 1);
+    let back: HubStatus = serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(back.link, status.link);
     assert_eq!(
         json["sectors"],
         json!({"rev": 3, "layouts": 2, "strips": 5, "unknown": 1})
@@ -2002,8 +2016,10 @@ fn an_older_hubs_status_reads_with_default_sectors() {
         },
         colors: ColorsStatus::default(),
         mute_alarms: MuteAlarmsStatus::default(),
+        link: None,
     };
     let mut json = serde_json::to_value(&status).unwrap();
+    assert!(json.get("link").is_none(), "no [link]: no field");
     assert_eq!(
         json["sectors"],
         json!({"rev": 9, "layouts": 1, "strips": 1, "unknown": 0,

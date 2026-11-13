@@ -1653,6 +1653,33 @@ pub struct HubStatus {
     /// older hub's answer.
     #[serde(default)]
     pub mute_alarms: MuteAlarmsStatus,
+    /// The instance link this hub serves (#184, `[link]`); none without it
+    /// (and in an older hub's answer).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<LinkStatus>,
+}
+
+/// `/api/status` `link` (#184): the instance link a hub serves: where it
+/// listens, which local instance it relays, the open link's peer and since
+/// when (Unix ms), how many links it took and refused, and the last
+/// refusal's words with its peer.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkStatus {
+    pub listen: String,
+    pub instance: String,
+    #[serde(default)]
+    pub peer: Option<String>,
+    #[serde(default)]
+    pub connected_since_ms: Option<u64>,
+    #[serde(default)]
+    pub links: u64,
+    #[serde(default)]
+    pub refusals: u64,
+    #[serde(default)]
+    pub last_refusal: Option<String>,
+    /// LUFS datagrams the link dropped because it lagged behind.
+    #[serde(default)]
+    pub lufs_dropped: u64,
 }
 
 /// `/api/status` `presenter` (#90): Presenter's address (`[presenter]

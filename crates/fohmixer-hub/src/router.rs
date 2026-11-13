@@ -1363,6 +1363,9 @@ impl Router {
                 self.rec_connected(instance);
                 self.broadcast_instance(instance);
             }
+            // The hub's event sink takes a link's LUFS datagrams
+            // (`live_events`): none reaches the router.
+            LiveEvent::Lufs { .. } => {}
             LiveEvent::Closed { why } => {
                 // The script's reason (PR #146 review M5), before its
                 // disconnect: a silent hub's close tells from a crash.

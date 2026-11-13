@@ -25,6 +25,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::events::EventLog;
+use crate::link::server::Tap;
 use crate::router::RouterMsg;
 use crate::rules::lufs::bound::{Admit, Bound, Dropping, FORGET_MS, Key};
 use crate::rules::lufs::kind_word;
@@ -125,12 +126,15 @@ pub fn dropping_fields(key: &Key, change: Dropping) -> Value {
 
 /// Binds `127.0.0.1:<port>` and starts the listener (inside a tokio
 /// runtime): its address and task, or the bind's error (recorded and in
-/// the counters' status).
+/// the counters' status). With a `tap` (#184, the instance link) every
+/// datagram read is also handed to it as read, before it is parsed: the
+/// dialling hub parses and bounds it itself.
 pub fn spawn(
     port: u16,
     tx: mpsc::UnboundedSender<RouterMsg>,
     counters: Arc<Counters>,
     events: EventLog,
+    tap: Option<Tap>,
 ) -> io::Result<(SocketAddr, JoinHandle<()>)> {
     let wanted = bind_addr(port);
     let bound = std::net::UdpSocket::bind(wanted).and_then(|socket| {
@@ -154,7 +158,7 @@ pub fn spawn(
     tracing::info!(addr = %addr, "lufs: listening for the LUFS devices");
     events.record("lufs", listen_fields(&addr.to_string(), None));
     counters.set_addr(Some(addr.to_string()), None);
-    let task = tokio::spawn(listen(socket, tx, counters, events));
+    let task = tokio::spawn(listen(socket, tx, counters, events, tap));
     Ok((addr, task))
 }
 
@@ -196,6 +200,55 @@ pub fn handle_datagram(
     tx.send(RouterMsg::Lufs { reading }).is_ok()
 }
 
+/// The LUFS datagrams an instance link passes on (#184, the dialling
+/// hub's side): each goes through [`handle_datagram`] with the hub's own
+/// counters and a bound of the link's own, as if this hub's listener had
+/// read it. One per linked instance.
+pub struct LinkedLufs {
+    bound: Mutex<(Bound, Instant)>,
+    counters: Arc<Counters>,
+    events: EventLog,
+    tx: mpsc::UnboundedSender<RouterMsg>,
+}
+
+impl LinkedLufs {
+    pub fn new(
+        counters: Arc<Counters>,
+        events: EventLog,
+        tx: mpsc::UnboundedSender<RouterMsg>,
+    ) -> Self {
+        Self {
+            bound: Mutex::new((Bound::new(), Instant::now())),
+            counters,
+            events,
+            tx,
+        }
+    }
+
+    /// One datagram from the link, at `now`: false once the router is gone.
+    pub fn take(&self, data: &[u8], now: Instant) -> bool {
+        let mut guard = self.bound.lock().unwrap_or_else(PoisonError::into_inner);
+        let (bound, swept) = &mut *guard;
+        let alive = handle_datagram(data, now, bound, &self.counters, &self.events, &self.tx);
+        if sweep_due(*swept, now) {
+            *swept = now;
+            if let Some(cutoff) = now.checked_sub(Duration::from_millis(FORGET_MS)) {
+                bound.forget_before(cutoff);
+            }
+        }
+        alive
+    }
+
+    /// The keys its bound keeps.
+    pub fn keys(&self) -> usize {
+        self.bound
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .0
+            .len()
+    }
+}
+
 /// Whether the bound forgets its unheard keys at `now`: the last sweep
 /// (`swept`) is [`SWEEP`] or longer ago.
 pub fn sweep_due(swept: Instant, now: Instant) -> bool {
@@ -207,6 +260,7 @@ async fn listen(
     tx: mpsc::UnboundedSender<RouterMsg>,
     counters: Arc<Counters>,
     events: EventLog,
+    tap: Option<Tap>,
 ) {
     // One byte over the limit, so a datagram too long reads as too long.
     let mut buf = vec![0u8; MAX_DATAGRAM + 1];
@@ -224,6 +278,10 @@ async fn listen(
                 continue;
             }
         };
+        if let Some(tap) = &tap {
+            // No link open: nobody subscribed, nothing kept.
+            let _ = tap.send(Arc::from(&buf[..n]));
+        }
         let now = Instant::now();
         if !handle_datagram(&buf[..n], now, &mut bound, &counters, &events, &tx) {
             return;
@@ -304,6 +362,66 @@ mod tests {
             ),
             "the router is gone"
         );
+    }
+
+    #[test]
+    fn a_linked_datagram_is_parsed_bounded_and_counted_as_the_listeners() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let counters = Arc::new(Counters::default());
+        let (events, _records) = EventLog::channel(16);
+        let linked = LinkedLufs::new(Arc::clone(&counters), events, tx);
+        let t0 = Instant::now();
+        for _ in 0..11 {
+            assert!(linked.take(&datagram(2), t0));
+        }
+        assert!(linked.take(b"junk", t0));
+        let status = counters.status();
+        assert_eq!((status.taken, status.dropped), (10, 1), "its own bound");
+        assert_eq!(status.refused.get("truncated"), Some(&1));
+        let mut got = 0;
+        while let Ok(RouterMsg::Lufs { reading }) = rx.try_recv() {
+            assert_eq!(reading.device, 2);
+            got += 1;
+        }
+        assert_eq!(got, 10);
+        // After the sweep's second the key's window is new again.
+        assert!(linked.take(&datagram(2), t0 + Duration::from_millis(1500)));
+        assert_eq!(counters.status().taken, 11);
+        assert_eq!(linked.keys(), 1);
+        // A key unheard for FORGET_MS is forgotten at the next sweep.
+        let later = t0 + Duration::from_millis(1500 + FORGET_MS + 1);
+        assert!(linked.take(&datagram(3), later));
+        assert_eq!(linked.keys(), 1, "device 2 forgotten, device 3 kept");
+        drop(rx);
+        assert!(!linked.take(&datagram(2), later + Duration::from_secs(3)));
+    }
+
+    #[tokio::test]
+    async fn the_tap_gets_every_datagram_as_read() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let counters = Arc::new(Counters::default());
+        let (events, _records) = EventLog::channel(16);
+        let tap = crate::link::server::tap();
+        let mut heard = tap.subscribe();
+        let (addr, task) = spawn(0, tx, counters, events, Some(tap.clone())).unwrap();
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        sender.send_to(&datagram(4), addr).unwrap();
+        sender.send_to(b"junk", addr).unwrap();
+        let first = tokio::time::timeout(Duration::from_secs(5), heard.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&*first, datagram(4).as_slice());
+        let second = tokio::time::timeout(Duration::from_secs(5), heard.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&*second, b"junk", "before it is parsed");
+        let reading = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap();
+        assert!(matches!(reading, Some(RouterMsg::Lufs { .. })));
+        task.abort();
     }
 
     #[test]
