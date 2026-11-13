@@ -4,25 +4,32 @@
 //! the engineer login; the layout, the status, a Pro-Q 4 editor's last
 //! picture (#71 PR E) and the client WebSocket (a token). Every request must
 //! name this hub as its `Host` ([`check_host`]).
+//!
+//! Roles (#184): every API route has one decision in [`route_role`] (the
+//! table [`API_PATHS`] lists them), enforced by [`role_gate`] on every
+//! matched API route, so a route added without a decision is refused to
+//! everyone; an MBC login gets 403 `ROLE` on an engineer-only route, and
+//! its layout and status hold only the Live set `mbc`.
 
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use axum::{
     Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, Path, Query, Request, State},
+    extract::{ConnectInfo, DefaultBodyLimit, MatchedPath, Path, Query, Request, State},
     http::{HeaderMap, StatusCode, header},
     middleware::Next,
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use fohmixer_proto::VersionInfo;
-use fohmixer_proto::client::{HubStatus, SongMapReport};
+use fohmixer_proto::client::{HubStatus, LayoutStatus, SongMapReport};
 use fohmixer_proto::layout::LayoutResponse;
 use fohmixer_proto::markers::migrate::MigrationStatus;
+use fohmixer_proto::roles::{self, MBC_INSTANCE, Role};
 use rust_embed::RustEmbed;
 
-use crate::auth::{Rejection, error_response};
+use crate::auth::{Rejection, bearer, error_response};
 use crate::{Assets, Hub};
 
 /// `GET /api/version`: the build this hub runs (deploy verification, the UI's
@@ -70,17 +77,147 @@ async fn client_error(Json(report): Json<ClientErrorReport>) -> StatusCode {
     StatusCode::NO_CONTENT
 }
 
-/// `GET /api/layout` (a token): the served layout and its revision; 503 while
-/// none is served.
+/// Who may call an API route (#184).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteAccess {
+    /// No token: the version, the pages' reports, the login.
+    Open,
+    /// Any login; the handler serves a role its own view.
+    AnyRole,
+    /// The engineer's login only: an MBC token gets 403 `ROLE`.
+    EngineerOnly,
+}
+
+/// Every path [`api_routes`] registers, each with its decision in
+/// [`route_role`] (a test holds the two together).
+pub const API_PATHS: &[&str] = &[
+    "/api/version",
+    "/api/client-error",
+    "/api/client-report",
+    "/api/auth",
+    "/api/layout",
+    "/api/status",
+    "/api/markers/migration",
+    "/api/eq/picture",
+    "/api/songmap",
+    "/ws",
+];
+
+/// The role decision of an API route (none: a route with no decision,
+/// which [`role_gate`] refuses to everyone).
+pub fn route_role(path: &str) -> Option<RouteAccess> {
+    match path {
+        "/api/version" | "/api/client-error" | "/api/client-report" | "/api/auth" => {
+            Some(RouteAccess::Open)
+        }
+        "/api/layout" | "/api/status" | "/ws" => Some(RouteAccess::AnyRole),
+        "/api/markers/migration" | "/api/eq/picture" | "/api/songmap" => {
+            Some(RouteAccess::EngineerOnly)
+        }
+        _ => None,
+    }
+}
+
+/// Whether a request with a token of `role` (none: no valid token, which
+/// the handler answers 401) is refused before its handler.
+pub fn refused(access: Option<RouteAccess>, role: Option<Role>) -> bool {
+    match access {
+        None => true,
+        Some(RouteAccess::Open | RouteAccess::AnyRole) => false,
+        Some(RouteAccess::EngineerOnly) => role == Some(Role::Mbc),
+    }
+}
+
+/// The 403 of a refused route.
+pub fn role_forbidden() -> Response {
+    error_response(StatusCode::FORBIDDEN, "ROLE", "Not allowed for this login")
+}
+
+/// The role check of every matched API route ([`route_role`]).
+pub async fn role_gate(
+    State(hub): State<Hub>,
+    path: MatchedPath,
+    request: Request,
+    next: Next,
+) -> Response {
+    let access = route_role(path.as_str());
+    let role = hub.auth.role(bearer(request.headers()));
+    if !refused(access, role) {
+        return next.run(request).await;
+    }
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(addr)| addr.ip().to_string())
+        .unwrap_or_else(|| "-".to_string());
+    match access {
+        None => tracing::error!(
+            path = path.as_str(),
+            "an API route without a role decision refused"
+        ),
+        Some(_) => tracing::info!(
+            role = role.map_or("-", Role::as_str),
+            path = path.as_str(),
+            peer = %peer,
+            "role refused"
+        ),
+    }
+    role_forbidden()
+}
+
+/// The status an MBC login is served: its Live set only, the layout's
+/// revision and that set's unresolved bindings, and nothing of the FOH
+/// side (every other field empty). The engineer's is the whole status.
+pub fn status_for(role: Role, status: HubStatus) -> HubStatus {
+    match role {
+        Role::Engineer => status,
+        Role::Mbc => HubStatus {
+            instances: status
+                .instances
+                .into_iter()
+                .filter(|i| i.name == MBC_INSTANCE)
+                .collect(),
+            layout: LayoutStatus {
+                rev: status.layout.rev,
+                error: None,
+                unresolved: status
+                    .layout
+                    .unresolved
+                    .into_iter()
+                    .filter(|u| u.instance == MBC_INSTANCE)
+                    .collect(),
+                markers: Default::default(),
+            },
+            stage_aut: Default::default(),
+            clients: 0,
+            remote: Default::default(),
+            client_reports: Vec::new(),
+            companion: None,
+            ableset: None,
+            presenter: None,
+            reverb: Default::default(),
+            fader_links: Vec::new(),
+            autotune: Default::default(),
+            songmap: Vec::new(),
+            lufs: Default::default(),
+            sectors: Default::default(),
+            colors: Default::default(),
+            mute_alarms: Default::default(),
+        },
+    }
+}
+
+/// `GET /api/layout` (a token): the served layout as the login's role sees
+/// it (`roles::layout_for`) and its revision; 503 while none is served.
 async fn get_layout(
     State(hub): State<Hub>,
     headers: HeaderMap,
 ) -> Result<Json<LayoutResponse>, Rejection> {
-    hub.auth.require(&headers)?;
+    let (_, role) = hub.auth.require(&headers)?;
     match hub.layout.current() {
         (rev, Some(layout)) => Ok(Json(LayoutResponse {
             rev,
-            layout: (*layout).clone(),
+            layout: roles::layout_for(role, &layout),
         })),
         (_, None) => Err(Rejection::from(error_response(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -92,13 +229,14 @@ async fn get_layout(
     }
 }
 
-/// `GET /api/status` (a token): the instances, the layout, STAGE AUT.
+/// `GET /api/status` (a token): the instances, the layout, STAGE AUT; an
+/// MBC login's trimmed ([`status_for`]).
 async fn get_status(
     State(hub): State<Hub>,
     headers: HeaderMap,
 ) -> Result<Json<HubStatus>, Rejection> {
-    hub.auth.require(&headers)?;
-    Ok(Json(hub.status().await))
+    let (_, role) = hub.auth.require(&headers)?;
+    Ok(Json(status_for(role, hub.status().await)))
 }
 
 /// `GET /api/markers/migration` (a token, #68 PR C): each planned track of
@@ -344,7 +482,7 @@ pub async fn https_redirect(State(hub): State<Hub>, request: Request, next: Next
 }
 
 /// API routes.
-pub fn api_routes() -> Router<Hub> {
+pub fn api_routes(hub: Hub) -> Router<Hub> {
     Router::new()
         // Version endpoint (deploy verification, the UI's version label)
         .route("/api/version", get(get_version))
@@ -370,6 +508,7 @@ pub fn api_routes() -> Router<Hub> {
         .route("/api/eq/picture", get(get_eq_picture))
         .route("/api/songmap", get(get_songmap))
         .route("/ws", get(crate::ws::ws_handler))
+        .route_layer(axum::middleware::from_fn_with_state(hub, role_gate))
 }
 
 /// Static routes: the embedded UI (Trunk's `dist/`). A path without a file
@@ -855,6 +994,219 @@ mod tests {
                 (Some(code), Some(message))
             );
         }
+    }
+
+    async fn get_as(hub: &crate::Hub, role: Role, path: &str) -> Response {
+        send_as(hub, role, Request::get(path)).await
+    }
+
+    async fn send_as(
+        hub: &crate::Hub,
+        role: Role,
+        request: axum::http::request::Builder,
+    ) -> Response {
+        let token = hub.auth.issue(role).unwrap();
+        lan(crate::app_router(hub.clone()))
+            .oneshot(
+                request
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[test]
+    fn every_api_route_has_a_role_decision() {
+        for path in API_PATHS {
+            assert!(route_role(path).is_some(), "{path}");
+        }
+        assert_eq!(route_role("/api/nothing"), None);
+        assert_eq!(route_role("/api/version"), Some(RouteAccess::Open));
+        assert_eq!(route_role("/api/auth"), Some(RouteAccess::Open));
+        assert_eq!(route_role("/api/client-error"), Some(RouteAccess::Open));
+        assert_eq!(route_role("/api/client-report"), Some(RouteAccess::Open));
+        assert_eq!(route_role("/api/layout"), Some(RouteAccess::AnyRole));
+        assert_eq!(route_role("/api/status"), Some(RouteAccess::AnyRole));
+        assert_eq!(route_role("/ws"), Some(RouteAccess::AnyRole));
+        for path in ["/api/markers/migration", "/api/eq/picture", "/api/songmap"] {
+            assert_eq!(route_role(path), Some(RouteAccess::EngineerOnly), "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn every_listed_path_is_a_registered_route() {
+        // A path in the table that no route serves would be a stale entry;
+        // a registered route missing from it is refused to everyone (the
+        // gate's `None`), which its own tests then show.
+        let dir = tempfile::tempdir().unwrap();
+        let hub = crate::test_hub(dir.path());
+        for path in API_PATHS {
+            let response = get_as(&hub, Role::Engineer, path).await;
+            assert_ne!(response.status(), StatusCode::NOT_FOUND, "{path}");
+            assert_ne!(response.status(), StatusCode::FORBIDDEN, "{path}");
+            // Not the SPA's index either.
+            let body = body_bytes(response).await;
+            assert!(!body.starts_with(b"<!"), "{path}");
+        }
+        hub.stop();
+    }
+
+    #[test]
+    fn only_an_mbc_token_on_an_engineer_route_or_a_route_without_a_decision_is_refused() {
+        for role in [None, Some(Role::Engineer), Some(Role::Mbc)] {
+            assert!(!refused(Some(RouteAccess::Open), role), "{role:?}");
+            assert!(!refused(Some(RouteAccess::AnyRole), role), "{role:?}");
+            assert!(refused(None, role), "{role:?}");
+        }
+        assert!(refused(Some(RouteAccess::EngineerOnly), Some(Role::Mbc)));
+        assert!(!refused(
+            Some(RouteAccess::EngineerOnly),
+            Some(Role::Engineer)
+        ));
+        // No token: the handler's own 401.
+        assert!(!refused(Some(RouteAccess::EngineerOnly), None));
+    }
+
+    #[tokio::test]
+    async fn an_mbc_token_gets_403_on_every_engineer_route() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = crate::test_hub(dir.path());
+        let engineer_only: Vec<&str> = API_PATHS
+            .iter()
+            .copied()
+            .filter(|p| route_role(p) == Some(RouteAccess::EngineerOnly))
+            .collect();
+        assert_eq!(engineer_only.len(), 3);
+        for path in engineer_only {
+            for request in [Request::get(path), Request::post(path)] {
+                let response = send_as(&hub, Role::Mbc, request).await;
+                if response.status() == StatusCode::METHOD_NOT_ALLOWED {
+                    continue;
+                }
+                assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+                let body: serde_json::Value =
+                    serde_json::from_slice(&body_bytes(response).await).unwrap();
+                assert_eq!(body["code"], "ROLE", "{path}");
+            }
+            let response = get_as(&hub, Role::Engineer, path).await;
+            assert_ne!(response.status(), StatusCode::FORBIDDEN, "{path}");
+        }
+        // Without a token: 401 as before, never 403.
+        let response = get_path("/api/songmap?instance=band").await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        hub.stop();
+    }
+
+    /// A hub of band, master and mbc (nothing listening) serving
+    /// `layout-ok.json` with one more group: an mbc strip.
+    async fn three_lives(dir: &std::path::Path) -> crate::Hub {
+        let text = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/layout-ok.json"),
+        )
+        .unwrap();
+        let mut layout: serde_json::Value = serde_json::from_str(&text).unwrap();
+        layout["pages"][0]["rows"][0]["sections"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "kind": "group", "id": "mbc-1", "title": "MBC", "color": "#1E3A1E",
+                "controls": [{"kind": "strip", "strip_kind": "standard",
+                    "binding": {"instance": "mbc", "anchor": {"kind": "track", "name": "Hand 1"}}}]
+            }));
+        std::fs::write(dir.join("layout.json"), layout.to_string()).unwrap();
+        let mut config = crate::config::Config::defaults(dir);
+        config.instances = ["band", "master", "mbc"]
+            .into_iter()
+            .map(|name| {
+                let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                let port = free.local_addr().unwrap().port();
+                crate::config::InstanceCfg {
+                    name: name.into(),
+                    port,
+                }
+            })
+            .collect();
+        let hub = crate::Hub::start(config).unwrap();
+        for _ in 0..100 {
+            if get_as(&hub, Role::Engineer, "/api/layout").await.status() == StatusCode::OK {
+                return hub;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("the layout is served within 5 s: {:?}", hub.layout.error());
+    }
+
+    #[tokio::test]
+    async fn an_mbc_token_gets_only_mbc_in_the_layout_and_the_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = three_lives(dir.path()).await;
+        let mbc: serde_json::Value =
+            serde_json::from_slice(&body_bytes(get_as(&hub, Role::Mbc, "/api/layout").await).await)
+                .unwrap();
+        let text = mbc["layout"].to_string();
+        assert!(!text.contains("\"band\""), "{text}");
+        assert!(!text.contains("\"master\""), "{text}");
+        assert!(text.contains("\"mbc\""), "{text}");
+        let response = get_as(&hub, Role::Mbc, "/api/status").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let status: HubStatus = serde_json::from_slice(&body_bytes(response).await).unwrap();
+        let names: Vec<&str> = status.instances.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, ["mbc"]);
+        assert!(status.layout.rev > 0);
+        hub.stop();
+    }
+
+    #[tokio::test]
+    async fn an_engineer_token_is_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = three_lives(dir.path()).await;
+        let body: serde_json::Value = serde_json::from_slice(
+            &body_bytes(get_as(&hub, Role::Engineer, "/api/layout").await).await,
+        )
+        .unwrap();
+        let served = hub.layout.current().1.unwrap();
+        assert_eq!(body["layout"], serde_json::to_value(&*served).unwrap());
+        let status: HubStatus = serde_json::from_slice(
+            &body_bytes(get_as(&hub, Role::Engineer, "/api/status").await).await,
+        )
+        .unwrap();
+        let names: Vec<&str> = status.instances.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, ["band", "master", "mbc"]);
+        hub.stop();
+    }
+
+    #[test]
+    fn the_mbc_status_holds_its_live_set_only() {
+        let mut status: HubStatus = serde_json::from_value(serde_json::json!({
+            "instances": [], "layout": {"rev": 7, "error": "e", "unresolved": [
+                {"instance": "band", "target": "t", "error": "x"},
+                {"instance": "mbc", "target": "u", "error": "y"}]},
+            "stage_aut": {"on": true, "writes": 3}, "clients": 4,
+        }))
+        .unwrap();
+        for name in ["band", "mbc", "master"] {
+            status.instances.push(
+                serde_json::from_value(serde_json::json!({
+                    "name": name, "port": 1, "online": true, "busy": false,
+                    "set_name": "s", "live_version": "v", "script_version": "w",
+                    "main_tick_age_ms": null, "subscriptions": 2, "listeners": 2,
+                    "connect_failures": 0, "last_error": null}))
+                .unwrap(),
+            );
+        }
+        assert_eq!(status_for(Role::Engineer, status.clone()), status);
+        let mbc = status_for(Role::Mbc, status);
+        assert_eq!(mbc.instances.len(), 1);
+        assert_eq!(mbc.instances[0].name, "mbc");
+        assert_eq!(mbc.layout.rev, 7);
+        assert_eq!(mbc.layout.error, None);
+        assert_eq!(mbc.layout.unresolved.len(), 1);
+        assert_eq!(mbc.layout.unresolved[0].target, "u");
+        assert!(!mbc.stage_aut.on);
+        assert_eq!(mbc.stage_aut.writes, 0);
+        assert_eq!(mbc.clients, 0);
     }
 
     #[tokio::test]

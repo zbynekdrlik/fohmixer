@@ -872,7 +872,7 @@ fn router(hub: Hub, redirect: bool) -> Router {
     };
     let access = axum::middleware::from_fn_with_state(guard, access::middleware);
     let mut app = Router::new()
-        .merge(routes::api_routes())
+        .merge(routes::api_routes(hub.clone()))
         .merge(routes::static_routes())
         .layer(access);
     if redirect {
