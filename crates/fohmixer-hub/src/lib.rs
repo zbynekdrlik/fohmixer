@@ -97,6 +97,7 @@ pub mod remote;
 pub mod router;
 pub mod routes;
 pub mod rules;
+pub mod script_watch;
 pub mod sealed;
 pub mod secrets;
 pub mod sectors;
@@ -423,6 +424,7 @@ impl HubInner {
                     last_error: snap.last_error,
                     unfolded: router.unfolded.get(&cfg.name).cloned().unwrap_or_default(),
                     playing: router.playing.get(&cfg.name).copied().flatten(),
+                    script_missing: router.script_missing.contains(&cfg.name),
                 }
             })
             .collect();
@@ -664,6 +666,13 @@ impl Hub {
                 router::LUFS_TICK,
             )));
         }
+        // `script missing` (#184 PR D): Live running without its script.
+        tasks.push(tokio::spawn(script_watch::watch(
+            live.values().cloned().collect(),
+            router_tx.clone(),
+            script_watch::live_running,
+            script_watch::CHECK_EVERY,
+        )));
         tasks.push(tokio::spawn(poll_layout(
             Arc::clone(&layout),
             router_tx.clone(),

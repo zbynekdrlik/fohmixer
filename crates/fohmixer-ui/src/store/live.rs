@@ -643,6 +643,7 @@ impl LiveStore {
                 busy,
                 set_name,
                 linked,
+                script_missing,
             } => self.on_instance(
                 name,
                 InstanceView {
@@ -650,6 +651,7 @@ impl LiveStore {
                     busy,
                     set_name,
                     linked,
+                    script_missing,
                 },
             ),
             ServerMsg::Hub { key, value } => {

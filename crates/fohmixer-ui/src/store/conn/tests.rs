@@ -23,6 +23,7 @@ fn view(online: bool, set_name: &str) -> InstanceView {
         busy: false,
         set_name: set_name.to_string(),
         linked: false,
+        script_missing: false,
     }
 }
 

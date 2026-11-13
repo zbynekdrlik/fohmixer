@@ -249,6 +249,7 @@ fn badges_are_offline_busy_or_online() {
         busy,
         set_name: String::new(),
         linked: false,
+        script_missing: false,
     };
     assert_eq!(Badge::of(&view(false, false)), Badge::Offline);
     assert_eq!(Badge::of(&view(false, true)), Badge::Offline);

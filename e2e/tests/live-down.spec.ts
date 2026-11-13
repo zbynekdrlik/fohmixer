@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { Page } from "@playwright/test";
 import { expect, test } from "./support/fixtures";
-import { FIXTURE_LAYOUT, FOH_LIVES, MBC_MARKERS, frames, harness, hostLine, hubStatus, openSurface, selectPage, token, until } from "./support/live";
+import { FIXTURE_LAYOUT, FOH_LIVES, HUB_SOCKET, MBC_MARKERS, frames, harness, hostLine, hubStatus, openSurface, selectPage, token, until } from "./support/live";
 
 // A Live that is down, said in words (#178; the owner's approved
 // docs/mockups/live-down-v2.html): no card or overlay anywhere. A strip of a
@@ -140,6 +140,47 @@ test.describe("A Live that is down (#178)", () => {
     await expect(page.getByTestId("strip-why")).toHaveCount(0);
     await roomKept(page);
     await expect(first.getByTestId("db")).toBeVisible();
+  });
+
+  // #184 PR D: a hub on the PC says `script_missing` when Live runs there
+  // while its FohMixer script has not answered for 60 s. No Live runs on the
+  // runner, so the hub's word is put on the stopped hosts' `instance`
+  // messages through the routed socket; the page's words and room are what
+  // this checks (the hub's watch is its own Rust tests).
+  test("Live running without its script: NO SCRIPT on its strips, `no script` in the foot, the room kept (#184)", async ({ page }) => {
+    await page.routeWebSocket(HUB_SOCKET, (ws) => {
+      const server = ws.connectToServer();
+      server.onMessage((message) => {
+        if (typeof message !== "string") return ws.send(message);
+        const msg = JSON.parse(message);
+        if (msg.type === "instance" && msg.online === false) ws.send(JSON.stringify({ ...msg, script_missing: true }));
+        else ws.send(message);
+      });
+    });
+    await page.setViewportSize(IPAD);
+    await openSurface(page);
+    await expect(foot(page, "band")).toHaveAttribute("data-live", "on", { timeout: UP });
+
+    await host("band", "stop");
+    await host("master", "stop");
+    for (const instance of ["band", "master"]) {
+      await stripsSay(page, instance, "off");
+      await expect(foot(page, instance)).toHaveAttribute("data-live", "off");
+      await expect(foot(page, instance).getByTestId("badge-word")).toHaveText("no script");
+    }
+    const first = page.locator('[data-testid="strip"][data-instance="band"]').first();
+    await expect(first.getByTestId("strip-why")).toHaveText("NO SCRIPT");
+    await expect(first.getByTestId("strip-hint")).toHaveText("Live runs without the FohMixer script. Run the install again.");
+    expect(await redIn(page, "body")).toBe(0);
+    await roomKept(page);
+
+    await host("band", "start");
+    await host("master", "start");
+    for (const instance of ["band", "master"]) {
+      await stripsSay(page, instance, null);
+      await expect(foot(page, instance).getByTestId("badge-word")).toHaveText("on", { timeout: UP });
+    }
+    await expect(page.getByTestId("strip-hint")).toHaveCount(0);
   });
 
   test("a Live with no set: NO SET on its strips, its bindings not red, the other Live untouched", async ({ page }) => {

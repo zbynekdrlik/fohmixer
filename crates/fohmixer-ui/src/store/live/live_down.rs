@@ -62,17 +62,21 @@ impl LiveStore {
     /// slots stay as they are.
     pub(super) fn judge(self, instance: &str) {
         let connected = self.connected.try_get_untracked().unwrap_or(false);
-        let online = self
+        let (online, script_missing) = self
             .instances
-            .try_with_untracked(|all| all.get(instance).map(|v| v.online))
-            .flatten();
+            .try_with_untracked(|all| {
+                all.get(instance)
+                    .map(|v| (Some(v.online), v.script_missing))
+            })
+            .flatten()
+            .unwrap_or((None, false));
         let signals = self.slots_of(Some(instance));
         let seen = Seen::of(
             self.judging_slots(instance)
                 .iter()
                 .filter_map(|signal| signal.try_with_untracked(Slot::class)),
         );
-        let word = live_word(connected, online, seen);
+        let word = live_word(connected, online, script_missing, seen);
         if let Some(word) = word {
             let quiet = word.quiets();
             for signal in signals {

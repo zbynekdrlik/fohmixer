@@ -229,6 +229,7 @@ pub fn is_warn(record: &Value) -> bool {
                 | "sectors"
                 | "colors"
                 | "mute_alarms"
+                | "script"
         )
         || (ev == "trace" && holds_warn_event(record))
         || (ev == "songmap" && problems_changed(record))
