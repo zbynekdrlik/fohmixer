@@ -22,6 +22,7 @@ import {
   volume,
   type SectorsDoc,
   type StripRef,
+  fixtureLayout,
 } from "./support/live";
 
 // The fader sectors (#148; spec docs/superpowers/specs/2026-10-28-sectors-design.md,
@@ -313,7 +314,7 @@ test.describe("The fader sectors", () => {
       // The site's column (the owner's report of 29.10.2026): the LAYOUTS
       // block, ARRANGE alone on its row, the rail STAGE, REVERB, AUTOTUNE,
       // TALKBACK and TECHALERT at its foot.
-      const fixture = await servedLayout();
+      const fixture = fixtureLayout();
       const rails = fixture.pages.find((p: any) => p.id === "foh").rail.length;
       const layout = structuredClone(fixture);
       const foh = layout.pages.find((p: any) => p.id === "foh");

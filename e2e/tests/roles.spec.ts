@@ -2,9 +2,10 @@ import { test, expect, type Page } from "./support/fixtures";
 import { BASE, PIN, openSurface } from "./support/live";
 
 // The MBC login (#184): a second PIN whose login reaches only the Live set
-// mbc. On the harness's FOH hub (band and master, no mbc) such a login sees
-// nothing of the FOH side; its foot says who is logged in and LOG OUT goes
-// back to the login. The FOH engineer's page is unchanged: no line.
+// mbc. On the harness's FOH hub (band and master, and since PR B the linked
+// mbc of the harness's MBC hub) such a login sees the MBC strips and nothing
+// of the FOH side; its foot says who is logged in and LOG OUT goes back to
+// the login. The FOH engineer's page is unchanged: no line.
 
 const MBC_PIN = process.env.E2E_MBC_PIN || "";
 
@@ -26,19 +27,27 @@ test.describe("The MBC login", () => {
   test("an MBC login shows only MBC things", async ({ page }) => {
     await logInAsMbc(page);
     await expect(page.getByTestId("stage")).toBeVisible();
-    // Give the hub's attach messages time to arrive: none of them is FOH's.
+    // The linked mbc's strips only (PR B: the harness's FOH hub links the
+    // MBC hub's mbc); give the hub's attach messages time to arrive: none of
+    // them is FOH's.
+    await expect(page.locator('[data-testid="strip"][data-instance="mbc"]').first()).toBeVisible({ timeout: 15_000 });
     await page.waitForTimeout(1500);
-    await expect(page.getByTestId("strip")).toHaveCount(0);
+    const instances = await page
+      .getByTestId("strip")
+      .evaluateAll((all) => [...new Set(all.map((s) => s.getAttribute("data-instance")))]);
+    expect(instances).toEqual(["mbc"]);
     await expect(page.locator('[data-testid="rail"] .btn')).toHaveCount(0);
-    for (const id of ["deck-tab", "ableset-tab", "iem-row", "presenter-tab", "badge"]) {
+    for (const id of ["deck-tab", "ableset-tab", "iem-row", "presenter-tab"]) {
       await expect(page.getByTestId(id), id).toHaveCount(0);
     }
+    const badges = await page.getByTestId("badge").evaluateAll((all) => all.map((b) => b.getAttribute("data-instance")));
+    expect(badges).toEqual(["mbc"]);
     await expect(page.getByTestId("logout")).toHaveText("LOG OUT");
     // The hub itself refuses the FOH side to this token.
     const token = await page.evaluate(() => localStorage.getItem("fohmixer_token"));
     const status = await fetch(`${BASE}/api/status`, { headers: { authorization: `Bearer ${token}` } });
     expect(status.status).toBe(200);
-    expect((await status.json()).instances).toEqual([]);
+    expect((await status.json()).instances.map((i: any) => i.name)).toEqual(["mbc"]);
     const songmap = await fetch(`${BASE}/api/songmap?instance=band`, {
       headers: { authorization: `Bearer ${token}` },
     });

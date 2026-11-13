@@ -15,6 +15,7 @@ import {
   seen,
   selectPage,
   until,
+  MBC_MARKERS,
 } from "./support/live";
 
 // The linked mute (#127, the approved mockup docs/mockups/paired-mute-v3.html,
@@ -38,7 +39,7 @@ function withMarkers(): any {
 
 /** Waits until the hub holds no Tuner marker: the next spec starts on the fixture. */
 async function markersGone() {
-  await until(async () => (await hubStatus()).layout.markers.found, (n: number) => n === 0, "the Tuner markers gone", 10_000);
+  await until(async () => (await hubStatus()).layout.markers.found, (n: number) => n === MBC_MARKERS, "the Tuner markers gone", 10_000);
 }
 
 /** SimLive's band set: the strip's own track (Hand2 #), a partner track (Hand3 #) and a partner return (A-Reverb #). */
