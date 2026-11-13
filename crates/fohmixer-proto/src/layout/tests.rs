@@ -601,6 +601,7 @@ fn a_page_lists_its_controls_rail_first() {
             Control::Alert { .. } => "alert",
             Control::Reverb { .. } => "reverb",
             Control::Autotune { .. } => "autotune",
+            Control::LufsReadout { .. } => "lufs_readout",
         })
         .collect();
     assert_eq!(
@@ -1381,17 +1382,18 @@ fn ctrl(id: &str) -> Value {
 }
 
 #[test]
-fn a_ctrl_id_reads_its_three_names_and_no_other() {
+fn a_ctrl_id_reads_its_four_names_and_no_other() {
     for (id, name) in [
         (CtrlId::Stage, "stage"),
         (CtrlId::Alert, "alert"),
         (CtrlId::Talkback, "talkback"),
+        (CtrlId::Stream, "stream"),
     ] {
         assert_eq!(id.name(), name);
         assert_eq!(CtrlId::parse(name), Some(id));
         assert_eq!(serde_json::to_value(id).unwrap(), json!(name));
     }
-    for text in ["", "STAGE", "stage ", "solo"] {
+    for text in ["", "STAGE", "stage ", "solo", "STREAM"] {
         assert_eq!(CtrlId::parse(text), None, "{text:?}");
     }
 }
@@ -1452,4 +1454,162 @@ fn an_unknown_ctrl_id_does_not_parse() {
     v["pages"][1]["rail"][0]["binding"] = ctrl("solo");
     let error = serde_json::from_value::<Layout>(v).unwrap_err().to_string();
     assert!(error.contains("unknown variant"), "{error}");
+}
+
+/// A `lufs_readout` (#184): `STREAM LUFS` of the Live set `mbc` by track
+/// index, target -14.
+fn readout(anchor: Value) -> Value {
+    json!({"kind": "lufs_readout", "label": "STREAM LUFS", "target": -14,
+           "binding": {"instance": "mbc", "anchor": anchor}})
+}
+
+/// A one-page layout with `controls` in a group and `global` at the foot.
+fn with_readouts(controls: Vec<Value>, global: Vec<Value>) -> Value {
+    json!({"schema": 2, "default_page": "p", "pages": [
+        {"id": "p", "title": "P", "rows": [{"sections": [
+            {"kind": "group", "id": "g", "controls": controls}]}]}],
+        "global": global})
+}
+
+#[test]
+fn a_readout_in_global_is_a_lufs_point() {
+    let layout = parse(with_readouts(
+        vec![],
+        vec![readout(json!({"kind": "track_at", "index": 11}))],
+    ));
+    assert_eq!(layout.validate(), vec![]);
+    assert_eq!(
+        layout.lufs_points(),
+        vec![LufsPoint {
+            instance: "mbc".into(),
+            anchor: Anchor::TrackAt { index: 11 },
+            target: "live_set tracks 11".into(),
+            spec: LufsSpec { target: Some(-14) },
+            label: "STREAM LUFS".into(),
+        }]
+    );
+    assert_eq!(readouts(&layout), vec![&layout.global[0]]);
+    assert_eq!(
+        layout.global[0].bindings()[0].target().as_deref(),
+        Ok("live_set tracks 11")
+    );
+}
+
+#[test]
+fn a_readout_outside_global_is_refused() {
+    let v = with_readouts(
+        vec![readout(json!({"kind": "track_at", "index": 11}))],
+        vec![],
+    );
+    assert_eq!(
+        errors(v),
+        vec!["pages[0].rows[0].sections[0].controls[0]: lufs_readout only in global"]
+    );
+    let mut v = sample();
+    v["pages"][1]["rail"]
+        .as_array_mut()
+        .unwrap()
+        .push(readout(json!({"kind": "track_at", "index": 1})));
+    assert_eq!(
+        errors(v),
+        vec!["pages[1].rail[3]: lufs_readout only in global"]
+    );
+    assert!(readouts(&parse(sample())).is_empty());
+}
+
+#[test]
+fn a_readouts_label_and_target_are_checked() {
+    let with = |label: &str, target: i64| {
+        let mut r = readout(json!({"kind": "track_at", "index": 1}));
+        r["label"] = json!(label);
+        r["target"] = json!(target);
+        errors(with_readouts(vec![], vec![r]))
+    };
+    assert_eq!(with("S", -14), Vec::<String>::new());
+    assert_eq!(with("STREAM LUFS 0123", -14), Vec::<String>::new());
+    assert_eq!(with("STREAM LUFS ČŠŽÝ", -40), Vec::<String>::new());
+    assert_eq!(
+        with("STREAM LUFS 01234", -10),
+        vec!["global[0].label: 17 characters, not 1 to 16".to_string()]
+    );
+    assert_eq!(
+        with("", -14),
+        vec!["global[0].label: 0 characters, not 1 to 16".to_string()]
+    );
+    for target in [-41, -9] {
+        assert_eq!(
+            with("STREAM LUFS", target),
+            vec![format!(
+                "global[0].target: target {target} is not in -40..=-10"
+            )]
+        );
+    }
+    let mut r = readout(json!({"kind": "track_at", "index": 1}));
+    r["binding"]["instance"] = json!("");
+    assert_eq!(
+        errors(with_readouts(vec![], vec![r])),
+        vec!["global[0].binding: binding without an instance"]
+    );
+    let mut r = readout(json!({"kind": "track_at", "index": 1}));
+    r["extra"] = json!(1);
+    assert!(serde_json::from_value::<Layout>(with_readouts(vec![], vec![r])).is_err());
+}
+
+#[test]
+fn a_readout_and_a_strip_on_one_track_share_one_point() {
+    // Review Focus 5: the strip's spec and label win, whatever comes first.
+    let strip = json!({"kind": "strip", "strip_kind": "standard", "label": "Stream",
+        "binding": {"instance": "mbc", "anchor": {"kind": "track_at", "index": 11}}, "lufs": {}});
+    let layout = parse(with_readouts(
+        vec![strip],
+        vec![readout(json!({"kind": "track_at", "index": 11}))],
+    ));
+    let one = vec![LufsPoint {
+        instance: "mbc".into(),
+        anchor: Anchor::TrackAt { index: 11 },
+        target: "live_set tracks 11".into(),
+        spec: LufsSpec { target: None },
+        label: "Stream".into(),
+    }];
+    assert_eq!(layout.lufs_points(), one);
+    // The same track by name: one canonical target, one point.
+    let strip = json!({"kind": "strip", "strip_kind": "standard",
+        "binding": {"instance": "mbc", "anchor": {"kind": "track", "name": "Stream"}}, "lufs": {"target": -20}});
+    let layout = parse(with_readouts(
+        vec![strip],
+        vec![readout(json!({"kind": "track", "name": "Stream"}))],
+    ));
+    let points = layout.lufs_points();
+    assert_eq!(points.len(), 1);
+    assert_eq!(points[0].spec, LufsSpec { target: Some(-20) });
+    assert_eq!(points[0].label, "Stream");
+    // Another track, or another Live set: a point of its own.
+    let strip = json!({"kind": "strip", "strip_kind": "standard", "label": "Hand 1",
+        "binding": {"instance": "band", "anchor": {"kind": "track_at", "index": 11}}, "lufs": {}});
+    let layout = parse(with_readouts(
+        vec![strip],
+        vec![readout(json!({"kind": "track_at", "index": 11}))],
+    ));
+    assert_eq!(
+        layout
+            .lufs_points()
+            .into_iter()
+            .map(|p| (p.instance, p.label))
+            .collect::<Vec<_>>(),
+        [
+            ("band".into(), "Hand 1".into()),
+            ("mbc".into(), "STREAM LUFS".into())
+        ]
+    );
+}
+
+#[test]
+fn an_unfilled_readout_is_no_point_yet() {
+    let layout = parse(with_readouts(
+        vec![],
+        vec![readout(json!({"kind": "ctrl", "id": "stream"}))],
+    ));
+    assert_eq!(layout.validate(), vec![]);
+    assert_eq!(layout.lufs_points(), vec![]);
+    assert_eq!(readouts(&layout).len(), 1);
 }

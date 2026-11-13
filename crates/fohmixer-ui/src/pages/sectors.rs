@@ -43,6 +43,7 @@ use crate::behave::arrange_edit::{REMOVE_ASK, TabRow, TabTap, field_text, tab_ro
 use crate::binding::sectors::{
     Picks, picked, pool_controls, sector_instances, sector_name, sector_side,
 };
+use crate::components::stream_lufs::stream_readouts;
 use crate::components::{ControlView, down_of, owns_touches};
 use crate::dom;
 use crate::pages::presenter::StageMini;
@@ -396,6 +397,7 @@ pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
         })
     };
     let arranging = move || mode.try_with(Arrange::is_on).unwrap_or(false).to_string();
+    let stream = stream_readouts(&head.layout, shown_doc, nav.picks);
     view! {
         <div
             class="body"
@@ -429,6 +431,7 @@ pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
                     <ArrangeButton carrier=carrier refused=refused />
                 </div>
                 <div class="saved-note" data-testid="arrange-note">{note}</div>
+                {stream}
                 <div class="shifts">
                     <For
                         each=move || windows.try_get().unwrap_or_default()

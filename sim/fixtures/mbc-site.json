@@ -146,7 +146,7 @@
    "devices": [
     {
      "template": "plain",
-     "name": "\"Stream\" +G:MBC:12",
+     "name": "\"Stream\" +G:MBC:12 +CTRL:stream",
      "class_name": "Tuner"
     }
    ]

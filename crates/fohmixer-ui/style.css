@@ -121,6 +121,10 @@
     --text: #eaeaf0;
     --muted: #9a9ab4;
     --faint: #5c5c78;
+    /* A LUFS reading (#151 v10 A) and its band's green: the strip's and
+       STREAM LUFS's (#184), one look. */
+    --lufs-text: #e2e2ec;
+    --lufs-in: #2fc79a;
     /* The meter's zones (TouchOSC's colours) and the states. */
     --m-green: #36d67a;
     --m-yellow: #f5d547;

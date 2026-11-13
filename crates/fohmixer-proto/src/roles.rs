@@ -73,7 +73,8 @@ fn control_instance(control: &Control) -> Option<&str> {
         Control::Strip(strip) => Some(&strip.binding.instance),
         Control::Solo { binding, .. }
         | Control::Stage { binding, .. }
-        | Control::Alert { binding, .. } => Some(&binding.instance),
+        | Control::Alert { binding, .. }
+        | Control::LufsReadout { binding, .. } => Some(&binding.instance),
         Control::ParamToggle { targets, .. } => {
             targets.first().map(|t| t.binding.instance.as_str())
         }

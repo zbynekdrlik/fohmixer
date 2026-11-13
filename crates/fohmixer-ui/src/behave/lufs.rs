@@ -8,11 +8,13 @@
 //! the stylesheet). An input point also has its spring (`spring`, mockup
 //! v13): the pause-skipping `V` on the meter's scale.
 
-use fohmixer_proto::layout::{Binding, LufsKind, LufsSpec, Strip};
+use fohmixer_proto::layout::{Binding, Layout, LufsKind, LufsSpec, Strip};
 use fohmixer_proto::lufs::{LufsProblem, LufsState, caption, in_band, judge, text};
 use fohmixer_proto::path::canonical_target;
+use fohmixer_proto::sectors::{SectorLayout, pool};
 
 use super::fader::VolumeLaw;
+use super::login::one_instance;
 use super::scale::tick_pos;
 
 /// The key the hub sends a strip's reading under (`LufsItem`'s instance
@@ -21,13 +23,46 @@ use super::scale::tick_pos;
 /// `+LUFS` or a target that does not parse.
 pub fn point_key(strip: &Strip) -> Option<(String, String)> {
     let _ = strip.lufs?;
+    track_key(&strip.binding)
+}
+
+/// The key of the point on `binding`'s track (its instance and the track's
+/// canonical target, its path left out): a strip's and a `lufs_readout`'s
+/// (#184) point; none while it names no track (a `+CTRL` id no Tuner
+/// filled).
+pub fn track_key(binding: &Binding) -> Option<(String, String)> {
     let track = Binding {
-        instance: strip.binding.instance.clone(),
-        anchor: strip.binding.anchor.clone(),
+        instance: binding.instance.clone(),
+        anchor: binding.anchor.clone(),
         path: None,
     };
     let target = track.target().ok()?;
-    Some((strip.binding.instance.clone(), canonical_target(&target)))
+    Some((binding.instance.clone(), canonical_target(&target)))
+}
+
+/// Whether a `lufs_readout` of the Live set `instance` shows (#184, mockup
+/// v3): always on a page whose faders are one Live set's (`one_instance`,
+/// the MBC hub's), else only while a picked layout holds a fader of
+/// `instance` (the FOH page with a sector paged to the MBC faders).
+pub fn stream_shown(instance: &str, picked: &[&SectorLayout], one_instance: bool) -> bool {
+    one_instance
+        || picked
+            .iter()
+            .any(|layout| layout.refs().any(|s| s.instance == instance))
+}
+
+/// Whether `layout` is a page of one Live set's faders (#184: the MBC
+/// hub's), where a readout always shows, at its full size: a pool of at
+/// least one fader, all of one Live set. An empty pool (no marker read yet,
+/// the Lives down) is none: the FOH page then shows no readout of its own.
+pub fn stream_page(layout: &Layout) -> bool {
+    !pool(layout).is_empty() && one_instance(layout)
+}
+
+/// A readout's target line (#184, mockup v3, in English, #141): a target
+/// is always below 0 (`lufs_target_ok`), with a typographic minus.
+pub fn target_text(target: i8) -> String {
+    format!("target \u{2212}{}", target.unsigned_abs())
 }
 
 /// The caption's kind as the strip's `data-kind`: `in` or `out`, none
@@ -213,6 +248,89 @@ mod tests {
             fader_follows: Vec::new(),
             lufs,
         }
+    }
+
+    fn layout_of(strips: &[(&str, &str)]) -> SectorLayout {
+        SectorLayout {
+            id: "rd-1".into(),
+            title: "RD".into(),
+            strips: strips
+                .iter()
+                .map(|(instance, label)| {
+                    Some(fohmixer_proto::sectors::StripRef {
+                        instance: (*instance).into(),
+                        label: (*label).into(),
+                    })
+                })
+                .chain([None])
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn stream_lufs_shows_on_one_instance_or_while_a_sector_shows_its_faders() {
+        let foh = layout_of(&[("band", "Vox 1"), ("master", "Hand1 #")]);
+        let mbc = layout_of(&[("mbc", "Hand 1"), ("mbc", "Choir")]);
+        let mixed = layout_of(&[("band", "Vox 1"), ("mbc", "Choir")]);
+        // The MBC hub's page: shown with nothing picked.
+        assert!(stream_shown("mbc", &[], true));
+        assert!(stream_shown("mbc", &[&foh], true));
+        // The FOH page: RD paged to the MBC faders, then back.
+        assert!(stream_shown("mbc", &[&foh, &mbc], false));
+        assert!(stream_shown("mbc", &[&mixed], false));
+        assert!(!stream_shown("mbc", &[&foh, &foh], false));
+        assert!(!stream_shown("mbc", &[], false));
+        assert!(!stream_shown("band", &[&mbc], false));
+    }
+
+    #[test]
+    fn a_stream_page_is_a_pool_of_one_live_sets_faders_and_never_empty() {
+        let page = |strips: Vec<(&str, &str)>| -> Layout {
+            let controls: Vec<serde_json::Value> = strips
+                .into_iter()
+                .map(|(instance, label)| {
+                    json!({"kind": "strip", "strip_kind": "standard", "label": label,
+                        "binding": {"instance": instance, "anchor": {"kind": "track_at", "index": 0}}})
+                })
+                .collect();
+            serde_json::from_value(json!({"schema": 2, "default_page": "p", "pages": [
+                {"id": "p", "title": "P", "rows": [{"sections": [
+                    {"kind": "group", "id": "g", "controls": controls}]}]}]}))
+            .unwrap()
+        };
+        assert!(stream_page(&page(vec![
+            ("mbc", "Hand 1"),
+            ("mbc", "Choir")
+        ])));
+        assert!(stream_page(&page(vec![("mbc", "Hand 1")])));
+        assert!(!stream_page(&page(vec![
+            ("band", "Vox 1"),
+            ("mbc", "Choir")
+        ])));
+        assert!(!stream_page(&page(vec![])));
+    }
+
+    #[test]
+    fn a_readouts_key_is_its_tracks_point_and_its_target_line_is_english() {
+        let by_index = Binding {
+            instance: "mbc".into(),
+            anchor: Anchor::TrackAt { index: 8 },
+            path: None,
+        };
+        assert_eq!(
+            track_key(&by_index),
+            Some(("mbc".into(), "live_set tracks 8".into()))
+        );
+        let unfilled = Binding {
+            instance: "mbc".into(),
+            anchor: Anchor::Ctrl {
+                id: fohmixer_proto::layout::CtrlId::Stream,
+            },
+            path: None,
+        };
+        assert_eq!(track_key(&unfilled), None);
+        assert_eq!(target_text(-14), "target \u{2212}14");
+        assert_eq!(target_text(-40), "target \u{2212}40");
     }
 
     #[test]

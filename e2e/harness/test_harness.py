@@ -719,6 +719,20 @@ class MbcConfig(unittest.TestCase):
             '[link]\nlisten = "127.0.0.1:39196"\ninstance = "mbc"\n',
         )
 
+    def test_the_foh_layout_gets_the_stream_readout_as_the_mbc_frame_has_it(self):
+        with open(harness.MBC_FRAME, encoding="utf-8") as f:
+            frame = json.load(f)
+        self.assertEqual(frame["global"], [harness.STREAM_READOUT])
+        layout = {"schema": 2, "pages": [], "global": [{"kind": "alert"}]}
+        self.assertEqual(
+            harness.with_stream_readout(layout)["global"],
+            [{"kind": "alert"}, harness.STREAM_READOUT],
+        )
+        self.assertEqual(layout["global"], [{"kind": "alert"}], "the input stays")
+        self.assertEqual(
+            harness.with_stream_readout({"schema": 2})["global"], [harness.STREAM_READOUT]
+        )
+
     def test_a_link_secret_is_32_random_bytes_in_base64(self):
         one, two = harness.link_secret_line(), harness.link_secret_line()
         self.assertTrue(one.endswith("\n"))

@@ -18,5 +18,19 @@
     }
    ]
   }
+ ],
+ "global": [
+  {
+   "kind": "lufs_readout",
+   "label": "STREAM LUFS",
+   "target": -14,
+   "binding": {
+    "instance": "mbc",
+    "anchor": {
+     "kind": "ctrl",
+     "id": "stream"
+    }
+   }
+  }
  ]
 }

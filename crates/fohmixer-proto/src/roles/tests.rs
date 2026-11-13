@@ -336,3 +336,21 @@ fn mbc_may_arrange_only_on_a_hub_of_its_own_faders() {
     assert!(may_arrange(Role::Engineer, &mixed, [&mbc, &band]));
     assert!(may_arrange(Role::Engineer, &empty, [&band]));
 }
+
+#[test]
+fn an_mbc_layout_keeps_an_mbc_readout_and_drops_a_band_one() {
+    let readout = |instance: &str| {
+        json!({"kind": "lufs_readout", "label": "STREAM LUFS", "target": -14,
+               "binding": {"instance": instance, "anchor": {"kind": "ctrl", "id": "stream"}}})
+    };
+    let mut whole = mixed();
+    whole.global.push(layout_control(readout("mbc")));
+    whole.global.push(layout_control(readout("band")));
+    let got = layout_for(Role::Mbc, &whole);
+    assert_eq!(got.global, vec![layout_control(readout("mbc"))]);
+    assert_eq!(layout_for(Role::Engineer, &whole), whole);
+}
+
+fn layout_control(value: serde_json::Value) -> Control {
+    serde_json::from_value(value).expect("a test control")
+}

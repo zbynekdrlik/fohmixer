@@ -548,7 +548,7 @@ pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
         frame,
         &mut out,
         names_ctrl_wrongly,
-        "a ctrl anchor: only stage, alert and param_toggle take one",
+        "a ctrl anchor: only stage, alert, param_toggle and lufs_readout take one",
     );
     // One link on two faders: named at the second, with its label (#130
     // review M4).
@@ -597,7 +597,10 @@ pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
 fn names_ctrl_wrongly(control: &Control) -> bool {
     !matches!(
         control,
-        Control::Stage { .. } | Control::Alert { .. } | Control::ParamToggle { .. }
+        Control::Stage { .. }
+            | Control::Alert { .. }
+            | Control::ParamToggle { .. }
+            | Control::LufsReadout { .. }
     ) && control
         .bindings()
         .iter()

@@ -210,6 +210,15 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         targets: Vec<AutotuneTarget>,
     },
+    /// A loudness readout of one track (#184: `STREAM LUFS`), read only:
+    /// #151's reading of its track's point, judged against `target`. Only
+    /// in [`Layout::global`]; its binding names the track (a frame names it
+    /// by a `+CTRL` id, which the markers fill).
+    LufsReadout {
+        label: String,
+        target: i8,
+        binding: Binding,
+    },
 }
 
 /// The largest value of a rack's macro (#104: the `Latencies` rack's first
@@ -294,47 +303,6 @@ pub struct Strip {
     /// `+LUFS:<target>`, or a frame strip's `"lufs"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lufs: Option<LufsSpec>,
-}
-
-/// The lowest target a `+LUFS:<target>` takes (#151, spec §5.1).
-pub const LUFS_TARGET_MIN: i8 = -40;
-/// The highest target a `+LUFS:<target>` takes.
-pub const LUFS_TARGET_MAX: i8 = -10;
-
-/// A strip's loudness point (#151, spec §3.1, §5.1): with a target an
-/// INPUT point (after the trim, its `Voice` judged against the target),
-/// without one an OUTPUT point (its plain short-term).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LufsSpec {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target: Option<i8>,
-}
-
-/// Which loudness a point's number is (#151, the owner's FINDING of 27.10).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LufsKind {
-    /// After the trim, judged against the target: `LUFS IN`.
-    In,
-    /// An output, plain: `LUFS OUT`.
-    Out,
-}
-
-impl LufsSpec {
-    /// `In` with a target, `Out` without (the kind comes from the tag
-    /// alone, never from the track's place).
-    pub fn kind(&self) -> LufsKind {
-        match self.target {
-            Some(_) => LufsKind::In,
-            None => LufsKind::Out,
-        }
-    }
-}
-
-/// Whether `target` is a target a loudness point takes.
-pub fn lufs_target_ok(target: i8) -> bool {
-    (LUFS_TARGET_MIN..=LUFS_TARGET_MAX).contains(&target)
 }
 
 /// A fader link's leader: its Live set and its `+ID` (#130, D18).
@@ -456,7 +424,8 @@ impl Control {
                 .collect(),
             Control::Solo { binding, .. }
             | Control::Stage { binding, .. }
-            | Control::Alert { binding, .. } => vec![binding],
+            | Control::Alert { binding, .. }
+            | Control::LufsReadout { binding, .. } => vec![binding],
             Control::ParamToggle { targets, .. } | Control::ParamFader { targets, .. } => {
                 targets.iter().map(|t| &t.binding).collect()
             }
@@ -598,6 +567,8 @@ pub enum CtrlId {
     Stage,
     Alert,
     Talkback,
+    /// The stream's loudness readout (#184, `STREAM LUFS`).
+    Stream,
 }
 
 impl CtrlId {
@@ -607,14 +578,20 @@ impl CtrlId {
             CtrlId::Stage => "stage",
             CtrlId::Alert => "alert",
             CtrlId::Talkback => "talkback",
+            CtrlId::Stream => "stream",
         }
     }
 
     /// The id a tag's argument names; none for any other text.
     pub fn parse(text: &str) -> Option<Self> {
-        [CtrlId::Stage, CtrlId::Alert, CtrlId::Talkback]
-            .into_iter()
-            .find(|id| id.name() == text)
+        [
+            CtrlId::Stage,
+            CtrlId::Alert,
+            CtrlId::Talkback,
+            CtrlId::Stream,
+        ]
+        .into_iter()
+        .find(|id| id.name() == text)
     }
 }
 
@@ -682,6 +659,7 @@ impl Layout {
         let mut v = Validator {
             errors: Vec::new(),
             ids: HashSet::new(),
+            global: false,
         };
         if self.schema != LAYOUT_SCHEMA {
             v.error(
@@ -704,6 +682,7 @@ impl Layout {
         for (i, page) in self.pages.iter().enumerate() {
             v.page(&format!("pages[{i}]"), page);
         }
+        v.global = true;
         for (i, control) in self.global.iter().enumerate() {
             v.control(&format!("global[{i}]"), control);
         }
@@ -823,51 +802,6 @@ impl Layout {
         found.into_values().collect()
     }
 
-    /// The loudness points (#151, spec §4.4): every strip with `lufs`, each
-    /// track once (a strip shows in several views), in document order of
-    /// its first place; its target in canonical form (the key a page holds
-    /// its strip by), its anchor (the hub names its track from it) and its
-    /// label (the strip's own, else its track name's first word).
-    pub fn lufs_points(&self) -> Vec<LufsPoint> {
-        let mut points: Vec<LufsPoint> = Vec::new();
-        for control in self.controls() {
-            let Control::Strip(strip) = control else {
-                continue;
-            };
-            let Some(spec) = strip.lufs else {
-                continue;
-            };
-            let track = Binding {
-                instance: strip.binding.instance.clone(),
-                anchor: strip.binding.anchor.clone(),
-                path: None,
-            };
-            let Ok(target) = track.target() else {
-                continue;
-            };
-            let target = crate::path::canonical_target(&target);
-            if points
-                .iter()
-                .any(|p| p.instance == strip.binding.instance && p.target == target)
-            {
-                continue;
-            }
-            let label = match (&strip.label, &strip.binding.anchor) {
-                (Some(label), _) => label.clone(),
-                (None, Anchor::Track { name } | Anchor::Return { name }) => strip_label(name),
-                (None, _) => target.clone(),
-            };
-            points.push(LufsPoint {
-                instance: strip.binding.instance.clone(),
-                anchor: strip.binding.anchor.clone(),
-                target,
-                spec,
-                label,
-            });
-        }
-        points
-    }
-
     /// The frame's linked faders (#130, D18: Podklady All): each one's link
     /// and label, in document order.
     pub fn linked_faders(&self) -> Vec<(LinkId, String)> {
@@ -924,21 +858,12 @@ pub struct RuleFader {
     pub target: String,
 }
 
-/// One loudness point of a served layout (#151): its strip's instance,
-/// anchor and track target (canonical), its spec and its label.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LufsPoint {
-    pub instance: String,
-    pub anchor: Anchor,
-    pub target: String,
-    pub spec: LufsSpec,
-    pub label: String,
-}
-
 struct Validator {
     errors: Vec<LayoutError>,
     /// Page, sub-page, group and pager ids: one namespace.
     ids: HashSet<String>,
+    /// Checking `global`'s controls (the only place of a `lufs_readout`).
+    global: bool,
 }
 
 impl Validator {
@@ -1112,6 +1037,29 @@ impl Validator {
                 }
             }
             Control::Reverb { .. } => {}
+            Control::LufsReadout {
+                label,
+                target,
+                binding,
+            } => {
+                if !self.global {
+                    self.error(at, OUTSIDE_GLOBAL.to_string());
+                }
+                self.binding(&format!("{at}.binding"), binding);
+                let chars = label.chars().count();
+                if !(1..=READOUT_LABEL_MAX).contains(&chars) {
+                    self.error(
+                        &format!("{at}.label"),
+                        format!("{chars} characters, not 1 to {READOUT_LABEL_MAX}"),
+                    );
+                }
+                if !lufs_target_ok(*target) {
+                    self.error(
+                        &format!("{at}.target"),
+                        format!("target {target} is not in {LUFS_TARGET_MIN}..={LUFS_TARGET_MAX}"),
+                    );
+                }
+            }
             Control::Autotune { targets, .. } => {
                 for (i, t) in targets.iter().enumerate() {
                     let t_at = format!("{at}.targets[{i}]");
@@ -1167,6 +1115,13 @@ impl Validator {
         }
     }
 }
+
+mod lufs;
+use lufs::OUTSIDE_GLOBAL;
+pub use lufs::{
+    LUFS_TARGET_MAX, LUFS_TARGET_MIN, LufsKind, LufsPoint, LufsSpec, READOUT_LABEL_MAX,
+    lufs_target_ok, readouts,
+};
 
 #[cfg(test)]
 mod tests;

@@ -1040,13 +1040,24 @@ mod tests {
         let frame = check(&std::fs::read(path).unwrap(), &["mbc".to_string()]).unwrap();
         let composed = compose_with(
             &frame,
-            &[Found {
-                instance: "mbc".into(),
-                kind: TrackKind::Track,
-                index: 0,
-                name: r#""Hand 1" +G:MBC:1"#.into(),
-                tuners: 1,
-            }],
+            &[
+                Found {
+                    instance: "mbc".into(),
+                    kind: TrackKind::Track,
+                    index: 0,
+                    name: r#""Hand 1" +G:MBC:1"#.into(),
+                    tuners: 1,
+                },
+                // The stream group's Tuner (PR C): a strip and the readout's
+                // `+CTRL:stream`, as `sim/fixtures/mbc-site.json` has it.
+                Found {
+                    instance: "mbc".into(),
+                    kind: TrackKind::Track,
+                    index: 8,
+                    name: r#""Stream" +G:MBC:12 +CTRL:stream"#.into(),
+                    tuners: 1,
+                },
+            ],
             &BTreeSet::new(),
         );
         assert!(composed.problems.is_empty());
@@ -1055,7 +1066,16 @@ mod tests {
             1,
             "no view: the frame places MBC"
         );
-        assert_eq!(fohmixer_proto::sectors::pool(&composed.layout).len(), 1);
+        assert_eq!(fohmixer_proto::sectors::pool(&composed.layout).len(), 2);
+        // STREAM LUFS (#184 PR C): the frame's readout reads the stream
+        // group's track, -14.
+        let points = composed.layout.lufs_points();
+        assert_eq!(points.len(), 1);
+        assert_eq!(
+            (points[0].target.as_str(), points[0].label.as_str()),
+            ("live_set tracks 8", "STREAM LUFS")
+        );
+        assert_eq!(points[0].spec.target, Some(-14));
     }
 
     #[test]

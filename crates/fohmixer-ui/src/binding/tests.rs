@@ -362,6 +362,7 @@ fn shown(layout: &Layout, path: &[usize]) -> Vec<String> {
             Control::Alert { .. } => "alert".into(),
             Control::Reverb { .. } => "reverb".into(),
             Control::Autotune { .. } => "autotune".into(),
+            Control::LufsReadout { label, .. } => label.clone(),
         })
         .collect()
 }

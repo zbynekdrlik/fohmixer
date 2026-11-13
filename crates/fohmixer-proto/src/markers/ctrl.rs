@@ -1,6 +1,6 @@
-//! A frame control's Tuner (#104): a `stage`, `alert` or `param_toggle` that
-//! names a `+CTRL` id takes the tagged track by index, and an id on two
-//! Tuners of a Live set, or on none, binds nothing.
+//! A frame control's Tuner (#104): a `stage`, `alert`, `param_toggle` or
+//! (#184) `lufs_readout` that names a `+CTRL` id takes the tagged track by
+//! index, and an id on two Tuners of a Live set, or on none, binds nothing.
 
 use std::collections::BTreeMap;
 
@@ -72,12 +72,14 @@ fn fill_binding(binding: &mut Binding, tracks: &BTreeMap<(String, CtrlId), Ancho
     }
 }
 
-/// Fills every `stage`, `alert` and `param_toggle` that names a `+CTRL` id
-/// (#104; a view's copied rail too, so it runs after the views). A control
-/// that still names its track stays as it is.
+/// Fills every `stage`, `alert`, `param_toggle` and `lufs_readout` (#184)
+/// that names a `+CTRL` id (#104; a view's copied rail too, so it runs
+/// after the views). A control that still names its track stays as it is.
 pub(super) fn fill(layout: &mut Layout, tracks: &BTreeMap<(String, CtrlId), Anchor>) {
     each_control_mut(layout, &mut |control: &mut Control| match control {
-        Control::Stage { binding, .. } | Control::Alert { binding, .. } => {
+        Control::Stage { binding, .. }
+        | Control::Alert { binding, .. }
+        | Control::LufsReadout { binding, .. } => {
             fill_binding(binding, tracks);
         }
         Control::ParamToggle { targets, .. } => {
