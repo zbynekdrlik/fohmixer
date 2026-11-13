@@ -293,15 +293,13 @@ test.describe("A Live that is down (#178)", () => {
      * the page replaced in between was read removed, and a removed label's
      * computed `visibility` is `""` in both engines: three replaced master
      * strips read as 27 hidden labels. Waited for (`expect.poll`), as the
-     * strips may still be recomposing after the resize back to the iPad. */
+     * strips may still be recomposing after the resize back to the iPad.
+     * No label at all reads -1, so the same read proves there are some. */
     const hiddenTicks = (instance: string) =>
-      page.evaluate(
-        (instance) =>
-          [...document.querySelectorAll(`[data-testid="strip"][data-instance="${instance}"] .scale .tick`)].filter(
-            (t) => getComputedStyle(t).visibility !== "visible",
-          ).length,
-        instance,
-      );
+      page.evaluate((instance) => {
+        const ticks = [...document.querySelectorAll(`[data-testid="strip"][data-instance="${instance}"] .scale .tick`)];
+        return ticks.length === 0 ? -1 : ticks.filter((t) => getComputedStyle(t).visibility !== "visible").length;
+      }, instance);
 
     await host("band", "stop");
     await host("master", "stop");
@@ -313,13 +311,11 @@ test.describe("A Live that is down (#178)", () => {
     await stripsSay(page, "master", null);
     await check("noset");
     // Only a down strip loses its numbers: the master Live is on.
-    expect(await page.locator('[data-testid="strip"][data-instance="master"] .scale .tick').count()).toBeGreaterThan(0);
-    await expect.poll(() => hiddenTicks("master"), { timeout: UP }).toBe(0);
+    await expect.poll(() => hiddenTicks("master"), { timeout: UP, message: "master's scale labels all shown" }).toBe(0);
 
     await host("band", "start");
     await stripsSay(page, "band", null);
-    expect(await page.locator('[data-testid="strip"][data-instance="band"] .scale .tick').count()).toBeGreaterThan(0);
-    await expect.poll(() => hiddenTicks("band"), { timeout: UP }).toBe(0);
+    await expect.poll(() => hiddenTicks("band"), { timeout: UP, message: "band's scale labels all shown" }).toBe(0);
   });
 
   test("every Live on: one line per Live beside the counter, the rail keeps its room", async ({ page }) => {
