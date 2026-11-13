@@ -534,6 +534,13 @@ fn handle_text(hub: &Hub, conn: &mut Conn, text: &str) {
             strip,
             color,
         }),
+        // The mute alarm (#188): answered as the colours are.
+        Ok(ClientMsg::SetMuteAlarm { id, strip, on }) => hub.route(RouterMsg::SetMuteAlarm {
+            client,
+            id,
+            strip,
+            on,
+        }),
         // Straight to the outbox (PR I): the writer's next frame may go.
         Ok(ClientMsg::EqFrameAck { session, seq }) => {
             outbox.frame_acked(session, seq, std::time::Instant::now());

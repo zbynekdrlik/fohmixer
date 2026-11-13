@@ -83,6 +83,7 @@ pub mod layout;
 pub mod live;
 pub mod login_guard;
 pub mod lufs_udp;
+pub mod mute_alarms;
 pub mod outbox;
 pub mod pepper;
 pub mod pin_hash;
@@ -448,6 +449,7 @@ impl HubInner {
             presenter: self.presenter.as_ref().map(|site| site.status()),
             sectors: router.sectors,
             colors: router.colors,
+            mute_alarms: router.mute_alarms,
         }
     }
 }
@@ -698,8 +700,8 @@ fn remote_http() -> anyhow::Result<http_client::HttpClient> {
 }
 
 /// Checks the layout file every `period`; a new layout goes to the router,
-/// and the router reads `sectors.json` (#148) and `colors.json` (#164)
-/// again.
+/// and the router reads `sectors.json` (#148), `colors.json` (#164) and
+/// `mute_alarms.json` (#188) again.
 async fn poll_layout(
     layout: Arc<LayoutStore>,
     router: mpsc::UnboundedSender<RouterMsg>,
@@ -724,6 +726,10 @@ async fn poll_layout(
         }
         // So does the strips' colours' file (#164).
         if router.send(RouterMsg::ColorsPoll).is_err() {
+            return;
+        }
+        // And the mute alarm's marks' file (#188).
+        if router.send(RouterMsg::MuteAlarmsPoll).is_err() {
             return;
         }
     }

@@ -29,7 +29,7 @@ test-group = 'hub-ports'
 # and the listener's flood (host-free, timed); the sectors (#148) and the
 # strips' colours (#164): host-free, an in-process hub polling its files, as
 # layout
-filter = 'binary_id(fohmixer-hub::it) & (test(/^live_client::/) | test(/^fanout::/) | test(/^stage_aut::/) | test(/^layout::/) | test(/^auth::/) | test(/^names::/) | test(/^ping::/) | test(/^setter::/) | test(/^companion_client::/) | test(/^deck::/) | test(/^unfold::/) | test(/^markers::/) | test(/^eq::/) | test(/^reverb::/) | test(/^rec::/) | test(/^fader_link::/) | test(/^autotune::/) | test(/^autotune_keys::/) | test(/^autotune_safe::/) | test(/^autotune_switch::/) | test(/^songmap::/) | test(/^lufs::/) | test(/^lufs_listener::/) | test(/^sectors::/) | test(/^colors::/))'
+filter = 'binary_id(fohmixer-hub::it) & (test(/^live_client::/) | test(/^fanout::/) | test(/^stage_aut::/) | test(/^layout::/) | test(/^auth::/) | test(/^names::/) | test(/^ping::/) | test(/^setter::/) | test(/^companion_client::/) | test(/^deck::/) | test(/^unfold::/) | test(/^markers::/) | test(/^eq::/) | test(/^reverb::/) | test(/^rec::/) | test(/^fader_link::/) | test(/^autotune::/) | test(/^autotune_keys::/) | test(/^autotune_safe::/) | test(/^autotune_switch::/) | test(/^songmap::/) | test(/^lufs::/) | test(/^lufs_listener::/) | test(/^sectors::/) | test(/^colors::/) | test(/^mute_alarms::/))'
 test-group = 'hub-hosts'
 
 [profile.mutants]
