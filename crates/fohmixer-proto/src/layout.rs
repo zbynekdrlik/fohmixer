@@ -57,6 +57,11 @@ pub struct Page {
     pub title: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub view: bool,
+    /// A linked Live set's tag group (#184): its faders are in the sectors'
+    /// pool (ARRANGE), but it is never a page tab or a VIEWS button. Only
+    /// on a view.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pool_only: bool,
     /// The function controls down the left side (the stage mics with STAGE
     /// AUT, solos, the former MIDI toggles), top to bottom.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -954,6 +959,9 @@ impl Validator {
 
     fn page(&mut self, at: &str, page: &Page) {
         self.id(at, &page.id);
+        if page.pool_only && !page.view {
+            self.error(at, "pool_only without view".to_string());
+        }
         for (i, control) in page.rail.iter().enumerate() {
             self.control(&format!("{at}.rail[{i}]"), control);
         }

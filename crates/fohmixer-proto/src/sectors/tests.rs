@@ -1368,3 +1368,38 @@ fn the_seed_counts_a_wide_strip_and_carries_a_full_right_side_into_more_layouts(
     );
     assert_eq!(seeded.validate(), Vec::<String>::new());
 }
+
+#[test]
+fn the_pool_holds_a_pool_only_pages_faders() {
+    // #184: a linked Live set's tag group is a pool-only view; its faders
+    // are in ARRANGE's pool, beside the frame's.
+    let frame: Layout = serde_json::from_value(json!({
+        "schema": 2, "default_page": "foh",
+        "pages": [{"id": "foh", "title": "FOH", "rows": [{"sections": [
+            {"kind": "group", "id": "vocals", "title": "VOCALS", "tags": "VOCALS"}]}]}]}))
+    .unwrap();
+    let marker = |instance: &str, index: u32, name: &str| Found {
+        instance: instance.into(),
+        kind: TrackKind::Track,
+        index,
+        name: name.into(),
+        tuners: 1,
+    };
+    let composed = crate::markers::compose_with(
+        &frame,
+        &[
+            marker("band", 0, r#""Vox 1" +G:VOCALS"#),
+            marker("mbc", 0, r#""Hand 1" +G:MBC"#),
+            marker("mbc", 1, r#""Vox 1" +G:MBC"#),
+        ],
+        &std::collections::BTreeSet::from(["mbc".to_string()]),
+    );
+    let ids: Vec<StripRef> = pool(&composed.layout).into_iter().map(|p| p.id).collect();
+    assert_eq!(ids, [band("Vox 1"), r("mbc", "Hand 1"), r("mbc", "Vox 1")]);
+    // The seed takes the default page only: no MBC fader in it.
+    let seeded = seed(&composed.layout);
+    assert_eq!(
+        seeded.layouts(SectorId::Lu),
+        &[sl("lu-1", "VOCALS", vec![band("Vox 1")])]
+    );
+}

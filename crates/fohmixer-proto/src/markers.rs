@@ -1130,8 +1130,38 @@ fn fill(sections: &mut [Section], strips: &BTreeMap<String, Vec<Strip>>) {
     }
 }
 
-/// The frame and the markers as the served layout, and every problem.
+/// The frame and the markers as the served layout, and every problem: no
+/// linked Live set ([`compose_with`]).
 pub fn compose(frame: &Layout, found: &[Found]) -> Composed {
+    compose_with(frame, found, &BTreeSet::new())
+}
+
+/// The label domain of a Live set (#184): a linked one (another hub's, the
+/// FOH hub's `mbc`) is its own, every local one shares `""` (band and
+/// master: an equal label there is a conflict).
+pub fn label_domain<'a>(instance: &'a str, linked: &BTreeSet<String>) -> &'a str {
+    if linked.contains(instance) {
+        instance
+    } else {
+        ""
+    }
+}
+
+/// Whether a tag group is pool-only (#184): every marker of it is of a
+/// linked Live set. Its faders join the sectors' pool (ARRANGE) and it is
+/// never a page tab or a VIEWS button.
+fn pool_only_group(list: &[usize], entries: &[Entry<'_>], linked: &BTreeSet<String>) -> bool {
+    !list.is_empty()
+        && list
+            .iter()
+            .all(|&i| linked.contains(&entries[i].found.instance))
+}
+
+/// [`compose`] with the `linked` Live sets (#184): equal labels are
+/// conflicts within one label domain only ([`label_domain`]), and a tag
+/// group the frame does not show whose markers are all linked is a
+/// pool-only view.
+pub fn compose_with(frame: &Layout, found: &[Found], linked: &BTreeSet<String>) -> Composed {
     let mut sorted: Vec<&Found> = found.iter().collect();
     sorted.sort_by(|a, b| a.key().cmp(&b.key()));
     let mut entries: Vec<Entry<'_>> = sorted
@@ -1152,16 +1182,19 @@ pub fn compose(frame: &Layout, found: &[Found]) -> Composed {
             }
         })
         .collect();
-    // An equal label on two or more markers: a conflict on each.
-    let mut labels: BTreeMap<String, usize> = BTreeMap::new();
+    // An equal label on two or more markers of one label domain: a
+    // conflict on each.
+    let mut labels: BTreeMap<(String, String), usize> = BTreeMap::new();
     for entry in &entries {
         if let Some(label) = &entry.marker.label {
-            *labels.entry(label.clone()).or_default() += 1;
+            let domain = label_domain(&entry.found.instance, linked).to_string();
+            *labels.entry((domain, label.clone())).or_default() += 1;
         }
     }
     for entry in &mut entries {
+        let domain = label_domain(&entry.found.instance, linked).to_string();
         if let Some(label) = &entry.marker.label
-            && labels.get(label).copied().unwrap_or(0) > 1
+            && labels.get(&(domain, label.clone())).copied().unwrap_or(0) > 1
         {
             entry.problems.push(TagProblem::Conflict {
                 label: label.clone(),
@@ -1234,9 +1267,12 @@ pub fn compose(frame: &Layout, found: &[Found]) -> Composed {
         .map(|p| p.rail.clone())
         .unwrap_or_default();
     for (_, name) in views {
-        layout
-            .pages
-            .push(view_page(name, &groups, &entries, &strips, &rail));
+        let pool_only = groups
+            .get(name)
+            .is_some_and(|list| pool_only_group(list, &entries, linked));
+        layout.pages.push(view_page(
+            name, &groups, &entries, &strips, &rail, pool_only,
+        ));
     }
     fill_links(&mut layout, &frame_links, &frame_partners);
     fill_autotune(&mut layout, &autotune_targets(&entries));
@@ -1284,13 +1320,16 @@ pub fn compose(frame: &Layout, found: &[Found]) -> Composed {
 }
 
 /// A view: its group's strips, then every pinned strip not in it, under
-/// the title of each one's first group (in the order of the markers).
+/// the title of each one's first group (in the order of the markers). A
+/// pool-only view (#184) holds its own strips only: it is never shown as a
+/// page, only its faders join the pool.
 fn view_page(
     name: &str,
     groups: &BTreeMap<String, Vec<usize>>,
     entries: &[Entry<'_>],
     strips: &[Strip],
     rail: &[Control],
+    pool_only: bool,
 ) -> Page {
     let own = groups.get(name).cloned().unwrap_or_default();
     let mut sections = vec![Section::Group(Group {
@@ -1308,7 +1347,7 @@ fn view_page(
         let Some(first) = entry.marker.groups.first() else {
             continue;
         };
-        if !entry.marker.pin || own.contains(&i) {
+        if pool_only || !entry.marker.pin || own.contains(&i) {
             continue;
         }
         match pins.iter_mut().find(|(g, _)| g == &first.name) {
@@ -1332,6 +1371,7 @@ fn view_page(
         id: format!("{VIEW_PREFIX}{name}"),
         title: group_title(name),
         view: true,
+        pool_only,
         rail: rail.to_vec(),
         rows: vec![Row {
             sections,

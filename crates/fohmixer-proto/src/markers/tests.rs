@@ -2513,3 +2513,112 @@ fn a_frame_may_name_ctrl_ids_only_on_stage_alert_and_param_toggle() {
         );
     }
 }
+
+fn linked_mbc() -> BTreeSet<String> {
+    BTreeSet::from(["mbc".to_string()])
+}
+
+#[test]
+fn an_mbc_label_equal_to_a_band_label_is_no_conflict_when_mbc_is_linked() {
+    // #184: a linked Live set is a label domain of its own.
+    let markers = vec![
+        found("band", TrackKind::Track, 0, r#""Vox 1" +G:VOCALS"#),
+        found("mbc", TrackKind::Track, 0, r#""Vox 1" +G:MBC"#),
+    ];
+    let composed = compose_with(&frame(), &markers, &linked_mbc());
+    assert_eq!(composed.problems, vec![]);
+    let vocals = strips(&group(&composed.layout, "vocals").controls)[0];
+    assert_eq!(vocals.mark, None);
+    let mbc = strips(&group(&composed.layout, "view-MBC-strips").controls)[0];
+    assert_eq!(mbc.mark, None);
+    // Not linked (the MBC hub's own `mbc`, or before #184): one domain.
+    let local = compose(&frame(), &markers);
+    assert_eq!(local.problems.len(), 2, "{:?}", local.problems);
+    // Two equal labels inside the linked set are still a conflict.
+    let twice = vec![
+        found("mbc", TrackKind::Track, 0, r#""Hand 1" +G:MBC"#),
+        found("mbc", TrackKind::Track, 1, r#""Hand 1" +G:MBC"#),
+    ];
+    let composed = compose_with(&frame(), &twice, &linked_mbc());
+    assert_eq!(composed.problems.len(), 2);
+}
+
+#[test]
+fn the_label_domain_is_the_linked_sets_own_else_shared() {
+    assert_eq!(label_domain("mbc", &linked_mbc()), "mbc");
+    assert_eq!(label_domain("band", &linked_mbc()), "");
+    assert_eq!(label_domain("mbc", &BTreeSet::new()), "");
+}
+
+#[test]
+fn a_linked_tag_group_is_a_pool_only_view() {
+    let markers = vec![
+        found("band", TrackKind::Track, 3, r#""Vox 9" +G:TALKSHOW +PIN"#),
+        found("mbc", TrackKind::Track, 0, r#""Hand 1" +G:MBC:1"#),
+        found("mbc", TrackKind::Track, 1, r#""Ambience" +G:MBC:2"#),
+    ];
+    let composed = compose_with(&frame(), &markers, &linked_mbc());
+    let mbc = composed
+        .layout
+        .pages
+        .iter()
+        .find(|p| p.id == "view-MBC")
+        .expect("the MBC view");
+    assert!(mbc.view && mbc.pool_only);
+    // Its own strips only: a FOH pinned strip never joins it.
+    assert_eq!(mbc.rows[0].sections.len(), 1);
+    assert_eq!(
+        labels(&group(&composed.layout, "view-MBC-strips").controls),
+        ["Hand 1", "Ambience"]
+    );
+    let talkshow = composed
+        .layout
+        .pages
+        .iter()
+        .find(|p| p.id == "view-TALKSHOW")
+        .unwrap();
+    assert!(talkshow.view && !talkshow.pool_only, "a band group: a view");
+    assert_eq!(composed.layout.validate(), vec![]);
+    // A group with a band marker too is a normal view.
+    let mixed = vec![
+        found("band", TrackKind::Track, 3, r#""Vox 9" +G:MBC"#),
+        found("mbc", TrackKind::Track, 0, r#""Hand 1" +G:MBC"#),
+    ];
+    let composed = compose_with(&frame(), &mixed, &linked_mbc());
+    let page = composed
+        .layout
+        .pages
+        .iter()
+        .find(|p| p.id == "view-MBC")
+        .unwrap();
+    assert!(!page.pool_only);
+}
+
+#[test]
+fn a_local_mbc_group_the_frame_places_is_a_normal_group() {
+    // The MBC hub's case: `mbc` is local and its frame places `MBC`.
+    let mut frame = serde_json::to_value(frame()).unwrap();
+    frame["pages"][0]["rows"][0]["sections"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"kind": "group", "id": "mbc", "tags": "MBC"}));
+    let frame: Layout = serde_json::from_value(frame).unwrap();
+    let markers = vec![found("mbc", TrackKind::Track, 0, r#""Hand 1" +G:MBC"#)];
+    let composed = compose_with(&frame, &markers, &BTreeSet::new());
+    assert_eq!(labels(&group(&composed.layout, "mbc").controls), ["Hand 1"]);
+    assert!(!composed.layout.pages.iter().any(|p| p.pool_only));
+    assert!(!composed.layout.pages.iter().any(|p| p.view));
+}
+
+#[test]
+fn a_pool_only_page_without_view_is_invalid() {
+    let mut layout = compose(&frame(), &[]).layout;
+    layout.pages[0].pool_only = true;
+    let problems = layout.validate();
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.message.contains("pool_only without view")),
+        "{problems:?}"
+    );
+}

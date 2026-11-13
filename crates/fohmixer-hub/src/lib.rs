@@ -557,7 +557,9 @@ impl Hub {
             tasks.push(tokio::spawn(deck_ticks(router_tx.clone(), deck::TICK)));
         }
         let names: Vec<String> = config.instances.iter().map(|i| i.name.clone()).collect();
-        let layout = Arc::new(layout::store_in(&config.data_dir, &config.layout, names));
+        let layout = Arc::new(
+            layout::store_in(&config.data_dir, &config.layout, names).with_linked(linked.clone()),
+        );
         let hub_state = rules::HubState::load(&config.data_dir);
         let policy = page_policy(&config);
         let revision = policy_rev(&policy);
