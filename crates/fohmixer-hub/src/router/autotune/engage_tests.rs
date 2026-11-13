@@ -190,3 +190,21 @@ async fn no_delay_writes_a_play_starts_switch_on_at_once_with_no_wait() {
     assert_eq!(of(&steps(&rx), "engage"), Vec::<Value>::new());
     assert!(router.autotune.engage.waiting.is_empty());
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_sessions_first_value_of_playing_opens_no_wait() {
+    // A reconnect while Live plays is no play start (the connect's hold
+    // keeps the writes back): no `engage` record, no wait.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, rx) = waiting(dir.path()).await;
+    router.handle(RouterMsg::Live {
+        instance: "band".into(),
+        event: LiveEvent::Disconnected,
+    });
+    live.settle(&mut router).await;
+    let _ = steps(&rx);
+    transport(&mut router, true);
+    live.settle(&mut router).await;
+    assert_eq!(of(&steps(&rx), "engage"), Vec::<Value>::new());
+    assert!(router.autotune.engage.waiting.is_empty());
+}

@@ -37,15 +37,18 @@ pub(in crate::router) struct Engage {
     pub turns: u64,
 }
 
-/// Whether a play start waits: a delay is set.
-pub(super) fn waits(delay_ms: u64) -> bool {
-    delay_ms > 0
+/// Whether Live playing after `prev` opens a wait: a delay is set and it
+/// is a play start, Live heard stopped before. A session's first value
+/// (`prev` none: a hub start, a reconnect, a lost transport) starts nothing
+/// Live did: the connect's hold already keeps its writes back.
+pub(super) fn waits(delay_ms: u64, prev: Option<bool>) -> bool {
+    delay_ms > 0 && prev == Some(false)
 }
 
-/// `going` split into the writes that go now and the ones a running wait
-/// (`waiting`) holds back: only a write to the chain waits.
-pub(super) fn now_and_later(going: Vec<Going>, waiting: bool) -> (Vec<Going>, Vec<Going>) {
-    going.into_iter().partition(|g| !(waiting && g.on))
+/// The writes of `going` that go now: a running wait (`waiting`) holds back
+/// every write to the chain.
+pub(super) fn now(going: Vec<Going>, waiting: bool) -> Vec<Going> {
+    going.into_iter().filter(|g| !(waiting && g.on)).collect()
 }
 
 impl Router {
@@ -55,11 +58,11 @@ impl Router {
         self
     }
 
-    /// Live started playing in `set`: with a delay set, its wait opens (a
-    /// wait still running starts over).
-    pub(super) fn autotune_engage_start(&mut self, set: &str) {
+    /// Live plays in `set` after `prev`: at a play start with a delay set,
+    /// its wait opens (a wait still running starts over).
+    pub(super) fn autotune_engage_start(&mut self, set: &str, prev: Option<bool>) {
         let ms = self.autotune.engage.delay_ms;
-        if !waits(ms) {
+        if !waits(ms, prev) {
             return;
         }
         self.autotune.engage.turns += 1;
@@ -105,7 +108,7 @@ impl Router {
     /// and the end's `write` record trace them, no line per decision).
     pub(super) fn autotune_engage_filter(&self, set: &str, going: Vec<Going>) -> Vec<Going> {
         let waiting = self.autotune.engage.waiting.contains_key(set);
-        now_and_later(going, waiting).0
+        now(going, waiting)
     }
 
     /// The `engage` record of `set`'s wait.
@@ -137,17 +140,13 @@ mod tests {
 
     #[test]
     fn only_a_write_to_the_chain_waits_and_only_while_a_wait_runs() {
-        assert!(!waits(0), "0: no wait, today's writes");
-        assert!(waits(1));
-        assert!(waits(1000));
+        assert!(!waits(0, Some(false)), "0: no wait, today's writes");
+        assert!(waits(1, Some(false)));
+        assert!(waits(1000, Some(false)));
+        assert!(!waits(1000, None), "a session's first value");
+        assert!(!waits(1000, Some(true)));
         let all = vec![going("a", true), going("b", false), going("c", true)];
-        assert_eq!(
-            now_and_later(all.clone(), true),
-            (
-                vec![going("b", false)],
-                vec![going("a", true), going("c", true)]
-            )
-        );
-        assert_eq!(now_and_later(all.clone(), false), (all, Vec::new()));
+        assert_eq!(now(all.clone(), true), vec![going("b", false)]);
+        assert_eq!(now(all.clone(), false), all);
     }
 }

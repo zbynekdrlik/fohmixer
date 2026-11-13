@@ -1573,7 +1573,7 @@ impl Router {
             self.stage_value(playing);
         }
         self.reverb_transport(&instance, playing);
-        self.autotune_transport(&instance, playing);
+        self.autotune_transport(&instance, playing, prev);
         self.songmap_transport(&instance, prev);
         self.rec_transport(&instance, Some(playing));
     }

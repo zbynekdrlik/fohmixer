@@ -1336,16 +1336,16 @@ impl Router {
         self.autotune_decide(instance, Cause::Release);
     }
 
-    /// A transport change of `instance`: the set's unfound targets walked
-    /// again, the key in force judged, every target decided (a stop is DRY
-    /// at once).
-    pub(super) fn autotune_transport(&mut self, instance: &str, playing: bool) {
+    /// A transport change of `instance` (`prev`: the value before, none for
+    /// a session's first): the set's unfound targets walked again, the key
+    /// in force judged, every target decided (a stop is DRY at once).
+    pub(super) fn autotune_transport(&mut self, instance: &str, playing: bool, prev: Option<bool>) {
         // A start drops a stop's DRY still to come: its selectors are
         // decided afresh (#140).
         if playing {
             self.autotune_unspread(instance, None, "start");
-            // #190: the selectors it switches on wait, with a delay set.
-            self.autotune_engage_start(instance);
+            // #190: a play start's switch-on waits, with a delay set.
+            self.autotune_engage_start(instance, prev);
         } else {
             self.autotune_engage_cancel(instance, EngageAct::Stopped);
         }
