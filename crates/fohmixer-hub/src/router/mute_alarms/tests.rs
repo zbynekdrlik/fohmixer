@@ -251,6 +251,8 @@ async fn the_status_counts_the_marks_and_those_no_pool_fader_carries() {
     let dir = tempfile::tempdir().unwrap();
     let first = doc(&["Vox 1", "Renamed"]);
     let (mut router, _own, _rx) = served(dir.path(), Some(&first));
+    // A page attached (#184: the router acts for attached clients by role).
+    attach(&mut router, 1);
     assert_eq!(
         status(&mut router).mute_alarms,
         MuteAlarmsStatus {
@@ -359,4 +361,25 @@ fn the_records_and_lines_read_as_written() {
         unwritable_line("No such file or directory"),
         "mute_alarms.json was removed and cannot be written back, the document stays served and is written again at the next poll: No such file or directory"
     );
+}
+
+#[tokio::test]
+async fn an_mbc_mark_for_a_band_strip_is_refused_with_role() {
+    // #184: an MBC login reaches only the Live set mbc's faders.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, _own, rx) = served(dir.path(), None);
+    let mbc = super::super::tests::attach_as(&mut router, 1, fohmixer_proto::roles::Role::Mbc);
+    mbc.take();
+    let _ = records(&rx);
+    router.handle(set(1, "a1", "Bass", true));
+    assert_eq!(mbc.take().unwrap(), vec![error("a1", "role")]);
+    assert_eq!(alarm_records(&rx), Vec::<Value>::new());
+    assert!(
+        !dir.path().join(MUTE_ALARMS_FILE).exists(),
+        "nothing written"
+    );
+    let engineer = attach(&mut router, 2);
+    engineer.take();
+    router.handle(set(2, "a2", "Bass", true));
+    assert_eq!(engineer.take().unwrap()[0], result("a2"));
 }

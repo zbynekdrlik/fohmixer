@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use fohmixer_proto::client::{SectorsStatus, ServerMsg};
 use fohmixer_proto::layout::Layout;
+use fohmixer_proto::roles;
 use fohmixer_proto::sectors::{self as model, Refusal, Sectors, SectorsDoc, StripRef};
 use serde_json::{Value, json};
 
@@ -116,6 +117,29 @@ impl Router {
         }
     }
 
+    /// Refuses (`role`) a tick or an ARRANGE save of a client whose role
+    /// may not change this document (#184: an MBC login on the FOH hub,
+    /// where it is served a derived view); whether it did.
+    fn sectors_role_refused(&self, client: ClientId, id: &str) -> bool {
+        let role = self.role_of(client);
+        let refused = !roles::may_edit_sectors(role, self.sectors.store.doc());
+        if refused {
+            tracing::info!(
+                client,
+                role = role.as_str(),
+                "a sectors change is refused: role"
+            );
+            self.sectors_answer(
+                client,
+                ServerMsg::Error {
+                    id: Some(id.to_string()),
+                    message: crate::ws::role::REFUSED.to_string(),
+                },
+            );
+        }
+        refused
+    }
+
     fn sectors_refuse(&self, client: ClientId, id: String, refusal: Refusal) {
         self.sectors_answer(
             client,
@@ -186,6 +210,9 @@ impl Router {
         strip: &StripRef,
         on: bool,
     ) {
+        if self.sectors_role_refused(client, &id) {
+            return;
+        }
         let served = self.sectors_layout();
         let pool = served.as_deref().map(model::pool).unwrap_or_default();
         match model::tick(self.sectors.store.doc(), layout, strip, on, &pool) {
@@ -217,6 +244,9 @@ impl Router {
         sectors: &Sectors,
         rev: u64,
     ) {
+        if self.sectors_role_refused(client, &id) {
+            return;
+        }
         let served = self.sectors_layout();
         let pool = served.as_deref().map(model::pool).unwrap_or_default();
         let before = self.sectors.store.doc();

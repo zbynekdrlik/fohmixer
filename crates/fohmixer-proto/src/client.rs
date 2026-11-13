@@ -420,6 +420,10 @@ pub enum ServerMsg {
         /// reloads. None from a hub before it; a page before it ignores it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         policy: Option<String>,
+        /// The role of the socket's login (#184): the page shows `logged
+        /// in: MBC`. None from a hub before it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<crate::roles::Role>,
     },
     /// The script's result slots for a `cmd`, in command order.
     Result { id: String, data: Vec<Value> },

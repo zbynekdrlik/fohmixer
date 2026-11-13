@@ -241,6 +241,8 @@ async fn the_status_counts_the_colours_and_those_no_pool_fader_carries() {
     let dir = tempfile::tempdir().unwrap();
     let first = doc(&[("Vox 1", ColorKey::Pink), ("Renamed", ColorKey::Red)]);
     let (mut router, _own, _rx) = served(dir.path(), Some(&first));
+    // A page attached (#184: the router acts for attached clients by role).
+    attach(&mut router, 1);
     assert_eq!(
         status(&mut router).colors,
         ColorsStatus {
@@ -335,4 +337,35 @@ fn the_records_and_lines_read_as_written() {
         unwritable_line("No such file or directory"),
         "colors.json was removed and cannot be written back, the document stays served and is written again at the next poll: No such file or directory"
     );
+}
+
+#[tokio::test]
+async fn an_mbc_colour_for_a_band_strip_is_refused_with_role() {
+    // #184: an MBC login reaches only the Live set mbc's faders.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, _own, rx) = served(dir.path(), None);
+    let mbc = super::super::tests::attach_as(&mut router, 1, fohmixer_proto::roles::Role::Mbc);
+    let engineer = attach(&mut router, 2);
+    mbc.take();
+    engineer.take();
+    let _ = records(&rx);
+    router.handle(set(1, "c1", "Bass", Some(ColorKey::Blue)));
+    assert_eq!(mbc.take().unwrap(), vec![error("c1", "role")]);
+    assert_eq!(engineer.take().unwrap(), vec![]);
+    assert_eq!(color_records(&rx), Vec::<Value>::new());
+    assert!(!dir.path().join(COLORS_FILE).exists(), "nothing written");
+    // An mbc strip passes the role (and meets the pool's own check here).
+    router.handle(RouterMsg::SetColor {
+        client: 1,
+        id: "c2".into(),
+        strip: StripRef {
+            instance: "mbc".into(),
+            label: "Hand 1".into(),
+        },
+        color: Some(ColorKey::Blue),
+    });
+    assert_eq!(mbc.take().unwrap(), vec![error("c2", "not in the pool")]);
+    // The engineer's choice of the same band strip is taken.
+    router.handle(set(2, "c3", "Bass", Some(ColorKey::Blue)));
+    assert_eq!(engineer.take().unwrap()[0], result("c3"));
 }

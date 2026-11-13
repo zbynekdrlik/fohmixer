@@ -35,6 +35,7 @@ mod presenter;
 mod rec;
 mod remote;
 mod reverb;
+mod roles;
 mod sectors;
 mod serve_until;
 mod setter;

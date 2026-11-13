@@ -176,6 +176,15 @@ impl TestHub {
         Client::connect(&self.ws_url()).await
     }
 
+    /// A connected client of a login of `role` (#184), past its hello.
+    pub async fn client_as(&self, role: fohmixer_proto::roles::Role) -> Client {
+        let secret = std::fs::read_to_string(self.dir.join("secrets").join("jwt_secret")).unwrap();
+        let token =
+            fohmixer_hub::auth::issue_token(secret.trim(), fohmixer_hub::auth::now_secs(), role)
+                .unwrap();
+        Client::connect(&format!("ws://{}/ws?token={token}&proto=2", self.addr)).await
+    }
+
     /// `GET path` with the token: the status code and the body.
     pub async fn get(&self, path: &str) -> (u16, Value) {
         http(self.addr, "GET", path, Some(&self.token), None).await

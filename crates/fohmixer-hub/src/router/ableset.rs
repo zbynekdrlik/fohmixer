@@ -89,6 +89,7 @@ mod tests {
             outbox: Arc::clone(&outbox),
             peer: format!("10.0.0.{client}"),
             lan,
+            role: fohmixer_proto::roles::Role::Engineer,
         });
         outbox
     }

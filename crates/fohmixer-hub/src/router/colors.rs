@@ -14,6 +14,7 @@ use std::sync::Arc;
 use fohmixer_proto::client::{ColorsStatus, ServerMsg};
 use fohmixer_proto::colors::{self as model, ColorKey};
 use fohmixer_proto::layout::Layout;
+use fohmixer_proto::roles;
 use fohmixer_proto::sectors::{self as sectors_model, StripRef};
 use serde_json::{Value, json};
 
@@ -126,6 +127,11 @@ impl Router {
         strip: &StripRef,
         color: Option<ColorKey>,
     ) {
+        if !roles::reaches_strip(self.role_of(client), strip) {
+            tracing::info!(client, "a strip's colour is refused: role");
+            self.colors_refuse(client, id, crate::ws::role::REFUSED.to_string());
+            return;
+        }
         let served = self.colors_layout();
         let pool = served
             .as_deref()

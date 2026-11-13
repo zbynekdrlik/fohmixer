@@ -169,9 +169,21 @@ fn server_messages_round_trip() {
             build: "0.1.0".into(),
             min_client_proto: MIN_CLIENT_PROTO,
             policy: Some("0123456789abcdef".into()),
+            role: None,
         },
         json!({"type": "hello", "proto": 2, "build": "0.1.0", "min_client_proto": 2,
             "policy": "0123456789abcdef"}),
+    );
+    round_trip_server(
+        ServerMsg::Hello {
+            proto: UI_PROTO,
+            build: "0.1.0".into(),
+            min_client_proto: MIN_CLIENT_PROTO,
+            policy: None,
+            role: Some(crate::roles::Role::Mbc),
+        },
+        json!({"type": "hello", "proto": 2, "build": "0.1.0", "min_client_proto": 2,
+            "role": "mbc"}),
     );
     round_trip_server(
         ServerMsg::Result {
@@ -377,6 +389,7 @@ fn the_hellos_page_policy_is_optional_both_ways() {
             build: "1.0.8".into(),
             min_client_proto: 2,
             policy: None,
+            role: None,
         }
     );
     // A field the page does not know is ignored, as a page before #90

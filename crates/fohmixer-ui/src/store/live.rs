@@ -232,6 +232,9 @@ pub struct LiveStore {
     /// The hub's last answer to an undo of this page's open editor (#71 PR
     /// P2b): its number and result (none since the screen opened).
     pub eq_undone: RwSignal<Option<(u32, String)>>,
+    /// The login's role as the hub's last hello named it (#184): none
+    /// before a hello (and from an older hub).
+    pub role: RwSignal<Option<fohmixer_proto::roles::Role>>,
 }
 
 impl LiveStore {
@@ -265,6 +268,7 @@ impl LiveStore {
             eq_locks: RwSignal::new(Vec::new()),
             eq: RwSignal::new(None),
             eq_undone: RwSignal::new(None),
+            role: RwSignal::new(None),
         }
     }
 
@@ -312,6 +316,16 @@ impl LiveStore {
     /// The token was refused: forget it and show the login (once).
     fn logout(self) {
         dom::log("the hub refused the token: back to the login");
+        self.end_session();
+    }
+
+    /// LOG OUT (#184): the login's token forgotten, back to the login.
+    pub fn log_out(self) {
+        dom::log("LOG OUT: back to the login");
+        self.end_session();
+    }
+
+    fn end_session(self) {
         self.stop();
         dom::storage_remove(TOKEN_KEY);
         let _ = self.session.try_set(None);
@@ -594,7 +608,8 @@ impl LiveStore {
                 build,
                 min_client_proto,
                 policy,
-            } => self.on_hello(proto, &build, min_client_proto, policy.as_deref()),
+                role,
+            } => self.on_hello(proto, &build, min_client_proto, policy.as_deref(), role),
             ServerMsg::Subbed {
                 sub,
                 value,
@@ -776,7 +791,14 @@ impl LiveStore {
         }
     }
 
-    fn on_hello(self, proto: u32, build: &str, min_client_proto: u32, policy: Option<&str>) {
+    fn on_hello(
+        self,
+        proto: u32,
+        build: &str,
+        min_client_proto: u32,
+        policy: Option<&str>,
+        role: Option<fohmixer_proto::roles::Role>,
+    ) {
         let now = dom::wall_now();
         // The page policy this page loaded with (#90): the hub wrote its
         // revision into the page.
@@ -800,6 +822,9 @@ impl LiveStore {
                 ),
             );
             return;
+        }
+        if self.role.try_get_untracked() != Some(role) {
+            let _ = self.role.try_set(role);
         }
         let epoch = dom::epoch_now();
         let Some(hello) = self.inner.try_update_value(|i| {
