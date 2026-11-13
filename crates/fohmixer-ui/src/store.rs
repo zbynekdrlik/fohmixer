@@ -325,6 +325,8 @@ pub struct InstanceView {
     pub online: bool,
     pub busy: bool,
     pub set_name: String,
+    /// Another hub holds this Live (#184, the hub's `linked`).
+    pub linked: bool,
 }
 
 /// The hub values (STAGE AUT, #104), as the hub last sent them (review

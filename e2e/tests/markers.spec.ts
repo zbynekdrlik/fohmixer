@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "./support/fixtures";
-import { LiveClient, centre, clipped, frames, harness, hostLine, hubEvents, hubStatus, openSurface, ready, selectPage, servedLayout, until, volume } from "./support/live";
+import { LiveClient, centre, clipped, frames, harness, hostLine, hubEvents, hubStatus, openSurface, ready, selectPage, servedLayout, until, volume, MBC_MARKERS } from "./support/live";
 
 // Strips from Tuner markers (#68, spec D16): a Tuner in a track's device
 // chain, renamed with the strip's quoted label and its tags, puts the strip
@@ -21,7 +21,7 @@ function withMarkers(): any {
 
 /** Waits until the hub holds no Tuner marker: the next spec starts on the fixture, never rebuilt by a late read. */
 async function markersGone() {
-  await until(async () => (await hubStatus()).layout.markers.found, (n: number) => n === 0, "the Tuner markers gone", 10_000);
+  await until(async () => (await hubStatus()).layout.markers.found, (n: number) => n === MBC_MARKERS, "the Tuner markers gone", 10_000);
 }
 
 /** A mouse drag up the fader, from its centre (its first move only anchors, #43 PR F). */

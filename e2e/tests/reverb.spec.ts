@@ -20,6 +20,7 @@ import {
   strip as stripByTrack,
   until,
   value2db,
+  MBC_MARKERS,
 } from "./support/live";
 
 // REVERB and REVERB AUT on the surface (#130, D18; mockup reverb-link-v2):
@@ -70,7 +71,7 @@ const strip = (page: Page, label: string): Locator =>
 
 /** Waits until the hub holds no Tuner marker: the next spec starts on the fixture. */
 async function markersGone() {
-  await until(async () => (await hubStatus()).layout.markers.found, (n: number) => n === 0, "the markers gone", 10_000);
+  await until(async () => (await hubStatus()).layout.markers.found, (n: number) => n === MBC_MARKERS, "the markers gone", 10_000);
 }
 
 /** The page clock (the flight recorder's `t`) now. */

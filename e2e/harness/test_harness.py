@@ -686,6 +686,55 @@ class EphemeralPorts(unittest.TestCase):
             [8443, 8480, 8481, 39101, 39102, 39190, 39192, 39193, 39194, 39195],
         )
 
+    def test_the_mbc_hubs_ports_are_fixed_only_when_it_is_on(self):
+        # #184: the MBC hub, its host, its link and its LUFS listener; all in
+        # the reserved 39100-39199 but the hub's HTTP port, below the range.
+        args = harness.parse_args([*("--data", "d", "--layout", "l"), *("--mbc-hub-port", "8490")])
+        ports = sorted(p for p in harness.fixed_ports(args) if p)
+        for port in (8490, 39103, 39196, 39111):
+            self.assertIn(port, ports)
+        self.assertEqual(
+            harness.ports_at_risk([8490, 39103, 39196, 39111], "32768 60999", "39100-39199"), []
+        )
+        off = harness.parse_args(["--data", "d", "--layout", "l"])
+        self.assertNotIn(39196, harness.fixed_ports(off))
+
+
+class MbcConfig(unittest.TestCase):
+    def test_the_foh_hub_config_links_mbc_and_the_mbc_hub_serves_it(self):
+        text = harness.hub_config(8480, 1, 2, mbc_link="ws://127.0.0.1:39196")
+        self.assertEqual(
+            text,
+            'http_port = 8480\nlayout = "layout.json"\nlayout_poll_ms = 200\n'
+            '[[instances]]\nname = "band"\nport = 1\n'
+            '[[instances]]\nname = "master"\nport = 2\n'
+            '[[instances]]\nname = "mbc"\nlink = "ws://127.0.0.1:39196"\n'
+            '[eq]\nbackend = "sim"\n',
+        )
+        self.assertEqual(
+            harness.mbc_hub_config(8490, 39103, 39196, 39111),
+            'http_port = 8490\nlayout = "layout.json"\nlayout_poll_ms = 200\n'
+            '[[instances]]\nname = "mbc"\nport = 39103\n'
+            "[lufs]\nport = 39111\n"
+            '[link]\nlisten = "127.0.0.1:39196"\ninstance = "mbc"\n',
+        )
+
+    def test_a_link_secret_is_32_random_bytes_in_base64(self):
+        one, two = harness.link_secret_line(), harness.link_secret_line()
+        self.assertTrue(one.endswith("\n"))
+        self.assertEqual(len(base64.b64decode(one.strip())), 32)
+        self.assertNotEqual(one, two)
+
+    def test_the_pins_are_copied_and_nothing_else(self):
+        src = tempfile.mkdtemp(prefix="fohmixer-harness-test-")
+        dst = os.path.join(tempfile.mkdtemp(prefix="fohmixer-harness-test-"), "secrets")
+        self.addCleanup(shutil.rmtree, src, ignore_errors=True)
+        for name in ("pin_hashes.json", "pepper.test", "jwt_secret"):
+            with open(os.path.join(src, name), "w", encoding="utf-8") as f:
+                f.write(name)
+        harness.copy_pins(src, dst)
+        self.assertEqual(sorted(os.listdir(dst)), ["pepper.test", "pin_hashes.json"])
+
 
 class Stop(unittest.TestCase):
     def test_a_part_that_fails_to_stop_never_leaves_the_others_running(self):

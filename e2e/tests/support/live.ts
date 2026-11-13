@@ -14,6 +14,15 @@ export const HARNESS = process.env.E2E_HARNESS_URL || "http://127.0.0.1:39190";
 // stall, drop and block (`impair`). The test's own `LiveClient` and API calls
 // use BASE, the hub itself, so they never lose their link.
 export const PIN = process.env.E2E_PIN || "";
+// The MBC hub (#184): a second hub on the MBC set (SimLive `mbc`), whose
+// instance link the harness's FOH hub dials; the same engineer PIN.
+export const MBC_BASE = process.env.E2E_MBC_URL || "http://127.0.0.1:8490";
+// The Tuner markers of the MBC set (`sim/fixtures/mbc-site.json`, one per
+// strip): the FOH hub finds them through its link, so its `markers.found`
+// counts them beside a test's own band and master Tuners.
+export const MBC_MARKERS = 12;
+// The FOH hub's own Lives (#184: `mbc` is linked, served by the MBC hub).
+export const FOH_LIVES = ["band", "master"];
 
 /** The LOM target of a track by name (the layout's binding form). */
 export const track = (name: string) => `live_set tracks[name=${name}]`;
@@ -206,6 +215,15 @@ export async function servedLayout(): Promise<any> {
 export const FIXTURE_LAYOUT = join(__dirname, "..", "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
 
 /**
+ * The fixture as the frame the harness gives the hub, to change and push
+ * (#184): never the served layout, which holds the views the markers made
+ * (the linked MBC set's `view-MBC`), refused in a frame.
+ */
+export function fixtureLayout(): any {
+  return JSON.parse(readFileSync(FIXTURE_LAYOUT, "utf-8"));
+}
+
+/**
  * The fixture layout with touch-idle after `seconds` (#51: its
  * `config.idle_after_s`), served by the hub when this returns. A test that
  * sets it puts the fixture back with `resetLayout` in its `finally`.
@@ -389,9 +407,9 @@ export async function hostLine(instance: string, line: string): Promise<string |
   return (await harness(`/host/${instance}/line`, { line })).answer;
 }
 
-/** A fresh engineer token from the hub. */
-export async function token(): Promise<string> {
-  const response = await fetch(`${BASE}/api/auth`, {
+/** A fresh engineer token from the hub (`base`: another hub, #184). */
+export async function token(base = BASE): Promise<string> {
+  const response = await fetch(`${base}/api/auth`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ pin: PIN }),
@@ -536,9 +554,12 @@ export async function until<T>(read: () => Promise<T>, ok: (v: T) => boolean, wh
   return last;
 }
 
-/** Opens the surface logged in (the token seeded once per tab), connected to the hub. */
-export async function openSurface(page: Page) {
-  const seeded = await token();
+/**
+ * Opens the surface logged in (the token seeded once per tab), connected to
+ * the hub; `base` opens another hub's (#184: `MBC_BASE`) by its own address.
+ */
+export async function openSurface(page: Page, { base }: { base?: string } = {}) {
+  const seeded = await token(base);
   await page.addInitScript((t) => {
     try {
       if (!sessionStorage.getItem("e2e-seeded")) {
@@ -549,7 +570,7 @@ export async function openSurface(page: Page) {
       // storage blocked: the test then fails on the login page
     }
   }, seeded);
-  await page.goto("/");
+  await page.goto(base ? `${base}/` : "/");
   await expect(page.getByTestId("stage")).toBeVisible();
   await expect(page.getByTestId("surface")).toHaveAttribute("data-connected", "true");
 }

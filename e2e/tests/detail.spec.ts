@@ -21,6 +21,7 @@ import {
   track,
   until,
   volume,
+  MBC_MARKERS,
 } from "./support/live";
 
 // The channel detail (#71 PR D; spec F27, D17; the approved mockup
@@ -566,7 +567,7 @@ test.describe("A marker strip's detail", () => {
       // fixture (the deleted track back, no Tuner), the layout reset.
       await harness("/host/band/restart");
       await harness("/hub/layout/reset");
-      await until(async () => (await hubStatus()).layout.markers.found, (n: number) => n === 0, "the Tuner markers gone", 15_000);
+      await until(async () => (await hubStatus()).layout.markers.found, (n: number) => n === MBC_MARKERS, "the Tuner markers gone", 15_000);
       await until(hubStatus, (st) => st.instances[0].online, "the band's Live back", 10_000);
     }
   });

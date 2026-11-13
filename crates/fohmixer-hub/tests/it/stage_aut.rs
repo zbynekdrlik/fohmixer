@@ -33,6 +33,7 @@ fn instances(band: &Host) -> Vec<InstanceCfg> {
         InstanceCfg {
             name: "master".into(),
             port: 1,
+            link: None,
         },
     ]
 }

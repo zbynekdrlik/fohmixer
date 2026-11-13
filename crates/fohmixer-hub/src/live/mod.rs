@@ -164,6 +164,8 @@ pub enum Frame {
         uuid: Option<String>,
         message: String,
     },
+    /// A LUFS datagram an instance link passed on (#184): its bytes.
+    Lufs(Vec<u8>),
 }
 
 fn text_of(value: Option<&Value>) -> String {
@@ -244,6 +246,17 @@ pub fn parse_frame(text: &str) -> Result<Frame, String> {
                 .map(str::to_string),
             message: data.and_then(Value::as_str).unwrap_or("error").to_string(),
         }),
+        "lufs" => {
+            use base64::Engine as _;
+            let osc = message
+                .get("osc")
+                .and_then(Value::as_str)
+                .ok_or("lufs without osc")?;
+            base64::engine::general_purpose::STANDARD
+                .decode(osc)
+                .map(Frame::Lufs)
+                .map_err(|e| format!("lufs osc is no base64: {e}"))
+        }
         other => Err(format!("unknown event {other:?}")),
     }
 }
@@ -252,6 +265,24 @@ pub fn parse_frame(text: &str) -> Result<Frame, String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_lufs_frame_carries_its_datagram() {
+        assert_eq!(
+            parse_frame(r#"{"event":"lufs","osc":"AAEC/w=="}"#),
+            Ok(Frame::Lufs(vec![0, 1, 2, 255]))
+        );
+    }
+
+    #[test]
+    fn a_lufs_frame_with_bad_base64_is_unreadable() {
+        let bad = parse_frame(r#"{"event":"lufs","osc":"not base64!"}"#).unwrap_err();
+        assert!(bad.starts_with("lufs osc is no base64"), "{bad}");
+        assert_eq!(
+            parse_frame(r#"{"event":"lufs"}"#),
+            Err("lufs without osc".to_string())
+        );
+    }
 
     #[test]
     fn busy_is_a_late_tick_or_an_overdue_heartbeat() {

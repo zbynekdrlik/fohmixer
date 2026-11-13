@@ -19,6 +19,7 @@ import {
   until,
   value2db,
   volume,
+  fixtureLayout,
 } from "./support/live";
 
 // The former MIDI controls (spec F17, F18, D10, X10): toggles and a fader that
@@ -178,7 +179,7 @@ test.describe("Former MIDI toggles", () => {
     const repro = "live_set tracks[name=Hand4 #] mixer_device sends 1";
     await live.set("band", repro, "value", 0.0);
     // REPRO writes 5.0 for "on": a send's range is 0..1, so Live refuses it.
-    const refused = structuredClone(await served());
+    const refused = fixtureLayout();
     reproTarget(refused).on = 5.0;
     await harness("/hub/layout", { layout: refused });
     try {
@@ -227,7 +228,7 @@ test.describe("The former MIDI fader", () => {
       label: "OWN",
       targets: [{ binding: { instance: "band", anchor: { kind: "track", name: "Drums #" }, path: "mixer_device volume" }, prop: "value", scale: "cc_linear" }],
     };
-    const layout = structuredClone(await served());
+    const layout = fixtureLayout();
     podkladyGroup(layout).controls.push(own);
     await harness("/hub/layout", { layout });
     try {

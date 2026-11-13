@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { test, expect } from "./support/fixtures";
-import { LiveClient, centre, clipped, frames, harness, hostLine, dispatchPointer, hubStatus, openSurface, ready, seen, until, value2db } from "./support/live";
+import { LiveClient, centre, clipped, frames, harness, hostLine, dispatchPointer, hubStatus, openSurface, ready, seen, until, value2db, MBC_MARKERS } from "./support/live";
 
 // The strip's loudness (#151, spec §6.1, §6.2, §9's E2E bullet; mockup
 // docs/mockups/lufs-v9.html; the owner's ruling of 27.10 evening: like
@@ -45,7 +45,7 @@ function lufsStrip(page: Page, label: string): Locator {
 
 /** Waits until the hub holds no Tuner marker: the next spec starts on the fixture. */
 async function markersGone() {
-  await until(async () => (await hubStatus()).layout.markers.found, (n: number) => n === 0, "the Tuner markers gone", 10_000);
+  await until(async () => (await hubStatus()).layout.markers.found, (n: number) => n === MBC_MARKERS, "the Tuner markers gone", 10_000);
 }
 
 type Saved = { mute: boolean; volume: number }[];

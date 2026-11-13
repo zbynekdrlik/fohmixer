@@ -23,6 +23,7 @@
 //! router keeps a Live's remembered markers until the keeper has read that
 //! Live ([`kept_markers`]).
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -31,7 +32,8 @@ use fohmixer_proto::client::MarkersStatus;
 use fohmixer_proto::layout::{CtrlId, Layout};
 use fohmixer_proto::markers::migrate::{Migration, Planned, migration};
 use fohmixer_proto::markers::{
-    CtrlReport, Found, Leader, LinkReport, MarkerReport, TrackKind, compose, frame_problems, parse,
+    CtrlReport, Found, Leader, LinkReport, MarkerReport, TrackKind, compose_with, frame_problems,
+    parse,
 };
 
 /// Backups kept.
@@ -66,6 +68,9 @@ struct State {
     error: Option<String>,
     /// The file's (modified time, length) at the last check.
     seen: Option<(SystemTime, u64)>,
+    /// The linked Live sets (#184): each its own label domain, its tag
+    /// groups pool-only.
+    linked: BTreeSet<String>,
     /// The backups were tried once (nothing served, the file unusable).
     fallback_tried: bool,
 }
@@ -224,6 +229,13 @@ impl LayoutStore {
             instances,
             state: Mutex::new(State::default()),
         }
+    }
+
+    /// The store whose compositions know the `linked` Live sets (#184,
+    /// `Config::linked_instances`).
+    pub fn with_linked(self, linked: BTreeSet<String>) -> Self {
+        self.lock().linked = linked;
+        self
     }
 
     /// The same store remembering its markers in `file` (#178): the markers
@@ -543,7 +555,7 @@ fn serve(state: &mut State) {
         state.ctrls = Vec::new();
         return;
     };
-    let composed = compose(&frame, &state.markers);
+    let composed = compose_with(&frame, &state.markers, &state.linked);
     state.problems = composed.problems;
     state.links = composed.links;
     state.ctrls = composed.ctrls;
@@ -1016,6 +1028,87 @@ mod tests {
         std::fs::write(&path, b"{").unwrap();
         let bad = plan_lines(&path).unwrap_err().to_string();
         assert!(bad.contains("does not parse"), "{bad}");
+    }
+
+    #[test]
+    fn the_mbc_hubs_frame_is_a_frame_the_hub_serves() {
+        // #184: scripts/fohmixer-pc/mbc-frame.json, the MBC hub's frame (the
+        // E2E harness's and the MBC PC's): one page whose MBC group shows
+        // the MBC set's Tuner strips.
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/fohmixer-pc/mbc-frame.json");
+        let frame = check(&std::fs::read(path).unwrap(), &["mbc".to_string()]).unwrap();
+        let composed = compose_with(
+            &frame,
+            &[Found {
+                instance: "mbc".into(),
+                kind: TrackKind::Track,
+                index: 0,
+                name: r#""Hand 1" +G:MBC:1"#.into(),
+                tuners: 1,
+            }],
+            &BTreeSet::new(),
+        );
+        assert!(composed.problems.is_empty());
+        assert_eq!(
+            composed.layout.pages.len(),
+            1,
+            "no view: the frame places MBC"
+        );
+        assert_eq!(fohmixer_proto::sectors::pool(&composed.layout).len(), 1);
+    }
+
+    #[test]
+    fn a_store_with_a_linked_live_composes_its_labels_apart() {
+        // #184: the FOH hub's linked `mbc` is a label domain of its own,
+        // its tag group a pool-only view.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("layout.json"),
+            serde_json::to_vec(&json!({
+                "schema": 2, "default_page": "foh",
+                "pages": [{"id": "foh", "title": "FOH", "rows": [{"sections": [
+                    {"kind": "group", "id": "vocals", "title": "VOCALS", "tags": "VOCALS"}]}]}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let marker = |instance: &str, name: &str| Found {
+            instance: instance.into(),
+            kind: TrackKind::Track,
+            index: 0,
+            name: name.into(),
+            tuners: 1,
+        };
+        let found = vec![
+            marker("band", r#""Vox 1" +G:VOCALS"#),
+            marker("mbc", r#""Vox 1" +G:MBC"#),
+        ];
+        let instances = vec!["band".to_string(), "mbc".to_string()];
+        let linked = LayoutStore::new(
+            dir.path().join("layout.json"),
+            dir.path().join("backups"),
+            instances.clone(),
+        )
+        .with_linked(BTreeSet::from(["mbc".to_string()]));
+        linked.poll();
+        let _ = linked.set_markers(found.clone());
+        assert!(linked.markers_status().problems.is_empty());
+        let layout = linked.current().1.unwrap();
+        assert!(
+            layout
+                .pages
+                .iter()
+                .any(|p| p.id == "view-MBC" && p.pool_only)
+        );
+        let local = LayoutStore::new(
+            dir.path().join("layout.json"),
+            dir.path().join("backups"),
+            instances,
+        );
+        local.poll();
+        let _ = local.set_markers(found);
+        assert_eq!(local.markers_status().problems.len(), 2, "one domain");
     }
 
     #[test]

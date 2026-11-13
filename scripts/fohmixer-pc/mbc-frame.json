@@ -1,0 +1,22 @@
+{
+ "schema": 2,
+ "default_page": "main",
+ "pages": [
+  {
+   "id": "main",
+   "title": "MBC",
+   "rows": [
+    {
+     "sections": [
+      {
+       "kind": "group",
+       "id": "mbc",
+       "title": "MBC",
+       "tags": "MBC"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

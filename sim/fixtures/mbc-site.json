@@ -1,0 +1,159 @@
+{
+ "name": "MBC",
+ "live_version": [
+  12,
+  2,
+  5
+ ],
+ "tracks": [
+  {
+   "name": "Hand 1 mbc#",
+   "color": 5000000,
+   "volume": 0.85,
+   "devices": [
+    {
+     "template": "plain",
+     "name": "\"Hand 1\" +G:MBC:1",
+     "class_name": "Tuner"
+    }
+   ]
+  },
+  {
+   "name": "Hand 2 mbc#",
+   "color": 5000001,
+   "volume": 0.85,
+   "devices": [
+    {
+     "template": "plain",
+     "name": "\"Hand 2\" +G:MBC:2",
+     "class_name": "Tuner"
+    }
+   ]
+  },
+  {
+   "name": "Moderator 1 mbc#",
+   "color": 5000002,
+   "volume": 0.85,
+   "devices": [
+    {
+     "template": "plain",
+     "name": "\"Moderator 1\" +G:MBC:3",
+     "class_name": "Tuner"
+    }
+   ]
+  },
+  {
+   "name": "Moderator 2 mbc#",
+   "color": 5000003,
+   "volume": 0.85,
+   "devices": [
+    {
+     "template": "plain",
+     "name": "\"Moderator 2\" +G:MBC:4",
+     "class_name": "Tuner"
+    }
+   ]
+  },
+  {
+   "name": "Ambience mbc#",
+   "color": 5000004,
+   "volume": 0.85,
+   "devices": [
+    {
+     "template": "plain",
+     "name": "\"Ambience\" +G:MBC:5",
+     "class_name": "Tuner"
+    }
+   ]
+  },
+  {
+   "name": "Choir mbc#",
+   "color": 5000005,
+   "volume": 0.85,
+   "devices": [
+    {
+     "template": "plain",
+     "name": "\"Choir\" +G:MBC:6",
+     "class_name": "Tuner"
+    }
+   ]
+  },
+  {
+   "name": "Band Feed mbc#",
+   "color": 5000006,
+   "volume": 0.85,
+   "devices": [
+    {
+     "template": "plain",
+     "name": "\"Band Feed\" +G:MBC:7",
+     "class_name": "Tuner"
+    }
+   ]
+  },
+  {
+   "name": "Piano mbc#",
+   "color": 5000007,
+   "volume": 0.85,
+   "devices": [
+    {
+     "template": "plain",
+     "name": "\"Piano\" +G:MBC:8",
+     "class_name": "Tuner"
+    }
+   ]
+  },
+  {
+   "name": "Stream grp#",
+   "color": 10927616,
+   "children": [
+    {
+     "name": "Video mbc#",
+     "color": 5000008,
+     "volume": 0.85,
+     "devices": [
+      {
+       "template": "plain",
+       "name": "\"Video\" +G:MBC:9",
+       "class_name": "Tuner"
+      }
+     ]
+    },
+    {
+     "name": "Guest mbc#",
+     "color": 5000009,
+     "volume": 0.85,
+     "devices": [
+      {
+       "template": "plain",
+       "name": "\"Guest\" +G:MBC:10",
+       "class_name": "Tuner"
+      }
+     ]
+    },
+    {
+     "name": "Reserve mbc#",
+     "color": 5000010,
+     "volume": 0.85,
+     "devices": [
+      {
+       "template": "plain",
+       "name": "\"Reserve\" +G:MBC:11",
+       "class_name": "Tuner"
+      }
+     ]
+    }
+   ],
+   "devices": [
+    {
+     "template": "plain",
+     "name": "\"Stream\" +G:MBC:12",
+     "class_name": "Tuner"
+    }
+   ]
+  }
+ ],
+ "returns": [],
+ "master": {
+  "name": "Main"
+ }
+}

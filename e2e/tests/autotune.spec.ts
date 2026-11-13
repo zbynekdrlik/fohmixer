@@ -18,6 +18,7 @@ import {
   selectPage,
   strip,
   until,
+  MBC_MARKERS,
 } from "./support/live";
 
 // AUTOTUNE and its singers' panel (#140 PR 3c; the approved mockup
@@ -224,7 +225,7 @@ test.describe("AUTOTUNE and its singers' panel", () => {
     expect(await hostLine("band", "song time 0")).toBe("SONG 0.0");
     for (const track of [6, 7, 8]) await hostLine("band", `tuner track ${track} remove`);
     await harness("/hub/layout/reset");
-    await until(async () => (await hubStatus()).layout.markers.found, (n: number) => n === 0, "the markers gone", 10_000);
+    await until(async () => (await hubStatus()).layout.markers.found, (n: number) => n === MBC_MARKERS, "the markers gone", 10_000);
     await until(async () => (await hubStatus()).autotune.targets.length, (n: number) => n === 0, "no AUTOTUNE target", 10_000);
     await live.set("band", PA, "value", 0);
     await live.set("band", STREAM, "value", 0);

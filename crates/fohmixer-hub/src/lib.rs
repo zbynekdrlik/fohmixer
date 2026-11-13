@@ -80,6 +80,7 @@ pub mod events;
 pub mod http_client;
 pub mod https;
 pub mod layout;
+pub mod link;
 pub mod live;
 pub mod login_guard;
 pub mod lufs_udp;
@@ -217,6 +218,8 @@ pub struct HubInner {
     pub eq: bool,
     /// The LUFS devices' listener's counts and state (#151).
     pub lufs: Arc<lufs_udp::Counters>,
+    /// The instance link this hub serves (#184, `[link]`).
+    pub link: Option<Arc<link::server::LinkState>>,
     /// Its window worker, awaited after the stop so its windows are handed
     /// back and its contact ended before the process ends.
     plugwin: Option<plugwin::Plugwin>,
@@ -450,6 +453,7 @@ impl HubInner {
             sectors: router.sectors,
             colors: router.colors,
             mute_alarms: router.mute_alarms,
+            link: self.link.as_ref().map(|state| state.status()),
         }
     }
 }
@@ -499,16 +503,36 @@ impl Hub {
         // The router's beat (PR #146 review I1): the writers ping the
         // scripts only while the router's loop turns.
         let beat = live::client::Beat::router();
+        // The LUFS listener's counts (#151): a linked instance's datagrams
+        // (#184) are counted there too.
+        let lufs = Arc::new(lufs_udp::Counters::default());
+        // The instance link's secret (#184): a linked instance signs its
+        // link tokens with it, `[link]` checks them.
+        let linked = config.linked_instances();
+        let link_secret = if linked.is_empty() && config.link.is_none() {
+            None
+        } else {
+            // A secret that cannot be read never stops the hub: band and
+            // master run on, the link is refused or fails with its reason.
+            let (secret, warning) =
+                link::usable(link::load(&config.data_dir.join(secrets::SECRETS_DIR)));
+            if let Some(warning) = warning {
+                tracing::warn!("{warning}");
+            }
+            secret
+        };
         let mut live = BTreeMap::new();
         for instance in &config.instances {
-            let tx = router_tx.clone();
-            let events: Events = Arc::new(move |name: &str, event: LiveEvent| {
-                let _ = tx.send(RouterMsg::Live {
-                    instance: name.to_string(),
-                    event,
-                });
+            let linked_lufs = instance.link.is_some().then(|| {
+                Arc::new(lufs_udp::LinkedLufs::new(
+                    Arc::clone(&lufs),
+                    events.clone(),
+                    router_tx.clone(),
+                ))
             });
-            let (handle, task) = LiveHandle::spawn_with(instance, events, beat.clone());
+            let events = live_events(router_tx.clone(), linked_lufs);
+            let (handle, task) =
+                LiveHandle::spawn_dialing(instance, link_secret.clone(), events, beat.clone());
             live.insert(instance.name.clone(), handle);
             tasks.push(task);
         }
@@ -539,7 +563,9 @@ impl Hub {
             tasks.push(tokio::spawn(deck_ticks(router_tx.clone(), deck::TICK)));
         }
         let names: Vec<String> = config.instances.iter().map(|i| i.name.clone()).collect();
-        let layout = Arc::new(layout::store_in(&config.data_dir, &config.layout, names));
+        let layout = Arc::new(
+            layout::store_in(&config.data_dir, &config.layout, names).with_linked(linked.clone()),
+        );
         let hub_state = rules::HubState::load(&config.data_dir);
         let policy = page_policy(&config);
         let revision = policy_rev(&policy);
@@ -601,18 +627,38 @@ impl Hub {
             presenter_switches = Some(rx);
         }
         tokio::spawn(router.run(router_rx));
+        // The instance link (#184, `[link]`): its LUFS tap and its server,
+        // which binds its LAN address again until it can (the address may
+        // come up after the hub); the hub runs meanwhile.
+        let link_tap = config.link.as_ref().map(|_| link::server::tap());
+        let link = match (&config.link, &link_tap) {
+            (Some(cfg), Some(tap)) => {
+                let script_port = config
+                    .instances
+                    .iter()
+                    .find(|i| i.name == cfg.instance)
+                    .map_or(0, |i| i.port);
+                let (state, task) =
+                    link::server::spawn(cfg, script_port, link_secret.clone(), tap, events.clone());
+                tasks.push(task);
+                Some(state)
+            }
+            _ => None,
+        };
         // The LUFS devices' listener (#151): 127.0.0.1 only; a port taken
         // is recorded and shown, and the hub runs on without it.
-        let lufs = Arc::new(lufs_udp::Counters::default());
-        if config.lufs.port != 0 {
-            if let Ok((_, task)) = lufs_udp::spawn(
+        if config.lufs.port != 0
+            && let Ok((_, task)) = lufs_udp::spawn(
                 config.lufs.port,
                 router_tx.clone(),
                 Arc::clone(&lufs),
                 events.clone(),
-            ) {
-                tasks.push(task);
-            }
+                link_tap,
+            )
+        {
+            tasks.push(task);
+        }
+        if lufs_ticks_due(config.lufs.port, &linked) {
             tasks.push(tokio::spawn(router::lufs_ticks(
                 router_tx.clone(),
                 router::LUFS_TICK,
@@ -646,6 +692,7 @@ impl Hub {
             pictures,
             eq,
             lufs,
+            link,
             plugwin,
             live,
             router: router_tx,
@@ -653,6 +700,35 @@ impl Hub {
             tasks: Mutex::new(tasks),
         })))
     }
+}
+
+/// The event sink of one Live instance's task: everything to the router,
+/// but a linked instance's LUFS datagrams (#184), which go through the
+/// hub's LUFS parser and a bound of their own (`linked`) as the listener's
+/// do; without `linked` (a local instance) they are dropped.
+pub fn live_events(
+    tx: mpsc::UnboundedSender<RouterMsg>,
+    linked: Option<Arc<lufs_udp::LinkedLufs>>,
+) -> Events {
+    Arc::new(move |name: &str, event: LiveEvent| match event {
+        LiveEvent::Lufs { osc } => {
+            if let Some(linked) = &linked {
+                linked.take(&osc, std::time::Instant::now());
+            }
+        }
+        event => {
+            let _ = tx.send(RouterMsg::Live {
+                instance: name.to_string(),
+                event,
+            });
+        }
+    })
+}
+
+/// Whether the LUFS rule's tick runs: a listener of its own, or a linked
+/// instance whose readings come over its link (#184).
+pub fn lufs_ticks_due(port: u16, linked: &std::collections::BTreeSet<String>) -> bool {
+    port != 0 || !linked.is_empty()
 }
 
 /// The window backend of `[eq]` (#71 PR E): none when it is `off`; the
@@ -1223,6 +1299,69 @@ fn bind_https(hub: &Hub, at: SocketAddr, name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lufs_datagram() -> Vec<u8> {
+        use fohmixer_proto::lufs::wire::{DeviceKind, Reading, encode};
+        encode(&Reading {
+            kind: DeviceKind::Lufs,
+            device: 7,
+            version: "v1.42.0".to_string(),
+            parents: ["Ambience", "MBC", "-", "-"].map(str::to_string),
+            first: -230,
+            second: -230,
+        })
+    }
+
+    #[test]
+    fn a_lufs_event_reaches_the_router_as_a_reading() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let counters = Arc::new(lufs_udp::Counters::default());
+        let (events_log, _records) = EventLog::channel(8);
+        let linked = Arc::new(lufs_udp::LinkedLufs::new(
+            Arc::clone(&counters),
+            events_log,
+            tx.clone(),
+        ));
+        let events = live_events(tx.clone(), Some(linked));
+        events(
+            "mbc",
+            LiveEvent::Lufs {
+                osc: lufs_datagram(),
+            },
+        );
+        match rx.try_recv() {
+            Ok(RouterMsg::Lufs { reading }) => {
+                assert_eq!(reading.device, 7);
+                assert_eq!(reading.parents[0], "Ambience");
+            }
+            _ => panic!("no reading"),
+        }
+        assert_eq!(counters.status().taken, 1, "counted as the listener's");
+        events("mbc", LiveEvent::Disconnected);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(RouterMsg::Live { instance, event: LiveEvent::Disconnected }) if instance == "mbc"
+        ));
+        // A local instance has no link: a LUFS frame from it goes nowhere.
+        let local = live_events(tx, None);
+        local(
+            "band",
+            LiveEvent::Lufs {
+                osc: lufs_datagram(),
+            },
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn the_lufs_tick_runs_for_a_listener_or_a_linked_instance() {
+        let none = std::collections::BTreeSet::new();
+        let mbc = std::collections::BTreeSet::from(["mbc".to_string()]);
+        assert!(lufs_ticks_due(39110, &none));
+        assert!(lufs_ticks_due(0, &mbc));
+        assert!(lufs_ticks_due(39110, &mbc));
+        assert!(!lufs_ticks_due(0, &none));
+    }
 
     #[test]
     fn the_port_defaults_to_the_configured_one() {

@@ -1,5 +1,10 @@
 //! One reconnecting client per Live instance (spec §2.4): a task that holds
-//! the WebSocket to the FohMixer script on `127.0.0.1:<port>`.
+//! the WebSocket to the FohMixer script on `127.0.0.1:<port>`, or (#184) to
+//! the instance link of the hub that holds a linked instance: its `link`
+//! URL with a fresh link token per attempt ([`instance_request`]). The
+//! link relays a script connection of its own, so everything below holds
+//! for both; the link also carries the MBC hub's LUFS datagrams
+//! ([`LiveEvent::Lufs`]).
 //!
 //! - It reconnects with a backoff of 250 ms doubling to 2 s, and never gives
 //!   up. A connection is a session only once the script's `connect` names
@@ -53,6 +58,7 @@ use super::{
     tick_age_now, wall_ms,
 };
 use crate::config::InstanceCfg;
+use crate::link::{LinkSecret, link_token};
 
 /// How long a caller waits for a result.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
@@ -151,6 +157,11 @@ pub enum LiveEvent {
     Closed {
         why: String,
     },
+    /// A LUFS device's datagram the instance link passed on (#184): for the
+    /// hub's LUFS parser, as if its own listener had read it.
+    Lufs {
+        osc: Vec<u8>,
+    },
 }
 
 /// Where the events go: called with the instance name, from its task.
@@ -205,6 +216,8 @@ pub struct Snapshot {
 pub struct LiveHandle {
     name: String,
     port: u16,
+    /// Reached through another hub's instance link (#184).
+    linked: bool,
     tx: mpsc::UnboundedSender<Request>,
     snapshot: Arc<Mutex<Snapshot>>,
     requests: Arc<AtomicU64>,
@@ -225,16 +238,29 @@ impl LiveHandle {
     /// [`LiveHandle::spawn`] whose writer pings only while `beat` is fresh
     /// (the hub's: its router's).
     pub fn spawn_with(cfg: &InstanceCfg, events: Events, beat: Beat) -> (Self, JoinHandle<()>) {
+        Self::spawn_dialing(cfg, None, events, beat)
+    }
+
+    /// [`LiveHandle::spawn_with`] for an instance that may be linked
+    /// (#184): `secret` signs its link tokens (none: a linked instance's
+    /// every attempt fails with the reason).
+    pub fn spawn_dialing(
+        cfg: &InstanceCfg,
+        secret: Option<LinkSecret>,
+        events: Events,
+        beat: Beat,
+    ) -> (Self, JoinHandle<()>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let snapshot = Arc::new(Mutex::new(Snapshot::default()));
         let handle = Self {
             name: cfg.name.clone(),
             port: cfg.port,
+            linked: cfg.link.is_some(),
             tx,
             snapshot: Arc::clone(&snapshot),
             requests: Arc::new(AtomicU64::new(0)),
         };
-        let task = tokio::spawn(run(cfg.clone(), rx, events, snapshot, beat));
+        let task = tokio::spawn(run(cfg.clone(), secret, rx, events, snapshot, beat));
         (handle, task)
     }
 
@@ -244,6 +270,12 @@ impl LiveHandle {
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// Whether another hub holds this Live, reached through its instance
+    /// link (#184).
+    pub fn linked(&self) -> bool {
+        self.linked
     }
 
     /// The current state.
@@ -298,6 +330,7 @@ pub(crate) fn scripted(name: &str) -> (LiveHandle, Script) {
     let handle = LiveHandle {
         name: name.to_string(),
         port: 0,
+        linked: false,
         tx,
         snapshot: Arc::new(Mutex::new(Snapshot::default())),
         requests: Arc::new(AtomicU64::new(0)),
@@ -423,6 +456,46 @@ pub(crate) fn close_words(frame: Option<&CloseFrame>) -> Option<String> {
     })
 }
 
+/// The words of a linked instance's attempt with no link secret.
+pub const NO_LINK_SECRET: &str = "no link secret: run fohmixer-hub link set-secret";
+
+/// The request one connection attempt of `cfg` makes at the Unix time
+/// `now` (pure): a local instance's `ws://127.0.0.1:<port>` with no header;
+/// a linked one's `link` with `Authorization: Bearer <a new link token>`;
+/// a linked one with no `secret` is an error, a failed attempt like any
+/// other.
+pub fn instance_request(
+    cfg: &InstanceCfg,
+    secret: Option<&LinkSecret>,
+    now: u64,
+) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request, String> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+    let Some(link) = &cfg.link else {
+        return format!("ws://127.0.0.1:{}", cfg.port)
+            .into_client_request()
+            .map_err(|e| e.to_string());
+    };
+    let secret = secret.ok_or_else(|| NO_LINK_SECRET.to_string())?;
+    let mut request = link
+        .as_str()
+        .into_client_request()
+        .map_err(|e| e.to_string())?;
+    let bearer = format!("Bearer {}", link_token(secret, now));
+    let value = bearer
+        .parse()
+        .map_err(|_| "a link token that is no header".to_string())?;
+    request.headers_mut().insert("authorization", value);
+    Ok(request)
+}
+
+/// Where an instance's script is, for the log lines: its port, or its link.
+pub fn place(cfg: &InstanceCfg) -> String {
+    match &cfg.link {
+        Some(link) => format!("link {link}"),
+        None => format!("port {}", cfg.port),
+    }
+}
+
 /// Whether a failed attempt is the first of an outage (a warning; the
 /// retries are debug lines).
 pub(crate) fn first_of_outage(failures: u64) -> bool {
@@ -431,28 +504,35 @@ pub(crate) fn first_of_outage(failures: u64) -> bool {
 
 async fn run(
     cfg: InstanceCfg,
+    secret: Option<LinkSecret>,
     mut rx: mpsc::UnboundedReceiver<Request>,
     events: Events,
     snapshot: Arc<Mutex<Snapshot>>,
     beat: Beat,
 ) {
-    let url = format!("ws://127.0.0.1:{}", cfg.port);
+    let place = place(&cfg);
     let mut backoff = Backoff::default();
     let mut failures: u64 = 0;
     loop {
-        let connect = tokio::time::timeout(
-            CONNECT_TIMEOUT,
-            tokio_tungstenite::connect_async(url.as_str()),
-        );
-        let Some(attempt) = refusing(&mut rx, connect).await else {
-            return;
+        let attempt = match instance_request(&cfg, secret.as_ref(), crate::auth::now_secs()) {
+            Ok(request) => {
+                let connect = tokio::time::timeout(
+                    CONNECT_TIMEOUT,
+                    tokio_tungstenite::connect_async(request),
+                );
+                let Some(attempt) = refusing(&mut rx, connect).await else {
+                    return;
+                };
+                attempt.map(|r| r.map_err(|e| e.to_string()))
+            }
+            Err(why) => Ok(Err(why)),
         };
         let failure = match attempt {
             Ok(Ok((socket, _))) => {
-                tracing::debug!(instance = %cfg.name, port = cfg.port, "WebSocket open: waiting for the script's connect");
+                tracing::debug!(instance = %cfg.name, at = %place, "WebSocket open: waiting for the script's connect");
                 let session = Session {
                     name: &cfg.name,
-                    port: cfg.port,
+                    place: &place,
                     events: &events,
                     snapshot: &snapshot,
                     beat: &beat,
@@ -467,7 +547,7 @@ async fn run(
                     End::Failed(why) => Some(why),
                 }
             }
-            Ok(Err(error)) => Some(error.to_string()),
+            Ok(Err(error)) => Some(error),
             Err(_) => Some("connection attempt timed out".to_string()),
         };
         if let Some(why) = failure {
@@ -478,9 +558,9 @@ async fn run(
                 snap.last_error = Some(why.clone());
             }
             if first_of_outage(failures) {
-                tracing::warn!(instance = %cfg.name, port = cfg.port, error = %why, "no usable FohMixer script: retrying every 2 s at most");
+                tracing::warn!(instance = %cfg.name, at = %place, error = %why, "no usable FohMixer script: retrying every 2 s at most");
             } else {
-                tracing::debug!(instance = %cfg.name, port = cfg.port, failures, error = %why, "still no usable FohMixer script");
+                tracing::debug!(instance = %cfg.name, at = %place, failures, error = %why, "still no usable FohMixer script");
             }
         }
         let wait = tokio::time::sleep(backoff.next_delay());
@@ -493,7 +573,8 @@ async fn run(
 /// One connection's state.
 struct Session<'a> {
     name: &'a str,
-    port: u16,
+    /// Its port or its link, for the words of a refusal.
+    place: &'a str,
     events: &'a Events,
     snapshot: &'a Mutex<Snapshot>,
     beat: &'a Beat,
@@ -586,8 +667,8 @@ impl Session<'_> {
                             // A swapped port: commands and STAGE AUT writes
                             // would go to the wrong Live.
                             break End::Failed(format!(
-                                "port {} answers as instance {:?}, not {:?}",
-                                self.port, info.instance, self.name
+                                "{} answers as instance {:?}, not {:?}",
+                                self.place, info.instance, self.name
                             ));
                         }
                         Ok(frame) => self.on_frame(frame, &mut health, &mut pending),
@@ -698,6 +779,7 @@ impl Session<'_> {
                 None => self.emit(LiveEvent::Result { uuid, data }),
             },
             Frame::Values(items) => self.emit(LiveEvent::Values(items)),
+            Frame::Lufs(osc) => self.emit(LiveEvent::Lufs { osc }),
             Frame::Error { uuid, message } => {
                 tracing::warn!(instance = self.name, uuid = ?uuid, message, "the script refused a request");
                 let Some(uuid) = uuid else { return };
@@ -720,6 +802,83 @@ impl Session<'_> {
 mod tests {
     use super::*;
 
+    fn linked(link: Option<&str>, port: u16) -> InstanceCfg {
+        InstanceCfg {
+            name: "mbc".into(),
+            port,
+            link: link.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_local_instance_dials_loopback_without_a_header() {
+        let request = instance_request(&linked(None, 39103), None, 1_000).unwrap();
+        assert_eq!(request.uri().to_string(), "ws://127.0.0.1:39103/");
+        assert!(request.headers().get("authorization").is_none());
+        assert_eq!(place(&linked(None, 39103)), "port 39103");
+    }
+
+    #[test]
+    fn a_linked_instance_dials_its_link_with_a_fresh_token() {
+        let secret = LinkSecret::from_bytes([8; 32]);
+        let cfg = linked(Some("ws://10.0.0.5:39201"), 0);
+        let request = instance_request(&cfg, Some(&secret), 1_000).unwrap();
+        assert_eq!(request.uri().to_string(), "ws://10.0.0.5:39201/");
+        let header = request
+            .headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        assert_eq!(
+            crate::link::link_claims_ok(header.as_deref(), &secret, 1_060),
+            Ok(()),
+            "a hub token of the secret, valid 60 s"
+        );
+        assert_eq!(
+            crate::link::link_claims_ok(header.as_deref(), &secret, 1_061),
+            Err(crate::link::LinkRefusal::Expired)
+        );
+        let later = instance_request(&cfg, Some(&secret), 2_000).unwrap();
+        assert_ne!(
+            later.headers().get("authorization"),
+            request.headers().get("authorization"),
+            "a new token per attempt"
+        );
+        assert_eq!(place(&cfg), "link ws://10.0.0.5:39201");
+    }
+
+    #[test]
+    fn a_linked_instance_without_a_secret_fails_with_a_reason() {
+        let cfg = linked(Some("ws://10.0.0.5:39201"), 0);
+        assert_eq!(
+            instance_request(&cfg, None, 1_000).err().as_deref(),
+            Some(NO_LINK_SECRET)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_linked_instance_without_a_secret_counts_its_failed_attempts() {
+        let events: Events = Arc::new(|_: &str, _: LiveEvent| {});
+        let (handle, task) = LiveHandle::spawn_dialing(
+            &linked(Some("ws://127.0.0.1:9"), 0),
+            None,
+            events,
+            Beat::steady(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let snap = handle.snapshot();
+            if snap.connect_failures >= 1 {
+                assert_eq!(snap.last_error.as_deref(), Some(NO_LINK_SECRET));
+                assert!(!snap.online);
+                break;
+            }
+            assert!(Instant::now() < deadline, "{snap:?}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        task.abort();
+    }
+
     #[test]
     fn only_the_first_failure_of_an_outage_warns() {
         assert!(first_of_outage(1));
@@ -738,6 +897,7 @@ mod tests {
             &InstanceCfg {
                 name: "band".into(),
                 port,
+                link: None,
             },
             events,
         );
@@ -969,6 +1129,7 @@ mod tests {
             &InstanceCfg {
                 name: "band".into(),
                 port,
+                link: None,
             },
             events,
         );

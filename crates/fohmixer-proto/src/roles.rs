@@ -160,6 +160,7 @@ fn mbc_page(page: &Page) -> Option<Page> {
         id: page.id.clone(),
         title: page.title.clone(),
         view: page.view,
+        pool_only: page.pool_only,
         rail,
         rows,
     })
@@ -181,6 +182,7 @@ pub fn layout_for(role: Role, layout: &Layout) -> Layout {
                     id: EMPTY_PAGE_ID.to_string(),
                     title: EMPTY_PAGE_TITLE.to_string(),
                     view: false,
+                    pool_only: false,
                     rail: Vec::new(),
                     rows: Vec::new(),
                 });

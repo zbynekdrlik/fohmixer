@@ -33,7 +33,7 @@ use crate::arrange::{
 use crate::behave::ableset::tab_dot;
 use crate::behave::arrange_drag::Arrange;
 use crate::behave::iem::alive_after;
-use crate::behave::live_down::LiveWord;
+use crate::behave::live_down::{LiveWord, foot_lives};
 use crate::behave::presenter::{TAB_TITLE as PRESENTER_TAB, tab_dot as presenter_tab_dot};
 use crate::behave::solo::soloed;
 use crate::binding::sectors::{PICKS_KEY, Picks, Sectored, parse_picks, sectors_on};
@@ -586,6 +586,32 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
     }
 }
 
+/// A page as the column lists it: its layout index, id and title.
+pub type PageEntry = (usize, String, String);
+
+/// The column's page tabs and its VIEWS (#68), each `(index, id, title)`
+/// in the layout's order: a page is a tab, a view a VIEWS button, and a
+/// pool-only view (#184: a linked Live's tag group, its faders only in
+/// ARRANGE's pool) neither.
+pub fn column_pages(layout: &Layout) -> (Vec<PageEntry>, Vec<PageEntry>) {
+    let entry = |(i, p): (usize, &Page)| (i, p.id.clone(), p.title.clone());
+    let tabs = layout
+        .pages
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| !p.view)
+        .map(entry)
+        .collect();
+    let views = layout
+        .pages
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.view && !p.pool_only)
+        .map(entry)
+        .collect();
+    (tabs, views)
+}
+
 /// The head of a page's column: the pages' tabs first (each mixer page's
 /// tab a row of its own, larger; STREAM DECK and ABLESET under them,
 /// smaller: the owner's ruling of 29.10.2026 on #148), the pager's tabs
@@ -600,14 +626,9 @@ pub fn ColumnHead() -> impl IntoView {
         sub,
         sectored,
     } = expect_context::<Head>();
-    // A view (#68) is no page tab: the column's VIEWS shows it.
-    let tabs: Vec<(usize, String, String)> = layout
-        .pages
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| !p.view)
-        .map(|(i, p)| (i, p.id.clone(), p.title.clone()))
-        .collect();
+    // A view (#68) is no page tab: the column's VIEWS shows it; a
+    // pool-only view (#184) is neither.
+    let (tabs, views) = column_pages(&layout);
     let for_pager = layout.clone();
     // Every read tolerates a disposed value: a layout change disposes the
     // selection while the old column's effects may still run once.
@@ -643,13 +664,6 @@ pub fn ColumnHead() -> impl IntoView {
         Some(view! { <TabBar tabs=tabs level=1 selected=sub dim=dim /> })
     };
     // The views (#68): a button for each tag group the frame does not show.
-    let views: Vec<(usize, String, String)> = layout
-        .pages
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| p.view)
-        .map(|(i, p)| (i, p.id.clone(), p.title.clone()))
-        .collect();
     let views_bar = (!views.is_empty()).then(|| {
         let buttons = views
             .into_iter()
@@ -1731,11 +1745,12 @@ fn StatusCluster() -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let badges = move || {
         let words = store.live.try_get().unwrap_or_default();
-        store
-            .instances
-            .try_get()
-            .unwrap_or_default()
+        let instances = store.instances.try_get().unwrap_or_default();
+        // Another hub's Live (#184) is left out while this hub holds its own.
+        let shown = foot_lives(&instances);
+        instances
             .into_iter()
+            .filter(|(name, _)| shown.contains(name))
             .map(|(name, instance)| {
                 let state = Badge::of(&instance).name();
                 let word = words.get(&name).copied();
@@ -1776,6 +1791,34 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+
+    #[test]
+    fn a_pool_only_page_is_neither_a_tab_nor_a_view() {
+        // #184: a linked Live's tag group (the FOH hub's MBC faders) is in
+        // ARRANGE's pool only.
+        let layout: Layout = serde_json::from_value(json!({
+            "schema": 2, "default_page": "foh",
+            "pages": [
+                {"id": "foh", "title": "FOH"},
+                {"id": "view-TALKSHOW", "title": "TALKSHOW", "view": true},
+                {"id": "view-MBC", "title": "MBC", "view": true, "pool_only": true},
+                {"id": "cue", "title": "CUE"}
+            ]
+        }))
+        .unwrap();
+        let (tabs, views) = column_pages(&layout);
+        assert_eq!(
+            tabs,
+            vec![
+                (0, "foh".to_string(), "FOH".to_string()),
+                (3, "cue".to_string(), "CUE".to_string())
+            ]
+        );
+        assert_eq!(
+            views,
+            vec![(1, "view-TALKSHOW".to_string(), "TALKSHOW".to_string())]
+        );
+    }
 
     #[test]
     fn an_extra_tab_covers_the_left_half_and_keeps_the_pager_tabs_of_a_right_region() {

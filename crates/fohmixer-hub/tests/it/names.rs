@@ -54,6 +54,7 @@ fn the_status_lists_the_bindings_that_do_not_resolve() {
             InstanceCfg {
                 name: "master".into(),
                 port: 1,
+                link: None,
             },
         ];
         let hub = TestHub::start(instances, dir.path()).await;

@@ -21,10 +21,12 @@ fn instances() -> Vec<InstanceCfg> {
         InstanceCfg {
             name: "band".into(),
             port: 1,
+            link: None,
         },
         InstanceCfg {
             name: "master".into(),
             port: 2,
+            link: None,
         },
     ]
 }

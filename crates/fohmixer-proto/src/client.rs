@@ -449,6 +449,11 @@ pub enum ServerMsg {
         online: bool,
         busy: bool,
         set_name: String,
+        /// Another hub holds this Live, reached through its instance link
+        /// (#184): the FOH page's foot leaves it out (spec C8, mockup v3);
+        /// absent (false) from an older hub.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        linked: bool,
     },
     /// A hub value (STAGE AUT).
     Hub { key: String, value: Value },
@@ -1653,6 +1658,36 @@ pub struct HubStatus {
     /// older hub's answer.
     #[serde(default)]
     pub mute_alarms: MuteAlarmsStatus,
+    /// The instance link this hub serves (#184, `[link]`); none without it
+    /// (and in an older hub's answer).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<LinkStatus>,
+}
+
+/// `/api/status` `link` (#184): the instance link a hub serves: where it
+/// listens, which local instance it relays, the open link's peer and since
+/// when (Unix ms), how many links it took and refused, and the last
+/// refusal's words with its peer.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkStatus {
+    pub listen: String,
+    pub instance: String,
+    #[serde(default)]
+    pub peer: Option<String>,
+    #[serde(default)]
+    pub connected_since_ms: Option<u64>,
+    #[serde(default)]
+    pub links: u64,
+    #[serde(default)]
+    pub refusals: u64,
+    #[serde(default)]
+    pub last_refusal: Option<String>,
+    /// LUFS datagrams the link dropped because it lagged behind.
+    #[serde(default)]
+    pub lufs_dropped: u64,
+    /// Why the listener is not bound yet (it is tried again every 2 s).
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// `/api/status` `presenter` (#90): Presenter's address (`[presenter]

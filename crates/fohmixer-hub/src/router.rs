@@ -1363,6 +1363,9 @@ impl Router {
                 self.rec_connected(instance);
                 self.broadcast_instance(instance);
             }
+            // The hub's event sink takes a link's LUFS datagrams
+            // (`live_events`): none reaches the router.
+            LiveEvent::Lufs { .. } => {}
             LiveEvent::Closed { why } => {
                 // The script's reason (PR #146 review M5), before its
                 // disconnect: a silent hub's close tells from a crash.
@@ -1442,6 +1445,7 @@ impl Router {
                 online: state.online,
                 busy: state.busy,
                 set_name: state.set_name,
+                linked: self.live.get(name).is_some_and(LiveHandle::linked),
             },
         );
     }
@@ -2072,6 +2076,7 @@ mod tests {
             &crate::config::InstanceCfg {
                 name: "band".into(),
                 port,
+                link: None,
             },
             Arc::new(|_: &str, _: LiveEvent| {}),
         );
@@ -2903,6 +2908,7 @@ mod tests {
             online: false,
             busy: true,
             set_name: String::new(),
+            linked: false,
         };
         for outbox in [&a, &b] {
             assert_eq!(outbox.take().unwrap(), vec![state.clone(), link(301.0)]);

@@ -20,6 +20,7 @@ import {
   servedLayout,
   token,
   until,
+  fixtureLayout,
 } from "./support/live";
 
 // The Stream Deck tab (#52) against the harness's fake Companion
@@ -351,7 +352,7 @@ test.describe("The Stream Deck tab", () => {
     await expect(page.locator('.slot[data-side="left"][data-group="stage-1"]').first()).toBeAttached();
     await expect(page.locator('[data-testid="tabbar"][data-level="1"]')).toHaveCount(0);
     // The first row's group before the pager: the region is its right half.
-    const fixture = await servedLayout();
+    const fixture = fixtureLayout();
     const layout = structuredClone(fixture);
     const row = layout.pages.find((p: any) => p.id === "foh").rows[0];
     row.sections = [...row.sections.slice(1), row.sections[0]];

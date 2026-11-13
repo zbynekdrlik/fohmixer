@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { Page } from "@playwright/test";
 import { expect, test } from "./support/fixtures";
-import { FIXTURE_LAYOUT, frames, harness, hostLine, hubStatus, openSurface, selectPage, token, until } from "./support/live";
+import { FIXTURE_LAYOUT, FOH_LIVES, MBC_MARKERS, frames, harness, hostLine, hubStatus, openSurface, selectPage, token, until } from "./support/live";
 
 // A Live that is down, said in words (#178; the owner's approved
 // docs/mockups/live-down-v2.html): no card or overlay anywhere. A strip of a
@@ -67,7 +67,7 @@ test.describe("A Live that is down (#178)", () => {
     const bearer = await token();
     await until(
       () => hubStatus(bearer),
-      (s) => s.instances.every((i: any) => i.online && i.set_name === "Test Site"),
+      (s) => s.instances.filter((i: any) => FOH_LIVES.includes(i.name)).every((i: any) => i.online && i.set_name === "Test Site"),
       "both Lives online on the test site",
       15_000,
     );
@@ -324,7 +324,7 @@ test.describe("A hub started while both Lives are down (#178)", () => {
     const bearer = await token();
     await until(
       () => hubStatus(bearer),
-      (s) => s.instances.every((i: any) => i.online && i.set_name === "Test Site") && s.layout.markers.found === 0,
+      (s) => s.instances.filter((i: any) => FOH_LIVES.includes(i.name)).every((i: any) => i.online && i.set_name === "Test Site") && s.layout.markers.found === MBC_MARKERS,
       "both Lives online on the test site and no Tuner marker left",
       20_000,
     );
@@ -339,7 +339,7 @@ test.describe("A hub started while both Lives are down (#178)", () => {
     const bearer = await token();
     await until(
       () => hubStatus(bearer),
-      (s) => s.layout.markers.found === MARKER_TRACKS && s.layout.markers.ctrls.every((c: any) => c.tuners === 1),
+      (s) => s.layout.markers.found === MARKER_TRACKS + MBC_MARKERS && s.layout.markers.ctrls.every((c: any) => c.tuners === 1),
       "every Tuner marker composed",
       15_000,
     );
@@ -349,7 +349,7 @@ test.describe("A hub started while both Lives are down (#178)", () => {
     await harness("/hub/restart", { rotate_secret: false });
     await until(
       () => hubStatus(),
-      (s) => s.instances.every((i: any) => !i.online),
+      (s) => s.instances.filter((i: any) => FOH_LIVES.includes(i.name)).every((i: any) => !i.online),
       "the restarted hub with both Lives down",
       15_000,
     );
