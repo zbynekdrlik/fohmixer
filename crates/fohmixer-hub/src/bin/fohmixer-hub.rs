@@ -2,6 +2,8 @@
 //!
 //!   fohmixer-hub                        serve on 0.0.0.0:$PORT (default: the config's, 8480)
 //!   fohmixer-hub pin set-engineer       read a PIN from stdin, store its hash as the engineer PIN
+//!   fohmixer-hub pin set-mbc            the same for the MBC operator's PIN (#184); the two
+//!                                       PINs must differ (exit 2)
 //!   fohmixer-hub cloudflare set-token   read a Cloudflare API token from stdin, store it sealed
 //!                                       (the ACME client's DNS-01 records, #17)
 //!   fohmixer-hub config check <file>    check <file> as the hub's config (the installer, before
@@ -45,9 +47,10 @@ use std::time::Duration;
 use anyhow::Context as _;
 use fohmixer_hub::config::Config;
 use fohmixer_hub::provision::{self, ProvisionError};
+use fohmixer_proto::roles::Role;
 use tokio::sync::oneshot;
 
-const USAGE: &str = "usage: fohmixer-hub [pin set-engineer | cloudflare set-token | config check <file> | layout check <layout> <config> | markers plan <layout> | markers frame <layout> <out> | eq-probe --pid <pid> ...]   (the PIN or the token is read from stdin)";
+const USAGE: &str = "usage: fohmixer-hub [pin set-engineer | pin set-mbc | cloudflare set-token | config check <file> | layout check <layout> <config> | markers plan <layout> | markers frame <layout> <out> | eq-probe --pid <pid> ...]   (the PIN or the token is read from stdin)";
 
 fn data_dir() -> PathBuf {
     PathBuf::from(std::env::var("FOHMIXER_DATA").unwrap_or_else(|_| ".".to_string()))
@@ -65,7 +68,8 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        ["pin", "set-engineer"] => pin_command(),
+        ["pin", "set-engineer"] => pin_command(Role::Engineer),
+        ["pin", "set-mbc"] => pin_command(Role::Mbc),
         ["cloudflare", "set-token"] => token_command(),
         ["config", "check", file] => config_command(file),
         ["layout", "check", layout, config] => layout_command(layout, config),
@@ -79,12 +83,13 @@ fn main() -> ExitCode {
     }
 }
 
-/// `pin set-engineer`: exit 0 when stored, 2 for a bad PIN, 1 on an error.
-fn pin_command() -> ExitCode {
+/// `pin set-engineer` / `pin set-mbc`: exit 0 when stored, 2 for a bad PIN
+/// (or one equal to the other role's), 1 on an error.
+fn pin_command(role: Role) -> ExitCode {
     let stdin = std::io::stdin();
-    match provision::run(&data_dir(), stdin.lock()) {
+    match provision::run_role(&data_dir(), stdin.lock(), role) {
         Ok(()) => {
-            eprintln!("fohmixer-hub: stored the engineer PIN hash");
+            eprintln!("fohmixer-hub: stored the {} PIN hash", pin_name(role));
             ExitCode::SUCCESS
         }
         Err(e @ ProvisionError::Invalid(_)) => {
@@ -95,6 +100,14 @@ fn pin_command() -> ExitCode {
             eprintln!("fohmixer-hub: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// A role's PIN as the CLI names it.
+fn pin_name(role: Role) -> &'static str {
+    match role {
+        Role::Engineer => "engineer",
+        Role::Mbc => "MBC",
     }
 }
 

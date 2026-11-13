@@ -1,6 +1,7 @@
-//! The engineer PIN's argon2id hash: `<data>/secrets/pin_hashes.json`
-//! (from iemmixer's `iem-server/src/pin_store.rs` @ 22372bc, trimmed to the
-//! engineer role: fohmixer has no member logins).
+//! The PINs' argon2id hashes: `<data>/secrets/pin_hashes.json` (from
+//! iemmixer's `iem-server/src/pin_store.rs` @ 22372bc): the engineer's and,
+//! since #184, the MBC operator's (`fohmixer_proto::roles::Role`). A file
+//! of an older hub holds the engineer's only.
 //!
 //! Never plaintext: the stored value must be an argon2id PHC string, and a
 //! file that holds anything else is a load error instead of being ignored.
@@ -8,6 +9,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use fohmixer_proto::roles::Role;
 use serde::{Deserialize, Serialize};
 
 /// File name inside the secrets directory.
@@ -17,22 +19,40 @@ pub const PIN_HASHES_FILE: &str = "pin_hashes.json";
 struct PinFile {
     #[serde(default)]
     engineer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mbc: Option<String>,
 }
 
-/// The engineer PIN hash, persisted atomically.
+impl PinFile {
+    fn entry(&self, role: Role) -> &Option<String> {
+        match role {
+            Role::Engineer => &self.engineer,
+            Role::Mbc => &self.mbc,
+        }
+    }
+
+    fn entry_mut(&mut self, role: Role) -> &mut Option<String> {
+        match role {
+            Role::Engineer => &mut self.engineer,
+            Role::Mbc => &mut self.mbc,
+        }
+    }
+}
+
+/// The PIN hashes, persisted atomically.
 #[derive(Debug)]
 pub struct PinStore {
     file: PinFile,
     path: PathBuf,
 }
 
-fn check_phc(phc: &str) -> io::Result<()> {
+fn check_phc(role: Role, phc: &str) -> io::Result<()> {
     if phc.starts_with("$argon2id$") {
         Ok(())
     } else {
         Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "the engineer PIN entry is not an argon2id hash",
+            format!("the {} PIN entry is not an argon2id hash", role.as_str()),
         ))
     }
 }
@@ -51,25 +71,37 @@ impl PinStore {
             Err(e) if e.kind() == io::ErrorKind::NotFound => PinFile::default(),
             Err(e) => return Err(e),
         };
-        if let Some(phc) = &file.engineer {
-            check_phc(phc)?;
+        for role in [Role::Engineer, Role::Mbc] {
+            if let Some(phc) = file.entry(role) {
+                check_phc(role, phc)?;
+            }
         }
         Ok(Self { file, path })
     }
 
-    pub fn engineer_hash(&self) -> Option<&str> {
-        self.file.engineer.as_deref()
+    /// The hash of `role`'s PIN.
+    pub fn hash(&self, role: Role) -> Option<&str> {
+        self.file.entry(role).as_deref()
     }
 
-    /// Whether a PIN hash is stored.
+    pub fn engineer_hash(&self) -> Option<&str> {
+        self.hash(Role::Engineer)
+    }
+
+    /// Whether a PIN hash is stored (either role's).
     pub fn has_hashes(&self) -> bool {
-        self.file.engineer.is_some()
+        self.file.engineer.is_some() || self.file.mbc.is_some()
+    }
+
+    /// Stores `phc` as `role`'s PIN hash.
+    pub fn set_hash(&mut self, role: Role, phc: String) -> io::Result<()> {
+        check_phc(role, &phc)?;
+        *self.file.entry_mut(role) = Some(phc);
+        self.save()
     }
 
     pub fn set_engineer_hash(&mut self, phc: String) -> io::Result<()> {
-        check_phc(&phc)?;
-        self.file.engineer = Some(phc);
-        self.save()
+        self.set_hash(Role::Engineer, phc)
     }
 
     fn save(&self) -> io::Result<()> {
@@ -111,6 +143,50 @@ mod tests {
         assert!(h.verify("2468", store.engineer_hash().unwrap()));
         let text = std::fs::read_to_string(dir.path().join(PIN_HASHES_FILE)).unwrap();
         assert!(!text.contains("\"2468\""));
+    }
+
+    #[test]
+    fn the_mbc_hash_survives_a_reload_beside_the_engineers() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = hasher();
+        {
+            let mut store = PinStore::load(dir.path()).unwrap();
+            store.set_hash(Role::Mbc, h.hash("1357")).unwrap();
+            assert!(store.has_hashes(), "the MBC PIN alone is a stored PIN");
+            assert!(store.engineer_hash().is_none());
+            store.set_engineer_hash(h.hash("2468")).unwrap();
+        }
+        let store = PinStore::load(dir.path()).unwrap();
+        assert!(h.verify("1357", store.hash(Role::Mbc).unwrap()));
+        assert!(h.verify("2468", store.hash(Role::Engineer).unwrap()));
+        assert!(!h.verify("2468", store.hash(Role::Mbc).unwrap()));
+        let text = std::fs::read_to_string(dir.path().join(PIN_HASHES_FILE)).unwrap();
+        assert!(!text.contains("\"1357\""));
+    }
+
+    #[test]
+    fn a_plaintext_mbc_entry_is_a_load_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = hasher();
+        let text = serde_json::json!({"engineer": h.hash("2468"), "mbc": "1357"}).to_string();
+        std::fs::write(dir.path().join(PIN_HASHES_FILE), text).unwrap();
+        let err = PinStore::load(dir.path()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(err.to_string(), "the mbc PIN entry is not an argon2id hash");
+        let mut store = PinStore::load(tempfile::tempdir().unwrap().path()).unwrap();
+        assert!(store.set_hash(Role::Mbc, "1357".to_string()).is_err());
+    }
+
+    #[test]
+    fn an_older_file_with_only_the_engineer_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = hasher();
+        let text = serde_json::json!({"engineer": h.hash("2468")}).to_string();
+        std::fs::write(dir.path().join(PIN_HASHES_FILE), text).unwrap();
+        let store = PinStore::load(dir.path()).unwrap();
+        assert_eq!(store.hash(Role::Mbc), None);
+        assert!(store.has_hashes());
+        assert!(h.verify("2468", store.hash(Role::Engineer).unwrap()));
     }
 
     #[test]
