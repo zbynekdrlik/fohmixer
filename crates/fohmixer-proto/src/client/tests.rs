@@ -1172,10 +1172,24 @@ fn api_bodies_round_trip() {
     let auth = AuthResponse {
         token: "t".into(),
         expires_in: 60,
+        role: None,
     };
     assert_eq!(
         serde_json::to_value(&auth).unwrap(),
         json!({"token": "t", "expires_in": 60})
+    );
+    let mbc = AuthResponse {
+        token: "t".into(),
+        expires_in: 60,
+        role: Some(crate::roles::Role::Mbc),
+    };
+    assert_eq!(
+        serde_json::to_value(&mbc).unwrap(),
+        json!({"token": "t", "expires_in": 60, "role": "mbc"})
+    );
+    assert_eq!(
+        serde_json::from_value::<AuthResponse>(json!({"token": "t", "expires_in": 60})).unwrap(),
+        auth
     );
     assert_eq!(
         serde_json::from_value::<AuthRequest>(json!({"pin": "2468"})).unwrap(),

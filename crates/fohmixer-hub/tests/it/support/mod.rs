@@ -126,8 +126,12 @@ impl TestHub {
             .expect("the hub is ready within 10 s")
             .expect("the hub reports its address");
         let secret = std::fs::read_to_string(dir.join("secrets").join("jwt_secret")).unwrap();
-        let token =
-            fohmixer_hub::auth::issue_token(secret.trim(), fohmixer_hub::auth::now_secs()).unwrap();
+        let token = fohmixer_hub::auth::issue_token(
+            secret.trim(),
+            fohmixer_hub::auth::now_secs(),
+            fohmixer_proto::roles::Role::Engineer,
+        )
+        .unwrap();
         Self {
             addr,
             dir,

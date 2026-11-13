@@ -1,6 +1,9 @@
-//! Engineer login: PIN → JWT, and token checks (from iemmixer's
-//! `iem-server/src/auth.rs` @ 22372bc, trimmed to the engineer role; spec
-//! §2.4, X8: one login per device, the token lasts 7 days).
+//! Login: PIN → JWT, and token checks (from iemmixer's
+//! `iem-server/src/auth.rs` @ 22372bc; spec §2.4, X8: one login per device,
+//! the token lasts 7 days). Since #184 two roles (`fohmixer_proto::roles`):
+//! the PIN names the role (the engineer's or the MBC operator's, which must
+//! differ), and the token's subject carries it; an engineer token of before
+//! (`sub: "engineer"`) stays valid.
 //!
 //! Login protection: admission by [`LoginGuard`] before any hashing, a
 //! bounded hashing gate, argon2id verification against the stored hash,
@@ -21,6 +24,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use fohmixer_proto::client::{ApiError, AuthRequest, AuthResponse};
+use fohmixer_proto::roles::Role;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 
@@ -31,15 +35,31 @@ use crate::secrets::SECRETS_DIR;
 
 /// Token lifetime: 7 days (iemmixer's engineer token).
 pub const TOKEN_EXPIRY_SECS: u64 = 7 * 24 * 60 * 60;
-/// The subject of every token: the one role fohmixer has.
-pub const ENGINEER: &str = "engineer";
-
 /// The token's claims.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Claims {
     pub sub: String,
     pub iat: u64,
     pub exp: u64,
+}
+
+impl Claims {
+    /// The role the token's subject names.
+    pub fn role(&self) -> Option<Role> {
+        Role::from_sub(&self.sub)
+    }
+}
+
+/// The role a login's PIN matched: the engineer's first (the two PINs
+/// differ, so both matching is a store written by hand).
+pub fn login_role(engineer_ok: bool, mbc_ok: bool) -> Option<Role> {
+    if engineer_ok {
+        Some(Role::Engineer)
+    } else if mbc_ok {
+        Some(Role::Mbc)
+    } else {
+        None
+    }
 }
 
 /// A rejection already rendered as a response (boxed: `Response` is large).
@@ -92,10 +112,14 @@ pub fn now_secs() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// A token for the engineer, issued at `now` (Unix seconds).
-pub fn issue_token(secret: &str, now: u64) -> Result<String, jsonwebtoken::errors::Error> {
+/// A token for `role`, issued at `now` (Unix seconds).
+pub fn issue_token(
+    secret: &str,
+    now: u64,
+    role: Role,
+) -> Result<String, jsonwebtoken::errors::Error> {
     let claims = Claims {
-        sub: ENGINEER.to_string(),
+        sub: role.sub().to_string(),
         iat: now,
         exp: now + TOKEN_EXPIRY_SECS,
     };
@@ -107,7 +131,7 @@ pub fn issue_token(secret: &str, now: u64) -> Result<String, jsonwebtoken::error
 }
 
 /// The claims of a token signed with `secret`, valid through the second of
-/// its `exp` at the Unix time `now`.
+/// its `exp` at the Unix time `now`, whose subject names a role.
 pub fn claims_at(token: Option<&str>, secret: &str, now: u64) -> Option<Claims> {
     let data = decode::<Claims>(
         token?,
@@ -115,7 +139,7 @@ pub fn claims_at(token: Option<&str>, secret: &str, now: u64) -> Option<Claims> 
         &Validation::default(),
     )
     .ok()?;
-    (data.claims.exp >= now).then_some(data.claims)
+    (data.claims.exp >= now && data.claims.role().is_some()).then_some(data.claims)
 }
 
 /// The token of an `Authorization: Bearer …` header.
@@ -179,24 +203,38 @@ impl Auth {
         }
     }
 
-    /// A new engineer token (the login's; tests and tools).
-    pub fn issue(&self) -> Result<String, jsonwebtoken::errors::Error> {
-        issue_token(&self.jwt_secret, now_secs())
+    /// A new token for `role` (the login's; tests and tools).
+    pub fn issue(&self, role: Role) -> Result<String, jsonwebtoken::errors::Error> {
+        issue_token(&self.jwt_secret, now_secs(), role)
     }
 
-    /// The claims of a valid token now.
+    /// The claims of a valid token now (one whose subject names a role).
     pub fn claims(&self, token: Option<&str>) -> Option<Claims> {
         claims_at(token, &self.jwt_secret, now_secs())
     }
 
-    /// The claims of the request's bearer token, or the 401 to answer.
-    pub fn require(&self, headers: &HeaderMap) -> Result<Claims, Rejection> {
+    /// The role of a valid token now.
+    pub fn role(&self, token: Option<&str>) -> Option<Role> {
+        self.claims(token).as_ref().and_then(Claims::role)
+    }
+
+    /// The claims and role of the request's bearer token, or the 401 to
+    /// answer.
+    pub fn require(&self, headers: &HeaderMap) -> Result<(Claims, Role), Rejection> {
         self.claims(bearer(headers))
+            .and_then(|claims| claims.role().map(|role| (claims, role)))
             .ok_or_else(|| Rejection::from(unauthorized()))
     }
 
-    /// Runs argon2id work on the blocking pool, admitted by the gate.
-    async fn verify(&self, pin: String, phc: Option<String>) -> Result<bool, Rejection> {
+    /// Runs argon2id work on the blocking pool, admitted by the gate: the
+    /// PIN against the engineer's and the MBC operator's hash, in one
+    /// permit (one login is one admission, whichever role it is).
+    async fn verify(
+        &self,
+        pin: String,
+        engineer: Option<String>,
+        mbc: Option<String>,
+    ) -> Result<Option<Role>, Rejection> {
         let Some(permit) = self.gate.acquire().await else {
             tracing::warn!("PIN hashing gate full: answering 429");
             return Err(Rejection::from(too_many_attempts(Duration::from_secs(1))));
@@ -204,7 +242,10 @@ impl Auth {
         let hasher = self.hasher.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            hasher.verify_optional(&pin, phc.as_deref())
+            login_role(
+                hasher.verify_optional(&pin, engineer.as_deref()),
+                hasher.verify_optional(&pin, mbc.as_deref()),
+            )
         })
         .await
         .map_err(|e| {
@@ -218,7 +259,8 @@ impl Auth {
     }
 }
 
-/// `POST /api/auth {pin}`: the engineer's token, or 401 / 429.
+/// `POST /api/auth {pin}`: the token of the role the PIN matches, or 401 /
+/// 429.
 pub async fn login(
     State(auth): State<Arc<Auth>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -229,8 +271,11 @@ pub async fn login(
         tracing::info!(peer = %peer.ip(), wait_ms = wait.as_millis() as u64, "login throttled");
         return Err(Rejection::from(too_many_attempts(wait)));
     }
-    let hash = match PinStore::load(&auth.secrets_dir) {
-        Ok(store) => store.engineer_hash().map(str::to_owned),
+    let (engineer, mbc) = match PinStore::load(&auth.secrets_dir) {
+        Ok(store) => (
+            store.hash(Role::Engineer).map(str::to_owned),
+            store.hash(Role::Mbc).map(str::to_owned),
+        ),
         Err(e) => {
             tracing::error!(error = %e, "the PIN store is unreadable");
             return Err(Rejection::from(error_response(
@@ -240,9 +285,9 @@ pub async fn login(
             )));
         }
     };
-    if auth.verify(req.pin, hash).await? {
+    if let Some(role) = auth.verify(req.pin, engineer, mbc).await? {
         auth.guard.record_success(peer.ip());
-        let token = auth.issue().map_err(|e| {
+        let token = auth.issue(role).map_err(|e| {
             tracing::error!(error = %e, "cannot sign a token");
             Rejection::from(error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -250,10 +295,11 @@ pub async fn login(
                 "Failed to create token",
             ))
         })?;
-        tracing::info!(peer = %peer.ip(), "engineer logged in");
+        tracing::info!(peer = %peer.ip(), "{} logged in", role.as_str());
         Ok(Json(AuthResponse {
             token,
             expires_in: TOKEN_EXPIRY_SECS,
+            role: Some(role),
         }))
     } else {
         if let Some(note) = failure_note(auth.guard.record_failure(peer.ip(), now)) {
@@ -294,6 +340,8 @@ mod tests {
     const WRONG_PIN: &str = "9753";
     const SECRET: &str = "login-test-secret";
 
+    const MBC_PIN: &str = "1357";
+
     fn auth(dir: &Path, with_pin: bool) -> Arc<Auth> {
         let hasher = PinHasher::for_tests([5u8; PEPPER_LEN]);
         if with_pin {
@@ -303,6 +351,134 @@ mod tests {
                 .unwrap();
         }
         Arc::new(Auth::with(SECRET.to_string(), dir.to_path_buf(), hasher))
+    }
+
+    /// An `Auth` with both PINs stored.
+    fn both(dir: &Path) -> Arc<Auth> {
+        let hasher = PinHasher::for_tests([5u8; PEPPER_LEN]);
+        let mut store = PinStore::load(dir).unwrap();
+        store.set_engineer_hash(hasher.hash(PIN)).unwrap();
+        store.set_hash(Role::Mbc, hasher.hash(MBC_PIN)).unwrap();
+        Arc::new(Auth::with(SECRET.to_string(), dir.to_path_buf(), hasher))
+    }
+
+    #[test]
+    fn login_role_names_the_pin_that_matched() {
+        assert_eq!(login_role(true, false), Some(Role::Engineer));
+        assert_eq!(login_role(false, true), Some(Role::Mbc));
+        assert_eq!(login_role(false, false), None);
+        assert_eq!(login_role(true, true), Some(Role::Engineer));
+    }
+
+    #[test]
+    fn a_token_carries_its_role() {
+        let now = now_secs();
+        let token = issue_token(SECRET, now, Role::Mbc).unwrap();
+        let claims = claims_at(Some(&token), SECRET, now).unwrap();
+        assert_eq!(claims.sub, "mbc");
+        assert_eq!(claims.role(), Some(Role::Mbc));
+        let token = issue_token(SECRET, now, Role::Engineer).unwrap();
+        assert_eq!(
+            claims_at(Some(&token), SECRET, now).unwrap().role(),
+            Some(Role::Engineer)
+        );
+    }
+
+    /// A token signed with `claims` as they are, the way a hub before #184
+    /// signed every token.
+    fn signed(claims: &Claims) -> String {
+        encode(
+            &Header::default(),
+            claims,
+            &EncodingKey::from_secret(SECRET.as_bytes()),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn an_engineer_token_of_before_stays_valid() {
+        let now = now_secs();
+        let old = signed(&Claims {
+            sub: "engineer".into(),
+            iat: now - 3600,
+            exp: now + 3600,
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let auth = auth(dir.path(), false);
+        assert_eq!(auth.role(Some(&old)), Some(Role::Engineer));
+    }
+
+    #[test]
+    fn a_token_naming_no_role_is_refused() {
+        let now = now_secs();
+        let dir = tempfile::tempdir().unwrap();
+        let auth = auth(dir.path(), false);
+        for sub in ["hub", "", "Engineer"] {
+            let token = signed(&Claims {
+                sub: sub.into(),
+                iat: now,
+                exp: now + 3600,
+            });
+            assert_eq!(claims_at(Some(&token), SECRET, now), None, "{sub:?}");
+            assert_eq!(auth.role(Some(&token)), None, "{sub:?}");
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::AUTHORIZATION,
+                format!("Bearer {token}").parse().unwrap(),
+            );
+            assert!(auth.require(&headers).is_err(), "{sub:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_login_names_the_role_its_pin_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = both(dir.path());
+        for (pin, role) in [(PIN, Role::Engineer), (MBC_PIN, Role::Mbc)] {
+            let resp = login_with(&app(Arc::clone(&auth), [10, 0, 0, 50]), pin).await;
+            assert_eq!(resp.status(), StatusCode::OK, "{pin}");
+            let body = json_body(resp).await;
+            assert_eq!(body["role"], role.as_str());
+            let token = body["token"].as_str().unwrap();
+            assert_eq!(auth.role(Some(token)), Some(role));
+        }
+        let resp = login_with(&app(Arc::clone(&auth), [10, 0, 0, 50]), WRONG_PIN).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(json_body(resp).await["code"], "INVALID_PIN");
+    }
+
+    #[tokio::test]
+    async fn only_the_mbc_pin_logs_in_as_mbc() {
+        let dir = tempfile::tempdir().unwrap();
+        let hasher = PinHasher::for_tests([5u8; PEPPER_LEN]);
+        PinStore::load(dir.path())
+            .unwrap()
+            .set_hash(Role::Mbc, hasher.hash(MBC_PIN))
+            .unwrap();
+        let auth = Arc::new(Auth::with(
+            SECRET.to_string(),
+            dir.path().to_path_buf(),
+            hasher,
+        ));
+        let app = app(Arc::clone(&auth), [10, 0, 0, 50]);
+        assert_eq!(
+            login_with(&app, PIN).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let body = json_body(login_with(&app, MBC_PIN).await).await;
+        assert_eq!(body["role"], "mbc");
+    }
+
+    #[tokio::test]
+    async fn a_wrong_pin_counts_as_one_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = both(dir.path());
+        let app = app(Arc::clone(&auth), [10, 0, 0, 50]);
+        assert_eq!(
+            login_with(&app, WRONG_PIN).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(auth.guard.stats().failures, 1);
     }
 
     fn app(auth: Arc<Auth>, peer: [u8; 4]) -> axum::Router {
@@ -455,7 +631,7 @@ mod tests {
     #[test]
     fn a_token_is_valid_through_its_expiry_second() {
         let now = now_secs();
-        let token = issue_token(SECRET, now).unwrap();
+        let token = issue_token(SECRET, now, Role::Engineer).unwrap();
         let exp = now + TOKEN_EXPIRY_SECS;
         assert_eq!(
             claims_at(Some(&token), SECRET, exp),
@@ -470,7 +646,7 @@ mod tests {
         assert_eq!(claims_at(Some("not.a.token"), SECRET, now), None);
         assert_eq!(claims_at(None, SECRET, now), None);
         // A token that expired in the real clock does not decode at all.
-        let old = issue_token(SECRET, now - TOKEN_EXPIRY_SECS - 3600).unwrap();
+        let old = issue_token(SECRET, now - TOKEN_EXPIRY_SECS - 3600, Role::Engineer).unwrap();
         assert_eq!(claims_at(Some(&old), SECRET, 0), None);
     }
 
@@ -485,12 +661,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let auth = auth(dir.path(), false);
         assert!(auth.require(&headers).is_err());
-        let token = issue_token(SECRET, now_secs()).unwrap();
+        let token = issue_token(SECRET, now_secs(), Role::Engineer).unwrap();
         headers.insert(
             header::AUTHORIZATION,
             format!("Bearer {token}").parse().unwrap(),
         );
-        assert_eq!(auth.require(&headers).ok().unwrap().sub, "engineer");
+        let (claims, role) = auth.require(&headers).ok().unwrap();
+        assert_eq!((claims.sub.as_str(), role), ("engineer", Role::Engineer));
+        let token = issue_token(SECRET, now_secs(), Role::Mbc).unwrap();
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
+        );
+        assert_eq!(auth.require(&headers).ok().unwrap().1, Role::Mbc);
         let resp = auth
             .require(&HeaderMap::new())
             .err()
@@ -503,7 +686,7 @@ mod tests {
     fn load_creates_the_secrets_and_refuses_a_plaintext_store() {
         let dir = tempfile::tempdir().unwrap();
         let auth = Auth::load(dir.path()).unwrap();
-        let token = issue_token(&auth.jwt_secret, now_secs()).unwrap();
+        let token = issue_token(&auth.jwt_secret, now_secs(), Role::Engineer).unwrap();
         assert!(auth.claims(Some(&token)).is_some());
         assert!(dir.path().join(SECRETS_DIR).join("jwt_secret").is_file());
         let again = Auth::load(dir.path()).unwrap();

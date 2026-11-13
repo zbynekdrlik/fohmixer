@@ -721,7 +721,10 @@ mod tests {
             body,
             serde_json::json!({"rows": [], "problems": [], "reading": false, "renamed": 0})
         );
-        let token = hub.auth.issue().unwrap();
+        let token = hub
+            .auth
+            .issue(fohmixer_proto::roles::Role::Engineer)
+            .unwrap();
         let response = lan(crate::app_router(hub.clone()))
             .oneshot(
                 Request::post("/api/markers/migration")
@@ -736,7 +739,10 @@ mod tests {
     }
 
     async fn get_with_token(hub: &crate::Hub, path: &str) -> Response {
-        let token = hub.auth.issue().unwrap();
+        let token = hub
+            .auth
+            .issue(fohmixer_proto::roles::Role::Engineer)
+            .unwrap();
         lan(crate::app_router(hub.clone()))
             .oneshot(
                 Request::get(path)
