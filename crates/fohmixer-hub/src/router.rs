@@ -2072,6 +2072,7 @@ mod tests {
             &crate::config::InstanceCfg {
                 name: "band".into(),
                 port,
+                link: None,
             },
             Arc::new(|_: &str, _: LiveEvent| {}),
         );

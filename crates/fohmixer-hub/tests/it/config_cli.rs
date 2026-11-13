@@ -53,6 +53,31 @@ fn a_missing_file_or_argument_is_refused() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("config check <file>"));
 }
 
+#[test]
+fn config_check_refuses_an_unspecified_link_listen() {
+    // #184: the instance link binds the LAN address it is given, never all.
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("fohmixer-hub.toml.check");
+    let config = |listen: &str| {
+        format!(
+            "[[instances]]\nname = \"mbc\"\nport = 39103\n\
+             [link]\nlisten = \"{listen}\"\ninstance = \"mbc\"\n"
+        )
+    };
+    std::fs::write(&file, config("10.0.0.5:39201")).unwrap();
+    let out = check(&file);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    std::fs::write(&file, config("0.0.0.0:39201")).unwrap();
+    let out = check(&file);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("never every address"), "{stderr}");
+}
+
 fn layout_check(layout: &std::path::Path, config: &std::path::Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_fohmixer-hub"))
         .args(["layout", "check"])

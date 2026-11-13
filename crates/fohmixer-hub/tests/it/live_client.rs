@@ -247,6 +247,7 @@ fn cfg(port: u16) -> InstanceCfg {
     InstanceCfg {
         name: "band".into(),
         port,
+        link: None,
     }
 }
 

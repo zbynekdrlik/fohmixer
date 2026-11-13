@@ -1540,6 +1540,7 @@ async fn a_disconnect_ends_the_reads_task_so_it_asks_live_nothing_more() {
     let cfg = crate::config::InstanceCfg {
         name: "band".into(),
         port,
+        link: None,
     };
     let (live, _task) = crate::live::client::LiveHandle::spawn(&cfg, events);
     let info = loop {

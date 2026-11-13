@@ -53,6 +53,7 @@ fn offline_live() -> LiveHandle {
         &InstanceCfg {
             name: "band".into(),
             port,
+            link: None,
         },
         Arc::new(|_: &str, _: LiveEvent| {}),
     );

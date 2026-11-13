@@ -56,6 +56,16 @@
 //! bitmap_px = 144        # 32..=512, the keys' image size
 //! title = "Stream Deck"  # 1..=24 characters, the tab's title
 //!
+//! # The instance link (#184), optional: the MBC hub serves its local
+//! # instance on a given LAN address (never every address), and another
+//! # hub reaches it as a linked instance (`link` instead of `port`):
+//! [link]
+//! listen = "10.0.0.5:39201"
+//! instance = "mbc"
+//! # [[instances]]
+//! # name = "mbc"
+//! # link = "ws://10.0.0.5:39201"
+//!
 //! # The Pro-Q 4 screen (#71 PR E), optional: which window backend shows the
 //! # editors. "off" (the default on Windows: no Pro-Q screen, the detail
 //! # says so), "windows" (Live's editor windows: written by hand on the PC
@@ -81,6 +91,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, bail};
 use serde::Deserialize;
+
+mod link;
+pub use link::{LinkCfg, is_link_url};
 
 /// The configuration file inside the data folder.
 pub const CONFIG_FILE: &str = "fohmixer-hub.toml";
@@ -122,12 +135,17 @@ pub const DEFAULT_ABLESET_TITLE: &str = "AbleSet";
 pub const DEFAULT_IEM_TITLE: &str = "IEM MIXER";
 
 /// One Live instance: its name (the `instance` of every command and
-/// binding) and the localhost port of its FohMixer script.
+/// binding) and the localhost port of its FohMixer script, or (#184) the
+/// instance link of another hub that holds it (`link`, exclusive with
+/// `port`; [`link::is_link_url`]).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InstanceCfg {
     pub name: String,
+    #[serde(default)]
     pub port: u16,
+    #[serde(default)]
+    pub link: Option<String>,
 }
 
 fn default_http_port() -> u16 {
@@ -139,10 +157,12 @@ fn default_instances() -> Vec<InstanceCfg> {
         InstanceCfg {
             name: "band".to_string(),
             port: 39101,
+            link: None,
         },
         InstanceCfg {
             name: "master".to_string(),
             port: 39102,
+            link: None,
         },
     ]
 }
@@ -611,6 +631,9 @@ pub struct Config {
     /// AUTOTUNE's wait at a play start (#190); none without the table.
     #[serde(default)]
     pub autotune: AutotuneCfg,
+    /// The instance link this hub serves (#184, `[link]`); none: no link.
+    #[serde(default)]
+    pub link: Option<LinkCfg>,
     /// The data folder (where the file was read from).
     #[serde(skip)]
     pub data_dir: PathBuf,
@@ -636,6 +659,7 @@ impl Config {
             eq: None,
             lufs: LufsCfg::default(),
             autotune: AutotuneCfg::default(),
+            link: None,
             data_dir: data_dir.to_path_buf(),
         }
     }
@@ -686,8 +710,9 @@ impl Config {
             if !names.insert(name) {
                 bail!("instance {name:?} is listed twice");
             }
-            if instance.port == 0 {
-                bail!("instance {name:?}: port 0");
+            link::validate_instance(instance)?;
+            if instance.link.is_some() {
+                continue;
             }
             if !ports.insert(instance.port) {
                 bail!(
@@ -706,6 +731,10 @@ impl Config {
                 "layout_poll_ms {} is below {MIN_LAYOUT_POLL_MS}",
                 self.layout_poll_ms
             );
+        }
+        link::validate_links(&self.instances)?;
+        if let Some(cfg) = &self.link {
+            link::validate_listen(cfg, &self.instances)?;
         }
         self.validate_companion()?;
         if self.autotune.engage_delay_ms > MAX_ENGAGE_DELAY_MS {
@@ -910,6 +939,12 @@ impl Config {
     pub fn has_instance(&self, name: &str) -> bool {
         self.instances.iter().any(|i| i.name == name)
     }
+
+    /// The instances reached through another hub's link (#184): each is a
+    /// label domain of its own (`fohmixer_proto::markers::compose`).
+    pub fn linked_instances(&self) -> std::collections::BTreeSet<String> {
+        link::linked(&self.instances)
+    }
 }
 
 #[cfg(test)]
@@ -930,11 +965,13 @@ mod tests {
             vec![
                 InstanceCfg {
                     name: "band".into(),
-                    port: 39101
+                    port: 39101,
+                    link: None,
                 },
                 InstanceCfg {
                     name: "master".into(),
-                    port: 39102
+                    port: 39102,
+                    link: None,
                 }
             ]
         );
@@ -972,7 +1009,10 @@ mod tests {
             ("[[instances]]\nname = \"\"\nport = 1\n", "not empty"),
             ("[[instances]]\nname = \"a|b\"\nport = 1\n", "not empty"),
             ("[[instances]]\nname = \" a\"\nport = 1\n", "not empty"),
-            ("[[instances]]\nname = \"a\"\nport = 0\n", "port 0"),
+            (
+                "[[instances]]\nname = \"a\"\nport = 0\n",
+                "a port or a link",
+            ),
             (
                 "[[instances]]\nname = \"a\"\nport = 1\n[[instances]]\nname = \"b\"\nport = 1\n",
                 "port 1 is another instance's",

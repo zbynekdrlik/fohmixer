@@ -738,6 +738,7 @@ mod tests {
             &InstanceCfg {
                 name: "band".into(),
                 port,
+                link: None,
             },
             events,
         );
@@ -969,6 +970,7 @@ mod tests {
             &InstanceCfg {
                 name: "band".into(),
                 port,
+                link: None,
             },
             events,
         );

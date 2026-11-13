@@ -130,6 +130,7 @@ impl Host {
         InstanceCfg {
             name: self.instance.clone(),
             port: self.port,
+            link: None,
         }
     }
 

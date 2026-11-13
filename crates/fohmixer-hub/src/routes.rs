@@ -814,6 +814,7 @@ mod tests {
         config.instances = vec![crate::config::InstanceCfg {
             name: "band".into(),
             port,
+            link: None,
         }];
         let hub = crate::Hub::start(config).unwrap();
         let response = get_with_token(&hub, "/api/songmap?instance=band").await;
@@ -967,6 +968,7 @@ mod tests {
                 crate::config::InstanceCfg {
                     name: name.into(),
                     port,
+                    link: None,
                 }
             })
             .collect();
