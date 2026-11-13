@@ -239,6 +239,22 @@ impl WriterAct {
     }
 }
 
+/// Where a play start's wait of its selector-on writes stands (#190, the
+/// hub's `[autotune] engage_delay_ms`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EngageAct {
+    /// Live started playing: the selectors the rule switches on wait.
+    Waits,
+    /// The wait ended: the set is decided again and they go.
+    Ends,
+    /// Live stopped (or its transport was lost) within the wait: nothing
+    /// waiting is written.
+    Stopped,
+    /// The set went offline within the wait.
+    Offline,
+}
+
 /// One step of AUTOTUNE: an `autotune` record and a log line.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "step", rename_all = "snake_case")]
@@ -397,6 +413,15 @@ pub enum Step {
         targets: Vec<String>,
         why: String,
     },
+    /// A play start's selector-on writes wait `ms` (#190): the wait starts
+    /// (`waits`), ends (`ends`: the delayed writes go, each with its own
+    /// `write` record), or is cancelled (`stopped`, `offline`: nothing that
+    /// waited is written).
+    Engage {
+        instance: String,
+        ms: u64,
+        act: EngageAct,
+    },
     /// Another writer moved a target's selector, and what the hub did.
     SelectorWriter {
         instance: String,
@@ -446,6 +471,30 @@ fn lateness_words(ms: f64) -> String {
         format!("{:.1} ms before its start", -ms)
     } else {
         format!("{ms:.1} ms after its start")
+    }
+}
+
+/// An [`Step::Engage`]'s log line.
+fn engage_line(instance: &str, ms: u64, act: EngageAct) -> String {
+    match act {
+        EngageAct::Waits => {
+            format!(
+                "AUTOTUNE holds {instance}'s selectors off the chain for {ms} ms after the play start"
+            )
+        }
+        EngageAct::Ends => {
+            format!(
+                "AUTOTUNE's {ms} ms wait after {instance}'s play start ended: its selectors may go on"
+            )
+        }
+        EngageAct::Stopped => {
+            format!(
+                "AUTOTUNE's {ms} ms wait after {instance}'s play start is cancelled: Live stopped"
+            )
+        }
+        EngageAct::Offline => {
+            format!("AUTOTUNE's {ms} ms wait after {instance}'s play start is cancelled: offline")
+        }
     }
 }
 
@@ -624,6 +673,7 @@ pub fn step_line(step: &Step) -> String {
             targets.len(),
             targets.join(", ")
         ),
+        Step::Engage { instance, ms, act } => engage_line(instance, *ms, *act),
         Step::SelectorWriter {
             instance,
             target,

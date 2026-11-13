@@ -1038,7 +1038,8 @@ pub struct KeyInForce {
 /// (#140 PR 3a); none in an older hub's answer. Since #140 PR 3b `writes`
 /// counts the selector batches the rule sent, `taps` is always 0 (a tap is
 /// refused; kept for an older reader) and `singers_off` names the singers
-/// off by hand, sorted.
+/// off by hand, sorted. `engage_delay_ms` (#190) is the hub's `[autotune]`
+/// setting: how long a play start's selector-on writes wait (0: none).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AutotuneStatus {
     pub aut: bool,
@@ -1052,6 +1053,8 @@ pub struct AutotuneStatus {
     pub safe: Vec<SafeStatus>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub singers_off: Vec<String>,
+    #[serde(default)]
+    pub engage_delay_ms: u64,
 }
 
 /// Where a Live set's registration of its DRY writes stands (#140 PR 3a,

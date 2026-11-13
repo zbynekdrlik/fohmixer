@@ -814,6 +814,7 @@ fn api_bodies_round_trip() {
                 },
             ],
             singers_off: vec!["VOX2".into()],
+            engage_delay_ms: 1000,
         },
         songmap: vec![SongMapStatus {
             instance: "band".into(),
@@ -906,13 +907,17 @@ fn api_bodies_round_trip() {
                 {"instance": "band", "state": "kept", "targets": 12, "problem": null},
                 {"instance": "master", "state": "failed", "targets": 1,
                  "problem": "no such function: safe_writes"}],
-            "singers_off": ["VOX2"]})
+            "singers_off": ["VOX2"], "engage_delay_ms": 1000})
     );
     // A hub before the rule (#140 PR 3b) names no decision, no singer off
     // and no taps.
     let mut before_rule = json["autotune"].clone();
     before_rule.as_object_mut().unwrap().remove("singers_off");
     before_rule.as_object_mut().unwrap().remove("taps");
+    before_rule
+        .as_object_mut()
+        .unwrap()
+        .remove("engage_delay_ms");
     before_rule["targets"][0]
         .as_object_mut()
         .unwrap()
@@ -924,6 +929,7 @@ fn api_bodies_round_trip() {
     let before_rule = serde_json::from_value::<AutotuneStatus>(before_rule).unwrap();
     assert!(before_rule.singers_off.is_empty());
     assert_eq!(before_rule.taps, 0);
+    assert_eq!(before_rule.engage_delay_ms, 0, "a hub before #190");
     assert_eq!(before_rule.targets[0].decision, None);
     assert!(
         !before_rule.targets[0].writing,
@@ -1108,7 +1114,9 @@ fn api_bodies_round_trip() {
     assert_eq!(before_autotune.autotune, AutotuneStatus::default());
     assert_eq!(
         serde_json::to_value(AutotuneStatus::default()).unwrap(),
-        json!({"aut": false, "writes": 0, "taps": 0, "targets": [], "keys": [], "safe": []})
+        json!({"aut": false, "writes": 0, "taps": 0, "targets": [], "keys": [], "safe": [],
+               "engage_delay_ms": 0}),
+        "#190: the wait is shown at 0 too"
     );
     assert_eq!(
         serde_json::from_value::<HubStatus>(json.clone())

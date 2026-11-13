@@ -417,6 +417,13 @@ pub enum RouterMsg {
         instance: String,
         generation: u64,
     },
+    /// The wait `generation` of `instance`'s play start ran out (#190):
+    /// the selectors it held off the chain go; void once a stop, a
+    /// disconnect or a newer start ended it.
+    AutotuneEngage {
+        instance: String,
+        generation: u64,
+    },
     /// The answer to AUTOTUNE's registration `seq` of `instance`'s DRY
     /// writes with its script, `targets` of them (#140 PR 3a): the one
     /// command's slot, or why there is none.
@@ -1217,6 +1224,10 @@ impl Router {
                 instance,
                 generation,
             } => self.autotune_spread_turn(&instance, generation),
+            RouterMsg::AutotuneEngage {
+                instance,
+                generation,
+            } => self.autotune_engage_end(&instance, generation),
             RouterMsg::AutotuneSafe {
                 instance,
                 seq,

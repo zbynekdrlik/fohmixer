@@ -366,6 +366,8 @@ impl Router {
         let holding = self.autotune.held.contains(set);
         let settled = self.reverb_settled(set);
         let going = self.autotune_judge(set, cause, !may_write(holding, settled));
+        // A play start's wait holds its writes to the chain back (#190).
+        let going = self.autotune_engage_filter(set, going);
         if going.is_empty() || holding {
             return;
         }

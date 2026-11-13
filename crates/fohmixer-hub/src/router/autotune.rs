@@ -88,12 +88,14 @@ use crate::rules::autotune::switch::{
     Decision, Flying, Refusal, SelectorGuard, answered_flying, needs_write, still_flying,
 };
 use crate::rules::autotune::{
-    AutotuneAut, Cause, REFUSED_WHY, Step, shows, step_line, step_warn, target_state,
+    AutotuneAut, Cause, EngageAct, REFUSED_WHY, Step, shows, step_line, step_warn, target_state,
 };
 
 #[path = "autotune/keys.rs"]
 mod keys;
 use keys::{Position, key_status};
+#[path = "autotune/engage.rs"]
+mod engage;
 #[path = "autotune/key_writes.rs"]
 mod key_writes;
 #[path = "autotune/safe.rs"]
@@ -263,6 +265,8 @@ pub(super) struct AutotuneIo {
     pub spreads: BTreeMap<String, spread::Spread>,
     /// The spreads' turns' own counter (a stale turn does nothing).
     pub spread_turns: u64,
+    /// The play starts' waits of their selector-on writes (#190).
+    pub engage: engage::Engage,
 }
 
 impl AutotuneIo {
@@ -289,6 +293,7 @@ impl AutotuneIo {
             retiring: BTreeMap::new(),
             spreads: BTreeMap::new(),
             spread_turns: 0,
+            engage: engage::Engage::default(),
         };
         io.told = Some(io.state());
         io
@@ -391,6 +396,7 @@ impl AutotuneIo {
                 .collect(),
             safe: self.safe_status(),
             singers_off: self.rule.singers_off(),
+            engage_delay_ms: self.engage.delay_ms,
         }
     }
 
@@ -1210,6 +1216,7 @@ impl Router {
     pub(super) fn autotune_offline(&mut self, instance: &str) {
         // A stop's DRY still to come: the script made it (#140).
         self.autotune_unspread(instance, None, "offline");
+        self.autotune_engage_cancel(instance, EngageAct::Offline);
         let keys = self.autotune.keys_of(Some(instance), false);
         for key in &keys {
             self.autotune.walks += 1;
@@ -1337,6 +1344,10 @@ impl Router {
         // decided afresh (#140).
         if playing {
             self.autotune_unspread(instance, None, "start");
+            // #190: the selectors it switches on wait, with a delay set.
+            self.autotune_engage_start(instance);
+        } else {
+            self.autotune_engage_cancel(instance, EngageAct::Stopped);
         }
         self.autotune.rule.on_playing(instance, playing);
         for key in self.autotune.keys_of(Some(instance), true) {
@@ -1351,6 +1362,7 @@ impl Router {
     /// its transport, so every target goes DRY (an unknown transport is no
     /// play).
     pub(super) fn autotune_transport_lost(&mut self, instance: &str) {
+        self.autotune_engage_cancel(instance, EngageAct::Stopped);
         self.autotune.rule.transport_lost(instance);
         self.autotune_position_playing(instance, None);
         self.autotune_decide(instance, Cause::Transport);

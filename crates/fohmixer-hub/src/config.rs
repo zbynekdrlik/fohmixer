@@ -392,6 +392,20 @@ impl Default for LufsCfg {
     }
 }
 
+/// The longest wait `[autotune] engage_delay_ms` takes (#190): 5 s.
+pub const MAX_ENGAGE_DELAY_MS: u64 = 5000;
+
+/// `[autotune]` (#190): how long a play start's selector-on writes wait
+/// (`engage_delay_ms`, 0 to [`MAX_ENGAGE_DELAY_MS`]; 0, the default, writes
+/// them at once as before). A test of band Live's stalls at a play start:
+/// the play start and the hub's switch-on apart.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AutotuneCfg {
+    #[serde(default)]
+    pub engage_delay_ms: u64,
+}
+
 /// `[eq]` (#71 PR E): the Pro-Q 4 screen's backend.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -594,6 +608,9 @@ pub struct Config {
     /// table.
     #[serde(default)]
     pub lufs: LufsCfg,
+    /// AUTOTUNE's wait at a play start (#190); none without the table.
+    #[serde(default)]
+    pub autotune: AutotuneCfg,
     /// The data folder (where the file was read from).
     #[serde(skip)]
     pub data_dir: PathBuf,
@@ -618,6 +635,7 @@ impl Config {
             companion: None,
             eq: None,
             lufs: LufsCfg::default(),
+            autotune: AutotuneCfg::default(),
             data_dir: data_dir.to_path_buf(),
         }
     }
@@ -690,6 +708,12 @@ impl Config {
             );
         }
         self.validate_companion()?;
+        if self.autotune.engage_delay_ms > MAX_ENGAGE_DELAY_MS {
+            bail!(
+                "[autotune] engage_delay_ms {} is above {MAX_ENGAGE_DELAY_MS}",
+                self.autotune.engage_delay_ms
+            );
+        }
         if self.eq_backend() == EqBackend::Windows && !cfg!(windows) {
             bail!("[eq] backend \"windows\" runs on Windows only");
         }
@@ -1721,6 +1745,34 @@ mod tests {
             Config::parse("[lufs]\nhost = \"0.0.0.0\"\n", &data()).unwrap_err()
         );
         assert!(refused.contains("unknown field"), "{refused}");
+    }
+
+    #[test]
+    fn autotune_engage_delay_defaults_to_0_and_takes_0_to_5000() {
+        // #190: none, an empty table or 0 is today's behaviour.
+        let delay = |text: &str| {
+            Config::parse(text, &data())
+                .unwrap()
+                .autotune
+                .engage_delay_ms
+        };
+        assert_eq!(delay(""), 0);
+        assert_eq!(delay("[autotune]\n"), 0);
+        assert_eq!(
+            Config::defaults(&data()).autotune,
+            AutotuneCfg { engage_delay_ms: 0 }
+        );
+        assert_eq!(delay("[autotune]\nengage_delay_ms = 1000\n"), 1000);
+        assert_eq!(delay("[autotune]\nengage_delay_ms = 5000\n"), 5000);
+        assert_eq!(MAX_ENGAGE_DELAY_MS, 5000);
+        let refused = |text: &str| format!("{:#}", Config::parse(text, &data()).unwrap_err());
+        assert!(
+            refused("[autotune]\nengage_delay_ms = 5001\n")
+                .contains("[autotune] engage_delay_ms 5001 is above 5000"),
+        );
+        assert!(refused("[autotune]\nengage_delay_ms = -1\n").contains("engage_delay_ms"));
+        assert!(refused("[autotune]\ndelay = 1000\n").contains("unknown field"));
+        assert!(refused("engage_delay_ms = 1000\n").contains("unknown field"));
     }
 
     /// A config's `[eq]` backend.

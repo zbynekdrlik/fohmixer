@@ -554,6 +554,7 @@ impl Hub {
             access = config.access.is_some(),
             companion = config.companion.is_some(),
             eq = ?config.eq_backend(),
+            engage_delay_ms = config.autotune.engage_delay_ms,
             policy = %revision,
             "hub started"
         );
@@ -575,7 +576,10 @@ impl Hub {
             router = router.with_eq(plugwin, Arc::clone(&pictures));
         }
         // The Tuner markers (#68) go to the layout store.
-        router = router.with_layout(Arc::clone(&layout)).with_beat(beat);
+        router = router
+            .with_layout(Arc::clone(&layout))
+            .with_beat(beat)
+            .with_engage_delay(config.autotune.engage_delay_ms);
         tasks.push(tokio::spawn(router::beat_ticks(
             router_tx.clone(),
             Duration::from_millis(live::client::ROUTER_BEAT_MS),

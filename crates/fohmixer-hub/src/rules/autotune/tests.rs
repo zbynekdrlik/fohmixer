@@ -732,3 +732,39 @@ fn a_stops_spread_is_recorded_and_logged() {
     assert!(!step_warn(&spread));
     assert!(!step_warn(&unspread));
 }
+
+#[test]
+fn a_play_starts_wait_has_its_lines_and_is_never_a_warning() {
+    // #190: the wait of a play start's selector-on writes, its end and its
+    // cancels, each one info line and record.
+    let engage = |act| Step::Engage {
+        instance: "band".into(),
+        ms: 1000,
+        act,
+    };
+    let lines: Vec<String> = [
+        EngageAct::Waits,
+        EngageAct::Ends,
+        EngageAct::Stopped,
+        EngageAct::Offline,
+    ]
+    .into_iter()
+    .map(|act| {
+        assert!(!step_warn(&engage(act)), "{act:?}");
+        step_line(&engage(act))
+    })
+    .collect();
+    assert_eq!(
+        lines,
+        [
+            "AUTOTUNE holds band's selectors off the chain for 1000 ms after the play start",
+            "AUTOTUNE's 1000 ms wait after band's play start ended: its selectors may go on",
+            "AUTOTUNE's 1000 ms wait after band's play start is cancelled: Live stopped",
+            "AUTOTUNE's 1000 ms wait after band's play start is cancelled: offline",
+        ]
+    );
+    assert_eq!(
+        serde_json::to_value(engage(EngageAct::Stopped)).unwrap(),
+        serde_json::json!({"step": "engage", "instance": "band", "ms": 1000, "act": "stopped"})
+    );
+}
