@@ -420,6 +420,15 @@ exclude_re = [
   # behave::colour::colour_of and binding::sectors::detail_ref;
   # strip-color.spec.ts reads the strip's edge and the detail's chip.
   "fohmixer-ui/src/components/detail_color\\.rs.*(replace|in) strip_colour( |$)",
+  # store/live/mute_alarms.rs (#188): set_mute_alarm, the mute alarm's
+  # request through sector_request (the socket); mute-alarm.spec.ts switches
+  # it in the detail and reads it on the strip and a second page.
+  "fohmixer-ui/src/store/live/mute_alarms\\.rs.*(replace|in) LiveStore::set_mute_alarm( |$)",
+  # components/detail_alarm.rs (#188): strip_alarm, the hub's document and
+  # the strip's identity read into a memo of the tested
+  # behave::mute_alarm::marked and binding::sectors::detail_ref;
+  # mute-alarm.spec.ts reads the strip's alarm and the detail's switch.
+  "fohmixer-ui/src/components/detail_alarm\\.rs.*(replace|in) strip_alarm( |$)",
   # pages/ableset.rs (#90): take_return (location.hash read through the
   # tested behave::ableset::returns_to_tab, then history.replaceState
   # without it); ableset.spec.ts's sign-in comes back to #ableset and finds

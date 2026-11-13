@@ -228,6 +228,7 @@ pub fn is_warn(record: &Value) -> bool {
                 | "autotune"
                 | "sectors"
                 | "colors"
+                | "mute_alarms"
         )
         || (ev == "trace" && holds_warn_event(record))
         || (ev == "songmap" && problems_changed(record))

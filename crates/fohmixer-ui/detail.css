@@ -549,7 +549,9 @@
 
     .detail-body {
         grid-template-columns: var(--chl) minmax(0, 1fr);
-        grid-template-rows: auto minmax(0, 1fr);
+        /* The right box (PAN, LAYOUTS, MUTE ALARM, COLOR) takes at most
+           45 % of the height and scrolls; the middle keeps the rest. */
+        grid-template-rows: fit-content(45%) minmax(0, 1fr);
     }
 
     .detail-left {

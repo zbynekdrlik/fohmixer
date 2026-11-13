@@ -9,7 +9,8 @@
 //! of a set's locators and Sections key clips ([`songmap`], #140), the
 //! loudness readings of the LUFS devices ([`lufs`], #151) and Live's meter
 //! scale and pan law ([`meter`], #151), and the strips' colours chosen on
-//! the tablet ([`colors`], #164).
+//! the tablet ([`colors`], #164), and the faders marked for the mute alarm
+//! ([`mute_alarms`], #188).
 
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +21,7 @@ pub mod layout;
 pub mod lufs;
 pub mod markers;
 pub mod meter;
+pub mod mute_alarms;
 pub mod path;
 pub mod sectors;
 pub mod songmap;

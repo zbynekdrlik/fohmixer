@@ -95,6 +95,8 @@ mod sectors;
 
 #[path = "router/colors.rs"]
 mod colors;
+#[path = "router/mute_alarms.rs"]
+mod mute_alarms;
 #[path = "router/songmap.rs"]
 mod songmap;
 #[cfg(test)]
@@ -552,6 +554,15 @@ pub enum RouterMsg {
     },
     /// The layout poll's tick (#164): `colors.json` is read again.
     ColorsPoll,
+    /// A page's switch of a strip's mute alarm (#188, `set_mute_alarm`).
+    SetMuteAlarm {
+        client: ClientId,
+        id: String,
+        strip: StripRef,
+        on: bool,
+    },
+    /// The layout poll's tick (#188): `mute_alarms.json` is read again.
+    MuteAlarmsPoll,
     /// The hub stops: the Stream Deck's held keys released and its task
     /// told to stop (#52), then every client closed.
     Stop,
@@ -583,6 +594,8 @@ pub struct RouterStatus {
     pub sectors: fohmixer_proto::client::SectorsStatus,
     /// The strips' colours (#164).
     pub colors: fohmixer_proto::client::ColorsStatus,
+    /// The faders marked for the mute alarm (#188).
+    pub mute_alarms: fohmixer_proto::client::MuteAlarmsStatus,
     pub clients: usize,
     pub unresolved: Vec<Unresolved>,
 }
@@ -657,6 +670,8 @@ pub struct Router {
     sectors: sectors::SectorsIo,
     /// The strips' colours (#164): `colors.json`.
     colors: colors::ColorsIo,
+    /// The mute alarm's marks (#188): `mute_alarms.json`.
+    mute_alarms: mute_alarms::MuteAlarmsIo,
     /// Every instance's transport (#104, D18), by instance.
     transport: BTreeMap<String, TransportWatch>,
     layout_rev: u64,
@@ -746,6 +761,9 @@ impl Router {
         let colors = colors::ColorsIo {
             store: crate::colors::ColorStore::open(&data_dir),
         };
+        let mute_alarms = mute_alarms::MuteAlarmsIo {
+            store: crate::mute_alarms::MuteAlarmStore::open(&data_dir),
+        };
         Self {
             subs,
             names: NameCheck::default(),
@@ -772,6 +790,7 @@ impl Router {
             rec: rec::RecIo::default(),
             sectors,
             colors,
+            mute_alarms,
             state,
             transport,
             layout_rev: 0,
@@ -843,6 +862,7 @@ impl Router {
                 self.links_attach(&outbox);
                 self.sectors_attach(&outbox);
                 self.colors_attach(&outbox);
+                self.alarms_attach(&outbox);
                 if self.layout_rev > 0 {
                     outbox.layout(self.layout_rev);
                 }
@@ -1090,6 +1110,7 @@ impl Router {
                     lufs: self.lufs_status(),
                     sectors: self.sectors_status(),
                     colors: self.colors_status(),
+                    mute_alarms: self.alarms_status(),
                     clients: self.clients.len(),
                     unresolved: self.names.unresolved(),
                 });
@@ -1276,6 +1297,13 @@ impl Router {
                 color,
             } => self.colors_set(client, id, &strip, color),
             RouterMsg::ColorsPoll => self.colors_poll(),
+            RouterMsg::SetMuteAlarm {
+                client,
+                id,
+                strip,
+                on,
+            } => self.alarms_set(client, id, &strip, on),
+            RouterMsg::MuteAlarmsPoll => self.alarms_poll(),
             RouterMsg::Stop => return false,
         }
         true
@@ -2883,13 +2911,17 @@ mod tests {
                 ServerMsg::Colors {
                     doc: fohmixer_proto::colors::ColorsDoc::empty(),
                 },
+                ServerMsg::MuteAlarms {
+                    doc: fohmixer_proto::mute_alarms::MuteAlarmsDoc::empty(),
+                },
                 ServerMsg::Hub {
                     key: HUB_STAGE_AUT.into(),
                     value: json!(false)
                 }
             ],
             "no layout yet: no revision (REVERB's state, #130, AUTOTUNE's, #104, \
-             the sectors' document, #148, and the colours', #164, are replies)"
+             the sectors' document, #148, the colours', #164, and the mute \
+             alarm's, #188, are replies)"
         );
         router.handle(RouterMsg::Layout {
             rev: 1,

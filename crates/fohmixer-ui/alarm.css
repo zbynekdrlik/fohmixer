@@ -1,0 +1,98 @@
+/* The mute alarm (#188; the owner's approved mockup
+   docs/mockups/mute-alert-v1.html). A strip marked in its channel detail's
+   MUTE ALARM carries `data-mute-alarm="true"`; while its mute shows muted
+   (`data-muted="true"`, every track of a linked mute) its name button
+   blinks between a bright (#e5484d) and a dark red (#4a1015) once a
+   second, the name and MUTED in white, and a 2 px red frame round the
+   whole strip blinks with it. The fader, the meter and the readout recede
+   as on any muted strip; nothing moves and the travel is today's. A marked
+   strip that sounds, and an unmarked mute, look as before. Reduced motion:
+   steady bright red (the animation is set only under `no-preference`).
+   Paint little per frame (ui-rust.md, #21): the dark red is drawn still
+   (the button's background, the strip's `::before` frame) and the bright
+   red is a layer over it whose OPACITY alone loops (the button's
+   `::before` under its text, the strip's `::after` frame), so the blink
+   runs on the compositor and repaints nothing; an opacity between the two
+   is the same colour the mockup's background-colour animation gives. The
+   one looping animation besides the REC pulse, by the owner's approval,
+   and only while a marked strip is muted. While a finger drives the
+   fader the strip's held light (strip.css) keeps the `::after`: the
+   button still blinks. */
+@keyframes mute-alarm {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+}
+
+.strip[data-mute-alarm="true"]:has(.strip-head > .mute[data-muted="true"])::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border: 2px solid #4a1015;
+    border-radius: 8px;
+    pointer-events: none;
+}
+
+.strip[data-mute-alarm="true"]:has(.strip-head > .mute[data-muted="true"]):not(:has(.fader[data-held="true"]))::after {
+    border: 2px solid #e5484d;
+    box-shadow: none;
+}
+
+.strip[data-mute-alarm="true"] .strip-head > .mute[data-muted="true"] {
+    isolation: isolate;
+    background-color: #4a1015;
+    box-shadow: none;
+    color: #ffffff;
+}
+
+/* The bright layer, under the button's text (`isolation` keeps it above
+   the button's own background). */
+.strip[data-mute-alarm="true"] .strip-head > .mute[data-muted="true"]::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background-color: #e5484d;
+    pointer-events: none;
+}
+
+/* The colour edge gives way to the red. */
+.strip[data-mute-alarm="true"] .strip-head > .mute[data-muted="true"]::after {
+    opacity: 0;
+}
+
+.strip[data-mute-alarm="true"] .strip-head > .mute[data-muted="true"] .strip-marks .mute-mark {
+    color: #ffffff;
+}
+
+/* The blink only for a viewer who has not asked for reduced motion: else
+   the bright layers stay whole, a steady red. */
+@media (prefers-reduced-motion: no-preference) {
+    .strip[data-mute-alarm="true"]:has(.strip-head > .mute[data-muted="true"]):not(:has(.fader[data-held="true"]))::after,
+    .strip[data-mute-alarm="true"] .strip-head > .mute[data-muted="true"]::before {
+        animation: mute-alarm 1s ease-in-out infinite;
+    }
+}
+
+/* The channel detail's MUTE ALARM (components/detail_alarm.rs): a calm
+   section of the right box before COLOR, its title and state as COLOR's
+   (`.col-head`, `.col-now`) and two of COLOR's dark keys, OFF and ON, the
+   state's key drawn as a selected tab (colour.css `.col-key`). Nothing is
+   red here: the red is the strip's, and only while it is muted. */
+.alarm-sec {
+    flex: none;
+    margin-top: 6px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+}
+
+.alarm-keys {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.alarm-key {
+    height: 36px;
+}

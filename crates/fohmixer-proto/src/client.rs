@@ -25,6 +25,7 @@ use crate::colors::{ColorKey, ColorsDoc};
 use crate::eq::{Area, EqItem, EqLock, EqState, Part, Touch};
 use crate::layout::{Binding, LinkId};
 use crate::lufs::{LufsProblem, LufsState};
+use crate::mute_alarms::MuteAlarmsDoc;
 use crate::path::canonical_target;
 use crate::sectors::{Sectors, SectorsDoc, StripRef};
 use crate::songmap::{Counts, Key, ProblemKind, SectionsState, Span};
@@ -285,6 +286,16 @@ pub enum ClientMsg {
         id: String,
         strip: StripRef,
         color: Option<ColorKey>,
+    },
+    /// A strip's MUTE ALARM switched in its channel detail (#188): `on`
+    /// marks the fader, so it blinks red while muted. Answered as
+    /// [`ClientMsg::SetColor`] (`result`, or `error` with `not in the pool`
+    /// for a mark of a fader the served layout does not carry; off is
+    /// always taken). Nothing reaches Live.
+    SetMuteAlarm {
+        id: String,
+        strip: StripRef,
+        on: bool,
     },
 }
 
@@ -590,6 +601,9 @@ pub enum ServerMsg {
     Sectors { doc: SectorsDoc },
     /// The strips' colours (#164), at attach and after every change.
     Colors { doc: ColorsDoc },
+    /// The faders marked for the mute alarm (#188), at attach and after
+    /// every change.
+    MuteAlarms { doc: MuteAlarmsDoc },
     /// A message of a newer hub that this page does not know (#90 B3): any
     /// other `type` reads as this, and the page ignores it, so a new
     /// message never breaks an older page.
@@ -1625,6 +1639,10 @@ pub struct HubStatus {
     /// The strips' colours (#164); the defaults in an older hub's answer.
     #[serde(default)]
     pub colors: ColorsStatus,
+    /// The faders marked for the mute alarm (#188); the defaults in an
+    /// older hub's answer.
+    #[serde(default)]
+    pub mute_alarms: MuteAlarmsStatus,
 }
 
 /// `/api/status` `presenter` (#90): Presenter's address (`[presenter]
@@ -1651,6 +1669,18 @@ pub struct PresenterStatus {
 /// stays).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ColorsStatus {
+    pub strips: usize,
+    pub unknown: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// `/api/status` `mute_alarms` (#188): how many faders are marked, how
+/// many of those no pool fader carries (`unknown`: a track renamed in
+/// Live), and why the file on disk is not served (`error`: the last good
+/// document stays).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MuteAlarmsStatus {
     pub strips: usize,
     pub unknown: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -873,6 +873,11 @@ fn api_bodies_round_trip() {
             unknown: 1,
             error: None,
         },
+        mute_alarms: MuteAlarmsStatus {
+            strips: 2,
+            unknown: 0,
+            error: None,
+        },
     };
     let json = serde_json::to_value(&status).unwrap();
     assert_eq!(
@@ -1961,6 +1966,7 @@ fn an_older_hubs_status_reads_with_default_sectors() {
             error: Some("expected value at line 1 column 1".into()),
         },
         colors: ColorsStatus::default(),
+        mute_alarms: MuteAlarmsStatus::default(),
     };
     let mut json = serde_json::to_value(&status).unwrap();
     assert_eq!(
@@ -2061,6 +2067,73 @@ fn the_colors_status_reads_as_written_and_defaults_for_an_older_hub() {
     assert_eq!(bare, ColorsStatus::default());
     assert_eq!(
         serde_json::to_value(ColorsStatus::default()).unwrap(),
+        json!({"strips": 0, "unknown": 0})
+    );
+}
+
+#[test]
+fn a_set_mute_alarm_reads_as_the_page_sends_it() {
+    let strip = StripRef {
+        instance: "band".into(),
+        label: "Vox 1".into(),
+    };
+    round_trip_client(
+        ClientMsg::SetMuteAlarm {
+            id: "a1".into(),
+            strip: strip.clone(),
+            on: true,
+        },
+        json!({"type": "set_mute_alarm", "id": "a1",
+               "strip": {"instance": "band", "label": "Vox 1"}, "on": true}),
+    );
+    round_trip_client(
+        ClientMsg::SetMuteAlarm {
+            id: "a2".into(),
+            strip,
+            on: false,
+        },
+        json!({"type": "set_mute_alarm", "id": "a2",
+               "strip": {"instance": "band", "label": "Vox 1"}, "on": false}),
+    );
+    // `on` is a bool, never a word.
+    let bad = json!({"type": "set_mute_alarm", "id": "a3",
+                     "strip": {"instance": "band", "label": "Vox 1"}, "on": "yes"});
+    assert!(serde_json::from_value::<ClientMsg>(bad).is_err());
+}
+
+#[test]
+fn the_mute_alarms_message_carries_the_document() {
+    let doc = crate::mute_alarms::MuteAlarmsDoc::empty().with(
+        &StripRef {
+            instance: "band".into(),
+            label: "Vox 1".into(),
+        },
+        true,
+    );
+    let msg = ServerMsg::MuteAlarms { doc };
+    let json = serde_json::to_value(&msg).unwrap();
+    assert_eq!(
+        json,
+        json!({"type": "mute_alarms", "doc": {"mute_alarms": {"band": ["Vox 1"]}}})
+    );
+    assert_eq!(serde_json::from_value::<ServerMsg>(json).unwrap(), msg);
+}
+
+#[test]
+fn the_mute_alarms_status_reads_as_written_and_defaults_for_an_older_hub() {
+    let status = MuteAlarmsStatus {
+        strips: 3,
+        unknown: 1,
+        error: Some("bad".into()),
+    };
+    let json = serde_json::to_value(&status).unwrap();
+    assert_eq!(json, json!({"strips": 3, "unknown": 1, "error": "bad"}));
+    assert_eq!(
+        serde_json::from_value::<MuteAlarmsStatus>(json).unwrap(),
+        status
+    );
+    assert_eq!(
+        serde_json::to_value(MuteAlarmsStatus::default()).unwrap(),
         json!({"strips": 0, "unknown": 0})
     );
 }

@@ -21,6 +21,7 @@ use leptos::prelude::*;
 
 use super::buttons::{Corner, MuteView, Partner, anchor_name};
 use super::detail::DetailStrip;
+use super::detail_alarm::strip_alarm;
 use super::detail_color::strip_colour;
 use super::fader::{FaderView, Law, Target};
 use super::fader_link::link_parts;
@@ -36,6 +37,7 @@ use crate::behave::live_down::LiveWord;
 use crate::behave::lufs::{
     COIL, LufsLook, SpringLook, glyphs, kind_name, look as lufs_look_of, point_key, spring,
 };
+use crate::behave::mute_alarm::strip_attr;
 use crate::behave::reverb::held_low;
 use crate::behave::scale::{tick_label, tick_pos, ticks};
 use crate::binding::{detail_keys, strip_subs};
@@ -350,6 +352,10 @@ pub fn StripView(
     let mute = subs.mute.as_ref().map(|s| store.slot(s));
     // The strip's colour, chosen on the tablet (#164): its edge only.
     let color = Some(strip_colour(store, &strip));
+    // The mute alarm's mark (#188): while the strip is marked and muted
+    // `alarm.css` blinks its name button and frame red.
+    let alarm = strip_alarm(store, &strip);
+    let alarm_attr = move || strip_attr(alarm.try_get().unwrap_or(false));
     let meters: Vec<RwSignal<Slot>> = subs.meters.iter().map(|s| store.slot(s)).collect();
     // The status light: every value the strip shows; it never blinks with
     // them (#151).
@@ -551,6 +557,7 @@ pub fn StripView(
             data-lufs=lufs_kind
             data-lufs-problem=lufs_problem
             data-live=live_attr
+            data-mute-alarm=alarm_attr
         >
             <div class="strip-head">
                 {mute_view}

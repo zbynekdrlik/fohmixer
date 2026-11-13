@@ -433,6 +433,11 @@ pub type HubSectors = HubTold<SectorsDoc>;
 /// colours), stale until the next connection's document.
 pub type HubColors = HubTold<fohmixer_proto::colors::ColorsDoc>;
 
+/// The faders marked for the mute alarm as the hub last told them (#188,
+/// `ServerMsg::MuteAlarms`): kept through an outage (a marked strip keeps
+/// its alarm), stale until the next connection's document.
+pub type HubMuteAlarms = HubTold<fohmixer_proto::mute_alarms::MuteAlarmsDoc>;
+
 /// One loudness point as the hub last sent it (#151): its reading in
 /// tenths and its problem, none of either until the hub says.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
