@@ -913,6 +913,7 @@ fn api_bodies_round_trip() {
             refusals: 1,
             last_refusal: Some("the token expired".into()),
             lufs_dropped: 0,
+            error: None,
         }),
     };
     let json = serde_json::to_value(&status).unwrap();

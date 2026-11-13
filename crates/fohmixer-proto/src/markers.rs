@@ -1067,9 +1067,12 @@ fn each_group_mut(section: &mut Section, f: &mut impl FnMut(&mut Group)) {
 
 /// Every tag group's members, by group name: the entries' indices in the
 /// group's order (by place, then without a place in Live's order).
-fn members(entries: &[Entry<'_>]) -> BTreeMap<String, Vec<usize>> {
+fn members(
+    entries: &[Entry<'_>],
+    taken: impl Fn(&Entry<'_>) -> bool,
+) -> BTreeMap<String, Vec<usize>> {
     let mut groups: BTreeMap<String, Vec<(Option<u32>, usize)>> = BTreeMap::new();
-    for (i, entry) in entries.iter().enumerate() {
+    for (i, entry) in entries.iter().enumerate().filter(|(_, e)| taken(e)) {
         for tag in &entry.marker.groups {
             groups
                 .entry(tag.name.clone())
@@ -1147,14 +1150,15 @@ pub fn label_domain<'a>(instance: &'a str, linked: &BTreeSet<String>) -> &'a str
     }
 }
 
-/// Whether a tag group is pool-only (#184): every marker of it is of a
-/// linked Live set. Its faders join the sectors' pool (ARRANGE) and it is
-/// never a page tab or a VIEWS button.
-fn pool_only_group(list: &[usize], entries: &[Entry<'_>], linked: &BTreeSet<String>) -> bool {
-    !list.is_empty()
-        && list
-            .iter()
-            .all(|&i| linked.contains(&entries[i].found.instance))
+/// The name a linked tag group's pool-only view is known by (#184): its own,
+/// or `<instance>-<name>` when a local group has that name (both are views
+/// or one is placed: their page ids must differ).
+pub fn pool_view_name(name: &str, instance: &str, local: &BTreeMap<String, Vec<usize>>) -> String {
+    if local.contains_key(name) {
+        format!("{instance}-{name}")
+    } else {
+        name.to_string()
+    }
 }
 
 /// [`compose`] with the `linked` Live sets (#184): equal labels are
@@ -1208,9 +1212,14 @@ pub fn compose_with(frame: &Layout, found: &[Found], linked: &BTreeSet<String>) 
     let frame_partners = link_faders(&mut entries, &ids, &frame_links);
     let ctrls = ctrl::carriers(&entries);
     ctrl::mark_duplicates(&mut entries, &ctrls);
-    let groups = members(&entries);
+    // A linked Live's markers (#184) are a domain of their own: their tag
+    // groups never fill a frame group or a local view, and a local pin
+    // never joins them (nor theirs a local view).
+    let is_linked = |e: &Entry<'_>| linked.contains(&e.found.instance);
+    let groups = members(&entries, |e| !is_linked(e));
+    let linked_groups = members(&entries, is_linked);
     // Two strips on one place of a group: both marked.
-    for (name, list) in &groups {
+    for (name, list) in groups.iter().chain(&linked_groups) {
         let places: Vec<(usize, u32)> = list
             .iter()
             .filter_map(|&i| {
@@ -1267,12 +1276,35 @@ pub fn compose_with(frame: &Layout, found: &[Found], linked: &BTreeSet<String>) 
         .map(|p| p.rail.clone())
         .unwrap_or_default();
     for (_, name) in views {
-        let pool_only = groups
-            .get(name)
-            .is_some_and(|list| pool_only_group(list, &entries, linked));
-        layout.pages.push(view_page(
-            name, &groups, &entries, &strips, &rail, pool_only,
-        ));
+        let parts = ViewParts {
+            name,
+            id_name: name,
+            groups: &groups,
+            entries: &entries,
+            strips: &strips,
+            rail: &rail,
+        };
+        layout.pages.push(view_page(&parts, false, linked));
+    }
+    // Every linked tag group is a pool-only view (#184), after the local
+    // ones, in the order of its first marker; named apart when a local
+    // group has its name (`view-<instance>-<name>`).
+    let mut pool: Vec<(usize, &String)> = linked_groups
+        .iter()
+        .map(|(name, list)| (list.iter().copied().min().unwrap_or(0), name))
+        .collect();
+    pool.sort();
+    for (first, name) in pool {
+        let id_name = pool_view_name(name, &entries[first].found.instance, &groups);
+        let parts = ViewParts {
+            name,
+            id_name: &id_name,
+            groups: &linked_groups,
+            entries: &entries,
+            strips: &strips,
+            rail: &rail,
+        };
+        layout.pages.push(view_page(&parts, true, linked));
     }
     fill_links(&mut layout, &frame_links, &frame_partners);
     fill_autotune(&mut layout, &autotune_targets(&entries));
@@ -1319,21 +1351,34 @@ pub fn compose_with(frame: &Layout, found: &[Found], linked: &BTreeSet<String>) 
     }
 }
 
+/// What a view is made of: its group's name (its title), the name its ids
+/// carry, the groups it is looked up in, the markers, their strips and the
+/// rail it keeps.
+struct ViewParts<'a> {
+    name: &'a str,
+    id_name: &'a str,
+    groups: &'a BTreeMap<String, Vec<usize>>,
+    entries: &'a [Entry<'a>],
+    strips: &'a [Strip],
+    rail: &'a [Control],
+}
+
 /// A view: its group's strips, then every pinned strip not in it, under
 /// the title of each one's first group (in the order of the markers). A
 /// pool-only view (#184) holds its own strips only: it is never shown as a
-/// page, only its faders join the pool.
-fn view_page(
-    name: &str,
-    groups: &BTreeMap<String, Vec<usize>>,
-    entries: &[Entry<'_>],
-    strips: &[Strip],
-    rail: &[Control],
-    pool_only: bool,
-) -> Page {
+/// page, only its faders join the pool; a local view takes no linked pin.
+fn view_page(parts: &ViewParts<'_>, pool_only: bool, linked: &BTreeSet<String>) -> Page {
+    let ViewParts {
+        name,
+        id_name,
+        groups,
+        entries,
+        strips,
+        rail,
+    } = *parts;
     let own = groups.get(name).cloned().unwrap_or_default();
     let mut sections = vec![Section::Group(Group {
-        id: Some(format!("{VIEW_PREFIX}{name}-strips")),
+        id: Some(format!("{VIEW_PREFIX}{id_name}-strips")),
         title: Some(group_title(name)),
         color: None,
         tags: None,
@@ -1347,7 +1392,11 @@ fn view_page(
         let Some(first) = entry.marker.groups.first() else {
             continue;
         };
-        if pool_only || !entry.marker.pin || own.contains(&i) {
+        if pool_only
+            || !entry.marker.pin
+            || own.contains(&i)
+            || linked.contains(&entry.found.instance)
+        {
             continue;
         }
         match pins.iter_mut().find(|(g, _)| g == &first.name) {
@@ -1357,7 +1406,7 @@ fn view_page(
     }
     for (group, list) in pins {
         sections.push(Section::Group(Group {
-            id: Some(format!("{VIEW_PREFIX}{name}-pins-{group}")),
+            id: Some(format!("{VIEW_PREFIX}{id_name}-pins-{group}")),
             title: Some(group_title(&group)),
             color: None,
             tags: None,
@@ -1368,7 +1417,7 @@ fn view_page(
         }));
     }
     Page {
-        id: format!("{VIEW_PREFIX}{name}"),
+        id: format!("{VIEW_PREFIX}{id_name}"),
         title: group_title(name),
         view: true,
         pool_only,

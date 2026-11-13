@@ -512,8 +512,14 @@ impl Hub {
         let link_secret = if linked.is_empty() && config.link.is_none() {
             None
         } else {
-            link::load(&config.data_dir.join(secrets::SECRETS_DIR))
-                .context("loading the link secret")?
+            // A secret that cannot be read never stops the hub: band and
+            // master run on, the link is refused or fails with its reason.
+            let (secret, warning) =
+                link::usable(link::load(&config.data_dir.join(secrets::SECRETS_DIR)));
+            if let Some(warning) = warning {
+                tracing::warn!("{warning}");
+            }
+            secret
         };
         let mut live = BTreeMap::new();
         for instance in &config.instances {
@@ -621,9 +627,9 @@ impl Hub {
             presenter_switches = Some(rx);
         }
         tokio::spawn(router.run(router_rx));
-        // The instance link (#184, `[link]`): its LUFS tap and its server;
-        // a listen address taken stops the start (the link is the MBC
-        // hub's way to the FOH hub, never silently missing).
+        // The instance link (#184, `[link]`): its LUFS tap and its server,
+        // which binds its LAN address again until it can (the address may
+        // come up after the hub); the hub runs meanwhile.
         let link_tap = config.link.as_ref().map(|_| link::server::tap());
         let link = match (&config.link, &link_tap) {
             (Some(cfg), Some(tap)) => {
@@ -632,9 +638,8 @@ impl Hub {
                     .iter()
                     .find(|i| i.name == cfg.instance)
                     .map_or(0, |i| i.port);
-                let (_, state, task) =
-                    link::server::spawn(cfg, script_port, link_secret.clone(), tap, events.clone())
-                        .with_context(|| format!("[link] listening on {}", cfg.listen))?;
+                let (state, task) =
+                    link::server::spawn(cfg, script_port, link_secret.clone(), tap, events.clone());
                 tasks.push(task);
                 Some(state)
             }

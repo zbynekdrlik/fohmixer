@@ -68,8 +68,9 @@ pub(super) fn validate_instance(instance: &InstanceCfg) -> anyhow::Result<()> {
 pub(super) fn validate_links(instances: &[InstanceCfg]) -> anyhow::Result<()> {
     let mut links = HashSet::new();
     for instance in instances {
+        // `ws://h:1` and `ws://h:1/` are one link.
         if let Some(url) = &instance.link
-            && !links.insert(url.as_str())
+            && !links.insert(url.strip_suffix('/').unwrap_or(url))
         {
             bail!(
                 "instance {:?}: link {url:?} is another instance's",
@@ -164,6 +165,14 @@ mod tests {
                  [[instances]]\nname = \"b\"\nlink = \"ws://10.0.0.5:39201\"\n"
             )
             .contains("is another instance's")
+        );
+        assert!(
+            refused(
+                "[[instances]]\nname = \"a\"\nlink = \"ws://10.0.0.5:39201\"\n\
+                 [[instances]]\nname = \"b\"\nlink = \"ws://10.0.0.5:39201/\"\n"
+            )
+            .contains("is another instance's"),
+            "a trailing / is the same link"
         );
         assert!(
             refused("[[instances]]\nname = \"mbc\"\nlink = \"wss://10.0.0.5:39201\"\n")

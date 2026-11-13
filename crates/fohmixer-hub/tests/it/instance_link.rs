@@ -73,15 +73,16 @@ async fn foh_hub(dir: &Path, band: &Host, link: SocketAddr, secret: &LinkSecret)
     TestHub::start_config(config).await
 }
 
-/// The address the MBC hub's link serves on.
+/// The address the MBC hub's link serves on, once bound.
 async fn link_addr(hub: &TestHub) -> SocketAddr {
-    let status = hub.status().await;
-    status
-        .link
-        .expect("the MBC hub serves a link")
-        .listen
-        .parse()
-        .unwrap()
+    let status = hub
+        .status_until(SECS_5, |s| {
+            s.link
+                .as_ref()
+                .is_some_and(|l| l.error.is_none() && !l.listen.ends_with(":0"))
+        })
+        .await;
+    status.link.unwrap().listen.parse().unwrap()
 }
 
 fn online(status: &fohmixer_proto::client::HubStatus, name: &str) -> bool {
@@ -204,6 +205,84 @@ fn a_foh_hub_with_another_secret_stays_offline_with_the_reason() {
                 .iter()
                 .all(|e| e["ev"] != "instance_link" || e["what"] != "connected")
         );
+        foh.stop().await;
+        mbc_hub.stop().await;
+    });
+}
+
+#[test]
+fn a_link_secret_the_foh_hub_cannot_read_keeps_band_and_leaves_mbc_offline() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let (mbc_dir, foh_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mbc = Host::start_site("mbc", &mbc_site(), 0, 0.0);
+        let band = Host::start("band");
+        let mbc_hub = mbc_hub(mbc_dir.path(), &mbc, any_port(), 0, &secret(1)).await;
+        let addr = link_addr(&mbc_hub).await;
+        // A sealed file that holds no secret (31 bytes).
+        let secrets = foh_dir.path().join("secrets");
+        std::fs::create_dir_all(&secrets).unwrap();
+        fohmixer_hub::sealed::write(&fohmixer_hub::link::secret_path(&secrets), &[1; 31]).unwrap();
+        let mut config = Config::defaults(foh_dir.path());
+        config.instances = vec![
+            band.cfg(),
+            InstanceCfg {
+                name: "mbc".to_string(),
+                port: 0,
+                link: Some(format!("ws://{addr}")),
+            },
+        ];
+        config.layout_poll_ms = 100;
+        config.lufs.port = 0;
+        let foh = TestHub::start_config(config).await;
+        let status = foh
+            .status_until(SECS_10, |s| {
+                online(s, "band")
+                    && s.instances.iter().any(|i| {
+                        i.name == "mbc"
+                            && i.last_error.as_deref()
+                                == Some(fohmixer_hub::live::client::NO_LINK_SECRET)
+                    })
+            })
+            .await;
+        assert!(!online(&status, "mbc"));
+        foh.stop().await;
+        mbc_hub.stop().await;
+    });
+}
+
+#[test]
+fn a_new_foh_link_is_taken_after_the_last_one_dropped_and_the_mbc_live_can_go_and_come_back() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let (mbc_dir, foh_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mbc = Host::start_site("mbc", &mbc_site(), 0, 0.0);
+        let port = mbc.port;
+        let band = Host::start("band");
+        let mbc_hub = mbc_hub(mbc_dir.path(), &mbc, any_port(), 0, &secret(1)).await;
+        let addr = link_addr(&mbc_hub).await;
+        // A FOH hub links, stops, and another links: the MBC hub ran on.
+        let first = foh_hub(foh_dir.path(), &band, addr, &secret(1)).await;
+        first.status_until(SECS_10, |s| online(s, "mbc")).await;
+        first.stop().await;
+        mbc_hub
+            .status_until(SECS_5, |s| {
+                s.link.as_ref().is_some_and(|l| l.peer.is_none())
+            })
+            .await;
+        let foh = foh_hub(foh_dir.path(), &band, addr, &secret(1)).await;
+        foh.status_until(SECS_10, |s| online(s, "mbc")).await;
+        let link = mbc_hub.status().await.link.unwrap();
+        assert_eq!(link.links, 2);
+        assert_eq!(link.refusals, 0);
+        // The MBC Live goes away under the open link: offline on both hubs.
+        mbc.stop();
+        foh.status_until(SECS_10, |s| !online(s, "mbc")).await;
+        mbc_hub.status_until(SECS_10, |s| !online(s, "mbc")).await;
+        // It comes back on its port: online again on both, by themselves.
+        let _again = Host::start_site("mbc", &mbc_site(), port, 0.0);
+        mbc_hub.status_until(SECS_10, |s| online(s, "mbc")).await;
+        foh.status_until(SECS_10, |s| online(s, "mbc")).await;
         foh.stop().await;
         mbc_hub.stop().await;
     });

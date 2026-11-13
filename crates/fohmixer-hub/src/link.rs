@@ -100,6 +100,21 @@ pub fn load(secrets_dir: &Path) -> std::io::Result<Option<LinkSecret>> {
     })
 }
 
+/// The secret a hub runs with, and the warn line when the stored one could
+/// not be read (it runs without: links are refused, a linked instance's
+/// attempts fail, never the hub's start).
+pub fn usable(loaded: std::io::Result<Option<LinkSecret>>) -> (Option<LinkSecret>, Option<String>) {
+    match loaded {
+        Ok(secret) => (secret, None),
+        Err(e) => (
+            None,
+            Some(format!(
+                "the link secret cannot be read, the instance link runs without it: {e}"
+            )),
+        ),
+    }
+}
+
 /// The whole `link set-secret` command.
 pub fn run(data_dir: &Path, input: impl BufRead) -> Result<(), ProvisionError> {
     let secret = read_secret(input)?;

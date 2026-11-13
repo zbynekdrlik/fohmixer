@@ -8,6 +8,8 @@ use super::*;
 use crate::link::{LINK_TOKEN_SECS, link_token};
 
 const WAIT: Duration = Duration::from_secs(5);
+/// What makes the fake script close with `1001 silent`.
+const CLOSE_SILENT: &str = "<close silent>";
 
 fn secret(byte: u8) -> LinkSecret {
     LinkSecret::from_bytes([byte; 32])
@@ -48,6 +50,12 @@ async fn fake_script() -> FakeScript {
                     _ => return,
                 },
                 text = said.recv() => match text {
+                    // The test's close: the script's own close frame.
+                    Some(text) if text == CLOSE_SILENT => {
+                        let close = CloseFrame { code: CloseCode::Away, reason: "silent".into() };
+                        let _ = ws.send(Message::Close(Some(close))).await;
+                        return;
+                    }
                     Some(text) => {
                         if ws.send(Message::Text(text.into())).await.is_err() {
                             return;
@@ -74,20 +82,42 @@ struct Served {
     records: std::sync::mpsc::Receiver<Value>,
 }
 
-fn serve(script_port: u16, secret: Option<LinkSecret>) -> Served {
+/// The server on `listen` once it is bound.
+async fn serve_on(listen: &str, script_port: u16, secret: Option<LinkSecret>) -> Served {
     let cfg = LinkCfg {
-        listen: "127.0.0.1:0".parse().unwrap(),
+        listen: listen.parse().unwrap(),
         instance: "mbc".into(),
     };
     let (events, records) = EventLog::channel(64);
     let tap = tap();
-    let (addr, state, task) = spawn(&cfg, script_port, secret, &tap, events).unwrap();
+    let (state, task) = spawn(&cfg, script_port, secret, &tap, events);
+    let addr = bound(&state, WAIT).await;
     Served {
         addr,
         state,
         task,
         tap,
         records,
+    }
+}
+
+async fn serve(script_port: u16, secret: Option<LinkSecret>) -> Served {
+    serve_on("127.0.0.1:0", script_port, secret).await
+}
+
+/// The address `state`'s listener holds, within `limit`.
+async fn bound(state: &LinkState, limit: Duration) -> SocketAddr {
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        if let Some(addr) = state.bound() {
+            return addr;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never bound: {:?}",
+            state.status()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 
@@ -141,7 +171,7 @@ async fn record_of(records: &std::sync::mpsc::Receiver<Value>, what: &str) -> Va
 #[tokio::test]
 async fn a_link_relays_the_scripts_frames_both_ways() {
     let mut script = fake_script().await;
-    let served = serve(script.port, Some(secret(1)));
+    let served = serve(script.port, Some(secret(1))).await;
     let mut link = open(served.addr, bearer(&secret(1))).await.unwrap();
     let connect = next_text(&mut link).await;
     assert_eq!(
@@ -192,7 +222,7 @@ async fn a_link_relays_the_scripts_frames_both_ways() {
 #[tokio::test]
 async fn a_wrong_token_gets_401_and_a_record() {
     let script = fake_script().await;
-    let served = serve(script.port, Some(secret(1)));
+    let served = serve(script.port, Some(secret(1))).await;
     assert_eq!(open(served.addr, bearer(&secret(2))).await.err(), Some(401));
     let record = record_of(&served.records, "refused").await;
     assert_eq!(record["why"], "not a token of the link secret");
@@ -219,7 +249,7 @@ async fn a_wrong_token_gets_401_and_a_record() {
 #[tokio::test]
 async fn a_second_link_gets_409_while_one_is_open() {
     let script = fake_script().await;
-    let served = serve(script.port, Some(secret(1)));
+    let served = serve(script.port, Some(secret(1))).await;
     let mut first = open(served.addr, bearer(&secret(1))).await.unwrap();
     next_text(&mut first).await;
     assert_eq!(open(served.addr, bearer(&secret(1))).await.err(), Some(409));
@@ -232,7 +262,7 @@ async fn a_second_link_gets_409_while_one_is_open() {
 #[tokio::test]
 async fn a_link_without_a_stored_secret_refuses_everything() {
     let script = fake_script().await;
-    let served = serve(script.port, None);
+    let served = serve(script.port, None).await;
     assert_eq!(open(served.addr, bearer(&secret(1))).await.err(), Some(401));
     assert_eq!(
         record_of(&served.records, "refused").await["why"],
@@ -248,7 +278,7 @@ async fn a_dead_script_closes_the_link_with_1011() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.local_addr().unwrap().port()
     };
-    let served = serve(port, Some(secret(1)));
+    let served = serve(port, Some(secret(1))).await;
     let mut link = open(served.addr, bearer(&secret(1))).await.unwrap();
     let close = loop {
         match tokio::time::timeout(WAIT, link.next()).await.unwrap() {
@@ -270,7 +300,7 @@ async fn a_dead_script_closes_the_link_with_1011() {
 #[tokio::test]
 async fn a_lufs_datagram_reaches_the_link_as_base64() {
     let script = fake_script().await;
-    let served = serve(script.port, Some(secret(1)));
+    let served = serve(script.port, Some(secret(1))).await;
     let mut link = open(served.addr, bearer(&secret(1))).await.unwrap();
     next_text(&mut link).await;
     // Subscribed once the link is open: wait for the relay's subscription.
@@ -291,7 +321,7 @@ async fn a_lufs_datagram_reaches_the_link_as_base64() {
 #[tokio::test]
 async fn a_link_that_never_reads_ends_after_the_stall() {
     let script = fake_script().await;
-    let served = serve(script.port, Some(secret(1)));
+    let served = serve(script.port, Some(secret(1))).await;
     // A client on a 4 KiB receive buffer that never reads.
     let socket = tokio::net::TcpSocket::new_v4().unwrap();
     socket.set_recv_buffer_size(4096).unwrap();
@@ -342,7 +372,7 @@ async fn record_of_within(
 async fn a_request_that_is_no_upgrade_is_neither_a_link_nor_a_refusal() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let script = fake_script().await;
-    let served = serve(script.port, Some(secret(1)));
+    let served = serve(script.port, Some(secret(1))).await;
     let mut plain = TcpStream::connect(served.addr).await.unwrap();
     plain
         .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -352,11 +382,127 @@ async fn a_request_that_is_no_upgrade_is_neither_a_link_nor_a_refusal() {
     let _ = tokio::time::timeout(WAIT, plain.read_to_end(&mut answer)).await;
     let status = served.state.status();
     assert_eq!((status.links, status.refusals), (0, 0), "{status:?}");
-    assert!(served.records.try_recv().is_err(), "no record");
+    let records: Vec<Value> = served.records.try_iter().collect();
+    assert!(
+        records.iter().all(|r| r["what"] == "listening"),
+        "no link record: {records:?}"
+    );
     // A real link still opens afterwards.
     let mut link = open(served.addr, bearer(&secret(1))).await.unwrap();
     next_text(&mut link).await;
     served.task.abort();
+}
+
+#[tokio::test]
+async fn the_scripts_close_reaches_the_link_whole() {
+    let script = fake_script().await;
+    let served = serve(script.port, Some(secret(1))).await;
+    let mut link = open(served.addr, bearer(&secret(1))).await.unwrap();
+    next_text(&mut link).await;
+    script.say.send(CLOSE_SILENT.into()).unwrap();
+    let close = loop {
+        match tokio::time::timeout(WAIT, link.next()).await.unwrap() {
+            Some(Ok(Message::Close(frame))) => break frame.expect("a close frame"),
+            Some(Ok(_)) => {}
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(u16::from(close.code), 1001);
+    assert_eq!(close.reason.as_str(), "silent");
+    assert_eq!(
+        record_of(&served.records, "dropped").await["why"],
+        "the script closed"
+    );
+    served.task.abort();
+}
+
+#[tokio::test]
+async fn a_link_that_lags_the_lufs_tap_counts_what_it_dropped() {
+    let script = fake_script().await;
+    let served = serve(script.port, Some(secret(1))).await;
+    let mut link = open(served.addr, bearer(&secret(1))).await.unwrap();
+    next_text(&mut link).await;
+    let deadline = std::time::Instant::now() + WAIT;
+    while served.tap.receiver_count() == 0 {
+        assert!(std::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // More than the tap holds, sent before the relay's task can take any
+    // (this test's runtime has one thread: nothing runs between the sends).
+    for n in 0..(LUFS_TAP + 50) {
+        let datagram: Arc<[u8]> = Arc::from(&(n as u32).to_be_bytes()[..]);
+        served.tap.send(datagram).unwrap();
+    }
+    let deadline = std::time::Instant::now() + WAIT;
+    while served.state.status().lufs_dropped == 0 {
+        assert!(std::time::Instant::now() < deadline, "nothing counted");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(served.state.status().lufs_dropped, 50);
+    served.task.abort();
+}
+
+#[tokio::test]
+async fn a_peer_that_sends_no_request_is_dropped_after_the_handshakes_bound() {
+    use tokio::io::AsyncReadExt;
+    let script = fake_script().await;
+    let served = serve(script.port, Some(secret(1))).await;
+    let start = std::time::Instant::now();
+    let mut silent = TcpStream::connect(served.addr).await.unwrap();
+    let mut buf = [0u8; 16];
+    let read = tokio::time::timeout(HANDSHAKE + WAIT, silent.read(&mut buf))
+        .await
+        .expect("closed by the hub");
+    assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
+    assert!(start.elapsed() >= HANDSHAKE, "{:?}", start.elapsed());
+    assert_eq!(served.state.status().refusals, 0);
+    let mut link = open(served.addr, bearer(&secret(1))).await.unwrap();
+    next_text(&mut link).await;
+    served.task.abort();
+}
+
+#[tokio::test]
+async fn a_listen_address_taken_is_tried_again_until_it_is_free() {
+    let holder = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let taken = holder.local_addr().unwrap().to_string();
+    let script = fake_script().await;
+    let cfg = LinkCfg {
+        listen: taken.parse().unwrap(),
+        instance: "mbc".into(),
+    };
+    let (events, records) = EventLog::channel(64);
+    let (state, task) = spawn(&cfg, script.port, Some(secret(1)), &tap(), events);
+    let deadline = std::time::Instant::now() + WAIT;
+    while state.status().error.is_none() {
+        assert!(std::time::Instant::now() < deadline, "no bind error");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(state.bound(), None);
+    let failed = record_of(&records, "listening").await;
+    assert!(failed["error"].is_string(), "{failed}");
+    drop(holder);
+    let addr = bound(&state, BIND_RETRY + WAIT).await;
+    assert_eq!(addr.to_string(), taken);
+    assert_eq!(state.status().error, None);
+    assert_eq!(record_of(&records, "listening").await["addr"], taken);
+    let mut link = open(addr, bearer(&secret(1))).await.unwrap();
+    next_text(&mut link).await;
+    task.abort();
+}
+
+#[test]
+fn the_bind_warns_once_and_the_listen_record_says_why() {
+    assert!(first_bind_failure(1));
+    assert!(!first_bind_failure(0));
+    assert!(!first_bind_failure(2));
+    assert_eq!(
+        listen_fields("10.0.0.5:39201", None),
+        serde_json::json!({"what": "listening", "addr": "10.0.0.5:39201"})
+    );
+    assert_eq!(
+        listen_fields("10.0.0.5:39201", Some("in use")),
+        serde_json::json!({"what": "listening", "addr": "10.0.0.5:39201", "error": "in use", "warn": true})
+    );
 }
 
 #[test]
@@ -399,4 +545,7 @@ fn the_constants() {
     assert_eq!(LINK_STALL, Duration::from_secs(3));
     assert_eq!(LUFS_TAP, 256);
     assert_eq!(REFUSED_LINES, 8);
+    assert_eq!(HANDSHAKE, Duration::from_secs(3));
+    assert_eq!(BIND_RETRY, Duration::from_secs(2));
+    assert_eq!(UNAUTHORIZED, "unauthorized");
 }

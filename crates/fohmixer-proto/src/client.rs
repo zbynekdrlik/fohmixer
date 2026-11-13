@@ -1685,6 +1685,9 @@ pub struct LinkStatus {
     /// LUFS datagrams the link dropped because it lagged behind.
     #[serde(default)]
     pub lufs_dropped: u64,
+    /// Why the listener is not bound yet (it is tried again every 2 s).
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// `/api/status` `presenter` (#90): Presenter's address (`[presenter]

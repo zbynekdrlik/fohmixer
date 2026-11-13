@@ -160,3 +160,18 @@ fn every_refusal_has_its_words() {
     assert_eq!(LinkRefusal::NotHub.text(), "the token is not a hub's");
     assert_eq!(LinkRefusal::NoSecret.text(), "no link secret");
 }
+
+#[test]
+fn a_secret_that_cannot_be_read_is_none_with_a_warning() {
+    assert_eq!(usable(Ok(Some(secret(1)))), (Some(secret(1)), None));
+    assert_eq!(usable(Ok(None)), (None, None));
+    let (secret, warning) = usable(Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "not 32 bytes",
+    )));
+    assert_eq!(secret, None);
+    assert_eq!(
+        warning.as_deref(),
+        Some("the link secret cannot be read, the instance link runs without it: not 32 bytes")
+    );
+}

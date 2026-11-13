@@ -2579,19 +2579,70 @@ fn a_linked_tag_group_is_a_pool_only_view() {
         .unwrap();
     assert!(talkshow.view && !talkshow.pool_only, "a band group: a view");
     assert_eq!(composed.layout.validate(), vec![]);
-    // A group with a band marker too is a normal view.
+    // A group name both Lives use: the band's part a view, the linked
+    // part a pool-only view of its own, named apart.
     let mixed = vec![
         found("band", TrackKind::Track, 3, r#""Vox 9" +G:MBC"#),
         found("mbc", TrackKind::Track, 0, r#""Hand 1" +G:MBC"#),
     ];
     let composed = compose_with(&frame(), &mixed, &linked_mbc());
-    let page = composed
+    let page = |id: &str| composed.layout.pages.iter().find(|p| p.id == id).unwrap();
+    assert!(!page("view-MBC").pool_only);
+    assert_eq!(
+        labels(&group(&composed.layout, "view-MBC-strips").controls),
+        ["Vox 9"]
+    );
+    assert!(page("view-mbc-MBC").pool_only);
+    assert_eq!(page("view-mbc-MBC").title, "MBC");
+    assert_eq!(
+        labels(&group(&composed.layout, "view-mbc-MBC-strips").controls),
+        ["Hand 1"]
+    );
+    assert_eq!(composed.layout.validate(), vec![]);
+}
+
+#[test]
+fn a_linked_marker_never_fills_a_frame_group_and_its_pin_joins_no_local_view() {
+    let markers = vec![
+        found("band", TrackKind::Track, 0, r#""Vox 1" +G:VOCALS"#),
+        found("band", TrackKind::Track, 1, r#""Vox 2" +G:TALKSHOW"#),
+        found("mbc", TrackKind::Track, 0, r#""Hand 1" +G:VOCALS +PIN"#),
+    ];
+    let composed = compose_with(&frame(), &markers, &linked_mbc());
+    // The frame's VOCALS shows band's only; MBC's VOCALS is pool-only.
+    assert_eq!(
+        labels(&group(&composed.layout, "vocals").controls),
+        ["Vox 1"]
+    );
+    let mbc = composed
         .layout
         .pages
         .iter()
-        .find(|p| p.id == "view-MBC")
+        .find(|p| p.id == "view-mbc-VOCALS")
+        .expect("the linked VOCALS");
+    assert!(mbc.pool_only);
+    // TALKSHOW's view takes no linked pin.
+    let talkshow = composed
+        .layout
+        .pages
+        .iter()
+        .find(|p| p.id == "view-TALKSHOW")
         .unwrap();
-    assert!(!page.pool_only);
+    assert_eq!(talkshow.rows[0].sections.len(), 1, "{talkshow:?}");
+    assert_eq!(composed.layout.validate(), vec![]);
+    // Unlinked (the MBC hub's own, or before #184) it fills VOCALS as ever.
+    let local = compose(&frame(), &markers);
+    assert_eq!(
+        labels(&group(&local.layout, "vocals").controls),
+        ["Vox 1", "Hand 1"]
+    );
+}
+
+#[test]
+fn a_pool_view_is_named_apart_only_beside_a_local_group_of_its_name() {
+    let local: BTreeMap<String, Vec<usize>> = [("VOCALS".to_string(), vec![0])].into();
+    assert_eq!(pool_view_name("MBC", "mbc", &local), "MBC");
+    assert_eq!(pool_view_name("VOCALS", "mbc", &local), "mbc-VOCALS");
 }
 
 #[test]

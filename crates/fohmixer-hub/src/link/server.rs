@@ -59,6 +59,14 @@ pub const LUFS_TAP: usize = 256;
 pub const REFUSED_LINES: u32 = 8;
 /// The close code of a link whose script does not answer.
 pub const SCRIPT_UNREACHABLE: &str = "script unreachable";
+/// The longest an upgrade may take, from the TCP accept to the answer: a
+/// peer that opens TCP and sends no request holds no task past it.
+pub const HANDSHAKE: Duration = Duration::from_secs(3);
+/// The wait before a failed bind of `[link] listen` is tried again (the
+/// LAN address may come up after the hub, at a PC's start).
+pub const BIND_RETRY: Duration = Duration::from_secs(2);
+/// The body of every 401: the reason stays in the hub's record and status.
+pub const UNAUTHORIZED: &str = "unauthorized";
 
 /// The LUFS tap: every datagram the hub's LUFS listener reads.
 pub type Tap = broadcast::Sender<Arc<[u8]>>;
@@ -93,6 +101,20 @@ pub fn lufs_frame(datagram: &[u8]) -> String {
     json!({"event": "lufs", "osc": STANDARD.encode(datagram)}).to_string()
 }
 
+/// Whether a failed bind is the first of a run of failures (a warn line;
+/// the retries are debug lines).
+pub fn first_bind_failure(failures: u64) -> bool {
+    failures == 1
+}
+
+/// The `instance_link` record of the listener bound (`error` none) or not.
+pub fn listen_fields(addr: &str, error: Option<&str>) -> Value {
+    match error {
+        None => json!({"what": "listening", "addr": addr}),
+        Some(error) => json!({"what": "listening", "addr": addr, "error": error, "warn": true}),
+    }
+}
+
 /// The `instance_link` record of a step: what happened, with the peer and
 /// the reason.
 pub fn link_fields(what: &str, peer: &SocketAddr, why: Option<&str>) -> Value {
@@ -110,6 +132,7 @@ pub fn link_fields(what: &str, peer: &SocketAddr, why: Option<&str>) -> Value {
 #[derive(Debug)]
 pub struct LinkState {
     open: AtomicBool,
+    bound: Mutex<Option<SocketAddr>>,
     status: Mutex<LinkStatus>,
     lines: Mutex<Ration>,
 }
@@ -118,6 +141,7 @@ impl LinkState {
     fn new(cfg: &LinkCfg) -> Self {
         Self {
             open: AtomicBool::new(false),
+            bound: Mutex::new(None),
             status: Mutex::new(LinkStatus {
                 listen: cfg.listen.to_string(),
                 instance: cfg.instance.clone(),
@@ -127,6 +151,7 @@ impl LinkState {
                 refusals: 0,
                 last_refusal: None,
                 lufs_dropped: 0,
+                error: None,
             }),
             lines: Mutex::new(Ration::default()),
         }
@@ -140,28 +165,28 @@ impl LinkState {
     pub fn status(&self) -> LinkStatus {
         self.with(|s| s.clone())
     }
+
+    /// The address the listener holds, once bound.
+    pub fn bound(&self) -> Option<SocketAddr> {
+        *self.bound.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
-/// Binds `cfg.listen` and starts the server (inside a tokio runtime). Its
-/// task holds every link's task: aborting it ends them all.
+/// Starts the server (inside a tokio runtime): its task binds
+/// `cfg.listen`, again every [`BIND_RETRY`] while that fails (the hub runs
+/// on meanwhile, the error in `/api/status` `link.error`), then serves. It
+/// holds every link's task: aborting it ends them all.
 pub fn spawn(
     cfg: &LinkCfg,
     script_port: u16,
     secret: Option<LinkSecret>,
     tap: &Tap,
     events: EventLog,
-) -> std::io::Result<(SocketAddr, Arc<LinkState>, JoinHandle<()>)> {
-    let std_listener = std::net::TcpListener::bind(cfg.listen)?;
-    std_listener.set_nonblocking(true)?;
-    let listener = TcpListener::from_std(std_listener)?;
-    let addr = listener.local_addr()?;
+) -> (Arc<LinkState>, JoinHandle<()>) {
     let state = Arc::new(LinkState::new(cfg));
-    // The address bound (a test's port 0 names its port).
-    state.with(|s| s.listen = addr.to_string());
     if secret.is_none() {
-        tracing::warn!(addr = %addr, "instance link: no link secret: every link is refused (`fohmixer-hub link set-secret`)");
+        tracing::warn!(addr = %cfg.listen, "instance link: no link secret: every link is refused (`fohmixer-hub link set-secret`)");
     }
-    tracing::info!(addr = %addr, instance = %cfg.instance, script_port, "instance link: listening");
     let server = Server {
         script_port,
         secret,
@@ -169,8 +194,14 @@ pub fn spawn(
         events,
         state: Arc::clone(&state),
     };
-    let task = tokio::spawn(server.accept(listener));
-    Ok((addr, state, task))
+    let listen = cfg.listen;
+    let instance = cfg.instance.clone();
+    let task = tokio::spawn(async move {
+        let listener = server.bind(listen).await;
+        tracing::info!(addr = %server.state.status().listen, instance = %instance, script_port, "instance link: listening");
+        server.accept(listener).await;
+    });
+    (state, task)
 }
 
 #[derive(Clone)]
@@ -196,6 +227,46 @@ impl Drop for OpenGuard {
 }
 
 impl Server {
+    /// `listen` bound, tried again every [`BIND_RETRY`] until it is.
+    async fn bind(&self, listen: SocketAddr) -> TcpListener {
+        let mut failures: u64 = 0;
+        loop {
+            match TcpListener::bind(listen).await {
+                Ok(listener) => {
+                    let addr = listener.local_addr().unwrap_or(listen);
+                    *self
+                        .state
+                        .bound
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner) = Some(addr);
+                    // The address bound (a test's port 0 names its port).
+                    self.state.with(|s| {
+                        s.listen = addr.to_string();
+                        s.error = None;
+                    });
+                    self.events
+                        .record("instance_link", listen_fields(&addr.to_string(), None));
+                    return listener;
+                }
+                Err(e) => {
+                    failures += 1;
+                    let error = e.to_string();
+                    self.state.with(|s| s.error = Some(error.clone()));
+                    if first_bind_failure(failures) {
+                        tracing::warn!(addr = %listen, error = %error, "instance link: cannot listen: trying again every 2 s");
+                        self.events.record(
+                            "instance_link",
+                            listen_fields(&listen.to_string(), Some(&error)),
+                        );
+                    } else {
+                        tracing::debug!(addr = %listen, error = %error, failures, "instance link: still cannot listen");
+                    }
+                    tokio::time::sleep(BIND_RETRY).await;
+                }
+            }
+        }
+    }
+
     async fn accept(self, listener: TcpListener) {
         let mut links = JoinSet::new();
         loop {
@@ -259,11 +330,25 @@ impl Server {
             admission = Some(decided);
             match decided {
                 Admission::Accept => Ok(response),
-                Admission::Refuse(why) => Err(refusal(StatusCode::UNAUTHORIZED, why.text())),
+                // The reason stays in the record and the status: a 401 tells a
+                // LAN caller nothing of this hub's secret.
+                Admission::Refuse(_) => Err(refusal(StatusCode::UNAUTHORIZED, UNAUTHORIZED)),
                 Admission::Busy => Err(refusal(StatusCode::CONFLICT, "busy")),
             }
         };
-        let upgraded = tokio_tungstenite::accept_hdr_async(stream, callback).await;
+        // A peer that sends no request in time holds nothing.
+        let Ok(upgraded) = tokio::time::timeout(
+            HANDSHAKE,
+            tokio_tungstenite::accept_hdr_async(stream, callback),
+        )
+        .await
+        else {
+            if admission == Some(Admission::Accept) {
+                self.state.open.store(false, Ordering::SeqCst);
+            }
+            tracing::debug!(peer = %peer, "instance link: no upgrade within the handshake's bound");
+            return;
+        };
         let link = match (admission, upgraded) {
             (Some(Admission::Accept), Ok(link)) => link,
             (Some(Admission::Accept), Err(e)) => {
