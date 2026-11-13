@@ -14,7 +14,7 @@
 
 - Public repository: no host names, IPs, Windows user names, real track names, PINs, secrets or repo URLs in code, tests, fixtures, docs, commit messages or PR bodies. Strip names in fixtures are invented (`Hand 1`, `Moderator 1`, `Ambience`, `Vox 1`). Before every push run the denylist scan (`.claude/rules/public-repo-hygiene.md`) with exit 0.
 - Commits use the repo's local noreply identity; the message names only `(#184)`; it ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
-- Versions: one workspace version (`Cargo.toml` `[workspace.package]`, `live-script/FohMixer/version.py`, both `live-device/*/version.txt` and the device faces/`pack` that `scripts/check_lufs_device.py` checks). Feature = +0.1.0, the FIRST commit of each PR: PR A 1.40.0 (master is 1.39.0), PR B 1.41.0, PR C 1.42.0, PR D 1.43.0. `Cargo.lock`: only the `fohmixer-*` blocks without a `source` line (`.claude/rules/ci.md`). The bump commit carries `[no-test: version only]`; commit and push in separate calls.
+- Versions: one workspace version (`Cargo.toml` `[workspace.package]`, `live-script/FohMixer/version.py`, both `live-device/*/version.txt` and the device faces/`pack` that `scripts/check_lufs_device.py` checks). Feature = +0.1.0 over the version on `dev` at the PR's start (dev already ahead of `master` counts: when this plan was written `master` was 1.39.0 and #190 had taken 1.40.0 on `dev`), the FIRST commit of each PR; read it again at each PR's start, never reuse a version. Below, `vA` is PR A's version, `vB` = `vA` + 0.1.0, `vC`, `vD` likewise. `Cargo.lock`: only the `fohmixer-*` blocks without a `source` line (`.claude/rules/ci.md`). The bump commit carries `[no-test: version only]`; commit and push in separate calls.
 - Never redesign tuned components: the strip, #151's LUFS display (`crates/fohmixer-ui/src/behave/lufs.rs` `look`, `fohmixer_proto::lufs::{judge, text, caption, in_band}`), the four sectors (#148, `crates/fohmixer-proto/src/sectors.rs`, `docs/superpowers/specs/2026-10-28-sectors-design.md`). Only what is new is added.
 - Scope = today's MBC TouchOSC page (12 strips: volume, mute, pan in SEL's detail, meter, dB) + per-strip and stream LUFS + PIN roles + MBC working with the FOH PC off. No latency alignment, no `STREAM` fader, no sends/EQ/plug-in windows on MBC, nothing from recon.
 - `127.0.0.1` stays the only bind of the FohMixer script (C1) and of the LUFS listener (C2, `[lufs] port` default 39110). The link binds the LAN address it is given, never `0.0.0.0`/`::` (C3).
@@ -71,22 +71,22 @@
 
 ## PR split (each ships working software)
 
-- **PR A — roles and the second PIN (1.40.0).** Ships alone: an `mbc` PIN can be set and logs in to a page that shows only MBC things (none yet), the engineer is unchanged. It is the security foundation the link must not ship without.
-- **PR B — the instance link (1.41.0).** Ships the MBC hub (MBC tablet works with the FOH PC off) and the FOH hub's linked `mbc`, whose faders the engineer can already place in a sector by ARRANGE; per-strip LUFS works through the link (the existing strip display).
-- **PR C — STREAM LUFS and the MBC page's column (1.42.0).** The one new readout and the MBC hub page as approved in mockup v3.
-- **PR D — install on the MBC PC (1.43.0).** The PowerShell path and `script missing`; then the main-session rollout.
+- **PR A — roles and the second PIN (`vA`).** Ships alone: an `mbc` PIN can be set and logs in to a page that shows only MBC things (none yet), the engineer is unchanged. It is the security foundation the link must not ship without.
+- **PR B — the instance link (`vB`).** Ships the MBC hub (MBC tablet works with the FOH PC off) and the FOH hub's linked `mbc`, whose faders the engineer can already place in a sector by ARRANGE; per-strip LUFS works through the link (the existing strip display).
+- **PR C — STREAM LUFS and the MBC page's column (`vC`).** The one new readout and the MBC hub page as approved in mockup v3.
+- **PR D — install on the MBC PC (`vD`).** The PowerShell path and `script missing`; then the main-session rollout.
 
 ---
 
 ## PR A — roles and the second PIN
 
-### Task A1: Version 1.40.0
+### Task A1: Version `vA`
 
 **Files:** `Cargo.toml`, `Cargo.lock` (fohmixer-* blocks only), `live-script/FohMixer/version.py`, `live-device/FohMixer-LUFS/version.txt`, `live-device/FohMixer-Meter/version.txt` and whatever `scripts/check_lufs_device.py` checks.
 
-- [ ] **Step 1:** `git fetch origin && git merge origin/dev`; set every version to `1.40.0`.
+- [ ] **Step 1:** `git fetch origin && git merge origin/dev`; set every version to `vA` (the next minor; 1.41.0 if #190's 1.40.0 is the last on dev).
 - [ ] **Step 2:** Run `python3 scripts/check_version.py` and `python3 scripts/check_lufs_device.py` → both pass; `git diff Cargo.lock` names only `fohmixer-*`.
-- [ ] **Step 3:** Commit `chore: bump the version to 1.40.0 (#184) [no-test: version only]`.
+- [ ] **Step 3:** Commit `chore: bump the version to <vA> (#184) [no-test: version only]`.
 
 ### Task A2: `fohmixer_proto::roles`
 
@@ -185,15 +185,15 @@
 ### Task A8: Playbook and the PR
 
 - [ ] **Step 1:** `.claude/rules/hub-rust.md`: a "Roles (#184)" bullet (the three choke points, the exhaustive matches, the `API_PATHS` table); `.claude/rules/deploy-pc.md`: `pin set-mbc` as the band user, like `set-engineer`; `ui-rust.md`: the login line.
-- [ ] **Step 2:** Denylist scan (exit 0), `cargo fmt --all --check`, `cargo clippy --workspace -- -D warnings`, commit, `git fetch && git merge origin/dev`, push `dev`, open PR `dev` → `master` (body ends with the attribution line), watch every job (push run and PR run) to green, merge with `gh pr merge --merge`, tag `v1.40.0`.
+- [ ] **Step 2:** Denylist scan (exit 0), `cargo fmt --all --check`, `cargo clippy --workspace -- -D warnings`, commit, `git fetch && git merge origin/dev`, push `dev`, open PR `dev` → `master` (body ends with the attribution line), watch every job (push run and PR run) to green, merge with `gh pr merge --merge`, tag `v<vA>`.
 
 ---
 
 ## PR B — the instance link
 
-### Task B1: Version 1.41.0
+### Task B1: Version `vB`
 
-- [ ] As Task A1, `1.41.0`, after `master` holds 1.40.0.
+- [ ] As Task A1, `vB`, after `master` holds `vA`.
 
 ### Task B2: Config: a linked instance and `[link]`
 
@@ -290,15 +290,15 @@
 ### Task B9: Playbook and the PR
 
 - [ ] **Step 1:** `.claude/rules/hub-rust.md` "The instance link (#184)" (per-link script connection, the tap, the stall, the 401/409, the record); `.claude/rules/e2e.md` (the MBC hub, its ports, `MBC_BASE`, the harness control); `CLAUDE.md` playbook router: no new rules file needed unless a file grows past its scope.
-- [ ] **Step 2:** As A8 Step 2; tag `v1.41.0`.
+- [ ] **Step 2:** As A8 Step 2; tag `v<vB>`.
 
 ---
 
 ## PR C — STREAM LUFS and the MBC page's column
 
-### Task C1: Version 1.42.0
+### Task C1: Version `vC`
 
-- [ ] As Task A1, `1.42.0`.
+- [ ] As Task A1, `vC`.
 
 ### Task C2: `lufs_readout`
 
@@ -333,15 +333,15 @@
 ### Task C4: Playbook and the PR
 
 - [ ] **Step 1:** `ui-rust.md` "STREAM LUFS (#184)" (the readout, `stream_shown`, sizes, the shared look); `deploy-pc.md`: the FOH frame's `global` gets the readout in both layout files (#51's rule) at deploy.
-- [ ] **Step 2:** As A8 Step 2; tag `v1.42.0`. After the deploy the main session walks every state of mockup v3's captions on the deployed pages (`ui-rust.md`'s live check).
+- [ ] **Step 2:** As A8 Step 2; tag `v<vC>`. After the deploy the main session walks every state of mockup v3's captions on the deployed pages (`ui-rust.md`'s live check).
 
 ---
 
 ## PR D — install on the MBC PC
 
-### Task D1: Version 1.43.0
+### Task D1: Version `vD`
 
-- [ ] As Task A1, `1.43.0`.
+- [ ] As Task A1, `vD`.
 
 ### Task D2: `script missing`
 
@@ -369,7 +369,7 @@
 ### Task D4: Playbook and the PR
 
 - [ ] **Step 1:** `deploy-pc.md` "The MBC PC (#184)": the install line (no host names: `<MBC LAN address>`, `<MBC user>`), `pin set-engineer`/`pin set-mbc`/`link set-secret` as the MBC user, the slot-2 selection, `script missing`, the rollback (deselect slot 2, disable the task); public-repo-hygiene unchanged.
-- [ ] **Step 2:** As A8 Step 2; tag `v1.43.0`.
+- [ ] **Step 2:** As A8 Step 2; tag `v<vD>`.
 
 ---
 
