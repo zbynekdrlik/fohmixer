@@ -117,11 +117,5 @@ pub fn set_mute_alarm(
     Ok(Some(doc.with(strip, on)))
 }
 
-/// Whether a strip shows the alarm: marked and muted (a linked mute: its
-/// button shows muted). A marked strip that sounds looks like any other.
-pub fn alarming(marked: bool, muted: bool) -> bool {
-    marked && muted
-}
-
 #[cfg(test)]
 mod tests;

@@ -1,0 +1,73 @@
+/* The mute alarm (#188; the owner's approved mockup
+   docs/mockups/mute-alert-v1.html). A strip marked in its channel detail's
+   MUTE ALARM carries `data-mute-alarm="true"`; while its mute shows muted
+   (`data-muted="true"`, every track of a linked mute) its name button is
+   filled red and blinks between a bright and a dark red once a second, the
+   name and MUTED in white, and a 2 px red frame round the whole strip
+   blinks with it. The fader, the meter and the readout recede as on any
+   muted strip; nothing moves and the travel is today's. A marked strip
+   that sounds, and an unmarked mute, look as before. Reduced motion:
+   steady bright red. The one looping animation besides the REC pulse, by
+   the owner's approval: only while a marked strip is muted, a state that
+   must not look calm. */
+@keyframes mute-alarm-fill {
+    0%, 100% { background-color: #e5484d; }
+    50% { background-color: #4a1015; }
+}
+
+@keyframes mute-alarm-frame {
+    0%, 100% { border-color: #e5484d; }
+    50% { border-color: #4a1015; }
+}
+
+.strip[data-mute-alarm="true"]:has(.strip-head > .mute[data-muted="true"])::after {
+    border: 2px solid #e5484d;
+    box-shadow: none;
+    animation: mute-alarm-frame 1s ease-in-out infinite;
+}
+
+.strip[data-mute-alarm="true"] .strip-head > .mute[data-muted="true"] {
+    background-color: #e5484d;
+    box-shadow: none;
+    color: #ffffff;
+    animation: mute-alarm-fill 1s ease-in-out infinite;
+}
+
+/* The colour edge gives way to the red. */
+.strip[data-mute-alarm="true"] .strip-head > .mute[data-muted="true"]::after {
+    opacity: 0;
+}
+
+.strip[data-mute-alarm="true"] .strip-head > .mute[data-muted="true"] .strip-marks .mute-mark {
+    color: #ffffff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .strip[data-mute-alarm="true"]:has(.strip-head > .mute[data-muted="true"])::after,
+    .strip[data-mute-alarm="true"] .strip-head > .mute[data-muted="true"] {
+        animation: none;
+    }
+}
+
+/* The channel detail's MUTE ALARM (components/detail_alarm.rs): a calm
+   section of the right box before COLOR, its title and state as COLOR's
+   (`.col-head`, `.col-now`) and two of COLOR's dark keys, OFF and ON, the
+   state's key drawn as a selected tab (colour.css `.col-key`). Nothing is
+   red here: the red is the strip's, and only while it is muted. */
+.alarm-sec {
+    flex: none;
+    margin-top: 6px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+}
+
+.alarm-keys {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.alarm-key {
+    height: 36px;
+}

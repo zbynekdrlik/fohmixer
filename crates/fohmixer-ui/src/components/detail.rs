@@ -18,6 +18,7 @@ use leptos::prelude::*;
 use serde_json::json;
 
 use super::buttons::{Corner, MuteView, Partner, anchor_name};
+use super::detail_alarm::{DetailMuteAlarm, strip_alarm};
 use super::detail_color::{DetailColor, strip_colour};
 use super::detail_layouts::{DetailLayouts, DetailStep};
 use super::eq::EqCards;
@@ -164,6 +165,9 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
     // The strip's colour chosen on the tablet (#164): the chip and COLOR.
     let color = strip_colour(store, &strip);
     let colour_strip = strip.clone();
+    // The mute alarm's mark (#188): MUTE ALARM's switch.
+    let alarm = strip_alarm(store, &strip);
+    let alarm_strip = strip.clone();
     let meters: Vec<RwSignal<Slot>> = subs.meters.iter().map(|s| store.slot(s)).collect();
     // The status light: every value the detail shows (the pan too); it
     // never blinks with them (#151).
@@ -391,6 +395,7 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
                     {centre}
                     {link_box}
                     <DetailLayouts strip=layouts_strip />
+                    <DetailMuteAlarm strip=alarm_strip on=alarm />
                     <DetailColor strip=colour_strip colour=color />
                 </section>
             </div>

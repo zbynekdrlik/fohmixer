@@ -158,11 +158,3 @@ fn set_mute_alarm_takes_a_pool_fader_and_refuses_another() {
     );
     assert_eq!(set_mute_alarm(&doc, &band("Keys"), false, &[]), Ok(None));
 }
-
-#[test]
-fn only_a_marked_muted_strip_alarms() {
-    assert!(alarming(true, true));
-    assert!(!alarming(true, false));
-    assert!(!alarming(false, true));
-    assert!(!alarming(false, false));
-}
