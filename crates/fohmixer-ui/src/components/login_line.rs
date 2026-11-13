@@ -13,10 +13,12 @@ use crate::store::LiveStore;
 pub fn LoginLine() -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let line = Memo::new(move |_| {
+        // No layout served yet: not one Live set's page (the FOH page
+        // without its layout shows no line).
         let one = store
             .layout
-            .try_with(|l| l.as_deref().is_none_or(one_instance))
-            .unwrap_or(true);
+            .try_with(|l| l.as_deref().is_some_and(one_instance))
+            .unwrap_or(false);
         login_line(store.role.try_get().flatten(), one)
     });
     move || {

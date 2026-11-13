@@ -118,11 +118,13 @@ impl Router {
     }
 
     /// Refuses (`role`) a tick or an ARRANGE save of a client whose role
-    /// may not change this document (#184: an MBC login on the FOH hub,
-    /// where it is served a derived view); whether it did.
-    fn sectors_role_refused(&self, client: ClientId, id: &str) -> bool {
+    /// may not change this hub's document (#184, `roles::may_arrange`: an
+    /// MBC login on the FOH hub, where it is served a derived view);
+    /// whether it did.
+    fn sectors_role_refused(&self, client: ClientId, id: &str, pool: &[model::Pooled<'_>]) -> bool {
         let role = self.role_of(client);
-        let refused = !roles::may_edit_sectors(role, self.sectors.store.doc());
+        let refused =
+            !roles::may_arrange(role, self.sectors.store.doc(), pool.iter().map(|p| &p.id));
         if refused {
             tracing::info!(
                 client,
@@ -210,11 +212,11 @@ impl Router {
         strip: &StripRef,
         on: bool,
     ) {
-        if self.sectors_role_refused(client, &id) {
-            return;
-        }
         let served = self.sectors_layout();
         let pool = served.as_deref().map(model::pool).unwrap_or_default();
+        if self.sectors_role_refused(client, &id, &pool) {
+            return;
+        }
         match model::tick(self.sectors.store.doc(), layout, strip, on, &pool) {
             Err(refusal) => self.sectors_refuse(client, id, refusal),
             // Nothing changes: no write, no record, no news (call 13).
@@ -244,11 +246,11 @@ impl Router {
         sectors: &Sectors,
         rev: u64,
     ) {
-        if self.sectors_role_refused(client, &id) {
-            return;
-        }
         let served = self.sectors_layout();
         let pool = served.as_deref().map(model::pool).unwrap_or_default();
+        if self.sectors_role_refused(client, &id, &pool) {
+            return;
+        }
         let before = self.sectors.store.doc();
         match model::edit(before, sectors, rev, &pool) {
             Err(refusal) => self.sectors_refuse(client, id, refusal),

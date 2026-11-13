@@ -261,6 +261,21 @@ pub fn may_edit_sectors(role: Role, doc: &SectorsDoc) -> bool {
     }
 }
 
+/// Whether `role` may change the sectors document `doc` of a hub whose
+/// pool holds `pool` (a tick or an ARRANGE save): the engineer always; an
+/// MBC login only on a hub every pool fader of which it reaches (the MBC
+/// hub) and whose document it sees whole ([`may_edit_sectors`]). On the
+/// FOH hub (band and master faders in its pool) an MBC login changes
+/// nothing, an empty document's layouts included (#184 review: a tick of a
+/// band fader into an empty FOH document).
+pub fn may_arrange<'a>(
+    role: Role,
+    doc: &SectorsDoc,
+    pool: impl IntoIterator<Item = &'a StripRef>,
+) -> bool {
+    may_edit_sectors(role, doc) && pool.into_iter().all(|s| reaches_strip(role, s))
+}
+
 #[cfg(test)]
 #[path = "roles/tests.rs"]
 mod tests;

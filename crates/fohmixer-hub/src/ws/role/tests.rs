@@ -5,7 +5,7 @@ use fohmixer_proto::roles::{Role, sectors_for};
 use fohmixer_proto::sectors::SectorsDoc;
 use serde_json::{Value, json};
 
-use super::{REFUSED, inbound, outbound, refused_id};
+use super::{REFUSED, inbound, outbound, refusal, refused_id};
 
 fn client(wire: Value) -> ClientMsg {
     serde_json::from_value(wire.clone()).unwrap_or_else(|e| panic!("{wire}: {e}"))
@@ -156,6 +156,8 @@ fn mbc_gets_no_foh_message() {
             msg,
             ServerMsg::Hello { .. }
                 | ServerMsg::Result { .. }
+                | ServerMsg::Subbed { .. }
+                | ServerMsg::Ack { .. }
                 | ServerMsg::Layout { .. }
                 | ServerMsg::Pong { .. }
                 | ServerMsg::Error { .. }
@@ -200,14 +202,11 @@ fn mbc_gets_only_its_items_of_a_mixed_message() {
         Some(server(json!({"type": "values", "items": [
             {"sub": "mbc|live_set tracks 0 mixer_device volume|value|false", "value": 0.7}]})))
     );
+    // The socket's own answers pass whole: its band writes were refused
+    // with a failed ack of their own keys.
     let ack = server(json!({"type": "ack", "items": [
-        {"key": "band|live_set|tempo", "seq": 9}, {"key": "mbc|live_set|tempo", "seq": 10}]}));
-    assert_eq!(
-        outbound(Role::Mbc, ack),
-        Some(server(
-            json!({"type": "ack", "items": [{"key": "mbc|live_set|tempo", "seq": 10}]})
-        ))
-    );
+        {"key": "band|live_set|tempo", "seq": 9, "error": "role"}, {"key": "mbc|live_set|tempo", "seq": 10}]}));
+    assert_eq!(outbound(Role::Mbc, ack.clone()), Some(ack));
     let lufs = server(json!({"type": "lufs", "items": [
         {"instance": "band", "target": "live_set tracks 1", "tenths": -253},
         {"instance": "mbc", "target": "live_set tracks 2", "tenths": -140}]}));
@@ -220,6 +219,7 @@ fn mbc_gets_only_its_items_of_a_mixed_message() {
         json!({"type": "instance", "name": "mbc", "online": true, "busy": false, "set_name": "S"}),
         json!({"type": "link", "instance": "mbc", "tick_age_ms": 4.5, "busy": false}),
         json!({"type": "subbed", "sub": "mbc|live_set|tempo|false", "value": 120.0}),
+        json!({"type": "subbed", "sub": "band|live_set|tempo|false", "error": "role"}),
     ] {
         let msg = server(wire.clone());
         assert_eq!(outbound(Role::Mbc, msg.clone()), Some(msg), "{wire}");
@@ -228,9 +228,6 @@ fn mbc_gets_only_its_items_of_a_mixed_message() {
     let band_only = server(json!({"type": "values", "items": [
         {"sub": "band|live_set|tempo|false", "value": 1}]}));
     assert_eq!(outbound(Role::Mbc, band_only), None);
-    let band_ack =
-        server(json!({"type": "ack", "items": [{"key": "band|live_set|tempo", "seq": 9}]}));
-    assert_eq!(outbound(Role::Mbc, band_ack), None);
     let band_lufs = server(json!({"type": "lufs", "items": [
         {"instance": "band", "target": "live_set tracks 1", "tenths": -253}]}));
     assert_eq!(outbound(Role::Mbc, band_lufs), None);
@@ -250,4 +247,30 @@ fn mbc_gets_its_own_sectors_view() {
         })
     );
     assert_ne!(sectors_for(Role::Mbc, &doc), doc);
+}
+
+#[test]
+fn a_refused_write_is_answered_by_a_failed_ack_and_anything_else_by_an_error() {
+    assert_eq!(
+        refusal(&set_to("band"), REFUSED),
+        server(json!({"type": "ack", "items": [
+            {"key": "band|live_set tracks 0 mixer_device volume|value", "seq": 41, "error": "role"}]}))
+    );
+    let sets = client(json!({"type": "sets", "sets": [item("mbc", 1), item("band", 2)]}));
+    assert_eq!(
+        refusal(&sets, REFUSED),
+        server(json!({"type": "ack", "items": [
+            {"key": "mbc|live_set tracks 3|mute", "seq": 1, "error": "role"},
+            {"key": "band|live_set tracks 3|mute", "seq": 2, "error": "role"}]}))
+    );
+    let cmd = client(json!({"type": "cmd", "id": "c1", "instance": "band", "commands": []}));
+    assert_eq!(
+        refusal(&cmd, REFUSED),
+        server(json!({"type": "error", "id": "c1", "message": "role"}))
+    );
+    let hub = client(json!({"type": "set_hub", "key": "stage_aut", "value": true}));
+    assert_eq!(
+        refusal(&hub, REFUSED),
+        server(json!({"type": "error", "message": "role"}))
+    );
 }

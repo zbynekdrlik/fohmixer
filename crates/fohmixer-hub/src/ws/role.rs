@@ -9,7 +9,7 @@
 //! (`roles::may_edit_sectors`, `roles::reaches_strip`): those messages pass
 //! here.
 
-use fohmixer_proto::client::{ClientMsg, ServerMsg, ValueItem};
+use fohmixer_proto::client::{AckItem, ClientMsg, ServerMsg, ValueItem, set_key};
 use fohmixer_proto::colors::ColorsDoc;
 use fohmixer_proto::mute_alarms::MuteAlarmsDoc;
 use fohmixer_proto::roles::{self, MBC_INSTANCE, Role};
@@ -75,6 +75,40 @@ pub fn refused_id(msg: &ClientMsg) -> Option<String> {
     }
 }
 
+/// The answer to a refused message: a refused write's failed ack per key
+/// (a page settles its open write by its ack, never by an `error`), else
+/// the `error` with the message's id ([`refused_id`]).
+pub fn refusal(msg: &ClientMsg, word: &str) -> ServerMsg {
+    let failed = |instance: &str, target: &str, prop: &str, seq: u64| AckItem {
+        key: set_key(instance, target, prop),
+        seq,
+        value: None,
+        error: Some(word.to_string()),
+        superseded: false,
+    };
+    match msg {
+        ClientMsg::Set {
+            instance,
+            target,
+            prop,
+            seq,
+            ..
+        } => ServerMsg::Ack {
+            items: vec![failed(instance, target, prop, *seq)],
+        },
+        ClientMsg::Sets { sets } => ServerMsg::Ack {
+            items: sets
+                .iter()
+                .map(|s| failed(&s.instance, &s.target, &s.prop, s.seq))
+                .collect(),
+        },
+        _ => ServerMsg::Error {
+            id: refused_id(msg),
+            message: word.to_string(),
+        },
+    }
+}
+
 /// The colours of the Live set `mbc` only.
 fn mbc_colors(doc: ColorsDoc) -> ColorsDoc {
     ColorsDoc {
@@ -106,7 +140,9 @@ fn mbc_values(items: Vec<ValueItem>) -> Vec<ValueItem> {
 }
 
 /// What of `msg` `role` is sent: the engineer everything; an MBC login only
-/// what belongs to the Live set `mbc` and the socket's own answers, a
+/// what belongs to the Live set `mbc` and the socket's own answers (a
+/// `result`, `subbed`, `ack` or `error` answers what this socket sent, and
+/// its band or master requests were refused before they went anywhere), a
 /// message left with nothing dropped.
 pub fn outbound(role: Role, msg: ServerMsg) -> Option<ServerMsg> {
     let Role::Mbc = role else {
@@ -116,21 +152,15 @@ pub fn outbound(role: Role, msg: ServerMsg) -> Option<ServerMsg> {
     match msg {
         ServerMsg::Hello { .. }
         | ServerMsg::Result { .. }
+        | ServerMsg::Subbed { .. }
+        | ServerMsg::Ack { .. }
         | ServerMsg::Layout { .. }
         | ServerMsg::Pong { .. }
         | ServerMsg::Error { .. }
         | ServerMsg::Unknown => Some(msg),
-        ServerMsg::Subbed { ref sub, .. } => mbc(key_instance(sub)).then_some(msg),
         ServerMsg::Values { items } => {
             let items = mbc_values(items);
             (!items.is_empty()).then_some(ServerMsg::Values { items })
-        }
-        ServerMsg::Ack { items } => {
-            let items: Vec<_> = items
-                .into_iter()
-                .filter(|i| mbc(key_instance(&i.key)))
-                .collect();
-            (!items.is_empty()).then_some(ServerMsg::Ack { items })
         }
         ServerMsg::Lufs { items } => {
             let items: Vec<_> = items.into_iter().filter(|i| mbc(&i.instance)).collect();

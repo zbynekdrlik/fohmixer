@@ -150,11 +150,11 @@ pub fn bearer(headers: &HeaderMap) -> Option<&str> {
         .and_then(|v| v.strip_prefix("Bearer "))
 }
 
-/// The start-up warning about the PIN store: nobody can log in without an
-/// engineer PIN.
+/// The start-up warning about the PIN store: without an engineer PIN
+/// nobody can log in as the engineer.
 fn pin_warning(has_pin: bool) -> Option<&'static str> {
     (!has_pin).then_some(
-        "no engineer PIN yet: set one with `fohmixer-hub pin set-engineer` (nobody can log in)",
+        "no engineer PIN yet: set one with `fohmixer-hub pin set-engineer` (nobody can log in as the engineer)",
     )
 }
 
@@ -183,7 +183,9 @@ impl Auth {
         let secrets = crate::secrets::load_or_create(&secrets_dir)?;
         let pepper = crate::pepper::load_or_create(&secrets_dir)?;
         let store = PinStore::load(&secrets_dir)?;
-        if let Some(warning) = pin_warning(store.has_hashes()) {
+        // The engineer's PIN, whatever the MBC one: without it nobody
+        // reaches the FOH side (#184).
+        if let Some(warning) = pin_warning(store.engineer_hash().is_some()) {
             tracing::warn!("{warning}");
         }
         Ok(Self::with(

@@ -49,13 +49,15 @@ fn an_mbc_socket_cannot_move_a_band_fader() {
         );
         mbc.write("band", VOLUME, "value", json!(0.9), 1, true)
             .await;
-        let refused = mbc
-            .wait(SECS_5, |m| match m {
-                ServerMsg::Error { message, .. } => Some(message.clone()),
-                _ => None,
-            })
+        // The write is answered by its own failed ack: the page settles it.
+        let ack = mbc
+            .ack_of(
+                &fohmixer_proto::client::set_key("band", VOLUME, "value"),
+                1,
+                SECS_5,
+            )
             .await;
-        assert_eq!(refused, "role");
+        assert_eq!(ack.error.as_deref(), Some("role"), "{ack:?}");
         // A command to band is refused too, with its id.
         assert_eq!(
             mbc.cmd(
@@ -79,9 +81,11 @@ fn an_mbc_socket_sees_no_band_or_master_state() {
         let dir = tempfile::tempdir().unwrap();
         let (_hosts, hub) = three(dir.path()).await;
         let mut engineer = hub.client().await;
-        engineer
-            .instance_state("mbc", true, Some(false), SECS_5)
-            .await;
+        for name in ["band", "master", "mbc"] {
+            engineer
+                .instance_state(name, true, Some(false), SECS_5)
+                .await;
+        }
         let mut mbc = hub.client_as(Role::Mbc).await;
         // A sub of band is refused; a sub of mbc is answered.
         mbc.send(&ClientMsg::Sub {

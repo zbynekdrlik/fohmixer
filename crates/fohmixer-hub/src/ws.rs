@@ -224,7 +224,12 @@ async fn session(mut socket: WebSocket, hub: Hub, proto: Option<u32>, who: Opene
                 // The messages, then the frame taken with them (PR I).
                 // The role's view of each (#184): an MBC login is sent
                 // nothing of the FOH side.
-                let frame = batch.frame.map(Message::Binary);
+                // A Pro-Q 4 frame reaches only an open editor's holder,
+                // and an MBC login opens none: kept from it all the same.
+                let frame = batch
+                    .frame
+                    .filter(|_| role == Role::Engineer)
+                    .map(Message::Binary);
                 let messages = batch
                     .messages
                     .into_iter()
@@ -621,10 +626,7 @@ pub fn refused_fields(role: Role, msg: &ClientMsg) -> (String, Option<String>) {
 /// Answers a message the socket's role may not send: the `error` with the
 /// message's id, and one info line, rationed per socket.
 fn refuse_role(conn: &mut Conn, msg: &ClientMsg, word: &'static str) {
-    conn.outbox.reply(ServerMsg::Error {
-        id: role::refused_id(msg),
-        message: word.to_string(),
-    });
+    conn.outbox.reply(role::refusal(msg, word));
     if let Some(skipped) = conn
         .refusals
         .take(std::time::Instant::now(), role::REFUSED_LINES)

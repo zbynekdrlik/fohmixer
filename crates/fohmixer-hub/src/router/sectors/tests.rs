@@ -974,15 +974,48 @@ async fn an_mbc_arrange_save_on_a_mixed_document_is_refused_with_role() {
 }
 
 #[tokio::test]
-async fn an_mbc_change_of_a_document_of_its_own_passes_the_role() {
-    // The MBC hub's document holds no fader of another Live set: the role
-    // lets the change through to the document's own checks (here the pool:
-    // the fixture has no mbc fader).
+async fn an_mbc_tick_of_a_band_fader_into_an_empty_document_is_refused_with_role() {
+    // The FOH hub with no faders placed yet: its pool holds band faders, so
+    // an MBC login changes nothing there (#184 review).
     let dir = tempfile::tempdir().unwrap();
-    let (mut router, _own, _rx) = served(dir.path(), Some(&SectorsDoc::empty()));
+    let (mut router, _own, rx) = served(dir.path(), Some(&SectorsDoc::empty()));
     let mbc = super::super::tests::attach_as(&mut router, 1, fohmixer_proto::roles::Role::Mbc);
     mbc.take();
+    let _ = records(&rx);
     router.handle(tick(1, "t1", "lu-1", "Bass", true));
+    assert_eq!(answers(&mbc), vec![error("t1", "role")]);
+    router.handle(RouterMsg::SectorTick {
+        client: 1,
+        id: "t2".into(),
+        layout: "lu-1".into(),
+        strip: StripRef {
+            instance: "mbc".into(),
+            label: "Hand 1".into(),
+        },
+        on: true,
+    });
+    assert_eq!(answers(&mbc), vec![error("t2", "role")]);
+    assert_eq!(sector_records(&rx), Vec::<Value>::new());
+}
+
+#[tokio::test]
+async fn an_mbc_change_on_a_hub_of_its_own_faders_passes_the_role() {
+    // The MBC hub: a pool of mbc faders only (here none: a bare router), so
+    // the role lets the change through to the document's own checks.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, _own, _rx) = offline_router(dir.path());
+    let mbc = super::super::tests::attach_as(&mut router, 1, fohmixer_proto::roles::Role::Mbc);
+    mbc.take();
+    router.handle(RouterMsg::SectorTick {
+        client: 1,
+        id: "t1".into(),
+        layout: "lu-1".into(),
+        strip: StripRef {
+            instance: "mbc".into(),
+            label: "Hand 1".into(),
+        },
+        on: true,
+    });
     let got = answers(&mbc);
     assert_eq!(got.len(), 1);
     assert_ne!(got[0], error("t1", "role"));

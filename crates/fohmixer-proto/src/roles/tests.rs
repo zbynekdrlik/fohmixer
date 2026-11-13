@@ -311,3 +311,28 @@ fn mbc_may_edit_only_a_document_of_its_own() {
     assert!(may_edit_sectors(Role::Engineer, &mixed));
     assert!(may_edit_sectors(Role::Engineer, &own));
 }
+
+#[test]
+fn mbc_may_arrange_only_on_a_hub_of_its_own_faders() {
+    let band = StripRef {
+        instance: "band".into(),
+        label: "A".into(),
+    };
+    let mbc = StripRef {
+        instance: "mbc".into(),
+        label: "X".into(),
+    };
+    let empty = SectorsDoc::empty();
+    // The MBC hub: its pool and its document are mbc's.
+    assert!(may_arrange(Role::Mbc, &empty, [&mbc]));
+    assert!(may_arrange(Role::Mbc, &empty, std::iter::empty()));
+    // The FOH hub: a band fader in the pool, even with an empty document.
+    assert!(!may_arrange(Role::Mbc, &empty, [&mbc, &band]));
+    assert!(!may_arrange(Role::Mbc, &empty, [&band]));
+    // A document of another set's fader, whatever the pool.
+    let mixed = doc(vec![(SectorId::Lu, vec![sl("lu1", vec![r("band", "A")])])]);
+    assert!(!may_arrange(Role::Mbc, &mixed, [&mbc]));
+    // The engineer everywhere.
+    assert!(may_arrange(Role::Engineer, &mixed, [&mbc, &band]));
+    assert!(may_arrange(Role::Engineer, &empty, [&band]));
+}
