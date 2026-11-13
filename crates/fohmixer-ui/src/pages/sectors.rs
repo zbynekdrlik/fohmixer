@@ -29,8 +29,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use fohmixer_proto::layout::{Control, Layout, Page};
-use fohmixer_proto::sectors::{SectorId, SectorsDoc, StripRef, pool};
+use fohmixer_proto::layout::{Control, Layout, Page, readouts};
+use fohmixer_proto::sectors::{SectorId, SectorLayout, SectorsDoc, StripRef, pool};
 use leptos::html;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
@@ -40,9 +40,12 @@ use crate::arrange::sectors::{SectorArrangement, SectorCell, WindowKey, arrange_
 use crate::arrange::{Arrangement, LineKey, METRICS, Shift, Sides, narrow};
 use crate::behave::arrange_drag::{Arrange, ArrangeEnd, Drag, Held, NoteTimer, Tap, arrange_note};
 use crate::behave::arrange_edit::{REMOVE_ASK, TabRow, TabTap, field_text, tab_rows};
+use crate::behave::login::one_instance;
+use crate::behave::lufs::stream_shown;
 use crate::binding::sectors::{
     Picks, picked, pool_controls, sector_instances, sector_name, sector_side,
 };
+use crate::components::stream_lufs::StreamLufs;
 use crate::components::{ControlView, down_of, owns_touches};
 use crate::dom;
 use crate::pages::presenter::StageMini;
@@ -112,6 +115,64 @@ pub(crate) fn instances_memo(
         .flatten()
         .unwrap_or_default()
     })
+}
+
+/// The global `lufs_readout`s (#184, `STREAM LUFS`) under ARRANGE: each
+/// while `behave::lufs::stream_shown` says so (always on a page of one
+/// Live set's faders, the MBC hub's, at 40 px; on the FOH page only while a
+/// picked layout shows its Live set's faders, at 30 px).
+fn stream_readouts(
+    layout: &Layout,
+    doc: Memo<Option<SectorsDoc>>,
+    picks: RwSignal<Picks>,
+) -> impl IntoView + use<> {
+    let one = one_instance(layout);
+    readouts(layout)
+        .into_iter()
+        .filter_map(|control| match control {
+            Control::LufsReadout {
+                label,
+                target,
+                binding,
+            } => Some((label.clone(), *target, binding.clone())),
+            _ => None,
+        })
+        .map(|(label, target, binding)| {
+            let instance = binding.instance.clone();
+            let shown = Memo::new(move |_| {
+                doc.try_with(|doc| {
+                    let picked: Vec<&SectorLayout> = doc
+                        .as_ref()
+                        .map(|doc| {
+                            picks
+                                .try_with(|picks| {
+                                    SectorId::ALL
+                                        .into_iter()
+                                        .filter_map(|sector| picked(doc, picks, sector))
+                                        .collect()
+                                })
+                                .unwrap_or_default()
+                        })
+                        .unwrap_or_default();
+                    stream_shown(&instance, &picked, one)
+                })
+                .unwrap_or(false)
+            });
+            let compact = Signal::derive(move || !one);
+            move || {
+                shown.try_get().unwrap_or(false).then(|| {
+                    view! {
+                        <StreamLufs
+                            label=label.clone()
+                            target=target
+                            binding=binding.clone()
+                            compact=compact
+                        />
+                    }
+                })
+            }
+        })
+        .collect_view()
 }
 
 /// A side's window moved a step (`forward` or back), kept by its key.
@@ -396,6 +457,7 @@ pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
         })
     };
     let arranging = move || mode.try_with(Arrange::is_on).unwrap_or(false).to_string();
+    let stream = stream_readouts(&head.layout, shown_doc, nav.picks);
     view! {
         <div
             class="body"
@@ -429,6 +491,7 @@ pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
                     <ArrangeButton carrier=carrier refused=refused />
                 </div>
                 <div class="saved-note" data-testid="arrange-note">{note}</div>
+                {stream}
                 <div class="shifts">
                     <For
                         each=move || windows.try_get().unwrap_or_default()

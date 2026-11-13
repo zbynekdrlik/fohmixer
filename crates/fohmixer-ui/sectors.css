@@ -438,3 +438,49 @@
 .column .shift[aria-disabled="true"] * {
     pointer-events: none;
 }
+
+/* STREAM LUFS (#184, the approved mockup mbc-layout-v3.html): the stream's
+   loudness under ARRANGE, read only, #151's look (the display face, nearly
+   white, green only within ±1.0 LU of its target). 40 px on a page of one
+   Live set's faders (the MBC hub), 30 px on the FOH column. Every line is a
+   px line above its face's content area (clipped()). */
+.column .slufs {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    pointer-events: none;
+}
+
+.slufs-cap {
+    color: var(--faint);
+    font: 700 9px/12px var(--ui);
+    letter-spacing: 0.06em;
+    text-align: center;
+    white-space: nowrap;
+}
+
+.slufs-n {
+    min-height: 48px;
+    color: #e2e2ec;
+    font: 700 40px/48px var(--display);
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    white-space: nowrap;
+}
+
+.slufs[data-size="compact"] .slufs-n {
+    min-height: 36px;
+    font-size: 30px;
+    line-height: 36px;
+}
+
+.slufs-n[data-l="in"] {
+    color: #2fc79a;
+}
+
+.slufs-goal {
+    color: var(--faint);
+    font: 600 10px/14px var(--mono);
+    text-align: center;
+    white-space: nowrap;
+}

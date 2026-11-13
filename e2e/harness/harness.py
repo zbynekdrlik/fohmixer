@@ -210,6 +210,14 @@ SITE = os.path.join(REPO, "sim", "fixtures", "test-site.json")
 # The MBC set (#184) and the MBC hub's frame.
 MBC_SITE = os.path.join(REPO, "sim", "fixtures", "mbc-site.json")
 MBC_FRAME = os.path.join(REPO, "scripts", "fohmixer-pc", "mbc-frame.json")
+# The stream's loudness readout (#184 PR C): the MBC frame's own, which the
+# FOH hub's layout gets too while the MBC hub runs.
+STREAM_READOUT = {
+    "kind": "lufs_readout",
+    "label": "STREAM LUFS",
+    "target": -14,
+    "binding": {"instance": "mbc", "anchor": {"kind": "ctrl", "id": "stream"}},
+}
 # What the MBC hub's data folder takes from the FOH hub's (#184): the PINs.
 PIN_FILES = ("pin_hashes.json", "pepper.test", "pepper.dpapi")
 # The sets a stopped host can start with again (#178): the test site, or a
@@ -307,6 +315,15 @@ def hub_config(
     if presenter:
         text += f'[presenter]\nurl = "{presenter}"\n'
     return text
+
+
+def with_stream_readout(layout):
+    """``layout`` with the stream's readout (``STREAM_READOUT``) appended to
+    its ``global`` (#184 PR C: the FOH hub's layout while the MBC hub runs,
+    as the deploy adds it to the FOH frame)."""
+    out = dict(layout)
+    out["global"] = [*layout.get("global", []), STREAM_READOUT]
+    return out
 
 
 def mbc_hub_config(http_port, mbc_port, link_port, lufs_port):
@@ -901,6 +918,12 @@ class Harness:
         os.replace(path + ".tmp", path)
 
     def reset_layout(self):
+        """The original layout file back; while the MBC hub runs, with the
+        stream's readout in its ``global`` (#184 PR C)."""
+        if self.mbc:
+            with open(self.layout, encoding="utf-8") as f:
+                self.write_layout(with_stream_readout(json.load(f)))
+            return
         path = os.path.join(self.data, "layout.json")
         shutil.copyfile(self.layout, path + ".tmp")
         os.replace(path + ".tmp", path)
