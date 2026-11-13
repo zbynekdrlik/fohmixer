@@ -22,6 +22,7 @@ pub mod pan;
 pub mod params;
 pub mod rail;
 pub mod rec;
+pub mod stream_lufs;
 pub mod strip;
 
 use fohmixer_proto::client::set_key;
@@ -323,6 +324,10 @@ pub fn ControlView(
             let label = label.unwrap_or_else(|| "AUTOTUNE".to_string());
             view! { <RuleButton kind=RuleKind::Autotune label=label /> }.into_any()
         }
+        // A loudness readout (#184, `STREAM LUFS`) is no rail control: the
+        // sectors page draws it under ARRANGE (`StreamLufs`); at the rail's
+        // foot it draws nothing.
+        Control::LufsReadout { .. } => ().into_any(),
     }
 }
 

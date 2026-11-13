@@ -508,3 +508,49 @@ fn live_values_never_interleave_while_the_device_is_fresh_and_come_back_after() 
         host.stop();
     });
 }
+
+/// The frame with a `lufs_readout` (#184, `STREAM LUFS`) in its `global`,
+/// naming the `+CTRL` id `stream` of the band.
+fn readout_frame(dir: &Path) {
+    let frame = json!({"schema": 2, "default_page": "p", "pages": [{"id": "p", "title": "P",
+        "rows": [{"sections": [{"kind": "group", "id": "lufs", "title": "LUFS", "tags": "LUFS"}]}]}],
+        "global": [{"kind": "lufs_readout", "label": "STREAM LUFS", "target": -14,
+            "binding": {"instance": "band", "anchor": {"kind": "ctrl", "id": "stream"}}}]});
+    std::fs::write(dir.join("layout.json"), frame.to_string()).unwrap();
+}
+
+#[test]
+fn a_readout_point_gets_its_reading() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let port = free_port();
+        let mut host = Host::start_lufs("band", &site(), port);
+        let dir = tempfile::tempdir().unwrap();
+        let hub = hub(dir.path(), &[&host], port).await;
+        readout_frame(dir.path());
+        // No Tuner yet: the readout names no track and is no point.
+        let status = hub
+            .status_until(SECS_5, |s| {
+                s.layout.markers.ctrls.iter().any(|c| c.tuners == 0)
+            })
+            .await;
+        assert!(status.lufs.strips.is_empty());
+        assert_eq!(host.tuner("track", 1, "set", "+CTRL:stream"), 1);
+        let status = points(&hub, 1).await;
+        assert_eq!(status.lufs.strips[0].label, "STREAM LUFS");
+        assert_eq!(host.maxdev("maxdev lufs track 1 add rack"), 1);
+        assert_eq!(host.maxdev("lufs track 1 -142 -300"), 1);
+        let mut client = hub.client().await;
+        let got = item(&mut client, "band", SECS_5, |i| i.tenths.is_some()).await;
+        assert_eq!(got.tenths, Some(-142), "the readout shows S");
+        assert_eq!(got.problem, None);
+        // Judged against the readout's own target, -14.
+        hub.status_until(SECS_5, |s| s.lufs.strips[0].state == LufsState::In)
+            .await;
+        assert_eq!(host.maxdev("lufs track 1 -160 -300"), 1);
+        hub.status_until(SECS_5, |s| s.lufs.strips[0].state == LufsState::Off)
+            .await;
+        hub.stop().await;
+        host.stop();
+    });
+}

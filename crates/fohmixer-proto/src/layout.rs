@@ -210,7 +210,19 @@ pub enum Control {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         targets: Vec<AutotuneTarget>,
     },
+    /// A loudness readout of one track (#184: `STREAM LUFS`), read only:
+    /// #151's reading of its track's point, judged against `target`. Only
+    /// in [`Layout::global`]; its binding names the track (a frame names it
+    /// by a `+CTRL` id, which the markers fill).
+    LufsReadout {
+        label: String,
+        target: i8,
+        binding: Binding,
+    },
 }
+
+/// The longest label a `lufs_readout` takes, in characters (#184).
+pub const READOUT_LABEL_MAX: usize = 16;
 
 /// The largest value of a rack's macro (#104: the `Latencies` rack's first
 /// macro, 0 to 127).
@@ -456,7 +468,8 @@ impl Control {
                 .collect(),
             Control::Solo { binding, .. }
             | Control::Stage { binding, .. }
-            | Control::Alert { binding, .. } => vec![binding],
+            | Control::Alert { binding, .. }
+            | Control::LufsReadout { binding, .. } => vec![binding],
             Control::ParamToggle { targets, .. } | Control::ParamFader { targets, .. } => {
                 targets.iter().map(|t| &t.binding).collect()
             }
@@ -598,6 +611,8 @@ pub enum CtrlId {
     Stage,
     Alert,
     Talkback,
+    /// The stream's loudness readout (#184, `STREAM LUFS`).
+    Stream,
 }
 
 impl CtrlId {
@@ -607,14 +622,20 @@ impl CtrlId {
             CtrlId::Stage => "stage",
             CtrlId::Alert => "alert",
             CtrlId::Talkback => "talkback",
+            CtrlId::Stream => "stream",
         }
     }
 
     /// The id a tag's argument names; none for any other text.
     pub fn parse(text: &str) -> Option<Self> {
-        [CtrlId::Stage, CtrlId::Alert, CtrlId::Talkback]
-            .into_iter()
-            .find(|id| id.name() == text)
+        [
+            CtrlId::Stage,
+            CtrlId::Alert,
+            CtrlId::Talkback,
+            CtrlId::Stream,
+        ]
+        .into_iter()
+        .find(|id| id.name() == text)
     }
 }
 
@@ -682,6 +703,7 @@ impl Layout {
         let mut v = Validator {
             errors: Vec::new(),
             ids: HashSet::new(),
+            global: false,
         };
         if self.schema != LAYOUT_SCHEMA {
             v.error(
@@ -704,6 +726,7 @@ impl Layout {
         for (i, page) in self.pages.iter().enumerate() {
             v.page(&format!("pages[{i}]"), page);
         }
+        v.global = true;
         for (i, control) in self.global.iter().enumerate() {
             v.control(&format!("global[{i}]"), control);
         }
@@ -828,42 +851,62 @@ impl Layout {
     /// its first place; its target in canonical form (the key a page holds
     /// its strip by), its anchor (the hub names its track from it) and its
     /// label (the strip's own, else its track name's first word).
+    ///
+    /// Then each `lufs_readout` of `global` (#184) whose track no strip
+    /// point names: its target, its label; a strip point on the same track
+    /// wins (its spec and label), so both read the one device.
     pub fn lufs_points(&self) -> Vec<LufsPoint> {
         let mut points: Vec<LufsPoint> = Vec::new();
-        for control in self.controls() {
-            let Control::Strip(strip) = control else {
-                continue;
-            };
-            let Some(spec) = strip.lufs else {
-                continue;
-            };
+        let strips = self.controls().into_iter().filter_map(|c| match c {
+            Control::Strip(strip) => strip.lufs.map(|spec| {
+                let label = |target: &str| match (&strip.label, &strip.binding.anchor) {
+                    (Some(label), _) => label.clone(),
+                    (None, Anchor::Track { name } | Anchor::Return { name }) => strip_label(name),
+                    (None, _) => target.to_string(),
+                };
+                (&strip.binding, spec, label)
+            }),
+            _ => None,
+        });
+        let mut add = |binding: &Binding, spec: LufsSpec, label: &dyn Fn(&str) -> String| {
             let track = Binding {
-                instance: strip.binding.instance.clone(),
-                anchor: strip.binding.anchor.clone(),
+                instance: binding.instance.clone(),
+                anchor: binding.anchor.clone(),
                 path: None,
             };
             let Ok(target) = track.target() else {
-                continue;
+                return;
             };
             let target = crate::path::canonical_target(&target);
             if points
                 .iter()
-                .any(|p| p.instance == strip.binding.instance && p.target == target)
+                .any(|p| p.instance == binding.instance && p.target == target)
             {
-                continue;
+                return;
             }
-            let label = match (&strip.label, &strip.binding.anchor) {
-                (Some(label), _) => label.clone(),
-                (None, Anchor::Track { name } | Anchor::Return { name }) => strip_label(name),
-                (None, _) => target.clone(),
-            };
             points.push(LufsPoint {
-                instance: strip.binding.instance.clone(),
-                anchor: strip.binding.anchor.clone(),
+                instance: binding.instance.clone(),
+                anchor: binding.anchor.clone(),
+                label: label(&target),
                 target,
                 spec,
-                label,
             });
+        };
+        for (binding, spec, label) in strips {
+            add(binding, spec, &label);
+        }
+        for control in readouts(self) {
+            if let Control::LufsReadout {
+                label,
+                target,
+                binding,
+            } = control
+            {
+                let spec = LufsSpec {
+                    target: Some(*target),
+                };
+                add(binding, spec, &|_: &str| label.clone());
+            }
         }
         points
     }
@@ -914,6 +957,19 @@ impl Layout {
     }
 }
 
+/// The `lufs_readout` controls of `layout`'s `global`, in document order
+/// (#184; a readout anywhere else is refused by [`Layout::validate`]).
+pub fn readouts(layout: &Layout) -> Vec<&Control> {
+    layout
+        .global
+        .iter()
+        .filter(|c| matches!(c, Control::LufsReadout { .. }))
+        .collect()
+}
+
+/// A `lufs_readout` outside `global` (#184).
+const OUTSIDE_GLOBAL: &str = "lufs_readout only in global";
+
 /// One fader of the REVERB rule (#130, D18): a reverb strip's track, its
 /// label (the rule knows a fader by it across layouts: a track inserted
 /// above moves the index) and its volume's LOM target.
@@ -939,6 +995,8 @@ struct Validator {
     errors: Vec<LayoutError>,
     /// Page, sub-page, group and pager ids: one namespace.
     ids: HashSet<String>,
+    /// Checking `global`'s controls (the only place of a `lufs_readout`).
+    global: bool,
 }
 
 impl Validator {
@@ -1112,6 +1170,29 @@ impl Validator {
                 }
             }
             Control::Reverb { .. } => {}
+            Control::LufsReadout {
+                label,
+                target,
+                binding,
+            } => {
+                if !self.global {
+                    self.error(at, OUTSIDE_GLOBAL.to_string());
+                }
+                self.binding(&format!("{at}.binding"), binding);
+                let chars = label.chars().count();
+                if !(1..=READOUT_LABEL_MAX).contains(&chars) {
+                    self.error(
+                        &format!("{at}.label"),
+                        format!("{chars} characters, not 1 to {READOUT_LABEL_MAX}"),
+                    );
+                }
+                if !lufs_target_ok(*target) {
+                    self.error(
+                        &format!("{at}.target"),
+                        format!("target {target} is not in {LUFS_TARGET_MIN}..={LUFS_TARGET_MAX}"),
+                    );
+                }
+            }
             Control::Autotune { targets, .. } => {
                 for (i, t) in targets.iter().enumerate() {
                     let t_at = format!("{at}.targets[{i}]");

@@ -2507,7 +2507,8 @@ fn a_frame_may_name_ctrl_ids_only_on_stage_alert_and_param_toggle() {
             frame_problems(&frame),
             [LayoutError {
                 at: at.into(),
-                message: "a ctrl anchor: only stage, alert and param_toggle take one".into()
+                message: "a ctrl anchor: only stage, alert, param_toggle and lufs_readout take one"
+                    .into()
             }],
             "{frame:?}"
         );
@@ -2672,4 +2673,63 @@ fn a_pool_only_page_without_view_is_invalid() {
             .any(|p| p.message.contains("pool_only without view")),
         "{problems:?}"
     );
+}
+
+/// The MBC frame's `STREAM LUFS` (#184): a readout in `global` naming the
+/// `+CTRL` id `stream` of the Live set `mbc`.
+fn readout_frame() -> Layout {
+    let mut frame = frame();
+    frame.global.push(
+        serde_json::from_value(
+            json!({"kind": "lufs_readout", "label": "STREAM LUFS", "target": -14,
+            "binding": {"instance": "mbc", "anchor": {"kind": "ctrl", "id": "stream"}}}),
+        )
+        .expect("the readout parses"),
+    );
+    frame
+}
+
+#[test]
+fn a_readout_naming_a_ctrl_id_takes_that_tuners_track() {
+    let frame = readout_frame();
+    assert_eq!(frame_problems(&frame), vec![]);
+    let tuners = [
+        found("mbc", TrackKind::Track, 11, "+CTRL:stream"),
+        // The band's id of that name binds nothing of the MBC set.
+        found("band", TrackKind::Track, 4, "+CTRL:stream"),
+    ];
+    let composed = compose(&frame, &tuners);
+    assert_eq!(composed.problems, vec![]);
+    let readout = composed.layout.global.last().unwrap();
+    assert_eq!(readout.bindings()[0].anchor, Anchor::TrackAt { index: 11 });
+    let points = composed.layout.lufs_points();
+    assert_eq!(points.len(), 1);
+    assert_eq!(
+        (points[0].instance.as_str(), points[0].target.as_str()),
+        ("mbc", "live_set tracks 11")
+    );
+    assert_eq!(
+        composed.ctrls,
+        [CtrlReport {
+            instance: "mbc".into(),
+            id: CtrlId::Stream,
+            tuners: 1
+        }]
+    );
+    // No Tuner: the readout keeps its id and is no point.
+    let composed = compose(&frame, &[]);
+    assert_eq!(
+        composed.layout.global.last().unwrap().bindings()[0].anchor,
+        Anchor::Ctrl { id: CtrlId::Stream }
+    );
+    assert!(composed.layout.lufs_points().is_empty());
+    assert_eq!(composed.layout.validate(), vec![]);
+}
+
+#[test]
+fn a_stream_ctrl_tag_alone_makes_no_strip() {
+    let m = parse("+CTRL:stream");
+    assert_eq!(m.ctrls, [CtrlId::Stream]);
+    // A Tuner of this tag alone makes no strip: no label or group asked.
+    assert_eq!(m.problems, vec![]);
 }
