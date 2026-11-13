@@ -8,10 +8,12 @@
 //! a problem (no LUFS meter on the track) takes that line's place. It
 //! takes no touch.
 
-use fohmixer_proto::layout::{Binding, LufsSpec};
+use fohmixer_proto::layout::{Binding, Control, Layout, LufsSpec, readouts};
+use fohmixer_proto::sectors::{SectorId, SectorLayout, SectorsDoc};
 use leptos::prelude::*;
 
-use crate::behave::lufs::{look, target_text, track_key};
+use crate::behave::lufs::{look, stream_page, stream_shown, target_text, track_key};
+use crate::binding::sectors::{Picks, picked};
 use crate::store::LiveStore;
 
 /// The readout `label` of `binding`'s track against `target`; `compact`
@@ -62,4 +64,63 @@ pub fn StreamLufs(
             </div>
         </div>
     }
+}
+
+/// The global `lufs_readout`s (#184, `STREAM LUFS`) under the sectors
+/// page's ARRANGE (`pages::sectors`): each while
+/// `behave::lufs::stream_shown` says so (always on a page of one
+/// Live set's faders, the MBC hub's, at 40 px; on the FOH page only while a
+/// picked layout shows its Live set's faders, at 30 px).
+pub(crate) fn stream_readouts(
+    layout: &Layout,
+    doc: Memo<Option<SectorsDoc>>,
+    picks: RwSignal<Picks>,
+) -> impl IntoView + use<> {
+    let one = stream_page(layout);
+    readouts(layout)
+        .into_iter()
+        .filter_map(|control| match control {
+            Control::LufsReadout {
+                label,
+                target,
+                binding,
+            } => Some((label.clone(), *target, binding.clone())),
+            _ => None,
+        })
+        .map(|(label, target, binding)| {
+            let instance = binding.instance.clone();
+            let shown = Memo::new(move |_| {
+                doc.try_with(|doc| {
+                    let picked: Vec<&SectorLayout> = doc
+                        .as_ref()
+                        .map(|doc| {
+                            picks
+                                .try_with(|picks| {
+                                    SectorId::ALL
+                                        .into_iter()
+                                        .filter_map(|sector| picked(doc, picks, sector))
+                                        .collect()
+                                })
+                                .unwrap_or_default()
+                        })
+                        .unwrap_or_default();
+                    stream_shown(&instance, &picked, one)
+                })
+                .unwrap_or(false)
+            });
+            let compact = Signal::derive(move || !one);
+            move || {
+                shown.try_get().unwrap_or(false).then(|| {
+                    view! {
+                        <StreamLufs
+                            label=label.clone()
+                            target=target
+                            binding=binding.clone()
+                            compact=compact
+                        />
+                    }
+                })
+            }
+        })
+        .collect_view()
 }

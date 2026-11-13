@@ -1382,7 +1382,7 @@ fn ctrl(id: &str) -> Value {
 }
 
 #[test]
-fn a_ctrl_id_reads_its_three_names_and_no_other() {
+fn a_ctrl_id_reads_its_four_names_and_no_other() {
     for (id, name) in [
         (CtrlId::Stage, "stage"),
         (CtrlId::Alert, "alert"),

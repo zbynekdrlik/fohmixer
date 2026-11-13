@@ -461,7 +461,7 @@
 
 .slufs-n {
     min-height: 48px;
-    color: #e2e2ec;
+    color: var(--lufs-text);
     font: 700 40px/48px var(--display);
     font-variant-numeric: tabular-nums;
     text-align: center;
@@ -475,7 +475,7 @@
 }
 
 .slufs-n[data-l="in"] {
-    color: #2fc79a;
+    color: var(--lufs-in);
 }
 
 .slufs-goal {

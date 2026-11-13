@@ -345,7 +345,7 @@
     width: 100%;
     min-height: 1.25em;
     overflow: hidden;
-    color: #e2e2ec;
+    color: var(--lufs-text);
     font: 700 13px/1.25 var(--display);
     font-size: clamp(9px, calc((var(--strip-w, 76px) - 38px - var(--cap-w) / 2) / 2.25), 22px);
     font-variant-numeric: tabular-nums;
@@ -354,7 +354,7 @@
 }
 
 .lufs[data-l="in"] {
-    color: #2fc79a;
+    color: var(--lufs-in);
 }
 
 .lufs[data-l="none"] {

@@ -8,12 +8,13 @@
 //! the stylesheet). An input point also has its spring (`spring`, mockup
 //! v13): the pause-skipping `V` on the meter's scale.
 
-use fohmixer_proto::layout::{Binding, LufsKind, LufsSpec, Strip};
+use fohmixer_proto::layout::{Binding, Layout, LufsKind, LufsSpec, Strip};
 use fohmixer_proto::lufs::{LufsProblem, LufsState, caption, in_band, judge, text};
 use fohmixer_proto::path::canonical_target;
-use fohmixer_proto::sectors::SectorLayout;
+use fohmixer_proto::sectors::{SectorLayout, pool};
 
 use super::fader::VolumeLaw;
+use super::login::one_instance;
 use super::scale::tick_pos;
 
 /// The key the hub sends a strip's reading under (`LufsItem`'s instance
@@ -48,6 +49,14 @@ pub fn stream_shown(instance: &str, picked: &[&SectorLayout], one_instance: bool
         || picked
             .iter()
             .any(|layout| layout.refs().any(|s| s.instance == instance))
+}
+
+/// Whether `layout` is a page of one Live set's faders (#184: the MBC
+/// hub's), where a readout always shows, at its full size: a pool of at
+/// least one fader, all of one Live set. An empty pool (no marker read yet,
+/// the Lives down) is none: the FOH page then shows no readout of its own.
+pub fn stream_page(layout: &Layout) -> bool {
+    !pool(layout).is_empty() && one_instance(layout)
 }
 
 /// A readout's target line (#184, mockup v3, in English, #141): a target
@@ -272,6 +281,33 @@ mod tests {
         assert!(!stream_shown("mbc", &[&foh, &foh], false));
         assert!(!stream_shown("mbc", &[], false));
         assert!(!stream_shown("band", &[&mbc], false));
+    }
+
+    #[test]
+    fn a_stream_page_is_a_pool_of_one_live_sets_faders_and_never_empty() {
+        let page = |strips: Vec<(&str, &str)>| -> Layout {
+            let controls: Vec<serde_json::Value> = strips
+                .into_iter()
+                .map(|(instance, label)| {
+                    json!({"kind": "strip", "strip_kind": "standard", "label": label,
+                        "binding": {"instance": instance, "anchor": {"kind": "track_at", "index": 0}}})
+                })
+                .collect();
+            serde_json::from_value(json!({"schema": 2, "default_page": "p", "pages": [
+                {"id": "p", "title": "P", "rows": [{"sections": [
+                    {"kind": "group", "id": "g", "controls": controls}]}]}]}))
+            .unwrap()
+        };
+        assert!(stream_page(&page(vec![
+            ("mbc", "Hand 1"),
+            ("mbc", "Choir")
+        ])));
+        assert!(stream_page(&page(vec![("mbc", "Hand 1")])));
+        assert!(!stream_page(&page(vec![
+            ("band", "Vox 1"),
+            ("mbc", "Choir")
+        ])));
+        assert!(!stream_page(&page(vec![])));
     }
 
     #[test]

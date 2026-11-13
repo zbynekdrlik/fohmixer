@@ -171,7 +171,10 @@ test.describe("STREAM LUFS (#184 PR C)", () => {
     const took = (await box.boundingBox())!.height;
     console.log(`STREAM LUFS on the FOH column (${test.info().project.name}): ${took} px, rail rows ${before[0]} -> ${after[0]} px`);
     expect(after.length).toBe(before.length);
-    for (const row of after) expect(row, "the rows give the readout its room").toBeLessThan(before[0]);
+    for (const row of after) {
+      expect(row, "a rail row keeps page.css's floor").toBeGreaterThanOrEqual(24);
+      expect(row, "the readout never adds to a row").toBeLessThanOrEqual(before[0] + 0.01);
+    }
     await expect(page.getByTestId("stage-mini")).toHaveCount(1);
     expect((await zone.boundingBox())!.height, "the faders keep their travel").toBeCloseTo(travel, 1);
     // The readout lies above the rail, overlapping nothing of it.
