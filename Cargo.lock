@@ -165,9 +165,9 @@ dependencies = [
 
 [[package]]
 name = "async-executor"
-version = "1.14.0"
+version = "1.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c96bf972d85afc50bf5ab8fe2d54d1586b4e0b46c97c50a0c9e71e2f7bcd812a"
+checksum = "f426a31126c735126297bc5ea7a521263c9faff4f63ca415267ee625651c4f37"
 dependencies = [
  "async-task",
  "concurrent-queue",
@@ -1433,7 +1433,7 @@ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
 name = "fohmixer-hub"
-version = "1.44.0"
+version = "1.44.1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1476,7 +1476,7 @@ dependencies = [
 
 [[package]]
 name = "fohmixer-proto"
-version = "1.44.0"
+version = "1.44.1"
 dependencies = [
  "chrono",
  "serde",
@@ -1485,7 +1485,7 @@ dependencies = [
 
 [[package]]
 name = "fohmixer-tray"
-version = "1.44.0"
+version = "1.44.1"
 dependencies = [
  "dirs 6.0.0",
  "fohmixer-proto",
@@ -1506,7 +1506,7 @@ dependencies = [
 
 [[package]]
 name = "fohmixer-ui"
-version = "1.44.0"
+version = "1.44.1"
 dependencies = [
  "console_error_panic_hook",
  "fohmixer-proto",

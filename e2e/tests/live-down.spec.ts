@@ -15,16 +15,27 @@ import { FIXTURE_LAYOUT, FOH_LIVES, HUB_SOCKET, MBC_MARKERS, frames, harness, ho
 const IPAD = { width: 1194, height: 834 };
 const UP = 15_000;
 
-/** Every strip of `instance` on the page carries `live` (none: no attribute). */
+/** Every strip of `instance` on the page carries `live` (none: no attribute).
+ *
+ * #192: the page re-creates a Live's strips when it recomposes its lines (a
+ * Live coming back, a resize), so the strips are read again on every poll,
+ * all in one task inside the page: a count followed by waits on each index
+ * never waited on a strip added after the count, and `locator.evaluateAll`
+ * queries and reads in two round trips, between which the page can replace
+ * them. */
 async function stripsSay(page: Page, instance: string, live: string | null) {
-  const strips = page.locator(`[data-testid="strip"][data-instance="${instance}"]`);
-  await expect(strips.first()).toBeAttached();
-  const n = await strips.count();
-  expect(n).toBeGreaterThan(0);
-  for (let i = 0; i < n; i++) {
-    if (live === null) await expect(strips.nth(i)).not.toHaveAttribute("data-live", /.*/, { timeout: UP });
-    else await expect(strips.nth(i)).toHaveAttribute("data-live", live, { timeout: UP });
-  }
+  const wrong = () =>
+    page.evaluate(
+      ({ instance, live }) => {
+        const strips = [...document.querySelectorAll(`[data-testid="strip"][data-instance="${instance}"]`)];
+        if (strips.length === 0) return ["no strip"];
+        return strips
+          .filter((s) => s.getAttribute("data-live") !== live)
+          .map((s) => `${s.getAttribute("data-track")}: ${s.getAttribute("data-live")}`);
+      },
+      { instance, live },
+    );
+  await expect.poll(wrong, { timeout: UP, message: `every ${instance} strip says ${live ?? "nothing"}` }).toEqual([]);
 }
 
 /** The controls drawn red (I5) inside `scope`'s matches. */
@@ -232,10 +243,12 @@ test.describe("A Live that is down (#178)", () => {
 
     /** Per down strip on screen: its hint inside the zone, and the visible
      * texts of the zone it meets (the scale's labels, the group's name, the
-     * LUFS reading; their text: none is right). */
+     * LUFS reading; their text: none is right). Read in one task inside the
+     * page (#192): `evaluateAll`'s two round trips can read strips the page
+     * has just replaced. */
     const clashes = () =>
-      page.locator('[data-testid="strip"][data-live]').evaluateAll((strips) =>
-        strips
+      page.evaluate(() =>
+        [...document.querySelectorAll('[data-testid="strip"][data-live]')]
           .filter((s) => s.getBoundingClientRect().width > 0)
           .map((s) => {
             const hint = s.querySelector('[data-testid="strip-hint"]');
@@ -274,11 +287,19 @@ test.describe("A Live that is down (#178)", () => {
       }
     };
 
-    /** The scale labels of `instance`'s strips that are not shown (a Live that is on keeps every one). */
+    /** The scale labels of `instance`'s strips that are not shown (a Live
+     * that is on keeps every one). #192: read in one task inside the page.
+     * Through `evaluateAll` (a query, then a read: two round trips) a strip
+     * the page replaced in between was read removed, and a removed label's
+     * computed `visibility` is `""` in both engines: three replaced master
+     * strips read as 27 hidden labels. Waited for (`expect.poll`), as the
+     * strips may still be recomposing after the resize back to the iPad.
+     * No label at all reads -1, so the same read proves there are some. */
     const hiddenTicks = (instance: string) =>
-      page
-        .locator(`[data-testid="strip"][data-instance="${instance}"] .scale .tick`)
-        .evaluateAll((ticks) => ticks.filter((t) => getComputedStyle(t).visibility !== "visible").length);
+      page.evaluate((instance) => {
+        const ticks = [...document.querySelectorAll(`[data-testid="strip"][data-instance="${instance}"] .scale .tick`)];
+        return ticks.length === 0 ? -1 : ticks.filter((t) => getComputedStyle(t).visibility !== "visible").length;
+      }, instance);
 
     await host("band", "stop");
     await host("master", "stop");
@@ -290,13 +311,11 @@ test.describe("A Live that is down (#178)", () => {
     await stripsSay(page, "master", null);
     await check("noset");
     // Only a down strip loses its numbers: the master Live is on.
-    expect(await page.locator('[data-testid="strip"][data-instance="master"] .scale .tick').count()).toBeGreaterThan(0);
-    expect(await hiddenTicks("master")).toBe(0);
+    await expect.poll(() => hiddenTicks("master"), { timeout: UP, message: "master's scale labels all shown" }).toBe(0);
 
     await host("band", "start");
     await stripsSay(page, "band", null);
-    expect(await page.locator('[data-testid="strip"][data-instance="band"] .scale .tick').count()).toBeGreaterThan(0);
-    expect(await hiddenTicks("band")).toBe(0);
+    await expect.poll(() => hiddenTicks("band"), { timeout: UP, message: "band's scale labels all shown" }).toBe(0);
   });
 
   test("every Live on: one line per Live beside the counter, the rail keeps its room", async ({ page }) => {
