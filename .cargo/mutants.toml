@@ -106,7 +106,10 @@ exclude_re = [
   # #71 PR E split on_text's liveness stamp into heard (also a binary
   # message's) and added on_binary (a Pro-Q 4 frame: heard, then on_frame);
   # eq.spec.ts draws the frames.
-  "fohmixer-ui/src/store/live\\.rs.*(replace|in) LiveStore::(new|start|stop|stopped|token|logout|connect|retry|show_layout|open_socket|watch|drop_socket|on_close|heard|on_text|on_binary|on_hello|on_instance|on_layout|apply|mark_pending|slots_of|mark_stale|forget_unwanted|send|send_text|send_sub|slot|slot_signal|set_wanted|cmd|finish|set_hub|range|fetch_ranges|fetch_range)( |$)",
+  # #184 added log_out (LOG OUT) beside logout, both through end_session
+  # (the store stopped, the token forgotten, the login shown); roles.spec.ts
+  # logs out and finds the login with no token kept.
+  "fohmixer-ui/src/store/live\\.rs.*(replace|in) LiveStore::(new|start|stop|stopped|token|logout|log_out|end_session|connect|retry|show_layout|open_socket|watch|drop_socket|on_close|heard|on_text|on_binary|on_hello|on_instance|on_layout|apply|mark_pending|slots_of|mark_stale|forget_unwanted|send|send_text|send_sub|slot|slot_signal|set_wanted|cmd|finish|set_hub|range|fetch_ranges|fetch_range)( |$)",
   # store/live/live_down.rs (#178): a Live that is down, the store's glue,
   # one function at a time: word_of and instance_of (reads of the store's
   # signals), judging_slots (the wanted slots whose target judges_set, the

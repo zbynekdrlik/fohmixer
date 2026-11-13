@@ -524,7 +524,7 @@ jobs:
           # The key that signs the test Access assertions (the harness serves its public half).
           openssl genrsa -out "$dir/access.pem" 2048
           echo "E2E_REMOTE_DIR=$dir" >> "$GITHUB_ENV"
-      - name: Engineer PIN (random per run, masked)
+      - name: Engineer and MBC PINs (random per run, masked)
         run: |
           set -euo pipefail
           # The hub's data folder (secrets, pepper, PIN, layout): a fresh
@@ -535,6 +535,11 @@ jobs:
           echo "::add-mask::$pin"
           printf '%s\n' "$pin" | ./target/release/fohmixer-hub pin set-engineer
           echo "E2E_PIN=$pin" >> "$GITHUB_ENV"
+          # The MBC operator's (#184): another random PIN (the hub refuses an equal one).
+          mbc="$(PIN="$pin" python3 -c 'import os, secrets; print(next(p for p in (f"{secrets.randbelow(10000):04d}" for _ in iter(int, 1)) if p != os.environ["PIN"]))')"
+          echo "::add-mask::$mbc"
+          printf '%s\n' "$mbc" | ./target/release/fohmixer-hub pin set-mbc
+          echo "E2E_MBC_PIN=$mbc" >> "$GITHUB_ENV"
       - name: Start the hub with two SimLive hosts (e2e/harness/harness.py)
         env:
           RUST_LOG: info

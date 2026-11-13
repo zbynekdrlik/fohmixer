@@ -798,7 +798,8 @@ pub(crate) fn extra_attr(nav: Nav) -> impl Fn() -> &'static str + Copy {
     move || nav.shown.try_get().unwrap_or_default().name()
 }
 
-/// The column's foot (#148, the owner's ruling of 29.10.2026): the status
+/// The column's foot (#148, the owner's ruling of 29.10.2026): the login
+/// line and LOG OUT where the login is worth a line (#184), then the status
 /// (the dropout counter, the badges, the version, the tag manual's chip)
 /// under the global controls, smaller and dimmer; a red state stays red.
 /// The Stream Deck's capture listener lifts no hold on a down there, as in
@@ -807,6 +808,7 @@ pub(crate) fn extra_attr(nav: Nav) -> impl Fn() -> &'static str + Copy {
 pub fn ColumnFoot() -> impl IntoView {
     view! {
         <div class="column-foot" data-testid="column-foot">
+            <crate::components::login_line::LoginLine />
             <StatusCluster />
         </div>
     }
