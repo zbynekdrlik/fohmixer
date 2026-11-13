@@ -454,6 +454,12 @@ pub enum ServerMsg {
         /// absent (false) from an older hub.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         linked: bool,
+        /// Live runs on the hub's PC, but its FohMixer script has not
+        /// answered for [`SCRIPT_MISSING_AFTER_S`] (#184, spec §6.5: a Live
+        /// update replaced the folder it was copied into); absent (false)
+        /// from an older hub and while the instance is online.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        script_missing: bool,
     },
     /// A hub value (STAGE AUT).
     Hub { key: String, value: Value },
@@ -1371,7 +1377,15 @@ pub struct InstanceStatus {
     /// answer).
     #[serde(default)]
     pub playing: Option<bool>,
+    /// Live runs on the hub's PC without its FohMixer script answering
+    /// (#184, `script missing`); absent (false) in an older hub's answer.
+    #[serde(default)]
+    pub script_missing: bool,
 }
+
+/// How long a local instance stays offline while Live runs before the hub
+/// says its script is missing (#184, spec §6.5): 60 s.
+pub const SCRIPT_MISSING_AFTER_S: u64 = 60;
 
 /// A layout binding that does not resolve on its instance (spec §2.5 D4,
 /// I5): its LOM target and the script's answer (a missing or an ambiguous

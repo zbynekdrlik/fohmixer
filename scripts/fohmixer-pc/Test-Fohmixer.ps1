@@ -53,7 +53,9 @@
 #   PATH, as in the CI jobs) into the bundle's live-device\, refused when
 #   missing or not a device, installed into each user's User Library at
 #   Presets\Audio Effects\Max Audio Effect equal to the bundle's, a second
-#   run writing nothing, a changed one written again.
+#   run writing nothing, a changed one written again;
+# - the MBC PC's install and the FOH install's link (#184 PR D): see
+#   Test-FohmixerMbc.ps1, dot-sourced here.
 # Only its own test objects are removed; nothing is ended by force (spec I7).
 param([Parameter(Mandatory)][string]$HubExe, [Parameter(Mandatory)][string]$TrayExe)
 Set-StrictMode -Version Latest
@@ -1060,6 +1062,9 @@ try {
     Assert ($r13b.code -eq 0) 'install-13b-without-iems-address-exits-0'
     $want13b = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Remote (Get-FohRemoteToml @tablesR)
     Assert ([IO.File]::ReadAllText((Join-Path $dataR 'fohmixer-hub.toml')) -ceq $want13b) 'install-13b-removes-the-iem-table'
+
+    # ---- the MBC PC and the FOH install's link (#184 PR D): Test-FohmixerMbc.ps1 ----
+    . (Join-Path $here 'Test-FohmixerMbc.ps1')
 
     # ---- the tasks, registered for this user in a test folder (never started) ----
     Register-FohHubTasks -AppDir $appV1 -DataDir $data -User $me -TaskPath $taskFolder

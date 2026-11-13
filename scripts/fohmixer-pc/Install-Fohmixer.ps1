@@ -73,7 +73,20 @@ the hub registers there as one more Stream Deck ("fohmixer"). A run without
 Presenter's stage tab (#90), only with -PresenterUrl: the toml gets [presenter]
 (Presenter's server on the LAN as http://<address>[:port]; the hub checks it).
 A run without -PresenterUrl keeps an installed [presenter] table as it is.
-The data folder gets a protected DACL: SYSTEM, Administrators and the band user.
+The MBC Live through its link (#184), only with -MbcLink: the toml gets the
+linked instance mbc after band and master (ws://<MBC LAN address>:39201). A
+run without -MbcLink keeps an installed linked instance as it is.
+-Site Mbc (#184) installs the MBC PC instead: the hub runs as -MbcUser; the
+toml has one instance mbc on -MbcPort (39103) and [link] on -LinkListen
+(checked by the new hub: never every address), the text from [tls] on kept;
+FohMixer goes into Live's built-in -ScriptFolder (it must hold Live's
+_Framework) with INSTANCE mbc, the port and LOG_DIR <DataDir>\logs, a copy
+it replaces kept under <DataDir>\script-backups\<UTC stamp>; a first install
+takes the bundle's mbc-frame.json as layout.json; the firewall rule
+fohmixer-hub-link opens the link's port. The FOH parameters are refused
+there, and the MBC ones on the FOH PC. Selecting FohMixer in a free
+control-surface slot of the MBC Live is a step in Live.
+The data folder gets a protected DACL: SYSTEM, Administrators and the hub's user.
 When a step after the stop fails, the hub and tray tasks that ran are started again.
 -NoTask (the self-test) leaves out steps 1, 6, 7 and the DACL.
 Errors: one "fohmixer install FAILED: ..." line on stderr, exit code 1.
@@ -82,23 +95,42 @@ Errors: one "fohmixer install FAILED: ..." line on stderr, exit code 1.
 powershell -NoProfile -ExecutionPolicy Bypass -File <unzipped bundle>\Install-Fohmixer.ps1 -BundleZip <bundle zip> -BandUser <band account> -MasterUser <master account> -Layout <import folder>\layout.json
 
 .EXAMPLE
+powershell -NoProfile -ExecutionPolicy Bypass -File <unzipped bundle>\Install-Fohmixer.ps1 -Site Mbc -BundleZip <bundle zip> -MbcUser <MBC account> -LinkListen <MBC LAN address>:39201 -ScriptFolder "<Live's folder>\Resources\MIDI Remote Scripts"
+
+.EXAMPLE
 Get-Content <token file> | powershell -NoProfile -ExecutionPolicy Bypass -File <unzipped bundle>\Install-Fohmixer.ps1 -BundleZip <bundle zip> -BandUser <band account> -MasterUser <master account> -PublicName <name> -AccessTeam <team>.cloudflareaccess.com -AccessAud <aud> -SetTunnelToken
 #>
 [CmdletBinding()]
 param(
     # The CI bundle zip (the artifact fohmixer-windows-<version>-<sha> of a master push).
     [Parameter(Mandatory)][string]$BundleZip,
-    # The Windows account that runs the band Live (and the hub): a local account
-    # of this PC, without a domain part (looked up as <computer>\<name>, also
-    # where the account is named like the computer).
-    [Parameter(Mandatory)][string]$BandUser,
-    # The Windows account that runs the master Live (a local account, as -BandUser).
-    [Parameter(Mandatory)][string]$MasterUser,
+    # Which PC (#184): Foh (the default: the band and master Lives) or Mbc
+    # (the MBC Live, its hub and its instance link).
+    [ValidateSet('Foh', 'Mbc')][string]$Site = 'Foh',
+    # FOH: the Windows account that runs the band Live (and the hub): a local
+    # account of this PC, without a domain part (looked up as
+    # <computer>\<name>, also where the account is named like the computer).
+    [string]$BandUser = '',
+    # FOH: the Windows account that runs the master Live (a local account, as -BandUser).
+    [string]$MasterUser = '',
+    # FOH (#184): the MBC hub's instance link, ws://<MBC LAN address>:39201;
+    # without it an installed linked instance is kept.
+    [string]$MbcLink = '',
+    # MBC (#184): the Windows account that runs the MBC Live (and the hub there).
+    [string]$MbcUser = '',
+    # MBC: the instance link's LAN address and port, <MBC LAN address>:39201
+    # (never every address: the hub refuses 0.0.0.0).
+    [string]$LinkListen = '',
+    # MBC: the MBC Live's FohMixer script port.
+    [int]$MbcPort = 39103,
+    # MBC: Live's built-in MIDI Remote Scripts folder (in Live's Resources).
+    [string]$ScriptFolder = '',
     [string]$DataDir = (Join-Path $env:ProgramData 'fohmixer'),
     [int]$HttpPort = 8480,
     [int]$BandPort = 39101,
     [int]$MasterPort = 39102,
-    # The layout file to install (the TouchOSC import's output); none keeps the installed one.
+    # The layout file to install (the TouchOSC import's output); none keeps the installed one
+    # (on the MBC PC a first install takes the bundle's mbc-frame.json).
     [string]$Layout = '',
     # Live's User Library of each user, when not <SystemDrive>\Users\<user>\Documents\Ableton\User Library.
     [string]$BandUserLibrary = '',
@@ -149,6 +181,27 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 try {
     Import-Module (Join-Path $PSScriptRoot 'FohmixerPc.psm1') -Force
+    # Each PC's own parameters (#184): the other PC's are refused, the needed ones asked for.
+    $given = @($PSBoundParameters.Keys)
+    $mbcOnly = @('MbcUser', 'LinkListen', 'MbcPort', 'ScriptFolder')
+    $fohOnly = @('BandUser', 'MasterUser', 'BandPort', 'MasterPort', 'BandUserLibrary', 'MasterUserLibrary', 'BandAbletonPrefs',
+        'MasterAbletonPrefs', 'MbcLink', 'PublicName', 'HttpsPort', 'AcmeEmail', 'AcmeDirectory', 'AccessTeam', 'AccessAud',
+        'SetTunnelToken', 'CloudflaredExe', 'TunnelMetricsPort', 'TunnelDir', 'HostsFile', 'BandDesktop', 'AbleSetName',
+        'AbleSetAccessAud', 'AbleSetTitle', 'IemUrl', 'IemTitle', 'CompanionHost', 'PresenterUrl')
+    if ($Site -eq 'Mbc') {
+        Test-FohSiteArgs -Site $Site -Given $given -Others $fohOnly -Where 'FOH PC'
+        foreach ($k in @('MbcUser', 'LinkListen', 'ScriptFolder')) {
+            if (-not $PSBoundParameters[$k]) { throw "-Site Mbc needs -$k" }
+        }
+        $result = Invoke-FohInstall -Site Mbc -BundleZip $BundleZip -MbcUser $MbcUser -DataDir $DataDir -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort `
+            -MbcPort $MbcPort -LinkListen $LinkListen -ScriptFolder $ScriptFolder -Layout $Layout -NoTask:$NoTask
+        ConvertTo-Json -InputObject $result -Depth 5
+        exit 0
+    }
+    Test-FohSiteArgs -Site $Site -Given $given -Others $mbcOnly -Where 'MBC PC'
+    foreach ($k in @('BandUser', 'MasterUser')) {
+        if (-not $PSBoundParameters[$k]) { throw "-Site Foh needs -$k" }
+    }
     # Remote access (#17): checked, the tunnel token read, before any change.
     $remoteArgs = @{}
     foreach ($k in @('PublicName', 'HttpsPort', 'AcmeEmail', 'AcmeDirectory', 'AccessTeam', 'AccessAud', 'SetTunnelToken',
@@ -164,11 +217,13 @@ try {
     $presenter = Resolve-FohPresenter -DataDir $DataDir -PresenterUrl $PresenterUrl
     # The Pro-Q 4 screen (#71): an installed [eq] table is kept as it is.
     $eq = Resolve-FohEq -DataDir $DataDir
+    # The MBC Live through its link (#184): checked before any change, kept when not given.
+    $linked = Resolve-FohMbcLink -DataDir $DataDir -MbcLink $MbcLink
     $result = Invoke-FohInstall -BundleZip $BundleZip -BandUser $BandUser -MasterUser $MasterUser -DataDir $DataDir `
         -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Layout $Layout `
         -BandUserLibrary $BandUserLibrary -MasterUserLibrary $MasterUserLibrary `
         -BandAbletonPrefs $BandAbletonPrefs -MasterAbletonPrefs $MasterAbletonPrefs -NoTask:$NoTask -Companion $companion `
-        -Eq $eq -Presenter $presenter -Remote $remote
+        -Eq $eq -Presenter $presenter -Remote $remote -Linked $linked
     ConvertTo-Json -InputObject $result -Depth 5
 } catch {
     # One unwrapped line (a 5.1 error record wraps at the console width), then where it failed.

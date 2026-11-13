@@ -1,6 +1,8 @@
 //! A Live that is down, said in words (#178, the owner's approved mockup
 //! `docs/mockups/live-down-v2.html`): each Live instance is `not running`
-//! (the hub reports it offline), has `no set` (it answers, but no binding
+//! (the hub reports it offline), `no script` (#184 PR D: offline while
+//! Live runs on the hub's PC, the hub's `script_missing`), has `no set`
+//! (it answers, but no binding
 //! of it the page holds resolves: a Live open with no set or still loading
 //! one) or is `on`. A Live that has no set is not a fault of one binding,
 //! so its bindings are not drawn red (I5 stays for a single bad binding
@@ -18,6 +20,10 @@ pub enum LiveWord {
     /// The hub reports the instance offline: Live is not running (or its
     /// FohMixer script is not loaded).
     NotRunning,
+    /// The hub reports the instance offline while Live runs on its PC for
+    /// a minute (#184 PR D, spec §6.5: `script missing`, a Live update
+    /// replaced the script's folder). Drawn as `NotRunning` (`off`).
+    ScriptMissing,
     /// Live answers, but no binding of it the page holds resolves.
     NoSet,
     /// Live answers and its set is there.
@@ -28,7 +34,7 @@ impl LiveWord {
     /// The strip's and the foot line's `data-live`.
     pub fn name(self) -> &'static str {
         match self {
-            Self::NotRunning => "off",
+            Self::NotRunning | Self::ScriptMissing => "off",
             Self::NoSet => "noset",
             Self::On => "on",
         }
@@ -38,6 +44,7 @@ impl LiveWord {
     pub fn word(self) -> &'static str {
         match self {
             Self::NotRunning => "not running",
+            Self::ScriptMissing => "no script",
             Self::NoSet => "no set",
             Self::On => "on",
         }
@@ -49,6 +56,7 @@ impl LiveWord {
     pub fn hint(self) -> Option<&'static str> {
         match self {
             Self::NotRunning => Some(NOT_RUNNING_HINT),
+            Self::ScriptMissing => Some(SCRIPT_MISSING_HINT),
             Self::NoSet => Some(NO_SET_HINT),
             Self::On => None,
         }
@@ -67,6 +75,7 @@ impl LiveWord {
     pub fn strip_word(self) -> Option<&'static str> {
         match self {
             Self::NotRunning => Some("NOT RUNNING"),
+            Self::ScriptMissing => Some("NO SCRIPT"),
             Self::NoSet => Some("NO SET"),
             Self::On => None,
         }
@@ -125,12 +134,19 @@ pub fn rejudges(word: Option<LiveWord>, before: Option<SlotClass>, after: SlotCl
 /// One instance's word: none while the page has no hub connection (the
 /// close marks every instance offline, which is no news of Live; the
 /// dropout counter says the link is down) or before the hub reported the
-/// instance (`online` none).
-pub fn live_word(connected: bool, online: Option<bool>, seen: Seen) -> Option<LiveWord> {
+/// instance (`online` none). An offline instance whose script the hub
+/// says is missing (`script_missing`, #184 PR D) is `ScriptMissing`.
+pub fn live_word(
+    connected: bool,
+    online: Option<bool>,
+    script_missing: bool,
+    seen: Seen,
+) -> Option<LiveWord> {
     if !connected {
         return None;
     }
     match online? {
+        false if script_missing => Some(LiveWord::ScriptMissing),
         false => Some(LiveWord::NotRunning),
         true if seen.no_set() => Some(LiveWord::NoSet),
         true => Some(LiveWord::On),
@@ -139,6 +155,10 @@ pub fn live_word(connected: bool, online: Option<bool>, seen: Seen) -> Option<Li
 
 /// The hint while a Live is not running (the mockup's words).
 pub const NOT_RUNNING_HINT: &str = "Start Live on the FOH PC. The faders come back by themselves.";
+
+/// The hint while Live runs without its FohMixer script (#184 PR D).
+pub const SCRIPT_MISSING_HINT: &str =
+    "Live runs without the FohMixer script. Run the install again.";
 
 /// The hint while a Live answers with no set.
 pub const NO_SET_HINT: &str = "Open the set in Live.";
@@ -170,6 +190,7 @@ mod tests {
             busy: false,
             set_name: String::new(),
             linked,
+            script_missing: false,
         }
     }
 
@@ -219,9 +240,9 @@ mod tests {
     fn no_hub_connection_or_no_report_says_nothing() {
         for seen in [NONE, ERRORS, VALUES, BOTH] {
             for online in [None, Some(false), Some(true)] {
-                assert_eq!(live_word(false, online, seen), None);
+                assert_eq!(live_word(false, online, false, seen), None);
             }
-            assert_eq!(live_word(true, None, seen), None);
+            assert_eq!(live_word(true, None, false, seen), None);
         }
     }
 
@@ -229,24 +250,52 @@ mod tests {
     fn an_offline_live_is_not_running_whatever_its_slots() {
         for seen in [NONE, ERRORS, VALUES, BOTH] {
             assert_eq!(
-                live_word(true, Some(false), seen),
+                live_word(true, Some(false), false, seen),
                 Some(LiveWord::NotRunning)
             );
         }
     }
 
     #[test]
+    fn an_offline_live_whose_script_is_missing_says_so_and_only_offline() {
+        for seen in [NONE, ERRORS, VALUES, BOTH] {
+            assert_eq!(
+                live_word(true, Some(false), true, seen),
+                Some(LiveWord::ScriptMissing)
+            );
+            // Online: the hub's word is stale, Live answers.
+            assert_eq!(
+                live_word(true, Some(true), true, VALUES),
+                Some(LiveWord::On)
+            );
+            // No hub connection or no report: nothing.
+            assert_eq!(live_word(false, Some(false), true, seen), None);
+            assert_eq!(live_word(true, None, true, seen), None);
+        }
+        assert_eq!(
+            live_word(true, Some(true), true, ERRORS),
+            Some(LiveWord::NoSet)
+        );
+    }
+
+    #[test]
     fn an_online_live_has_no_set_only_while_nothing_resolves_and_something_does_not() {
-        assert_eq!(live_word(true, Some(true), ERRORS), Some(LiveWord::NoSet));
+        assert_eq!(
+            live_word(true, Some(true), false, ERRORS),
+            Some(LiveWord::NoSet)
+        );
         // One binding resolved: the set is there; an error is a single bad
         // binding (I5, red).
-        assert_eq!(live_word(true, Some(true), BOTH), Some(LiveWord::On));
-        assert_eq!(live_word(true, Some(true), VALUES), Some(LiveWord::On));
+        assert_eq!(live_word(true, Some(true), false, BOTH), Some(LiveWord::On));
+        assert_eq!(
+            live_word(true, Some(true), false, VALUES),
+            Some(LiveWord::On)
+        );
         // Everything still waits for Live: no news yet.
-        assert_eq!(live_word(true, Some(true), NONE), Some(LiveWord::On));
+        assert_eq!(live_word(true, Some(true), false, NONE), Some(LiveWord::On));
         // A first error while others still wait: no verdict yet.
         assert_eq!(
-            live_word(true, Some(true), ERRORS_WAITING),
+            live_word(true, Some(true), false, ERRORS_WAITING),
             Some(LiveWord::On)
         );
     }
@@ -299,6 +348,9 @@ mod tests {
     #[test]
     fn the_words_and_names() {
         assert_eq!(LiveWord::NotRunning.name(), "off");
+        assert_eq!(LiveWord::ScriptMissing.name(), "off");
+        assert_eq!(LiveWord::ScriptMissing.word(), "no script");
+        assert_eq!(LiveWord::ScriptMissing.strip_word(), Some("NO SCRIPT"));
         assert_eq!(LiveWord::NoSet.name(), "noset");
         assert_eq!(LiveWord::On.name(), "on");
         assert_eq!(LiveWord::NotRunning.word(), "not running");
@@ -312,6 +364,11 @@ mod tests {
     #[test]
     fn a_down_strip_says_what_to_do() {
         assert_eq!(LiveWord::NotRunning.hint(), Some(NOT_RUNNING_HINT));
+        assert_eq!(LiveWord::ScriptMissing.hint(), Some(SCRIPT_MISSING_HINT));
+        assert_eq!(
+            SCRIPT_MISSING_HINT,
+            "Live runs without the FohMixer script. Run the install again."
+        );
         assert_eq!(LiveWord::NoSet.hint(), Some(NO_SET_HINT));
         assert_eq!(LiveWord::On.hint(), None);
         assert_eq!(
@@ -326,6 +383,7 @@ mod tests {
         // #178: a hub started while the Lives were down drew the `+CTRL`
         // rail buttons and TechAlert's frame red.
         assert!(LiveWord::NotRunning.quiets());
+        assert!(LiveWord::ScriptMissing.quiets());
         assert!(LiveWord::NoSet.quiets());
         assert!(!LiveWord::On.quiets());
     }

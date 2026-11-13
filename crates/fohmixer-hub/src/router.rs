@@ -45,7 +45,7 @@
 //! every transport change, served at `GET /api/songmap` (its own subscriber
 //! `SONGMAP_CLIENT`; it writes nothing to Live).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -91,6 +91,8 @@ mod rec;
 mod retries;
 #[path = "router/reverb.rs"]
 mod reverb;
+mod script;
+pub use script::shown as script_shown;
 #[path = "router/sectors.rs"]
 mod sectors;
 
@@ -573,6 +575,12 @@ pub enum RouterMsg {
     },
     /// The layout poll's tick (#188): `mute_alarms.json` is read again.
     MuteAlarmsPoll,
+    /// The script watch's verdict on a local instance changed (#184 PR D,
+    /// `script_watch`): Live runs without its FohMixer script answering.
+    ScriptMissing {
+        instance: String,
+        missing: bool,
+    },
     /// The hub stops: the Stream Deck's held keys released and its task
     /// told to stop (#52), then every client closed.
     Stop,
@@ -588,6 +596,8 @@ pub struct RouterStatus {
     /// Each instance's transport as the router last heard it (#104, D18;
     /// none before the first value, and again after a disconnect).
     pub playing: BTreeMap<String, Option<bool>>,
+    /// The local instances whose script is missing (#184 PR D).
+    pub script_missing: BTreeSet<String>,
     pub stage_aut: StageAutStatus,
     /// REVERB (#130, D18).
     pub reverb: ReverbStatus,
@@ -660,6 +670,9 @@ pub struct Router {
     roles: HashMap<ClientId, Role>,
     live: BTreeMap<String, LiveHandle>,
     states: BTreeMap<String, InstanceState>,
+    /// The local instances whose script is missing (#184 PR D, the script
+    /// watch's verdict; a connect or a disconnect leaves it to the watch).
+    script_missing: BTreeSet<String>,
     setters: BTreeMap<String, Setter>,
     /// The persisted hub values (`hub-state.json`), kept whole and saved
     /// whole (#130).
@@ -788,6 +801,7 @@ impl Router {
                 .keys()
                 .map(|k| (k.clone(), InstanceState::default()))
                 .collect(),
+            script_missing: BTreeSet::new(),
             setters: live
                 .keys()
                 .map(|k| (k.clone(), Setter::default()))
@@ -1121,6 +1135,7 @@ impl Router {
                         })
                         .collect(),
                     playing: names.map(|n| (n.clone(), self.transport_now(n))).collect(),
+                    script_missing: self.script_missing.clone(),
                     stage_aut: StageAutStatus {
                         on: self.stage.is_on(),
                         writes: self.stage.writes(),
@@ -1330,6 +1345,9 @@ impl Router {
                 on,
             } => self.alarms_set(client, id, &strip, on),
             RouterMsg::MuteAlarmsPoll => self.alarms_poll(),
+            RouterMsg::ScriptMissing { instance, missing } => {
+                self.script_verdict(&instance, missing);
+            }
             RouterMsg::Stop => return false,
         }
         true
@@ -1446,6 +1464,7 @@ impl Router {
                 busy: state.busy,
                 set_name: state.set_name,
                 linked: self.live.get(name).is_some_and(LiveHandle::linked),
+                script_missing: script::shown(state.online, self.script_missing.contains(name)),
             },
         );
     }
@@ -2909,6 +2928,7 @@ mod tests {
             busy: true,
             set_name: String::new(),
             linked: false,
+            script_missing: false,
         };
         for outbox in [&a, &b] {
             assert_eq!(outbox.take().unwrap(), vec![state.clone(), link(301.0)]);

@@ -33,6 +33,15 @@ exclude_globs = [
 ]
 
 exclude_re = [
+  # `script missing` (#184 PR D): the process probe. The Windows half lists
+  # the processes through ToolHelp and is not compiled on the Linux runners
+  # (the `windows` job builds and lints it); the other half is a constant
+  # false that `no_live_runs_beside_a_hub_off_windows` pins. The decision on
+  # a process's name is the tested `is_live_exe`.
+  # Its body too (the loop, the terminator search); its ToolHelp entry is
+  # zeroed and then sized, never a struct-update literal, whose field
+  # deletion mutants no exclude reaches (.claude/rules/hub-rust.md).
+  "fohmixer-hub/src/script_watch\\.rs.*(replace live_running -> bool|in live_running( |$))",
   # The WASM entry point mounts the app into the browser DOM (web_sys): a
   # native test cannot run it. e2e/tests/app-load.spec.ts drives it (the app
   # mounts and the loading shell goes).

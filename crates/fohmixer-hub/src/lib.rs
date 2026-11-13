@@ -97,6 +97,7 @@ pub mod remote;
 pub mod router;
 pub mod routes;
 pub mod rules;
+pub mod script_watch;
 pub mod sealed;
 pub mod secrets;
 pub mod sectors;
@@ -423,6 +424,10 @@ impl HubInner {
                     last_error: snap.last_error,
                     unfolded: router.unfolded.get(&cfg.name).cloned().unwrap_or_default(),
                     playing: router.playing.get(&cfg.name).copied().flatten(),
+                    script_missing: router::script_shown(
+                        snap.online,
+                        router.script_missing.contains(&cfg.name),
+                    ),
                 }
             })
             .collect();
@@ -664,6 +669,13 @@ impl Hub {
                 router::LUFS_TICK,
             )));
         }
+        // `script missing` (#184 PR D): Live running without its script.
+        tasks.push(tokio::spawn(script_watch::watch(
+            live.values().cloned().collect(),
+            router_tx.clone(),
+            script_watch::live_running,
+            script_watch::CHECK_EVERY,
+        )));
         tasks.push(tokio::spawn(poll_layout(
             Arc::clone(&layout),
             router_tx.clone(),
@@ -1703,6 +1715,33 @@ mod tests {
         // After the stop the router is gone: the status still answers.
         let status = hub.status().await;
         assert_eq!(status.clients, 0);
+    }
+
+    #[tokio::test]
+    async fn the_status_shows_the_routers_script_missing_of_an_offline_instance() {
+        // #184 PR D: `/api/status` `instances[].script_missing` is the
+        // router's verdict while the instance is offline.
+        let dir = tempfile::tempdir().unwrap();
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = free.local_addr().unwrap().port();
+        drop(free);
+        let mut config = Config::defaults(dir.path());
+        config.instances = vec![config::InstanceCfg {
+            name: "mbc".into(),
+            port,
+            link: None,
+        }];
+        let hub = Hub::start(config).expect("a test hub");
+        assert!(!hub.status().await.instances[0].script_missing);
+        hub.route(RouterMsg::ScriptMissing {
+            instance: "mbc".into(),
+            missing: true,
+        });
+        let status = hub.status().await;
+        assert_eq!(status.instances[0].name, "mbc");
+        assert!(!status.instances[0].online);
+        assert!(status.instances[0].script_missing);
+        hub.stop();
     }
 
     #[tokio::test]

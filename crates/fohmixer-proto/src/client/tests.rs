@@ -227,6 +227,7 @@ fn server_messages_round_trip() {
             busy: false,
             set_name: "Test Site".into(),
             linked: false,
+            script_missing: false,
         },
         json!({"type": "instance", "name": "band", "online": true, "busy": false, "set_name": "Test Site"}),
     );
@@ -237,9 +238,23 @@ fn server_messages_round_trip() {
             busy: false,
             set_name: "MBC".into(),
             linked: true,
+            script_missing: false,
         },
         json!({"type": "instance", "name": "mbc", "online": true, "busy": false, "set_name": "MBC",
                "linked": true}),
+    );
+    // #184 PR D: Live runs without its script.
+    round_trip_server(
+        ServerMsg::Instance {
+            name: "mbc".into(),
+            online: false,
+            busy: false,
+            set_name: String::new(),
+            linked: false,
+            script_missing: true,
+        },
+        json!({"type": "instance", "name": "mbc", "online": false, "busy": false, "set_name": "",
+               "script_missing": true}),
     );
     round_trip_server(
         ServerMsg::Hub {
@@ -656,6 +671,7 @@ fn api_bodies_round_trip() {
             last_error: None,
             unfolded: vec!["Stems grp#".into()],
             playing: Some(true),
+            script_missing: true,
         }],
         layout: LayoutStatus {
             rev: 1,
@@ -921,6 +937,17 @@ fn api_bodies_round_trip() {
     assert_eq!(json["link"]["refusals"], 1);
     let back: HubStatus = serde_json::from_value(json.clone()).unwrap();
     assert_eq!(back.link, status.link);
+    // #184 PR D: `script_missing`, false in an older hub's answer.
+    assert_eq!(json["instances"][0]["script_missing"], true);
+    assert!(back.instances[0].script_missing);
+    let mut older = json["instances"][0].clone();
+    older.as_object_mut().unwrap().remove("script_missing");
+    assert!(
+        !serde_json::from_value::<InstanceStatus>(older)
+            .unwrap()
+            .script_missing
+    );
+    assert_eq!(SCRIPT_MISSING_AFTER_S, 60);
     assert_eq!(
         json["sectors"],
         json!({"rev": 3, "layouts": 2, "strips": 5, "unknown": 1})

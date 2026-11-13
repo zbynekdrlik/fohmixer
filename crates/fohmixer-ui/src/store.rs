@@ -327,6 +327,9 @@ pub struct InstanceView {
     pub set_name: String,
     /// Another hub holds this Live (#184, the hub's `linked`).
     pub linked: bool,
+    /// Live runs on the hub's PC without its script (#184 PR D, the hub's
+    /// `script_missing`).
+    pub script_missing: bool,
 }
 
 /// The hub values (STAGE AUT, #104), as the hub last sent them (review
