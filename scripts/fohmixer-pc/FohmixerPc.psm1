@@ -25,7 +25,7 @@ $script:StopTask = 'fohmixer-hub-stop'
 # What a bundle holds besides SHA256SUMS (design note section 2).
 $script:BundleFiles = @('VERSION', 'fohmixer-hub.exe', 'fohmixer-tray.exe', 'THIRD-PARTY-NOTICES.md', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1',
     'FohmixerLivePrefs.ps1', 'FohmixerFirewall.ps1', 'FohmixerRemote.ps1', 'FohmixerTray.ps1', 'FohmixerHubProcess.ps1',
-    'FohmixerTasks.ps1', 'Start-FohmixerHub.ps1', 'Stop-FohmixerHub.ps1',
+    'FohmixerTasks.ps1', 'FohmixerTables.ps1', 'FohmixerMbc.ps1', 'Start-FohmixerHub.ps1', 'Stop-FohmixerHub.ps1', 'mbc-frame.json',
     'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py',
     'live-device/FohMixer LUFS.amxd', 'live-device/FohMixer Meter.amxd')
 # The Max for Live devices (#151): the bundle's live-device\ folder, built by
@@ -34,6 +34,8 @@ $script:BundleFiles = @('VERSION', 'fohmixer-hub.exe', 'fohmixer-tray.exe', 'THI
 $script:DeviceDir = 'live-device'
 $script:Devices = @('FohMixer LUFS.amxd', 'FohMixer Meter.amxd')
 $script:DevicePresets = 'Presets\Audio Effects\Max Audio Effect'
+# The MBC hub's frame (#184), in the bundle beside the scripts.
+$script:MbcFrame = 'mbc-frame.json'
 # A SemVer version that is also a safe folder name (no trailing dot, no "..").
 $script:SemVer = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?\z'
 
@@ -54,6 +56,12 @@ $script:SemVer = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z
 # in files of their own.
 . (Join-Path $PSScriptRoot 'FohmixerHubProcess.ps1')
 . (Join-Path $PSScriptRoot 'FohmixerTasks.ps1')
+# The toml's optional tables ([eq], [companion], [presenter]), in a file of
+# their own.
+. (Join-Path $PSScriptRoot 'FohmixerTables.ps1')
+# The MBC PC (#184): its toml, its FohMixer copy in Live's own folder, and
+# the FOH install's linked instance, in a file of their own.
+. (Join-Path $PSScriptRoot 'FohmixerMbc.ps1')
 
 # ---- small helpers ----
 
@@ -237,6 +245,8 @@ function New-FohBundle {
             Where-Object { @('.ps1', '.psm1') -contains $_.Extension })) {
         Copy-Item -LiteralPath $f.FullName -Destination $stage
     }
+    # The MBC hub's frame (#184): the MBC PC's first layout.
+    Copy-Item -LiteralPath (Join-Path $RepoRoot ('scripts\fohmixer-pc\' + $script:MbcFrame)) -Destination $stage
     [IO.File]::WriteAllText((Join-Path $stage 'VERSION'), ($version + "`n"), $script:Utf8NoBom)
     $zip = Join-Path $OutDir ($name + '.zip')
     New-FohBundleZip -Stage $stage -Zip $zip
@@ -342,7 +352,8 @@ function Install-FohAppDir {
 function New-FohHubToml {
     # <DataDir>\fohmixer-hub.toml as the hub's config.rs reads it: the HTTP
     # port, the two instances and the layout file (relative to the data folder),
-    # then $Eq (Get-FohInstalledEqToml: the Pro-Q 4 screen's table, #71, kept
+    # then $Linked (Get-FohLinkedToml: the MBC PC's Live through its link,
+    # #184, after the local instances), then $Eq (Get-FohInstalledEqToml: the Pro-Q 4 screen's table, #71, kept
     # from the installed file, never written by the install itself), then
     # $Companion (Get-FohCompanionToml: the Stream Deck tab, #52), then
     # $Presenter (Get-FohPresenterToml: Presenter's stage tab, #90), then
@@ -351,7 +362,7 @@ function New-FohHubToml {
     # There is no data_dir key: the hub's data folder is FOHMIXER_DATA.
     param([Parameter(Mandatory)][int]$HttpPort, [Parameter(Mandatory)][int]$BandPort, [Parameter(Mandatory)][int]$MasterPort,
           [AllowEmptyString()][string]$Eq = '', [AllowEmptyString()][string]$Companion = '', [AllowEmptyString()][string]$Remote = '',
-          [AllowEmptyString()][string]$Presenter = '')
+          [AllowEmptyString()][string]$Presenter = '', [AllowEmptyString()][string]$Linked = '')
     $lines = @(
         '# fohmixer-hub configuration, written by Install-Fohmixer.ps1: run the install again to change it.',
         ('http_port = {0}' -f $HttpPort),
@@ -364,113 +375,7 @@ function New-FohHubToml {
         '[[instances]]',
         'name = "master"',
         ('port = {0}' -f $MasterPort))
-    return (($lines -join "`r`n") + "`r`n" + $Eq + $Companion + $Presenter + $Remote)
-}
-
-function Get-FohInstalledEqToml {
-    # The [eq] table of an installed fohmixer-hub.toml's text (#71): the Pro-Q
-    # 4 screen, turned on by hand (.claude/rules/deploy-pc.md), so an update
-    # keeps it as it is (its backend value included; the new hub checks it).
-    # Its lines from [eq] to the next table or the end, looked for only
-    # before [tls]: from there on the text is the remote tables, kept or
-    # rewritten as a whole (Get-FohInstalledRemoteToml), so an [eq] there is
-    # never taken twice. Written by hand, it may have no blank line before
-    # it, LF line ends or trailing blanks: it comes back as New-FohHubToml
-    # writes a table (a blank line before it, CRLF lines, blank lines
-    # dropped); '' without one.
-    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
-    $head = $Text
-    $tls = [regex]::Match($Text, '\r?\n\[tls\]\r?\n')
-    if ($tls.Success) { $head = $Text.Substring(0, $tls.Index) }
-    # The header may carry a comment, or end the file (#77 review).
-    $m = [regex]::Match($head, '(?s)\r?\n\[eq\][ \t]*(?:#[^\r\n]*)?(?:\r?\n.*?(?=\r?\n\[|\z)|\z)')
-    if (-not $m.Success) { return '' }
-    $lines = @($m.Value -split '\r?\n' | ForEach-Object { $_.TrimEnd() } | Where-Object { $_ })
-    return ("`r`n" + ($lines -join "`r`n") + "`r`n")
-}
-
-function Resolve-FohEq {
-    # The [eq] table of an install (#71): the installed toml's as it is
-    # (Get-FohInstalledEqToml: an update keeps the Pro-Q 4 screen on), else
-    # '' (a first install: the screen stays off until it is turned on by hand).
-    param([Parameter(Mandatory)][string]$DataDir)
-    $toml = Join-Path (Resolve-FohPath $DataDir) 'fohmixer-hub.toml'
-    if (-not (Test-Path -LiteralPath $toml -PathType Leaf)) { return '' }
-    return (Get-FohInstalledEqToml -Text ([IO.File]::ReadAllText($toml)))
-}
-
-function Get-FohCompanionToml {
-    # The [companion] table of fohmixer-hub.toml (#52, CRLF lines, '' without
-    # -Endpoint): Bitfocus Companion's Satellite API as host or host:port
-    # (default port 16622). The grid, the image size and the title keep the
-    # hub's defaults; the hub checks the table (config check).
-    param([AllowEmptyString()][string]$Endpoint = '')
-    if (-not $Endpoint) { return '' }
-    $m = [regex]::Match($Endpoint, '\A(?<host>[^\s:"\\]+)(:(?<port>[0-9]{1,5}))?\z')
-    $port = 16622
-    if ($m.Success -and $m.Groups['port'].Success) { $port = [int]$m.Groups['port'].Value }
-    if (-not $m.Success -or $port -lt 1 -or $port -gt 65535) {
-        throw "Companion endpoint refused: [$Endpoint] (host or host:port, port 1-65535)"
-    }
-    $lines = @('', '[companion]', ('host = "{0}"' -f $m.Groups['host'].Value), ('port = {0}' -f $port))
-    return (($lines -join "`r`n") + "`r`n")
-}
-
-function Get-FohInstalledCompanionToml {
-    # The [companion] table of an installed fohmixer-hub.toml's text (#52), from
-    # the line end before it to the next table or the end, exactly as
-    # Get-FohCompanionToml wrote it; '' without one.
-    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
-    $m = [regex]::Match($Text, '(?s)\r?\n\[companion\]\r?\n.*?(?=\r?\n\[|\z)')
-    if ($m.Success) { return $m.Value }
-    return ''
-}
-
-function Resolve-FohCompanion {
-    # The [companion] table of an install (#52), checked before any change:
-    # from -CompanionHost when given, else the installed toml's as it is (a
-    # routine update keeps the Stream Deck tab), else ''.
-    param([Parameter(Mandatory)][string]$DataDir, [AllowEmptyString()][string]$CompanionHost = '')
-    if ($CompanionHost) { return (Get-FohCompanionToml -Endpoint $CompanionHost) }
-    $toml = Join-Path (Resolve-FohPath $DataDir) 'fohmixer-hub.toml'
-    if (-not (Test-Path -LiteralPath $toml -PathType Leaf)) { return '' }
-    return (Get-FohInstalledCompanionToml -Text ([IO.File]::ReadAllText($toml)))
-}
-
-function Get-FohPresenterToml {
-    # The [presenter] table of fohmixer-hub.toml (#90, the stage tab; CRLF
-    # lines, '' without -Url): Presenter's server on the LAN as
-    # http://<address>[:port]. The hub checks the address (config check:
-    # plain http, a LAN address, nothing after the port); here only what
-    # could break the TOML line is refused.
-    param([AllowEmptyString()][string]$Url = '')
-    if (-not $Url) { return '' }
-    if ($Url -notmatch '\Ahttp://[^\s"\\]+\z') {
-        throw "Presenter address refused: [$Url] (http://<LAN address>[:port])"
-    }
-    $lines = @('', '[presenter]', ('url = "{0}"' -f $Url))
-    return (($lines -join "`r`n") + "`r`n")
-}
-
-function Get-FohInstalledPresenterToml {
-    # The [presenter] table of an installed fohmixer-hub.toml's text (#90),
-    # from the line end before it to the next table or the end, exactly as
-    # Get-FohPresenterToml wrote it; '' without one.
-    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
-    $m = [regex]::Match($Text, '(?s)\r?\n\[presenter\]\r?\n.*?(?=\r?\n\[|\z)')
-    if ($m.Success) { return $m.Value }
-    return ''
-}
-
-function Resolve-FohPresenter {
-    # The [presenter] table of an install (#90), checked before any change:
-    # from -PresenterUrl when given, else the installed toml's as it is (a
-    # routine update keeps the stage tab), else ''.
-    param([Parameter(Mandatory)][string]$DataDir, [AllowEmptyString()][string]$PresenterUrl = '')
-    if ($PresenterUrl) { return (Get-FohPresenterToml -Url $PresenterUrl) }
-    $toml = Join-Path (Resolve-FohPath $DataDir) 'fohmixer-hub.toml'
-    if (-not (Test-Path -LiteralPath $toml -PathType Leaf)) { return '' }
-    return (Get-FohInstalledPresenterToml -Text ([IO.File]::ReadAllText($toml)))
+    return (($lines -join "`r`n") + "`r`n" + $Linked + $Eq + $Companion + $Presenter + $Remote)
 }
 
 function Test-FohHubToml {
@@ -523,14 +428,21 @@ function Test-FohHubLayout {
 }
 
 function Set-FohConfigText {
-    # Config.py's text with INSTANCE and PORT set. Exactly one assignment of each
-    # must exist; everything else is kept, line endings included.
+    # Config.py's text with INSTANCE and PORT set, and LOG_DIR when -LogDir is
+    # given (#184: a copy in Live's own folder, which Live's user cannot
+    # write, logs into the data folder; forward slashes, a plain Python
+    # string). Exactly one assignment of each must exist; everything else is
+    # kept, line endings included.
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Text, [Parameter(Mandatory)][string]$Instance,
-          [Parameter(Mandatory)][int]$Port)
+          [Parameter(Mandatory)][int]$Port, [string]$LogDir = '')
     if ($Instance -cnotmatch '^[a-z][a-z0-9_-]*\z') { throw "instance name refused: $Instance" }
     $rules = @(
         @{ key = 'INSTANCE'; value = ('INSTANCE = "{0}"' -f $Instance) },
         @{ key = 'PORT'; value = ('PORT = {0}' -f $Port) })
+    if ($LogDir) {
+        if ($LogDir -cnotmatch '\A[^"\r\n]+\z') { throw "log folder refused: [$LogDir]" }
+        $rules += @{ key = 'LOG_DIR'; value = ('LOG_DIR = "{0}"' -f $LogDir.Replace('\', '/')) }
+    }
     foreach ($r in $rules) {
         $pattern = '(?m)^' + $r.key + '[ \t]*=[^\r\n]*'
         $n = [regex]::Matches($Text, $pattern).Count
@@ -565,47 +477,66 @@ function Install-FohLayout {
 
 function Install-FohUserScript {
     # Design note section 3 step 5, one Live user: <UserLibrary>\Remote
-    # Scripts\FohMixer. The User Library must exist (Live made it; a missing one
-    # means Live keeps it elsewhere, and nothing is guessed). The copy is
-    # replaced only when its version.py differs from the bundle's: every bundle
-    # file is written, version.py last (an interrupted copy is redone next
-    # time), and files the bundle no longer has are removed; Live's logs\ and
-    # Python's __pycache__\ stay. Config.py always carries this user's INSTANCE
-    # and PORT and is written only when that changes it. Live reads the folder at
-    # its start only, so a running Live is not affected. Returns what changed.
+    # Scripts\FohMixer (Install-FohScriptCopy). The User Library must exist
+    # (Live made it; a missing one means Live keeps it elsewhere, and nothing
+    # is guessed). Returns what changed.
     param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$UserLibrary,
           [Parameter(Mandatory)][string]$Instance, [Parameter(Mandatory)][int]$Port)
     if (-not (Test-Path -LiteralPath $UserLibrary -PathType Container)) { throw "Live's User Library not found: $UserLibrary" }
     $dest = Join-Path (Join-Path $UserLibrary 'Remote Scripts') $script:ScriptName
+    return (Install-FohScriptCopy -Source $Source -Dest $dest -Instance $Instance -Port $Port)
+}
+
+function Install-FohScriptCopy {
+    # The FohMixer folder $Dest made a copy of $Source. It is replaced only
+    # when its version.py differs from the bundle's: every bundle file is
+    # written, version.py last (an interrupted copy is redone next time), and
+    # files the bundle no longer has are removed; Live's logs\ and Python's
+    # __pycache__\ stay. With -BackupDir (#184, Live's own folder) a copy it
+    # replaces is first kept whole as <BackupDir>\<UTC stamp>\FohMixer.
+    # Config.py always carries this instance's INSTANCE and PORT (and
+    # LOG_DIR with -LogDir) and is written only when that changes it. Live
+    # reads the folder at its start only, so a running Live is not affected.
+    # Returns what changed.
+    param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Dest,
+          [Parameter(Mandatory)][string]$Instance, [Parameter(Mandatory)][int]$Port,
+          [string]$LogDir = '', [string]$BackupDir = '')
     $sourceVersion = [IO.File]::ReadAllText((Join-Path $Source 'version.py'))
-    $destVersion = Join-Path $dest 'version.py'
+    $destVersion = Join-Path $Dest 'version.py'
+    $there = Test-Path -LiteralPath $Dest -PathType Container
     $replace = $true
     if (Test-Path -LiteralPath $destVersion -PathType Leaf) { $replace = ([IO.File]::ReadAllText($destVersion) -cne $sourceVersion) }
     $removed = @()
+    $backup = $null
     if ($replace) {
-        New-Item -ItemType Directory -Force -Path $dest | Out-Null
+        if ($BackupDir -and $there) {
+            $backup = Join-Path (Join-Path $BackupDir ([DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss'))) $script:ScriptName
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $backup) | Out-Null
+            Copy-Item -LiteralPath $Dest -Destination $backup -Recurse
+        }
+        New-Item -ItemType Directory -Force -Path $Dest | Out-Null
         $files = @(Get-FohRelativeFiles -Root $Source | Where-Object { -not (Test-FohSkipped $_.rel) })
         $keep = @{}
         foreach ($f in $files) {
             $keep[$f.rel] = $true
             if ($f.rel -ceq 'version.py' -or $f.rel -ceq 'Config.py') { continue }
-            $target = Join-Path $dest $f.rel.Replace('/', '\')
+            $target = Join-Path $Dest $f.rel.Replace('/', '\')
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
             Copy-Item -LiteralPath $f.full -Destination $target -Force
         }
-        foreach ($f in @(Get-FohRelativeFiles -Root $dest)) {
+        foreach ($f in @(Get-FohRelativeFiles -Root $Dest)) {
             if ((Test-FohSkipped $f.rel) -or $keep.ContainsKey($f.rel)) { continue }
             Remove-Item -LiteralPath $f.full
             $removed += $f.rel
         }
     }
-    $config = Join-Path $dest 'Config.py'
+    $config = Join-Path $Dest 'Config.py'
     $base = Join-Path $Source 'Config.py'
     if (-not $replace -and (Test-Path -LiteralPath $config -PathType Leaf)) { $base = $config }
-    $configText = Set-FohConfigText -Text ([IO.File]::ReadAllText($base)) -Instance $Instance -Port $Port
+    $configText = Set-FohConfigText -Text ([IO.File]::ReadAllText($base)) -Instance $Instance -Port $Port -LogDir $LogDir
     $configWritten = Write-FohText -Path $config -Text $configText
     if ($replace) { Copy-Item -LiteralPath (Join-Path $Source 'version.py') -Destination $destVersion -Force }
-    return [pscustomobject]@{ path = $dest; replaced = $replace; config_written = $configWritten; removed = $removed }
+    return [pscustomobject]@{ path = $Dest; replaced = $replace; config_written = $configWritten; removed = $removed; backup = $backup }
 }
 
 function Install-FohUserDevices {
@@ -751,11 +682,23 @@ function Invoke-FohInstall {
     # is Resolve-FohRemote's plan (#17), resolved and checked by the caller;
     # $Companion is the [companion] table (#52, Resolve-FohCompanion); $Eq the
     # installed [eq] table kept (#71, Resolve-FohEq); $Presenter the
-    # [presenter] table (#90, Resolve-FohPresenter).
+    # [presenter] table (#90, Resolve-FohPresenter); $Linked the MBC Live's
+    # linked instance (#184, Resolve-FohMbcLink). -Site Mbc (#184) installs
+    # the MBC PC instead: its hub runs as -MbcUser, its toml is
+    # New-FohMbcHubToml's (the text from [tls] on kept as installed), its
+    # FohMixer goes into Live's own -ScriptFolder (Install-FohMbcScript), its
+    # first layout is the bundle's MBC frame, and the link's port gets a
+    # firewall rule; the FOH parameters are not used.
     param(
         [Parameter(Mandatory)][string]$BundleZip,
-        [Parameter(Mandatory)][string]$BandUser,
-        [Parameter(Mandatory)][string]$MasterUser,
+        [ValidateSet('Foh', 'Mbc')][string]$Site = 'Foh',
+        [string]$BandUser = '',
+        [string]$MasterUser = '',
+        [string]$MbcUser = '',
+        [int]$MbcPort = 39103,
+        [string]$LinkListen = '',
+        [string]$ScriptFolder = '',
+        [AllowEmptyString()][string]$Linked = '',
         [Parameter(Mandatory)][string]$DataDir,
         [Parameter(Mandatory)][int]$HttpPort,
         [Parameter(Mandatory)][int]$BandPort,
@@ -777,27 +720,43 @@ function Invoke-FohInstall {
     $BundleZip = Resolve-FohPath $BundleZip
     $DataDir = Resolve-FohPath $DataDir
     if (-not (Test-Path -LiteralPath $BundleZip -PathType Leaf)) { throw "bundle not found: $BundleZip" }
-    Test-FohUserName $BandUser
-    Test-FohUserName $MasterUser
-    if ($BandUser -eq $MasterUser) { throw 'the band and master users must be two accounts' }
-    foreach ($p in @($HttpPort, $BandPort, $MasterPort)) { if ($p -lt 1 -or $p -gt 65535) { throw "port $p refused" } }
-    if (@($HttpPort, $BandPort, $MasterPort | Select-Object -Unique).Count -ne 3) {
-        throw "the ports must differ: http $HttpPort, band $BandPort, master $MasterPort"
-    }
-    if (-not $BandUserLibrary) { $BandUserLibrary = Join-Path $env:SystemDrive "Users\$BandUser\Documents\Ableton\User Library" }
-    if (-not $MasterUserLibrary) { $MasterUserLibrary = Join-Path $env:SystemDrive "Users\$MasterUser\Documents\Ableton\User Library" }
-    $BandUserLibrary = Resolve-FohPath $BandUserLibrary
-    $MasterUserLibrary = Resolve-FohPath $MasterUserLibrary
-    if ($BandUserLibrary -eq $MasterUserLibrary) { throw "both users would share one User Library: $BandUserLibrary" }
-    foreach ($lib in @($BandUserLibrary, $MasterUserLibrary)) {
-        if (-not (Test-Path -LiteralPath $lib -PathType Container)) {
-            throw "Live's User Library not found: $lib (Live creates it at its first start; pass its folder with -BandUserLibrary or -MasterUserLibrary when Live keeps it elsewhere)"
+    $mbc = $Site -eq 'Mbc'
+    if ($mbc) {
+        Test-FohUserName $MbcUser
+        $hubUser = $MbcUser
+        $accounts = @($MbcUser)
+        foreach ($p in @($HttpPort, $MbcPort)) { if ($p -lt 1 -or $p -gt 65535) { throw "port $p refused" } }
+        if ($HttpPort -eq $MbcPort) { throw "the ports must differ: http $HttpPort, mbc $MbcPort" }
+        $ScriptFolder = Resolve-FohPath $ScriptFolder
+        Test-FohScriptFolder -Path $ScriptFolder
+        # Its form is checked here; the hub checks the address itself below.
+        $null = New-FohMbcHubToml -HttpPort $HttpPort -MbcPort $MbcPort -LinkListen $LinkListen
+        $linkPort = [int]($LinkListen.Substring($LinkListen.LastIndexOf(':') + 1))
+    } else {
+        Test-FohUserName $BandUser
+        Test-FohUserName $MasterUser
+        if ($BandUser -eq $MasterUser) { throw 'the band and master users must be two accounts' }
+        $hubUser = $BandUser
+        $accounts = @($BandUser, $MasterUser)
+        foreach ($p in @($HttpPort, $BandPort, $MasterPort)) { if ($p -lt 1 -or $p -gt 65535) { throw "port $p refused" } }
+        if (@($HttpPort, $BandPort, $MasterPort | Select-Object -Unique).Count -ne 3) {
+            throw "the ports must differ: http $HttpPort, band $BandPort, master $MasterPort"
         }
+        if (-not $BandUserLibrary) { $BandUserLibrary = Join-Path $env:SystemDrive "Users\$BandUser\Documents\Ableton\User Library" }
+        if (-not $MasterUserLibrary) { $MasterUserLibrary = Join-Path $env:SystemDrive "Users\$MasterUser\Documents\Ableton\User Library" }
+        $BandUserLibrary = Resolve-FohPath $BandUserLibrary
+        $MasterUserLibrary = Resolve-FohPath $MasterUserLibrary
+        if ($BandUserLibrary -eq $MasterUserLibrary) { throw "both users would share one User Library: $BandUserLibrary" }
+        foreach ($lib in @($BandUserLibrary, $MasterUserLibrary)) {
+            if (-not (Test-Path -LiteralPath $lib -PathType Container)) {
+                throw "Live's User Library not found: $lib (Live creates it at its first start; pass its folder with -BandUserLibrary or -MasterUserLibrary when Live keeps it elsewhere)"
+            }
+        }
+        if (-not $BandAbletonPrefs) { $BandAbletonPrefs = Join-Path $env:SystemDrive "Users\$BandUser\AppData\Roaming\Ableton" }
+        if (-not $MasterAbletonPrefs) { $MasterAbletonPrefs = Join-Path $env:SystemDrive "Users\$MasterUser\AppData\Roaming\Ableton" }
+        Test-FohLiveUserLibrary -User $BandUser -Prefs (Resolve-FohPath $BandAbletonPrefs) -UserLibrary $BandUserLibrary -Switch 'Band'
+        Test-FohLiveUserLibrary -User $MasterUser -Prefs (Resolve-FohPath $MasterAbletonPrefs) -UserLibrary $MasterUserLibrary -Switch 'Master'
     }
-    if (-not $BandAbletonPrefs) { $BandAbletonPrefs = Join-Path $env:SystemDrive "Users\$BandUser\AppData\Roaming\Ableton" }
-    if (-not $MasterAbletonPrefs) { $MasterAbletonPrefs = Join-Path $env:SystemDrive "Users\$MasterUser\AppData\Roaming\Ableton" }
-    Test-FohLiveUserLibrary -User $BandUser -Prefs (Resolve-FohPath $BandAbletonPrefs) -UserLibrary $BandUserLibrary -Switch 'Band'
-    Test-FohLiveUserLibrary -User $MasterUser -Prefs (Resolve-FohPath $MasterAbletonPrefs) -UserLibrary $MasterUserLibrary -Switch 'Master'
 
     if ($Layout) {
         $Layout = Resolve-FohPath $Layout
@@ -808,9 +767,9 @@ function Invoke-FohInstall {
     if (-not $NoTask) {
         $me = New-Object Security.Principal.WindowsPrincipal ([Security.Principal.WindowsIdentity]::GetCurrent())
         if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-            throw 'run the install elevated: it registers the tasks for the band user and writes both users'' User Libraries'
+            throw 'run the install elevated: it registers the hub''s tasks for its user and writes the FohMixer copies'
         }
-        foreach ($u in @($BandUser, $MasterUser)) { $null = Get-FohAccountSid $u }
+        foreach ($u in $accounts) { $null = Get-FohAccountSid $u }
     }
 
     # ---- the bundle: unpacked and checked before anything else changes ----
@@ -821,19 +780,30 @@ function Invoke-FohInstall {
     $trayWasRunning = $false
     try {
         # The new config, checked by the new hub before anything else changes.
-        $tomlText = New-FohHubToml -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Eq $Eq -Companion $Companion -Presenter $Presenter -Remote $remoteToml
+        if ($mbc) {
+            # The MBC hub's toml (#184); the text from [tls] on kept as installed.
+            $installedToml = Join-Path $DataDir 'fohmixer-hub.toml'
+            $kept = ''
+            if (Test-Path -LiteralPath $installedToml -PathType Leaf) { $kept = Get-FohInstalledRemoteToml -Text ([IO.File]::ReadAllText($installedToml)) }
+            $tomlText = New-FohMbcHubToml -HttpPort $HttpPort -MbcPort $MbcPort -LinkListen $LinkListen -Remote $kept
+        } else {
+            $tomlText = New-FohHubToml -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Linked $Linked -Eq $Eq -Companion $Companion -Presenter $Presenter -Remote $remoteToml
+        }
         $accepted = Test-FohHubToml -Exe (Join-Path $unpacked.dir $script:HubExe) -Text $tomlText -Dir (Split-Path -Parent $unpacked.dir)
         Write-Host "fohmixer install: the new hub accepts the config ($accepted)"
         # The layout it will serve (the new one, else the one in place), checked by
         # the new hub too (#21).
         $served = $Layout
+        # The MBC PC's first layout is the bundle's MBC frame (#184); an installed one is kept.
+        $frameFirst = $mbc -and -not $Layout -and -not (Test-Path -LiteralPath (Join-Path $DataDir 'layout.json') -PathType Leaf)
+        if ($frameFirst) { $served = Join-Path $unpacked.dir $script:MbcFrame }
         if (-not $served) { $served = Join-Path $DataDir 'layout.json' }
         if (Test-Path -LiteralPath $served -PathType Leaf) {
             $null = Test-FohHubLayout -Exe (Join-Path $unpacked.dir $script:HubExe) -Layout $served -Text $tomlText -Dir (Split-Path -Parent $unpacked.dir)
             Write-Host 'fohmixer install: the new hub accepts the layout'
         }
         if (-not $NoTask) {
-            Set-FohDataDirAcl -Path $DataDir -User $BandUser
+            Set-FohDataDirAcl -Path $DataDir -User $hubUser
             # 1. the running tray (#39: it runs from app\<version>), then the running hub
             $trayWasRunning = @(Get-FohTrayProcess -DataDir $DataDir).Count -gt 0
             $trayStop = Stop-FohTray -DataDir $DataDir -TaskPath $TaskPath
@@ -851,6 +821,7 @@ function Invoke-FohInstall {
         if ($Eq) { Write-Host 'fohmixer install: the [eq] table kept as installed (the Pro-Q 4 screen)' }
         # 4. the layout
         $layoutChanged = $false
+        if ($frameFirst) { $Layout = Join-Path $app.dir $script:MbcFrame }
         if ($Layout) {
             $layoutChanged = Install-FohLayout -Layout $Layout -DataDir $DataDir
             Write-Host "fohmixer install: layout.json (changed: $layoutChanged)"
@@ -862,9 +833,15 @@ function Invoke-FohInstall {
         $copies = @()
         # (#151) A running Live keeps its loaded devices: see Install-FohUserDevices.
         $liveRunning = Test-FohLiveRunning
+        if ($mbc) {
+            # The MBC Live's FohMixer in Live's own folder (#184, spec 6.5).
+            $r = Install-FohMbcScript -Source $source -ScriptFolder $ScriptFolder -Port $MbcPort -DataDir $DataDir
+            Write-Host ("fohmixer install: the mbc FohMixer in Live's MIDI Remote Scripts (replaced: {0}, Config.py written: {1}, old copy kept: {2})" -f $r.replaced, $r.config_written, [bool]$r.backup)
+            $copies += [pscustomobject]@{ instance = 'mbc'; replaced = $r.replaced; config_written = $r.config_written; removed = $r.removed; kept = [bool]$r.backup }
+        }
         foreach ($u in @(
                 @{ instance = 'band'; library = $BandUserLibrary; port = $BandPort },
-                @{ instance = 'master'; library = $MasterUserLibrary; port = $MasterPort })) {
+                @{ instance = 'master'; library = $MasterUserLibrary; port = $MasterPort }) | Where-Object { -not $mbc }) {
             $r = Install-FohUserScript -Source $source -UserLibrary $u.library -Instance $u.instance -Port $u.port
             Write-Host ("fohmixer install: the {0} user's FohMixer (replaced: {1}, Config.py written: {2})" -f $u.instance, $r.replaced, $r.config_written)
             # The Max for Live devices (#151), printed by name only.
@@ -883,12 +860,16 @@ function Invoke-FohInstall {
         if ($Remote) { $remoteResult = Install-FohRemoteFiles -Remote $Remote }
         # 6. the tasks and the firewall rule
         if (-not $NoTask) {
-            Register-FohHubTasks -AppDir $app.dir -DataDir $DataDir -User $BandUser -TaskPath $TaskPath
+            Register-FohHubTasks -AppDir $app.dir -DataDir $DataDir -User $hubUser -TaskPath $TaskPath
             Write-Host "fohmixer install: tasks $TaskPath$($script:HubTask) and $TaskPath$($script:StopTask) registered and read back"
-            Register-FohTrayTasks -AppDir $app.dir -DataDir $DataDir -User $BandUser -TaskPath $TaskPath
+            Register-FohTrayTasks -AppDir $app.dir -DataDir $DataDir -User $hubUser -TaskPath $TaskPath
             Write-Host "fohmixer install: tasks $TaskPath$($script:TrayTask) and $TaskPath$($script:TrayStopTask) registered and read back"
             $firewall = Set-FohFirewallRule -Port $HttpPort
             Write-Host "fohmixer install: firewall rule fohmixer-hub-http, TCP $HttpPort, Domain and Private (changed: $firewall)"
+            if ($mbc) {
+                $linkRule = Set-FohFirewallRule -Port $linkPort -Name $script:LinkRule
+                Write-Host "fohmixer install: firewall rule $($script:LinkRule), TCP $linkPort, Domain and Private (changed: $linkRule)"
+            }
             if ($Remote) { Install-FohRemoteServices -Remote $Remote -Result $remoteResult }
             foreach ($n in @(Get-NetConnectionProfile | Where-Object { "$($_.NetworkCategory)" -eq 'Public' })) {
                 $publicNote = 'fohmixer install: the network on {0} is Public; the rule allows Domain and Private only, ' +
@@ -940,6 +921,6 @@ function Invoke-FohInstall {
     return [pscustomobject]@{
         version = $unpacked.version; app = $app.dir; app_changed = $app.changed; config_changed = $toml
         layout_changed = $layoutChanged; copies = $copies; hub = $answer; tray = $trayPid; remote = $remoteResult; companion = [bool]$Companion; presenter = [bool]$Presenter
-        eq = [bool]$Eq
+        eq = [bool]$Eq; site = $Site; linked = [bool]$Linked
     }
 }

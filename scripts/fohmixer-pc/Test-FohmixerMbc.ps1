@@ -135,7 +135,7 @@ $kept = @(Get-ChildItem -LiteralPath (Join-Path $dataM 'script-backups') -Direct
 Assert ($kept.Count -eq 1 -and $kept[0].Name -cmatch '^\d{8}-\d{6}\z') "mbc-install-3-keeps-one-dated-copy ($(($kept | ForEach-Object { $_.Name }) -join ', '))"
 Assert ([IO.File]::ReadAllText((Join-Path $kept[0].FullName 'FohMixer\version.py')) -ceq "VERSION = `"0.0.1`"`n") 'mbc-install-3-the-dated-copy-is-the-old-one'
 $inLive = @(Get-ChildItem -LiteralPath $scripts -Directory | ForEach-Object { $_.Name })
-Assert ($inLive.Count -eq 2 -and $inLive -ccontains '_Framework' -and $inLive -ccontains 'FohMixer') "mbc-install-3-leaves-nothing-else-in-lives-folder ($($inLive -join ', '))
+Assert ($inLive.Count -eq 2 -and $inLive -ccontains '_Framework' -and $inLive -ccontains 'FohMixer') "mbc-install-3-leaves-nothing-else-in-lives-folder ($($inLive -join ', '))"
 
 # ---- install M4: the FOH install's link (-MbcLink): written, kept by an update, the PC's own tables kept ----
 $tomlR = Join-Path $dataR 'fohmixer-hub.toml'
