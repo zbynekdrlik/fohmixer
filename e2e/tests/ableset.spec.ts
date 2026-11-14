@@ -273,7 +273,7 @@ test.describe("AbleSet's tab (the LAN path, fohmixer's own https page)", () => {
     await expect(page.locator('.slot[data-side="right"] [data-testid="strip"]').first()).toBeVisible();
     // The right half is live beside the frame (#148 review): a cap there
     // hit-tests as itself and a real drag of it reaches the hub and Live.
-    await rightHalfLive(page, page.locator('.slot[data-side="right"] [data-testid="strip"]'));
+    await rightHalfLive(page, '.slot[data-side="right"] [data-testid="strip"]');
     // AbleSet's socket goes through the hub, and a press inside the frame reaches AbleSet.
     await until(() => ablesetStatus(bearer), (s) => s.sockets >= 1, "AbleSet's socket counted");
     // The hub's record of that socket opening (design §6): the frame's own

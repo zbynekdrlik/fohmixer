@@ -22,10 +22,12 @@ async function travel(page: Page, name: string, instance = "band"): Promise<numb
   return (await fader.boundingBox())!.height;
 }
 
-/** Nothing of a strip above its name button: the button is the strip's first part and its top edge (#151: 37 px, at the strip's top inside its 1 px border). */
+/** Nothing of a strip above its name button: the button is the strip's first part and its top edge (#151: 37 px, at the strip's top inside its 1 px border).
+ * Read in one task inside the page (#198): the specs call it while the page may still re-arrange its strips (a phone's size,
+ * the column opened), and a strip removed between `evaluateAll`'s query and its read measures a 0 px button. */
 async function headFirst(page: Page): Promise<string[]> {
-  return page.getByTestId("strip").evaluateAll((strips) =>
-    strips.flatMap((s) => {
+  return page.evaluate(() =>
+    [...document.querySelectorAll('[data-testid="strip"]')].flatMap((s) => {
       const head = s.firstElementChild;
       const mute = s.querySelector(".mute");
       if (!head || !head.classList.contains("strip-head") || !mute) return [`${s.getAttribute("data-track")}: no head first`];

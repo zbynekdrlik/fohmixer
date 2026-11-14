@@ -115,10 +115,13 @@ const GAP_DOC: SectorsDoc = {
 /** The note under ARRANGE while it is on (the approved mockup v2's). */
 const ARRANGE_NOTE = "drag · ✎ ✕ + · tap to save";
 
-const sectorsPage = (page: Page) => page.locator('[data-testid="page"][data-sectors="true"]');
+/** The sectors page, as CSS (for a read in one task inside the page, #198). */
+const SECTORS = '[data-testid="page"][data-sectors="true"]';
+const sectorsPage = (page: Page) => page.locator(SECTORS);
 
-/** A sector's slots on the sectors page, in their order. */
-const slots = (page: Page, sector: string) => sectorsPage(page).locator(`.slot[data-sector="${sector}"]`);
+/** A sector's slots on the sectors page, in their order: as CSS, and as a locator. */
+const slotsCss = (sector: string) => `${SECTORS} .slot[data-sector="${sector}"]`;
+const slots = (page: Page, sector: string) => page.locator(slotsCss(sector));
 
 /** A sector's cells in their order: a strip as `<instance>|<track>`, an empty slot as `_`. */
 async function cellsOf(page: Page, sector: string): Promise<string[]> {
@@ -250,7 +253,7 @@ test.describe("The fader sectors", () => {
       // A fader in RU still moves (#148 review): its cap's centre is the
       // cap's (nothing over it) and a real drag from there reaches the hub
       // as a set and raises Live's volume.
-      await rightHalfLive(page, slots(page, "ru").getByTestId("strip"));
+      await rightHalfLive(page, `${slotsCss("ru")} [data-testid="strip"]`);
       await expect(page.getByTestId("deck-key")).toHaveCount(32);
       // The controls that act only on the hidden left sectors are inert
       // (#148 review): LU's and LD's layouts and ARRANGE dimmed and
@@ -351,17 +354,18 @@ test.describe("The fader sectors", () => {
       await openSectors(page);
       await expect.poll(async () => (await stripsOf(page, "ld")).length).toBe(3);
       await frames(page);
-      const travels = await sectorsPage(page)
-        .locator('.slot[data-sector] [data-testid="strip"]')
-        .evaluateAll((all) =>
-          all
-            .filter((s) => s.querySelector('[data-testid="fader"]'))
-            .map((s) => ({
-              sector: s.closest(".slot")!.getAttribute("data-sector"),
-              name: `${s.getAttribute("data-instance")}|${s.getAttribute("data-track")}`,
-              h: s.querySelector('[data-testid="fader"]')!.getBoundingClientRect().height,
-            })),
-        );
+      // One task inside the page (#198): a strip re-created between
+      // `evaluateAll`'s query and its read would measure 0 px.
+      const travels = await page.evaluate((selector) =>
+        [...document.querySelectorAll(selector)]
+          .filter((s) => s.querySelector('[data-testid="fader"]'))
+          .map((s) => ({
+            sector: s.closest(".slot")!.getAttribute("data-sector"),
+            name: `${s.getAttribute("data-instance")}|${s.getAttribute("data-track")}`,
+            h: s.querySelector('[data-testid="fader"]')!.getBoundingClientRect().height,
+          })),
+        `${SECTORS} .slot[data-sector] [data-testid="strip"]`,
+      );
       // Every strip of lu, ru, ld (band and master mixed) and rd.
       expect(travels.length).toBe(7);
       expect([...new Set(travels.map((t) => t.sector))].sort()).toEqual(["ld", "lu", "rd", "ru"]);
@@ -376,16 +380,17 @@ test.describe("The fader sectors", () => {
       // No instance pill anywhere on the sectors page.
       await expect(sectorsPage(page).locator('[data-testid="strip-instance"]')).toHaveCount(0);
       // In the mixed ld each strip's info column names its own Live set.
-      const sides = await slots(page, "ld")
-        .locator('[data-testid="strip"]')
-        .evaluateAll((all) =>
-          all.map((s) => {
-            const side = s.querySelector('[data-testid="strip-col"] [data-testid="group-side"]') as HTMLElement | null;
-            return side
-              ? { text: side.textContent, color: getComputedStyle(side).color, events: getComputedStyle(side).pointerEvents }
-              : null;
-          }),
-        );
+      // One task inside the page (#198): a re-created strip's side text
+      // would read an empty computed colour through `evaluateAll`.
+      const sides = await page.evaluate((selector) =>
+        [...document.querySelectorAll(selector)].map((s) => {
+          const side = s.querySelector('[data-testid="strip-col"] [data-testid="group-side"]') as HTMLElement | null;
+          return side
+            ? { text: side.textContent, color: getComputedStyle(side).color, events: getComputedStyle(side).pointerEvents }
+            : null;
+        }),
+        `${slotsCss("ld")} [data-testid="strip"]`,
+      );
       const faint = await page.evaluate(() => {
         const probe = document.createElement("span");
         probe.style.color = "var(--faint)";
@@ -483,8 +488,14 @@ test.describe("The fader sectors", () => {
         // Outside ARRANGE a saved gap is plain space: no outline, no border.
         const otherGaps = sectorsPage(other).getByTestId("sector-gap");
         await expect(otherGaps).toHaveCount(2);
-        const plain = await otherGaps.evaluateAll((all) =>
-          all.map((e) => ({ outline: getComputedStyle(e).outlineStyle, border: getComputedStyle(e).borderTopStyle })),
+        // One task inside the page (#198): a gap re-created between
+        // `evaluateAll`'s query and its read has an empty computed style.
+        const plain = await other.evaluate((selector) =>
+          [...document.querySelectorAll(selector)].map((e) => ({
+            outline: getComputedStyle(e).outlineStyle,
+            border: getComputedStyle(e).borderTopStyle,
+          })),
+          `${SECTORS} [data-testid="sector-gap"]`,
         );
         expect(plain).toEqual([
           { outline: "none", border: "none" },
@@ -636,9 +647,12 @@ test.describe("The fader sectors", () => {
         });
         console.log(`sectors ARRANGE block at 4 layouts (${test.info().project.name}): ${fit.blockHeight.toFixed(1)} px`);
         expect(fit).toEqual({ ...fit, blockWhole: true, inBlock: true, ordered: true, inColumn: true, railButton: true });
-        const travels = await sectorsPage(page)
-          .locator('.slot[data-sector] [data-testid="fader"]')
-          .evaluateAll((all) => all.map((f) => f.getBoundingClientRect().height));
+        // One task inside the page (#198): ARRANGE re-arranges the cells,
+        // and a re-created fader read through `evaluateAll` measures 0 px.
+        const travels = await page.evaluate((selector) =>
+          [...document.querySelectorAll(selector)].map((f) => f.getBoundingClientRect().height),
+          `${SECTORS} .slot[data-sector] [data-testid="fader"]`,
+        );
         expect(travels.length).toBeGreaterThan(0);
         for (const h of travels) expect(h).toBeGreaterThanOrEqual(322 - 0.5);
 

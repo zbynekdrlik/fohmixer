@@ -961,10 +961,14 @@ export async function columnHeadAndFoot(page: Page): Promise<string[]> {
  * hit-tested at every event; both projects, as strip.spec.ts' and
  * group-side.spec.ts' cap drags): the drag's sets reach the hub under the
  * strip's volume key and Live's volume rises. Live put back.
+ * `strips` is a CSS selector: the pick queries and reads in one task inside
+ * the page (#198), as the extra tab's opening may still be re-creating
+ * strips (`evaluateAll`'s two round trips would read a removed one, whose
+ * box is all zeros and so "whole on the screen").
  */
-export async function rightHalfLive(page: Page, strips: Locator) {
-  const pick = await strips.evaluateAll((all) => {
-    for (const s of all) {
+export async function rightHalfLive(page: Page, strips: string) {
+  const pick = await page.evaluate((selector) => {
+    for (const s of document.querySelectorAll(selector)) {
       const r = s.getBoundingClientRect();
       const fader = s.querySelector('[data-testid="fader"]');
       const whole = r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight;
@@ -975,7 +979,7 @@ export async function rightHalfLive(page: Page, strips: Locator) {
       }
     }
     return null;
-  });
+  }, strips);
   expect(pick, "a bound strip of the right half whole on the screen").not.toBeNull();
   const key: string = JSON.parse(pick!)[0];
   const [instance, target, prop] = key.split("|");
@@ -1060,10 +1064,15 @@ export async function extraOnAPhone(page: Page, tab: Locator, pane: Locator, ite
     expect(b.y).toBeGreaterThanOrEqual(-0.5);
     expect(b.y + b.h, "an item inside the screen").toBeLessThanOrEqual(viewport.height + 0.5);
   }
-  // No strip shows under it.
-  const strips = await page
-    .getByTestId("strip")
-    .evaluateAll((all) => all.filter((s) => getComputedStyle(s).visibility === "visible").map((s) => s.getAttribute("data-track")));
+  // No strip shows under it. Read in one task inside the page (#198): the
+  // tab's opening re-arranges the page, and a strip removed between
+  // `evaluateAll`'s query and its read has an empty computed style, so it
+  // would never count as shown.
+  const strips = await page.evaluate(() =>
+    [...document.querySelectorAll('[data-testid="strip"]')]
+      .filter((s) => getComputedStyle(s).visibility === "visible")
+      .map((s) => s.getAttribute("data-track")),
+  );
   expect(strips, "strips shown beside an extra tab on a phone").toEqual([]);
   // ☰ opens the column over the pane, in the screen's middle, whole.
   await burger.dispatchEvent("pointerdown");
