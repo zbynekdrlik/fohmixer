@@ -463,6 +463,7 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
             <IemPane />
             {manual_view}
             {eq_view}
+            <crate::components::scene_news::SceneFlash />
         </div>
     }
 }
@@ -824,6 +825,7 @@ pub fn ColumnFoot() -> impl IntoView {
     view! {
         <div class="column-foot" data-testid="column-foot">
             <crate::components::login_line::LoginLine />
+            <crate::components::scene_news::SceneLine />
             <StatusCluster />
         </div>
     }

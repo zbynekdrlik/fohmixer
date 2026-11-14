@@ -231,12 +231,13 @@ impl Router {
         }
     }
 
-    /// The last scene as the pages get it.
-    fn scene_message(last: &LastScene) -> ServerMsg {
+    /// The last scene as the pages get it (`live`: it came just now).
+    fn scene_message(last: &LastScene, live: bool) -> ServerMsg {
         ServerMsg::Scene {
             name: last.name.clone(),
             at_ms: last.at_ms,
             moved: last.moved,
+            live,
         }
     }
 
@@ -248,7 +249,7 @@ impl Router {
         }
         outbox.reply(self.scenes_message());
         if let Some(last) = &self.scenes.last {
-            outbox.reply(Self::scene_message(last));
+            outbox.reply(Self::scene_message(last, false));
         }
     }
 
@@ -429,7 +430,7 @@ impl Router {
             at_ms: crate::live::wall_ms().unwrap_or(0.0),
             moved,
         };
-        self.scenes_tell(&Self::scene_message(&last));
+        self.scenes_tell(&Self::scene_message(&last, true));
         self.scenes.last = Some(last);
         moved
     }

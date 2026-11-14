@@ -647,11 +647,14 @@ pub enum ServerMsg {
     /// by a hub with an automation token (a page shows SCENES only then).
     Scenes { doc: ScenesDoc },
     /// A scene came (#207, `POST /api/scene`): its name, when (the hub's
-    /// UTC ms) and how many faders it moved; also the last one at attach.
+    /// UTC ms), how many faders it moved, and whether it came just now
+    /// (`live`; the last one told at attach is not: no flash for it).
     Scene {
         name: String,
         at_ms: f64,
         moved: u32,
+        #[serde(default)]
+        live: bool,
     },
     /// A message of a newer hub that this page does not know (#90 B3): any
     /// other `type` reads as this, and the page ignores it, so a new

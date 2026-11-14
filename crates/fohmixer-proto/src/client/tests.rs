@@ -2422,11 +2422,18 @@ fn the_scenes_and_scene_messages_carry_the_document_and_the_scene() {
         name: "talk".into(),
         at_ms: 1_700_000_000_000.0,
         moved: 2,
+        live: true,
     };
     let json = serde_json::to_value(&scene).unwrap();
     assert_eq!(
         json,
-        json!({"type": "scene", "name": "talk", "at_ms": 1_700_000_000_000.0, "moved": 2})
+        json!({"type": "scene", "name": "talk", "at_ms": 1_700_000_000_000.0, "moved": 2, "live": true})
     );
     assert_eq!(serde_json::from_value::<ServerMsg>(json).unwrap(), scene);
+    // An older hub's message: not live.
+    let older = json!({"type": "scene", "name": "talk", "at_ms": 1.0, "moved": 0});
+    assert!(matches!(
+        serde_json::from_value::<ServerMsg>(older).unwrap(),
+        ServerMsg::Scene { live: false, .. }
+    ));
 }

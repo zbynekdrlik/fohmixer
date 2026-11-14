@@ -458,6 +458,17 @@ exclude_re = [
   # mute-guard.spec.ts reads the detail's switch and the strip's
   # data-guarded, and a tap that writes nothing.
   "fohmixer-ui/src/components/detail_guard\\.rs.*(replace|in) (strip_guard_mark|strip_guard)( |$)",
+  # store/live/scenes.rs (#207): set_scene_rule, the scene rule's request
+  # through sector_request (the socket), and on_scene, the hub's scene into
+  # the store's signals by the tested behave::scenes::flashes;
+  # components/detail_scenes.rs fader_now (the volume slot read into the
+  # tested behave::scenes::fader_db) and components/scene_news.rs
+  # local_hours_minutes (js_sys::Date); scenes.spec.ts adds and edits a
+  # rule in the detail, posts a scene and reads the foot's line and the
+  # flash.
+  "fohmixer-ui/src/store/live/scenes\\.rs.*(replace|in) LiveStore::(set_scene_rule|on_scene)( |$)",
+  "fohmixer-ui/src/components/detail_scenes\\.rs.*(replace|in) fader_now( |$)",
+  "fohmixer-ui/src/components/scene_news\\.rs.*(replace|in) local_hours_minutes( |$)",
   # pages/ableset.rs (#90): take_return (location.hash read through the
   # tested behave::ableset::returns_to_tab, then history.replaceState
   # without it); ableset.spec.ts's sign-in comes back to #ableset and finds

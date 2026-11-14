@@ -301,7 +301,7 @@ async fn a_scene_learns_its_name_records_tells_and_answers_what_moved() {
     let told = taken(&page);
     assert!(matches!(&told[0], ServerMsg::Scenes { doc } if doc.knows("song")));
     assert!(
-        matches!(&told[1], ServerMsg::Scene { name, moved: 0, at_ms } if name == "song" && *at_ms > 0.0),
+        matches!(&told[1], ServerMsg::Scene { name, moved: 0, at_ms, live: true } if name == "song" && *at_ms > 0.0),
         "{told:?}"
     );
     assert_eq!(
@@ -326,11 +326,9 @@ async fn a_scene_learns_its_name_records_tells_and_answers_what_moved() {
     assert_eq!(now.known, 3);
     // A later page is told the last scene.
     let later = attach(&mut router, 2);
-    assert!(
-        taken(&later)
-            .iter()
-            .any(|m| matches!(m, ServerMsg::Scene { name, moved: 1, .. } if name == "intro"))
-    );
+    assert!(taken(&later).iter().any(
+        |m| matches!(m, ServerMsg::Scene { name, moved: 1, live: false, .. } if name == "intro")
+    ));
 }
 
 #[tokio::test]

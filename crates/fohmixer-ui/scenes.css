@@ -1,0 +1,246 @@
+/* The scene automation (#207; the owner's approved mockup
+   docs/mockups/scenes-v3.html). Frame 1: the channel detail's SCENES
+   (components/detail_scenes.rs), a section of the right box after LAYOUTS
+   and before MUTE ALARM, the alarm's calm section look; each scene this
+   strip has a rule for is one row (its name, the MUTE chip, ✕) with its dB
+   and time in sight (− value +, = FADER, − time +); the scene that came
+   last has a green left edge; + ADD SCENE opens a sheet of the scenes
+   heard. Frame 2: the column foot's small line `scene <name> · HH:MM` and
+   the mixer's edge flashing green once (components/scene_news.rs). */
+
+.scn-sec {
+    flex: none;
+    margin-top: 6px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+}
+
+.scn-empty {
+    margin: 6px 0;
+    color: var(--faint);
+    font: 600 11px/14px var(--ui);
+}
+
+.scn-item {
+    margin-top: 5px;
+    border-radius: 8px;
+    background: #15151f;
+}
+
+.scn-item[data-last="true"] {
+    box-shadow: inset 3px 0 0 var(--ok);
+}
+
+.scn-item[data-refused="true"] {
+    outline: 1px solid var(--mute);
+}
+
+.scn-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 40px;
+    padding: 0 4px 0 9px;
+}
+
+.scn-name {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text);
+    font: 600 15px/18px var(--display);
+    letter-spacing: 0.03em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.scn-btn,
+.scn-x,
+.scn-add,
+.scn-pick {
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    font: 600 12px/14px var(--display);
+    letter-spacing: 0.06em;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.scn-mute {
+    flex: none;
+    margin-left: auto;
+    height: 30px;
+    padding: 0 8px;
+    font-size: 11px;
+}
+
+.scn-mute[data-mute="mute"] {
+    background: var(--panel-hi);
+    color: var(--mute);
+}
+
+.scn-mute[data-mute="unmute"] {
+    background: var(--panel-hi);
+    color: var(--text);
+}
+
+.scn-x {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border-color: transparent;
+    color: var(--faint);
+    font-size: 15px;
+}
+
+.scn-edit {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    padding: 0 6px 8px;
+}
+
+.scn-sm {
+    flex: 0 0 30px;
+    height: 34px;
+    font-size: 15px;
+}
+
+.scn-take {
+    flex: 0 0 48px;
+    height: 34px;
+    font-size: 10px;
+}
+
+.scn-num {
+    flex: 0 0 64px;
+    color: var(--muted);
+    font: 500 12px/14px var(--mono);
+    text-align: center;
+    white-space: nowrap;
+}
+
+.scn-num.scn-t {
+    flex: 0 0 38px;
+}
+
+.scn-sep {
+    flex: 0 0 4px;
+}
+
+.scn-add {
+    width: 100%;
+    margin-top: 6px;
+    padding: 10px 0;
+    border-style: dashed;
+    color: var(--accent);
+    font-size: 13px;
+    letter-spacing: 0.08em;
+}
+
+/* The picker: a sheet over the screen, one tap picks. */
+.scn-sheet {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(7, 7, 12, 0.6);
+}
+
+.scn-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: min(520px, calc(100vw - 32px));
+    max-height: min(620px, calc(100vh - 32px));
+    padding: 14px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--section);
+}
+
+.scn-sheet-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    color: var(--text);
+    font: 700 18px/22px var(--display);
+    letter-spacing: 0.06em;
+}
+
+.scn-picks {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 6px;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.scn-pick {
+    padding: 12px 8px;
+    background: var(--panel);
+    color: var(--text);
+    font-size: 15px;
+    text-align: left;
+}
+
+.scn-pick small {
+    display: block;
+    color: var(--faint);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+}
+
+.scn-pick[data-refused="true"] {
+    border-color: var(--mute);
+}
+
+/* The column foot's line: calm, one line, cut with an ellipsis. */
+.column-foot .scene-line {
+    overflow: hidden;
+    color: var(--muted);
+    font: 500 10px/13px var(--mono);
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* The edge's flash: once, about 1 s; reduced motion a steady outline that
+   goes after 1 s. Never takes a touch. */
+.scene-flash {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    border-radius: 14px;
+    pointer-events: none;
+    opacity: 0;
+}
+
+@keyframes scene-flash {
+    0% { opacity: 1; box-shadow: inset 0 0 0 6px var(--ok); }
+    100% { opacity: 0; box-shadow: inset 0 0 0 6px var(--ok); }
+}
+
+@keyframes scene-outline {
+    0%, 99% { opacity: 1; outline: 4px solid var(--ok); outline-offset: -4px; }
+    100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+    .scene-flash {
+        animation: scene-flash 1s ease-out 1;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .scene-flash {
+        animation: scene-outline 1s steps(1, end) 1;
+    }
+}
