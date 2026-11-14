@@ -21,11 +21,32 @@ import {
 // LU 6 + RU 6), no rail and no extra tab; on the FOH hub the MBC faders are in
 // ARRANGE's pool, never a tab or a VIEWS button, and a fader moved on either
 // page moves on the other. With the MBC hub gone the FOH page says MBC is not
-// running on the MBC strips only.
+// running on the MBC strips only. A down MBC strip's hint names the MBC PC,
+// where the MBC Live runs, on either page; a FOH Live's the FOH PC.
 
 const IPAD = { width: 1194, height: 834 };
 const UP = 15_000;
 const VOLUME = "live_set tracks 0 mixer_device volume";
+const MBC_HINT = "Start Live on the MBC PC. The faders come back by themselves.";
+
+/** Every MBC strip on the page is down and shows the MBC PC's hint, read in
+ * one task inside the page (#192: the page re-creates a Live's strips when
+ * it recomposes their lines). */
+async function mbcStripsSayStartOnTheMbcPc(page: Page) {
+  const wrong = () =>
+    page.evaluate((hint) => {
+      const strips = [...document.querySelectorAll('[data-testid="strip"][data-instance="mbc"]')];
+      if (strips.length === 0) return ["no strip"];
+      return strips
+        .filter(
+          (s) =>
+            s.getAttribute("data-live") !== "off" ||
+            s.querySelector('[data-testid="strip-hint"]')?.textContent !== hint,
+        )
+        .map((s) => `${s.getAttribute("data-label")}: ${s.getAttribute("data-live")}`);
+    }, MBC_HINT);
+  await expect.poll(wrong, { timeout: UP, message: "every MBC strip down with the MBC PC's hint" }).toEqual([]);
+}
 
 /** The FOH hub's sectors with RD paged to an MBC layout of two MBC faders. */
 const FOH_DOC: SectorsDoc = {
@@ -71,8 +92,15 @@ async function mbcOnline(bearer: string): Promise<boolean> {
 
 test.describe("The MBC hub and its instance link (#184)", () => {
   let live: LiveClient | null = null;
+  /** A test stopped the MBC host (its Live): restarted on its own set. */
+  let mbcHostStopped = false;
 
   test.afterEach(async () => {
+    if (mbcHostStopped) {
+      // `restart`, never `start`: `start` takes the FOH test site.
+      await harness("/host/mbc/restart");
+      mbcHostStopped = false;
+    }
     await harness("/mbc-hub/start").catch(() => undefined);
     const bearer = await token();
     await until(() => mbcOnline(bearer), (on) => on, "mbc back online on the FOH hub", UP);
@@ -186,6 +214,9 @@ test.describe("The MBC hub and its instance link (#184)", () => {
     for (const strip of await sectorStrips(page, "rd").all()) {
       await expect(strip).toHaveAttribute("data-live", "off", { timeout: UP });
     }
+    // The MBC Live runs on the MBC PC: its strips say start it there, on the
+    // FOH page too (#184).
+    await mbcStripsSayStartOnTheMbcPc(page);
     // The foot names no linked Live (spec C8): the MBC strips say it.
     await expect(page.locator('[data-testid="badge"][data-instance="mbc"]')).toHaveCount(0);
     // The FOH Lives say nothing.
@@ -197,6 +228,23 @@ test.describe("The MBC hub and its instance link (#184)", () => {
     for (const strip of await sectorStrips(page, "rd").all()) {
       await expect(strip).not.toHaveAttribute("data-live", /.*/, { timeout: UP });
     }
+  });
+
+  test("with the MBC Live not running the MBC page's strips say start it on the MBC PC", async ({ page }) => {
+    await openMbc(page);
+    await expect(sectorStrips(page, "lu")).toHaveCount(6, { timeout: UP });
+    await expect(page.getByTestId("strip-hint")).toHaveCount(0);
+    mbcHostStopped = true;
+    await harness("/host/mbc/stop");
+    await mbcStripsSayStartOnTheMbcPc(page);
+    const hint = sectorStrips(page, "lu").first().getByTestId("strip-hint");
+    await expect(hint).toHaveText(MBC_HINT);
+    await expect(hint).toBeVisible();
+    // Back by itself once Live runs again.
+    await harness("/host/mbc/restart");
+    mbcHostStopped = false;
+    await expect(page.getByTestId("strip-hint")).toHaveCount(0, { timeout: UP });
+    await expect(sectorStrips(page, "lu")).toHaveCount(6);
   });
 
   for (const size of [IPAD, { width: 844, height: 390 }]) {

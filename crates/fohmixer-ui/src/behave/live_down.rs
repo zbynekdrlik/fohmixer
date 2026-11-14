@@ -52,9 +52,13 @@ impl LiveWord {
 
     /// What to do about it, dim in a down strip's fader area (#178, the
     /// main session's ruling: the column's foot keeps its height, so the
-    /// hint lives on the strips; none while on).
-    pub fn hint(self) -> Option<&'static str> {
+    /// hint lives on the strips; none while on). A Live that is not
+    /// running is started on the PC it runs on: the MBC Live (instance
+    /// `mbc`, the name its installer gives it) on the MBC PC, every other
+    /// Live on the FOH PC (#184).
+    pub fn hint(self, instance: &str) -> Option<&'static str> {
         match self {
+            Self::NotRunning if instance == MBC_INSTANCE => Some(MBC_NOT_RUNNING_HINT),
             Self::NotRunning => Some(NOT_RUNNING_HINT),
             Self::ScriptMissing => Some(SCRIPT_MISSING_HINT),
             Self::NoSet => Some(NO_SET_HINT),
@@ -153,8 +157,15 @@ pub fn live_word(
     }
 }
 
-/// The hint while a Live is not running (the mockup's words).
+/// The hint while a Live of the FOH PC is not running (the mockup's words).
 pub const NOT_RUNNING_HINT: &str = "Start Live on the FOH PC. The faders come back by themselves.";
+
+/// The MBC Live's instance name (fixed by its installer, `FohmixerMbc.ps1`).
+pub const MBC_INSTANCE: &str = "mbc";
+
+/// The hint while the MBC Live is not running: it runs on the MBC PC (#184).
+pub const MBC_NOT_RUNNING_HINT: &str =
+    "Start Live on the MBC PC. The faders come back by themselves.";
 
 /// The hint while Live runs without its FohMixer script (#184 PR D).
 pub const SCRIPT_MISSING_HINT: &str =
@@ -363,19 +374,43 @@ mod tests {
 
     #[test]
     fn a_down_strip_says_what_to_do() {
-        assert_eq!(LiveWord::NotRunning.hint(), Some(NOT_RUNNING_HINT));
-        assert_eq!(LiveWord::ScriptMissing.hint(), Some(SCRIPT_MISSING_HINT));
+        assert_eq!(LiveWord::NotRunning.hint("band"), Some(NOT_RUNNING_HINT));
+        assert_eq!(
+            LiveWord::ScriptMissing.hint("band"),
+            Some(SCRIPT_MISSING_HINT)
+        );
         assert_eq!(
             SCRIPT_MISSING_HINT,
             "Live runs without the FohMixer script. Run the install again."
         );
-        assert_eq!(LiveWord::NoSet.hint(), Some(NO_SET_HINT));
-        assert_eq!(LiveWord::On.hint(), None);
+        assert_eq!(LiveWord::NoSet.hint("band"), Some(NO_SET_HINT));
+        assert_eq!(LiveWord::On.hint("band"), None);
         assert_eq!(
             NOT_RUNNING_HINT,
             "Start Live on the FOH PC. The faders come back by themselves."
         );
         assert_eq!(NO_SET_HINT, "Open the set in Live.");
+    }
+
+    #[test]
+    fn a_not_running_live_is_started_on_the_pc_it_runs_on() {
+        // #184: the MBC Live runs on the MBC PC; its down strips said FOH.
+        assert_eq!(MBC_INSTANCE, "mbc");
+        assert_eq!(
+            MBC_NOT_RUNNING_HINT,
+            "Start Live on the MBC PC. The faders come back by themselves."
+        );
+        assert_eq!(LiveWord::NotRunning.hint("mbc"), Some(MBC_NOT_RUNNING_HINT));
+        assert_eq!(LiveWord::NotRunning.hint("band"), Some(NOT_RUNNING_HINT));
+        assert_eq!(LiveWord::NotRunning.hint("master"), Some(NOT_RUNNING_HINT));
+        // Only the not-running hint names a PC: the others are the same
+        // for the MBC Live.
+        assert_eq!(
+            LiveWord::ScriptMissing.hint("mbc"),
+            Some(SCRIPT_MISSING_HINT)
+        );
+        assert_eq!(LiveWord::NoSet.hint("mbc"), Some(NO_SET_HINT));
+        assert_eq!(LiveWord::On.hint("mbc"), None);
     }
 
     #[test]
