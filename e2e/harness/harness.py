@@ -47,6 +47,10 @@ what only the harness can do:
     POST /hub/mute_alarms/reset          the empty mute_alarms.json back (no strip marked)
     POST /hub/mute_guards {"doc": {...}} a new mute_guards.json (#203; the hub polls it)
     POST /hub/mute_guards/reset          the empty mute_guards.json back (no strip guarded)
+    POST /hub/scenes/reset               the empty scenes.json back (#207: no scene heard, no rule)
+    GET  /hub/automation                 {"token": ...}: the FOH hub's automation token
+                                         (#207, generated at start, stored with
+                                         ``automation set-token``) for ``POST /api/scene``
     GET  /hub/events                     {"events": [...]}: every record of the
                                          hub's event log (#43, ``logs/events-*.jsonl``
                                          in the data folder), oldest day first
@@ -184,6 +188,7 @@ import json
 import math
 import os
 import queue
+import secrets
 import shutil
 import signal
 import subprocess
@@ -346,6 +351,27 @@ def mbc_hub_config(http_port, mbc_port, link_port, lufs_port):
         f"[lufs]\nport = {lufs_port}\n"
         f'[link]\nlisten = "127.0.0.1:{link_port}"\ninstance = "mbc"\n'
     )
+
+
+def automation_token():
+    """One new automation token (#207): 43 URL-safe characters."""
+    return secrets.token_urlsafe(32)
+
+
+def store_automation_token(binary, data, token):
+    """``fohmixer-hub automation set-token`` into the data folder ``data``;
+    the token only on its stdin (never argv, never printed)."""
+    env = dict(os.environ, FOHMIXER_DATA=data)
+    done = subprocess.run(
+        [binary, "automation", "set-token"],
+        input=token + "\n",
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    if done.returncode != 0:
+        raise RuntimeError(f"automation set-token: exit {done.returncode}: {done.stderr.strip()}")
 
 
 def link_secret_line():
@@ -781,6 +807,7 @@ MUTE_ALARMS_EMPTY = {"mute_alarms": {}}
 # The mute guard's marks the hub starts with (#203): no strip guarded by the
 # tablet (the layout's own guards still hold).
 MUTE_GUARDS_EMPTY = {"mute_guards": {}}
+SCENES_EMPTY = {"known": [], "rules": {}}
 
 
 class Harness:
@@ -851,6 +878,12 @@ class Harness:
         self.reset_colors()
         self.reset_mute_alarms()
         self.reset_mute_guards()
+        self.reset_scenes()
+        # The scene API's token (#207): the FOH hub's only (the MBC hub takes
+        # no scene), stored before the hub starts, which reads it then.
+        self.automation = automation_token() if args.hub else None
+        if self.automation:
+            store_automation_token(args.hub, self.data, self.automation)
         # The proxy needs no hub to listen; it is up before the hub starts. A
         # process of its own (#43): as a thread of this one it shared the
         # interpreter's lock, and a GET /hub/events held every page's link.
@@ -996,6 +1029,13 @@ class Harness:
         """The empty document: no strip guarded by the tablet (#203)."""
         self.write_mute_guards(MUTE_GUARDS_EMPTY)
 
+    def reset_scenes(self):
+        """The empty scenes.json (#207): no scene heard, no rule."""
+        path = os.path.join(self.data, "scenes.json")
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(SCENES_EMPTY, f, indent=1)
+        os.replace(path + ".tmp", path)
+
     def reset_mute_alarms(self):
         """The empty document: no strip marked, whatever a test switched (#188)."""
         self.write_mute_alarms(MUTE_ALARMS_EMPTY)
@@ -1005,6 +1045,8 @@ class Harness:
         parts = [p for p in path.split("/") if p]
         if method == "GET" and parts == ["health"]:
             return 200, {"ok": True}
+        if method == "GET" and parts == ["hub", "automation"]:
+            return 200, {"token": self.automation}
         if method == "GET" and parts == ["hub", "events"]:
             return 200, {"events": event_records(self.data)}
         if method == "GET" and parts == ["sim", "eq"]:
@@ -1086,6 +1128,9 @@ class Harness:
             return 200, {"ok": True}
         if parts == ["hub", "mute_guards", "reset"]:
             self.reset_mute_guards()
+            return 200, {"ok": True}
+        if parts == ["hub", "scenes", "reset"]:
+            self.reset_scenes()
             return 200, {"ok": True}
         if parts == ["sim", "eq", "clear"]:
             clear_sim_eq(self.data)
