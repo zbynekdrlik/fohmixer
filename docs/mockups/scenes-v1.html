@@ -1,0 +1,350 @@
+<!doctype html>
+<!-- fohmixer #207: mockup v1 of the scene automation's look. (1) The channel
+     detail (hold SEL): the middle panel gets a SCENES tab beside EQ (on the
+     MBC hub, where EQ is off, SCENES is the panel). Per scene the fader's
+     target (STORE takes the fader's dB now, ± steps it), mute / unmute and
+     the glide time (2 s default). (2) The mixer page when a scene arrives:
+     the mixer's edge flashes green once and a calm line in the column names
+     the scene and what moved; the moving faders glide. Tokens from
+     style.css, fonts the app's own files by relative path. Invented names,
+     no site data. Plain JS. -->
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Scenes v1</title>
+<style>
+@font-face { font-family: "Barlow Condensed"; font-weight: 700; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 600; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 700; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-weight: 500; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2"); }
+
+:root {
+    color-scheme: dark;
+    --bg: #07070c;
+    --page: #0b0b12;
+    --section: #151522;
+    --panel: #1a1a28;
+    --panel-hi: #20203a;
+    --track: #0a0a14;
+    --line: #2a2a44;
+    --accent: #4ecdc4;
+    --text: #eaeaf0;
+    --muted: #9a9ab4;
+    --faint: #5c5c78;
+    --go: #36d67a;
+    --mute: #e63946;
+    --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+    --ui: "Barlow", -apple-system, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--ui); }
+body { padding: 16px; }
+
+.doc { max-width: 1194px; margin: 0 auto 14px; line-height: 1.5; font-size: 15px; }
+.doc h1 { font-family: var(--display); font-size: 26px; margin: 0 0 6px; letter-spacing: 0.04em; }
+.doc p, .doc li { color: var(--muted); }
+.doc b { color: var(--text); }
+.frame-title { max-width: 1194px; margin: 22px auto 8px; font-family: var(--display);
+    font-size: 18px; letter-spacing: 0.06em; color: var(--muted); }
+.fit { max-width: 1194px; margin: 0 auto; overflow: hidden; }
+.ipad { width: 1194px; height: 834px; background: var(--page); border: 1px solid var(--line);
+    border-radius: 14px; transform-origin: top left; position: relative; user-select: none;
+    -webkit-user-select: none; overflow: hidden; }
+
+/* ---------- frame 1: the channel detail ---------- */
+.dhead { height: 52px; display: flex; align-items: center; padding: 0 8px; gap: 10px;
+    border-bottom: 1px solid var(--line); }
+.back { font-family: var(--display); font-size: 15px; color: var(--accent); border: 1px solid var(--accent);
+    border-radius: 8px; padding: 9px 14px; letter-spacing: 0.06em; }
+.chip { margin-left: auto; font-family: var(--display); font-size: 18px; background: #6e6e88;
+    border-radius: 6px; padding: 4px 12px; }
+.chip-sub { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-right: auto; }
+.steps { display: flex; gap: 6px; }
+.steps div { width: 46px; height: 38px; border-radius: 8px; background: var(--panel);
+    display: flex; align-items: center; justify-content: center; color: var(--muted); }
+.dbody { display: grid; grid-template-columns: 230px 1fr 290px; gap: 10px; padding: 10px;
+    height: calc(834px - 52px); }
+.card { background: var(--panel); border-radius: 10px; padding: 10px; min-height: 0; }
+.fcol { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.mute { width: 100%; text-align: center; font-family: var(--display); font-size: 20px;
+    padding: 12px 0; border: 1px solid var(--line); border-radius: 8px; }
+.big { font-family: var(--mono); font-size: 26px; }
+.ftrack { flex: 1; width: 100%; position: relative; }
+.ftrack input { position: absolute; left: 50%; top: 0; height: 100%; width: 40px; margin-left: -20px;
+    writing-mode: vertical-lr; direction: rtl; accent-color: var(--accent); }
+.flabel { font-size: 11px; color: var(--faint); text-align: center; }
+
+.tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+.tabs div { font-family: var(--display); font-size: 14px; letter-spacing: 0.1em; padding: 8px 16px;
+    border-radius: 8px; color: var(--muted); border: 1px solid var(--line); }
+.tabs div.on { color: var(--text); background: var(--panel-hi); border-bottom: 2px solid var(--accent); }
+.hint { font-size: 12px; color: var(--faint); margin: 0 0 8px; }
+.hint b { color: var(--muted); font-family: var(--mono); }
+
+.scenes { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; max-height: 680px; }
+.srow { display: grid; grid-template-columns: 120px 64px 170px 104px 64px 36px; gap: 6px; align-items: center;
+    padding: 4px 6px; border-radius: 8px; background: #15151f; min-height: 46px; }
+.srow.now { box-shadow: inset 3px 0 0 var(--go); }
+.sname { font-family: var(--display); font-size: 16px; letter-spacing: 0.03em; }
+.sname small { display: block; font-family: var(--ui); font-size: 10px; color: var(--go); }
+.store { font-family: var(--display); font-size: 13px; letter-spacing: 0.08em; text-align: center;
+    padding: 10px 0; border-radius: 6px; border: 1px solid var(--line); color: var(--muted); cursor: pointer; }
+.target { display: grid; grid-template-columns: 36px 1fr 36px; align-items: center; gap: 2px; }
+.target .pm { height: 36px; border-radius: 6px; background: var(--panel); text-align: center; line-height: 36px;
+    color: var(--muted); cursor: pointer; }
+.target .val { text-align: center; font-family: var(--mono); font-size: 14px; white-space: nowrap; }
+.target .val.none { color: var(--faint); }
+.mutec, .timec { font-family: var(--display); font-size: 13px; letter-spacing: 0.06em; text-align: center;
+    padding: 10px 0; border-radius: 6px; border: 1px solid var(--line); color: var(--faint); cursor: pointer; }
+.mutec.m { color: var(--mute); border-color: rgba(230,57,70,0.45); }
+.mutec.u { color: var(--text); }
+.timec.set { color: var(--text); }
+.clear { text-align: center; color: var(--faint); cursor: pointer; font-size: 18px; }
+.colhead { display: grid; grid-template-columns: 120px 64px 170px 104px 64px 36px; gap: 6px; padding: 0 6px 4px;
+    font-size: 10px; letter-spacing: 0.1em; color: var(--faint); font-family: var(--display); }
+
+.side h4 { margin: 0 0 8px; font-family: var(--display); font-size: 12px; letter-spacing: 0.1em; color: var(--muted); }
+.side .box { height: 60px; border-radius: 8px; background: var(--track); margin-bottom: 14px; }
+.side .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 14px; }
+.side .row2 div { padding: 10px 0; text-align: center; border-radius: 8px; border: 1px solid var(--line);
+    font-family: var(--display); font-size: 13px; color: var(--muted); }
+
+/* ---------- frame 2: the mixer as a scene arrives ---------- */
+.mix { display: grid; grid-template-columns: 1fr 132px 1fr; gap: 12px; padding: 6px; height: 100%; }
+.half { display: flex; gap: 4px; }
+.half.right { justify-content: flex-end; }
+.strip { width: 78px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px;
+    display: flex; flex-direction: column; }
+.strip .name { height: 37px; background: #15151f; border-radius: 4px; font-family: var(--display); font-size: 15px;
+    display: flex; align-items: center; justify-content: center; }
+.strip .db { text-align: center; font-family: var(--mono); font-size: 12px; color: var(--muted); margin: 6px 0; }
+.strip .muted { font-size: 9px; color: var(--mute); text-align: center; height: 11px; letter-spacing: 0.06em; }
+.strip .travel { flex: 1; position: relative; }
+.strip .groove { position: absolute; left: 50%; top: 6px; bottom: 6px; width: 10px; margin-left: -5px;
+    background: var(--track); border-radius: 3px; }
+.strip .cap { position: absolute; left: 50%; width: 44px; margin-left: -22px; height: 26px; border-radius: 4px;
+    background: #2c2c40; border: 1px solid #4a4a66; transform: translateY(-50%); }
+.strip .sel { height: 36px; border-radius: 4px; background: #15151f; font-family: var(--display); font-size: 13px;
+    color: var(--muted); display: flex; align-items: center; justify-content: center; }
+.column { background: var(--section); border: 1px solid var(--line); border-radius: 10px; padding: 8px 6px;
+    display: flex; flex-direction: column; gap: 8px; }
+.page-tab { font-family: var(--display); font-size: 22px; text-align: center; padding: 6px 0; border-radius: 8px;
+    background: var(--panel-hi); border-bottom: 2px solid var(--accent); letter-spacing: 0.08em; }
+.cbtn { font-family: var(--display); font-size: 14px; text-align: center; padding: 10px 0; border-radius: 8px;
+    border: 1px solid var(--line); color: var(--muted); }
+.sceneline { border-radius: 8px; padding: 6px 6px; font-size: 11px; line-height: 1.35; color: var(--faint);
+    border: 1px solid var(--line); min-height: 52px; }
+.sceneline b { display: block; font-family: var(--display); font-size: 15px; color: var(--muted); letter-spacing: 0.05em; }
+.sceneline .dot { display: inline-block; width: 6px; height: 6px; border-radius: 3px; background: var(--go);
+    margin-right: 5px; vertical-align: middle; opacity: 0.8; }
+.flash { position: absolute; inset: 0; border-radius: 14px; pointer-events: none; box-shadow: inset 0 0 0 0 var(--go);
+    opacity: 0; }
+.flash.on { animation: flash 1s ease-out 1; }
+@keyframes flash {
+    0% { opacity: 1; box-shadow: inset 0 0 0 6px var(--go); }
+    100% { opacity: 0; box-shadow: inset 0 0 0 6px var(--go); }
+}
+.sim { max-width: 1194px; margin: 8px auto 0; display: flex; gap: 6px; flex-wrap: wrap; }
+.sim button { font-family: var(--display); font-size: 14px; letter-spacing: 0.06em; background: var(--panel);
+    color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+</style>
+</head>
+<body>
+
+<div class="doc">
+    <h1>Scény a zvuk — návrh v1 (#207)</h1>
+    <p>Companion pošle fohmixeru názov scény. Fohmixer podľa pravidiel <b>plynulo</b> (štandardne za 2 s) posunie fadre a prípadne mutne/odmutne.</p>
+    <ul>
+        <li><b>Nastavenie (obrázok 1):</b> podrž SEL na fadri → detail. V strede pribudne záložka <b>SCENES</b> (na MBC, kde EQ nie je, je to celý stredný panel). Pre každú scénu: posuň fader kam chceš a ťukni <b>STORE</b> (uloží aktuálne dB); ± jemne doladí; MUTE/UNMUTE; čas (ťuk prepína 1 / 2 / 3 / 5 / 8 s); ✕ zruší. Prázdne = scéna s fadrom nerobí nič.</li>
+        <li><b>Počas bohoslužby (obrázok 2):</b> keď príde scéna, okraj mixera raz blikne nazeleno a v stĺpci je pokojný riadok so scénou a počtom fadrov. Ak sa fadra dotkneš počas presunu, presun sa zastaví (ruka vyhráva).</li>
+    </ul>
+    <p>Mená fadrov sú vymyslené. Vyskúšaj: hýb fadrom vľavo, STORE, ±, MUTE, čas; dole tlačidlá simulujú príchod scény.</p>
+</div>
+
+<div class="frame-title">1 · Detail fadra (podrž SEL) — záložka SCENES</div>
+<div class="fit"><div class="ipad" id="detail">
+    <div class="dhead">
+        <div class="back">← BACK TO MIX</div>
+        <div class="chip">CG</div><div class="chip-sub">MBC · mbc</div>
+        <div class="steps"><div>◀</div><div>▶</div></div>
+    </div>
+    <div class="dbody">
+        <div class="card fcol">
+            <div class="mute">MUTE</div>
+            <div class="big" id="fdb">-11.4</div>
+            <div class="ftrack"><input type="range" id="fader" min="-60" max="6" step="0.1" value="-11.4"></div>
+            <div class="flabel">drag to set, then STORE</div>
+        </div>
+        <div class="card">
+            <div class="tabs"><div>EQ</div><div class="on">SCENES</div></div>
+            <p class="hint">Fader now <b id="now">-11.4 dB</b>. STORE saves it for that scene. Empty = the scene leaves this fader alone. Default glide 2 s.</p>
+            <div class="colhead"><span>SCENE</span><span></span><span>FADER TO</span><span>MUTE</span><span>TIME</span><span></span></div>
+            <div class="scenes" id="scenes"></div>
+        </div>
+        <div class="card side">
+            <h4>PAN</h4><div class="box"></div>
+            <h4>LAYOUTS</h4><div class="box" style="height:120px"></div>
+            <h4>MUTE ALARM</h4><div class="row2"><div>OFF</div><div>ON</div></div>
+            <h4>MUTE GUARD</h4><div class="row2"><div>OFF</div><div>HOLD</div></div>
+            <h4>COLOR</h4><div class="box" style="height:40px"></div>
+        </div>
+    </div>
+</div></div>
+
+<div class="frame-title">2 · Mixer, keď príde scéna — zelené bliknutie okraja a riadok v stĺpci</div>
+<div class="fit"><div class="ipad" id="mixer">
+    <div class="mix">
+        <div class="half" id="left"></div>
+        <div class="column">
+            <div class="page-tab">MBC</div>
+            <div class="cbtn">LAYOUTS</div>
+            <div class="cbtn">ARRANGE</div>
+            <div class="sceneline" id="sceneline"><b>SCENE —</b>no scene yet</div>
+        </div>
+        <div class="half right" id="right"></div>
+    </div>
+    <div class="flash" id="flash"></div>
+</div></div>
+<div class="sim" id="sim"></div>
+
+<script>
+"use strict";
+const SCENES = ["ytfast", "5min", "1min", "uvitanie", "chvaly", "modlitba", "evanjelium", "oznamy", "zbierka",
+    "kosik", "svedectvo", "kazen", "ytslow", "default"];
+const TIMES = [2, 3, 5, 8, 1];
+// The CG fader's rules (frame 1), invented values.
+const rules = {
+    "5min": { db: -20, mute: null, time: null },
+    "1min": { db: -12, mute: null, time: null },
+    "ytslow": { db: -30, mute: null, time: 5 },
+};
+let current = "1min";
+const fader = document.getElementById("fader");
+const fmt = (v) => (v <= -60 ? "−∞" : (v > 0 ? "+" : "") + v.toFixed(1)).replace("-", "−");
+
+function row(scene) {
+    const r = rules[scene] || {};
+    const el = document.createElement("div");
+    el.className = "srow" + (scene === current ? " now" : "");
+    const has = r.db !== undefined && r.db !== null;
+    el.innerHTML = `
+        <div class="sname"></div>
+        <div class="store">STORE</div>
+        <div class="target"><div class="pm">−</div><div class="val ${has ? "" : "none"}">${has ? fmt(r.db) + " dB" : "—"}</div><div class="pm">+</div></div>
+        <div class="mutec ${r.mute === "mute" ? "m" : r.mute === "unmute" ? "u" : ""}">${r.mute === "mute" ? "MUTE" : r.mute === "unmute" ? "UNMUTE" : "—"}</div>
+        <div class="timec ${r.time ? "set" : ""}">${r.time || 2} s</div>
+        <div class="clear">✕</div>`;
+    el.querySelector(".sname").textContent = scene;
+    if (scene === current) {
+        const s = document.createElement("small");
+        s.textContent = "NOW";
+        el.querySelector(".sname").append(s);
+    }
+    const get = () => (rules[scene] = rules[scene] || { db: null, mute: null, time: null });
+    el.querySelector(".store").onclick = () => { get().db = +fader.value; draw(); };
+    const pms = el.querySelectorAll(".pm");
+    pms[0].onclick = () => { const g = get(); g.db = Math.max(-60, (g.db ?? +fader.value) - 1); draw(); };
+    pms[1].onclick = () => { const g = get(); g.db = Math.min(6, (g.db ?? +fader.value) + 1); draw(); };
+    el.querySelector(".mutec").onclick = () => { const g = get(); g.mute = g.mute === null ? "mute" : g.mute === "mute" ? "unmute" : null; draw(); };
+    el.querySelector(".timec").onclick = () => { const g = get(); const i = TIMES.indexOf(g.time || 2); g.time = TIMES[(i + 1) % TIMES.length]; if (g.time === 2) g.time = null; draw(); };
+    el.querySelector(".clear").onclick = () => { delete rules[scene]; draw(); };
+    return el;
+}
+
+function draw() {
+    document.getElementById("scenes").replaceChildren(...SCENES.map(row));
+    document.getElementById("fdb").textContent = fmt(+fader.value);
+    document.getElementById("now").textContent = fmt(+fader.value) + " dB";
+}
+fader.oninput = draw;
+draw();
+
+// ---- frame 2 ----
+const strips = {
+    left: [["HAND1", 0, true], ["HAND2", 0, false], ["HAND3", -8, false], ["MOD1", -60, true], ["MOD2", -60, false], ["MOD3", -60, false]],
+    right: [["CG", -11.4, false], ["BAND", 0, false], ["KEYS", -6, false], ["RUCHY", -60, false], ["STREAM", 0, false], ["CLICK", -60, false]],
+};
+// What each scene does on this mixer (invented).
+const sceneRules = {
+    "5min": [["CG", -20, null]],
+    "1min": [["CG", -12, null]],
+    "uvitanie": [["CG", -60, null], ["HAND1", null, "unmute"]],
+    "ytslow": [["CG", -30, null]],
+};
+const capY = (db) => {
+    const t = db <= -60 ? 0 : (db + 60) / 66;
+    return `${(1 - t) * 100}%`;
+};
+const els = {};
+for (const side of ["left", "right"]) {
+    for (const [name, db, muted] of strips[side]) {
+        const s = document.createElement("div");
+        s.className = "strip";
+        s.innerHTML = `<div class="name"></div><div class="muted">${muted ? "MUTED" : ""}</div><div class="db"></div>
+            <div class="travel"><div class="groove"></div><div class="cap"></div></div><div class="sel">SEL</div>`;
+        s.querySelector(".name").textContent = name;
+        document.getElementById(side).append(s);
+        els[name] = { el: s, db, muted };
+        place(name);
+    }
+}
+function place(name) {
+    const s = els[name];
+    s.el.querySelector(".cap").style.top = capY(s.db);
+    s.el.querySelector(".db").textContent = fmt(s.db);
+    s.el.querySelector(".muted").textContent = s.muted ? "MUTED" : "";
+}
+function glide(name, to, ms) {
+    const s = els[name], from = s.db, t0 = performance.now();
+    const step = (now) => {
+        const k = Math.min(1, (now - t0) / ms);
+        s.db = from + (to - from) * k;
+        place(name);
+        if (k < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+}
+function arrive(scene) {
+    const todo = sceneRules[scene] || [];
+    const f = document.getElementById("flash");
+    if (todo.length) { f.classList.remove("on"); void f.offsetWidth; f.classList.add("on"); }
+    for (const [name, db, mute] of todo) {
+        if (db !== null) glide(name, db, 2000);
+        if (mute === "unmute") { els[name].muted = false; place(name); }
+        if (mute === "mute") { els[name].muted = true; place(name); }
+    }
+    const line = document.getElementById("sceneline");
+    line.innerHTML = "";
+    const b = document.createElement("b");
+    b.textContent = `SCENE ${scene}`;
+    line.append(b);
+    const t = document.createElement("span");
+    t.innerHTML = todo.length ? `<span class="dot"></span>${todo.length} fader${todo.length > 1 ? "s" : ""} moved` : "nothing to move";
+    line.append(t);
+}
+for (const s of ["5min", "1min", "uvitanie", "ytslow", "chvaly"]) {
+    const b = document.createElement("button");
+    b.textContent = `scene: ${s}`;
+    b.onclick = () => arrive(s);
+    document.getElementById("sim").append(b);
+}
+
+function fit() {
+    for (const pad of document.querySelectorAll(".ipad")) {
+        const k = Math.min(1, pad.parentElement.clientWidth / 1194);
+        pad.style.transform = `scale(${k})`;
+        pad.parentElement.style.height = `${834 * k}px`;
+    }
+}
+addEventListener("resize", fit);
+fit();
+</script>
+</body>
+</html>
