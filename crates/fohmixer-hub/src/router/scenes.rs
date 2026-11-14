@@ -351,6 +351,16 @@ impl Router {
                     .events
                     .record("scene_rule", rule_fields("file", None, None, json!({})));
                 tracing::info!("scenes.json was edited by hand: its rules are served");
+                // The last scene is one the document knows: a hand edit that
+                // drops its name forgets it (a later page shows no line).
+                if self
+                    .scenes
+                    .last
+                    .as_ref()
+                    .is_some_and(|l| !self.scenes.store.doc().knows(&l.name))
+                {
+                    self.scenes.last = None;
+                }
                 if self.scenes.on {
                     self.scenes_tell(&self.scenes_message());
                 }

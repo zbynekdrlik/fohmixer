@@ -11,7 +11,7 @@ use leptos::prelude::*;
 
 use super::super::SceneNews;
 use super::{LiveStore, ResultFn};
-use crate::behave::scenes::flashes;
+use crate::behave::scenes::{flashes, keeps_last};
 
 impl LiveStore {
     /// Sets `strip`'s rule for `scene` (none: removed). Whether the socket
@@ -32,6 +32,19 @@ impl LiveStore {
             },
             done,
         )
+    }
+
+    /// The hub's document: kept, and the last scene forgotten when the
+    /// document no longer knows it (`behave::scenes::keeps_last`).
+    pub(super) fn on_scenes(self, doc: fohmixer_proto::scenes::ScenesDoc) {
+        let forget = self
+            .scene
+            .try_with(|s| s.as_ref().is_some_and(|n| !keeps_last(&doc, &n.name)))
+            .unwrap_or(false);
+        if forget {
+            let _ = self.scene.try_set(None);
+        }
+        let _ = self.scenes.try_update(|scenes| scenes.put(doc));
     }
 
     /// A scene the hub told: the last one kept, and a flash when it came

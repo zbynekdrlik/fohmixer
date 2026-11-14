@@ -466,7 +466,7 @@ exclude_re = [
   # local_hours_minutes (js_sys::Date); scenes.spec.ts adds and edits a
   # rule in the detail, posts a scene and reads the foot's line and the
   # flash.
-  "fohmixer-ui/src/store/live/scenes\\.rs.*(replace|in) LiveStore::(set_scene_rule|on_scene)( |$)",
+  "fohmixer-ui/src/store/live/scenes\\.rs.*(replace|in) LiveStore::(set_scene_rule|on_scene|on_scenes)( |$)",
   "fohmixer-ui/src/components/detail_scenes\\.rs.*(replace|in) fader_now( |$)",
   "fohmixer-ui/src/components/scene_news\\.rs.*(replace|in) local_hours_minutes( |$)",
   # pages/ableset.rs (#90): take_return (location.hash read through the

@@ -413,6 +413,9 @@ async fn a_hand_edit_is_taken_recorded_and_followed() {
     assert!(router.scenes.watched.is_empty());
     let page = attach(&mut router, 1);
     taken(&page);
+    router.scene_came("talk", "lan", "10.0.0.5");
+    taken(&page);
+    records(&rx);
     std::fs::write(
         dir.path().join(SCENES_FILE),
         serde_json::to_string(&ruled()).unwrap(),
@@ -420,11 +423,28 @@ async fn a_hand_edit_is_taken_recorded_and_followed() {
     .unwrap();
     router.handle(RouterMsg::ScenesPoll);
     assert_eq!(taken(&page), vec![ServerMsg::Scenes { doc: ruled() }]);
+    // The edit knows the last scene: it stays.
+    assert_eq!(status(&mut router).scenes.last.as_deref(), Some("talk"));
     assert_eq!(router.scenes.watched.len(), 2);
     assert_eq!(
         of_kind(&records(&rx), "scene_rule"),
         vec![json!({"ev": "scene_rule", "what": "file", "client": null, "peer": null})]
     );
+    // An edit that drops the last scene's name forgets it.
+    std::fs::write(
+        dir.path().join(SCENES_FILE),
+        serde_json::to_string(&ScenesDoc::empty()).unwrap(),
+    )
+    .unwrap();
+    router.handle(RouterMsg::ScenesPoll);
+    assert_eq!(status(&mut router).scenes.last, None);
+    let later = attach(&mut router, 2);
+    assert!(
+        !taken(&later)
+            .iter()
+            .any(|m| matches!(m, ServerMsg::Scene { .. }))
+    );
+    records(&rx);
     // Removed: written back and recorded.
     std::fs::remove_file(dir.path().join(SCENES_FILE)).unwrap();
     router.handle(RouterMsg::ScenesPoll);

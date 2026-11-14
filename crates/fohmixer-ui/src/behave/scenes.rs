@@ -145,6 +145,13 @@ pub fn new_rule(fader: Option<f64>) -> SceneRule {
     }
 }
 
+/// Whether the page keeps the last scene it was told after a new document:
+/// only while the document knows its name (the hub forgets a last scene a
+/// hand edit drops, so the foot's line goes too).
+pub fn keeps_last(doc: &ScenesDoc, name: &str) -> bool {
+    doc.knows(name)
+}
+
 /// Whether `scene` is the one that came last (its row is marked).
 pub fn is_last(last: Option<&str>, scene: &str) -> bool {
     last == Some(scene)
@@ -297,6 +304,13 @@ mod tests {
     fn a_new_row_takes_the_fader_and_two_seconds() {
         assert_eq!(new_rule(Some(-6.5)), rule(Some(-6.5)));
         assert_eq!(new_rule(None), rule(Some(0.0)));
+    }
+
+    #[test]
+    fn the_last_scene_stays_while_the_document_knows_it() {
+        assert!(keeps_last(&doc(), "talk"));
+        assert!(!keeps_last(&doc(), "gone"));
+        assert!(!keeps_last(&ScenesDoc::empty(), "talk"));
     }
 
     #[test]

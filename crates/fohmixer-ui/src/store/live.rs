@@ -818,9 +818,7 @@ impl LiveStore {
                 let _ = self.mute_guards.try_update(|guards| guards.put(doc));
             }
             // The scene rules (#207): the detail's SCENES reads them.
-            ServerMsg::Scenes { doc } => {
-                let _ = self.scenes.try_update(|scenes| scenes.put(doc));
-            }
+            ServerMsg::Scenes { doc } => self.on_scenes(doc),
             // A scene (#207): the foot's line, and a flash of the edge when
             // it came just now and moved a fader.
             ServerMsg::Scene {
