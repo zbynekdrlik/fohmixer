@@ -1,0 +1,669 @@
+<!doctype html>
+<!-- fohmixer #205: mockup v1. While ARRANGE is on, the column shows a NOT
+     PLACED block in place of the rail: every fader no layout holds, as a
+     chip. A chip dragged onto a sector's cell puts the fader there (an
+     empty cell takes it, a strip there goes to NOT PLACED if no other
+     layout holds it); a strip dragged onto the block leaves its layout.
+     Outside ARRANGE nothing changes. Strips simplified from sectors-v2.html,
+     tokens from style.css, fonts the app's own files by relative path.
+     Invented names, no site data. Plain JS, pointer events. -->
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sectors not placed v1</title>
+<style>
+@font-face {
+    font-family: "Barlow Condensed";
+    font-weight: 700;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-700-normal.woff2") format("woff2");
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 600;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+    font-family: "Barlow";
+    font-weight: 700;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-700-normal.woff2") format("woff2");
+}
+@font-face {
+    font-family: "JetBrains Mono";
+    font-weight: 500;
+    font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2");
+}
+
+:root {
+    color-scheme: dark;
+    --bg: #07070c;
+    --page: #0b0b12;
+    --section: #151522;
+    --panel: #1a1a28;
+    --panel-hi: #20203a;
+    --track: #0a0a14;
+    --line: #2a2a44;
+    --accent: #4ecdc4;
+    --accent-dim: rgba(78, 205, 196, 0.28);
+    --band: #4ecdc4;
+    --master: #8b7dff;
+    --text: #eaeaf0;
+    --muted: #9a9ab4;
+    --faint: #5c5c78;
+    --warn: #f5a623;
+    --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+    --ui: "Barlow", -apple-system, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--ui);
+}
+
+body {
+    padding: 16px;
+}
+
+.doc {
+    max-width: 1194px;
+    margin: 0 auto 18px;
+    line-height: 1.5;
+    font-size: 15px;
+}
+
+.doc h1 {
+    font-family: var(--display);
+    font-size: 26px;
+    margin: 0 0 6px;
+    letter-spacing: 0.04em;
+}
+
+.doc p, .doc li { color: var(--muted); }
+.doc b { color: var(--text); }
+
+.frame-title {
+    max-width: 1194px;
+    margin: 22px auto 8px;
+    font-family: var(--display);
+    font-size: 18px;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+}
+
+/* The iPad, 1194 x 834, scaled down to fit a narrow window. */
+.fit {
+    max-width: 1194px;
+    margin: 0 auto;
+    overflow: hidden;
+}
+
+.ipad {
+    width: 1194px;
+    height: 834px;
+    background: var(--page);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    display: grid;
+    grid-template-columns: 1fr 132px 1fr;
+    gap: 12px;
+    padding: 6px;
+    transform-origin: top left;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+}
+
+.half {
+    display: grid;
+    grid-template-rows: 1fr 1fr;
+    gap: 6px;
+    min-width: 0;
+}
+
+.sector {
+    display: flex;
+    gap: 4px;
+    min-width: 0;
+}
+
+.sector.right { justify-content: flex-end; }
+
+.cell {
+    width: 78px;
+    flex: 0 0 78px;
+    border-radius: 6px;
+    position: relative;
+}
+
+/* Only in ARRANGE: an empty slot shows as a dashed cell. */
+.gap {
+    border: 1px dashed var(--line);
+}
+
+.gap.over, .strip.over {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.strip {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    padding: 4px;
+}
+
+.strip .name {
+    height: 37px;
+    border-radius: 4px;
+    background: #15151f;
+    font-family: var(--display);
+    font-size: 15px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    letter-spacing: 0.04em;
+    position: relative;
+}
+
+.strip .name::after {
+    content: "";
+    position: absolute;
+    left: 6px;
+    right: 6px;
+    bottom: 0;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--c, #73738a);
+}
+
+.strip .db {
+    text-align: center;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    margin: 6px 0 4px;
+}
+
+.strip .travel {
+    flex: 1;
+    position: relative;
+}
+
+.strip .groove {
+    position: absolute;
+    left: 50%;
+    top: 6px;
+    bottom: 6px;
+    width: 10px;
+    margin-left: -5px;
+    background: var(--track);
+    border-radius: 3px;
+}
+
+.strip .cap {
+    position: absolute;
+    left: 50%;
+    width: 44px;
+    margin-left: -22px;
+    height: 26px;
+    border-radius: 4px;
+    background: #2c2c40;
+    border: 1px solid #4a4a66;
+    top: var(--y, 40%);
+}
+
+.strip .sel {
+    height: 36px;
+    width: 40px;
+    border-radius: 4px;
+    background: #15151f;
+    font-family: var(--display);
+    font-size: 13px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* ARRANGE's cover: the strip carries, it takes no fader touch. */
+.arranging .strip {
+    cursor: grab;
+}
+
+.arranging .strip::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 6px;
+    background: rgba(78, 205, 196, 0.06);
+}
+
+/* The column. */
+.column {
+    background: var(--section);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 8px 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 0;
+}
+
+.ctitle {
+    font-family: var(--display);
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    text-align: center;
+}
+
+.page-tab {
+    font-family: var(--display);
+    font-size: 22px;
+    letter-spacing: 0.08em;
+    text-align: center;
+    padding: 6px 0;
+    border-radius: 8px;
+    background: var(--panel-hi);
+    border-bottom: 2px solid var(--accent);
+}
+
+.lays {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.lays div {
+    font-family: var(--display);
+    font-size: 12px;
+    text-align: center;
+    padding: 6px 2px;
+    color: var(--muted);
+    border-bottom: 1px solid var(--line);
+}
+
+.lays div.on {
+    color: var(--text);
+    background: var(--panel-hi);
+}
+
+.arrange-key {
+    font-family: var(--display);
+    font-size: 15px;
+    letter-spacing: 0.08em;
+    text-align: center;
+    padding: 10px 0;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    color: var(--muted);
+}
+
+.arranging .arrange-key {
+    color: #07070c;
+    background: var(--accent);
+    border-color: var(--accent);
+}
+
+/* The rail (outside ARRANGE). */
+.rail-btn {
+    font-family: var(--display);
+    font-size: 14px;
+    letter-spacing: 0.06em;
+    padding: 10px 8px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--text);
+}
+
+/* NEW: the NOT PLACED block, in the rail's place while ARRANGE is on. */
+.unplaced {
+    flex: 1;
+    min-height: 0;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 6px 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    overflow-y: auto;
+}
+
+.unplaced.over {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.unplaced .head {
+    font-family: var(--display);
+    font-size: 12px;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    padding: 0 3px;
+}
+
+.unplaced .head b {
+    color: var(--text);
+}
+
+.chip {
+    font-family: var(--display);
+    font-size: 15px;
+    letter-spacing: 0.04em;
+    padding: 9px 8px 7px;
+    border-radius: 6px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    position: relative;
+    cursor: grab;
+    touch-action: none;
+}
+
+.chip::after {
+    content: "";
+    position: absolute;
+    left: 6px;
+    right: 6px;
+    bottom: 0;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--c, #73738a);
+}
+
+.chip small {
+    font-family: var(--ui);
+    font-size: 10px;
+    color: var(--faint);
+    margin-left: 4px;
+}
+
+.unplaced .empty {
+    font-size: 12px;
+    color: var(--faint);
+    text-align: center;
+    padding: 10px 2px;
+    line-height: 1.35;
+}
+
+.unplaced .hint {
+    margin-top: auto;
+    font-size: 11px;
+    color: var(--faint);
+    line-height: 1.35;
+    padding: 0 3px;
+}
+
+/* The finger's copy while dragging. */
+.ghost {
+    position: fixed;
+    pointer-events: none;
+    z-index: 10;
+    opacity: 0.85;
+    font-family: var(--display);
+    font-size: 15px;
+    padding: 9px 12px;
+    border-radius: 6px;
+    background: var(--panel-hi);
+    border: 1px solid var(--accent);
+}
+
+.log {
+    max-width: 1194px;
+    margin: 8px auto 0;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    min-height: 18px;
+}
+</style>
+</head>
+<body>
+
+<div class="doc">
+    <h1>Fadre mimo layoutov — NOT PLACED (návrh v1, #205)</h1>
+    <p>Keď je zapnuté <b>ARRANGE</b>, v strednom stĺpci sa namiesto tlačidiel STAGE, REVERB, AUTOTUNE… ukáže blok
+    <b>NOT PLACED</b>: všetky fadre, ktoré nie sú v žiadnom layoute.</p>
+    <ul>
+        <li><b>Pridať:</b> potiahni fader z NOT PLACED na prázdne miesto v sektore (čiarkovaný rámik). Ak ho pustíš na iný fader, ten sa vymení a odíde do NOT PLACED (ak nie je v inom layoute).</li>
+        <li><b>Odobrať:</b> potiahni fader zo sektora do bloku NOT PLACED.</li>
+        <li>Uloží sa to ako doteraz, druhým ťuknutím na ARRANGE. Mimo ARRANGE sa nič nemení, fadre majú plnú výšku.</li>
+    </ul>
+    <p>Vyskúšaj si to dole: ťahaj prstom alebo myšou. Mená sú vymyslené.</p>
+</div>
+
+<div class="frame-title">1 · ARRANGE zapnuté — blok NOT PLACED v stĺpci</div>
+<div class="fit"><div class="ipad arranging" id="pad">
+    <div class="half" id="left">
+        <div class="sector" data-sector="lu"></div>
+        <div class="sector" data-sector="ld"></div>
+    </div>
+    <div class="column">
+        <div class="page-tab">FOH</div>
+        <div class="ctitle">LAYOUTS</div>
+        <div class="lays">
+            <div class="on">BAND</div><div class="on">MAIN</div>
+            <div class="on">EFFECTS</div><div class="on">HANDS</div>
+        </div>
+        <div class="arrange-key">ARRANGE</div>
+        <div class="unplaced" id="unplaced">
+            <div class="head"><span>NOT PLACED</span><b id="count">0</b></div>
+            <div id="chips"></div>
+            <div class="hint">Drag onto an empty slot to add. Drag a strip here to remove it.</div>
+        </div>
+    </div>
+    <div class="half" id="right">
+        <div class="sector right" data-sector="ru"></div>
+        <div class="sector right" data-sector="rd"></div>
+    </div>
+</div></div>
+<div class="log" id="log"></div>
+
+<div class="frame-title">2 · ARRANGE vypnuté — stĺpec ako dnes</div>
+<div class="fit"><div class="ipad" id="pad2">
+    <div class="half">
+        <div class="sector" data-static="lu"></div>
+        <div class="sector" data-static="ld"></div>
+    </div>
+    <div class="column">
+        <div class="page-tab">FOH</div>
+        <div class="ctitle">LAYOUTS</div>
+        <div class="lays">
+            <div class="on">BAND</div><div class="on">MAIN</div>
+            <div class="on">EFFECTS</div><div class="on">HANDS</div>
+        </div>
+        <div class="arrange-key">ARRANGE</div>
+        <div class="rail-btn">STAGE</div>
+        <div class="rail-btn">REVERB</div>
+        <div class="rail-btn">AUTOTUNE</div>
+        <div class="rail-btn">TALKBACK</div>
+        <div class="rail-btn">TECHALERT</div>
+    </div>
+    <div class="half">
+        <div class="sector right" data-static="ru"></div>
+        <div class="sector right" data-static="rd"></div>
+    </div>
+</div></div>
+
+<script>
+"use strict";
+const COLORS = { band: "#4ecdc4", master: "#8b7dff" };
+// Each sector's picked layout as six slots (null: an empty slot).
+const layouts = {
+    lu: ["Vox 1", "Vox 2", "Vox 3", "Vox 4", null, null],
+    ld: ["Rev ST", "Rev PA", "Delay", null, null, null],
+    ru: ["Keys", null, "Bass", "Drums", "Guitar", "PA Out"],
+    rd: ["Hand 1", "Hand 2", "Hand 3", null, null, null],
+};
+// The pool: every fader the layout carries, with its Live set.
+const pool = [
+    ["Vox 1", "band"], ["Vox 2", "band"], ["Vox 3", "band"], ["Vox 4", "band"], ["Vox 5", "band"],
+    ["Keys", "band"], ["Bass", "band"], ["Drums", "band"], ["Guitar", "band"], ["Click", "band"],
+    ["Rev ST", "band"], ["Rev PA", "band"], ["Delay", "band"],
+    ["Hand 1", "master"], ["Hand 2", "master"], ["Hand 3", "master"], ["Hand 4", "master"],
+    ["PA Out", "master"], ["Podium", "master"],
+];
+const setOf = (name) => (pool.find((p) => p[0] === name) || [])[1];
+
+function placed() {
+    const s = new Set();
+    for (const slots of Object.values(layouts)) for (const n of slots) if (n) s.add(n);
+    return s;
+}
+
+function strip(name, i) {
+    const el = document.createElement("div");
+    el.className = "cell strip";
+    el.dataset.name = name;
+    el.style.setProperty("--c", COLORS[setOf(name)]);
+    el.style.setProperty("--y", `${30 + ((i * 17) % 40)}%`);
+    el.innerHTML = `<div class="name"></div><div class="db">0.0</div>
+        <div class="travel"><div class="groove"></div><div class="cap"></div></div><div class="sel">SEL</div>`;
+    el.querySelector(".name").textContent = name.toUpperCase();
+    return el;
+}
+
+function render() {
+    for (const [sector, slots] of Object.entries(layouts)) {
+        const box = document.querySelector(`#pad [data-sector="${sector}"]`);
+        box.replaceChildren();
+        slots.forEach((name, slot) => {
+            const el = name ? strip(name, slot) : document.createElement("div");
+            if (!name) el.className = "cell gap";
+            el.dataset.sector = sector;
+            el.dataset.slot = slot;
+            box.append(el);
+        });
+        const still = document.querySelector(`#pad2 [data-static="${sector}"]`);
+        still.replaceChildren(...slots.map((n, i) => {
+            if (n) return strip(n, i);
+            const gap = document.createElement("div");
+            gap.className = "cell";
+            return gap;
+        }));
+    }
+    const here = placed();
+    const left = pool.filter((p) => !here.has(p[0]));
+    document.getElementById("count").textContent = left.length;
+    const chips = document.getElementById("chips");
+    chips.replaceChildren();
+    chips.style.display = "flex";
+    chips.style.flexDirection = "column";
+    chips.style.gap = "5px";
+    if (left.length === 0) {
+        const e = document.createElement("div");
+        e.className = "empty";
+        e.textContent = "Every fader is in a layout.";
+        chips.append(e);
+    }
+    for (const [name, set] of left) {
+        const c = document.createElement("div");
+        c.className = "chip";
+        c.dataset.name = name;
+        c.style.setProperty("--c", COLORS[set]);
+        c.textContent = name.toUpperCase();
+        const s = document.createElement("small");
+        s.textContent = set.toUpperCase();
+        c.append(s);
+        chips.append(c);
+    }
+}
+
+// Scale the iPad to the window.
+function fit() {
+    for (const pad of document.querySelectorAll(".ipad")) {
+        const k = Math.min(1, pad.parentElement.clientWidth / 1194);
+        pad.style.transform = `scale(${k})`;
+        pad.parentElement.style.height = `${834 * k}px`;
+    }
+}
+addEventListener("resize", fit);
+
+// Dragging: a chip (from NOT PLACED) or a strip (from a sector).
+let drag = null;
+const log = (t) => { document.getElementById("log").textContent = t; };
+
+function targetAt(x, y) {
+    const el = document.elementFromPoint(x, y);
+    if (!el) return null;
+    return el.closest("#pad .cell") || el.closest("#unplaced");
+}
+
+function mark(t) {
+    document.querySelectorAll(".over").forEach((e) => e.classList.remove("over"));
+    if (t) t.classList.add("over");
+}
+
+document.getElementById("pad").addEventListener("pointerdown", (ev) => {
+    const chip = ev.target.closest(".chip");
+    const st = ev.target.closest("#pad .strip");
+    if (!chip && !st) return;
+    ev.preventDefault();
+    const name = (chip || st).dataset.name;
+    const ghost = document.createElement("div");
+    ghost.className = "ghost";
+    ghost.textContent = name.toUpperCase();
+    document.body.append(ghost);
+    drag = { name, from: chip ? null : { sector: st.dataset.sector, slot: +st.dataset.slot }, ghost, x0: ev.clientX, y0: ev.clientY, moved: false };
+    move(ev);
+});
+
+function move(ev) {
+    if (!drag) return;
+    if (Math.hypot(ev.clientX - drag.x0, ev.clientY - drag.y0) > 6) drag.moved = true;
+    drag.ghost.style.left = `${ev.clientX - 30}px`;
+    drag.ghost.style.top = `${ev.clientY - 20}px`;
+    mark(drag.moved ? targetAt(ev.clientX, ev.clientY) : null);
+}
+addEventListener("pointermove", move);
+
+addEventListener("pointerup", (ev) => {
+    if (!drag) return;
+    const t = drag.moved ? targetAt(ev.clientX, ev.clientY) : null;
+    mark(null);
+    drag.ghost.remove();
+    const { name, from } = drag;
+    drag = null;
+    if (!t) return;
+    if (t.id === "unplaced") {
+        if (!from) return;
+        layouts[from.sector][from.slot] = null;
+        const still = placed().has(name);
+        log(still ? `${name}: out of this layout (still in another one)` : `${name}: to NOT PLACED`);
+    } else {
+        const sector = t.dataset.sector;
+        const slot = +t.dataset.slot;
+        const there = layouts[sector][slot];
+        if (from) {
+            layouts[from.sector][from.slot] = there;
+            layouts[sector][slot] = name;
+            log(`${name}: moved${there ? `, ${there} swapped` : ""}`);
+        } else {
+            layouts[sector][slot] = name;
+            log(there ? `${name}: placed, ${there} to NOT PLACED` : `${name}: placed in ${sector.toUpperCase()}`);
+        }
+    }
+    render();
+});
+
+render();
+fit();
+</script>
+</body>
+</html>
