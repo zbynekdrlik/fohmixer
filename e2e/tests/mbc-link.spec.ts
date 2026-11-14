@@ -96,9 +96,10 @@ test.describe("The MBC hub and its instance link (#184)", () => {
   let mbcHostStopped = false;
 
   test.afterEach(async () => {
-    if (mbcHostStopped) {
+    try {
       // `restart`, never `start`: `start` takes the FOH test site.
-      await harness("/host/mbc/restart");
+      if (mbcHostStopped) await harness("/host/mbc/restart");
+    } finally {
       mbcHostStopped = false;
     }
     await harness("/mbc-hub/start").catch(() => undefined);
@@ -240,10 +241,18 @@ test.describe("The MBC hub and its instance link (#184)", () => {
     const hint = sectorStrips(page, "lu").first().getByTestId("strip-hint");
     await expect(hint).toHaveText(MBC_HINT);
     await expect(hint).toBeVisible();
-    // Back by itself once Live runs again.
+    // Back by itself once Live runs again: every MBC strip on, no hint.
     await harness("/host/mbc/restart");
     mbcHostStopped = false;
-    await expect(page.getByTestId("strip-hint")).toHaveCount(0, { timeout: UP });
+    const stillDown = () =>
+      page.evaluate(() => {
+        const strips = [...document.querySelectorAll('[data-testid="strip"][data-instance="mbc"]')];
+        if (strips.length === 0) return ["no strip"];
+        return strips
+          .filter((s) => s.hasAttribute("data-live") || s.querySelector('[data-testid="strip-hint"]'))
+          .map((s) => `${s.getAttribute("data-label")}: ${s.getAttribute("data-live")}`);
+      });
+    await expect.poll(stillDown, { timeout: UP, message: "every MBC strip back on, no hint" }).toEqual([]);
     await expect(sectorStrips(page, "lu")).toHaveCount(6);
   });
 
