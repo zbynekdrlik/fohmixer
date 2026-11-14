@@ -3,6 +3,7 @@ import { test, expect } from "./support/fixtures";
 import {
   LiveClient,
   centre,
+  clipped,
   columnHeadAndFoot,
   dispatchPointer,
   frames,
@@ -29,8 +30,8 @@ import {
 // the approved looks docs/mockups/sectors-v1.html and sectors-v2.html): with
 // a sectors document that places faders, the FOH page is four sectors around
 // the column (lu ru over ld rd), each paging through its own layouts in the
-// column's LAYOUTS block; a strip's channel detail ticks the layouts it is
-// in, ARRANGE reorders a sector's strips and renames, adds and removes its
+// column's LAYOUTS block; a strip's channel detail lists the layouts it is
+// in and adds it to another from ADD TO LAYOUT's sheet (#208), ARRANGE reorders a sector's strips and renames, adds and removes its
 // layouts (saved as one change); there is no undo (the owner's ruling of
 // 29.10.2026: the ↶ beside ARRANGE is gone, ARRANGE takes its row alone). The hub owns
 // sectors.json; the harness starts it empty (sectors off) and each test puts
@@ -187,6 +188,38 @@ function watchConsole(page: Page): string[] {
 /** The hub's `sectors` records since `since` (the runner's clock), each `what`. */
 async function sectorSteps(since: number): Promise<string[]> {
   return (await hubEvents()).filter((r: any) => r.ev === "sectors" && r.ts >= since).map((r: any) => r.what);
+}
+
+/** The detail's LAYOUTS rows (#208) as `<sector>|<title>`, in their order. */
+async function layoutRows(layouts: Locator): Promise<string[]> {
+  return layouts
+    .getByTestId("lay-row")
+    .evaluateAll((all) =>
+      all.map((r) => `${r.getAttribute("data-sector")}|${r.querySelector(".lay-what")?.textContent ?? ""}`),
+    );
+}
+
+/** ADD TO LAYOUT's picks (#208) as `<layout>|<title>|<sector>|<full>`, in their order. */
+async function layoutPicks(sheet: Locator): Promise<string[]> {
+  return sheet
+    .getByTestId("lay-pick")
+    .evaluateAll((all) =>
+      all.map(
+        (p) =>
+          `${p.getAttribute("data-layout")}|${p.querySelector(".lay-pick-name")?.textContent ?? ""}|` +
+          `${p.getAttribute("data-sector")}|${p.getAttribute("data-full")}`,
+      ),
+    );
+}
+
+/** Whether `inner`'s box lies inside `outer`'s (half a pixel of rounding). */
+async function insideOf(inner: Locator, outer: Locator): Promise<boolean> {
+  const a = await inner.boundingBox();
+  const b = await outer.boundingBox();
+  if (!a || !b) return false;
+  return (
+    a.x >= b.x - 0.5 && a.y >= b.y - 0.5 && a.x + a.width <= b.x + b.width + 0.5 && a.y + a.height <= b.y + b.height + 0.5
+  );
 }
 
 test.afterEach(async () => {
@@ -759,7 +792,10 @@ test.describe("The fader sectors", () => {
     });
   });
 
-  test("a tick in SEL shows the strip in that layout and a second page sees it", async ({ page, context }) => {
+  test("ADD TO LAYOUT in SEL puts the strip in a layout, ✕ takes it out, and a second page sees both", async ({
+    page,
+    context,
+  }) => {
     await setSectors(DOC);
     const other = await context.newPage();
     const otherConsole = watchConsole(other);
@@ -769,16 +805,30 @@ test.describe("The fader sectors", () => {
     const detail = await openDetail(page, "Hand4 #", "master");
     const layouts = detail.getByTestId("detail-layouts");
     await expect(layouts).toBeVisible();
-    // Every layout of every sector, Hand4 #'s own ticked.
-    const tick = (id: string) => layouts.locator(`[data-testid="sector-tick"][data-layout="${id}"]`);
-    await expect(layouts.getByTestId("sector-tick")).toHaveCount(6);
-    await expect(tick("ld-1")).toHaveAttribute("aria-checked", "true");
-    await expect(tick("lu-1")).toHaveAttribute("aria-checked", "false");
+    // Only Hand4 #'s own layout, one row; the others wait in ADD's sheet (#208).
+    await expect.poll(() => layoutRows(layouts)).toEqual(["LD|HANDS"]);
+    await expect(layouts.getByTestId("lay-count")).toHaveText("1");
+    await expect(layouts.getByTestId("lay-empty")).toHaveCount(0);
+    await expect(detail.getByTestId("lay-sheet")).toHaveCount(0);
     await expect(detail.getByTestId("detail-steps")).toBeVisible();
 
-    await tick("lu-1").click();
-    await expect(tick("lu-1")).toHaveAttribute("aria-checked", "true");
-    await expect(tick("lu-1")).toHaveAttribute("data-refused", "false");
+    await layouts.getByTestId("lay-add").click();
+    const sheet = detail.getByTestId("lay-sheet");
+    await expect(sheet).toBeVisible();
+    // Every other layout, in the sectors' order (LU, LD, RU, RD), none full.
+    await expect.poll(() => layoutPicks(sheet)).toEqual([
+      "lu-1|STAGE|LU|false",
+      "lu-2|ALT|LU|false",
+      "ld-2|FX|LD|false",
+      "ru-1|MAIN|RU|false",
+      "rd-1|MAIN|RD|false",
+    ]);
+    await sheet.locator('[data-testid="lay-pick"][data-layout="lu-1"]').click();
+    // One tap: the sheet goes and the row comes.
+    await expect(sheet).toHaveCount(0);
+    await expect.poll(() => layoutRows(layouts)).toEqual(["LU|STAGE", "LD|HANDS"]);
+    await expect(layouts.getByTestId("lay-count")).toHaveText("2");
+    await expect(layouts.getByTestId("lay-add")).toHaveAttribute("data-refused", "false");
     // It joins STAGE at its end, on both pages; it stays in HANDS.
     const stage = [name(VOCAL), name(KEYS), "master|Hand4 #"];
     await expect.poll(() => stripsOf(page, "lu")).toEqual(stage);
@@ -791,28 +841,54 @@ test.describe("The fader sectors", () => {
     expect(record.strip).toEqual(master("Hand4 #"));
     expect(record.on).toBe(true);
 
+    // ✕ on STAGE's row takes it out again, on both pages.
+    const out = Date.now();
+    await layouts.locator('[data-testid="lay-row"][data-layout="lu-1"]').getByTestId("lay-remove").click();
+    await expect.poll(() => layoutRows(layouts)).toEqual(["LD|HANDS"]);
+    await expect.poll(() => stripsOf(page, "lu")).toEqual([name(VOCAL), name(KEYS)]);
+    await expect.poll(() => stripsOf(other, "lu")).toEqual([name(VOCAL), name(KEYS)]);
+    const removed = await until(
+      async () => (await hubEvents()).filter((r: any) => r.ev === "sectors" && r.ts >= out),
+      (all) => all.length > 0,
+      "the hub's record of the ✕",
+    );
+    expect(removed.map((r: any) => [r.what, r.layout, r.on])).toEqual([["tick", "lu-1", false]]);
+    expect(removed[0].strip).toEqual(master("Hand4 #"));
+
     expect(otherConsole, "the second page's console").toEqual([]);
     await other.close();
   });
 
-  test("a full layout reads FULL and a tick is refused", async ({ page }) => {
+  test("a full layout reads FULL in ADD's sheet and a tick is refused", async ({ page }) => {
     await setSectors(FULL_DOC);
     await openSectors(page);
     await expect.poll(async () => (await stripsOf(page, "lu")).length).toBe(6);
     const detail = await openDetail(page, "Hand2 #", "master");
-    const tick = detail.locator('[data-testid="sector-tick"][data-layout="lu-1"]');
-    await expect(tick).toHaveAttribute("aria-checked", "false");
-    await expect(tick).toBeDisabled();
-    await expect(tick).toContainText("FULL");
-    // Its own layout is not full for it: it is in it already.
-    const own = detail.locator('[data-testid="sector-tick"][data-layout="ld-1"]');
-    await expect(own).toHaveAttribute("aria-checked", "true");
-    await expect(own).toBeEnabled();
+    const layouts = detail.getByTestId("detail-layouts");
+    // Its own layout is a row: it is in it already.
+    await expect.poll(() => layoutRows(layouts)).toEqual(["LD|HANDS"]);
+    await layouts.getByTestId("lay-add").click();
+    const sheet = detail.getByTestId("lay-sheet");
+    await expect(sheet).toBeVisible();
+    const pick = sheet.locator('[data-testid="lay-pick"][data-layout="lu-1"]');
+    await expect.poll(() => layoutPicks(sheet)).toEqual(["lu-1|STAGE|LU|true"]);
+    await expect(pick).toBeDisabled();
+    await expect(pick).toContainText("STAGE");
+    await expect(pick).toContainText("LU · FULL");
+    // A touch on it changes nothing: the sheet stays, the document too.
+    const before = (await hubStatus()).sectors.rev;
+    const at = await centre(pick);
+    await page.mouse.click(at.x, at.y);
+    await frames(page);
+    await expect(sheet).toBeVisible();
+    expect((await hubStatus()).sectors.rev).toBe(before);
+    // ✕ closes the sheet.
+    await sheet.getByTestId("lay-sheet-close").click();
+    await expect(sheet).toHaveCount(0);
 
     // The hub refuses the tick itself (another client asking past the page).
     const live = await LiveClient.open();
     try {
-      const before = (await hubStatus()).sectors.rev;
       const answer = await live.ask({ type: "sector_tick", layout: "lu-1", strip: master("Hand2 #"), on: true });
       expect(answer.type).toBe("error");
       expect(answer.message).toBe("FULL");
@@ -820,6 +896,81 @@ test.describe("The fader sectors", () => {
       await expect.poll(async () => (await stripsOf(page, "lu")).length).toBe(6);
     } finally {
       live.close();
+    }
+  });
+
+  test("a strip in no layout shows the empty line, and ADD's sheet holds every layout", async ({ page }) => {
+    await setSectors(DOC);
+    await openSectors(page);
+    const detail = await openDetail(page, "Hand4 #", "master");
+    const layouts = detail.getByTestId("detail-layouts");
+    await layouts.locator('[data-testid="lay-row"][data-layout="ld-1"]').getByTestId("lay-remove").click();
+    // Out of its only layout: no row, the empty line, the detail still open.
+    await expect(layouts.getByTestId("lay-empty")).toHaveText("This fader is in no layout.");
+    await expect(layouts.getByTestId("lay-row")).toHaveCount(0);
+    await expect(layouts.getByTestId("lay-count")).toHaveText("0");
+    await expect(detail).toHaveAttribute("data-track", "Hand4 #");
+    await expect.poll(() => stripsOf(page, "ld")).toEqual(["master|Hand1 #"]);
+    // The sheet holds all six; the shade closes it.
+    await layouts.getByTestId("lay-add").click();
+    const sheet = detail.getByTestId("lay-sheet");
+    await expect(sheet.getByTestId("lay-pick")).toHaveCount(6);
+    await expect(sheet.locator(".lay-note")).toHaveText("It joins the layout at its end; ARRANGE moves it.");
+    const shade = await sheet.getByTestId("lay-shade").boundingBox();
+    if (!shade) throw new Error("the shade has no box");
+    await page.mouse.click(shade.x + 4, shade.y + 4);
+    await expect(sheet).toHaveCount(0);
+    // Back into HANDS from the sheet: at its end.
+    await layouts.getByTestId("lay-add").click();
+    await sheet.locator('[data-testid="lay-pick"][data-layout="ld-1"]').click();
+    await expect.poll(() => layoutRows(layouts)).toEqual(["LD|HANDS"]);
+    await expect(layouts.getByTestId("lay-empty")).toHaveCount(0);
+    await expect.poll(() => stripsOf(page, "ld")).toEqual(["master|Hand1 #", "master|Hand4 #"]);
+  });
+
+  test("LAYOUTS and its sheet fit the tablet and both phones", async ({ page }) => {
+    await setSectors(DOC);
+    await openSectors(page);
+    const detail = await openDetail(page, "Hand4 #", "master");
+    const layouts = detail.getByTestId("detail-layouts");
+    // In two layouts, so the block has two rows.
+    await layouts.getByTestId("lay-add").click();
+    await detail.locator('[data-testid="lay-pick"][data-layout="lu-1"]').click();
+    await expect.poll(() => layoutRows(layouts)).toEqual(["LU|STAGE", "LD|HANDS"]);
+    for (const size of [
+      { width: 1194, height: 834 },
+      { width: 844, height: 390 },
+      { width: 390, height: 844 },
+    ]) {
+      await page.setViewportSize(size);
+      await frames(page);
+      const where = `${size.width}x${size.height}`;
+      for (const row of await layouts.getByTestId("lay-row").all()) {
+        await row.scrollIntoViewIfNeeded();
+        expect(await clipped(row.locator(".lay-what")), `a row's title at ${where}`).toEqual([]);
+        expect(await insideOf(row.getByTestId("lay-remove"), row), `a row's ✕ at ${where}`).toBe(true);
+      }
+      const add = layouts.getByTestId("lay-add");
+      await add.scrollIntoViewIfNeeded();
+      expect(await clipped(add), `ADD at ${where}`).toEqual([]);
+      await add.click();
+      const sheet = detail.getByTestId("lay-sheet");
+      await expect(sheet).toBeVisible();
+      const panel = await sheet.locator(".lay-panel").boundingBox();
+      if (!panel) throw new Error("the sheet's panel has no box");
+      expect(panel.x, `the panel's left at ${where}`).toBeGreaterThanOrEqual(0);
+      expect(panel.y, `the panel's top at ${where}`).toBeGreaterThanOrEqual(0);
+      expect(panel.x + panel.width, `the panel's right at ${where}`).toBeLessThanOrEqual(size.width + 0.5);
+      expect(panel.y + panel.height, `the panel's bottom at ${where}`).toBeLessThanOrEqual(size.height + 0.5);
+      expect(await clipped(sheet.locator(".lay-sheet-title")), `the title at ${where}`).toEqual([]);
+      for (const pick of await sheet.getByTestId("lay-pick").all()) {
+        await pick.scrollIntoViewIfNeeded();
+        expect(await clipped(pick.locator(".lay-pick-name")), `a pick's title at ${where}`).toEqual([]);
+        expect(await clipped(pick.locator("small")), `a pick's sector at ${where}`).toEqual([]);
+        expect(await insideOf(pick, sheet.locator(".lay-panel")), `a pick inside the panel at ${where}`).toBe(true);
+      }
+      await sheet.getByTestId("lay-sheet-close").click();
+      await expect(sheet).toHaveCount(0);
     }
   });
 
