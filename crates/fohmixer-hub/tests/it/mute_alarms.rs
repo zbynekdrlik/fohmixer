@@ -14,6 +14,7 @@ use fohmixer_hub::mute_alarms::{MUTE_ALARMS_FILE, parse};
 use fohmixer_proto::client::{ClientMsg, ServerMsg};
 use fohmixer_proto::mute_alarms::MuteAlarmsDoc;
 use fohmixer_proto::sectors::StripRef;
+use fohmixer_proto::strip_marks::StripMarks;
 use serde_json::{Value, json};
 
 const SECS_3: Duration = Duration::from_secs(3);

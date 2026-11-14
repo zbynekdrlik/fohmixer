@@ -5,12 +5,13 @@
 //! strip is muted) is CSS on the strip's `data-mute-alarm` and its mute's
 //! `data-muted` (`alarm.css`).
 
-use fohmixer_proto::mute_alarms::MuteAlarmsDoc;
 use fohmixer_proto::sectors::StripRef;
+use fohmixer_proto::strip_marks::StripMarks;
 
 /// Whether a strip is marked in the hub's document as last told (none
-/// told yet, or a strip with no identity: not marked).
-pub fn marked(doc: Option<&MuteAlarmsDoc>, id: Option<&StripRef>) -> bool {
+/// told yet, or a strip with no identity: not marked). The mute alarm's
+/// and the mute guard's (#203) alike.
+pub fn marked<D: StripMarks>(doc: Option<&D>, id: Option<&StripRef>) -> bool {
     doc.zip(id).is_some_and(|(doc, id)| doc.is_on(id))
 }
 
@@ -31,6 +32,8 @@ pub fn strip_attr(marked: bool) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fohmixer_proto::mute_alarms::MuteAlarmsDoc;
+    use fohmixer_proto::mute_guards::MuteGuardsDoc;
 
     fn band(label: &str) -> StripRef {
         StripRef {
@@ -45,8 +48,15 @@ mod tests {
         assert!(marked(Some(&doc), Some(&band("Vox 1"))));
         assert!(!marked(Some(&doc), Some(&band("Bass"))));
         assert!(!marked(Some(&doc), None), "no identity");
-        assert!(!marked(None, Some(&band("Vox 1"))), "nothing told yet");
-        assert!(!marked(None, None));
+        assert!(
+            !marked::<MuteAlarmsDoc>(None, Some(&band("Vox 1"))),
+            "nothing told yet"
+        );
+        assert!(!marked::<MuteAlarmsDoc>(None, None));
+        // The mute guard's document reads the same way (#203).
+        let guards = MuteGuardsDoc::empty().with(&band("Bass"), true);
+        assert!(marked(Some(&guards), Some(&band("Bass"))));
+        assert!(!marked(Some(&guards), Some(&band("Vox 1"))));
     }
 
     #[test]

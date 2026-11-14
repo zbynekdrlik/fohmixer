@@ -23,6 +23,7 @@ use super::buttons::{Corner, MuteView, Partner, anchor_name};
 use super::detail::DetailStrip;
 use super::detail_alarm::strip_alarm;
 use super::detail_color::strip_colour;
+use super::detail_guard::{strip_guard, strip_guard_mark};
 use super::fader::{FaderView, Law, Target};
 use super::fader_link::link_parts;
 use super::meter::StatusView;
@@ -467,19 +468,31 @@ pub fn StripView(
     let lufs_flag =
         Signal::derive(move || lufs_look.try_with(|l| l.problem.is_some()).unwrap_or(false));
     let lufs_problem = move || lufs_look.try_with(|l| l.problem).flatten();
+    // The mute's guard (#162): the layout's (`+MG`, the frame's list) or
+    // the hub's mark set in the detail (#203). A change mounts the mute
+    // again, so only a guarded mute holds the hold's listeners.
+    let guard = strip_guard(&strip, strip_guard_mark(store, &strip));
     let mute_view = mute.zip(subs.mute.clone()).map(|(slot, spec)| {
-        view! {
-            <MuteView
-                state=slot
-                spec=spec
-                guarded={strip.mute_guard}
-                label=label
-                color=color
-                partners=partners
-                corner=corner
-                flink=flink
-                lufs_flag=lufs_flag
-            />
+        move || {
+            let guarded = guard.try_get().unwrap_or(strip.mute_guard);
+            let spec = spec.clone();
+            let label = label.clone();
+            let partners = partners.clone();
+            untrack(move || {
+                view! {
+                    <MuteView
+                        state=slot
+                        spec=spec
+                        guarded=guarded
+                        label=label
+                        color=color
+                        partners=partners
+                        corner=corner
+                        flink=flink
+                        lufs_flag=lufs_flag
+                    />
+                }
+            })
         }
     });
     let db = volume.map(|slot| view! { <DbView state=slot /> });

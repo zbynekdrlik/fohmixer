@@ -433,6 +433,31 @@ export async function resetMuteAlarms() {
   await setMuteAlarms({ mute_alarms: {} });
 }
 
+/** The mute guard's marks as `mute_guards.json` holds them (#203): instance → labels. */
+export type MuteGuardsDoc = { mute_guards: Record<string, string[]> };
+
+/**
+ * Writes `doc` as the hub's `mute_guards.json` (#203, a hand edit) and
+ * returns once the hub serves as many marks as it holds (`/api/status`
+ * `mute_guards`, no `error`). A spec that guards strips puts the empty
+ * document back with `resetMuteGuards`.
+ */
+export async function setMuteGuards(doc: MuteGuardsDoc) {
+  const bearer = await token();
+  await harness("/hub/mute_guards", { doc });
+  const n = Object.values(doc.mute_guards).reduce((sum, labels) => sum + labels.length, 0);
+  await until(
+    async () => (await hubStatus(bearer)).mute_guards,
+    (c: any) => c !== undefined && c.strips === n && !c.error,
+    "the hub serving the mute guard's marks",
+  );
+}
+
+/** The harness's empty `mute_guards.json` again (#203: no strip guarded by the tablet), served when this returns. */
+export async function resetMuteGuards() {
+  await setMuteGuards({ mute_guards: {} });
+}
+
 /** A control line on a host's stdin (`stall <ms>`, `rename "<a>" "<b>"`): its answer. */
 export async function hostLine(instance: string, line: string): Promise<string | null> {
   return (await harness(`/host/${instance}/line`, { line })).answer;

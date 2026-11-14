@@ -29,8 +29,8 @@ use super::eq::inputs::Inputs;
 use super::eq::{EqListView, EqView};
 use super::intent::Intents;
 use super::{
-    HubAutotune, HubColors, HubLufs, HubMuteAlarms, HubRec, HubReverb, HubSectors, HubValues,
-    InstanceView, ResultFn, Slot, TOKEN_KEY, next_range,
+    HubAutotune, HubColors, HubLufs, HubMuteAlarms, HubMuteGuards, HubRec, HubReverb, HubSectors,
+    HubValues, InstanceView, ResultFn, Slot, TOKEN_KEY, next_range,
 };
 use crate::behave::ableset::AbleSetInfo;
 use crate::behave::idle::IdleWatch;
@@ -51,6 +51,7 @@ mod idle;
 mod link;
 mod live_down;
 mod mute_alarms;
+mod mute_guards;
 mod presenter;
 mod sectors;
 mod writes;
@@ -199,6 +200,10 @@ pub struct LiveStore {
     /// document, kept through a reconnect, stale until the hub's next
     /// (`HubMuteAlarms`).
     pub mute_alarms: RwSignal<HubMuteAlarms>,
+    /// The faders whose mute the tablet guards (#203): the hub's last
+    /// document, kept through a reconnect, stale until the hub's next
+    /// (`HubMuteGuards`).
+    pub mute_guards: RwSignal<HubMuteGuards>,
     /// The loudness points' readings (#151): forgotten at a close, every
     /// point sent again at the next attach.
     pub lufs: RwSignal<HubLufs>,
@@ -254,6 +259,7 @@ impl LiveStore {
             sectors: RwSignal::new(HubSectors::default()),
             colors: RwSignal::new(HubColors::default()),
             mute_alarms: RwSignal::new(HubMuteAlarms::default()),
+            mute_guards: RwSignal::new(HubMuteGuards::default()),
             lufs: RwSignal::new(HubLufs::default()),
             connected: RwSignal::new(false),
             subscribed: RwSignal::new(0),
@@ -547,6 +553,7 @@ impl LiveStore {
         let _ = self.sectors.try_update(HubSectors::closed);
         let _ = self.colors.try_update(HubColors::closed);
         let _ = self.mute_alarms.try_update(HubMuteAlarms::closed);
+        let _ = self.mute_guards.try_update(HubMuteGuards::closed);
         let _ = self.lufs.try_update(HubLufs::closed);
         let _ = self.instances.try_update(|all| {
             for view in all.values_mut() {
@@ -789,6 +796,11 @@ impl LiveStore {
             // detail's MUTE ALARM read them.
             ServerMsg::MuteAlarms { doc } => {
                 let _ = self.mute_alarms.try_update(|alarms| alarms.put(doc));
+            }
+            // The mute guard's marks (#203): every strip's mute and the
+            // detail's MUTE GUARD read them.
+            ServerMsg::MuteGuards { doc } => {
+                let _ = self.mute_guards.try_update(|guards| guards.put(doc));
             }
             // A newer hub's message (#90 B3): ignored, never an error.
             ServerMsg::Unknown => dom::log("a hub message this page does not know: ignored"),

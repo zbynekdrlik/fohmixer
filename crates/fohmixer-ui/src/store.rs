@@ -443,6 +443,11 @@ pub type HubColors = HubTold<fohmixer_proto::colors::ColorsDoc>;
 /// its alarm), stale until the next connection's document.
 pub type HubMuteAlarms = HubTold<fohmixer_proto::mute_alarms::MuteAlarmsDoc>;
 
+/// The faders whose mute the tablet guards as the hub last told them (#203,
+/// `ServerMsg::MuteGuards`): kept through an outage (a guarded strip stays
+/// guarded), stale until the next connection's document.
+pub type HubMuteGuards = HubTold<fohmixer_proto::mute_guards::MuteGuardsDoc>;
+
 /// One loudness point as the hub last sent it (#151): its reading in
 /// tenths and its problem, none of either until the hub says.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

@@ -20,6 +20,7 @@ use serde_json::json;
 use super::buttons::{Corner, MuteView, Partner, anchor_name};
 use super::detail_alarm::{DetailMuteAlarm, strip_alarm};
 use super::detail_color::{DetailColor, strip_colour};
+use super::detail_guard::{DetailMuteGuard, strip_guard, strip_guard_mark};
 use super::detail_layouts::{DetailLayouts, DetailStep};
 use super::eq::EqCards;
 use super::fader::{FaderView, Law, Target};
@@ -168,6 +169,11 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
     // The mute alarm's mark (#188): MUTE ALARM's switch.
     let alarm = strip_alarm(store, &strip);
     let alarm_strip = strip.clone();
+    // The mute's guard (#162, #203): the layout's or the hub's mark; MUTE
+    // GUARD's switch shows the mark.
+    let guard_mark = strip_guard_mark(store, &strip);
+    let mute_guard = strip_guard(&strip, guard_mark);
+    let guard_strip = strip.clone();
     let meters: Vec<RwSignal<Slot>> = subs.meters.iter().map(|s| store.slot(s)).collect();
     // The status light: every value the detail shows (the pan too); it
     // never blinks with them (#151).
@@ -243,17 +249,28 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
             slot: store.slot(spec),
         })
         .collect();
+    // A change of the guard mounts the mute again (only a guarded mute
+    // holds the hold's listeners).
+    let layout_guard = strip.mute_guard;
     let mute_view = mute.zip(subs.mute.clone()).map(|(slot, spec)| {
-        view! {
-            <MuteView
-                state=slot
-                spec=spec
-                guarded={strip.mute_guard}
-                label=mute_label
-                color=no_colour
-                partners=partners
-                corner=no_corner
-            />
+        move || {
+            let guarded = mute_guard.try_get().unwrap_or(layout_guard);
+            let spec = spec.clone();
+            let label = mute_label.clone();
+            let partners = partners.clone();
+            untrack(move || {
+                view! {
+                    <MuteView
+                        state=slot
+                        spec=spec
+                        guarded=guarded
+                        label=label
+                        color=no_colour
+                        partners=partners
+                        corner=no_corner
+                    />
+                }
+            })
         }
     });
     let db = volume.map(|slot| view! { <DbView state=slot /> });
@@ -396,6 +413,7 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
                     {link_box}
                     <DetailLayouts strip=layouts_strip />
                     <DetailMuteAlarm strip=alarm_strip on=alarm />
+                    <DetailMuteGuard strip=guard_strip on=guard_mark />
                     <DetailColor strip=colour_strip colour=color />
                 </section>
             </div>

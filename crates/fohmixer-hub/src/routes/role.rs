@@ -143,6 +143,7 @@ pub fn status_for(role: Role, status: HubStatus) -> HubStatus {
             sectors: Default::default(),
             colors: Default::default(),
             mute_alarms: Default::default(),
+            mute_guards: Default::default(),
             link: None,
         },
     }
