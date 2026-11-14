@@ -32,6 +32,20 @@ pub struct ChannelGroup {
     pub channels: Vec<Channel>,
 }
 
+impl ChannelGroup {
+    /// What the sheet keys a group by: its Live set and each fader's
+    /// identity, mark and outline, so a change in another group keeps this
+    /// one's picks (and a press under a finger on one).
+    pub fn key(&self) -> String {
+        let channels: Vec<String> = self
+            .channels
+            .iter()
+            .map(|c| format!("{}:{}:{}", c.id.label, c.placed, c.current))
+            .collect();
+        format!("{}|{}", self.instance, channels.join("|"))
+    }
+}
+
 /// Whether some layout of `doc` holds `id`.
 fn placed(doc: &SectorsDoc, id: &StripRef) -> bool {
     SectorId::ALL
@@ -213,6 +227,11 @@ mod tests {
             ]
         );
         assert_eq!(groups[0].instance, "band");
+        assert_eq!(groups[1].key(), "master|Hand1 #:false:false");
+        assert_eq!(
+            groups[0].key(),
+            "band|Vox 1 #:true:false|Keys 1:false:true|Rev ST:true:false"
+        );
         assert_eq!(groups[0].channels[1].id, sref("band", "Keys 1"));
         assert_eq!(groups[0].channels[1].strip, keys);
     }

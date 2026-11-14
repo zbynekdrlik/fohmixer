@@ -93,6 +93,13 @@ mod tests {
         assert!(!key_acts(Lift::Nothing));
         assert!(key_acts(Lift::Tap));
         assert!(key_acts(Lift::Open));
+        // A press a hold's check found full (1 s) still acts at its lift,
+        // never at the check: the key is a lifted press, not SEL's.
+        let mut key = key_press();
+        assert!(key.down(7, true, 0.0));
+        assert!(!key.open(999.0));
+        assert!(key.open(1020.0));
+        assert!(key_acts(key.up(7, 1100.0)));
     }
 
     #[test]

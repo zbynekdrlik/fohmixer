@@ -176,31 +176,6 @@
     font: 600 10.5px/14px var(--ui);
 }
 
-/* The detail bar's ◀ ▶: the pool's strip before and after (#148). */
-.detail-steps {
-    display: flex;
-    flex: none;
-    gap: 6px;
-    height: 100%;
-}
-
-.detail-step {
-    width: 48px;
-    height: 100%;
-    padding: 0;
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    background: var(--panel);
-    color: var(--text);
-    font: 700 16px/1 var(--ui);
-    cursor: pointer;
-    touch-action: manipulation;
-}
-
-.detail-step.end {
-    opacity: 0.35;
-}
-
 /* ARRANGE (#148, mockups v1 and v2), the edit mode: what talks to Live
    goes inert. The column's head (the pages' tabs, the counter), ↶ and the
    rail dim and take no touches; ARRANGE and the LAYOUTS block (paging,

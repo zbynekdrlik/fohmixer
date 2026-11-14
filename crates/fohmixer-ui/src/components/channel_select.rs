@@ -40,7 +40,7 @@ pub fn ChannelSelect(strip: Strip, label: String, chip: Signal<String>) -> impl 
     let name = move || {
         view! {
             <span class="detail-chip" data-testid="detail-name" style=move || chip.try_get().unwrap_or_default()>
-                {label.try_get_value().unwrap_or_default()}
+                <span class="chip-text">{label.try_get_value().unwrap_or_default()}</span>
             </span>
         }
     };
@@ -50,19 +50,13 @@ pub fn ChannelSelect(strip: Strip, label: String, chip: Signal<String>) -> impl 
     };
     let sheet = move || {
         open.try_get().unwrap_or(false).then(|| {
-            // Drawn anew when the list changes (another page's ARRANGE, a
-            // new layout): rare, and no state lives in a pick.
-            let list = move || {
-                groups
-                    .try_get()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|group| view! { <GroupView group=group open=open /> })
-                    .collect_view()
-            };
+            // A group is keyed by all it shows, so a change elsewhere (another
+            // page's ARRANGE moving an unrelated fader) keeps its picks, and a
+            // press under a finger with them.
+            let group = move |group: ChannelGroup| view! { <GroupView group=group open=open /> };
             view! {
                 <Sheet title="CHANNEL" testid="chan-sheet" open=open wide=true>
-                    {list}
+                    <For each=move || groups.try_get().unwrap_or_default() key=ChannelGroup::key children=group />
                 </Sheet>
             }
         })
@@ -121,9 +115,8 @@ fn ChannelPick(channel: Channel, open: RwSignal<bool>) -> impl IntoView {
         }
         let pointer = ev.pointer_id();
         after_lift(move || {
-            if current {
-                let _ = open.try_set(false);
-            } else if let (Some(detail), Some(strip)) = (detail, target.try_get_value()) {
+            let _ = open.try_set(false);
+            if !current && let (Some(detail), Some(strip)) = (detail, target.try_get_value()) {
                 detail.pick(picked(&strip), pointer);
             }
         });

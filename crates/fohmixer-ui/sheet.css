@@ -176,12 +176,22 @@
 }
 
 .chan-open .detail-chip {
+    display: flex;
+    gap: 6px;
     max-width: 100%;
     box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25);
 }
 
+/* The name takes the ellipsis, so a long name never cuts the ▾. */
+.chan-open .chip-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 .chan-open .detail-chip::after {
-    content: " ▾";
+    flex: none;
+    content: "▾";
 }
 
 .sheet-pick.current {
