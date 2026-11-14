@@ -223,12 +223,37 @@ impl SectorArrangement {
     }
 }
 
+/// The rows' weights for [`sector_lines`] (#184): a row that has layouts
+/// but no strip in any of them (the MBC hub's seeded `ld` and `rd`) weighs
+/// 0, so the page takes one line and the faders the whole height; every
+/// other row 1, and both 1 when both rows are empty. A row with no layout
+/// at all keeps its line. Every layout counts, not the picked one: a page
+/// through a sector never changes the lines.
+pub fn row_weights(doc: &SectorsDoc) -> [f64; 2] {
+    let empty = |sectors: [SectorId; 2]| {
+        let layouts = || sectors.iter().flat_map(|s| doc.layouts(*s));
+        layouts().next().is_some() && layouts().all(|l| l.refs().next().is_none())
+    };
+    match (
+        empty([SectorId::Lu, SectorId::Ru]),
+        empty([SectorId::Ld, SectorId::Rd]),
+    ) {
+        (false, true) => [1.0, 0.0],
+        (true, false) => [0.0, 1.0],
+        _ => [1.0, 1.0],
+    }
+}
+
 /// The page's lines in `height` px, each its left and right sectors: two
 /// lines (`lu` | `ru`, `ld` | `rd`) while each keeps `m.line_min` of the
-/// height (`arrange::lines` of two equal rows); otherwise one, each side up
-/// then down.
-pub fn sector_lines(height: f64, m: &Metrics) -> Vec<(Vec<SectorId>, Vec<SectorId>)> {
-    lines(&[1.0, 1.0], height, m)
+/// height (`arrange::lines` of the rows' `weights`, [`row_weights`]);
+/// otherwise one, each side up then down.
+pub fn sector_lines(
+    height: f64,
+    weights: [f64; 2],
+    m: &Metrics,
+) -> Vec<(Vec<SectorId>, Vec<SectorId>)> {
+    lines(&weights, height, m)
         .into_iter()
         .map(|rows| {
             let side = |left: bool| -> Vec<SectorId> {
@@ -333,7 +358,7 @@ pub fn arrange_sectors(
 ) -> SectorArrangement {
     let mut width = f64::INFINITY;
     let mut out = Vec::new();
-    for (left, right) in sector_lines(height, m) {
+    for (left, right) in sector_lines(height, row_weights(doc), m) {
         let (left, left_width) = arrange_side(doc, pool, picks, left, sides, &offset, m);
         let (right, right_width) = arrange_side(doc, pool, picks, right, sides, &offset, m);
         width = [left_width, right_width]
