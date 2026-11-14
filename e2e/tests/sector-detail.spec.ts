@@ -287,11 +287,30 @@ test.describe("The channel detail with the sectors on", () => {
         .getByTestId("sheet-body")
         .evaluate((e) => ({ scroll: e.scrollHeight, client: e.clientHeight }));
       expect(body.scroll, `the picks' list scrolls at ${where}`).toBeLessThanOrEqual(body.client);
-      for (const pick of await sheet.getByTestId("lay-pick").all()) {
-        expect(await clipped(pick.locator(".sheet-pick-name")), `a pick's title at ${where}`).toEqual([]);
-        expect(await clipped(pick.locator("small")), `a pick's sector at ${where}`).toEqual([]);
-        expect(await insideOf(pick, sheet.locator(".sheet-panel")), `a pick inside the panel at ${where}`).toBe(true);
-      }
+      // Every pick's texts unclipped and its box inside the panel, read in
+      // one task in the page (up to 16 picks × 3 round trips each ran the
+      // test past its 30 s on a loaded box).
+      const problems = await sheet.evaluate((root) => {
+        const out: string[] = [];
+        const panel = root.querySelector(".sheet-panel")!.getBoundingClientRect();
+        for (const pick of root.querySelectorAll('[data-testid="lay-pick"]')) {
+          const id = pick.getAttribute("data-layout");
+          for (const sel of [".sheet-pick-name", "small"]) {
+            const el = pick.querySelector(sel) as HTMLElement;
+            if (el.scrollWidth > el.clientWidth || el.scrollHeight > el.clientHeight) out.push(`${id} ${sel} clipped`);
+          }
+          const box = pick.getBoundingClientRect();
+          if (
+            box.left < panel.left - 0.5 ||
+            box.top < panel.top - 0.5 ||
+            box.right > panel.right + 0.5 ||
+            box.bottom > panel.bottom + 0.5
+          )
+            out.push(`${id} outside the panel`);
+        }
+        return out;
+      });
+      expect(problems, `the picks at ${where}`).toEqual([]);
     };
     for (const size of [
       { width: 1194, height: 834 },
@@ -442,6 +461,76 @@ test.describe("The channel detail with the sectors on", () => {
     await detail.getByTestId("chan-open").click();
     await expect(pickOf(detail.getByTestId("chan-sheet"), loose)).toHaveAttribute("data-placed", "true");
     await expect(pickOf(detail.getByTestId("chan-sheet"), loose).locator(".chan-np")).toHaveCount(0);
+  });
+
+  test("a flick whose first move is already past 10 px takes nothing out, adds nothing and opens no channel", async ({
+    page,
+  }) => {
+    // The integrated review's finding: a key's press was anchored at its
+    // first move, so a flick whose first pointermove landed 30 px away still
+    // acted at its lift. The flicks: down, then the first move 30 px below,
+    // then the up there.
+    const flick = [
+      { type: "pointerdown" as const },
+      { type: "pointermove" as const, dy: -30 },
+      { type: "pointerup" as const, dy: -30 },
+    ];
+    await setSectors(DOC);
+    await openSectors(page);
+    const since = await page.evaluate(() => performance.timeOrigin + performance.now());
+    const detail = await openDetail(page, "Hand4 #", "master");
+    const layouts = detail.getByTestId("detail-layouts");
+    const touched = Date.now();
+    // ✕ on HANDS: the fader stays in it.
+    await dispatchPointer(layouts.locator('[data-testid="lay-row"][data-layout="ld-1"]').getByTestId("lay-remove"), flick);
+    // A pick of STAGE in ADD's sheet: the sheet stays open.
+    await layouts.getByTestId("lay-add").click();
+    const sheet = detail.getByTestId("lay-sheet");
+    await dispatchPointer(sheet.locator('[data-testid="lay-pick"][data-layout="lu-1"]'), flick);
+    await frames(page);
+    await expect(sheet).toBeVisible();
+    await sheet.getByTestId("sheet-close").click();
+    await expect.poll(() => layoutRows(layouts)).toEqual(["LD|HANDS"]);
+    // A marker after both: a tick the test's own client asks (Hand1 # into
+    // FX). The hub logs in order, so its record being the only `sectors`
+    // record since the flicks proves neither flick asked anything.
+    const live = await LiveClient.open();
+    try {
+      const marker = await live.ask({ type: "sector_tick", layout: "ld-2", strip: master("Hand1 #"), on: true });
+      expect(marker.type).toBe("result");
+    } finally {
+      live.close();
+    }
+    const records = await until(
+      async () => (await hubEvents()).filter((r: any) => r.ev === "sectors" && r.ts >= touched),
+      (all) => all.length > 0,
+      "the marker's record",
+    );
+    expect(
+      records.map((r: any) => [r.what, r.layout, r.on]),
+      "no tick but the marker's",
+    ).toEqual([["tick", "ld-2", true]]);
+
+    // A pick in the channel list: no channel opens; then a real pick
+    // (A-Echo) closes the record, so a wrong open would sit before it.
+    await detail.getByTestId("chan-open").click();
+    const chans = detail.getByTestId("chan-sheet");
+    await dispatchPointer(pickOf(chans, band("B-Main repro #")), flick);
+    await frames(page);
+    await expect(chans).toBeVisible();
+    await expect(detail).toHaveAttribute("data-track", "Hand4 #");
+    await pickOf(chans, master("A-Echo")).click();
+    await expect(detail).toHaveAttribute("data-track", "A-Echo");
+    const opens = await until(
+      async () =>
+        pageEvents(await hubEvents()).filter(
+          (e: any) => e.ev === "detail" && e.what === "open" && e.why === "pick" && e.t >= since,
+        ),
+      (all) => all.some((e: any) => (e.keys as string[]).some((k) => k.startsWith("master|") && k.includes("A-Echo"))),
+      "the real pick's open in the event log",
+      15_000,
+    );
+    expect(opens.length, JSON.stringify(opens)).toBe(1);
   });
 
   test("the channel list scrolls under a dragged finger and a drag opens nothing", async ({ page }) => {

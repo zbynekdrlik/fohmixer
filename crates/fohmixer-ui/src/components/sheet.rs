@@ -10,7 +10,7 @@ use leptos::prelude::*;
 
 use super::owns_touches;
 use crate::behave::hold::{Hold, Lift};
-use crate::behave::sheet::{DragScroll, key_acts, key_press};
+use crate::behave::sheet::{DragScroll, key_acts, key_down, key_press};
 use crate::dom;
 
 /// A key that acts at its lift (`behave::sheet::key_press`): the down
@@ -34,9 +34,10 @@ impl LiftKey {
     pub fn down(self, ev: &web_sys::PointerEvent) {
         ev.prevent_default();
         let id = ev.pointer_id();
+        let (x, y) = (f64::from(ev.client_x()), f64::from(ev.client_y()));
         let pressed = self
             .press
-            .try_update_value(|h| h.down(id, ev.is_primary(), dom::now()))
+            .try_update_value(|h| key_down(h, id, ev.is_primary(), dom::now(), x, y))
             .unwrap_or(false);
         if pressed && let Some(el) = dom::current_element(ev) {
             let _ = el.set_pointer_capture(id);

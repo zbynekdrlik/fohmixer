@@ -33,17 +33,39 @@ pub struct ChannelGroup {
 }
 
 impl ChannelGroup {
-    /// What the sheet keys a group by: its Live set and each fader's
-    /// identity, mark and outline, so a change in another group keeps this
-    /// one's picks (and a press under a finger on one).
+    /// What the sheet keys a group by: its Live set and, for each fader,
+    /// all a pick shows and opens (its identity, its shown label, its mark,
+    /// its outline and a hash of its strip, which the pick opens), so a
+    /// change in another group keeps this one's picks (and a press under a
+    /// finger on one), and a relabelled or rebound fader is drawn anew.
     pub fn key(&self) -> String {
         let channels: Vec<String> = self
             .channels
             .iter()
-            .map(|c| format!("{}:{}:{}", c.id.label, c.placed, c.current))
+            .map(|c| {
+                format!(
+                    "{}:{}:{}:{}:{:x}",
+                    c.id.label,
+                    c.label,
+                    c.placed,
+                    c.current,
+                    strip_hash(&c.strip)
+                )
+            })
             .collect();
         format!("{}|{}", self.instance, channels.join("|"))
     }
+}
+
+/// A hash of everything a strip carries (its JSON form: `Strip` derives no
+/// `Hash`), for the group's key.
+fn strip_hash(strip: &Strip) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_string(strip)
+        .unwrap_or_default()
+        .hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Whether some layout of `doc` holds `id`.
@@ -227,13 +249,37 @@ mod tests {
             ]
         );
         assert_eq!(groups[0].instance, "band");
-        assert_eq!(groups[1].key(), "master|Hand1 #:false:false");
-        assert_eq!(
-            groups[0].key(),
-            "band|Vox 1 #:true:false|Keys 1:false:true|Rev ST:true:false"
+        let hand = format!(
+            "master|Hand1 #:Hand1:false:false:{:x}",
+            strip_hash(&groups[1].channels[0].strip)
         );
+        assert_eq!(groups[1].key(), hand);
+        assert!(
+            groups[0].key().starts_with("band|Vox 1 #:Vox:true:false:"),
+            "{}",
+            groups[0].key()
+        );
+        assert!(groups[0].key().contains("|Keys 1:Keys:false:true:"));
+        assert!(groups[0].key().contains("|Rev ST:Rev ST:true:false:"));
         assert_eq!(groups[0].channels[1].id, sref("band", "Keys 1"));
         assert_eq!(groups[0].channels[1].strip, keys);
+    }
+
+    #[test]
+    fn a_relabelled_or_rebound_fader_changes_its_groups_key() {
+        let layout = layout();
+        let keys = strip_of(strip("band", "Keys 1"));
+        let group = channel_groups(Some(&doc()), &layout, &keys).remove(0);
+        // The integrated review's finding: the sheet keeps a group's picks
+        // while its key holds, so a key without the shown label and the
+        // strip kept a relabelled fader's old name and its old strip.
+        let mut relabelled = group.clone();
+        relabelled.channels[2].label = "Hall".to_string();
+        assert_ne!(relabelled.key(), group.key());
+        let mut rebound = group.clone();
+        rebound.channels[0].strip.mute_guard = !rebound.channels[0].strip.mute_guard;
+        assert_ne!(rebound.key(), group.key());
+        assert_eq!(group.clone().key(), group.key());
     }
 
     #[test]
