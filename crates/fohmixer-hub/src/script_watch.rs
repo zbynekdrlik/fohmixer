@@ -50,11 +50,16 @@ pub fn watched(local: usize) -> bool {
 
 /// Whether a process's executable name is an Ableton Live (the band's or
 /// the master's renamed copy, `Ableton Live 12 Suite.exe`; Live's indexer,
-/// `Ableton Index.exe`, is not a Live). Case-insensitive, as the install's
+/// `Ableton Index.exe`, is not a Live; nor is Live's installer, its `.tmp`
+/// helper or an uninstaller, #184: while the installer ran with Live closed
+/// the strips read NO SCRIPT). Case-insensitive, as the install's
 /// `Test-FohLiveRunning`.
 pub fn is_live_exe(exe: &str) -> bool {
     let lower = exe.to_ascii_lowercase();
-    lower.starts_with("ableton live") || lower.starts_with("abletonlive")
+    (lower.starts_with("ableton live") || lower.starts_with("abletonlive"))
+        && lower.ends_with(".exe")
+        && !lower.contains("installer")
+        && !lower.contains("uninst")
 }
 
 /// The watch's state: since when each instance is offline while Live runs,

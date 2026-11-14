@@ -33,6 +33,18 @@ fn a_live_is_any_ableton_live_exe_and_never_its_indexer() {
 }
 
 #[test]
+fn lives_installer_and_uninstaller_are_not_a_running_live() {
+    // #184, the MBC PC on 2026-11-14: while Live's installer ran with Live
+    // closed, the strips read NO SCRIPT instead of NOT RUNNING.
+    assert!(!is_live_exe("Ableton Live 12 Suite Installer.exe"));
+    assert!(!is_live_exe("Ableton Live 12 Suite Installer.tmp"));
+    assert!(!is_live_exe("ABLETON LIVE 12 SUITE INSTALLER.EXE"));
+    assert!(!is_live_exe("Ableton Live 12 Suite Uninstall.exe"));
+    assert!(!is_live_exe("Ableton Live 12 Suite.tmp"));
+    assert!(is_live_exe("Ableton Live 12 Suite.EXE"));
+}
+
+#[test]
 fn the_watch_counts_only_while_offline_with_live_running_and_says_each_change_once() {
     let start = Instant::now();
     let at = |s: u64| start + Duration::from_secs(s);
