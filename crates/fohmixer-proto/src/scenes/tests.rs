@@ -414,4 +414,12 @@ fn unknown_counts_the_faders_no_pool_fader_carries() {
         .with(&band("Gone"), "talk", Some(rule(Some(-5.0), None)));
     assert_eq!(unknown(&doc, &pool), 1);
     assert_eq!(unknown(&doc, &[]), 2);
+    // Two pool faders: a fader is known only when one of them IS it, not
+    // when some other pool fader differs from it.
+    let two = [control("Vox 1"), control("Vox 2")];
+    let two_pool = pool_of(&two);
+    let doc = heard_two()
+        .with(&band("Vox 1"), "intro", Some(rule(Some(-5.0), None)))
+        .with(&band("Gone"), "intro", Some(rule(Some(-5.0), None)));
+    assert_eq!(unknown(&doc, &two_pool), 1);
 }
