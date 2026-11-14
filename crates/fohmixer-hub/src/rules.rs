@@ -31,6 +31,8 @@ pub mod lufs;
 pub mod rec;
 #[path = "rules/reverb.rs"]
 pub mod reverb;
+#[path = "rules/scenes.rs"]
+pub mod scenes;
 
 /// The file of the persisted hub values.
 pub const HUB_STATE_FILE: &str = "hub-state.json";

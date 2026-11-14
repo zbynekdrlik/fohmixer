@@ -28,6 +28,7 @@ use crate::lufs::{LufsProblem, LufsState};
 use crate::mute_alarms::MuteAlarmsDoc;
 use crate::mute_guards::MuteGuardsDoc;
 use crate::path::canonical_target;
+use crate::scenes::{SceneRule, ScenesDoc};
 use crate::sectors::{Sectors, SectorsDoc, StripRef};
 use crate::songmap::{Counts, Key, ProblemKind, SectionsState, Span};
 
@@ -305,6 +306,17 @@ pub enum ClientMsg {
         id: String,
         strip: StripRef,
         on: bool,
+    },
+    /// A strip's rule for one scene set in its channel detail's SCENES
+    /// (#207): none (or a rule that moves nothing) removes it. Answered as
+    /// [`ClientMsg::SetColor`] (`result`, or `error` with `not in the
+    /// pool`, `unknown scene` or `invalid rule`; a removal is always
+    /// taken). Nothing reaches Live until a scene comes.
+    SetSceneRule {
+        id: String,
+        strip: StripRef,
+        scene: String,
+        rule: Option<SceneRule>,
     },
 }
 
@@ -631,6 +643,12 @@ pub enum ServerMsg {
     /// The faders whose mute the tablet guards by a hold (#203), at attach
     /// and after every change.
     MuteGuards { doc: MuteGuardsDoc },
+    /// The scene rules (#207), at attach and after every change; sent only
+    /// by a hub with an automation token (a page shows SCENES only then).
+    Scenes { doc: ScenesDoc },
+    /// A scene came (#207, `POST /api/scene`): its name, when (the hub's
+    /// UTC ms) and how many faders it moved; also the last one at attach.
+    Scene { name: String, at_ms: f64, moved: u32 },
     /// A message of a newer hub that this page does not know (#90 B3): any
     /// other `type` reads as this, and the page ignores it, so a new
     /// message never breaks an older page.
@@ -1688,6 +1706,9 @@ pub struct HubStatus {
     /// older hub's answer.
     #[serde(default)]
     pub mute_guards: MuteGuardsStatus,
+    /// The scene automation (#207); the defaults in an older hub's answer.
+    #[serde(default)]
+    pub scenes: ScenesStatus,
     /// The instance link this hub serves (#184, `[link]`); none without it
     /// (and in an older hub's answer).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1768,6 +1789,25 @@ pub type MuteAlarmsStatus = MarksStatus;
 /// `/api/status` `mute_guards` (#203): the same shape, for the faders the
 /// tablet guards.
 pub type MuteGuardsStatus = MarksStatus;
+
+/// `/api/status` `scenes` (#207): whether the hub takes scenes (an
+/// automation token is set), how many faders have a rule, how many of
+/// those no pool fader carries, why the file is not served, the scene
+/// names heard, the last scene, and the glides running now.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScenesStatus {
+    pub on: bool,
+    pub strips: usize,
+    pub unknown: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub known: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<String>,
+    pub glides: usize,
+    /// Every glide step written since the start.
+    pub writes: u64,
+}
 
 /// `/api/status` `sectors` (#148): the served document's revision, its
 /// layouts, its distinct faders and the refs no pool fader carries

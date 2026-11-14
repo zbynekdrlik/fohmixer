@@ -105,6 +105,11 @@ fn warn_class_records_are_socket_link_cap_dropped_and_errors() {
         "deck_view",
         "eq",
         "idle",
+        // The scene automation (#207): a few per service, each one why a
+        // fader moved.
+        "scene",
+        "scene_rule",
+        "scene_glide",
     ] {
         assert!(is_warn(&json!({"ev": ev})), "{ev}");
     }
