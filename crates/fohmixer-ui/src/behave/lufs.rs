@@ -8,7 +8,7 @@
 //! the stylesheet). An input point also has its spring (`spring`, mockup
 //! v13): the pause-skipping `V` on the meter's scale.
 
-use fohmixer_proto::layout::{Binding, Layout, LufsKind, LufsSpec, Strip};
+use fohmixer_proto::layout::{Binding, Control, Layout, LufsKind, LufsSpec, Strip, readouts};
 use fohmixer_proto::lufs::{LufsProblem, LufsState, caption, in_band, judge, text};
 use fohmixer_proto::path::canonical_target;
 use fohmixer_proto::sectors::{SectorLayout, pool};
@@ -57,6 +57,23 @@ pub fn stream_shown(instance: &str, picked: &[&SectorLayout], one_instance: bool
 /// the Lives down) is none: the FOH page then shows no readout of its own.
 pub fn stream_page(layout: &Layout) -> bool {
     !pool(layout).is_empty() && one_instance(layout)
+}
+
+/// A frame's global `lufs_readout`s (#184, `STREAM LUFS`) as label, target
+/// and binding, in the frame's order: what the sectors page and the rows page
+/// draw (`components::stream_lufs`).
+pub fn readout_specs(layout: &Layout) -> Vec<(String, i8, Binding)> {
+    readouts(layout)
+        .into_iter()
+        .filter_map(|control| match control {
+            Control::LufsReadout {
+                label,
+                target,
+                binding,
+            } => Some((label.clone(), *target, binding.clone())),
+            _ => None,
+        })
+        .collect()
 }
 
 /// A readout's target line (#184, mockup v3, in English, #141): a target
@@ -308,6 +325,35 @@ mod tests {
             ("mbc", "Choir")
         ])));
         assert!(!stream_page(&page(vec![])));
+    }
+
+    #[test]
+    fn readout_specs_are_the_frames_global_lufs_readouts_in_order() {
+        let frame = |global: serde_json::Value| -> Layout {
+            serde_json::from_value(json!({"schema": 2, "default_page": "p", "pages": [
+                {"id": "p", "title": "P", "rows": [{"sections": [
+                    {"kind": "group", "id": "g", "controls": [
+                        {"kind": "strip", "strip_kind": "standard", "label": "Hand 1",
+                         "binding": {"instance": "mbc", "anchor": {"kind": "track_at", "index": 0}}}]}]}]}],
+                "global": global}))
+            .unwrap()
+        };
+        let stream = json!({"instance": "mbc", "anchor": {"kind": "ctrl", "id": "stream"}});
+        let track = json!({"instance": "band", "anchor": {"kind": "track_at", "index": 8}});
+        let layout = frame(json!([
+            {"kind": "lufs_readout", "label": "STREAM LUFS", "target": -14, "binding": stream},
+            {"kind": "lufs_readout", "label": "ROOM LUFS", "target": -23, "binding": track}
+        ]));
+        let binding =
+            |b: &serde_json::Value| -> Binding { serde_json::from_value(b.clone()).unwrap() };
+        assert_eq!(
+            readout_specs(&layout),
+            vec![
+                ("STREAM LUFS".to_string(), -14, binding(&stream)),
+                ("ROOM LUFS".to_string(), -23, binding(&track)),
+            ]
+        );
+        assert_eq!(readout_specs(&frame(json!([]))), Vec::new());
     }
 
     #[test]

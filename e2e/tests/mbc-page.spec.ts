@@ -266,14 +266,17 @@ test.describe("STREAM LUFS on the page without sectors (#184)", () => {
       expect(await clipped(column.getByTestId(id)), id).toEqual([]);
     }
     await expect(column.getByTestId("version")).toBeInViewport({ ratio: 1 });
-    // The faders' travel is the page's without the readout.
+    // The rail (no buttons on the MBC page) gives no room away by scrolling.
+    const railFits = await page.locator(".rail-main").evaluate((e) => e.scrollHeight <= e.clientHeight + 0.5);
+    expect(railFits, "the rail fits its room").toBe(true);
+    // The faders keep their full travel: the readout lives in the column
+    // (its own grid track spanning the lines), never above the faders. 754 px
+    // is the rows page's whole travel at 1194 x 834, measured in both engines
+    // with the readout shown and with it hidden.
     const zone = mbcStrip(page, "Hand 1").locator(".strip-zone");
     const travel = (await zone.boundingBox())!.height;
-    await box.evaluate((e) => ((e as HTMLElement).style.display = "none"));
-    const without = (await zone.boundingBox())!.height;
-    await box.evaluate((e) => ((e as HTMLElement).style.display = ""));
-    console.log(`STREAM LUFS on the MBC rows page (${test.info().project.name}): ${at.height} px, travel ${travel} px (${without} px without it)`);
-    expect(travel, "the faders keep their travel").toBeCloseTo(without, 1);
+    console.log(`STREAM LUFS on the MBC rows page (${test.info().project.name}): ${at.height} px, travel ${travel} px`);
+    expect(travel, "the faders keep their travel").toBeGreaterThanOrEqual(753.5);
     // A new reading follows.
     await streamReads(-160);
     await expect(n).toHaveText("−16.0", { timeout: UP });

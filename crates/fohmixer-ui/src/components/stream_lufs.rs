@@ -8,11 +8,11 @@
 //! a problem (no LUFS meter on the track) takes that line's place. It
 //! takes no touch.
 
-use fohmixer_proto::layout::{Binding, Control, Layout, LufsSpec, readouts};
+use fohmixer_proto::layout::{Binding, Layout, LufsSpec};
 use fohmixer_proto::sectors::{SectorId, SectorLayout, SectorsDoc};
 use leptos::prelude::*;
 
-use crate::behave::lufs::{look, stream_page, stream_shown, target_text, track_key};
+use crate::behave::lufs::{look, readout_specs, stream_page, stream_shown, target_text, track_key};
 use crate::binding::sectors::{Picks, picked};
 use crate::store::LiveStore;
 
@@ -64,21 +64,6 @@ pub fn StreamLufs(
             </div>
         </div>
     }
-}
-
-/// A frame's global `lufs_readout`s (#184): label, target and binding.
-fn readout_specs(layout: &Layout) -> Vec<(String, i8, Binding)> {
-    readouts(layout)
-        .into_iter()
-        .filter_map(|control| match control {
-            Control::LufsReadout {
-                label,
-                target,
-                binding,
-            } => Some((label.clone(), *target, binding.clone())),
-            _ => None,
-        })
-        .collect()
 }
 
 /// The global `lufs_readout`s (#184, `STREAM LUFS`) under the sectors
