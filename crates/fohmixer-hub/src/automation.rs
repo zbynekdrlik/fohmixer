@@ -178,6 +178,9 @@ mod tests {
         assert!(!same_token(b"abc", b"ab"));
         assert!(!same_token(b"ab", b"abc"));
         assert!(same_token(b"", b""));
+        // Two differences that cancel under XOR (the fold must OR them).
+        assert!(!same_token(b"ab", b"ba"));
+        assert!(!same_token(b"aa", b"cc"));
     }
 
     #[test]

@@ -63,6 +63,9 @@ pub(super) struct ScenesIo {
     pub generation: u64,
     pub armed: Option<f64>,
     pub last: Option<LastScene>,
+    /// The ration of the "not learned" warn line (a trigger in a loop past
+    /// `MAX_KNOWN` names never floods the log).
+    pub full_lines: crate::ration::Ration,
 }
 
 impl ScenesIo {
@@ -76,6 +79,7 @@ impl ScenesIo {
             generation: 0,
             armed: None,
             last: None,
+            full_lines: crate::ration::Ration::default(),
         }
     }
 }
@@ -122,6 +126,14 @@ pub(super) fn full_line(scene: &str) -> String {
         "scene {scene:?} runs, but scenes.json keeps {} names already: it is not learned",
         model::MAX_KNOWN
     )
+}
+
+/// The most "not learned" warn lines per `ration::GAP`.
+pub(super) const FULL_LINES: u32 = 4;
+
+/// Whether `instance` is online as the router knows it.
+pub(super) fn online(states: &BTreeMap<String, super::InstanceState>, instance: &str) -> bool {
+    states.get(instance).is_some_and(|s| s.online)
 }
 
 /// The warn line of a write of `scenes.json` that failed.
@@ -396,8 +408,13 @@ impl Router {
                 Ok(()) => self.scenes_tell(&self.scenes_message()),
                 Err(e) => tracing::warn!("{}", write_problem(&e)),
             }
-        } else if model::is_full(self.scenes.store.doc(), name) {
-            tracing::warn!("{}", full_line(name));
+        } else if model::is_full(self.scenes.store.doc(), name)
+            && let Some(skipped) = self
+                .scenes
+                .full_lines
+                .take(std::time::Instant::now(), FULL_LINES)
+        {
+            tracing::warn!(skipped, "{}", full_line(name));
         }
         let targets: BTreeMap<StripRef, FaderTargets> = self.scenes_targets().into_iter().collect();
         let faders: Vec<SceneFader> = self
@@ -406,6 +423,9 @@ impl Router {
             .doc()
             .rules_of(name)
             .into_iter()
+            // A Live set that is offline is left out: nothing reaches it,
+            // so nothing of it counts as moved.
+            .filter(|(strip, _)| online(&self.states, &strip.instance))
             .filter_map(|(strip, rule)| {
                 let targets = targets.get(&strip)?.clone();
                 let volume_now = targets.volume.as_ref().and_then(|(i, t)| {

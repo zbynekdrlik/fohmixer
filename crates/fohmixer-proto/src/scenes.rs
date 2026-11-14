@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::layout::{Anchor, Control};
 use crate::sectors::{Pooled, StripRef};
 use crate::volume::{FLOOR_DB, TOP_DB};
 
@@ -291,6 +292,12 @@ pub fn is_full(doc: &ScenesDoc, scene: &str) -> bool {
     !doc.knows(scene) && doc.known.len() >= MAX_KNOWN
 }
 
+/// Whether a pool control has a mute a rule may write: a strip's track
+/// (Live's master track has none; a parameter fader is no track).
+pub fn has_mute(control: &Control) -> bool {
+    matches!(control, Control::Strip(strip) if strip.binding.anchor != Anchor::Master)
+}
+
 /// Why the hub refuses a page's rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuleRefusal {
@@ -300,6 +307,8 @@ pub enum RuleRefusal {
     UnknownScene,
     /// A rule with a problem ([`SceneRule::problem`]).
     Invalid,
+    /// A mute or an unmute for a fader with no mute ([`has_mute`]).
+    NoMute,
 }
 
 impl RuleRefusal {
@@ -309,12 +318,14 @@ impl RuleRefusal {
             RuleRefusal::NotInPool => "not in the pool",
             RuleRefusal::UnknownScene => "unknown scene",
             RuleRefusal::Invalid => "invalid rule",
+            RuleRefusal::NoMute => "no mute",
         }
     }
 }
 
 /// A page's rule for `strip` and `scene` (none: removed): a rule only for
-/// a fader of the pool and a scene heard, and one without a problem (a
+/// a fader of the pool and a scene heard, a mute only for a fader that has
+/// one, and one without a problem (a
 /// rule that does nothing removes, as none does); a removal is always
 /// taken. `Ok(None)` when it changes nothing, else the document after.
 pub fn set_rule(
@@ -326,8 +337,11 @@ pub fn set_rule(
 ) -> Result<Option<ScenesDoc>, RuleRefusal> {
     let rule = rule.filter(SceneRule::does_something);
     if let Some(rule) = rule {
-        if !pool.iter().any(|p| p.id == *strip) {
+        let Some(pooled) = pool.iter().find(|p| p.id == *strip) else {
             return Err(RuleRefusal::NotInPool);
+        };
+        if rule.mute.is_some() && !has_mute(pooled.control) {
+            return Err(RuleRefusal::NoMute);
         }
         if !doc.knows(scene) {
             return Err(RuleRefusal::UnknownScene);

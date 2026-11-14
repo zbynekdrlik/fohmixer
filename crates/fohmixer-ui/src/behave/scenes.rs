@@ -62,13 +62,8 @@ pub fn fader_db(volume: Option<f64>) -> Option<f64> {
 /// A − step: down to the next whole dB, past [`DB_LOW`] −∞ (none counts as
 /// 0 dB, as the mockup).
 pub fn db_down(db: Option<f64>) -> f64 {
-    let db = db.unwrap_or(0.0);
-    let next = db.ceil() - 1.0;
-    if db <= DB_LOW || next < DB_LOW {
-        FLOOR_DB
-    } else {
-        next
-    }
+    let next = db.unwrap_or(0.0).ceil() - 1.0;
+    if next < DB_LOW { FLOOR_DB } else { next }
 }
 
 /// A + step: up to the next whole dB, −∞ to [`DB_LOW`], at most +6 dB.
@@ -86,8 +81,17 @@ pub fn db_text(db: Option<f64>) -> String {
     match db {
         None => "—".to_string(),
         Some(db) if db <= FLOOR_DB => "−∞ dB".to_string(),
-        Some(db) if db > 0.0 => format!("+{db:.1} dB"),
-        Some(db) => format!("{:.1} dB", db).replace('-', "−"),
+        Some(db) => {
+            // Its sign by the value shown (−0.04 reads 0.0, never −0.0).
+            let shown = (db * 10.0).round() / 10.0;
+            if shown > 0.0 {
+                format!("+{shown:.1} dB")
+            } else if shown < 0.0 {
+                format!("{shown:.1} dB").replace('-', "−")
+            } else {
+                "0.0 dB".to_string()
+            }
+        }
     }
 }
 
@@ -263,6 +267,10 @@ mod tests {
         assert_eq!(db_text(Some(2.5)), "+2.5 dB");
         assert_eq!(db_text(Some(-10.0)), "−10.0 dB");
         assert_eq!(db_text(Some(-69.9)), "−69.9 dB");
+        assert_eq!(db_text(Some(0.04)), "0.0 dB");
+        assert_eq!(db_text(Some(-0.04)), "0.0 dB");
+        assert_eq!(db_text(Some(0.05)), "+0.1 dB");
+        assert_eq!(db_text(Some(-0.06)), "−0.1 dB");
     }
 
     #[test]

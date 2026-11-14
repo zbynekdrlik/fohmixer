@@ -58,6 +58,9 @@ fn served(
     assert_eq!(store.poll(), Some(1));
     let (router, own, rx) = offline_router(dir);
     let mut router = router.with_layout(store).with_scenes(on);
+    // Band as online (its socket is a port nothing listens on: writes are
+    // answered offline by the setter, the rule's decisions are the test's).
+    router.states.get_mut("band").unwrap().online = true;
     router.scenes_watch();
     (router, own, rx)
 }
@@ -478,4 +481,18 @@ fn set_msg_for(client: ClientId, target: &str, seq: u64, value: f64) -> RouterMs
         *t = target.to_string();
     }
     msg
+}
+
+#[tokio::test]
+async fn a_fader_of_an_offline_live_set_is_left_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, _own, rx) = served(dir.path(), true, Some(&ruled()));
+    router.states.get_mut("band").unwrap().online = false;
+    assert_eq!(router.scene_came("intro", "lan", "10.0.0.5"), 0);
+    assert!(of_kind(&records(&rx), "set").is_empty());
+    assert!(!online(&router.states, "band"));
+    assert!(!online(&router.states, "nowhere"));
+    router.states.get_mut("band").unwrap().online = true;
+    assert!(online(&router.states, "band"));
+    assert_eq!(FULL_LINES, 4);
 }

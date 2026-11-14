@@ -11,7 +11,7 @@
 //! flashes the key (`data-refused`). The decisions are `behave::scenes`;
 //! nothing here writes a Live key.
 
-use fohmixer_proto::scenes::{SceneRule, ScenesDoc};
+use fohmixer_proto::scenes::{SceneRule, ScenesDoc, has_mute};
 use fohmixer_proto::sectors::StripRef;
 use leptos::prelude::*;
 
@@ -36,6 +36,10 @@ pub fn DetailScenes(
 ) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let id = StoredValue::new(detail_ref(&strip));
+    // The master track has no mute (`has_mute`): no MUTE chip there.
+    let muteable = has_mute(&fohmixer_proto::layout::Control::Strip(Box::new(
+        strip.clone(),
+    )));
     let on = Memo::new(move |_| {
         store
             .scenes
@@ -49,7 +53,8 @@ pub fn DetailScenes(
         }
         let named = id.try_with_value(Option::is_some).unwrap_or(false);
         Some(if named {
-            view! { <ScenesSection strip_id=id volume=volume sheet=sheet /> }.into_any()
+            view! { <ScenesSection strip_id=id volume=volume sheet=sheet muteable=muteable /> }
+                .into_any()
         } else {
             view! {
                 <div class="scn-sec" data-testid="detail-scenes">
@@ -69,6 +74,7 @@ pub fn DetailScenes(
 fn ScenesSection(
     strip_id: StoredValue<Option<StripRef>>,
     volume: Option<RwSignal<Slot>>,
+    muteable: bool,
     sheet: RwSignal<bool>,
 ) -> impl IntoView {
     let store = expect_context::<LiveStore>();
@@ -119,7 +125,13 @@ fn ScenesSection(
                 </div>
             </Show>
             <For each=scenes key=|scene| scene.clone() let:scene>
-                <SceneRow strip_id=strip_id scene=scene rows=rows_memo volume=volume />
+                <SceneRow
+                    strip_id=strip_id
+                    scene=scene
+                    rows=rows_memo
+                    volume=volume
+                    muteable=muteable
+                />
             </For>
             <button
                 type="button"
@@ -144,6 +156,7 @@ fn SceneRow(
     scene: String,
     rows: Memo<Vec<(String, SceneRule)>>,
     volume: Option<RwSignal<Slot>>,
+    muteable: bool,
 ) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let name = StoredValue::new(scene.clone());
@@ -261,8 +274,22 @@ fn SceneRow(
             .unwrap_or_default()
     };
     let refused = move || failed.try_get().unwrap_or(false).to_string();
-    let scene_attr = scene.clone();
     let k1: Vec<String> = Vec::new();
+    let mute_chip = muteable.then(|| {
+        view! {
+            <button
+                type="button"
+                class="scn-btn scn-mute"
+                use:owns_touches=k1
+                data-testid="scene-mute"
+                data-mute=mute_state
+                on:pointerdown=mute
+            >
+                {mute_text}
+            </button>
+        }
+    });
+    let scene_attr = scene.clone();
     let k2: Vec<String> = Vec::new();
     let k3: Vec<String> = Vec::new();
     let k4: Vec<String> = Vec::new();
@@ -281,16 +308,7 @@ fn SceneRow(
                 <span class="scn-name" data-testid="scene-name">
                     {scene}
                 </span>
-                <button
-                    type="button"
-                    class="scn-btn scn-mute"
-                    use:owns_touches=k1
-                    data-testid="scene-mute"
-                    data-mute=mute_state
-                    on:pointerdown=mute
-                >
-                    {mute_text}
-                </button>
+                {mute_chip}
                 <button
                     type="button"
                     class="scn-x"

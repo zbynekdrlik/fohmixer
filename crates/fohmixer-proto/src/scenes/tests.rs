@@ -347,11 +347,61 @@ fn set_rule_takes_a_pool_fader_of_a_known_scene_only() {
     assert_eq!(set_rule(&doc, &band("Vox 1"), "song", None, &[]), Ok(None));
 }
 
+/// The master strip of band.
+fn master() -> Control {
+    serde_json::from_value(json!({"kind": "strip",
+        "binding": {"instance": "band", "anchor": {"kind": "master"}},
+        "strip_kind": "standard"}))
+    .expect("the control parses")
+}
+
+#[test]
+fn the_master_track_takes_a_volume_rule_and_no_mute() {
+    let controls = [master(), control("Vox 1")];
+    let pool = pool_of(&controls);
+    assert!(!has_mute(&controls[0]));
+    assert!(has_mute(&controls[1]));
+    let param: Control = serde_json::from_value(json!({"kind": "param_fader", "label": "FX",
+        "targets": [{"binding": {"instance": "band", "anchor": {"kind": "track", "name": "Vox 1"},
+                     "path": "devices 0 parameters 1"}, "prop": "value"}]}))
+    .expect("the control parses");
+    assert!(!has_mute(&param), "a parameter fader is no track");
+    let doc = heard_two();
+    let main = band("Master");
+    assert!(
+        set_rule(&doc, &main, "intro", Some(rule(Some(-3.0), None)), &pool)
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        set_rule(
+            &doc,
+            &main,
+            "intro",
+            Some(rule(Some(-3.0), Some(SceneMute::Mute))),
+            &pool
+        ),
+        Err(RuleRefusal::NoMute)
+    );
+    assert!(
+        set_rule(
+            &doc,
+            &band("Vox 1"),
+            "intro",
+            Some(rule(None, Some(SceneMute::Mute))),
+            &pool
+        )
+        .unwrap()
+        .is_some()
+    );
+}
+
 #[test]
 fn a_refusal_says_why_in_words() {
     assert_eq!(RuleRefusal::NotInPool.text(), "not in the pool");
     assert_eq!(RuleRefusal::UnknownScene.text(), "unknown scene");
     assert_eq!(RuleRefusal::Invalid.text(), "invalid rule");
+    assert_eq!(RuleRefusal::NoMute.text(), "no mute");
 }
 
 #[test]

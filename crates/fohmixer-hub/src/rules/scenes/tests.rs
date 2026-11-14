@@ -63,6 +63,21 @@ fn a_strips_targets_are_its_volume_and_its_mutes_linked_ones_after() {
         "mute_links": [{"instance": "band", "anchor": {"kind": "track_at", "index": 7}}]}))
     .unwrap();
     assert_eq!(fader_targets(&control), Some(targets()));
+    // The master track: its volume, no mute.
+    let master: Control = serde_json::from_value(json!({"kind": "strip",
+        "binding": {"instance": "band", "anchor": {"kind": "master"}},
+        "strip_kind": "standard"}))
+    .unwrap();
+    assert_eq!(
+        fader_targets(&master),
+        Some(FaderTargets {
+            volume: Some((
+                "band".into(),
+                "live_set master_track mixer_device volume".into()
+            )),
+            mutes: Vec::new(),
+        })
+    );
     let solo: Control = serde_json::from_value(json!({"kind": "solo",
         "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Drums"}}}))
     .unwrap();

@@ -22,8 +22,8 @@
 //!   ends its glides.
 
 use fohmixer_proto::client::set_key;
-use fohmixer_proto::layout::Control;
-use fohmixer_proto::scenes::SceneRule;
+use fohmixer_proto::layout::{Binding, Control};
+use fohmixer_proto::scenes::{SceneRule, has_mute};
 use fohmixer_proto::sectors::StripRef;
 use fohmixer_proto::volume::{FLOOR_DB, value2db, volume_of};
 use serde::Serialize;
@@ -40,26 +40,38 @@ pub struct FaderTargets {
     pub mutes: Vec<(String, String)>,
 }
 
-/// A control's [`FaderTargets`]: a strip's volume and its track's mute with
-/// its linked mutes' tracks; none for any other control (a parameter fader
-/// has no volume or mute of its own).
+/// A control's [`FaderTargets`]: a strip's volume (its binding with the
+/// path `mixer_device volume`, as REVERB's `Layout::reverb_faders` builds
+/// it, so the glide's key is the page's) and its track's mute with its
+/// linked mutes' tracks (none for the master track: `has_mute`); none for
+/// any other control (a parameter fader has no volume or mute of its own).
+/// A fader link's partners are not moved: a scene moves the strip's own
+/// track, each partner by its own rule (#207, recorded on the ticket).
 pub fn fader_targets(control: &Control) -> Option<FaderTargets> {
     let Control::Strip(strip) = control else {
         return None;
     };
     let own = strip.binding.target().ok()?;
     let instance = strip.binding.instance.clone();
-    let mut mutes = vec![(instance.clone(), own.clone())];
-    mutes.extend(
-        strip
-            .mute_links
-            .iter()
-            .filter_map(|b| b.target().ok().map(|t| (b.instance.clone(), t))),
-    );
-    Some(FaderTargets {
-        volume: Some((instance, format!("{own} mixer_device volume"))),
-        mutes,
-    })
+    let volume = Binding {
+        instance: instance.clone(),
+        anchor: strip.binding.anchor.clone(),
+        path: Some("mixer_device volume".to_string()),
+    }
+    .target()
+    .ok()
+    .map(|t| (instance.clone(), t));
+    let mut mutes = Vec::new();
+    if has_mute(control) {
+        mutes.push((instance, own));
+        mutes.extend(
+            strip
+                .mute_links
+                .iter()
+                .filter_map(|b| b.target().ok().map(|t| (b.instance.clone(), t))),
+        );
+    }
+    Some(FaderTargets { volume, mutes })
 }
 
 /// One fader of a scene, as the router hands it: its identity, its rule,

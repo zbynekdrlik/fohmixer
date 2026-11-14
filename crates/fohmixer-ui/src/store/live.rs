@@ -875,6 +875,9 @@ impl LiveStore {
             return;
         };
         dom::log(&format!("connected to hub {build}"));
+        // The last scene comes again with the attach (#207): a hub that
+        // restarted has none, so the foot's line goes.
+        let _ = self.scene.try_set(None);
         let _ = self.connected.try_set(true);
         diag::connected();
         self.forget_unwanted();
