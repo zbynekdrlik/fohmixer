@@ -20,6 +20,13 @@ pub fn key_press() -> Hold {
     Hold::lifted(RAIL_HOLD_MS)
 }
 
+/// Pointer `pointer` went down on a key at `x`, `y` (`now`, `primary`
+/// as `Hold::down`): whether it is the key's press now.
+pub fn key_down(key: &mut Hold, pointer: i32, primary: bool, now: f64, x: f64, y: f64) -> bool {
+    let _ = (x, y);
+    key.down(pointer, primary, now)
+}
+
 /// Whether a key's lift acts.
 pub fn key_acts(lift: Lift) -> bool {
     matches!(lift, Lift::Tap | Lift::Open)
@@ -100,6 +107,32 @@ mod tests {
         assert!(!key.open(999.0));
         assert!(key.open(1020.0));
         assert!(key_acts(key.up(7, 1100.0)));
+    }
+
+    /// A press down at (100, 100) whose first move lands at `first`, then
+    /// its lift at 80 ms: whether it acts.
+    fn flick(first: (f64, f64)) -> bool {
+        let mut key = key_press();
+        assert!(key_down(&mut key, 7, true, 0.0, 100.0, 100.0));
+        key.moved(7, first.0, first.1);
+        key_acts(key.up(7, 80.0))
+    }
+
+    #[test]
+    fn a_flick_whose_first_move_is_past_10_px_acts_on_nothing() {
+        // The down's own point anchors the press: a first move already
+        // past 10 px from it is a slide (the integrated review's finding:
+        // a first move anchored, so a flick still acted at its lift).
+        assert!(!flick((100.0, 130.0)));
+        assert!(!flick((89.0, 100.0)));
+        // Within 10 px of the down it is still a tap.
+        assert!(flick((100.0, 110.0)));
+        assert!(flick((104.0, 96.0)));
+        // A second finger's down is no press.
+        let mut key = key_press();
+        assert!(key_down(&mut key, 7, true, 0.0, 100.0, 100.0));
+        assert!(!key_down(&mut key, 8, false, 1.0, 300.0, 300.0));
+        assert!(key_acts(key.up(7, 80.0)));
     }
 
     #[test]
