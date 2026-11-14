@@ -125,11 +125,11 @@ fn two_lines_when_both_keep_340_px_else_one() {
     use SectorId::*;
     let two = 2.0 * 340.0 + 6.0;
     assert_eq!(
-        sector_lines(two, &METRICS),
+        sector_lines(two, [1.0, 1.0], &METRICS),
         vec![(vec![Lu], vec![Ru]), (vec![Ld], vec![Rd])]
     );
     assert_eq!(
-        sector_lines(two.next_down(), &METRICS),
+        sector_lines(two.next_down(), [1.0, 1.0], &METRICS),
         vec![(vec![Lu, Ld], vec![Ru, Rd])]
     );
 }
@@ -527,10 +527,12 @@ fn doc_of_seven() -> SectorsDoc {
     )])
 }
 
+/// An empty `ld` beside a strip in `rd`, so the lower row keeps its line.
 fn doc_with_empty_ld() -> SectorsDoc {
     doc(vec![
         (SectorId::Lu, vec![sl("lu-1", &vox(&[1, 2, 3, 4, 5, 6]))]),
         (SectorId::Ld, vec![sl("ld-1", &[])]),
+        (SectorId::Rd, vec![sl("rd-1", &vox(&[7]))]),
     ])
 }
 
@@ -546,4 +548,105 @@ fn a_cell_is_found_by_its_key_on_its_line() {
     assert_eq!(page.cell_of(1, "rd:#0").map(|c| c.slot), Some(0));
     assert_eq!(page.cell_of(1, "lu:band|Vox 2"), None, "another line");
     assert_eq!(page.cell_of(2, "lu:band|Vox 2"), None);
+}
+
+#[test]
+fn a_row_with_layouts_but_no_strip_weighs_nothing() {
+    use SectorId::*;
+    let six = sl("a", &vox(&[1, 2, 3, 4, 5, 6]));
+    let none = sl("b", &names(&["", ""]));
+    let bare = sl("c", &[]);
+    // No layout at all, or a row with no layout: both rows keep their line.
+    assert_eq!(row_weights(&doc(vec![])), [1.0, 1.0]);
+    assert_eq!(row_weights(&doc(vec![(Lu, vec![six.clone()])])), [1.0, 1.0]);
+    assert_eq!(row_weights(&doc(vec![(Rd, vec![six.clone()])])), [1.0, 1.0]);
+    // The seeded MBC page: the lower row's layouts hold no strip.
+    assert_eq!(
+        row_weights(&doc(vec![
+            (Lu, vec![six.clone()]),
+            (Ld, vec![none.clone()]),
+            (Rd, vec![bare.clone()])
+        ])),
+        [1.0, 0.0]
+    );
+    assert_eq!(
+        row_weights(&doc(vec![
+            (Ru, vec![six.clone()]),
+            (Rd, vec![bare.clone()])
+        ])),
+        [1.0, 0.0]
+    );
+    assert_eq!(
+        row_weights(&doc(vec![
+            (Lu, vec![none.clone()]),
+            (Rd, vec![six.clone()])
+        ])),
+        [0.0, 1.0]
+    );
+    assert_eq!(
+        row_weights(&doc(vec![
+            (Ru, vec![bare.clone()]),
+            (Ld, vec![six.clone()])
+        ])),
+        [0.0, 1.0]
+    );
+    // Both rows empty: both keep their line.
+    assert_eq!(
+        row_weights(&doc(vec![
+            (Lu, vec![bare.clone()]),
+            (Ld, vec![none.clone()])
+        ])),
+        [1.0, 1.0]
+    );
+    // A strip in either sector, in any layout of it, keeps the row.
+    assert_eq!(
+        row_weights(&doc(vec![
+            (Lu, vec![six.clone()]),
+            (Ld, vec![bare.clone()]),
+            (Rd, vec![none.clone(), six.clone()])
+        ])),
+        [1.0, 1.0]
+    );
+    assert_eq!(
+        row_weights(&doc(vec![
+            (Lu, vec![bare.clone()]),
+            (Ru, vec![six.clone()]),
+            (Ld, vec![six])
+        ])),
+        [1.0, 1.0]
+    );
+}
+
+#[test]
+fn a_row_that_weighs_nothing_gives_one_line_at_any_height() {
+    use SectorId::*;
+    for weights in [[1.0, 0.0], [0.0, 1.0]] {
+        assert_eq!(
+            sector_lines(2.0 * TALL, weights, &METRICS),
+            vec![(vec![Lu, Ld], vec![Ru, Rd])]
+        );
+    }
+}
+
+#[test]
+fn the_seeded_page_with_empty_lower_sectors_takes_one_line() {
+    let lu = sl("lu", &vox(&[1, 2, 3, 4, 5, 6]));
+    let empty = sl("ld", &[]);
+    let d = doc(vec![
+        (SectorId::Lu, vec![lu]),
+        (SectorId::Ld, vec![empty.clone()]),
+        (SectorId::Rd, vec![empty]),
+    ]);
+    assert_eq!(
+        arranged(&d, &Picks::new(), Sides::both(IPAD_SIDE), TALL)
+            .lines
+            .len(),
+        1
+    );
+    assert_eq!(
+        arranging(&d, &Picks::new(), Sides::both(IPAD_SIDE), TALL)
+            .lines
+            .len(),
+        1
+    );
 }

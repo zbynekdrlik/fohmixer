@@ -53,6 +53,19 @@ const sectorsPage = (page: Page) => page.locator('[data-testid="page"][data-sect
 const mbcStrip = (page: Page, label: string) =>
   page.locator(`[data-testid="strip"][data-instance="mbc"][data-label="${label}"]`);
 
+const SECTORS_LINE = '[data-testid="page"][data-sectors="true"] [data-testid="line"]';
+
+/** Every fader's height on the sectors page, read in one task (#198). */
+async function travels(page: Page): Promise<number[]> {
+  return page.evaluate(() =>
+    [
+      ...document.querySelectorAll(
+        '[data-testid="page"][data-sectors="true"] .slot[data-sector] [data-testid="strip"] [data-testid="fader"]',
+      ),
+    ].map((f) => f.getBoundingClientRect().height),
+  );
+}
+
 /** The MBC hub's page, its sectors shown. */
 async function openMbc(page: Page) {
   await page.setViewportSize(IPAD);
@@ -122,6 +135,19 @@ test.describe("STREAM LUFS (#184 PR C)", () => {
     expect(at.x).toBeGreaterThanOrEqual(column.x);
     expect(at.x + at.width).toBeLessThanOrEqual(column.x + column.width + 0.5);
     await expect(box).toHaveCSS("pointer-events", "none");
+  });
+
+  test("the seeded MBC page keeps ARRANGE and the whole height for its faders", async ({ page }) => {
+    // The hub's seed: LU and RU hold the twelve strips, LD and RD an empty
+    // layout each. A row with layouts but no strip takes no line (#184), so
+    // the faders keep the rows page's height and ARRANGE stays.
+    await openMbc(page);
+    await expect(page.getByTestId("arrange")).toBeVisible();
+    await expect.poll(async () => page.locator(`${SECTORS_LINE}`).count(), { timeout: UP }).toBe(1);
+    await expect.poll(async () => (await travels(page)).length, { timeout: UP }).toBe(12);
+    const all = await travels(page);
+    console.log(`MBC sectors travel (${test.info().project.name}): ${[...new Set(all.map((t) => t.toFixed(2)))].join(", ")} px`);
+    for (const t of all) expect(t).toBeGreaterThan(600);
   });
 
   test("each MBC strip shows its own LUFS", async ({ page }) => {
