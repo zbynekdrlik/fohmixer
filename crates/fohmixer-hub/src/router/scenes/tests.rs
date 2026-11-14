@@ -343,7 +343,16 @@ async fn a_glide_steps_through_the_setter_and_a_pages_set_stops_it() {
     router.scene_came("intro", "lan", "10.0.0.5");
     // The wake: a step through the setter as the rule's own client.
     let generation = router.scenes.generation;
+    // Each arm numbers its wake afresh (a stale one is told apart by it).
+    assert!(
+        generation >= 1,
+        "the scene armed a numbered wake: {generation}"
+    );
     router.handle(RouterMsg::ScenesWake { generation });
+    assert!(
+        router.scenes.generation > generation,
+        "the next step's wake has a new number"
+    );
     let sets: Vec<Value> = of_kind(&records(&rx), "set");
     assert!(
         sets.iter().any(|s| s["client"] == json!(SCENES_CLIENT)
