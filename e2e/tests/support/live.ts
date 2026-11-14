@@ -352,6 +352,37 @@ export async function resetSectors() {
   );
 }
 
+/**
+ * The MBC hub's `sectors.json` replaced by `doc` (#184: its page without
+ * sectors) once it has seeded its own, served by it when this returns. A spec
+ * that calls it puts the seeded document back with `restoreMbcSectors`.
+ */
+export async function setMbcSectors(doc: SectorsDoc) {
+  const bearer = await token(MBC_BASE);
+  const status = async () => (await hubStatus(bearer, MBC_BASE)).sectors;
+  const seeded = await until(status, (s: any) => s.layouts > 0 && !s.error, "the MBC hub seeding its sectors");
+  await harness("/mbc-hub/sectors", { doc });
+  const layouts = layoutCount(doc);
+  await until(
+    status,
+    (s: any) => s.rev > seeded.rev && s.layouts === layouts && !s.error,
+    "the MBC hub serving the sectors document",
+  );
+}
+
+/** The MBC hub's seeded sectors back (#184), served by it when this returns. */
+export async function restoreMbcSectors() {
+  const bearer = await token(MBC_BASE);
+  const status = async () => (await hubStatus(bearer, MBC_BASE)).sectors;
+  const before = await status();
+  await harness("/mbc-hub/sectors/restore");
+  await until(
+    status,
+    (s: any) => s.layouts > 0 && !s.error && (before.layouts > 0 || s.rev > before.rev),
+    "the MBC hub serving its seeded sectors",
+  );
+}
+
 /** The strips' colours as `colors.json` holds them (#164): instance → label → palette key. */
 export type ColorsDoc = { colors: Record<string, Record<string, string>> };
 
@@ -419,8 +450,8 @@ export async function token(base = BASE): Promise<string> {
 }
 
 /** `GET /api/status` (with `bearer`, a token taken once: every login hashes the PIN). */
-export async function hubStatus(bearer?: string): Promise<any> {
-  const response = await fetch(`${BASE}/api/status`, { headers: { authorization: `Bearer ${bearer ?? (await token())}` } });
+export async function hubStatus(bearer?: string, base = BASE): Promise<any> {
+  const response = await fetch(`${base}/api/status`, { headers: { authorization: `Bearer ${bearer ?? (await token(base))}` } });
   if (!response.ok) throw new Error(`status: ${response.status}`);
   return response.json();
 }

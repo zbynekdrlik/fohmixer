@@ -6,6 +6,8 @@ import {
   hostLine,
   openSurface,
   resetSectors,
+  restoreMbcSectors,
+  setMbcSectors,
   setSectors,
   type SectorsDoc,
 } from "./support/live";
@@ -208,5 +210,85 @@ test.describe("STREAM LUFS (#184 PR C)", () => {
     for (const id of ["sector-layouts-title", "stream-lufs-cap", "stream-lufs-goal", "login-line", "logout"]) {
       expect(await clipped(column.getByTestId(id)), id).toEqual([]);
     }
+  });
+});
+
+// STREAM LUFS on the page without sectors (#184, the main session's design
+// on the ticket): the MBC hub runs with its sectors off (the owner's rule
+// "fader height first"), so the rows page draws the readout in its column,
+// under the tabs, by the same rule: always on a page of one Live set's
+// faders, never on the FOH rows page.
+test.describe("STREAM LUFS on the page without sectors (#184)", () => {
+  test.afterEach(async () => {
+    await hostLine("mbc", `lufs track ${STREAM} off`);
+    await hostLine("mbc", `maxdev lufs track ${STREAM} remove`);
+    await restoreMbcSectors();
+  });
+
+  test("the MBC rows page shows STREAM LUFS in its column, the faders keep their travel", async ({ page }) => {
+    await setMbcSectors({ rev: 0, sectors: {} });
+    expect(await hostLine("mbc", `maxdev lufs track ${STREAM} add rack`)).toBe("MAXDEV 1");
+    await streamReads(-142);
+    await page.setViewportSize(IPAD);
+    await openSurface(page, { base: MBC_BASE });
+    const rows = page.locator('[data-testid="page"]:not([data-sectors])');
+    await expect(rows).toBeVisible({ timeout: UP });
+    await expect(sectorsPage(page)).toHaveCount(0);
+    await expect(mbcStrip(page, "Hand 1")).toBeVisible({ timeout: UP });
+    const box = readout(page);
+    await expect(box).toBeVisible({ timeout: UP });
+    await expect(box).toHaveCount(1);
+    await expect(box).toHaveAttribute("data-size", "full");
+    await expect(box.getByTestId("stream-lufs-cap")).toHaveText("STREAM LUFS");
+    const n = box.getByTestId("stream-lufs");
+    await expect(n).toHaveText("−14.2", { timeout: UP });
+    await expect(n).toHaveAttribute("data-l", "in");
+    await expect(n).toHaveCSS("color", GREEN);
+    await expect(n).toHaveCSS("font-size", "40px");
+    await expect(box.getByTestId("stream-lufs-goal")).toHaveText("target −14");
+    await whole(box);
+    await expect(box).toHaveCSS("pointer-events", "none");
+    // In the column, above the rail and the foot.
+    const column = page.getByTestId("column");
+    const at = (await box.boundingBox())!;
+    const col = (await column.boundingBox())!;
+    expect(at.x).toBeGreaterThanOrEqual(col.x);
+    expect(at.x + at.width).toBeLessThanOrEqual(col.x + col.width + 0.5);
+    const rail = (await page.getByTestId("rail").boundingBox())!;
+    expect(at.y + at.height).toBeLessThanOrEqual(rail.y + 0.5);
+    // Nothing of the column is clipped: it fits its height, the foot whole
+    // (its lines as "the MBC page's column matches the mockup" checks them;
+    // the version's 10 px line is under its face's content area on every page).
+    const fits = await column.evaluate((e) => e.scrollHeight <= e.clientHeight + 0.5);
+    expect(fits, "the column fits its height").toBe(true);
+    for (const id of ["login-line", "logout"]) {
+      await expect(column.getByTestId(id), id).toBeVisible();
+      expect(await clipped(column.getByTestId(id)), id).toEqual([]);
+    }
+    await expect(column.getByTestId("version")).toBeInViewport({ ratio: 1 });
+    // The faders' travel is the page's without the readout.
+    const zone = mbcStrip(page, "Hand 1").locator(".strip-zone");
+    const travel = (await zone.boundingBox())!.height;
+    await box.evaluate((e) => ((e as HTMLElement).style.display = "none"));
+    const without = (await zone.boundingBox())!.height;
+    await box.evaluate((e) => ((e as HTMLElement).style.display = ""));
+    console.log(`STREAM LUFS on the MBC rows page (${test.info().project.name}): ${at.height} px, travel ${travel} px (${without} px without it)`);
+    expect(travel, "the faders keep their travel").toBeCloseTo(without, 1);
+    // A new reading follows.
+    await streamReads(-160);
+    await expect(n).toHaveText("−16.0", { timeout: UP });
+    await expect(n).toHaveAttribute("data-l", "off");
+  });
+
+  test("the FOH rows page draws no STREAM LUFS", async ({ page }) => {
+    expect(await hostLine("mbc", `maxdev lufs track ${STREAM} add rack`)).toBe("MAXDEV 1");
+    await streamReads(-141);
+    await resetSectors();
+    await page.setViewportSize(IPAD);
+    await openSurface(page);
+    await expect(page.locator('[data-testid="page"]:not([data-sectors])')).toBeVisible({ timeout: UP });
+    await expect(page.locator('[data-testid="strip"][data-instance="band"]').first()).toBeVisible({ timeout: UP });
+    await expect(page.getByTestId("rail")).toBeVisible();
+    await expect(readout(page)).toHaveCount(0);
   });
 });
