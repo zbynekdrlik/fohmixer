@@ -10,6 +10,7 @@ pub mod buttons;
 pub mod detail;
 mod detail_alarm;
 mod detail_color;
+mod detail_guard;
 mod detail_layouts;
 pub mod eq;
 pub mod fader;

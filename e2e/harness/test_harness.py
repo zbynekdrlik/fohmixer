@@ -308,6 +308,18 @@ class HarnessTest(unittest.TestCase):
         with open(path, encoding="utf-8") as f:
             self.assertEqual(json.load(f), {"mute_alarms": {}})
 
+    def test_the_mute_guards_file_starts_empty_is_replaced_and_reset(self):
+        path = os.path.join(self.data, "mute_guards.json")
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f), {"mute_guards": {}})
+        doc = {"mute_guards": {"band": ["Hand2 #"]}}
+        self.assertEqual(self.post("/hub/mute_guards", {"doc": doc}), (200, {"ok": True}))
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f), doc)
+        self.assertEqual(self.post("/hub/mute_guards/reset"), (200, {"ok": True}))
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f), {"mute_guards": {}})
+
     def test_the_hub_config_names_both_hosts(self):
         with open(os.path.join(self.data, "fohmixer-hub.toml"), encoding="utf-8") as f:
             text = f.read()

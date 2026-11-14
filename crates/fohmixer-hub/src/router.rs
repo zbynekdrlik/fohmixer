@@ -98,8 +98,8 @@ mod sectors;
 
 #[path = "router/colors.rs"]
 mod colors;
-#[path = "router/mute_alarms.rs"]
-mod mute_alarms;
+#[path = "router/marks.rs"]
+mod marks;
 #[path = "router/songmap.rs"]
 mod songmap;
 #[cfg(test)]
@@ -575,6 +575,15 @@ pub enum RouterMsg {
     },
     /// The layout poll's tick (#188): `mute_alarms.json` is read again.
     MuteAlarmsPoll,
+    /// A page's switch of a strip's mute guard (#203, `set_mute_guard`).
+    SetMuteGuard {
+        client: ClientId,
+        id: String,
+        strip: StripRef,
+        on: bool,
+    },
+    /// The layout poll's tick (#203): `mute_guards.json` is read again.
+    MuteGuardsPoll,
     /// The script watch's verdict on a local instance changed (#184 PR D,
     /// `script_watch`): Live runs without its FohMixer script answering.
     ScriptMissing {
@@ -616,6 +625,8 @@ pub struct RouterStatus {
     pub colors: fohmixer_proto::client::ColorsStatus,
     /// The faders marked for the mute alarm (#188).
     pub mute_alarms: fohmixer_proto::client::MuteAlarmsStatus,
+    /// The faders whose mute the tablet guards (#203).
+    pub mute_guards: fohmixer_proto::client::MuteGuardsStatus,
     pub clients: usize,
     pub unresolved: Vec<Unresolved>,
 }
@@ -696,7 +707,9 @@ pub struct Router {
     /// The strips' colours (#164): `colors.json`.
     colors: colors::ColorsIo,
     /// The mute alarm's marks (#188): `mute_alarms.json`.
-    mute_alarms: mute_alarms::MuteAlarmsIo,
+    mute_alarms: marks::MarksIo<fohmixer_proto::mute_alarms::MuteAlarmsDoc>,
+    /// The mute guard's marks (#203): `mute_guards.json`.
+    mute_guards: marks::MarksIo<fohmixer_proto::mute_guards::MuteGuardsDoc>,
     /// Every instance's transport (#104, D18), by instance.
     transport: BTreeMap<String, TransportWatch>,
     layout_rev: u64,
@@ -786,9 +799,8 @@ impl Router {
         let colors = colors::ColorsIo {
             store: crate::colors::ColorStore::open(&data_dir),
         };
-        let mute_alarms = mute_alarms::MuteAlarmsIo {
-            store: crate::mute_alarms::MuteAlarmStore::open(&data_dir),
-        };
+        let mute_alarms = marks::MarksIo::open(&data_dir);
+        let mute_guards = marks::MarksIo::open(&data_dir);
         Self {
             subs,
             names: NameCheck::default(),
@@ -818,6 +830,7 @@ impl Router {
             sectors,
             colors,
             mute_alarms,
+            mute_guards,
             state,
             transport,
             layout_rev: 0,
@@ -896,7 +909,8 @@ impl Router {
                 self.links_attach(&outbox);
                 self.sectors_attach(&outbox);
                 self.colors_attach(&outbox);
-                self.alarms_attach(&outbox);
+                self.marks_attach::<fohmixer_proto::mute_alarms::MuteAlarmsDoc>(&outbox);
+                self.marks_attach::<fohmixer_proto::mute_guards::MuteGuardsDoc>(&outbox);
                 if self.layout_rev > 0 {
                     outbox.layout(self.layout_rev);
                 }
@@ -1147,7 +1161,8 @@ impl Router {
                     lufs: self.lufs_status(),
                     sectors: self.sectors_status(),
                     colors: self.colors_status(),
-                    mute_alarms: self.alarms_status(),
+                    mute_alarms: self.marks_status::<fohmixer_proto::mute_alarms::MuteAlarmsDoc>(),
+                    mute_guards: self.marks_status::<fohmixer_proto::mute_guards::MuteGuardsDoc>(),
                     clients: self.clients.len(),
                     unresolved: self.names.unresolved(),
                 });
@@ -1343,8 +1358,23 @@ impl Router {
                 id,
                 strip,
                 on,
-            } => self.alarms_set(client, id, &strip, on),
-            RouterMsg::MuteAlarmsPoll => self.alarms_poll(),
+            } => {
+                self.marks_set::<fohmixer_proto::mute_alarms::MuteAlarmsDoc>(client, id, &strip, on)
+            }
+            RouterMsg::MuteAlarmsPoll => {
+                self.marks_poll::<fohmixer_proto::mute_alarms::MuteAlarmsDoc>();
+            }
+            RouterMsg::SetMuteGuard {
+                client,
+                id,
+                strip,
+                on,
+            } => {
+                self.marks_set::<fohmixer_proto::mute_guards::MuteGuardsDoc>(client, id, &strip, on)
+            }
+            RouterMsg::MuteGuardsPoll => {
+                self.marks_poll::<fohmixer_proto::mute_guards::MuteGuardsDoc>();
+            }
             RouterMsg::ScriptMissing { instance, missing } => {
                 self.script_verdict(&instance, missing);
             }
@@ -2971,14 +3001,17 @@ mod tests {
                 ServerMsg::MuteAlarms {
                     doc: fohmixer_proto::mute_alarms::MuteAlarmsDoc::empty(),
                 },
+                ServerMsg::MuteGuards {
+                    doc: fohmixer_proto::mute_guards::MuteGuardsDoc::empty(),
+                },
                 ServerMsg::Hub {
                     key: HUB_STAGE_AUT.into(),
                     value: json!(false)
                 }
             ],
             "no layout yet: no revision (REVERB's state, #130, AUTOTUNE's, #104, \
-             the sectors' document, #148, the colours', #164, and the mute \
-             alarm's, #188, are replies)"
+             the sectors' document, #148, the colours', #164, the mute \
+             alarm's, #188, and the mute guard's, #203, are replies)"
         );
         router.handle(RouterMsg::Layout {
             rev: 1,

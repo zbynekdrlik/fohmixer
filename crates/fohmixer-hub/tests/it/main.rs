@@ -29,6 +29,7 @@ mod lufs;
 mod lufs_listener;
 mod markers;
 mod mute_alarms;
+mod mute_guards;
 mod names;
 mod pin_cli;
 mod ping;

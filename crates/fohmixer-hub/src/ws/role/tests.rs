@@ -93,12 +93,18 @@ fn mbc_keeps_its_own_socket_messages() {
             "color": "blue"}),
         json!({"type": "set_mute_alarm", "id": "a1",
             "strip": {"instance": "band", "label": "Bass"}, "on": true}),
+        json!({"type": "set_mute_guard", "id": "g1",
+            "strip": {"instance": "band", "label": "Bass"}, "on": true}),
     ] {
         assert_eq!(inbound(Role::Mbc, &client(wire.clone())), Ok(()), "{wire}");
     }
     let tick = client(json!({"type": "sector_tick", "id": "s1", "layout": "lu-1",
         "strip": {"instance": "band", "label": "Bass"}, "on": true}));
     assert_eq!(refused_id(&tick), Some("s1".to_string()));
+    // #203: a refused mute guard switch is answered by its id.
+    let guard = client(json!({"type": "set_mute_guard", "id": "g1",
+        "strip": {"instance": "band", "label": "Bass"}, "on": true}));
+    assert_eq!(refused_id(&guard), Some("g1".to_string()));
 }
 
 /// One sample of every server message type.
@@ -133,6 +139,7 @@ fn samples() -> Vec<ServerMsg> {
             {"id": "lu-1", "title": "VOX", "strips": [{"instance": "band", "label": "Vox 1"}]}]}}}),
         json!({"type": "colors", "doc": {"colors": {"band": {"Vox 1": "teal"}}}}),
         json!({"type": "mute_alarms", "doc": {"mute_alarms": {"band": ["Vox 1"]}}}),
+        json!({"type": "mute_guards", "doc": {"mute_guards": {"band": ["Vox 1"]}}}),
         json!({"type": "a_later_message"}),
     ]
     .into_iter()
@@ -165,6 +172,7 @@ fn mbc_gets_no_foh_message() {
                 | ServerMsg::Sectors { .. }
                 | ServerMsg::Colors { .. }
                 | ServerMsg::MuteAlarms { .. }
+                | ServerMsg::MuteGuards { .. }
         );
         assert_eq!(shown.is_some(), kept, "{kind}");
     }
@@ -188,6 +196,18 @@ fn mbc_gets_no_foh_message() {
         doc,
         serde_json::from_value::<MuteAlarmsDoc>(json!({"mute_alarms": {"mbc": ["Hand 1"]}}))
             .unwrap()
+    );
+    let guards = server(json!({"type": "mute_guards", "doc": {"mute_guards": {
+        "band": ["Vox 1"], "mbc": ["Hand 1"]}}}));
+    let Some(ServerMsg::MuteGuards { doc }) = outbound(Role::Mbc, guards) else {
+        panic!("a mute guards message");
+    };
+    assert_eq!(
+        doc,
+        serde_json::from_value::<fohmixer_proto::mute_guards::MuteGuardsDoc>(
+            json!({"mute_guards": {"mbc": ["Hand 1"]}})
+        )
+        .unwrap()
     );
 }
 

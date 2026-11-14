@@ -1,5 +1,6 @@
 use super::*;
 use crate::sectors::{SectorId, SectorLayout};
+use crate::strip_marks::StripMarks;
 use serde_json::json;
 
 fn round_trip_client(msg: ClientMsg, wire: Value) {
@@ -920,6 +921,11 @@ fn api_bodies_round_trip() {
             unknown: 0,
             error: None,
         },
+        mute_guards: MuteGuardsStatus {
+            strips: 3,
+            unknown: 1,
+            error: None,
+        },
         link: Some(LinkStatus {
             listen: "10.0.0.5:39201".into(),
             instance: "mbc".into(),
@@ -934,6 +940,16 @@ fn api_bodies_round_trip() {
     };
     let json = serde_json::to_value(&status).unwrap();
     assert_eq!(json["link"]["listen"], "10.0.0.5:39201");
+    // #203: the guards beside the alarms, the defaults for an older hub.
+    assert_eq!(json["mute_guards"], json!({"strips": 3, "unknown": 1}));
+    let mut older_hub = json.clone();
+    older_hub.as_object_mut().unwrap().remove("mute_guards");
+    assert_eq!(
+        serde_json::from_value::<HubStatus>(older_hub)
+            .unwrap()
+            .mute_guards,
+        MuteGuardsStatus::default()
+    );
     assert_eq!(json["link"]["refusals"], 1);
     let back: HubStatus = serde_json::from_value(json.clone()).unwrap();
     assert_eq!(back.link, status.link);
@@ -2056,6 +2072,7 @@ fn an_older_hubs_status_reads_with_default_sectors() {
         },
         colors: ColorsStatus::default(),
         mute_alarms: MuteAlarmsStatus::default(),
+        mute_guards: MuteGuardsStatus::default(),
         link: None,
     };
     let mut json = serde_json::to_value(&status).unwrap();
@@ -2283,4 +2300,51 @@ fn the_recording_state_counts_its_armed_tracks_and_says_its_watch() {
         tracks: state.tracks,
     };
     assert_eq!(unheard.watch(), RecWatch::NotRec);
+}
+
+#[test]
+fn a_set_mute_guard_reads_as_the_page_sends_it() {
+    let strip = StripRef {
+        instance: "band".into(),
+        label: "Vox 1".into(),
+    };
+    round_trip_client(
+        ClientMsg::SetMuteGuard {
+            id: "g1".into(),
+            strip: strip.clone(),
+            on: true,
+        },
+        json!({"type": "set_mute_guard", "id": "g1",
+               "strip": {"instance": "band", "label": "Vox 1"}, "on": true}),
+    );
+    round_trip_client(
+        ClientMsg::SetMuteGuard {
+            id: "g2".into(),
+            strip,
+            on: false,
+        },
+        json!({"type": "set_mute_guard", "id": "g2",
+               "strip": {"instance": "band", "label": "Vox 1"}, "on": false}),
+    );
+    let bad = json!({"type": "set_mute_guard", "id": "g3",
+                     "strip": {"instance": "band", "label": "Vox 1"}, "on": 1});
+    assert!(serde_json::from_value::<ClientMsg>(bad).is_err());
+}
+
+#[test]
+fn the_mute_guards_message_carries_the_document() {
+    let doc = crate::mute_guards::MuteGuardsDoc::empty().with(
+        &StripRef {
+            instance: "band".into(),
+            label: "Vox 1".into(),
+        },
+        true,
+    );
+    let msg = ServerMsg::MuteGuards { doc };
+    let json = serde_json::to_value(&msg).unwrap();
+    assert_eq!(
+        json,
+        json!({"type": "mute_guards", "doc": {"mute_guards": {"band": ["Vox 1"]}}})
+    );
+    assert_eq!(serde_json::from_value::<ServerMsg>(json).unwrap(), msg);
 }

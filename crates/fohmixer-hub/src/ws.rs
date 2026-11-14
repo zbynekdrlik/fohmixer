@@ -575,6 +575,13 @@ fn handle_text(hub: &Hub, conn: &mut Conn, text: &str) {
             strip,
             on,
         }),
+        // The mute guard (#203): answered as the mute alarm is.
+        Ok(ClientMsg::SetMuteGuard { id, strip, on }) => hub.route(RouterMsg::SetMuteGuard {
+            client,
+            id,
+            strip,
+            on,
+        }),
         // Straight to the outbox (PR I): the writer's next frame may go.
         Ok(ClientMsg::EqFrameAck { session, seq }) => {
             outbox.frame_acked(session, seq, std::time::Instant::now());

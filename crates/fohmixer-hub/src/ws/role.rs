@@ -11,8 +11,8 @@
 
 use fohmixer_proto::client::{AckItem, ClientMsg, ServerMsg, ValueItem, set_key};
 use fohmixer_proto::colors::ColorsDoc;
-use fohmixer_proto::mute_alarms::MuteAlarmsDoc;
 use fohmixer_proto::roles::{self, MBC_INSTANCE, Role};
+use fohmixer_proto::strip_marks::StripMarks;
 
 /// The word a refused message is answered with.
 pub const REFUSED: &str = "role";
@@ -45,7 +45,8 @@ pub fn inbound(role: Role, msg: &ClientMsg) -> Result<(), &'static str> {
             ClientMsg::SectorTick { .. }
             | ClientMsg::SectorEdit { .. }
             | ClientMsg::SetColor { .. }
-            | ClientMsg::SetMuteAlarm { .. } => true,
+            | ClientMsg::SetMuteAlarm { .. }
+            | ClientMsg::SetMuteGuard { .. } => true,
             ClientMsg::SetHub { .. }
             | ClientMsg::DeckView { .. }
             | ClientMsg::DeckPress { .. }
@@ -70,7 +71,8 @@ pub fn refused_id(msg: &ClientMsg) -> Option<String> {
         | ClientMsg::SectorTick { id, .. }
         | ClientMsg::SectorEdit { id, .. }
         | ClientMsg::SetColor { id, .. }
-        | ClientMsg::SetMuteAlarm { id, .. } => Some(id.clone()),
+        | ClientMsg::SetMuteAlarm { id, .. }
+        | ClientMsg::SetMuteGuard { id, .. } => Some(id.clone()),
         _ => None,
     }
 }
@@ -120,17 +122,6 @@ fn mbc_colors(doc: ColorsDoc) -> ColorsDoc {
     }
 }
 
-/// The mute alarm's marks of the Live set `mbc` only.
-fn mbc_alarms(doc: MuteAlarmsDoc) -> MuteAlarmsDoc {
-    MuteAlarmsDoc {
-        mute_alarms: doc
-            .mute_alarms
-            .into_iter()
-            .filter(|(instance, _)| instance == MBC_INSTANCE)
-            .collect(),
-    }
-}
-
 /// The values of the Live set `mbc` only.
 fn mbc_values(items: Vec<ValueItem>) -> Vec<ValueItem> {
     items
@@ -174,8 +165,12 @@ pub fn outbound(role: Role, msg: ServerMsg) -> Option<ServerMsg> {
         ServerMsg::Colors { doc } => Some(ServerMsg::Colors {
             doc: mbc_colors(doc),
         }),
+        // The marks of the Live set `mbc` only (#188, #203).
         ServerMsg::MuteAlarms { doc } => Some(ServerMsg::MuteAlarms {
-            doc: mbc_alarms(doc),
+            doc: doc.only(MBC_INSTANCE),
+        }),
+        ServerMsg::MuteGuards { doc } => Some(ServerMsg::MuteGuards {
+            doc: doc.only(MBC_INSTANCE),
         }),
         ServerMsg::Hub { .. }
         | ServerMsg::Deck { .. }
