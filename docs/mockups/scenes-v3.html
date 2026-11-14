@@ -1,0 +1,388 @@
+<!doctype html>
+<!-- fohmixer #207 mockup v3 (owner, 2026-11-14 on v2: dB and time editable in plain
+     sight; no box in the crowded column, a small text line with the last scene;
+     FOH first, a scene may move MBC faders too). Frame 1: the FOH channel detail,
+     its right column's SCENES (set rows + ADD) and LAYOUTS (#208). Frame 2: the
+     FOH page with an MBC layout in RD; a scene glides a band fader and an MBC
+     fader, the edge flashes green once, the column's foot names the last scene.
+     Tokens from style.css, the app's fonts by relative path. Invented names, no
+     site data. Plain JS. -->
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Scenes v3</title>
+<style>
+
+@font-face { font-family: "Barlow Condensed"; font-weight: 700; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 600; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 700; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-weight: 500; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2"); }
+
+:root {
+    color-scheme: dark;
+    --bg: #07070c;
+    --page: #0b0b12;
+    --section: #151522;
+    --panel: #1a1a28;
+    --panel-hi: #20203a;
+    --track: #0a0a14;
+    --line: #2a2a44;
+    --accent: #4ecdc4;
+    --text: #eaeaf0;
+    --muted: #9a9ab4;
+    --faint: #5c5c78;
+    --go: #36d67a;
+    --mute: #e63946;
+    --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+    --ui: "Barlow", -apple-system, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--ui); }
+body { padding: 16px; }
+
+.doc { max-width: 1194px; margin: 0 auto 14px; line-height: 1.5; font-size: 15px; }
+.doc h1 { font-family: var(--display); font-size: 26px; margin: 0 0 6px; letter-spacing: 0.04em; }
+.doc p, .doc li { color: var(--muted); }
+.doc b { color: var(--text); }
+.frame-title { max-width: 1194px; margin: 22px auto 8px; font-family: var(--display);
+    font-size: 18px; letter-spacing: 0.06em; color: var(--muted); }
+.fit { max-width: 1194px; margin: 0 auto; overflow: hidden; }
+.ipad { width: 1194px; height: 834px; background: var(--page); border: 1px solid var(--line);
+    border-radius: 14px; transform-origin: top left; position: relative; user-select: none;
+    -webkit-user-select: none; overflow: hidden; }
+
+
+/* ---------- frame 1: the channel detail ---------- */
+.dhead { height: 52px; display: flex; align-items: center; padding: 0 8px; gap: 10px; border-bottom: 1px solid var(--line); }
+.back { font-family: var(--display); font-size: 15px; color: var(--accent); border: 1px solid var(--accent); border-radius: 8px; padding: 9px 14px; letter-spacing: 0.06em; }
+.chip { margin-left: auto; font-family: var(--display); font-size: 18px; background: #6e6e88; border-radius: 6px; padding: 4px 12px; }
+.chip-sub { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-right: auto; }
+.steps { display: flex; gap: 6px; }
+.steps div { width: 46px; height: 38px; border-radius: 8px; background: var(--panel); display: flex; align-items: center; justify-content: center; color: var(--muted); }
+.dbody { display: grid; grid-template-columns: 230px 1fr 330px; gap: 10px; padding: 10px; height: calc(834px - 52px); }
+.card { background: var(--panel); border-radius: 10px; padding: 12px; min-height: 0; }
+.fcol { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.mute { width: 100%; text-align: center; font-family: var(--display); font-size: 20px; padding: 12px 0; border: 1px solid var(--line); border-radius: 8px; }
+.big { font-family: var(--mono); font-size: 26px; }
+.ftrack { flex: 1; width: 100%; position: relative; }
+.ftrack input { position: absolute; left: 50%; top: 0; height: 100%; width: 40px; margin-left: -20px; writing-mode: vertical-lr; direction: rtl; accent-color: var(--accent); }
+.eqnote { color: var(--muted); font-size: 14px; }
+.side { overflow-y: auto; }
+.sec { border-top: 1px solid var(--line); padding: 12px 0; }
+.sec:first-child { border-top: 0; padding-top: 0; }
+.sec h4 { margin: 0 0 8px; font-family: var(--display); font-size: 12px; letter-spacing: 0.1em; color: var(--muted); display: flex; justify-content: space-between; }
+.sec h4 span { color: var(--faint); }
+.box { height: 52px; border-radius: 8px; background: var(--track); }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.row2 div { padding: 10px 0; text-align: center; border-radius: 8px; border: 1px solid var(--line); font-family: var(--display); font-size: 13px; color: var(--muted); }
+.row2 div.on { color: var(--text); background: var(--panel-hi); border-bottom: 2px solid var(--accent); }
+/* An entry that is set: one compact line, tap to open its controls. */
+.item { border-radius: 8px; background: #15151f; margin-bottom: 5px; }
+.item .line { display: flex; align-items: center; gap: 8px; padding: 0 8px; min-height: 44px; cursor: pointer; }
+.item .what { font-family: var(--display); font-size: 16px; letter-spacing: 0.03em; }
+.item .where { font-family: var(--display); font-size: 11px; color: var(--faint); letter-spacing: 0.08em; width: 22px; }
+.item .val { margin-left: auto; font-family: var(--mono); font-size: 13px; color: var(--muted); }
+.item .tag { font-family: var(--display); font-size: 12px; letter-spacing: 0.06em; color: var(--muted); }
+.item .tag.m { color: var(--mute); }
+.item .x { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; color: var(--faint); font-size: 16px; }
+.item.now { box-shadow: inset 3px 0 0 var(--go); }
+.item .edit { display: flex; padding: 4px 8px 10px; gap: 6px; flex-direction: column; }
+.item.open .edit { display: flex; }
+
+.erow { display: flex; gap: 6px; align-items: center; }
+.erow .lbl { font-size: 11px; color: var(--faint); width: 44px; }
+.btn { font-family: var(--display); font-size: 13px; letter-spacing: 0.06em; text-align: center; padding: 9px 10px; border-radius: 6px; border: 1px solid var(--line); color: var(--muted); cursor: pointer; flex: 1; }
+.btn.on { color: var(--text); background: var(--panel-hi); border-bottom: 2px solid var(--accent); }
+.btn.sm { flex: 0 0 38px; padding: 9px 0; }
+.item .btn.mt { flex: 0 0 auto; margin-left: auto; padding: 7px 8px; font-size: 12px; }
+.item .btn.mt.m { color: var(--mute); }
+.num { font-family: var(--mono); font-size: 12px; flex: 0 0 66px; text-align: center; white-space: nowrap; }
+.num.t { flex: 0 0 34px; }
+.erow .btn.sm { flex: 0 0 30px; padding: 9px 0; }
+.erow .sep { flex: 0 0 6px; }
+.btn.take { flex: 0 0 48px; padding: 9px 0; font-size: 10px; }
+.item .edit { padding: 0 6px 8px; }
+.erow { gap: 3px; }
+.eqcard { border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+.eqpic { height: 300px; background: #000; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: var(--faint); font-size: 13px; }
+.eqbtn { margin-top: 8px; text-align: center; font-family: var(--display); font-size: 15px; letter-spacing: 0.06em; padding: 12px 0; border-radius: 8px; border: 1px solid #c86fa8; color: #f39ad0; background: #2a1828; }
+.foot { margin-top: auto; font-size: 10px; color: var(--faint); text-align: center; line-height: 1.5; font-family: var(--mono); }
+.foot .scn { color: var(--muted); }
+.add { font-family: var(--display); font-size: 14px; letter-spacing: 0.08em; text-align: center; padding: 11px 0; border-radius: 8px; border: 1px dashed var(--line); color: var(--accent); cursor: pointer; }
+.empty { font-size: 12px; color: var(--faint); margin-bottom: 6px; }
+/* The picker: a sheet over the detail, one tap picks. */
+.sheet { position: absolute; inset: 0; background: rgba(7,7,12,0.6); display: none; align-items: center; justify-content: center; }
+.sheet.open { display: flex; }
+.sheet .panel { width: 520px; max-height: 620px; background: var(--section); border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.sheet h3 { margin: 0; font-family: var(--display); font-size: 18px; letter-spacing: 0.06em; display: flex; justify-content: space-between; }
+.sheet h3 span { color: var(--faint); cursor: pointer; }
+.picks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; overflow-y: auto; }
+.picks div { font-family: var(--display); font-size: 15px; padding: 12px 8px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); cursor: pointer; }
+.picks div small { display: block; font-size: 10px; color: var(--faint); letter-spacing: 0.08em; }
+.picks div.full { opacity: 0.4; pointer-events: none; }
+/* ---------- frame 2: the mixer as a scene arrives ---------- */
+.mix { display: grid; grid-template-columns: 1fr 132px 1fr; gap: 12px; padding: 6px; height: 100%; }
+.half { display: flex; gap: 4px; }
+.half.right { justify-content: flex-end; }
+.half { min-width: 0; }
+.strip { width: 76px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px;
+    display: flex; flex-direction: column; }
+.strip .name { height: 37px; background: #15151f; border-radius: 4px; font-family: var(--display); font-size: 13px; text-align: center;
+    display: flex; align-items: center; justify-content: center; }
+.strip .db { text-align: center; font-family: var(--mono); font-size: 12px; color: var(--muted); margin: 6px 0; }
+.strip .muted { font-size: 9px; color: var(--mute); text-align: center; height: 11px; letter-spacing: 0.06em; }
+.strip .travel { flex: 1; position: relative; }
+.strip .groove { position: absolute; left: 50%; top: 6px; bottom: 6px; width: 10px; margin-left: -5px;
+    background: var(--track); border-radius: 3px; }
+.strip .cap { position: absolute; left: 50%; width: 44px; margin-left: -22px; height: 26px; border-radius: 4px;
+    background: #2c2c40; border: 1px solid #4a4a66; transform: translateY(-50%); }
+.strip .sel { height: 36px; border-radius: 4px; background: #15151f; font-family: var(--display); font-size: 13px;
+    color: var(--muted); display: flex; align-items: center; justify-content: center; }
+.column { background: var(--section); border: 1px solid var(--line); border-radius: 10px; padding: 8px 6px;
+    display: flex; flex-direction: column; gap: 8px; }
+.page-tab { font-family: var(--display); font-size: 22px; text-align: center; padding: 6px 0; border-radius: 8px;
+    background: var(--panel-hi); border-bottom: 2px solid var(--accent); letter-spacing: 0.08em; }
+.cbtn { font-family: var(--display); font-size: 14px; text-align: center; padding: 10px 0; border-radius: 8px;
+    border: 1px solid var(--line); color: var(--muted); }
+.sceneline { border-radius: 8px; padding: 6px 6px; font-size: 11px; line-height: 1.35; color: var(--faint);
+    border: 1px solid var(--line); min-height: 52px; }
+.sceneline b { display: block; font-family: var(--display); font-size: 15px; color: var(--muted); letter-spacing: 0.05em; }
+.sceneline .dot { display: inline-block; width: 6px; height: 6px; border-radius: 3px; background: var(--go);
+    margin-right: 5px; vertical-align: middle; opacity: 0.8; }
+.flash { position: absolute; inset: 0; border-radius: 14px; pointer-events: none; box-shadow: inset 0 0 0 0 var(--go);
+    opacity: 0; }
+.flash.on { animation: flash 1s ease-out 1; }
+@keyframes flash {
+    0% { opacity: 1; box-shadow: inset 0 0 0 6px var(--go); }
+    100% { opacity: 0; box-shadow: inset 0 0 0 6px var(--go); }
+}
+.sim { max-width: 1194px; margin: 8px auto 0; display: flex; gap: 6px; flex-wrap: wrap; }
+.sim button { font-family: var(--display); font-size: 14px; letter-spacing: 0.06em; background: var(--panel);
+    color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+</style>
+</head>
+<body>
+
+<div class="doc">
+    <h1>Scény a zvuk — návrh v3 (#207, LAYOUTS #208)</h1>
+    <p>Pre <b>FOH</b>. Scéna môže pohnúť fadrami band, master aj MBC (MBC fadre sú v sektore na FOH). Pravidlá sú vo FOH a robí ich FOH.</p>
+    <ul>
+        <li><b>SCENES</b> v detaile fadra (podrž SEL, pravý stĺpec): len scény, kde fader niečo robí. Každý riadok má hneď <b>dB</b> (− / +, alebo <b>= FADER</b> vezme aktuálnu polohu fadra), <b>čas</b> presunu (− / +, štandard 2 s), MUTE / UNMUTE a ✕. <b>+ ADD SCENE</b> pridá riadok.</li>
+        <li><b>LAYOUTS</b> (#208): len layouty fadra a <b>+ ADD TO LAYOUT</b>.</li>
+        <li><b>Mixer</b> (obrázok 2): okraj raz blikne nazeleno. V spodku stĺpca je malý text <b>scene uvitanie · 10:00</b> (posledná scéna a kedy prišla). Siahneš na fader počas presunu, automatizácia sa na ňom zastaví.</li>
+    </ul>
+    <p>Mená sú vymyslené. Vyskúšaj: −/+, = FADER, MUTE, čas, + ADD, ✕; dole simulácia scén.</p>
+</div>
+
+<div class="frame-title">1 · FOH: detail fadra (podrž SEL)</div>
+<div class="fit"><div class="ipad" id="detail">
+    <div class="dhead">
+        <div class="back">← BACK TO MIX</div>
+        <div class="chip" style="background:#d9874a">VOX 1</div><div class="chip-sub">STAGE · band</div>
+        <div class="steps"><div>◀</div><div>▶</div></div>
+    </div>
+    <div class="dbody">
+        <div class="card fcol">
+            <div class="mute">MUTE</div>
+            <div class="big" id="fdb">0.0</div>
+            <div class="ftrack"><input type="range" id="fader" min="-60" max="6" step="0.1" value="0"></div>
+        </div>
+        <div class="card"><div class="sec"><h4>EQ</h4><div class="eqcard"><div class="eqpic">Pro-Q 4</div><div class="eqnote">Pro-Q 4 · Vocal FX</div><div class="eqbtn">OPEN EQ FULL SCREEN</div></div></div></div>
+        <div class="card side">
+            <div class="sec"><h4>PAN <span>C</span></h4><div class="box"></div></div>
+            <div class="sec"><h4>LAYOUTS <span id="laycount"></span></h4><div id="lays"></div><div class="add" id="addlay">+ ADD TO LAYOUT</div></div>
+            <div class="sec"><h4>SCENES <span id="scncount"></span></h4><div id="scn"></div><div class="add" id="addscn">+ ADD SCENE</div></div>
+            <div class="sec"><h4>MUTE ALARM <span>OFF</span></h4><div class="row2"><div class="on">OFF</div><div>ON</div></div></div>
+            <div class="sec"><h4>MUTE GUARD <span>OFF</span></h4><div class="row2"><div class="on">OFF</div><div>HOLD</div></div></div>
+            <div class="sec"><h4>COLOR <span>NONE</span></h4><div class="box" style="height:40px"></div></div>
+        </div>
+    </div>
+    <div class="sheet" id="sheet"><div class="panel"><h3><b id="sheettitle"></b><span id="sheetclose">✕</span></h3><div class="picks" id="picks"></div></div></div>
+</div></div>
+
+<div class="frame-title">2 · FOH mixer, keď príde scéna (RD ukazuje MBC 1)</div>
+<div class="fit"><div class="ipad" id="mixer">
+    <div class="mix">
+        <div class="half" id="left"></div>
+        <div class="column">
+            <div class="page-tab">FOH</div>
+            <div class="cbtn">LAYOUTS</div>
+            <div class="cbtn">ARRANGE</div>
+            <div class="cbtn">STAGE</div>
+            <div class="cbtn">REVERB</div>
+            <div class="cbtn">AUTOTUNE</div>
+            <div class="cbtn">TALKBACK</div>
+            <div class="cbtn">TECHALERT</div>
+            <div class="foot"><div class="scn" id="sceneline">no scene yet</div>BAND on · MASTER on · MBC on<br>v1.47.0</div>
+        </div>
+        <div class="half right" id="right"></div>
+    </div>
+    <div class="flash" id="flash"></div>
+</div></div>
+<div class="sim" id="sim"></div>
+
+<script>
+
+"use strict";
+const SCENES = ["ytfast", "5min", "1min", "uvitanie", "chvaly", "modlitba", "evanjelium", "oznamy", "zbierka",
+    "kosik", "svedectvo", "trailer", "kazen", "host", "ytslow", "default"];
+const LAYOUTS = [["LU", "BAND"], ["LU", "BAND B"], ["LU", "OTHERS"], ["LD", "EFFECTS"], ["LD", "MASTER"],
+    ["RU", "MAIN"], ["RD", "PA"], ["RD", "HANDS"], ["RD", "MBC 1"], ["RD", "MBC 2", "full"]];
+const TIMES = [0.5, 1, 2, 3, 5, 8, 10];
+const fader = document.getElementById("fader");
+const fmt = (v) => (v <= -60 ? "−∞" : (v > 0 ? "+" : "") + v.toFixed(1)).replace("-", "−");
+let rules = [{ scene: "1min", db: -10, mute: "unmute", time: 2 }, { scene: "chvaly", db: 0, mute: null, time: 2 },
+    { scene: "kazen", db: null, mute: "mute", time: 2 }];
+let inLays = [["LU", "BAND"]];
+const now = "1min";
+let open = null;
+
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
+
+function drawScenes() {
+    const box = document.getElementById("scn");
+    box.replaceChildren();
+    document.getElementById("scncount").textContent = rules.length ? `${rules.length}` : "";
+    if (!rules.length) box.append(el("div", "empty", "No scene moves this fader."));
+    for (const r of rules) {
+        const it = el("div", "item" + (r.scene === now ? " now" : ""));
+        const line = el("div", "line");
+        line.append(el("div", "what", r.scene));
+        const mt = el("div", "btn mt" + (r.mute ? " on" : "") + (r.mute === "mute" ? " m" : ""), r.mute ? r.mute.toUpperCase() : "MUTE —");
+        mt.onclick = () => { r.mute = r.mute === null ? "mute" : r.mute === "mute" ? "unmute" : null; drawScenes(); };
+        line.append(mt);
+        const x = el("div", "x", "✕");
+        x.onclick = () => { rules = rules.filter((q) => q !== r); drawScenes(); };
+        line.append(x);
+        it.append(line);
+        const ed = el("div", "edit");
+        const a = el("div", "erow");
+        const minus = el("div", "btn sm", "−"); minus.onclick = () => { r.db = Math.max(-60, (r.db ?? 0) - 1); drawScenes(); };
+        const v = el("div", "num", r.db === null ? "—" : `${fmt(r.db)} dB`);
+        const plus = el("div", "btn sm", "+"); plus.onclick = () => { r.db = Math.min(6, (r.db ?? 0) + 1); drawScenes(); };
+        const take = el("div", "btn take", "= FADER"); take.onclick = () => { r.db = +fader.value; drawScenes(); };
+        const tm = el("div", "btn sm", "−"); tm.onclick = () => { r.time = TIMES[Math.max(0, TIMES.indexOf(r.time) - 1)]; drawScenes(); };
+        const tv = el("div", "num t", `${r.time} s`);
+        const tp = el("div", "btn sm", "+"); tp.onclick = () => { r.time = TIMES[Math.min(TIMES.length - 1, TIMES.indexOf(r.time) + 1)]; drawScenes(); };
+        a.append(minus, v, plus, take, el("div", "sep"), tm, tv, tp);
+        ed.append(a);
+        it.append(ed);
+        box.append(it);
+    }
+}
+function drawLays() {
+    const box = document.getElementById("lays");
+    box.replaceChildren();
+    document.getElementById("laycount").textContent = `${inLays.length}`;
+    for (const [s, t] of inLays) {
+        const it = el("div", "item"); const line = el("div", "line");
+        line.append(el("div", "where", s)); line.append(el("div", "what", t));
+        const x = el("div", "x", "✕"); x.style.marginLeft = "auto";
+        x.onclick = () => { inLays = inLays.filter((l) => !(l[0] === s && l[1] === t)); drawLays(); };
+        line.append(x); it.append(line); box.append(it);
+    }
+}
+function sheet(title, items, pick) {
+    document.getElementById("sheettitle").textContent = title;
+    const p = document.getElementById("picks"); p.replaceChildren();
+    for (const [label, sub, full] of items) {
+        const d = el("div", full ? "full" : "", label);
+        if (sub) d.append(el("small", "", sub));
+        d.onclick = () => { pick(label, sub); document.getElementById("sheet").classList.remove("open"); };
+        p.append(d);
+    }
+    document.getElementById("sheet").classList.add("open");
+}
+document.getElementById("sheetclose").onclick = () => document.getElementById("sheet").classList.remove("open");
+document.getElementById("addscn").onclick = () => sheet("ADD SCENE",
+    SCENES.filter((s) => !rules.some((r) => r.scene === s)).map((s) => [s, s === now ? "NOW" : ""]),
+    (s) => { rules.push({ scene: s, db: +fader.value, mute: null, time: 2 }); drawScenes(); });
+document.getElementById("addlay").onclick = () => sheet("ADD TO LAYOUT",
+    LAYOUTS.filter(([s, t]) => !inLays.some((l) => l[0] === s && l[1] === t)).map(([s, t, f]) => [t, s + (f ? " · FULL" : ""), f]),
+    (t, sub) => { inLays.push([sub.slice(0, 2), t]); drawLays(); });
+fader.oninput = () => { document.getElementById("fdb").textContent = fmt(+fader.value); drawScenes(); };
+drawScenes(); drawLays();
+
+// ---- frame 2 ----
+const strips = {
+    left: [["VOX 1", -60, true], ["VOX 2", 0, false], ["VOX 3", 0, false], ["KEYS", -4, false], ["BASS", -2, false], ["DRUMS", 0, false]],
+    right: [["MBC HAND1", 0, true], ["MBC HAND2", 0, false], ["MBC CG", -30, false], ["MBC BAND", 0, false], ["MBC MOD1", -60, false], ["MBC RUCHY", -60, false]],
+};
+// What each scene does on this mixer (invented).
+const sceneRules = {
+    "5min": [["MBC CG", -20, null]],
+    "1min": [["VOX 1", -10, "unmute"], ["MBC CG", -12, null]],
+    "uvitanie": [["MBC CG", -60, null], ["MBC HAND1", null, "unmute"]],
+    "ytslow": [["MBC CG", -30, null]],
+};
+const capY = (db) => {
+    const t = db <= -60 ? 0 : (db + 60) / 66;
+    return `${(1 - t) * 100}%`;
+};
+const els = {};
+for (const side of ["left", "right"]) {
+    for (const [name, db, muted] of strips[side]) {
+        const s = document.createElement("div");
+        s.className = "strip";
+        s.innerHTML = `<div class="name"></div><div class="muted">${muted ? "MUTED" : ""}</div><div class="db"></div>
+            <div class="travel"><div class="groove"></div><div class="cap"></div></div><div class="sel">SEL</div>`;
+        s.querySelector(".name").textContent = name;
+        document.getElementById(side).append(s);
+        els[name] = { el: s, db, muted };
+        place(name);
+    }
+}
+function place(name) {
+    const s = els[name];
+    s.el.querySelector(".cap").style.top = capY(s.db);
+    s.el.querySelector(".db").textContent = fmt(s.db);
+    s.el.querySelector(".muted").textContent = s.muted ? "MUTED" : "";
+}
+function glide(name, to, ms) {
+    const s = els[name], from = s.db, t0 = performance.now();
+    const step = (now) => {
+        const k = Math.min(1, (now - t0) / ms);
+        s.db = from + (to - from) * k;
+        place(name);
+        if (k < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+}
+function arrive(scene) {
+    const todo = sceneRules[scene] || [];
+    const f = document.getElementById("flash");
+    if (todo.length) { f.classList.remove("on"); void f.offsetWidth; f.classList.add("on"); }
+    for (const [name, db, mute] of todo) {
+        if (db !== null) glide(name, db, 2000);
+        if (mute === "unmute") { els[name].muted = false; place(name); }
+        if (mute === "mute") { els[name].muted = true; place(name); }
+    }
+    const t = new Date();
+    document.getElementById("sceneline").textContent = `scene ${scene} · ${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`;
+}
+for (const s of ["5min", "1min", "uvitanie", "ytslow", "chvaly"]) {
+    const b = document.createElement("button");
+    b.textContent = `scene: ${s}`;
+    b.onclick = () => arrive(s);
+    document.getElementById("sim").append(b);
+}
+
+function fit() {
+    for (const pad of document.querySelectorAll(".ipad")) {
+        const k = Math.min(1, pad.parentElement.clientWidth / 1194);
+        pad.style.transform = `scale(${k})`;
+        pad.parentElement.style.height = `${834 * k}px`;
+    }
+}
+addEventListener("resize", fit);
+fit();
+</script>
+</body>
+</html>
