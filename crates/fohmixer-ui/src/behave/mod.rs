@@ -40,6 +40,7 @@ pub mod marks;
 pub mod meter;
 pub mod mute;
 pub mod mute_alarm;
+pub mod mute_guard;
 pub mod pan;
 pub mod peak;
 pub mod presenter;

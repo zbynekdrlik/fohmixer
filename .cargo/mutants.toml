@@ -447,6 +447,17 @@ exclude_re = [
   # behave::mute_alarm::marked and binding::sectors::detail_ref;
   # mute-alarm.spec.ts reads the strip's alarm and the detail's switch.
   "fohmixer-ui/src/components/detail_alarm\\.rs.*(replace|in) strip_alarm( |$)",
+  # store/live/mute_guards.rs (#203): set_mute_guard, the mute guard's
+  # request through sector_request (the socket); mute-guard.spec.ts
+  # switches it in the detail and holds the guarded mute on a second page.
+  "fohmixer-ui/src/store/live/mute_guards\\.rs.*(replace|in) LiveStore::set_mute_guard( |$)",
+  # components/detail_guard.rs (#203): strip_guard_mark and strip_guard,
+  # the hub's document, the strip's identity and the layout's guard read
+  # into memos of the tested behave::mute_alarm::marked,
+  # behave::mute_guard::guarded and binding::sectors::detail_ref;
+  # mute-guard.spec.ts reads the detail's switch and the strip's
+  # data-guarded, and a tap that writes nothing.
+  "fohmixer-ui/src/components/detail_guard\\.rs.*(replace|in) (strip_guard_mark|strip_guard)( |$)",
   # pages/ableset.rs (#90): take_return (location.hash read through the
   # tested behave::ableset::returns_to_tab, then history.replaceState
   # without it); ableset.spec.ts's sign-in comes back to #ableset and finds
