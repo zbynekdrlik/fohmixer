@@ -312,8 +312,12 @@ exclude_re = [
   # ticks_memo (the hub's document and the served layout read into the
   # tested binding::sectors::detail_ticks). sectors.spec.ts ticks a layout,
   # presses the detail's ▶ and ◀ and reads the neighbouring pool strip in
-  # the detail and the two "step" opens back from the event log.
-  "fohmixer-ui/src/components/detail_layouts\\.rs.*(replace|in) ticks_memo( |$)",
+  # the detail and the two "step" opens back from the event log. #208 added
+  # ask_tick (the strip's identity read from the memo and handed to
+  # LiveStore::sector_tick with the refusal's flash): sectors.spec.ts adds a
+  # strip through ADD's sheet and takes it out with ✕, and reads each
+  # `tick` record (layout, strip, on) back from the event log.
+  "fohmixer-ui/src/components/detail_layouts\\.rs.*(replace|in) (ticks_memo|ask_tick)( |$)",
   # components/eq.rs (#71 PR E): EqNav::open and EqNav::close (the screen's
   # signal written, the step recorded with the tested trace::detail),
   # local_hh_mm (js_sys::Date's local hours and minutes into the tested

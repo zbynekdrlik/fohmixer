@@ -150,9 +150,10 @@ pub fn sectored_controls<'a>(
     out
 }
 
-/// One layout's checkbox in a strip's channel detail: ticked (`on`) when
-/// the layout holds the strip; `full` when it does not and the strip would
-/// not fit (FULL, disabled).
+/// One layout as a strip's channel detail sees it: `on` when the layout
+/// holds the strip (a row of LAYOUTS, #208); `full` when it does not and
+/// the strip would not fit (a FULL pick, disabled;
+/// `binding::detail_layouts`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TickRow {
     pub layout: String,
@@ -161,7 +162,7 @@ pub struct TickRow {
     pub full: bool,
 }
 
-/// A sector's checkboxes, under its name (`LU`, `LD`, `RU`, `RD`).
+/// A sector's layouts, under its name (`LU`, `LD`, `RU`, `RD`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TickGroup {
     pub sector: SectorId,
@@ -234,7 +235,7 @@ pub enum DetailTicks {
     Off,
     /// The section's note: the strip has no identity to place.
     NoRef,
-    /// The strip's identity and every layout's checkbox, sector by sector.
+    /// The strip's identity and every layout, sector by sector.
     Rows {
         id: StripRef,
         groups: Vec<TickGroup>,
@@ -242,18 +243,6 @@ pub enum DetailTicks {
 }
 
 impl DetailTicks {
-    /// The checkboxes of `sector` (none outside `Rows`).
-    pub fn rows_of(&self, sector: SectorId) -> Vec<TickRow> {
-        match self {
-            DetailTicks::Rows { groups, .. } => groups
-                .iter()
-                .filter(|g| g.sector == sector)
-                .flat_map(|g| g.rows.iter().cloned())
-                .collect(),
-            _ => Vec::new(),
-        }
-    }
-
     /// The strip's identity, while it has rows.
     pub fn id(&self) -> Option<&StripRef> {
         match self {
@@ -275,14 +264,6 @@ pub fn detail_ticks(doc: Option<&SectorsDoc>, layout: &Layout, strip: &Strip) ->
             id,
         },
         None => DetailTicks::NoRef,
-    }
-}
-
-impl TickRow {
-    /// What a tap on this checkbox asks: the strip in (`true`) or out; none
-    /// for a FULL one (disabled).
-    pub fn tap(&self) -> Option<bool> {
-        (!self.full).then_some(!self.on)
     }
 }
 
@@ -739,7 +720,6 @@ mod tests {
             detail_ticks(Some(&doc), &layout, &marker),
             DetailTicks::NoRef
         );
-        assert_eq!(DetailTicks::NoRef.rows_of(SectorId::Lu), Vec::new());
         assert_eq!(DetailTicks::NoRef.id(), None);
         // No document, or one that places nothing: no section at all.
         let vox = strip_of(strip("Vox 1"));
@@ -752,21 +732,13 @@ mod tests {
         // A strip with its identity: every layout, sector by sector.
         let ticks = detail_ticks(Some(&doc), &layout, &vox);
         assert_eq!(ticks.id(), Some(&band("Vox 1")));
-        let row = |layout: &str, title: &str, on: bool| TickRow {
-            layout: layout.to_string(),
-            title: title.to_string(),
-            on,
-            full: false,
-        };
-        assert_eq!(
-            ticks.rows_of(SectorId::Lu),
-            vec![row("lu-1", "VOX", true), row("lu-2", "KEYS", false)]
-        );
-        assert_eq!(
-            ticks.rows_of(SectorId::Ru),
-            vec![row("ru-1", "MAIN", false)]
-        );
-        assert_eq!(ticks.rows_of(SectorId::Ld), Vec::new());
+        // The block's rows and picks (#208, `binding::detail_layouts`).
+        let held = crate::binding::detail_layouts::held(&ticks);
+        let held: Vec<(&str, &str)> = held.iter().map(|r| (r.sector, r.title.as_str())).collect();
+        assert_eq!(held, vec![("LU", "VOX")]);
+        let picks = crate::binding::detail_layouts::picks(&ticks);
+        let picks: Vec<(&str, &str)> = picks.iter().map(|p| (p.sector, p.title.as_str())).collect();
+        assert_eq!(picks, vec![("LU", "KEYS"), ("RU", "MAIN")]);
         assert_eq!(
             ticks,
             DetailTicks::Rows {
@@ -774,19 +746,6 @@ mod tests {
                 groups: tick_rows(&doc, &pool(&layout), &band("Vox 1")),
             }
         );
-    }
-
-    #[test]
-    fn a_tick_asks_the_other_state_and_a_full_one_asks_nothing() {
-        let row = |on: bool, full: bool| TickRow {
-            layout: "lu-1".to_string(),
-            title: "VOX".to_string(),
-            on,
-            full,
-        };
-        assert_eq!(row(false, false).tap(), Some(true));
-        assert_eq!(row(true, false).tap(), Some(false));
-        assert_eq!(row(false, true).tap(), None);
     }
 
     #[test]

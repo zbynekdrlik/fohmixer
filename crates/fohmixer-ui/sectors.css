@@ -64,12 +64,15 @@
     box-shadow: inset 0 -2px 0 var(--solo);
 }
 
-/* The channel detail's LAYOUTS (#148, mockup v1): the layouts this fader
-   shows in, a group per sector (LU, LD, RU, RD), a tick per layout; ticked:
-   the panel's lighter ground, the box filled in the accent; unticked: dim
-   text. A layout with no room cannot be ticked: FULL. Only while the hub's
-   document places faders (components/detail_layouts.rs); the right box
-   scrolls then rather than clip it. */
+/* The channel detail's LAYOUTS (#148; since #208 the owner's approved
+   mockup docs/mockups/scenes-v3.html, frame 1: a settings list shows only
+   what is set, plus one ADD): one compact row per layout that holds the
+   fader (its sector tag, its title, a ✕ that takes it out), the empty
+   line, and the dashed `+ ADD TO LAYOUT`, which opens a sheet over the
+   whole detail with the other layouts (a full one dimmed and disabled,
+   FULL). Only while the hub's document places faders
+   (components/detail_layouts.rs); the right box scrolls then rather than
+   clip it. */
 .detail-right:has(.lay-sec) {
     overflow-y: auto;
 }
@@ -77,109 +80,212 @@
 .lay-sec {
     display: grid;
     flex: none;
-    gap: 8px;
+    gap: 6px;
     margin-top: 6px;
     padding-top: 8px;
     border-top: 1px solid var(--line);
 }
 
-.lay-groups {
+.lay-rows {
     display: grid;
-    gap: 8px;
+    gap: 5px;
 }
 
-.lay-group {
-    display: grid;
-    gap: 4px;
-}
-
-.lay-where {
-    color: var(--muted);
-    font: 700 10px/12px var(--ui);
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+.lay-rows:empty {
+    display: none;
 }
 
 .lay-row {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 4px;
-}
-
-.tick-btn {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     min-width: 0;
-    min-height: 40px;
-    padding: 0 6px;
-    border: 1px solid var(--line);
+    min-height: 44px;
+    padding: 0 0 0 8px;
     border-radius: 8px;
-    background: #181826;
-    color: var(--muted);
-    font: 700 11px/14px var(--ui);
-    letter-spacing: 0.3px;
-    text-transform: uppercase;
+    background: #15151f;
+}
+
+/* The hub refused the ✕ (the link down): the refusal's flash. */
+.lay-row[data-refused="true"] {
+    box-shadow: inset 0 0 0 1px var(--mute);
+}
+
+.lay-where {
+    flex: none;
+    width: 22px;
+    color: var(--faint);
+    font: 600 11px/14px var(--display);
+    letter-spacing: 0.08em;
+}
+
+.lay-what {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text);
+    font: 600 16px/20px var(--display);
+    letter-spacing: 0.03em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.lay-remove {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--faint);
+    font: 600 16px/1 var(--ui);
     cursor: pointer;
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
 }
 
-.tick-btn .box {
+.lay-empty {
+    color: var(--faint);
+    font: 600 12px/16px var(--ui);
+}
+
+.lay-add {
+    min-height: 40px;
+    padding: 0;
+    border: 1px dashed var(--line);
+    border-radius: 8px;
+    background: none;
+    color: var(--accent);
+    font: 600 14px/18px var(--display);
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+}
+
+/* The hub refused the pick (another page filled the layout, the link
+   down): ADD flashes. */
+.lay-add[data-refused="true"] {
+    border-color: var(--mute);
+}
+
+/* The sheet: over the whole detail (`.detail` is its containing block: no
+   box between them is positioned), the shade under the panel. The shade
+   and the panel are siblings, so the shade owns its touches without
+   covering a control of its own. */
+.lay-sheet {
+    position: absolute;
+    inset: 0;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px;
+}
+
+.lay-shade {
+    position: absolute;
+    inset: 0;
+    background: rgba(7, 7, 12, 0.6);
+}
+
+.lay-panel {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: min(520px, 100%);
+    max-height: min(620px, 100%);
+    min-height: 0;
+    padding: 14px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--section);
+}
+
+.lay-sheet-head {
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.lay-sheet-title {
+    margin: 0;
+    color: var(--text);
+    font: 700 18px/22px var(--display);
+    letter-spacing: 0.06em;
+}
+
+.lay-sheet-close {
     display: grid;
     flex: none;
     place-items: center;
-    width: 16px;
-    height: 16px;
+    width: 40px;
+    height: 40px;
     padding: 0;
-    border: 1.5px solid var(--faint);
-    border-radius: 4px;
+    border: 0;
     background: none;
-    color: #07131a;
-    font: 800 12px/1 var(--ui);
+    color: var(--faint);
+    font: 600 18px/1 var(--ui);
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
 }
 
-.tick-btn .tname {
+.lay-picks {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    min-height: 0;
+    overflow-y: auto;
+    touch-action: pan-y;
+}
+
+.lay-pick {
+    display: grid;
+    gap: 2px;
     min-width: 0;
+    padding: 12px 8px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.lay-pick-name {
     overflow: hidden;
+    font: 600 15px/19px var(--display);
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-.tick-btn[aria-checked="true"] {
-    background: var(--panel-hi);
-    color: var(--text);
+.lay-pick small {
+    overflow: hidden;
+    color: var(--faint);
+    font: 600 10px/13px var(--ui);
+    letter-spacing: 0.08em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
-.tick-btn[aria-checked="true"] .box {
-    border-color: var(--accent);
-    background: var(--accent);
-}
-
-.tick-btn:disabled {
+.lay-pick:disabled {
     opacity: 0.4;
     cursor: default;
 }
 
-/* The hub refused the tick (another page filled the layout, the link
-   down): the refusal's flash. */
-.tick-btn[data-refused="true"] {
-    border-color: var(--mute);
-}
-
-.tick-btn .tcol {
-    display: grid;
-    gap: 2px;
-    min-width: 0;
-}
-
-.tick-btn small {
-    overflow: hidden;
-    color: var(--faint);
-    font: 700 8px/10px var(--ui);
-    letter-spacing: 0.04em;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+/* An upright phone: two picks a row. */
+@media (max-width: 520px) {
+    .lay-picks {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
 }
 
 .lay-note {
