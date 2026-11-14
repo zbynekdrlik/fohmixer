@@ -1,0 +1,88 @@
+<!doctype html>
+<!-- fohmixer #211: mockup v1. Every strip of the FOH page says which Live set
+     (which Ableton) it belongs to: BAND, MASTER or MBC, as calm dim text in the
+     strip's info column, under the LUFS reading, where the column is empty
+     today. Nothing on the name button, no fader height lost. Two faders of
+     the same name in MASTER and MBC are told apart at a glance. The look
+     follows the v8 strip (lufs-v8.html): calm, no filled pill, nothing lit.
+     Tokens from style.css, the app's fonts by relative path. Invented names,
+     no site data. -->
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Strip instance v1</title>
+<style>
+@font-face { font-family: "Barlow Condensed"; font-weight: 700; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 600; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-weight: 500; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2"); }
+:root {
+    color-scheme: dark;
+    --bg: #07070c; --page: #0b0b12; --panel: #1a1a28; --track: #0a0a14; --line: #2a2a44;
+    --text: #eaeaf0; --muted: #9a9ab4; --faint: #5c5c78; --mute: #e63946; --accent: #4ecdc4;
+    --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+    --ui: "Barlow", -apple-system, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--ui); }
+body { padding: 16px; }
+.doc { max-width: 1194px; margin: 0 auto 14px; line-height: 1.5; font-size: 15px; }
+.doc h1 { font-family: var(--display); font-size: 26px; margin: 0 0 6px; letter-spacing: 0.04em; }
+.doc p { color: var(--muted); }
+.doc b { color: var(--text); }
+.row { max-width: 1194px; margin: 0 auto; display: flex; gap: 4px; background: var(--page);
+    border: 1px solid var(--line); border-radius: 14px; padding: 6px; height: 420px; }
+.strip { width: 88px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px;
+    display: flex; flex-direction: column; position: relative; }
+.name { height: 37px; background: #15151f; border-radius: 4px; font-family: var(--display); font-size: 15px;
+    display: flex; align-items: center; justify-content: center; position: relative; }
+.name::after { content: ""; position: absolute; left: 6px; right: 6px; bottom: 0; height: 3px; border-radius: 2px; background: #73738a; }
+.name small { position: absolute; right: 4px; top: 2px; font-family: var(--ui); font-size: 7px; color: var(--mute); letter-spacing: 0.06em; }
+.db { text-align: center; font-family: var(--mono); font-size: 12px; color: var(--muted); margin: 6px 0 2px; }
+.body { flex: 1; display: grid; grid-template-columns: 34px 1fr; }
+.info { display: flex; flex-direction: column; gap: 2px; padding-top: 4px; }
+.cap { font-size: 7px; color: var(--faint); letter-spacing: 0.08em; line-height: 1.1; }
+.val { font-family: var(--display); font-size: 12px; color: var(--muted); }
+/* NEW: the strip's Live set, calm and dim, in the info column's empty middle. */
+.set { margin-top: 18px; font-family: var(--display); font-size: 11px; letter-spacing: 0.08em; color: var(--faint);
+    writing-mode: vertical-rl; transform: rotate(180deg); align-self: flex-start; }
+.travel { position: relative; }
+.groove { position: absolute; left: 50%; top: 6px; bottom: 6px; width: 10px; margin-left: -5px; background: var(--track); border-radius: 3px; }
+.capk { position: absolute; left: 50%; width: 40px; margin-left: -20px; height: 24px; border-radius: 4px; background: #2c2c40;
+    border: 1px solid #4a4a66; transform: translateY(-50%); }
+.sel { height: 36px; width: 40px; border-radius: 4px; background: #15151f; font-family: var(--display); font-size: 13px;
+    color: var(--muted); display: flex; align-items: center; justify-content: center; margin-top: 4px; }
+.gap { width: 18px; }
+</style>
+</head>
+<body>
+<div class="doc">
+    <h1>Z ktorého Abletonu je fader — návrh (#211)</h1>
+    <p>Každý fader má v ľavom stĺpiku (pod LUFS, kde je dnes prázdno) tlmený nápis svojho Abletonu: <b>BAND</b>, <b>MASTER</b> alebo <b>MBC</b>. Nič nesvieti, meno ani výška fadra sa nemenia. Dva fadre s rovnakým menom (napr. HAND 1 v MASTER a v MBC) rozlíšiš hneď.</p>
+</div>
+<div class="row" id="row"></div>
+<script>
+"use strict";
+const strips = [["VOX 1", "BAND", 0, false], ["KEYS", "BAND", -4, false], ["HAND 1", "MASTER", 0, false], ["HAND 2", "MASTER", -3, true],
+    null, ["HAND 1", "MBC", 0, true], ["HAND 2", "MBC", 0, false], ["CG", "MBC", -12, false], ["BAND", "MBC", 0, false]];
+const row = document.getElementById("row");
+for (const s of strips) {
+    if (!s) { const g = document.createElement("div"); g.className = "gap"; row.append(g); continue; }
+    const [name, set, db, muted] = s;
+    const el = document.createElement("div");
+    el.className = "strip";
+    const y = `${(1 - (db + 60) / 66) * 100}%`;
+    el.innerHTML = `<div class="name"><span></span>${muted ? "<small>MUTED</small>" : ""}</div><div class="db">${db.toFixed(1).replace("-", "−")}</div>
+        <div class="body"><div class="info"><div class="cap">LUFS<br>OUT</div><div class="val">−∞</div><div class="set"></div></div>
+        <div class="travel"><div class="groove"></div><div class="capk" style="top:${y}"></div></div></div><div class="sel">SEL</div>`;
+    el.querySelector(".name span").textContent = name;
+    el.querySelector(".set").textContent = set;
+    row.append(el);
+}
+</script>
+</body>
+</html>
