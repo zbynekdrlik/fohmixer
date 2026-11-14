@@ -237,6 +237,23 @@ mod tests {
     }
 
     #[test]
+    fn a_relabelled_or_rebound_fader_changes_its_groups_key() {
+        let layout = layout();
+        let keys = strip_of(strip("band", "Keys 1"));
+        let group = channel_groups(Some(&doc()), &layout, &keys).remove(0);
+        // The integrated review's finding: the sheet keeps a group's picks
+        // while its key holds, so a key without the shown label and the
+        // strip kept a relabelled fader's old name and its old strip.
+        let mut relabelled = group.clone();
+        relabelled.channels[2].label = "Hall".to_string();
+        assert_ne!(relabelled.key(), group.key());
+        let mut rebound = group.clone();
+        rebound.channels[0].strip.mute_guard = !rebound.channels[0].strip.mute_guard;
+        assert_ne!(rebound.key(), group.key());
+        assert_eq!(group.clone().key(), group.key());
+    }
+
+    #[test]
     fn no_list_while_the_document_places_no_fader() {
         let layout = layout();
         let keys = strip_of(strip("band", "Keys 1"));
