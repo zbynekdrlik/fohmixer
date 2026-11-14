@@ -72,12 +72,16 @@ impl LiftKey {
 /// direct close removes the key and drops its handlers ("closure invoked
 /// recursively or after being dropped", `.claude/rules/leptos-view-macro.md`).
 pub fn close_later(open: RwSignal<bool>) {
-    set_timeout(
-        move || {
-            let _ = open.try_set(false);
-        },
-        std::time::Duration::ZERO,
-    );
+    after_lift(move || {
+        let _ = open.try_set(false);
+    });
+}
+
+/// Runs `then` a task after a key's lift, for the same reason as
+/// [`close_later`]: a pick that opens another channel's detail replaces
+/// the sheet, the key included.
+pub fn after_lift(then: impl FnOnce() + 'static) {
+    set_timeout(then, std::time::Duration::ZERO);
 }
 
 /// The sheet (`data-testid` `testid`) while `open`: the shade and ✕ close

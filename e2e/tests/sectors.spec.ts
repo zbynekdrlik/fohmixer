@@ -231,6 +231,19 @@ async function layoutPicks(sheet: Locator): Promise<string[]> {
     );
 }
 
+/** The channel selector's pick of `r` (#205). */
+const pickOf = (sheet: Locator, r: StripRef) =>
+  sheet.locator(`[data-testid="chan-pick"][data-instance="${r.instance}"][data-label="${r.label}"]`);
+
+/** The channel selector's picks (#205) that are `current`, `placed` or `unplaced`, as `<instance>|<label>`. */
+async function channelPicks(sheet: Locator, which: "current" | "placed" | "unplaced"): Promise<string[]> {
+  const selector =
+    which === "current" ? '[data-current="true"]' : which === "placed" ? '[data-placed="true"]' : '[data-placed="false"]';
+  return sheet
+    .locator(`[data-testid="chan-pick"]${selector}`)
+    .evaluateAll((all) => all.map((p) => `${p.getAttribute("data-instance")}|${p.getAttribute("data-label")}`));
+}
+
 /** Whether `inner`'s box lies inside `outer`'s (half a pixel of rounding). */
 async function insideOf(inner: Locator, outer: Locator): Promise<boolean> {
   const a = await inner.boundingBox();
@@ -829,7 +842,7 @@ test.describe("The fader sectors", () => {
     await expect(layouts.getByTestId("lay-count")).toHaveText("1");
     await expect(layouts.getByTestId("lay-empty")).toHaveCount(0);
     await expect(detail.getByTestId("lay-sheet")).toHaveCount(0);
-    await expect(detail.getByTestId("detail-steps")).toBeVisible();
+    await expect(detail.getByTestId("chan-open")).toBeVisible();
 
     await layouts.getByTestId("lay-add").click();
     const sheet = detail.getByTestId("lay-sheet");
@@ -1115,36 +1128,146 @@ test.describe("The fader sectors", () => {
     }
   });
 
-  test("the detail's ◀ ▶ step to the pool's neighbouring strips", async ({ page }) => {
+  test("the channel chip lists the pool by Live set and a pick opens that channel", async ({ page }) => {
     await setSectors(DOC);
     await openSectors(page);
     const since = await page.evaluate(() => performance.timeOrigin + performance.now());
-    // The fixture's pool in document order: … band Keys 1, master Hand1 #
-    // (the FOH page's OTHERS sub-page), band B-Main repro # (a return) …
     const detail = await openDetail(page, "Hand1 #", "master");
-    await expect(detail.getByTestId("detail-steps")).toBeVisible();
-    await detail.getByTestId("detail-next").click();
+    await expect(detail.getByTestId("detail-name")).toHaveText("Hand1");
+    await detail.getByTestId("chan-open").click();
+    const sheet = detail.getByTestId("chan-sheet");
+    await expect(sheet).toBeVisible();
+    await expect(sheet.locator(".sheet-title")).toHaveText("CHANNEL");
+    // Grouped by Live set in the pool's order: band first, then master.
+    const groups = await sheet
+      .getByTestId("chan-group")
+      .evaluateAll((all) => all.map((g) => `${g.getAttribute("data-instance")}|${g.textContent}`));
+    expect(groups.slice(0, 2)).toEqual(["band|BAND", "master|MASTER"]);
+    // The one shown is outlined, alone.
+    await expect.poll(() => channelPicks(sheet, "current")).toEqual(["master|Hand1 #"]);
+    // Every strip DOC places reads placed, with no NOT PLACED.
+    const placedNow = await channelPicks(sheet, "placed");
+    for (const r of [VOCAL, KEYS, band("Hand2 #"), band("B-Main repro #"), master("Hand1 #"), master("Hand4 #"), band("A-Reverb #"), master("A-Echo")]) {
+      expect(placedNow, `${name(r)} placed`).toContain(name(r));
+      await expect(pickOf(sheet, r)).not.toContainText("NOT PLACED");
+    }
+    // A pick opens its channel (at its lift) and the sheet goes with the old detail.
+    await pickOf(sheet, band("B-Main repro #")).click();
     await expect(detail).toHaveAttribute("data-track", "B-Main repro #");
     await expect(detail).toHaveAttribute("data-instance", "band");
-    await detail.getByTestId("detail-prev").click();
+    await expect(detail.getByTestId("chan-sheet")).toHaveCount(0);
+    await detail.getByTestId("chan-open").click();
+    await pickOf(detail.getByTestId("chan-sheet"), master("Hand1 #")).click();
     await expect(detail).toHaveAttribute("data-track", "Hand1 #");
     await expect(detail).toHaveAttribute("data-instance", "master");
-    // Each step is an open recorded with why "step" and the strip's keys.
-    const steps = await until(
+    // A pick of the one shown only closes the sheet.
+    await detail.getByTestId("chan-open").click();
+    await pickOf(detail.getByTestId("chan-sheet"), master("Hand1 #")).click();
+    await expect(detail.getByTestId("chan-sheet")).toHaveCount(0);
+    await expect(detail).toHaveAttribute("data-track", "Hand1 #");
+    // Each pick is an open recorded with why "pick" and the strip's keys.
+    const picks = await until(
       async () =>
         pageEvents(await hubEvents())
-          .filter((e: any) => e.ev === "detail" && e.what === "open" && e.why === "step" && e.t >= since)
+          .filter((e: any) => e.ev === "detail" && e.what === "open" && e.why === "pick" && e.t >= since)
           .sort((a: any, b: any) => a.t - b.t),
       (all) => all.length >= 2,
-      "the two steps in the event log",
+      "the two picks in the event log",
       15_000,
     );
-    expect(steps.length).toBe(2);
+    expect(picks.length).toBe(2);
     const names = (e: any, instance: string, track: string) =>
       (e.keys as string[]).some((k) => k.startsWith(`${instance}|`) && k.includes(track));
-    expect(names(steps[0], "band", "B-Main repro #"), JSON.stringify(steps[0])).toBe(true);
-    expect(names(steps[1], "master", "Hand1 #"), JSON.stringify(steps[1])).toBe(true);
-    expect(typeof steps[0].pointer).toBe("number");
+    expect(names(picks[0], "band", "B-Main repro #"), JSON.stringify(picks[0])).toBe(true);
+    expect(names(picks[1], "master", "Hand1 #"), JSON.stringify(picks[1])).toBe(true);
+    expect(typeof picks[0].pointer).toBe("number");
+  });
+
+  test("a fader no layout holds is reachable from the chip, and ADD TO LAYOUT places it", async ({ page }) => {
+    await setSectors(DOC);
+    await openSectors(page);
+    const detail = await openDetail(page, "Hand1 #", "master");
+    await detail.getByTestId("chan-open").click();
+    const sheet = detail.getByTestId("chan-sheet");
+    // DOC places 8 faders; the pool holds more: the first one it leaves out.
+    const unplaced = await channelPicks(sheet, "unplaced");
+    expect(unplaced.length, "a fader no layout holds").toBeGreaterThan(0);
+    const [instance, label] = unplaced[0].split("|");
+    const loose = { instance, label };
+    const chip = pickOf(sheet, loose);
+    await expect(chip.locator(".chan-np")).toHaveText("NOT PLACED");
+    await expect(chip.locator(".chan-np")).toHaveCSS("color", "rgb(245, 166, 35)");
+    await chip.click();
+    await expect(detail).toHaveAttribute("data-instance", instance);
+    await expect(detail).toHaveAttribute("data-track", label);
+    // Its detail: in no layout; ADD's sheet puts it into lu's ALT.
+    const layouts = detail.getByTestId("detail-layouts");
+    await expect(layouts.getByTestId("lay-empty")).toBeVisible();
+    const since = Date.now();
+    await layouts.getByTestId("lay-add").click();
+    await detail.locator('[data-testid="lay-pick"][data-layout="lu-2"]').click();
+    await expect.poll(() => layoutRows(layouts)).toEqual(["LU|ALT"]);
+    const record = (
+      await until(
+        async () => (await hubEvents()).filter((r: any) => r.ev === "sectors" && r.ts >= since),
+        (all) => all.length > 0,
+        "the hub's tick record",
+      )
+    )[0];
+    expect([record.what, record.layout, record.on]).toEqual(["tick", "lu-2", true]);
+    expect(record.strip).toEqual(loose);
+    // The chip's list now reads it placed.
+    await detail.getByTestId("chan-open").click();
+    await expect(pickOf(detail.getByTestId("chan-sheet"), loose)).toHaveAttribute("data-placed", "true");
+    await expect(pickOf(detail.getByTestId("chan-sheet"), loose).locator(".chan-np")).toHaveCount(0);
+  });
+
+  test("the channel list scrolls under a dragged finger and a drag opens nothing", async ({ page }) => {
+    await setSectors(DOC);
+    await openSectors(page);
+    const detail = await openDetail(page, "Hand1 #", "master");
+    await page.setViewportSize({ width: 844, height: 390 });
+    await frames(page);
+    await detail.getByTestId("chan-open").click();
+    const sheet = detail.getByTestId("chan-sheet");
+    const body = sheet.getByTestId("sheet-body");
+    const panel = await sheet.locator(".sheet-panel").boundingBox();
+    if (!panel) throw new Error("the panel has no box");
+    expect(panel.y + panel.height, "the panel inside the screen").toBeLessThanOrEqual(390.5);
+    const sizes = await body.evaluate((e) => ({ scroll: e.scrollHeight, client: e.clientHeight, top: e.scrollTop }));
+    expect(sizes.scroll, "the pool overflows a phone on its side").toBeGreaterThan(sizes.client);
+    expect(sizes.top).toBe(0);
+    // A finger down on a pick, dragged 120 px up and lifted (buttons held,
+    // as a touch's moves carry them): the list scrolls, no channel opens.
+    const scrolled = await sheet
+      .getByTestId("chan-pick")
+      .nth(2)
+      .evaluate(async (el) => {
+        const box = el.getBoundingClientRect();
+        const x = box.left + box.width / 2;
+        const y = box.top + box.height / 2;
+        const fire = (type: string, dy: number) =>
+          el.dispatchEvent(
+            new PointerEvent(type, {
+              pointerId: 31,
+              pointerType: "touch",
+              isPrimary: true,
+              buttons: type === "pointerup" ? 0 : 1,
+              clientX: x,
+              clientY: y - dy,
+              bubbles: true,
+              cancelable: true,
+            }),
+          );
+        fire("pointerdown", 0);
+        for (const dy of [0, 20, 60, 120]) fire("pointermove", dy);
+        fire("pointerup", 120);
+        await new Promise((r) => setTimeout(r, 50));
+        return (el.closest('[data-testid="sheet-body"]') as HTMLElement).scrollTop;
+      });
+    expect(scrolled, "the list scrolled with the finger").toBeGreaterThan(0);
+    await expect(sheet).toBeVisible();
+    await expect(detail).toHaveAttribute("data-track", "Hand1 #");
   });
 
   test("the existing FOH page is unchanged with the empty document", async ({ page }) => {
@@ -1162,9 +1285,11 @@ test.describe("The fader sectors", () => {
     await expect(pager.locator('[data-testid="tab"][data-page="stage"]')).toBeVisible();
     await expect(pager.locator('[data-testid="tab"][data-page="others"]')).toBeVisible();
     await expect(page.locator('[data-testid="strip"][data-track="Vocal 1 repro#"][data-instance="band"]')).toBeVisible();
-    // The detail shows no LAYOUTS and no ◀ ▶.
+    // The detail shows no LAYOUTS and no channel selector: the name chip
+    // as before.
     const detail = await openDetail(page, "Vocal 1 repro#");
     await expect(detail.getByTestId("detail-layouts")).toHaveCount(0);
-    await expect(detail.getByTestId("detail-steps")).toHaveCount(0);
+    await expect(detail.getByTestId("chan-open")).toHaveCount(0);
+    await expect(detail.getByTestId("detail-name")).toHaveText("Vocal");
   });
 });

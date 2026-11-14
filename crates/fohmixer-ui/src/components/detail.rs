@@ -18,10 +18,11 @@ use leptos::prelude::*;
 use serde_json::json;
 
 use super::buttons::{Corner, MuteView, Partner, anchor_name};
+use super::channel_select::ChannelSelect;
 use super::detail_alarm::{DetailMuteAlarm, strip_alarm};
 use super::detail_color::{DetailColor, strip_colour};
 use super::detail_guard::{DetailMuteGuard, strip_guard, strip_guard_mark};
-use super::detail_layouts::{DetailLayouts, DetailStep};
+use super::detail_layouts::DetailLayouts;
 use super::eq::EqCards;
 use super::fader::{FaderView, Law, Target};
 use super::fader_link::{FaderFollowView, FaderLinkView, link_parts};
@@ -36,7 +37,7 @@ use crate::behave::fader::UNITY;
 use crate::behave::hold::guard_left;
 use crate::behave::label::shown_label;
 use crate::behave::reverb::held_low;
-use crate::binding::sectors::Stepped;
+use crate::binding::channels::Picked;
 use crate::binding::{CLOSE_EXIT, SubSpec, detail_keys, detail_subs};
 use crate::dom;
 use crate::store::{LiveStore, Readiness, Slot};
@@ -63,14 +64,14 @@ impl DetailStrip {
         let _ = self.strip.try_set(Some(strip));
     }
 
-    /// The detail's ◀ ▶ opened the pool's strip beside the one shown
-    /// (#148, the tested `binding::sectors::stepped`), by pointer
-    /// `pointer`: recorded as an open with its `why` and keys. The opening
-    /// guard is not started again (it is for a second tap at SEL's spot),
-    /// so the arrows step at a finger's pace.
-    pub fn step(self, stepped: Stepped, pointer: i32) {
-        trace_detail("open", Some(stepped.why), &stepped.keys, Some(pointer));
-        let _ = self.strip.try_set(Some(stepped.strip));
+    /// The channel selector opened another fader of the pool (#205, the
+    /// tested `binding::channels::picked`; #148's ◀ ▶ before it), by
+    /// pointer `pointer`: recorded as an open with its `why` and keys. The
+    /// opening guard is not started again (it is for a second tap at SEL's
+    /// spot).
+    pub fn pick(self, picked: Picked, pointer: i32) {
+        trace_detail("open", Some(picked.why), &picked.keys, Some(pointer));
+        let _ = self.strip.try_set(Some(picked.strip));
     }
 
     /// The detail closes (`why`: `exit`, `layout`, `conflict`; `pointer`
@@ -187,9 +188,11 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
     let label_attr = label.clone();
     let cards_label = label.clone();
     let cards_strip = strip.clone();
-    // The fader sectors (#148): the LAYOUTS ticks and the bar's ◀ ▶.
+    // The fader sectors (#148): LAYOUTS (#208) and the bar's channel
+    // selector (#205).
     let layouts_strip = strip.clone();
-    let step_strip = strip.clone();
+    let select_strip = strip.clone();
+    let chip_label = label.clone();
     let instance = strip.binding.instance.clone();
     let ret = strip.strip_kind == StripKind::Return;
     let sub = bar_text(group.as_deref(), &instance, ret);
@@ -374,14 +377,11 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
                     <span class="detail-exit-short">"← MIX"</span>
                 </button>
                 <div class="detail-name">
-                    <span class="detail-chip" data-testid="detail-name" style=chip>
-                        {label}
-                    </span>
+                    <ChannelSelect strip=select_strip label=chip_label chip=Signal::derive(chip) />
                     <span class="detail-sub" data-testid="detail-sub">
                         {sub}
                     </span>
                 </div>
-                <DetailStep strip=step_strip />
             </div>
             <div class="detail-body">
                 <section class="detail-box detail-left" data-testid="detail-left">

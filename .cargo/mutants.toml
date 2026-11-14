@@ -305,14 +305,14 @@ exclude_re = [
   # trace::rail event with the page clock, into the recorder);
   # controls.spec.ts reads the steps back from the event log.
   "fohmixer-ui/src/components/mod\\.rs.*(replace|in) (trace_touch|trace_start|trace_move|intent_look|trace_detail|trace_rail)( |$)",
-  "fohmixer-ui/src/components/detail\\.rs.*(replace|in) DetailStrip::(open|close|step)( |$)",
-  # #148: DetailStrip::step (the detail's ◀ ▶: the strip's signal written
-  # and the open recorded, both from the tested binding::sectors::stepped,
-  # its strip, why "step" and keys) and, in components/detail_layouts.rs,
-  # ticks_memo (the hub's document and the served layout read into the
-  # tested binding::sectors::detail_ticks). sectors.spec.ts ticks a layout,
-  # presses the detail's ▶ and ◀ and reads the neighbouring pool strip in
-  # the detail and the two "step" opens back from the event log. #208 added
+  "fohmixer-ui/src/components/detail\\.rs.*(replace|in) DetailStrip::(open|close|pick)( |$)",
+  # #205: DetailStrip::pick (the channel selector's pick, #148's ◀ ▶ before
+  # it: the strip's signal written and the open recorded, both from the
+  # tested binding::channels::picked, its strip, why "pick" and keys);
+  # sectors.spec.ts picks channels and reads the "pick" opens back from the
+  # event log. #148: in components/detail_layouts.rs, ticks_memo (the hub's
+  # document and the served layout read into the tested
+  # binding::sectors::detail_ticks). #208 added
   # ask_tick (the strip's identity read from the memo and handed to
   # LiveStore::sector_tick with the refusal's flash): sectors.spec.ts adds a
   # strip through ADD's sheet and takes it out with ✕, and reads each

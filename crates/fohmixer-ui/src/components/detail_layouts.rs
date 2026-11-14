@@ -1,9 +1,9 @@
 //! The channel detail's fader sectors (#148; spec
 //! `docs/superpowers/specs/2026-10-28-sectors-design.md` §4): the LAYOUTS
-//! section in `detail-right` and the bar's ◀ ▶, which step to the pool's
-//! strip before and after, so a strip in no layout (a new track) can still
-//! be opened and placed. Both show only while the hub's document places
-//! faders; an empty document keeps today's detail.
+//! section in `detail-right`, only while the hub's document places faders;
+//! an empty document keeps today's detail. A strip in no layout (a new
+//! track) is opened from the bar's channel selector (#205,
+//! `components::channel_select`; ◀ ▶ before it) and placed here.
 //!
 //! LAYOUTS (#208, the owner's approved mockup `docs/mockups/scenes-v3.html`
 //! frame 1; the owner's rule: a settings list shows only what is set, plus
@@ -13,17 +13,15 @@
 //! full one disabled, FULL); one tap there puts the fader in, at the
 //! layout's end. The ✕ and the picks act at their lift. The decisions are
 //! `binding::detail_layouts` (`held`, `picks`) over
-//! `binding::sectors::detail_ticks`, and `detail_steps` for ◀ ▶; nothing
-//! here writes a Live key.
+//! `binding::sectors::detail_ticks`; nothing here writes a Live key.
 
 use fohmixer_proto::layout::Strip;
 use leptos::prelude::*;
 
-use super::detail::DetailStrip;
 use super::sheet::{LiftKey, Sheet, close_later};
 use super::{fail_flash, owns_touches};
 use crate::binding::detail_layouts::{LayoutPick, LayoutRow, held, picks};
-use crate::binding::sectors::{DetailTicks, detail_steps, detail_ticks, stepped};
+use crate::binding::sectors::{DetailTicks, detail_ticks};
 use crate::store::{LiveStore, on_refusal};
 
 /// The section's layouts for the strip shown: the hub's document as last
@@ -290,76 +288,5 @@ fn PickButton(
             <span class="sheet-pick-name">{pick.title}</span>
             <small>{sub}</small>
         </button>
-    }
-}
-
-/// The bar's ◀ ▶: the pool's strip before and after this one (the
-/// parameter faders skipped, no wrap; `.end` at either end). A step opens
-/// that strip's detail (`DetailStrip::step` with the tested
-/// `binding::sectors::stepped`, recorded as an open with `why: "step"`).
-#[component]
-pub fn DetailStep(strip: Strip) -> impl IntoView {
-    let store = expect_context::<LiveStore>();
-    let shown = use_context::<DetailStrip>();
-    let strip = StoredValue::new(strip);
-    let steps = Memo::new(move |_| {
-        let layout = store.layout.try_get().flatten()?;
-        store
-            .sectors
-            .try_with(|told| strip.try_with_value(|s| detail_steps(told.shown(), &layout, s)))
-            .flatten()
-            .flatten()
-    });
-    let go = move |ev: web_sys::PointerEvent, forward: bool| {
-        ev.prevent_default();
-        let next = steps
-            .try_with_untracked(|s| stepped(s.as_ref(), forward))
-            .flatten();
-        if let (Some(next), Some(detail)) = (next, shown) {
-            detail.step(next, ev.pointer_id());
-        }
-    };
-    let at_start = move || {
-        steps
-            .try_with(|s| s.as_ref().is_none_or(|s| s.back.is_none()))
-            .unwrap_or(true)
-    };
-    let at_end = move || {
-        steps
-            .try_with(|s| s.as_ref().is_none_or(|s| s.next.is_none()))
-            .unwrap_or(true)
-    };
-    let live = move || steps.try_with(Option::is_some).unwrap_or(false);
-    move || {
-        live().then(|| {
-            let back_keys: Vec<String> = Vec::new();
-            let next_keys: Vec<String> = Vec::new();
-            view! {
-                <div class="detail-steps" data-testid="detail-steps">
-                    <button
-                        type="button"
-                        class="detail-step"
-                        use:owns_touches=back_keys
-                        class:end=at_start
-                        data-testid="detail-prev"
-                        aria-label="The previous fader"
-                        on:pointerdown=move |ev| go(ev, false)
-                    >
-                        "◀"
-                    </button>
-                    <button
-                        type="button"
-                        class="detail-step"
-                        use:owns_touches=next_keys
-                        class:end=at_end
-                        data-testid="detail-next"
-                        aria-label="The next fader"
-                        on:pointerdown=move |ev| go(ev, true)
-                    >
-                        "▶"
-                    </button>
-                </div>
-            }
-        })
     }
 }
