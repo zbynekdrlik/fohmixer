@@ -287,11 +287,30 @@ test.describe("The channel detail with the sectors on", () => {
         .getByTestId("sheet-body")
         .evaluate((e) => ({ scroll: e.scrollHeight, client: e.clientHeight }));
       expect(body.scroll, `the picks' list scrolls at ${where}`).toBeLessThanOrEqual(body.client);
-      for (const pick of await sheet.getByTestId("lay-pick").all()) {
-        expect(await clipped(pick.locator(".sheet-pick-name")), `a pick's title at ${where}`).toEqual([]);
-        expect(await clipped(pick.locator("small")), `a pick's sector at ${where}`).toEqual([]);
-        expect(await insideOf(pick, sheet.locator(".sheet-panel")), `a pick inside the panel at ${where}`).toBe(true);
-      }
+      // Every pick's texts unclipped and its box inside the panel, read in
+      // one task in the page (up to 16 picks × 3 round trips each ran the
+      // test past its 30 s on a loaded box).
+      const problems = await sheet.evaluate((root) => {
+        const out: string[] = [];
+        const panel = root.querySelector(".sheet-panel")!.getBoundingClientRect();
+        for (const pick of root.querySelectorAll('[data-testid="lay-pick"]')) {
+          const id = pick.getAttribute("data-layout");
+          for (const sel of [".sheet-pick-name", "small"]) {
+            const el = pick.querySelector(sel) as HTMLElement;
+            if (el.scrollWidth > el.clientWidth || el.scrollHeight > el.clientHeight) out.push(`${id} ${sel} clipped`);
+          }
+          const box = pick.getBoundingClientRect();
+          if (
+            box.left < panel.left - 0.5 ||
+            box.top < panel.top - 0.5 ||
+            box.right > panel.right + 0.5 ||
+            box.bottom > panel.bottom + 0.5
+          )
+            out.push(`${id} outside the panel`);
+        }
+        return out;
+      });
+      expect(problems, `the picks at ${where}`).toEqual([]);
     };
     for (const size of [
       { width: 1194, height: 834 },
