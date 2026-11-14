@@ -92,7 +92,10 @@ fn the_document_reads_as_written_and_refuses_unknown_fields() {
         json!({"rules": {"band": {"Vox 1": {"intro": {"db": 1.0, "fade": 2}}}}}),
         json!({"rules": {"band": {"Vox 1": {"intro": {"mute": "solo"}}}}}),
     ] {
-        assert!(serde_json::from_value::<ScenesDoc>(bad.clone()).is_err(), "{bad}");
+        assert!(
+            serde_json::from_value::<ScenesDoc>(bad.clone()).is_err(),
+            "{bad}"
+        );
     }
     // It writes back as it read.
     let back = serde_json::to_value(&doc).unwrap();
@@ -157,7 +160,11 @@ fn a_scene_name_is_trimmed_and_checked() {
     assert_eq!(scene_name(""), Err("the scene name is empty"));
     assert_eq!(scene_name("   "), Err("the scene name is empty"));
     let long: String = "é".repeat(MAX_NAME_CHARS);
-    assert_eq!(scene_name(&long), Ok(long.clone()), "64 characters, not bytes");
+    assert_eq!(
+        scene_name(&long),
+        Ok(long.clone()),
+        "64 characters, not bytes"
+    );
     assert_eq!(
         scene_name(&format!("{long}x")),
         Err("the scene name is longer than 64 characters")
@@ -200,15 +207,26 @@ fn heard_learns_a_new_name_once_and_keeps_the_order() {
 #[test]
 fn with_sets_and_removes_and_drops_what_is_left_empty() {
     let doc = heard_two().with(&band("Vox 1"), "intro", Some(rule(Some(-5.0), None)));
-    assert_eq!(doc.rule(&band("Vox 1"), "intro"), Some(rule(Some(-5.0), None)));
+    assert_eq!(
+        doc.rule(&band("Vox 1"), "intro"),
+        Some(rule(Some(-5.0), None))
+    );
     assert_eq!(doc.known, vec!["intro", "talk"], "the names stay");
     assert_eq!(doc.count(), 1);
-    let two = doc.with(&strip("mbc", "Hand"), "talk", Some(rule(None, Some(SceneMute::Unmute))));
+    let two = doc.with(
+        &strip("mbc", "Hand"),
+        "talk",
+        Some(rule(None, Some(SceneMute::Unmute))),
+    );
     assert_eq!(two.count(), 2);
     assert_eq!(two.strips(), vec![band("Vox 1"), strip("mbc", "Hand")]);
     // A rule that does nothing removes as none does.
     let removed = two.with(&band("Vox 1"), "intro", Some(rule(None, None)));
-    assert_eq!(removed.rules.get("band"), None, "a Live set left with none goes");
+    assert_eq!(
+        removed.rules.get("band"),
+        None,
+        "a Live set left with none goes"
+    );
     assert_eq!(removed.count(), 1);
     let none = removed.with(&strip("mbc", "Hand"), "talk", None);
     assert_eq!(none, heard_two());
@@ -224,7 +242,11 @@ fn rules_of_a_scene_are_every_faders_rule_for_it() {
     let doc = heard_two()
         .with(&band("Vox 1"), "intro", Some(rule(Some(-5.0), None)))
         .with(&band("Bass"), "talk", Some(rule(Some(-1.0), None)))
-        .with(&strip("mbc", "Hand"), "intro", Some(rule(None, Some(SceneMute::Mute))));
+        .with(
+            &strip("mbc", "Hand"),
+            "intro",
+            Some(rule(None, Some(SceneMute::Mute))),
+        );
     assert_eq!(
         doc.rules_of("intro"),
         vec![
@@ -283,7 +305,10 @@ fn set_rule_takes_a_pool_fader_of_a_known_scene_only() {
         .unwrap();
     assert_eq!(next.rule(&band("Vox 1"), "intro"), Some(take));
     // The same again changes nothing.
-    assert_eq!(set_rule(&next, &band("Vox 1"), "intro", Some(take), &pool), Ok(None));
+    assert_eq!(
+        set_rule(&next, &band("Vox 1"), "intro", Some(take), &pool),
+        Ok(None)
+    );
     assert_eq!(
         set_rule(&doc, &band("Keys"), "intro", Some(take), &pool),
         Err(RuleRefusal::NotInPool)
@@ -293,7 +318,13 @@ fn set_rule_takes_a_pool_fader_of_a_known_scene_only() {
         Err(RuleRefusal::UnknownScene)
     );
     assert_eq!(
-        set_rule(&doc, &band("Vox 1"), "intro", Some(rule(Some(9.0), None)), &pool),
+        set_rule(
+            &doc,
+            &band("Vox 1"),
+            "intro",
+            Some(rule(Some(9.0), None)),
+            &pool
+        ),
         Err(RuleRefusal::Invalid)
     );
     // A removal is always taken, a fader gone from the pool too.
@@ -304,7 +335,13 @@ fn set_rule_takes_a_pool_fader_of_a_known_scene_only() {
     );
     // A rule that does nothing is a removal, for an unknown scene too.
     assert_eq!(
-        set_rule(&next, &band("Vox 1"), "intro", Some(rule(None, None)), &pool),
+        set_rule(
+            &next,
+            &band("Vox 1"),
+            "intro",
+            Some(rule(None, None)),
+            &pool
+        ),
         Ok(Some(doc.clone()))
     );
     assert_eq!(set_rule(&doc, &band("Vox 1"), "song", None, &[]), Ok(None));

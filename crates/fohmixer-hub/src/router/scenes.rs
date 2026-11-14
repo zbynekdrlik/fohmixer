@@ -131,9 +131,7 @@ pub(super) fn write_problem(error: &std::io::Error) -> String {
 
 /// Whether a Live `mute` value is on (a bool, or a number other than 0).
 pub(super) fn mute_on(value: &Value) -> Option<bool> {
-    value
-        .as_bool()
-        .or_else(|| value.as_f64().map(|n| n != 0.0))
+    value.as_bool().or_else(|| value.as_f64().map(|n| n != 0.0))
 }
 
 /// The keys a fader's targets are followed by: its volume's `value` and its
@@ -357,9 +355,9 @@ impl Router {
                 }
                 self.scenes_watch();
             }
-            Some(Polled::Refused(why)) => tracing::warn!(
-                "scenes.json is refused, the last good document stays served: {why}"
-            ),
+            Some(Polled::Refused(why)) => {
+                tracing::warn!("scenes.json is refused, the last good document stays served: {why}")
+            }
             Some(Polled::Unreadable(why)) => tracing::warn!(
                 "cannot read scenes.json, the document stays served and is read again at the next poll: {why}"
             ),
@@ -367,7 +365,9 @@ impl Router {
                 "scenes.json was removed and cannot be written back, the document stays served and is written again at the next poll: {why}"
             ),
             Some(Polled::Restored) => {
-                tracing::warn!("scenes.json was removed; it is written back from the document served");
+                tracing::warn!(
+                    "scenes.json was removed; it is written back from the document served"
+                );
                 self.io.events.record(
                     "scene_rule",
                     rule_fields("file", None, None, json!({"why": "deleted"})),

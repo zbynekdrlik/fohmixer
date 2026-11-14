@@ -192,7 +192,10 @@ mod tests {
             check(Origin::Internet, false, false, b"x"),
             Err(Refused::Internet)
         );
-        assert_eq!(check(Origin::Local, false, false, good), Err(Refused::NoToken));
+        assert_eq!(
+            check(Origin::Local, false, false, good),
+            Err(Refused::NoToken)
+        );
         assert_eq!(check(Origin::Local, true, false, good), Err(Refused::Token));
         assert!(matches!(
             check(Origin::Local, true, true, b"{}"),
@@ -214,7 +217,10 @@ mod tests {
             b"",
         ] {
             let why = body_scene(bad).unwrap_err();
-            assert!(why.starts_with("the body is not {\"scene\": \"<name>\"}: "), "{why}");
+            assert!(
+                why.starts_with("the body is not {\"scene\": \"<name>\"}: "),
+                "{why}"
+            );
         }
     }
 
@@ -222,7 +228,11 @@ mod tests {
     fn each_refusal_has_its_status_code_and_word() {
         for (refused, status, word) in [
             (Refused::Internet, StatusCode::FORBIDDEN, "internet"),
-            (Refused::NoToken, StatusCode::SERVICE_UNAVAILABLE, "no_token"),
+            (
+                Refused::NoToken,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "no_token",
+            ),
             (Refused::Token, StatusCode::UNAUTHORIZED, "token"),
             (Refused::Body("x".into()), StatusCode::BAD_REQUEST, "body"),
         ] {
@@ -239,7 +249,11 @@ mod tests {
             "a scene request is refused (token) from 10.0.0.5; 2 left out before"
         );
         assert_eq!(
-            refused_line(&Refused::Body("the scene name is empty".into()), "10.0.0.5", 0),
+            refused_line(
+                &Refused::Body("the scene name is empty".into()),
+                "10.0.0.5",
+                0
+            ),
             "a scene request is refused (body: the scene name is empty) from 10.0.0.5; 0 left out before"
         );
     }

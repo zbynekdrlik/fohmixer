@@ -648,7 +648,11 @@ pub enum ServerMsg {
     Scenes { doc: ScenesDoc },
     /// A scene came (#207, `POST /api/scene`): its name, when (the hub's
     /// UTC ms) and how many faders it moved; also the last one at attach.
-    Scene { name: String, at_ms: f64, moved: u32 },
+    Scene {
+        name: String,
+        at_ms: f64,
+        moved: u32,
+    },
     /// A message of a newer hub that this page does not know (#90 B3): any
     /// other `type` reads as this, and the page ignores it, so a new
     /// message never breaks an older page.

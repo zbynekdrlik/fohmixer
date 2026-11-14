@@ -121,7 +121,11 @@ fn the_rules_client_is_after_the_recording_watchs() {
 #[test]
 fn the_lines_say_what_changed() {
     assert_eq!(
-        rule_line(&band("Vox 1"), "intro", Some(&rule(Some(-10.0), Some(SceneMute::Mute)))),
+        rule_line(
+            &band("Vox 1"),
+            "intro",
+            Some(&rule(Some(-10.0), Some(SceneMute::Mute)))
+        ),
         "a scene rule changed: band|Vox 1 in scene \"intro\": -10.0 dB, MUTE, 2000 ms"
     );
     assert_eq!(
@@ -215,8 +219,7 @@ async fn a_rule_is_set_recorded_told_and_followed() {
     );
     let page = attach(&mut router, 1);
     assert!(
-        taken(&page)
-            .contains(&ServerMsg::Scenes { doc: ruled() }),
+        taken(&page).contains(&ServerMsg::Scenes { doc: ruled() }),
         "the document at attach"
     );
     let talk = rule(None, Some(SceneMute::Mute));
@@ -238,9 +241,11 @@ async fn a_rule_is_set_recorded_told_and_followed() {
     let recs = of_kind(&records(&rx), "scene_rule");
     assert_eq!(
         recs,
-        vec![json!({"ev": "scene_rule", "what": "set", "client": 1, "peer": "10.0.0.1",
+        vec![
+            json!({"ev": "scene_rule", "what": "set", "client": 1, "peer": "10.0.0.1",
                     "strip": {"instance": "band", "label": "Vox 1"}, "scene": "talk",
-                    "rule": {"db": null, "mute": "mute", "time_ms": 2000}})]
+                    "rule": {"db": null, "mute": "mute", "time_ms": 2000}})
+        ]
     );
     // The same again: only `result`, no record.
     set_rule(&mut router, 1, "r2", "talk", Some(talk));
@@ -301,15 +306,19 @@ async fn a_scene_learns_its_name_records_tells_and_answers_what_moved() {
     );
     assert_eq!(
         of_kind(&records(&rx), "scene"),
-        vec![json!({"ev": "scene", "scene": "song", "source": "lan", "peer": "10.0.0.5", "moved": 0})]
+        vec![
+            json!({"ev": "scene", "scene": "song", "source": "lan", "peer": "10.0.0.5", "moved": 0})
+        ]
     );
     // `intro`: Vox 1 glides from 0 dB to −10 dB; already unmuted.
     assert_eq!(router.scene_came("intro", "lan", "10.0.0.5"), 1);
     let glides = of_kind(&records(&rx), "scene_glide");
     assert_eq!(
         glides,
-        vec![json!({"ev": "scene_glide", "what": "start", "instance": "band", "label": "Vox 1",
-                    "scene": "intro", "from_db": 0.0, "to_db": -10.0, "ms": 2000})]
+        vec![
+            json!({"ev": "scene_glide", "what": "start", "instance": "band", "label": "Vox 1",
+                    "scene": "intro", "from_db": 0.0, "to_db": -10.0, "ms": 2000})
+        ]
     );
     let now = status(&mut router).scenes;
     assert_eq!(now.glides, 1);
@@ -336,8 +345,8 @@ async fn a_glide_steps_through_the_setter_and_a_pages_set_stops_it() {
     router.handle(RouterMsg::ScenesWake { generation });
     let sets: Vec<Value> = of_kind(&records(&rx), "set");
     assert!(
-        sets.iter()
-            .any(|s| s["client"] == json!(SCENES_CLIENT) && s["key"] == set_key("band", VOX_VOLUME, "value")),
+        sets.iter().any(|s| s["client"] == json!(SCENES_CLIENT)
+            && s["key"] == set_key("band", VOX_VOLUME, "value")),
         "{sets:?}"
     );
     assert!(router.scenes.rule.writes() >= 1);
@@ -352,8 +361,10 @@ async fn a_glide_steps_through_the_setter_and_a_pages_set_stops_it() {
     let stops = of_kind(&records(&rx), "scene_glide");
     assert_eq!(
         stops,
-        vec![json!({"ev": "scene_glide", "what": "stop", "instance": "band", "label": "Vox 1",
-                    "scene": "intro", "why": "hand"})]
+        vec![
+            json!({"ev": "scene_glide", "what": "stop", "instance": "band", "label": "Vox 1",
+                    "scene": "intro", "why": "hand"})
+        ]
     );
     assert_eq!(router.scenes.rule.glides(), 0);
 }
@@ -388,7 +399,10 @@ async fn a_scene_with_no_value_heard_writes_the_target_and_the_unmute_at_once() 
         written,
         vec![
             (json!(set_key("band", VOX_TRACK, "mute")), json!(false)),
-            (json!(set_key("band", VOX_VOLUME, "value")), json!(volume_of(-10.0))),
+            (
+                json!(set_key("band", VOX_VOLUME, "value")),
+                json!(volume_of(-10.0))
+            ),
         ]
     );
     assert_eq!(router.scenes.rule.glides(), 0);
@@ -419,7 +433,9 @@ async fn a_hand_edit_is_taken_recorded_and_followed() {
     assert!(dir.path().join(SCENES_FILE).exists());
     assert_eq!(
         of_kind(&records(&rx), "scene_rule"),
-        vec![json!({"ev": "scene_rule", "what": "file", "client": null, "peer": null, "why": "deleted"})]
+        vec![
+            json!({"ev": "scene_rule", "what": "file", "client": null, "peer": null, "why": "deleted"})
+        ]
     );
 }
 

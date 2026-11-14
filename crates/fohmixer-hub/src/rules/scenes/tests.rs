@@ -37,7 +37,11 @@ fn key() -> String {
 
 fn write_value(act: &Act) -> Option<f64> {
     match act {
-        Act::Write { prop: "value", value, .. } => value.as_f64(),
+        Act::Write {
+            prop: "value",
+            value,
+            ..
+        } => value.as_f64(),
         _ => None,
     }
 }
@@ -67,14 +71,20 @@ fn a_strips_targets_are_its_volume_and_its_mutes_linked_ones_after() {
 
 #[test]
 fn moves_needs_a_volume_off_its_target_or_a_mute_that_changes() {
-    assert!(!moves(Some(0.5), None, Some(true), None), "a rule of nothing");
+    assert!(
+        !moves(Some(0.5), None, Some(true), None),
+        "a rule of nothing"
+    );
     assert!(moves(Some(0.5), Some(0.6), None, None));
     assert!(!moves(Some(0.5), Some(0.5 + SAME_VOLUME / 2.0), None, None));
     assert!(moves(Some(0.5), Some(0.5 + 2.0 * SAME_VOLUME), None, None));
     assert!(moves(None, Some(0.5), None, None), "a volume not heard");
     assert!(moves(Some(0.5), None, Some(false), Some(true)));
     assert!(!moves(Some(0.5), None, Some(true), Some(true)));
-    assert!(moves(Some(0.5), None, None, Some(false)), "a mute not heard");
+    assert!(
+        moves(Some(0.5), None, None, Some(false)),
+        "a mute not heard"
+    );
     assert!(moves(Some(0.5), Some(0.5), Some(false), Some(true)));
 }
 
@@ -131,7 +141,12 @@ fn a_mute_is_written_once_to_every_track_of_the_strip() {
     let mut rule = Scenes::default();
     let (acts, moved) = rule.scene(
         "talk",
-        vec![fader(None, Some(SceneMute::Mute), DEFAULT_TIME_MS, Some(0.5))],
+        vec![fader(
+            None,
+            Some(SceneMute::Mute),
+            DEFAULT_TIME_MS,
+            Some(0.5),
+        )],
         0.0,
     );
     assert_eq!(moved, 1);
@@ -158,7 +173,12 @@ fn a_mute_is_written_once_to_every_track_of_the_strip() {
     // Already unmuted: an unmute writes nothing and moves nothing.
     let (acts, moved) = rule.scene(
         "talk",
-        vec![fader(None, Some(SceneMute::Unmute), DEFAULT_TIME_MS, Some(0.5))],
+        vec![fader(
+            None,
+            Some(SceneMute::Unmute),
+            DEFAULT_TIME_MS,
+            Some(0.5),
+        )],
         0.0,
     );
     assert_eq!((acts, moved), (Vec::new(), 0));
@@ -176,7 +196,12 @@ fn a_fader_at_its_target_moves_nothing_and_its_mute_still_goes() {
     assert_eq!((acts, moved), (Vec::new(), 0));
     let (acts, moved) = rule.scene(
         "intro",
-        vec![fader(Some(-6.0), Some(SceneMute::Mute), DEFAULT_TIME_MS, Some(at))],
+        vec![fader(
+            Some(-6.0),
+            Some(SceneMute::Mute),
+            DEFAULT_TIME_MS,
+            Some(at),
+        )],
         0.0,
     );
     assert_eq!(moved, 1);
@@ -202,7 +227,11 @@ fn no_time_or_no_value_heard_writes_the_target_at_once() {
 #[test]
 fn the_floor_glides_to_silence_and_shows_minus_70() {
     let mut rule = Scenes::default();
-    let (acts, _) = rule.scene("a", vec![fader(Some(FLOOR_DB), None, 1000, Some(0.85))], 0.0);
+    let (acts, _) = rule.scene(
+        "a",
+        vec![fader(Some(FLOOR_DB), None, 1000, Some(0.85))],
+        0.0,
+    );
     assert!(matches!(&acts[0], Act::Step(Step::Start { to_db, .. }) if *to_db == FLOOR_DB));
     let end = rule.tick(1000.0);
     assert_eq!(write_value(&end[0]), Some(0.0));
@@ -236,7 +265,11 @@ fn a_hand_stops_its_glide_at_once_and_another_key_changes_nothing() {
 #[test]
 fn a_new_scene_replaces_a_glide_from_where_it_is() {
     let mut rule = Scenes::default();
-    rule.scene("intro", vec![fader(Some(0.0), None, 2000, Some(volume_of(-20.0)))], 0.0);
+    rule.scene(
+        "intro",
+        vec![fader(Some(0.0), None, 2000, Some(volume_of(-20.0)))],
+        0.0,
+    );
     // Half way (−10 dB) a new scene glides the same key back to −20 dB;
     // Live's stale value is not the start.
     let (acts, moved) = rule.scene(
@@ -259,7 +292,11 @@ fn a_new_scene_replaces_a_glide_from_where_it_is() {
 #[test]
 fn a_new_scene_whose_target_a_running_glide_is_at_ends_it_exactly_there() {
     let mut rule = Scenes::default();
-    rule.scene("intro", vec![fader(Some(0.0), None, 2000, Some(volume_of(-20.0)))], 0.0);
+    rule.scene(
+        "intro",
+        vec![fader(Some(0.0), None, 2000, Some(volume_of(-20.0)))],
+        0.0,
+    );
     let half = rule.tick(1000.0);
     let there = write_value(&half[0]).unwrap();
     let target = value2db(there);

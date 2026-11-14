@@ -99,10 +99,10 @@ pub mod remote;
 pub mod router;
 pub mod routes;
 pub mod rules;
+pub mod scenes;
 pub mod script_watch;
 pub mod sealed;
 pub mod secrets;
-pub mod scenes;
 pub mod sectors;
 pub mod setter;
 #[cfg(test)]
@@ -601,8 +601,9 @@ impl Hub {
         );
         // The automation token (#207): read at the start; a token that
         // cannot be read never stops the hub, it takes no scene.
-        let (automation, warning) =
-            automation::usable(automation::load(&config.data_dir.join(secrets::SECRETS_DIR)));
+        let (automation, warning) = automation::usable(automation::load(
+            &config.data_dir.join(secrets::SECRETS_DIR),
+        ));
         if let Some(warning) = warning {
             tracing::warn!("{warning}");
         }
