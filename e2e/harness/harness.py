@@ -45,6 +45,8 @@ what only the harness can do:
     POST /hub/colors/reset               the empty colors.json back (every strip NONE)
     POST /hub/mute_alarms {"doc": {...}} a new mute_alarms.json (#188; the hub polls it)
     POST /hub/mute_alarms/reset          the empty mute_alarms.json back (no strip marked)
+    POST /hub/mute_guards {"doc": {...}} a new mute_guards.json (#203; the hub polls it)
+    POST /hub/mute_guards/reset          the empty mute_guards.json back (no strip guarded)
     GET  /hub/events                     {"events": [...]}: every record of the
                                          hub's event log (#43, ``logs/events-*.jsonl``
                                          in the data folder), oldest day first
@@ -776,6 +778,10 @@ COLORS_EMPTY = {"colors": {}}
 # The mute alarm's marks the hub starts with (#188): no strip marked.
 MUTE_ALARMS_EMPTY = {"mute_alarms": {}}
 
+# The mute guard's marks the hub starts with (#203): no strip guarded by the
+# tablet (the layout's own guards still hold).
+MUTE_GUARDS_EMPTY = {"mute_guards": {}}
+
 
 class Harness:
     """The hosts, the hub and the layout file the control API acts on."""
@@ -844,6 +850,7 @@ class Harness:
         self.reset_sectors()
         self.reset_colors()
         self.reset_mute_alarms()
+        self.reset_mute_guards()
         # The proxy needs no hub to listen; it is up before the hub starts. A
         # process of its own (#43): as a thread of this one it shared the
         # interpreter's lock, and a GET /hub/events held every page's link.
@@ -978,6 +985,17 @@ class Harness:
             json.dump(doc, f, indent=1)
         os.replace(path + ".tmp", path)
 
+    def write_mute_guards(self, doc):
+        """Replaces mute_guards.json whole (#203), as ``write_mute_alarms``."""
+        path = os.path.join(self.data, "mute_guards.json")
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(doc, f, indent=1)
+        os.replace(path + ".tmp", path)
+
+    def reset_mute_guards(self):
+        """The empty document: no strip guarded by the tablet (#203)."""
+        self.write_mute_guards(MUTE_GUARDS_EMPTY)
+
     def reset_mute_alarms(self):
         """The empty document: no strip marked, whatever a test switched (#188)."""
         self.write_mute_alarms(MUTE_ALARMS_EMPTY)
@@ -1062,6 +1080,12 @@ class Harness:
             return 200, {"ok": True}
         if parts == ["hub", "mute_alarms", "reset"]:
             self.reset_mute_alarms()
+            return 200, {"ok": True}
+        if parts == ["hub", "mute_guards"]:
+            self.write_mute_guards(body["doc"])
+            return 200, {"ok": True}
+        if parts == ["hub", "mute_guards", "reset"]:
+            self.reset_mute_guards()
             return 200, {"ok": True}
         if parts == ["sim", "eq", "clear"]:
             clear_sim_eq(self.data)
