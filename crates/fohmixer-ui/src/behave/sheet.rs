@@ -21,10 +21,18 @@ pub fn key_press() -> Hold {
 }
 
 /// Pointer `pointer` went down on a key at `x`, `y` (`now`, `primary`
-/// as `Hold::down`): whether it is the key's press now.
+/// as `Hold::down`): whether it is the key's press now. The down's own
+/// point anchors the press (unlike SEL's and a fader's, whose first move
+/// anchors them: the iPad's first move comes late and 6–15 px away), so a
+/// flick whose first move is already past 10 px is a slide and acts on
+/// nothing (the integrated #208 review); a key is small and the finger
+/// lands on it.
 pub fn key_down(key: &mut Hold, pointer: i32, primary: bool, now: f64, x: f64, y: f64) -> bool {
-    let _ = (x, y);
-    key.down(pointer, primary, now)
+    if !key.down(pointer, primary, now) {
+        return false;
+    }
+    key.moved(pointer, x, y);
+    true
 }
 
 /// Whether a key's lift acts.
