@@ -325,8 +325,8 @@ pub fn ControlView(
             view! { <RuleButton kind=RuleKind::Autotune label=label /> }.into_any()
         }
         // A loudness readout (#184, `STREAM LUFS`) is no rail control: the
-        // sectors page draws it under ARRANGE (`StreamLufs`); at the rail's
-        // foot it draws nothing.
+        // sectors page draws it under ARRANGE and the rows page under the
+        // tabs (`StreamLufs`); at the rail's foot it draws nothing.
         Control::LufsReadout { .. } => ().into_any(),
     }
 }
