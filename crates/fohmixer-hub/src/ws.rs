@@ -582,6 +582,19 @@ fn handle_text(hub: &Hub, conn: &mut Conn, text: &str) {
             strip,
             on,
         }),
+        // The scene rules (#207): answered as the colours are.
+        Ok(ClientMsg::SetSceneRule {
+            id,
+            strip,
+            scene,
+            rule,
+        }) => hub.route(RouterMsg::SetSceneRule {
+            client,
+            id,
+            strip,
+            scene,
+            rule,
+        }),
         // Straight to the outbox (PR I): the writer's next frame may go.
         Ok(ClientMsg::EqFrameAck { session, seq }) => {
             outbox.frame_acked(session, seq, std::time::Instant::now());

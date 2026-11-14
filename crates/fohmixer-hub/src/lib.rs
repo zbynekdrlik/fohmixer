@@ -64,6 +64,7 @@ pub mod accept;
 pub mod access;
 pub mod acme;
 pub mod auth;
+pub mod automation;
 pub mod cf_token;
 pub mod client_report;
 pub mod clock;
@@ -98,6 +99,7 @@ pub mod remote;
 pub mod router;
 pub mod routes;
 pub mod rules;
+pub mod scenes;
 pub mod script_watch;
 pub mod sealed;
 pub mod secrets;
@@ -222,6 +224,11 @@ pub struct HubInner {
     pub lufs: Arc<lufs_udp::Counters>,
     /// The instance link this hub serves (#184, `[link]`).
     pub link: Option<Arc<link::server::LinkState>>,
+    /// The automation token of `POST /api/scene` (#207); none: the hub
+    /// takes no scene.
+    pub automation: Option<automation::AutomationToken>,
+    /// The ration of the scene requests' refusal lines and records.
+    pub scene_refusals: Mutex<ration::Ration>,
     /// Its window worker, awaited after the stop so its windows are handed
     /// back and its contact ended before the process ends.
     plugwin: Option<plugwin::Plugwin>,
@@ -460,6 +467,7 @@ impl HubInner {
             colors: router.colors,
             mute_alarms: router.mute_alarms,
             mute_guards: router.mute_guards,
+            scenes: router.scenes,
             link: self.link.as_ref().map(|state| state.status()),
         }
     }
@@ -591,6 +599,14 @@ impl Hub {
             policy = %revision,
             "hub started"
         );
+        // The automation token (#207): read at the start; a token that
+        // cannot be read never stops the hub, it takes no scene.
+        let (automation, warning) = automation::usable(automation::load(
+            &config.data_dir.join(secrets::SECRETS_DIR),
+        ));
+        if let Some(warning) = warning {
+            tracing::warn!("{warning}");
+        }
         let mut router = router::Router::new(
             live.clone(),
             hub_state,
@@ -612,7 +628,8 @@ impl Hub {
         router = router
             .with_layout(Arc::clone(&layout))
             .with_beat(beat)
-            .with_engage_delay(config.autotune.engage_delay_ms);
+            .with_engage_delay(config.autotune.engage_delay_ms)
+            .with_scenes(automation.is_some());
         tasks.push(tokio::spawn(router::beat_ticks(
             router_tx.clone(),
             Duration::from_millis(live::client::ROUTER_BEAT_MS),
@@ -710,6 +727,8 @@ impl Hub {
             plugwin,
             live,
             router: router_tx,
+            automation,
+            scene_refusals: Mutex::new(ration::Ration::default()),
             next_client: AtomicU64::new(1),
             tasks: Mutex::new(tasks),
         })))
@@ -828,6 +847,10 @@ async fn poll_layout(
         }
         // And the mute guard's (#203).
         if router.send(RouterMsg::MuteGuardsPoll).is_err() {
+            return;
+        }
+        // And the scene rules' (#207).
+        if router.send(RouterMsg::ScenesPoll).is_err() {
             return;
         }
     }

@@ -38,6 +38,7 @@ mod rec;
 mod remote;
 mod reverb;
 mod roles;
+mod scenes;
 mod sectors;
 mod serve_until;
 mod setter;

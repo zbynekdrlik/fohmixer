@@ -307,3 +307,44 @@ fn markers_plan_says_what_stops_the_migration() {
         "{stderr}"
     );
 }
+
+fn automation_token(dir: &std::path::Path, stdin: &str) -> Output {
+    use std::io::Write;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fohmixer-hub"))
+        .args(["automation", "set-token"])
+        .env("FOHMIXER_DATA", dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn fohmixer-hub");
+    let _ = child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(stdin.as_bytes());
+    child.wait_with_output().expect("wait for fohmixer-hub")
+}
+
+#[test]
+fn automation_set_token_exits_2_on_a_short_token_and_stores_a_good_one_sealed() {
+    let dir = tempfile::tempdir().unwrap();
+    // Built at run time (never a secret-shaped literal).
+    let short = format!("{}\n", "a".repeat(31));
+    let out = automation_token(dir.path(), &short);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("32 to 256 characters"));
+    assert!(!dir.path().join("secrets").exists(), "nothing stored");
+    let good = "b".repeat(40);
+    let out = automation_token(dir.path(), &format!("{good}\n"));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("stored the automation token (sealed)"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains(&good), "never printed");
+    assert!(out.stdout.is_empty());
+    let stored = fohmixer_hub::automation::load(&dir.path().join("secrets")).unwrap();
+    assert_eq!(stored, fohmixer_hub::automation::AutomationToken::of(&good));
+}

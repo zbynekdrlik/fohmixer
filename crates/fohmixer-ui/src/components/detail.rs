@@ -23,6 +23,7 @@ use super::detail_alarm::{DetailMuteAlarm, strip_alarm};
 use super::detail_color::{DetailColor, strip_colour};
 use super::detail_guard::{DetailMuteGuard, strip_guard, strip_guard_mark};
 use super::detail_layouts::DetailLayouts;
+use super::detail_scenes::DetailScenes;
 use super::eq::EqCards;
 use super::fader::{FaderView, Law, Target};
 use super::fader_link::{FaderFollowView, FaderLinkView, link_parts};
@@ -193,6 +194,8 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
     let layouts_strip = strip.clone();
     let select_strip = strip.clone();
     let chip_label = label.clone();
+    // The scene rules (#207): SCENES after LAYOUTS.
+    let scenes_strip = strip.clone();
     let instance = strip.binding.instance.clone();
     let ret = strip.strip_kind == StripKind::Return;
     let sub = bar_text(group.as_deref(), &instance, ret);
@@ -412,6 +415,7 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
                     {centre}
                     {link_box}
                     <DetailLayouts strip=layouts_strip />
+                    <DetailScenes strip=scenes_strip volume=volume />
                     <DetailMuteAlarm strip=alarm_strip on=alarm />
                     <DetailMuteGuard strip=guard_strip on=guard_mark />
                     <DetailColor strip=colour_strip colour=color />

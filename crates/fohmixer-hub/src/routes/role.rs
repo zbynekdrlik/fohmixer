@@ -26,6 +26,9 @@ pub enum RouteAccess {
     AnyRole,
     /// The engineer's login only: an MBC token gets 403 `ROLE`.
     EngineerOnly,
+    /// No login: the handler checks the automation token itself (#207,
+    /// `POST /api/scene`).
+    Automation,
 }
 
 /// Every path [`api_routes`] registers, each with its decision in
@@ -40,6 +43,7 @@ pub const API_PATHS: &[&str] = &[
     "/api/markers/migration",
     "/api/eq/picture",
     "/api/songmap",
+    "/api/scene",
     "/ws",
 ];
 
@@ -54,6 +58,7 @@ pub fn route_role(path: &str) -> Option<RouteAccess> {
         "/api/markers/migration" | "/api/eq/picture" | "/api/songmap" => {
             Some(RouteAccess::EngineerOnly)
         }
+        "/api/scene" => Some(RouteAccess::Automation),
         _ => None,
     }
 }
@@ -63,7 +68,7 @@ pub fn route_role(path: &str) -> Option<RouteAccess> {
 pub fn refused(access: Option<RouteAccess>, role: Option<Role>) -> bool {
     match access {
         None => true,
-        Some(RouteAccess::Open | RouteAccess::AnyRole) => false,
+        Some(RouteAccess::Open | RouteAccess::AnyRole | RouteAccess::Automation) => false,
         Some(RouteAccess::EngineerOnly) => role == Some(Role::Mbc),
     }
 }
@@ -144,6 +149,16 @@ pub fn status_for(role: Role, status: HubStatus) -> HubStatus {
             colors: Default::default(),
             mute_alarms: Default::default(),
             mute_guards: Default::default(),
+            scenes: fohmixer_proto::client::ScenesStatus {
+                on: status.scenes.on,
+                strips: 0,
+                unknown: 0,
+                error: None,
+                known: 0,
+                last: None,
+                glides: 0,
+                writes: 0,
+            },
             link: None,
         },
     }

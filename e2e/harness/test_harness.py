@@ -320,6 +320,19 @@ class HarnessTest(unittest.TestCase):
         with open(path, encoding="utf-8") as f:
             self.assertEqual(json.load(f), {"mute_guards": {}})
 
+    def test_the_scenes_file_starts_empty_and_is_reset(self):
+        path = os.path.join(self.data, "scenes.json")
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f), {"known": [], "rules": {}})
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"known": ["intro"], "rules": {}}, f)
+        self.assertEqual(self.post("/hub/scenes/reset"), (200, {"ok": True}))
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f), {"known": [], "rules": {}})
+
+    def test_without_a_hub_there_is_no_automation_token(self):
+        self.assertEqual(self.harness.handle("GET", "/hub/automation", {}), (200, {"token": None}))
+
     def test_the_hub_config_names_both_hosts(self):
         with open(os.path.join(self.data, "fohmixer-hub.toml"), encoding="utf-8") as f:
             text = f.read()
@@ -766,6 +779,12 @@ class MbcConfig(unittest.TestCase):
         self.assertEqual(
             harness.with_stream_readout({"schema": 2})["global"], [harness.STREAM_READOUT]
         )
+
+    def test_an_automation_token_is_new_and_the_cli_takes_it(self):
+        one, two = harness.automation_token(), harness.automation_token()
+        self.assertNotEqual(one, two)
+        self.assertGreaterEqual(len(one), 32)
+        self.assertTrue(all(c.isascii() and c.isprintable() and c != " " for c in one))
 
     def test_a_link_secret_is_32_random_bytes_in_base64(self):
         one, two = harness.link_secret_line(), harness.link_secret_line()

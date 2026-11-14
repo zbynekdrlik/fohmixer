@@ -46,7 +46,8 @@ pub fn inbound(role: Role, msg: &ClientMsg) -> Result<(), &'static str> {
             | ClientMsg::SectorEdit { .. }
             | ClientMsg::SetColor { .. }
             | ClientMsg::SetMuteAlarm { .. }
-            | ClientMsg::SetMuteGuard { .. } => true,
+            | ClientMsg::SetMuteGuard { .. }
+            | ClientMsg::SetSceneRule { .. } => true,
             ClientMsg::SetHub { .. }
             | ClientMsg::DeckView { .. }
             | ClientMsg::DeckPress { .. }
@@ -72,7 +73,8 @@ pub fn refused_id(msg: &ClientMsg) -> Option<String> {
         | ClientMsg::SectorEdit { id, .. }
         | ClientMsg::SetColor { id, .. }
         | ClientMsg::SetMuteAlarm { id, .. }
-        | ClientMsg::SetMuteGuard { id, .. } => Some(id.clone()),
+        | ClientMsg::SetMuteGuard { id, .. }
+        | ClientMsg::SetSceneRule { id, .. } => Some(id.clone()),
         _ => None,
     }
 }
@@ -172,6 +174,12 @@ pub fn outbound(role: Role, msg: ServerMsg) -> Option<ServerMsg> {
         ServerMsg::MuteGuards { doc } => Some(ServerMsg::MuteGuards {
             doc: doc.only(MBC_INSTANCE),
         }),
+        // The scene rules of the Live set `mbc` only, every name heard
+        // kept (#207); a scene that came is the whole mixer's news.
+        ServerMsg::Scenes { doc } => Some(ServerMsg::Scenes {
+            doc: doc.only(MBC_INSTANCE),
+        }),
+        ServerMsg::Scene { .. } => Some(msg),
         ServerMsg::Hub { .. }
         | ServerMsg::Deck { .. }
         | ServerMsg::DeckKeys { .. }

@@ -7,6 +7,7 @@
 //!   fohmixer-hub cloudflare set-token   read a Cloudflare API token from stdin, store it sealed
 //!                                       (the ACME client's DNS-01 records, #17)
 //!   fohmixer-hub link set-secret        read the instance link's secret (32 bytes in base64)
+//!   fohmixer-hub automation set-token   read the automation token of POST /api/scene (#207)
 //!                                       from stdin, store it sealed (#184): exit 0, 2 for a bad one
 //!   fohmixer-hub config check <file>    check <file> as the hub's config (the installer, before
 //!                                       it stops the hub): exit 0, or 2 with why
@@ -52,7 +53,7 @@ use fohmixer_hub::provision::{self, ProvisionError};
 use fohmixer_proto::roles::Role;
 use tokio::sync::oneshot;
 
-const USAGE: &str = "usage: fohmixer-hub [pin set-engineer | pin set-mbc | cloudflare set-token | link set-secret | config check <file> | layout check <layout> <config> | markers plan <layout> | markers frame <layout> <out> | eq-probe --pid <pid> ...]   (the PIN or the token is read from stdin)";
+const USAGE: &str = "usage: fohmixer-hub [pin set-engineer | pin set-mbc | cloudflare set-token | link set-secret | automation set-token | config check <file> | layout check <layout> <config> | markers plan <layout> | markers frame <layout> <out> | eq-probe --pid <pid> ...]   (the PIN or the token is read from stdin)";
 
 fn data_dir() -> PathBuf {
     PathBuf::from(std::env::var("FOHMIXER_DATA").unwrap_or_else(|_| ".".to_string()))
@@ -74,6 +75,7 @@ fn main() -> ExitCode {
         ["pin", "set-mbc"] => pin_command(Role::Mbc),
         ["cloudflare", "set-token"] => token_command(),
         ["link", "set-secret"] => link_secret_command(),
+        ["automation", "set-token"] => automation_command(),
         ["config", "check", file] => config_command(file),
         ["layout", "check", layout, config] => layout_command(layout, config),
         ["markers", "plan", layout] => plan_command(layout),
@@ -141,6 +143,29 @@ fn link_secret_command() -> ExitCode {
     match fohmixer_hub::link::run(&data_dir(), stdin.lock()) {
         Ok(()) => {
             eprintln!("fohmixer-hub: stored the link secret (sealed)");
+            ExitCode::SUCCESS
+        }
+        Err(e @ ProvisionError::Invalid(_)) => {
+            eprintln!("fohmixer-hub: {e}");
+            ExitCode::from(2)
+        }
+        Err(e) => {
+            eprintln!("fohmixer-hub: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `automation set-token` (#207): exit 0 when stored, 2 for a bad token,
+/// 1 on an error. The token is never printed; the hub reads it at its
+/// start.
+fn automation_command() -> ExitCode {
+    let stdin = std::io::stdin();
+    match fohmixer_hub::automation::run(&data_dir(), stdin.lock()) {
+        Ok(()) => {
+            eprintln!(
+                "fohmixer-hub: stored the automation token (sealed); restart the hub to take it"
+            );
             ExitCode::SUCCESS
         }
         Err(e @ ProvisionError::Invalid(_)) => {
