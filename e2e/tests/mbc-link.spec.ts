@@ -96,20 +96,23 @@ test.describe("The MBC hub and its instance link (#184)", () => {
   let mbcHostStopped = false;
 
   test.afterEach(async () => {
+    // The sectors are put back whatever fails before (later specs read them).
     try {
-      // `restart`, never `start`: `start` takes the FOH test site.
-      if (mbcHostStopped) await harness("/host/mbc/restart");
+      if (mbcHostStopped) {
+        mbcHostStopped = false;
+        // `restart`, never `start`: `start` takes the FOH test site.
+        await harness("/host/mbc/restart");
+      }
+      await harness("/mbc-hub/start").catch(() => undefined);
+      const bearer = await token();
+      await until(() => mbcOnline(bearer), (on) => on, "mbc back online on the FOH hub", UP);
+      live ??= await LiveClient.open();
+      await live.cmd("mbc", [{ target: VOLUME, name: "set_prop", args: { prop: "value", value: 0.85 } }]);
     } finally {
-      mbcHostStopped = false;
+      live?.close();
+      live = null;
+      await resetSectors();
     }
-    await harness("/mbc-hub/start").catch(() => undefined);
-    const bearer = await token();
-    await until(() => mbcOnline(bearer), (on) => on, "mbc back online on the FOH hub", UP);
-    live ??= await LiveClient.open();
-    await live.cmd("mbc", [{ target: VOLUME, name: "set_prop", args: { prop: "value", value: 0.85 } }]);
-    live.close();
-    live = null;
-    await resetSectors();
   });
 
   test("the MBC hub's page shows twelve MBC strips in LU and RU", async ({ page }) => {
