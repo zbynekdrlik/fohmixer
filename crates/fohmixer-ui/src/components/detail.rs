@@ -171,8 +171,8 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
     let alarm_strip = strip.clone();
     // The mute's guard (#162, #203): the layout's or the hub's mark; MUTE
     // GUARD's switch shows the mark.
-    let mute_guard = strip_guard(store, &strip);
     let guard_mark = strip_guard_mark(store, &strip);
+    let mute_guard = strip_guard(&strip, guard_mark);
     let guard_strip = strip.clone();
     let meters: Vec<RwSignal<Slot>> = subs.meters.iter().map(|s| store.slot(s)).collect();
     // The status light: every value the detail shows (the pan too); it

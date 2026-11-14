@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use fohmixer_proto::client::{MuteAlarmsStatus, ServerMsg};
+use fohmixer_proto::client::{MarksStatus, ServerMsg};
 use fohmixer_proto::layout::Layout;
 use fohmixer_proto::mute_alarms::MuteAlarmsDoc;
 use fohmixer_proto::mute_guards::MuteGuardsDoc;
@@ -300,14 +300,14 @@ impl Router {
     }
 
     /// `/api/status`'s part of `D` (`mute_alarms`, `mute_guards`).
-    pub(super) fn marks_status<D: Marked>(&self) -> MuteAlarmsStatus {
+    pub(super) fn marks_status<D: Marked>(&self) -> MarksStatus {
         let served = self.marks_layout();
         let pool = served
             .as_deref()
             .map(sectors_model::pool)
             .unwrap_or_default();
         let store = &D::io(self).store;
-        MuteAlarmsStatus {
+        MarksStatus {
             strips: store.doc().count(),
             unknown: strip_marks::unknown(store.doc(), &pool),
             error: store.error().map(str::to_string),

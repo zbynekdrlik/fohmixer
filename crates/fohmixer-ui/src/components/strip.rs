@@ -23,7 +23,7 @@ use super::buttons::{Corner, MuteView, Partner, anchor_name};
 use super::detail::DetailStrip;
 use super::detail_alarm::strip_alarm;
 use super::detail_color::strip_colour;
-use super::detail_guard::strip_guard;
+use super::detail_guard::{strip_guard, strip_guard_mark};
 use super::fader::{FaderView, Law, Target};
 use super::fader_link::link_parts;
 use super::meter::StatusView;
@@ -471,7 +471,7 @@ pub fn StripView(
     // The mute's guard (#162): the layout's (`+MG`, the frame's list) or
     // the hub's mark set in the detail (#203). A change mounts the mute
     // again, so only a guarded mute holds the hold's listeners.
-    let guard = strip_guard(store, &strip);
+    let guard = strip_guard(&strip, strip_guard_mark(store, &strip));
     let mute_view = mute.zip(subs.mute.clone()).map(|(slot, spec)| {
         move || {
             let guarded = guard.try_get().unwrap_or(strip.mute_guard);

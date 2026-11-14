@@ -123,6 +123,10 @@ test.describe("The mute guard (#203)", () => {
       // The detail's own MUTE is not guarded yet.
       await expect(detail.getByTestId("mute")).toHaveAttribute("data-guarded", "false");
 
+      // Another strip's mute is not mounted again by this strip's guard.
+      const masterMute = strip(other, "Hand2 #", "master").getByTestId("mute");
+      await masterMute.evaluate((el) => el.setAttribute("data-e2e-kept", "1"));
+
       // One real tap: HOLD.
       await key(detail, true).click();
       await expect(key(detail, true)).toHaveAttribute("aria-pressed", "true");
@@ -132,7 +136,8 @@ test.describe("The mute guard (#203)", () => {
       // master's Hand2 # stays one tap.
       await expect(detail.getByTestId("mute")).toHaveAttribute("data-guarded", "true");
       await expect(otherMute).toHaveAttribute("data-guarded", "true");
-      await expect(strip(other, "Hand2 #", "master").getByTestId("mute")).toHaveAttribute("data-guarded", "false");
+      await expect(masterMute).toHaveAttribute("data-guarded", "false");
+      await expect(masterMute).toHaveAttribute("data-e2e-kept", "1");
       await until(guards, (n) => n === 1, "the hub keeping one guard");
       await closeDetail(page);
       await expect(mute).toHaveAttribute("data-guarded", "true");
@@ -140,6 +145,8 @@ test.describe("The mute guard (#203)", () => {
       // On the second page: a tap writes nothing (the hint), a 1 s hold
       // mutes at its lift.
       await ready(otherMute);
+      const muteKey = JSON.parse((await otherMute.getAttribute("data-keys"))!)[0] as string;
+      const tapAt = Date.now();
       await dispatchPointer(otherMute, [{ type: "pointerdown" }, { wait: 200 }, { type: "pointerup" }]);
       await expect(otherMute.getByTestId("mute-hold")).toHaveText("hold");
       expect(await live.get("band", HAND2, "mute"), "a tap writes nothing").toBe(false);
@@ -149,6 +156,13 @@ test.describe("The mute guard (#203)", () => {
       await dispatchPointer(otherMute, [{ type: "pointerup" }]);
       await until(() => live.get("band", HAND2, "mute"), (v) => v === true, "muted at the hold's lift");
       await expect(mute).toHaveAttribute("data-muted", "true");
+      // The hub's records since the tap: one write of the mute, the lift's.
+      const muteSets = await until(
+        async () => (await hubEvents()).filter((r: any) => r.ev === "set" && r.ts >= tapAt && r.key === muteKey),
+        (sets: any[]) => sets.length >= 1,
+        "the lift's write recorded",
+      );
+      expect(muteSets.map((r: any) => r.value), "the tap wrote nothing, the lift true").toEqual([true]);
 
       // OFF on the second page's detail: one tap unmutes again.
       const otherDetail = await openDetail(other, "Hand2 #");
@@ -187,14 +201,14 @@ test.describe("The mute guard (#203)", () => {
     await ready(strip(page, "Hand1 #", "master").getByTestId("mute"));
     const detail = await openDetail(page, "Hand1 #", "master");
     const section = detail.getByTestId("detail-guard");
-    await expect(section.getByTestId("guard-now")).toHaveText("HOLD");
+    await expect(section.getByTestId("guard-now")).toHaveText("HOLD (LAYOUT)");
     await expect(key(detail, false)).toHaveAttribute("aria-pressed", "true");
     await expect(section.getByTestId("detail-guard-layout")).toContainText("+MG");
     await expect(detail.getByTestId("mute")).toHaveAttribute("data-guarded", "true");
     // A guard set and cleared on the hub changes nothing here.
     await setMuteGuards({ mute_guards: { master: ["Hand1 #"] } });
     await expect(key(detail, true)).toHaveAttribute("aria-pressed", "true");
-    await expect(section.getByTestId("guard-now")).toHaveText("HOLD");
+    await expect(section.getByTestId("guard-now")).toHaveText("HOLD (LAYOUT)");
     await resetMuteGuards();
     await expect(key(detail, false)).toHaveAttribute("aria-pressed", "true");
     await expect(detail.getByTestId("mute")).toHaveAttribute("data-guarded", "true");

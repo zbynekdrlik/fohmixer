@@ -15,7 +15,7 @@ use crate::sectors::{Pooled, Refusal, StripRef};
 /// Each Live set's marked faders by label.
 pub type Marks = BTreeMap<String, BTreeSet<String>>;
 
-/// A document of marked faders: its marks, and a document of other marks.
+/// A document of marked faders: it reads its marks and is built from marks.
 pub trait StripMarks: Sized {
     /// Its marks.
     fn marks(&self) -> &Marks;

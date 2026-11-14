@@ -15,7 +15,7 @@ use leptos::prelude::*;
 
 use super::{fail_flash, owns_touches};
 use crate::behave::mute_alarm::marked;
-use crate::behave::mute_guard::{KEYS, guarded, layout_note, word};
+use crate::behave::mute_guard::{KEYS, guarded, layout_note, state_word, word};
 use crate::binding::sectors::detail_ref;
 use crate::store::{LiveStore, on_refusal};
 
@@ -33,12 +33,11 @@ pub fn strip_guard_mark(store: LiveStore, strip: &Strip) -> Signal<bool> {
     memo.into()
 }
 
-/// Whether a strip's mute is guarded: the layout's guard or the hub's mark
-/// (`behave::mute_guard::guarded`); a memo, so a mark of another strip
-/// changes nothing here.
-pub fn strip_guard(store: LiveStore, strip: &Strip) -> Signal<bool> {
+/// Whether a strip's mute is guarded: the layout's guard or the hub's
+/// `mark` (`strip_guard_mark`; `behave::mute_guard::guarded`); a memo, so a
+/// mark of another strip changes nothing here.
+pub fn strip_guard(strip: &Strip, mark: Signal<bool>) -> Signal<bool> {
     let layout = strip.mute_guard;
-    let mark = strip_guard_mark(store, strip);
     let memo = Memo::new(move |_| guarded(layout, mark.try_get().unwrap_or(false)));
     memo.into()
 }
@@ -50,7 +49,7 @@ pub fn DetailMuteGuard(strip: Strip, on: Signal<bool>) -> impl IntoView {
     let id = StoredValue::new(detail_ref(&strip));
     let named = id.try_with_value(Option::is_some).unwrap_or(false);
     let layout = strip.mute_guard;
-    let now = move || word(guarded(layout, on.try_get().unwrap_or(false)));
+    let now = move || state_word(layout, on.try_get().unwrap_or(false));
     let note = layout_note(layout).map(|text| {
         view! {
             <div class="lay-note" data-testid="detail-guard-layout">

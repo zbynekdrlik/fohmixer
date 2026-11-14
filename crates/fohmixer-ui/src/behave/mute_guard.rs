@@ -17,6 +17,17 @@ pub fn word(on: bool) -> &'static str {
     if on { "HOLD" } else { "OFF" }
 }
 
+/// The state beside the title: the strip's guard as it acts (the
+/// layout's or the hub's mark), `HOLD (LAYOUT)` when the layout guards it,
+/// so the OFF key pressed there reads as no contradiction.
+pub fn state_word(layout: bool, marked: bool) -> &'static str {
+    if layout {
+        "HOLD (LAYOUT)"
+    } else {
+        word(marked)
+    }
+}
+
 /// The note under the switch while the layout guards the strip (its
 /// `+MG` tag or the frame's list), which no switch here lifts.
 pub const LAYOUT_NOTE: &str =
@@ -44,6 +55,14 @@ mod tests {
         assert_eq!(KEYS, [false, true]);
         assert_eq!(word(false), "OFF");
         assert_eq!(word(true), "HOLD");
+    }
+
+    #[test]
+    fn the_state_names_the_layouts_guard() {
+        assert_eq!(state_word(false, false), "OFF");
+        assert_eq!(state_word(false, true), "HOLD");
+        assert_eq!(state_word(true, false), "HOLD (LAYOUT)");
+        assert_eq!(state_word(true, true), "HOLD (LAYOUT)");
     }
 
     #[test]

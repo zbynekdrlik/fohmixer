@@ -1755,16 +1755,19 @@ pub struct ColorsStatus {
 /// Live), and why the file on disk is not served (`error`: the last good
 /// document stays).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MuteAlarmsStatus {
+pub struct MarksStatus {
     pub strips: usize,
     pub unknown: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
-/// `/api/status` `mute_guards` (#203): the mute alarm's shape, for the
-/// faders the tablet guards.
-pub type MuteGuardsStatus = MuteAlarmsStatus;
+/// `/api/status` `mute_alarms` (#188).
+pub type MuteAlarmsStatus = MarksStatus;
+
+/// `/api/status` `mute_guards` (#203): the same shape, for the faders the
+/// tablet guards.
+pub type MuteGuardsStatus = MarksStatus;
 
 /// `/api/status` `sectors` (#148): the served document's revision, its
 /// layouts, its distinct faders and the refs no pool fader carries
