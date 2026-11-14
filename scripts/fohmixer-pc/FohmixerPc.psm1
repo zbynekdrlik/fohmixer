@@ -577,9 +577,11 @@ function Install-FohUserDevices {
 
 function Test-FohLiveRunning {
     # Whether any Ableton Live runs on this PC (the band's or the master's
-    # renamed copy; Live's indexer, Ableton Index, is not a Live).
+    # renamed copy; Live's indexer, Ableton Index, is not a Live; nor is
+    # Live's installer or an uninstaller, #184, as the hub's is_live_exe).
     return [bool](@(Get-Process -ErrorAction SilentlyContinue | Where-Object {
-                $_.ProcessName -like 'Ableton Live*' -or $_.ProcessName -like 'AbletonLive*' }).Count)
+                ($_.ProcessName -like 'Ableton Live*' -or $_.ProcessName -like 'AbletonLive*') -and
+                $_.ProcessName -notlike '*installer*' -and $_.ProcessName -notlike '*uninst*' }).Count)
 }
 
 # ---- the accounts ----
