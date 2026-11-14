@@ -519,10 +519,11 @@ pub fn StripView(
                 view! { <span class="strip-why" data-testid="strip-why">{word}</span> }
             })
     };
+    let hint_of = instance.clone();
     let hint = move || {
         down.try_get()
             .flatten()
-            .and_then(LiveWord::hint)
+            .and_then(|word| word.hint(&hint_of))
             .map(|text| {
                 view! { <span class="strip-hint" data-testid="strip-hint">{text}</span> }
             })
