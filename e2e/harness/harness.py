@@ -167,6 +167,10 @@ and one generated link secret goes to both with ``link set-secret``.
     POST /mbc-hub/stop                   the MBC hub stopped, left stopped
     POST /mbc-hub/start                  the MBC hub started again (a running
                                          one is left alone)
+    POST /mbc-hub/sectors {"doc": {...}} the MBC hub's sectors.json replaced (its
+                                         page without sectors); the document it
+                                         seeded is kept the first time
+    POST /mbc-hub/sectors/restore        that kept document back
 
 Every process is stopped with SIGTERM and a bounded wait (spec I7). Prints
 ``HARNESS READY`` once everything answers; SIGTERM or SIGINT stops it all.
@@ -361,6 +365,20 @@ def store_link_secret(binary, data, line):
     )
     if done.returncode != 0:
         raise RuntimeError(f"link set-secret: exit {done.returncode}: {done.stderr.strip()}")
+
+
+def replace_doc(path, doc, kept):
+    """Writes ``doc`` to ``path`` whole (a hand edit the hub polls, as
+    ``write_sectors``) and returns the document to restore later: ``kept``
+    when there is one, else the file as it was (#184: the MBC hub's seeded
+    sectors)."""
+    if kept is None:
+        with open(path, encoding="utf-8") as f:
+            kept = json.load(f)
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(doc, f, indent=1)
+    os.replace(path + ".tmp", path)
+    return kept
 
 
 def copy_pins(src, dst):
@@ -779,6 +797,8 @@ class Harness:
         self.mbc = args.mbc_hub_port is not None and args.hub is not None
         self.mbc_link_port = args.mbc_link_port
         self.mbc_hub = None
+        self.mbc_data = None
+        self.mbc_sectors_kept = None
         if self.mbc:
             self.hosts["mbc"] = Host(
                 "mbc", args.mbc_port, args.meters_hz, log_dir, args.mbc_lufs_port, MBC_SITE
@@ -852,6 +872,7 @@ class Harness:
                 )
             )
         shutil.copyfile(MBC_FRAME, os.path.join(data, "layout.json"))
+        self.mbc_data = data
         self.mbc_hub = Hub(args.hub, data, args.mbc_hub_port, log_dir, "hub-mbc.log")
 
     def write_config(self):
@@ -1007,6 +1028,16 @@ class Harness:
             # A running hub is left alone: a page open on it keeps its link.
             if self.mbc_hub.proc.poll() is not None:
                 self.mbc_hub.start()
+            return 200, {"ok": True}
+        if parts == ["mbc-hub", "sectors"] and self.mbc_data is not None:
+            path = os.path.join(self.mbc_data, "sectors.json")
+            self.mbc_sectors_kept = replace_doc(path, body["doc"], self.mbc_sectors_kept)
+            return 200, {"ok": True}
+        if parts == ["mbc-hub", "sectors", "restore"] and self.mbc_data is not None:
+            if self.mbc_sectors_kept is not None:
+                path = os.path.join(self.mbc_data, "sectors.json")
+                replace_doc(path, self.mbc_sectors_kept, self.mbc_sectors_kept)
+                self.mbc_sectors_kept = None
             return 200, {"ok": True}
         if parts == ["hub", "restart"] and self.hub is not None:
             self.hub.restart(bool(body.get("rotate_secret")))

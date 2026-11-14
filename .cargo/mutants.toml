@@ -407,12 +407,12 @@ exclude_re = [
   # tick's answer).
   "fohmixer-ui/src/pages/surface\\.rs.*(replace|in) (Nav::pick|remembered_picks|measure_page)( |$)",
   "fohmixer-ui/src/pages/sectors\\.rs.*(replace|in) step_sector_window( |$)",
-  # STREAM LUFS (#184, components/stream_lufs.rs stream_readouts): the
-  # readouts' memos and views; whether one shows is the tested
-  # behave::lufs::stream_shown and stream_page, its number the tested
-  # behave::lufs::look and target_text; mbc-page.spec.ts drives it in
-  # Chromium and WebKit.
-  "fohmixer-ui/src/components/stream_lufs\\.rs.*(replace|in) stream_readouts( |$)",
+  # STREAM LUFS (#184, components/stream_lufs.rs stream_readouts and, on
+  # the rows page, page_readouts): the readouts' memos and views; whether
+  # one shows is the tested behave::lufs::stream_shown and stream_page, its
+  # number the tested behave::lufs::look and target_text; mbc-page.spec.ts
+  # drives both in Chromium and WebKit.
+  "fohmixer-ui/src/components/stream_lufs\\.rs.*(replace|in) (stream_readouts|page_readouts)( |$)",
   # ARRANGE's glue (#148, pages/sectors.rs): change_mode (the mode's
   # signal written only when the tested behave::arrange_drag::Arrange
   # changed), Carrier (the drag's stored state and the carried slot's

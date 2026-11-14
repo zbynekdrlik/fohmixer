@@ -44,6 +44,7 @@ use crate::binding::{
 use crate::components::detail::{DetailStrip, DetailView};
 use crate::components::eq::{EqNav, EqScreen, EqTarget};
 use crate::components::rec::RecKey;
+use crate::components::stream_lufs::page_readouts;
 use crate::components::{ControlView, Settings, fail_flash, key_of, owns_surface, owns_touches};
 use crate::diag;
 use crate::diag::trace::{self, IemStep};
@@ -1113,6 +1114,9 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
     };
     let narrow_attr = move || narrow_flags().is_some_and(|n| n.normal).to_string();
     let narrow_wide_attr = move || narrow_flags().is_some_and(|n| n.wide).to_string();
+    // STREAM LUFS (#184) under the tabs on a page of one Live set's faders
+    // without sectors (the MBC hub's), as the sectors page draws it.
+    let stream = page_readouts(&expect_context::<Head>().layout);
     let rail = page
         .rail
         .into_iter()
@@ -1175,6 +1179,7 @@ fn PageView(page: Page, global: Vec<Control>, sub: Memo<Option<usize>>) -> impl 
                     "✕ CLOSE"
                 </button>
                 <ColumnHead />
+                {stream}
                 <div class="shifts">
                     <For
                         each=move || shifted.try_get().unwrap_or_default()

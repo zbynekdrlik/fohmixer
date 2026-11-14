@@ -8,11 +8,11 @@
 //! a problem (no LUFS meter on the track) takes that line's place. It
 //! takes no touch.
 
-use fohmixer_proto::layout::{Binding, Control, Layout, LufsSpec, readouts};
+use fohmixer_proto::layout::{Binding, Layout, LufsSpec};
 use fohmixer_proto::sectors::{SectorId, SectorLayout, SectorsDoc};
 use leptos::prelude::*;
 
-use crate::behave::lufs::{look, stream_page, stream_shown, target_text, track_key};
+use crate::behave::lufs::{look, readout_specs, stream_page, stream_shown, target_text, track_key};
 use crate::binding::sectors::{Picks, picked};
 use crate::store::LiveStore;
 
@@ -77,16 +77,8 @@ pub(crate) fn stream_readouts(
     picks: RwSignal<Picks>,
 ) -> impl IntoView + use<> {
     let one = stream_page(layout);
-    readouts(layout)
+    readout_specs(layout)
         .into_iter()
-        .filter_map(|control| match control {
-            Control::LufsReadout {
-                label,
-                target,
-                binding,
-            } => Some((label.clone(), *target, binding.clone())),
-            _ => None,
-        })
         .map(|(label, target, binding)| {
             let instance = binding.instance.clone();
             let shown = Memo::new(move |_| {
@@ -121,6 +113,21 @@ pub(crate) fn stream_readouts(
                     }
                 })
             }
+        })
+        .collect_view()
+}
+
+/// The global `lufs_readout`s on the rows page's column (#184, the page
+/// without sectors): by the same `behave::lufs::stream_shown` with no picked
+/// layout (the rows page has no sector picks), so always on a page of one
+/// Live set's faders (the MBC hub's, at 40 px) and never on the FOH page.
+pub(crate) fn page_readouts(layout: &Layout) -> impl IntoView + use<> {
+    let one = stream_page(layout);
+    readout_specs(layout)
+        .into_iter()
+        .filter(|(_, _, binding)| stream_shown(&binding.instance, &[], one))
+        .map(|(label, target, binding)| {
+            view! { <StreamLufs label=label target=target binding=binding compact=false /> }
         })
         .collect_view()
 }

@@ -719,6 +719,28 @@ class MbcConfig(unittest.TestCase):
             '[link]\nlisten = "127.0.0.1:39196"\ninstance = "mbc"\n',
         )
 
+    def test_replace_doc_keeps_the_first_document_to_restore(self):
+        with tempfile.TemporaryDirectory(prefix="fohmixer-harness-doc-") as folder:
+            path = os.path.join(folder, "sectors.json")
+            seeded = {"rev": 1, "sectors": {"lu": [{"id": "lu-1", "title": "LU", "strips": []}]}}
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(seeded, f)
+            empty = {"rev": 0, "sectors": {}}
+            kept = harness.replace_doc(path, empty, None)
+            self.assertEqual(kept, seeded)
+            with open(path, encoding="utf-8") as f:
+                self.assertEqual(json.load(f), empty)
+            other = {"rev": 2, "sectors": {}}
+            self.assertEqual(
+                harness.replace_doc(path, other, kept), seeded, "the first one stays kept"
+            )
+            with open(path, encoding="utf-8") as f:
+                self.assertEqual(json.load(f), other)
+            harness.replace_doc(path, kept, kept)
+            with open(path, encoding="utf-8") as f:
+                self.assertEqual(json.load(f), seeded)
+            self.assertFalse(os.path.exists(path + ".tmp"))
+
     def test_the_foh_layout_gets_the_stream_readout_as_the_mbc_frame_has_it(self):
         with open(harness.MBC_FRAME, encoding="utf-8") as f:
             frame = json.load(f)
