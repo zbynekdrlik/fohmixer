@@ -318,6 +318,12 @@ exclude_re = [
   # strip through ADD's sheet and takes it out with ✕, and reads each
   # `tick` record (layout, strip, on) back from the event log.
   "fohmixer-ui/src/components/detail_layouts\\.rs.*(replace|in) (ticks_memo|ask_tick)( |$)",
+  # components/sheet.rs (#208): LiftKey's down, moved, up and cancel carry
+  # a pointer event's id, coordinates and the page clock into the tested
+  # behave::sheet::key_press Hold (and capture the pointer). sectors.spec.ts
+  # taps a pick and a ✕ (each acting at its lift) and slides a pick past
+  # 10 px (nothing written: no `tick` record).
+  "fohmixer-ui/src/components/sheet\\.rs.*(replace|in) LiftKey::(down|moved|up|cancel)( |$)",
   # components/eq.rs (#71 PR E): EqNav::open and EqNav::close (the screen's
   # signal written, the step recorded with the tested trace::detail),
   # local_hh_mm (js_sys::Date's local hours and minutes into the tested

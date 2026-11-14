@@ -23,6 +23,7 @@ pub mod pan;
 pub mod params;
 pub mod rail;
 pub mod rec;
+mod sheet;
 pub mod stream_lufs;
 pub mod strip;
 

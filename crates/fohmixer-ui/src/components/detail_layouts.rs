@@ -9,9 +9,10 @@
 //! frame 1; the owner's rule: a settings list shows only what is set, plus
 //! one ADD): one compact row per layout that holds the fader (its sector,
 //! its title, a ✕ that takes it out), and `+ ADD TO LAYOUT`, which opens a
-//! sheet over the detail with the other layouts (a full one disabled,
-//! FULL); one tap there puts the fader in, at the layout's end. The
-//! decisions are `binding::detail_layouts` (`held`, `picks`) over
+//! sheet over the detail (`components::sheet`) with the other layouts (a
+//! full one disabled, FULL); one tap there puts the fader in, at the
+//! layout's end. The ✕ and the picks act at their lift. The decisions are
+//! `binding::detail_layouts` (`held`, `picks`) over
 //! `binding::sectors::detail_ticks`, and `detail_steps` for ◀ ▶; nothing
 //! here writes a Live key.
 
@@ -19,6 +20,7 @@ use fohmixer_proto::layout::Strip;
 use leptos::prelude::*;
 
 use super::detail::DetailStrip;
+use super::sheet::{LiftKey, Sheet, close_later};
 use super::{fail_flash, owns_touches};
 use crate::binding::detail_layouts::{LayoutPick, LayoutRow, held, picks};
 use crate::binding::sectors::{DetailTicks, detail_steps, detail_ticks, stepped};
@@ -76,13 +78,6 @@ pub fn DetailLayouts(strip: Strip) -> impl IntoView {
     let rows = Memo::new(move |_| ticks.try_with(held).unwrap_or_default());
     let choices = Memo::new(move |_| ticks.try_with(picks).unwrap_or_default());
     let open = RwSignal::new(false);
-    // Nothing left to pick (another page filled the rest): the sheet goes.
-    Effect::new(move |_| {
-        let none = choices.try_with(Vec::is_empty).unwrap_or(true);
-        if none && open.try_get_untracked().unwrap_or(false) {
-            let _ = open.try_set(false);
-        }
-    });
     let count = move || rows.try_with(Vec::len).unwrap_or(0).to_string();
     let section = move || {
         if !shown.try_get().unwrap_or(false) {
@@ -122,7 +117,7 @@ pub fn DetailLayouts(strip: Strip) -> impl IntoView {
 /// on an unchanged one.
 #[component]
 fn LayoutList(ticks: Memo<DetailTicks>, rows: Memo<Vec<LayoutRow>>) -> impl IntoView {
-    let none = move || rows.try_with(Vec::is_empty).unwrap_or(true);
+    let none = Memo::new(move |_| rows.try_with(Vec::is_empty).unwrap_or(true));
     let row = move |row: LayoutRow| view! { <LayoutRowView ticks=ticks row=row /> };
     view! {
         <div class="lay-rows">
@@ -133,7 +128,8 @@ fn LayoutList(ticks: Memo<DetailTicks>, rows: Memo<Vec<LayoutRow>>) -> impl Into
             />
         </div>
         {move || {
-            none()
+            none.try_get()
+                .unwrap_or(false)
                 .then(|| {
                     view! {
                         <div class="lay-empty" data-testid="lay-empty">
@@ -146,16 +142,18 @@ fn LayoutList(ticks: Memo<DetailTicks>, rows: Memo<Vec<LayoutRow>>) -> impl Into
 }
 
 /// A layout that holds the fader: its sector, its title and ✕, whose tap
-/// (its `pointerdown`) asks the hub to take the fader out; a refusal
+/// (at its lift, `LiftKey`) asks the hub to take the fader out; a refusal
 /// flashes the row (`data-refused`).
 #[component]
 fn LayoutRowView(ticks: Memo<DetailTicks>, row: LayoutRow) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let failed = RwSignal::new(false);
     let layout = StoredValue::new(row.layout.clone());
-    let on_down = move |ev: web_sys::PointerEvent| {
-        ev.prevent_default();
-        let _ = layout.try_with_value(|layout| ask_tick(store, ticks, layout, false, failed));
+    let key = LiftKey::default();
+    let on_up = move |ev: web_sys::PointerEvent| {
+        if key.up(&ev) {
+            let _ = layout.try_with_value(|layout| ask_tick(store, ticks, layout, false, failed));
+        }
     };
     let label = format!("Take this fader out of {}", row.title);
     let no_keys: Vec<String> = Vec::new();
@@ -175,7 +173,11 @@ fn LayoutRowView(ticks: Memo<DetailTicks>, row: LayoutRow) -> impl IntoView {
                 use:owns_touches=no_keys
                 data-testid="lay-remove"
                 aria-label=label
-                on:pointerdown=on_down
+                on:pointerdown=move |ev| key.down(&ev)
+                on:pointermove=move |ev| key.moved(&ev)
+                on:pointerup=on_up
+                on:pointercancel=move |ev| key.cancel(&ev)
+                on:lostpointercapture=move |ev| key.cancel(&ev)
             >
                 "✕"
             </button>
@@ -183,8 +185,9 @@ fn LayoutRowView(ticks: Memo<DetailTicks>, row: LayoutRow) -> impl IntoView {
     }
 }
 
-/// `+ ADD TO LAYOUT` (only while a layout is left to pick) and its sheet:
-/// a tap opens the sheet; a refusal of a pick flashes the button.
+/// `+ ADD TO LAYOUT` (always, as the approved mockup draws it) and its
+/// sheet: a tap (its `pointerdown`: opening changes nothing) opens the
+/// sheet; a refusal of a pick flashes the button.
 #[component]
 fn AddLayout(
     ticks: Memo<DetailTicks>,
@@ -192,92 +195,63 @@ fn AddLayout(
     open: RwSignal<bool>,
 ) -> impl IntoView {
     let failed = RwSignal::new(false);
-    let any = move || choices.try_with(|c| !c.is_empty()).unwrap_or(false);
     let on_down = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
         let _ = open.try_set(true);
     };
-    let sheet = move || {
-        (open.try_get().unwrap_or(false) && any())
-            .then(|| view! { <LayoutSheet ticks=ticks choices=choices open=open failed=failed /> })
-    };
-    move || {
-        any().then(|| {
-            let no_keys: Vec<String> = Vec::new();
-            view! {
-                <button
-                    type="button"
-                    class="lay-add"
-                    use:owns_touches=no_keys
-                    data-testid="lay-add"
-                    data-refused=move || failed.try_get().unwrap_or(false).to_string()
-                    on:pointerdown=on_down
-                >
-                    "+ ADD TO LAYOUT"
-                </button>
-                {sheet}
-            }
-        })
-    }
-}
-
-/// The sheet over the detail: a shade (a tap closes), the title with ✕,
-/// the note, and a pick per layout the fader is not in. A pick's tap asks
-/// the hub to put the fader in and closes the sheet; a FULL pick is
-/// disabled.
-#[component]
-fn LayoutSheet(
-    ticks: Memo<DetailTicks>,
-    choices: Memo<Vec<LayoutPick>>,
-    open: RwSignal<bool>,
-    failed: RwSignal<bool>,
-) -> impl IntoView {
-    let close = move |ev: web_sys::PointerEvent| {
-        ev.prevent_default();
-        let _ = open.try_set(false);
-    };
+    let none = Memo::new(move |_| choices.try_with(Vec::is_empty).unwrap_or(false));
     let pick = move |pick: LayoutPick| {
         view! { <PickButton ticks=ticks pick=pick open=open failed=failed /> }
     };
-    let shade_keys: Vec<String> = Vec::new();
-    let close_keys: Vec<String> = Vec::new();
+    let sheet = move || {
+        open.try_get().unwrap_or(false).then(|| {
+            let empty = move || {
+                none.try_get().unwrap_or(false).then(|| {
+                    view! {
+                        <div class="lay-empty" data-testid="lay-sheet-none">
+                            "This fader is in every layout."
+                        </div>
+                    }
+                })
+            };
+            view! {
+                <Sheet
+                    title="ADD TO LAYOUT"
+                    testid="lay-sheet"
+                    open=open
+                    note="It joins the layout at its end; ARRANGE moves it."
+                >
+                    <div class="sheet-grid">
+                        <For
+                            each=move || choices.try_get().unwrap_or_default()
+                            key=|p: &LayoutPick| (p.layout.clone(), p.title.clone(), p.sector, p.full)
+                            children=pick
+                        />
+                    </div>
+                    {empty}
+                </Sheet>
+            }
+        })
+    };
+    let no_keys: Vec<String> = Vec::new();
     view! {
-        <div class="lay-sheet" data-testid="lay-sheet">
-            <div
-                class="lay-shade"
-                use:owns_touches=shade_keys
-                data-testid="lay-shade"
-                on:pointerdown=close
-            ></div>
-            <div class="lay-panel" role="dialog" aria-label="Add to layout">
-                <div class="lay-sheet-head">
-                    <h3 class="lay-sheet-title">"ADD TO LAYOUT"</h3>
-                    <button
-                        type="button"
-                        class="lay-sheet-close"
-                        use:owns_touches=close_keys
-                        data-testid="lay-sheet-close"
-                        aria-label="Close"
-                        on:pointerdown=close
-                    >
-                        "✕"
-                    </button>
-                </div>
-                <div class="lay-note">"It joins the layout at its end; ARRANGE moves it."</div>
-                <div class="lay-picks">
-                    <For
-                        each=move || choices.try_get().unwrap_or_default()
-                        key=|p: &LayoutPick| (p.layout.clone(), p.title.clone(), p.sector, p.full)
-                        children=pick
-                    />
-                </div>
-            </div>
-        </div>
+        <button
+            type="button"
+            class="lay-add"
+            use:owns_touches=no_keys
+            data-testid="lay-add"
+            data-refused=move || failed.try_get().unwrap_or(false).to_string()
+            on:pointerdown=on_down
+        >
+            "+ ADD TO LAYOUT"
+        </button>
+        {sheet}
     }
 }
 
 /// One layout of the sheet: its title and its sector (`· FULL` when the
-/// fader would not fit: disabled, asks nothing).
+/// fader would not fit: disabled, asks nothing). Its tap (at its lift)
+/// asks the hub to put the fader in and closes the sheet.
 #[component]
 fn PickButton(
     ticks: Memo<DetailTicks>,
@@ -288,29 +262,32 @@ fn PickButton(
     let store = expect_context::<LiveStore>();
     let asks = pick.asks();
     let layout = StoredValue::new(pick.layout.clone());
-    let on_down = move |ev: web_sys::PointerEvent| {
-        ev.prevent_default();
-        if !asks {
-            return;
+    let key = LiftKey::default();
+    let on_up = move |ev: web_sys::PointerEvent| {
+        if key.up(&ev) && asks {
+            let _ = layout.try_with_value(|layout| ask_tick(store, ticks, layout, true, failed));
+            close_later(open);
         }
-        let _ = layout.try_with_value(|layout| ask_tick(store, ticks, layout, true, failed));
-        let _ = open.try_set(false);
     };
     let sub = pick.sub();
     let no_keys: Vec<String> = Vec::new();
     view! {
         <button
             type="button"
-            class="lay-pick"
+            class="sheet-pick"
             use:owns_touches=no_keys
             data-testid="lay-pick"
             data-layout=pick.layout
             data-sector=pick.sector
             data-full=pick.full.to_string()
             disabled=pick.full
-            on:pointerdown=on_down
+            on:pointerdown=move |ev| key.down(&ev)
+            on:pointermove=move |ev| key.moved(&ev)
+            on:pointerup=on_up
+            on:pointercancel=move |ev| key.cancel(&ev)
+            on:lostpointercapture=move |ev| key.cancel(&ev)
         >
-            <span class="lay-pick-name">{pick.title}</span>
+            <span class="sheet-pick-name">{pick.title}</span>
             <small>{sub}</small>
         </button>
     }
