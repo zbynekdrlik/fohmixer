@@ -9,8 +9,9 @@
 //! of a set's locators and Sections key clips ([`songmap`], #140), the
 //! loudness readings of the LUFS devices ([`lufs`], #151) and Live's meter
 //! scale and pan law ([`meter`], #151), and the strips' colours chosen on
-//! the tablet ([`colors`], #164), and the faders marked for the mute alarm
-//! ([`mute_alarms`], #188).
+//! the tablet ([`colors`], #164), the faders marked for the mute alarm
+//! ([`mute_alarms`], #188) and for the hold-guarded mute ([`mute_guards`],
+//! #203), both sets of marks one logic ([`strip_marks`]).
 
 use serde::{Deserialize, Serialize};
 
@@ -22,10 +23,12 @@ pub mod lufs;
 pub mod markers;
 pub mod meter;
 pub mod mute_alarms;
+pub mod mute_guards;
 pub mod path;
 pub mod roles;
 pub mod sectors;
 pub mod songmap;
+pub mod strip_marks;
 pub mod volume;
 
 /// Application version: the workspace's `[workspace.package].version`.

@@ -26,6 +26,7 @@ use crate::eq::{Area, EqItem, EqLock, EqState, Part, Touch};
 use crate::layout::{Binding, LinkId};
 use crate::lufs::{LufsProblem, LufsState};
 use crate::mute_alarms::MuteAlarmsDoc;
+use crate::mute_guards::MuteGuardsDoc;
 use crate::path::canonical_target;
 use crate::sectors::{Sectors, SectorsDoc, StripRef};
 use crate::songmap::{Counts, Key, ProblemKind, SectionsState, Span};
@@ -293,6 +294,14 @@ pub enum ClientMsg {
     /// for a mark of a fader the served layout does not carry; off is
     /// always taken). Nothing reaches Live.
     SetMuteAlarm {
+        id: String,
+        strip: StripRef,
+        on: bool,
+    },
+    /// A strip's MUTE GUARD switched in its channel detail (#203): `on`
+    /// makes the fader's mute act only by a hold. Answered as
+    /// [`ClientMsg::SetMuteAlarm`]. Nothing reaches Live.
+    SetMuteGuard {
         id: String,
         strip: StripRef,
         on: bool,
@@ -619,6 +628,9 @@ pub enum ServerMsg {
     /// The faders marked for the mute alarm (#188), at attach and after
     /// every change.
     MuteAlarms { doc: MuteAlarmsDoc },
+    /// The faders whose mute the tablet guards by a hold (#203), at attach
+    /// and after every change.
+    MuteGuards { doc: MuteGuardsDoc },
     /// A message of a newer hub that this page does not know (#90 B3): any
     /// other `type` reads as this, and the page ignores it, so a new
     /// message never breaks an older page.
@@ -1672,6 +1684,10 @@ pub struct HubStatus {
     /// older hub's answer.
     #[serde(default)]
     pub mute_alarms: MuteAlarmsStatus,
+    /// The faders whose mute the tablet guards (#203); the defaults in an
+    /// older hub's answer.
+    #[serde(default)]
+    pub mute_guards: MuteGuardsStatus,
     /// The instance link this hub serves (#184, `[link]`); none without it
     /// (and in an older hub's answer).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1745,6 +1761,10 @@ pub struct MuteAlarmsStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
+
+/// `/api/status` `mute_guards` (#203): the mute alarm's shape, for the
+/// faders the tablet guards.
+pub type MuteGuardsStatus = MuteAlarmsStatus;
 
 /// `/api/status` `sectors` (#148): the served document's revision, its
 /// layouts, its distinct faders and the refs no pool fader carries

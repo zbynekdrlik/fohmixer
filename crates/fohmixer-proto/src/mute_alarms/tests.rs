@@ -1,5 +1,6 @@
 use super::*;
 use crate::layout::Control;
+use crate::strip_marks::StripMarks;
 use serde_json::json;
 
 fn band(label: &str) -> StripRef {
@@ -86,7 +87,7 @@ fn strips_lists_every_marked_fader() {
         },
         true,
     );
-    let all: Vec<StripRef> = doc.strips().collect();
+    let all: Vec<StripRef> = doc.strips();
     assert_eq!(
         all,
         vec![

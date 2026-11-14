@@ -4,13 +4,14 @@ use std::sync::Arc;
 use fohmixer_proto::client::{MuteAlarmsStatus, ServerMsg};
 use fohmixer_proto::mute_alarms::MuteAlarmsDoc;
 use fohmixer_proto::sectors::StripRef;
+use fohmixer_proto::strip_marks::StripMarks;
 use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use super::super::tests::{attach, offline_router, records, status};
 use super::super::{Router, RouterMsg};
 use super::{
-    RESTORED_LINE, TAKEN_LINE, alarm_fields, refused_line, set_line, unreadable_line,
+    mark_fields, refused_line, restored_line, set_line, taken_line, unreadable_line,
     unwritable_line, write_problem,
 };
 use crate::events::{is_warn, stamp};
@@ -310,55 +311,55 @@ fn a_mute_alarms_record_is_warn_class() {
     assert!(is_warn(&stamp(
         "mute_alarms",
         1,
-        alarm_fields("set", Some(1), Some("10.0.0.1"), json!({"on": true}))
+        mark_fields("set", Some(1), Some("10.0.0.1"), json!({"on": true}))
     )));
     assert!(is_warn(&stamp(
         "mute_alarms",
         1,
-        alarm_fields("file", None, None, json!({}))
+        mark_fields("file", None, None, json!({}))
     )));
 }
 
 #[test]
 fn the_records_and_lines_read_as_written() {
     assert_eq!(
-        alarm_fields("set", Some(3), Some("10.0.0.3"), json!({"on": true})),
+        mark_fields("set", Some(3), Some("10.0.0.3"), json!({"on": true})),
         json!({"what": "set", "client": 3, "peer": "10.0.0.3", "on": true})
     );
     assert_eq!(
-        alarm_fields("file", None, None, json!({})),
+        mark_fields("file", None, None, json!({})),
         json!({"what": "file", "client": null, "peer": null})
     );
     assert_eq!(
-        set_line(&band("Vox 1"), true),
+        set_line::<MuteAlarmsDoc>(&band("Vox 1"), true),
         "a strip's mute alarm changed: band|Vox 1 is on"
     );
     assert_eq!(
-        set_line(&band("Vox 1"), false),
+        set_line::<MuteAlarmsDoc>(&band("Vox 1"), false),
         "a strip's mute alarm changed: band|Vox 1 is off"
     );
     assert_eq!(
-        TAKEN_LINE,
+        taken_line::<MuteAlarmsDoc>(),
         "mute_alarms.json was edited by hand: its marks are served"
     );
     assert_eq!(
-        RESTORED_LINE,
+        restored_line::<MuteAlarmsDoc>(),
         "mute_alarms.json was removed; it is written back from the document served"
     );
     assert_eq!(
-        refused_line("bad"),
+        refused_line::<MuteAlarmsDoc>("bad"),
         "mute_alarms.json is refused, the last good document stays served: bad"
     );
     assert_eq!(
-        write_problem(&std::io::Error::other("disk full")),
+        write_problem::<MuteAlarmsDoc>(&std::io::Error::other("disk full")),
         "cannot write the mute alarm's marks (mute_alarms.json): disk full"
     );
     assert_eq!(
-        unreadable_line("Is a directory"),
+        unreadable_line::<MuteAlarmsDoc>("Is a directory"),
         "cannot read mute_alarms.json, the document stays served and is read again at the next poll: Is a directory"
     );
     assert_eq!(
-        unwritable_line("No such file or directory"),
+        unwritable_line::<MuteAlarmsDoc>("No such file or directory"),
         "mute_alarms.json was removed and cannot be written back, the document stays served and is written again at the next poll: No such file or directory"
     );
 }

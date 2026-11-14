@@ -10,6 +10,7 @@
 //! was read or written.
 
 use fohmixer_proto::mute_alarms::MuteAlarmsDoc;
+use fohmixer_proto::strip_marks::StripMarks;
 
 use crate::doc_store::{DocStore, Document};
 
