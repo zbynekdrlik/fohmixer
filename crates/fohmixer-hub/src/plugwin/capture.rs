@@ -12,14 +12,19 @@
 //!   screen was open). `blt` stays so the PC can switch back without a
 //!   rebuild.
 //! - **[`Arrivals`]:** what a session delivered: a frame since the last
-//!   grab ([`Arrivals::changed`], the worker's change-driven rate), none for
-//!   [`STALE_MS`] ([`Arrivals::stale`]: the session is started anew, which
-//!   always delivers the current content first), and the counts the probe
-//!   prints ([`CaptureCounts`]).
+//!   grab ([`Arrivals::changed`], the worker's change-driven rate), any at
+//!   all, and the counts the probe prints ([`CaptureCounts`]). A window
+//!   that stays the same sends no frame, so silence is never a lost
+//!   session: the worker's 1 s refresh sends the newest frame again, and a
+//!   session is started anew only when Windows ends it (the window closed)
+//!   or the GPU device is lost, keeping its newest frame meanwhile (the #215
+//!   review).
 //! - **[`picture_box`]:** Pro-Q's picture (its child window's client area)
 //!   in a frame of Live's top-level window, whose origin is the window's
 //!   extended frame bounds (as OBS places a window's client area in its
-//!   WGC frames).
+//!   WGC frames); **[`frame_current`]:** whether the newest frame is of the
+//!   window's size now (a frame from before a resize is not: its box would
+//!   be cut, or show the old layout).
 
 use serde::Deserialize;
 
@@ -65,11 +70,9 @@ impl Capture {
 /// (`lag_ms_max=`).
 pub const WGC_LAG_MS: f64 = 34.0;
 
-/// A session that delivered no frame for this long (ms) is started anew
-/// at the next grab: a new session delivers the window's current content
-/// first, so a session that stopped delivering (a lost device, a display
-/// change) never leaves a still picture for good.
-pub const STALE_MS: f64 = 5000.0;
+/// How far a frame's size may lie from the window's frame bounds (px,
+/// each side) and still be of the window's size now ([`frame_current`]).
+pub const FRAME_SLACK: u32 = 2;
 
 /// A capture's own counts (the probe's `arrived=` and `lag_ms_max=`): the
 /// frames delivered and the largest delay from a frame's composition to
@@ -80,32 +83,18 @@ pub struct CaptureCounts {
     pub lag_ms_max: f64,
 }
 
-/// The frames a capture session delivered (ms on the capture's clock).
-#[derive(Debug, Clone, PartialEq)]
+/// The frames a capture delivered.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Arrivals {
-    started: f64,
-    last: Option<f64>,
     arrived: u64,
     taken: u64,
     lag_max: f64,
 }
 
 impl Arrivals {
-    /// A session started at `started`, no frame yet.
-    pub fn new(started: f64) -> Self {
-        Self {
-            started,
-            last: None,
-            arrived: 0,
-            taken: 0,
-            lag_max: 0.0,
-        }
-    }
-
-    /// A frame arrived at `at`, `lag_ms` after its composition.
-    pub fn arrived(&mut self, at: f64, lag_ms: f64) {
+    /// A frame arrived, `lag_ms` after its composition.
+    pub fn arrived(&mut self, lag_ms: f64) {
         self.arrived += 1;
-        self.last = Some(at);
         self.lag_max = self.lag_max.max(lag_ms);
     }
 
@@ -124,12 +113,6 @@ impl Arrivals {
         self.arrived > 0
     }
 
-    /// Whether the session delivered nothing for [`STALE_MS`] at `now`,
-    /// counted from its last frame or, before one, from its start.
-    pub fn stale(&self, now: f64) -> bool {
-        now - self.last.unwrap_or(self.started) >= STALE_MS
-    }
-
     /// Its counts so far.
     pub fn counts(&self) -> CaptureCounts {
         CaptureCounts {
@@ -146,6 +129,13 @@ pub struct FrameBox {
     pub top: u32,
     pub width: u32,
     pub height: u32,
+}
+
+/// Whether a frame of `content` size is of the window's size now
+/// (`window`: its extended frame bounds' size), within [`FRAME_SLACK`] on
+/// each side.
+pub fn frame_current(content: (u32, u32), window: (u32, u32)) -> bool {
+    content.0.abs_diff(window.0) <= FRAME_SLACK && content.1.abs_diff(window.1) <= FRAME_SLACK
 }
 
 /// The picture's box in a frame of `content` size whose top-left corner
@@ -186,21 +176,21 @@ mod tests {
         assert_eq!(Capture::Wgc.name(), "wgc");
         assert_eq!(Capture::Blt.name(), "blt");
         assert_eq!(WGC_LAG_MS, 34.0);
-        assert_eq!(STALE_MS, 5000.0);
+        assert_eq!(FRAME_SLACK, 2);
     }
 
     #[test]
     fn a_frame_since_the_last_grab_is_a_change_and_a_grab_takes_it() {
-        let mut arrivals = Arrivals::new(100.0);
+        let mut arrivals = Arrivals::default();
         assert!(!arrivals.any());
         assert!(!arrivals.changed(), "nothing delivered yet");
-        arrivals.arrived(120.0, 3.0);
+        arrivals.arrived(3.0);
         assert!(arrivals.any());
         assert!(arrivals.changed());
         arrivals.taken();
         assert!(!arrivals.changed(), "taken");
-        arrivals.arrived(140.0, 9.5);
-        arrivals.arrived(150.0, 2.0);
+        arrivals.arrived(9.5);
+        arrivals.arrived(2.0);
         assert!(arrivals.changed());
         assert_eq!(
             arrivals.counts(),
@@ -215,16 +205,15 @@ mod tests {
     }
 
     #[test]
-    fn a_session_with_no_frame_for_5_s_is_stale_from_its_start_or_its_last_frame() {
-        // The bounds a millisecond's thousandth apart (a sum's rounding
-        // would swallow `next_down`).
-        let mut arrivals = Arrivals::new(1000.0);
-        assert!(!arrivals.stale(1000.0 + STALE_MS - 0.001));
-        assert!(arrivals.stale(1000.0 + STALE_MS));
-        arrivals.arrived(4000.0, 0.0);
-        assert!(!arrivals.stale(4000.0 + STALE_MS - 0.001));
-        assert!(arrivals.stale(4000.0 + STALE_MS));
-        assert!(!arrivals.stale(6000.0), "a frame since its start");
+    fn a_frame_is_of_the_windows_size_now_within_2_px_each_side() {
+        assert!(frame_current((1365, 848), (1365, 848)));
+        assert!(frame_current((1367, 846), (1365, 848)));
+        assert!(frame_current((1363, 850), (1365, 848)));
+        assert!(!frame_current((1368, 848), (1365, 848)), "wider");
+        assert!(!frame_current((1362, 848), (1365, 848)), "narrower");
+        assert!(!frame_current((1365, 851), (1365, 848)), "taller");
+        assert!(!frame_current((1365, 845), (1365, 848)), "shorter");
+        assert!(!frame_current((776, 1310), (1365, 848)), "before a resize");
     }
 
     #[test]

@@ -581,10 +581,11 @@ pub trait Backend: Send {
     /// frame the window delivered, up to [`Backend::lag_ms`] behind it).
     fn grab(&mut self, taken: &Taken) -> Result<Pixels, String>;
     /// Whether the taken window's picture may have changed since the last
-    /// grab (#215): `Some(false)` when nothing arrived since; none when the
-    /// backend cannot tell (a BitBlt sees only by grabbing).
-    fn changed(&mut self, _taken: &Taken) -> Option<bool> {
-        None
+    /// grab (#215): false only when the backend knows nothing arrived since
+    /// (Windows Graphics Capture); a backend that cannot tell (a BitBlt sees
+    /// only by grabbing) says true.
+    fn changed(&mut self, _taken: &Taken) -> bool {
+        true
     }
     /// How far behind the screen a grab's picture may be (ms, #215): 0 for
     /// a grab of the screen itself; Windows Graphics Capture's newest frame
@@ -920,8 +921,9 @@ pub fn capture_due(since_ms: f64) -> bool {
 pub const REST_MS: f64 = 2000.0;
 
 /// Whether an editor rests (#215): no contact of its session `down` and
-/// its last input (a touch phase, a handled input, an undo, a view, a
-/// resize, its take) `since_input_ms` ago, at least [`REST_MS`].
+/// its last input (its take, the page's start of viewing it, a touch
+/// phase, a handled input, an undo, a view, a resize) `since_input_ms`
+/// ago, at least [`REST_MS`].
 pub fn resting(down: bool, since_input_ms: f64) -> bool {
     !down && since_input_ms >= REST_MS
 }
@@ -929,15 +931,14 @@ pub fn resting(down: bool, since_input_ms: f64) -> bool {
 /// Whether an editor last grabbed `since_grab_ms` ago is grabbed now
 /// (#215): resting, only once [`REFRESH_MS`] passed (the still picture's
 /// refresh, the most a resting editor costs); else once [`CAPTURE_MS`]
-/// passed and its picture may have `changed` (none: the backend cannot
-/// tell), an input it shows not yet is painted (`newer`, [`Shown::due`]),
-/// or the refresh is due.
-pub fn grab_due(since_grab_ms: f64, resting: bool, changed: Option<bool>, newer: bool) -> bool {
+/// passed and its picture may have `changed` ([`Backend::changed`]), an
+/// input it shows not yet is painted (`newer`, [`Shown::due`]), or the
+/// refresh is due.
+pub fn grab_due(since_grab_ms: f64, resting: bool, changed: bool, newer: bool) -> bool {
     if resting {
         refresh_due(since_grab_ms)
     } else {
-        capture_due(since_grab_ms)
-            && (changed != Some(false) || newer || refresh_due(since_grab_ms))
+        capture_due(since_grab_ms) && (changed || newer || refresh_due(since_grab_ms))
     }
 }
 
@@ -1491,6 +1492,8 @@ impl Worker {
                 });
             }
             Command::Capture { session, sink } => {
+                // A page starting to view it counts as an input (#215).
+                self.heard(session);
                 if let Some(editor) = self.editors.get_mut(&session) {
                     editor.sink = Some(sink);
                     self.encoder.capture(session);

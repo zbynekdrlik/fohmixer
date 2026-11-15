@@ -647,8 +647,8 @@ impl Backend for Win {
         })
     }
 
-    fn changed(&mut self, taken: &Taken) -> Option<bool> {
-        (self.capture == Capture::Wgc).then(|| self.wgc.changed(hwnd(taken.window)))
+    fn changed(&mut self, taken: &Taken) -> bool {
+        self.capture != Capture::Wgc || self.wgc.changed(hwnd(taken.window))
     }
 
     fn lag_ms(&self) -> f64 {

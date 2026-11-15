@@ -28,7 +28,12 @@
 //!    use `--capture wgc|blt` (default `wgc`, the hub's default); with
 //!    `--capture-only` the probe stops here, releases the window and runs
 //!    no gesture, no resize back and no guard, so it measures the capture
-//!    alone on any process's window (an idle Notepad: dasio's comparison);
+//!    alone on any process's window (an idle Notepad: dasio's comparison).
+//!    Before the first grab the probe waits for the capture's first frame
+//!    (at most 500 ms). The ticks are the hub's 40 ms; every one grabs (a
+//!    readback of the newest frame with `wgc`) unless `--hub-rate`, which
+//!    grabs only as an awake editor of the hub would (a change, or a
+//!    second's refresh; `hub_rate=on skipped=` on the `fps=` line);
 //! 5. a double tap at `--band` (on a fresh Pro-Q's curve: a new band);
 //! 6. a drag from `--band` to `--to` (updates every 16 ms, a rest with the
 //!    resends, the up at the last point);
@@ -125,12 +130,12 @@ use super::undo::{self, Undo};
 use super::win::probe_backend as platform;
 use super::{
     Backend, GUARD_TAP, KNOWN_SIZE, NOT_ON_TOP, Phase, Pixels, Placement, QUALITY, Rect, STEP,
-    Taken, aside, encode, inert_spot, inside, keepalive_due, known_rect, millis, not_landed,
-    placed, resize_over, settled, window_size,
+    Taken, aside, encode, grab_due, inert_spot, inside, keepalive_due, known_rect, millis,
+    not_landed, placed, resize_over, settled, window_size,
 };
 
 /// The CLI's usage line.
-pub const USAGE: &str = "usage: fohmixer-hub eq-probe --pid <pid> [--frames <n>] [--capture wgc|blt] [--capture-only] [--size <w>x<h>] [--min-probe] [--hold] [--paint <n>] [--undo] [--band <x,y>] [--to <x,y>] [--inert <x,y>] [--out <folder>] [--close] [--sim]";
+pub const USAGE: &str = "usage: fohmixer-hub eq-probe --pid <pid> [--frames <n>] [--capture wgc|blt] [--capture-only] [--hub-rate] [--size <w>x<h>] [--min-probe] [--hold] [--paint <n>] [--undo] [--band <x,y>] [--to <x,y>] [--inert <x,y>] [--out <folder>] [--close] [--sim]";
 /// Why `--capture-only` was refused with a gesture's flag (#215): it runs
 /// none.
 pub const CAPTURE_ALONE: &str =
@@ -237,6 +242,9 @@ pub struct Args {
     /// captures.
     pub capture: Capture,
     pub capture_only: bool,
+    /// Whether the capture's ticks grab only as an awake editor of the hub
+    /// would (#215: a change or the second's refresh).
+    pub hub_rate: bool,
 }
 
 /// `x,y` as a point.
@@ -279,6 +287,7 @@ pub fn parse(args: &[&str]) -> Result<Args, String> {
         undo: false,
         capture: Capture::Wgc,
         capture_only: false,
+        hub_rate: false,
     };
     let mut pid = None;
     let mut rest = args.iter();
@@ -294,6 +303,7 @@ pub fn parse(args: &[&str]) -> Result<Args, String> {
             "--hold" => parsed.hold = true,
             "--undo" => parsed.undo = true,
             "--capture-only" => parsed.capture_only = true,
+            "--hub-rate" => parsed.hub_rate = true,
             "--pid" | "--frames" | "--band" | "--to" | "--inert" | "--out" | "--size"
             | "--paint" | "--capture" => {
                 let value = rest.next().ok_or(format!("{flag} needs a value"))?;
@@ -726,14 +736,25 @@ fn capture(
     held: &mut Held<'_>,
     frames: u32,
     how: Capture,
+    hub_rate: bool,
     report: &mut Report<'_>,
 ) -> Result<(), String> {
+    first_frame(held)?;
     let (mut grabs, mut encodes, mut sizes) = (Vec::new(), Vec::new(), Vec::new());
     let mut last: Option<Pixels> = None;
-    let mut same = 0_u32;
+    let (mut same, mut skipped) = (0_u32, 0_u32);
+    let mut grabbed: Option<Instant> = None;
     let started = Instant::now();
     for n in 0..frames {
         std::thread::sleep(due_at(n).saturating_sub(started.elapsed()));
+        // `--hub-rate` (#215): a tick grabs only as an awake editor of the
+        // hub would (a change, or the second's refresh).
+        let since = grabbed.map_or(f64::INFINITY, |at| millis(at.elapsed()));
+        if hub_rate && !grab_due(since, false, held.backend.changed(&held.taken), false) {
+            skipped += 1;
+            continue;
+        }
+        grabbed = Some(Instant::now());
         let at = Instant::now();
         let pixels = held.grab().map_err(|why| format!("capture: {why}"))?;
         grabs.push(millis(at.elapsed()));
@@ -760,13 +781,45 @@ fn capture(
         "encode_ms_mean={encode_mean:.1} encode_ms_max={encode_max:.1} bytes_mean={bytes_mean:.0}"
     ))?;
     // #215: on the rate's line, so the lines after it keep their places.
+    let rate_text = if hub_rate {
+        format!(" hub_rate=on skipped={skipped}")
+    } else {
+        String::new()
+    };
     report.line(&format!(
-        "fps={:.1} capture={} {}",
+        "fps={:.1} capture={} {}{rate_text}",
         rate(frames, seconds),
         how.name(),
         arrived_text(held.backend.capture_counts(&held.taken))
     ))?;
     Ok(())
+}
+
+/// The looks for a capture's first frame before the first grab, [`STEP`]
+/// apart (#215 review: Windows Graphics Capture delivers it a little after
+/// the take, and a grab before it has no picture).
+pub const FIRST_FRAME_LOOKS: u32 = 50;
+
+/// Waits for the capture's first frame, bounded ([`FIRST_FRAME_LOOKS`]);
+/// a backend that grabs the screen has none to wait for.
+fn first_frame(held: &mut Held<'_>) -> Result<(), String> {
+    for _ in 0..FIRST_FRAME_LOOKS {
+        if arrived(held.backend.capture_counts(&held.taken)) {
+            return Ok(());
+        }
+        std::thread::sleep(STEP);
+    }
+    if arrived(held.backend.capture_counts(&held.taken)) {
+        Ok(())
+    } else {
+        Err("capture: no frame of the window within 500 ms".to_string())
+    }
+}
+
+/// Whether a capture's counts let a grab go: none (a backend that grabs
+/// the screen), or a frame delivered.
+pub fn arrived(counts: Option<CaptureCounts>) -> bool {
+    counts.is_none_or(|counts| counts.arrived > 0)
 }
 
 /// The capture's own counts as the probe prints them (#215): `-` for a
@@ -1231,7 +1284,13 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
         scaled(args.band, original, now),
         scaled(args.to, original, now),
     );
-    capture(&mut held, args.frames, args.capture, &mut report)?;
+    capture(
+        &mut held,
+        args.frames,
+        args.capture,
+        args.hub_rate,
+        &mut report,
+    )?;
     if args.capture_only {
         held.release();
         report.line("release=ok")?;

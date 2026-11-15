@@ -22,6 +22,7 @@ fn args(pid: u32) -> Args {
         undo: false,
         capture: Capture::Wgc,
         capture_only: false,
+        hub_rate: false,
     }
 }
 
@@ -67,6 +68,7 @@ fn the_arguments_have_their_defaults_and_every_flag_is_read() {
             undo: false,
             capture: Capture::Wgc,
             capture_only: false,
+            hub_rate: false,
         })
     );
     // `--undo` (#71 PR P): alone, or with no paint trial; never with
@@ -1483,4 +1485,46 @@ fn a_capture_only_probe_takes_grabs_and_releases_nothing_else() {
         vec![op("take", "", -1, -1), op("release", "", -1, -1)]
     );
     assert!(handle.windows().contains(&window));
+}
+
+#[test]
+fn hub_rate_grabs_only_a_change_and_a_first_frame_is_awaited() {
+    // #215 review: `--hub-rate` grabs as an awake editor of the hub (a
+    // change or the second's refresh); a capture's first frame comes a
+    // little after the take, and a grab waits for it.
+    let (mut sim, handle, _) = one_window(42);
+    handle.change_driven(true);
+    let mut probe = args(42);
+    probe.frames = 5;
+    probe.capture_only = true;
+    probe.hub_rate = true;
+    assert_eq!(
+        parse(&[
+            "--pid",
+            "42",
+            "--capture-only",
+            "--hub-rate",
+            "--frames",
+            "5"
+        ]),
+        Ok(probe.clone())
+    );
+    let mut out = Vec::new();
+    run(&mut sim, &probe, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[2], "frames=5 sent=1 same=0", "{text}");
+    assert!(
+        lines[5].ends_with(" capture=wgc arrived=- lag_ms_max=- hub_rate=on skipped=4"),
+        "{text}"
+    );
+    assert_eq!(handle.grabs(), 1, "the still window grabbed once");
+    assert!(arrived(None), "a backend that grabs the screen");
+    let counts = |arrived| CaptureCounts {
+        arrived,
+        lag_ms_max: 0.0,
+    };
+    assert!(!arrived(Some(counts(0))), "no frame yet");
+    assert!(arrived(Some(counts(1))));
+    assert_eq!(FIRST_FRAME_LOOKS, 50);
 }

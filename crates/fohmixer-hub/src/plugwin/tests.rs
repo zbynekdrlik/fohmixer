@@ -1370,19 +1370,17 @@ fn an_editor_rests_2_s_after_its_last_input_with_no_contact_down() {
 #[test]
 fn a_grab_is_due_once_a_second_resting_else_on_a_change_a_newer_input_or_the_refresh() {
     // Resting: the refresh's second only, whatever changed.
-    assert!(!grab_due(REFRESH_MS.next_down(), true, Some(true), true));
-    assert!(grab_due(REFRESH_MS, true, Some(false), false));
+    assert!(!grab_due(REFRESH_MS.next_down(), true, true, true));
+    assert!(grab_due(REFRESH_MS, true, false, false));
     // Awake: never within CAPTURE_MS, whatever is due.
-    assert!(!grab_due(CAPTURE_MS.next_down(), false, Some(true), true));
-    assert!(!grab_due(CAPTURE_MS.next_down(), false, None, false));
-    // A backend that cannot tell (a BitBlt): every CAPTURE_MS.
-    assert!(grab_due(CAPTURE_MS, false, None, false));
-    // One that can: a change, a newer input painted, or the refresh.
-    assert!(grab_due(CAPTURE_MS, false, Some(true), false));
-    assert!(!grab_due(CAPTURE_MS, false, Some(false), false));
-    assert!(grab_due(CAPTURE_MS, false, Some(false), true));
-    assert!(!grab_due(REFRESH_MS.next_down(), false, Some(false), false));
-    assert!(grab_due(REFRESH_MS, false, Some(false), false));
+    assert!(!grab_due(CAPTURE_MS.next_down(), false, true, true));
+    // A change (or a backend that cannot tell, a BitBlt): every CAPTURE_MS.
+    assert!(grab_due(CAPTURE_MS, false, true, false));
+    // Nothing changed: a newer input painted, or the refresh.
+    assert!(!grab_due(CAPTURE_MS, false, false, false));
+    assert!(grab_due(CAPTURE_MS, false, false, true));
+    assert!(!grab_due(REFRESH_MS.next_down(), false, false, false));
+    assert!(grab_due(REFRESH_MS, false, false, false));
 }
 
 #[test]
@@ -1470,6 +1468,37 @@ fn a_picture_behind_the_screen_shows_an_input_only_a_paint_and_its_lag_after() {
     wait_for("the first frame", || frames.lock().unwrap().len() == 1);
     worker.command_at(Command::Handled { session: 1, n: 1 }, 100.0);
     assert_eq!(grabs_over(&mut worker, 1, 100, 130), 1);
+}
+
+#[test]
+fn a_backend_that_cannot_tell_a_change_is_grabbed_every_40_ms_on_its_own_clock() {
+    // #215: the trait's defaults are a BitBlt's: every grab may show a
+    // change (so an awake editor is grabbed every CAPTURE_MS) and its
+    // picture is the screen now (no lag). `Slow` keeps both defaults,
+    // whatever its sim could tell.
+    let (sim, handle) = Sim::new(None);
+    handle.still(true);
+    handle.change_driven(true);
+    let slow = Slow {
+        sim,
+        hold: Duration::ZERO,
+        grab_ms: 0.0,
+    };
+    let (mut worker, _) = worker_on(Box::new(slow));
+    take(&mut worker, &handle, 1, 0.0);
+    let (sink, _frames) = sink();
+    worker.command_at(Command::Capture { session: 1, sink }, 0.0);
+    assert_eq!(grabs_over(&mut worker, 1, 0, 70), 2, "at 0 and 40");
+    // Input 1 handled at 61: the grab at 80 is 19 ms after it, not painted.
+    worker.command_at(Command::Handled { session: 1, n: 1 }, 61.0);
+    worker.step_at(80.0);
+    assert_eq!(worker.editors[&1].counts.grabs, 3);
+    assert_eq!(worker.editors[&1].last_shown, 0);
+    // Input 2 at 100: the grab at 120 shows it, painted exactly then.
+    worker.command_at(Command::Handled { session: 1, n: 2 }, 100.0);
+    worker.step_at(120.0);
+    assert_eq!(worker.editors[&1].counts.grabs, 4);
+    assert_eq!(worker.editors[&1].last_shown, 2);
 }
 
 #[test]

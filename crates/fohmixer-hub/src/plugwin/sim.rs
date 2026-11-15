@@ -49,8 +49,8 @@
 //! before.
 //!
 //! **Change-driven frames (#215):** by default the sim cannot tell
-//! whether its picture changed ([`Backend::changed`] none: every grab
-//! looks, as a BitBlt does); `change_driven` makes it tell, as Windows
+//! whether its picture changed ([`Backend::changed`] always true: every
+//! grab looks, as a BitBlt does); `change_driven` makes it tell, as Windows
 //! Graphics Capture does (a change of the counter, the ↶ or the size since
 //! the last grab), and `lag` makes its pictures that far behind the screen
 //! ([`Backend::lag_ms`]).
@@ -827,12 +827,14 @@ impl Backend for Sim {
         Ok(pixels)
     }
 
-    fn changed(&mut self, taken: &Taken) -> Option<bool> {
+    fn changed(&mut self, taken: &Taken) -> bool {
         let state = self.lock();
+        let Some(size) = state.windows.get(&taken.window).map(|w| w.size) else {
+            return true;
+        };
         if !state.change_driven {
-            return None;
+            return true;
         }
-        let size = state.windows.get(&taken.window).map(|w| w.size)?;
         // A restless picture changes at every grab.
         let count = if state.restless {
             state.grabs + 1
@@ -840,7 +842,7 @@ impl Backend for Sim {
             state.count()
         };
         let glyph = state.undo.map(|left| left > 0);
-        Some(state.last_grab != Some((count, glyph, size)))
+        state.last_grab != Some((count, glyph, size))
     }
 
     fn lag_ms(&self) -> f64 {

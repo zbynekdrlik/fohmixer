@@ -27,14 +27,21 @@
 //!   [`Pixels`] the encoder takes. The device's immediate context is shared
 //!   by the frame thread and the worker under one lock (and the device is
 //!   multithread-protected).
-//! - **No frames:** a minimised window's grab fails (no stale picture); a
-//!   session that delivered nothing for [`STALE_MS`] is started anew at the
-//!   next grab (a new session delivers the current content first). The
-//!   worker never waits for a frame.
+//! - **No frames:** a window that stays the same sends none, and that is
+//!   no loss: the grab reads the newest frame again (the worker's 1 s
+//!   refresh). A minimised window's grab fails (no stale picture); a frame
+//!   of another size than the window's now (one from before a resize) is
+//!   not taken, and the grab fails until the resized one comes
+//!   ([`frame_current`]). A session Windows ended (the item's `Closed`) is
+//!   started anew at the next grab, keeping its newest frame until the new
+//!   one's first; a lost GPU device drops every session and the device,
+//!   made anew at the next grab. A session that failed to start is tried
+//!   again no sooner than [`START_AGAIN`]. The worker never waits for a
+//!   frame (the #215 review).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{
@@ -54,6 +61,7 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
+use windows::Win32::System::Com::IAgileObject;
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
@@ -63,10 +71,13 @@ use windows::Win32::UI::WindowsAndMessaging::IsIconic;
 use windows::core::{IInspectable, Interface};
 
 use super::Pixels;
-use super::capture::{Arrivals, CaptureCounts, picture_box};
+use super::capture::{Arrivals, CaptureCounts, frame_current, picture_box};
 
 /// The frame pool's buffers: one DWM writes while the other is copied.
 pub const BUFFERS: i32 = 2;
+/// A session that failed to start is tried again no sooner than this (the
+/// worker asks at every step while it has none).
+pub const START_AGAIN: Duration = Duration::from_secs(1);
 /// The frames' format: what the encoder reads (BGRA, 4 bytes a pixel).
 const FORMAT: DirectXPixelFormat = DirectXPixelFormat::B8G8R8A8UIntNormalized;
 
@@ -96,7 +107,8 @@ struct Device {
 struct Direct3D(IDirect3DDevice);
 
 // SAFETY: a WinRT Direct3D device is agile (it may be used from any
-// thread); the windows crate does not mark the interface so.
+// thread; `Device::new` refuses one that does not say `IAgileObject`); the
+// windows crate does not mark the interface so.
 unsafe impl Send for Direct3D {}
 // SAFETY: as above.
 unsafe impl Sync for Direct3D {}
@@ -143,6 +155,10 @@ impl Device {
             .map_err(|e| text("CreateDirect3D11DeviceFromDXGIDevice", e))?;
         let direct3d: IDirect3DDevice =
             inspectable.cast().map_err(|e| text("IDirect3DDevice", e))?;
+        // The frame threads use it (a pool's `Recreate`): it must be agile.
+        direct3d
+            .cast::<IAgileObject>()
+            .map_err(|e| text("the WinRT Direct3D device is not agile", e))?;
         Ok(Self {
             device,
             context: Arc::new(Mutex::new(context)),
@@ -209,11 +225,14 @@ fn qpc_100ns() -> Option<i64> {
 }
 
 /// What a session's frame thread and the worker share: the newest frame
-/// (on the GPU), the size of what it holds, and its bookkeeping.
+/// (on the GPU), the size of what it holds, its bookkeeping, and whether
+/// Windows ended the session (the window closed).
+#[derive(Default)]
 struct Newest {
     frame: Option<ID3D11Texture2D>,
     content: (u32, u32),
     arrivals: Arrivals,
+    ended: bool,
     /// The staging texture of the last grab's box (kept for the next one
     /// of that size).
     staging: Option<ID3D11Texture2D>,
@@ -221,26 +240,53 @@ struct Newest {
 
 /// One editor's capture.
 struct Session {
+    item: GraphicsCaptureItem,
     pool: Direct3D11CaptureFramePool,
     session: GraphicsCaptureSession,
-    token: i64,
+    frames: i64,
+    closed: i64,
     newest: Arc<Mutex<Newest>>,
 }
 
 impl Session {
+    /// Ends it: no handler runs after its removal, the pool's buffers go.
     fn stop(&self) {
-        let _ = self.pool.RemoveFrameArrived(self.token);
+        let _ = self.pool.RemoveFrameArrived(self.frames);
+        let _ = self.item.RemoveClosed(self.closed);
         let _ = self.session.Close();
         let _ = self.pool.Close();
     }
 }
 
+/// A session's parts made so far: on a failure every handler is removed
+/// and the pool closed before the error goes back.
+struct Partial {
+    item: GraphicsCaptureItem,
+    pool: Direct3D11CaptureFramePool,
+    frames: Option<i64>,
+    closed: Option<i64>,
+}
+
+impl Partial {
+    fn fail(self, why: String) -> String {
+        if let Some(token) = self.frames {
+            let _ = self.pool.RemoveFrameArrived(token);
+        }
+        if let Some(token) = self.closed {
+            let _ = self.item.RemoveClosed(token);
+        }
+        let _ = self.pool.Close();
+        why
+    }
+}
+
 /// The captures: one session per taken editor's window, on one device,
-/// started when first asked for.
+/// started when first asked for; a start that failed, when and why.
+#[derive(Default)]
 pub struct Wgc {
     device: Option<Device>,
     sessions: HashMap<usize, Session>,
-    started: Instant,
+    failed: HashMap<usize, (Instant, String)>,
 }
 
 impl std::fmt::Debug for Wgc {
@@ -251,31 +297,15 @@ impl std::fmt::Debug for Wgc {
     }
 }
 
-impl Default for Wgc {
-    fn default() -> Self {
-        Self {
-            device: None,
-            sessions: HashMap::new(),
-            started: Instant::now(),
-        }
-    }
-}
-
-/// ms on the captures' clock.
-fn ms_since(started: Instant) -> f64 {
-    started.elapsed().as_secs_f64() * 1000.0
-}
-
 /// The newest frame `texture` of `content` size kept: copied on the GPU
 /// into the session's own texture (made anew for another size) and
-/// counted, at `at` (ms), `lag_ms` after its composition.
+/// counted, `lag_ms` after its composition.
 fn keep(
     device: &ID3D11Device,
     context: &Mutex<ID3D11DeviceContext>,
     newest: &Mutex<Newest>,
     frame: &ID3D11Texture2D,
     content: SizeInt32,
-    at: f64,
     lag_ms: f64,
 ) -> Result<(), String> {
     let size = size_of(frame);
@@ -294,8 +324,25 @@ fn keep(
     unsafe { locked(context).CopyResource(kept, frame) };
     let side = |v: i32, max: u32| u32::try_from(v).unwrap_or(0).min(max);
     newest.content = (side(content.Width, size.0), side(content.Height, size.1));
-    newest.arrivals.arrived(at, lag_ms);
+    newest.arrivals.arrived(lag_ms);
     Ok(())
+}
+
+/// A window's extended frame bounds (its visible rectangle, the origin of
+/// its captured frames).
+fn frame_bounds(window: HWND) -> Result<RECT, String> {
+    let mut bounds = RECT::default();
+    // SAFETY: `bounds` outlives the call and is the attribute's size.
+    unsafe {
+        DwmGetWindowAttribute(
+            window,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            (&mut bounds as *mut RECT).cast(),
+            std::mem::size_of::<RECT>() as u32,
+        )
+    }
+    .map_err(|e| text("DwmGetWindowAttribute", e))?;
+    Ok(bounds)
 }
 
 impl Wgc {
@@ -308,12 +355,13 @@ impl Wgc {
             .ok_or_else(|| "no Direct3D device".to_string())
     }
 
-    /// A session for `window` started: its frames kept as they come.
-    fn start(&mut self, window: HWND) -> Result<Session, String> {
+    /// A session for `window` started, its frames kept in `newest` (a new
+    /// one, or the ended session's: its newest frame serves until the new
+    /// session's first).
+    fn start(&mut self, window: HWND, newest: Arc<Mutex<Newest>>) -> Result<Session, String> {
         if !GraphicsCaptureSession::IsSupported().unwrap_or(false) {
             return Err("Windows Graphics Capture is not supported here".to_string());
         }
-        let started = self.started;
         let device = self.device()?;
         let (d3d, context, direct3d) = (
             device.device.clone(),
@@ -331,12 +379,12 @@ impl Wgc {
         let pool =
             Direct3D11CaptureFramePool::CreateFreeThreaded(direct3d.get(), FORMAT, BUFFERS, size)
                 .map_err(|e| text("CreateFreeThreaded", e))?;
-        let newest = Arc::new(Mutex::new(Newest {
-            frame: None,
-            content: (0, 0),
-            arrivals: Arrivals::new(ms_since(started)),
-            staging: None,
-        }));
+        let mut partial = Partial {
+            item: item.clone(),
+            pool: pool.clone(),
+            frames: None,
+            closed: None,
+        };
         let theirs = Arc::clone(&newest);
         let pool_size = Mutex::new(size);
         let handler =
@@ -345,14 +393,13 @@ impl Wgc {
                     return Ok(());
                 };
                 let frame = pool.TryGetNextFrame()?;
-                let at = ms_since(started);
                 let composed = frame.SystemRelativeTime()?.Duration;
                 let lag_ms = qpc_100ns().map_or(0.0, |now| (now - composed) as f64 / 10_000.0);
                 let content = frame.ContentSize()?;
                 let access: IDirect3DDxgiInterfaceAccess = frame.Surface()?.cast()?;
                 // SAFETY: the frame's surface as its Direct3D texture.
                 let surface: ID3D11Texture2D = unsafe { access.GetInterface()? };
-                let kept = keep(&d3d, &context, &theirs, &surface, content, at, lag_ms);
+                let kept = keep(&d3d, &context, &theirs, &surface, content, lag_ms);
                 if let Err(why) = &kept {
                     tracing::debug!(why = %why, "a captured Pro-Q 4 frame could not be kept");
                 }
@@ -370,46 +417,75 @@ impl Wgc {
                 }
                 Ok(())
             });
-        let token = pool
-            .FrameArrived(&handler)
-            .map_err(|e| text("FrameArrived", e))?;
-        let session = pool
-            .CreateCaptureSession(&item)
-            .map_err(|e| text("CreateCaptureSession", e))?;
+        match pool.FrameArrived(&handler) {
+            Ok(token) => partial.frames = Some(token),
+            Err(e) => return Err(partial.fail(text("FrameArrived", e))),
+        }
+        // Windows ends the capture when the window closes: started anew at
+        // the next grab (a gone window is the worker's `alive`).
+        let flagged = Arc::clone(&newest);
+        let on_closed = TypedEventHandler::<GraphicsCaptureItem, IInspectable>::new(move |_, _| {
+            locked(&flagged).ended = true;
+            Ok(())
+        });
+        match item.Closed(&on_closed) {
+            Ok(token) => partial.closed = Some(token),
+            Err(e) => return Err(partial.fail(text("Closed", e))),
+        }
+        let session = match pool.CreateCaptureSession(&item) {
+            Ok(session) => session,
+            Err(e) => return Err(partial.fail(text("CreateCaptureSession", e))),
+        };
         // The cursor never in the picture; no border where Windows lets it
         // go (from 20348: the PC's 19044 refuses, accepted on #215).
         let _ = session.SetIsCursorCaptureEnabled(false);
         let _ = session.SetIsBorderRequired(false);
-        let made = Session {
+        if let Err(e) = session.StartCapture() {
+            let _ = session.Close();
+            return Err(partial.fail(text("StartCapture", e)));
+        }
+        locked(&newest).ended = false;
+        Ok(Session {
+            item,
             pool,
             session,
-            token,
+            frames: partial.frames.unwrap_or_default(),
+            closed: partial.closed.unwrap_or_default(),
             newest,
-        };
-        if let Err(e) = made.session.StartCapture() {
-            made.stop();
-            return Err(text("StartCapture", e));
-        }
-        Ok(made)
+        })
     }
 
-    /// The session of `window`, started when it has none or when it
-    /// delivered nothing for `STALE_MS` (a new session delivers the
-    /// current content first).
+    /// The session of `window`: started when it has none (a start that
+    /// failed less than [`START_AGAIN`] ago answers its error again) or
+    /// when Windows ended it (its newest frame kept).
     fn session(&mut self, window: HWND) -> Result<&Session, String> {
         let key = window.0 as usize;
-        let now = ms_since(self.started);
-        let stale = self
+        let ended = self
             .sessions
             .get(&key)
-            .is_some_and(|s| locked(&s.newest).arrivals.stale(now));
-        if stale && let Some(old) = self.sessions.remove(&key) {
-            tracing::info!("a Pro-Q 4 capture delivered no frame for 5 s: started anew");
+            .is_some_and(|s| locked(&s.newest).ended);
+        let mut kept = None;
+        if ended && let Some(old) = self.sessions.remove(&key) {
+            tracing::info!("a Pro-Q 4 capture ended by Windows: started anew");
             old.stop();
+            kept = Some(old.newest);
         }
         if !self.sessions.contains_key(&key) {
-            let session = self.start(window)?;
-            self.sessions.insert(key, session);
+            if let Some((at, why)) = self.failed.get(&key)
+                && at.elapsed() < START_AGAIN
+            {
+                return Err(why.clone());
+            }
+            match self.start(window, kept.unwrap_or_default()) {
+                Ok(session) => {
+                    self.failed.remove(&key);
+                    self.sessions.insert(key, session);
+                }
+                Err(why) => {
+                    self.failed.insert(key, (Instant::now(), why.clone()));
+                    return Err(why);
+                }
+            }
         }
         self.sessions
             .get(&key)
@@ -417,7 +493,7 @@ impl Wgc {
     }
 
     /// Starts the capture of a taken editor's `window` (its first frame
-    /// comes at once); a failure is said and tried again at the grab.
+    /// comes at once); a failure is said and tried again at a grab.
     pub fn begin(&mut self, window: HWND) {
         if let Err(why) = self.session(window) {
             tracing::warn!(why = %why, "a Pro-Q 4 editor's capture could not start: tried again at its grab");
@@ -425,13 +501,12 @@ impl Wgc {
     }
 
     /// Whether `window`'s picture may have changed since the last grab: a
-    /// frame arrived, its session is stale or it has none (the grab starts
-    /// it).
+    /// frame arrived, Windows ended its session, or it has none (the grab
+    /// starts it).
     pub fn changed(&mut self, window: HWND) -> bool {
-        let now = ms_since(self.started);
         self.sessions.get(&(window.0 as usize)).is_none_or(|s| {
             let newest = locked(&s.newest);
-            newest.arrivals.changed() || newest.arrivals.stale(now)
+            newest.arrivals.changed() || newest.ended
         })
     }
 
@@ -443,7 +518,8 @@ impl Wgc {
     }
 
     /// The picture of `window` (its picture's client area at the screen
-    /// point `origin`, `size`) from its newest frame.
+    /// point `origin`, `size`) from its newest frame. A lost device drops
+    /// every session and the device (made anew at the next grab).
     pub fn grab(
         &mut self,
         window: HWND,
@@ -454,30 +530,38 @@ impl Wgc {
         if unsafe { IsIconic(window) }.as_bool() {
             return Err("the editor's window is minimised: it gives no frames".to_string());
         }
-        let mut bounds = RECT::default();
-        // SAFETY: `bounds` outlives the call and is the attribute's size.
-        unsafe {
-            DwmGetWindowAttribute(
-                window,
-                DWMWA_EXTENDED_FRAME_BOUNDS,
-                (&mut bounds as *mut RECT).cast(),
-                std::mem::size_of::<RECT>() as u32,
-            )
-        }
-        .map_err(|e| text("DwmGetWindowAttribute", e))?;
+        let bounds = frame_bounds(window)?;
         let session = self.session(window)?;
         let newest = Arc::clone(&session.newest);
         let device = self
             .device
             .as_ref()
             .ok_or_else(|| "no Direct3D device".to_string())?;
-        read(device, &newest, (bounds.left, bounds.top), origin, size)
+        let read = read(device, &newest, bounds, origin, size);
+        // SAFETY: a plain query of the device's state.
+        if read.is_err()
+            && let Err(e) = unsafe { device.device.GetDeviceRemovedReason() }
+        {
+            tracing::warn!(error = %e, "the Pro-Q 4 capture's Direct3D device was lost: made anew at the next grab");
+            self.reset();
+        }
+        read
+    }
+
+    /// Every session ended and the device dropped.
+    fn reset(&mut self) {
+        for (_, session) in self.sessions.drain() {
+            session.stop();
+        }
+        self.device = None;
     }
 
     /// The capture of `window` ends (its release, a lost window, the
     /// stop).
     pub fn end(&mut self, window: HWND) {
-        if let Some(session) = self.sessions.remove(&(window.0 as usize)) {
+        let key = window.0 as usize;
+        self.failed.remove(&key);
+        if let Some(session) = self.sessions.remove(&key) {
             session.stop();
         }
     }
@@ -485,18 +569,18 @@ impl Wgc {
 
 impl Drop for Wgc {
     fn drop(&mut self) {
-        for (_, session) in self.sessions.drain() {
-            session.stop();
-        }
+        self.reset();
     }
 }
 
 /// The picture's box of the newest frame read back: copied on the GPU into
 /// a staging texture of its size, mapped once, its rows into [`Pixels`].
+/// A frame of another size than the window's `bounds` now (one from before
+/// a resize) is not taken: the grab fails, and the next frame is a change.
 fn read(
     device: &Device,
     newest: &Mutex<Newest>,
-    frame_origin: (i32, i32),
+    bounds: RECT,
     origin: (i32, i32),
     size: (u32, u32),
 ) -> Result<Pixels, String> {
@@ -504,7 +588,18 @@ fn read(
     if !newest.arrivals.any() {
         return Err("no frame of the editor yet".to_string());
     }
-    let within = picture_box(frame_origin, origin, size, newest.content)
+    let side = |from: i32, to: i32| u32::try_from(to - from).unwrap_or(0);
+    let window = (
+        side(bounds.left, bounds.right),
+        side(bounds.top, bounds.bottom),
+    );
+    if !frame_current(newest.content, window) {
+        return Err(format!(
+            "the newest frame is {}x{}, the window {}x{}: one of its size awaited",
+            newest.content.0, newest.content.1, window.0, window.1
+        ));
+    }
+    let within = picture_box((bounds.left, bounds.top), origin, size, newest.content)
         .ok_or("the picture lies outside the captured window")?;
     let Some(frame) = newest.frame.clone() else {
         return Err("no frame of the editor yet".to_string());
@@ -571,6 +666,11 @@ mod tests {
         assert!(wgc.counts(none).is_none());
         wgc.end(none);
         assert!(wgc.sessions.is_empty());
+        assert!(
+            wgc.failed.is_empty(),
+            "its failed start forgotten at its end"
+        );
+        assert_eq!(START_AGAIN, Duration::from_secs(1));
         assert!(qpc_100ns().is_some_and(|t| t > 0));
     }
 }
