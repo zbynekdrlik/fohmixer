@@ -427,6 +427,37 @@ impl Default for LufsCfg {
     }
 }
 
+/// `[listen]` (#210): the port on 127.0.0.1 where the Listen devices send
+/// their announces (UDP) and their audio (TCP), and the UDP port they take
+/// the hub's selects on (both fixed in the device's patch: another means
+/// the device rebuilt with `build_amxd.py --port`/`--select-port`); `port =
+/// 0` turns Listen off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListenCfg {
+    #[serde(default = "default_listen_port")]
+    pub port: u16,
+    #[serde(default = "default_select_port")]
+    pub select_port: u16,
+}
+
+fn default_listen_port() -> u16 {
+    fohmixer_proto::listen::DEFAULT_PORT
+}
+
+fn default_select_port() -> u16 {
+    fohmixer_proto::listen::SELECT_PORT
+}
+
+impl Default for ListenCfg {
+    fn default() -> Self {
+        Self {
+            port: default_listen_port(),
+            select_port: default_select_port(),
+        }
+    }
+}
+
 /// The longest wait `[autotune] engage_delay_ms` takes (#190): 5 s.
 pub const MAX_ENGAGE_DELAY_MS: u64 = 5000;
 
@@ -649,6 +680,9 @@ pub struct Config {
     /// table.
     #[serde(default)]
     pub lufs: LufsCfg,
+    /// Listen (#210); the default ports without the table.
+    #[serde(default)]
+    pub listen: ListenCfg,
     /// AUTOTUNE's wait at a play start (#190); none without the table.
     #[serde(default)]
     pub autotune: AutotuneCfg,
@@ -680,6 +714,7 @@ impl Config {
             scenes: None,
             eq: None,
             lufs: LufsCfg::default(),
+            listen: ListenCfg::default(),
             autotune: AutotuneCfg::default(),
             link: None,
             data_dir: data_dir.to_path_buf(),
@@ -1801,6 +1836,30 @@ mod tests {
                 .port,
             39120
         );
+    }
+
+    #[test]
+    fn listen_ports_default_to_39111_and_39112() {
+        let defaults = ListenCfg {
+            port: 39111,
+            select_port: 39112,
+        };
+        assert_eq!(Config::parse("", &data()).unwrap().listen, defaults);
+        assert_eq!(
+            Config::parse("[listen]\n", &data()).unwrap().listen,
+            defaults
+        );
+        assert_eq!(Config::defaults(&data()).listen, defaults);
+        assert_eq!(
+            Config::parse("[listen]\nport = 0\nselect_port = 40000\n", &data())
+                .unwrap()
+                .listen,
+            ListenCfg {
+                port: 0,
+                select_port: 40000
+            }
+        );
+        assert!(Config::parse("[listen]\nhost = \"0.0.0.0\"\n", &data()).is_err());
     }
 
     #[test]

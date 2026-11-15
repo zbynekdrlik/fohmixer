@@ -82,6 +82,7 @@ pub mod http_client;
 pub mod https;
 pub mod layout;
 pub mod link;
+pub mod listen;
 pub mod live;
 pub mod login_guard;
 pub mod lufs_udp;
@@ -225,6 +226,8 @@ pub struct HubInner {
     pub lufs: Arc<lufs_udp::Counters>,
     /// The instance link this hub serves (#184, `[link]`).
     pub link: Option<Arc<link::server::LinkState>>,
+    /// Listen (#210, `[listen]`); none with `port = 0`.
+    pub listen: Option<Arc<listen::Listen>>,
     /// The automation token of `POST /api/scene` (#207); none: the hub
     /// takes no scene.
     pub automation: Option<automation::AutomationToken>,
@@ -257,6 +260,16 @@ impl FromRef<Hub> for Arc<Auth> {
 }
 
 impl HubInner {
+    /// The Live set's name of `instance` as its script told it (Listen,
+    /// #210: the devices name their set); none while it is unknown (no
+    /// such instance, never connected) or empty.
+    pub fn set_name(&self, instance: &str) -> Option<String> {
+        self.live
+            .get(instance)
+            .map(|live| live.snapshot().info.set_name)
+            .filter(|name| !name.is_empty())
+    }
+
     /// Closes every client and ends the hub's tasks (idempotent). The
     /// router first releases the Stream Deck's held keys and tells the
     /// Companion task to stop (#52); [`HubInner::companion_stopped`] waits
@@ -484,6 +497,11 @@ impl HubInner {
             mute_guards: router.mute_guards,
             scenes: self.scenes_status(router.scenes),
             link: self.link.as_ref().map(|state| state.status()),
+            listen: self
+                .listen
+                .as_ref()
+                .map(|l| l.status(std::time::Instant::now()))
+                .unwrap_or_default(),
         }
     }
 }
@@ -706,6 +724,17 @@ impl Hub {
         {
             tasks.push(task);
         }
+        // Listen (#210): 127.0.0.1 only; a port taken is recorded and
+        // shown, and the hub runs on without it.
+        let listen = (config.listen.port != 0).then(|| {
+            let (listen, listen_tasks) = listen::spawn(
+                config.listen.port,
+                config.listen.select_port,
+                events.clone(),
+            );
+            tasks.extend(listen_tasks);
+            listen
+        });
         if lufs_ticks_due(config.lufs.port, &linked) {
             tasks.push(tokio::spawn(router::lufs_ticks(
                 router_tx.clone(),
@@ -748,6 +777,7 @@ impl Hub {
             eq,
             lufs,
             link,
+            listen,
             plugwin,
             live,
             router: router_tx,

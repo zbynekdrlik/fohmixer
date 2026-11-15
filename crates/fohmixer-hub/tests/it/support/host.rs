@@ -63,6 +63,23 @@ impl Host {
         )
     }
 
+    /// A host of `site` whose Listen devices (#210) announce and stream to
+    /// the hub's `listen_port` and take its selects on `select_port`.
+    pub fn start_listen(instance: &str, site: &Path, listen_port: u16, select_port: u16) -> Self {
+        Self::start_args(
+            instance,
+            site,
+            0,
+            0.0,
+            &[
+                "--listen-port".to_string(),
+                listen_port.to_string(),
+                "--select-port".to_string(),
+                select_port.to_string(),
+            ],
+        )
+    }
+
     fn start_args(
         instance: &str,
         site: &Path,
@@ -261,6 +278,12 @@ impl Host {
             .strip_prefix(&format!("{word} "))
             .and_then(|n| n.parse().ok())
             .unwrap_or_else(|| panic!("not a {word} line: {answer}"))
+    }
+
+    /// A Listen device line (#210): `listendev …`, `tone …` or `streamed
+    /// …`; the answer's number (-1: a bad line, no such track or device).
+    pub fn listendev(&mut self, line: &str) -> i64 {
+        self.maxdev(line)
     }
 
     /// The Live listeners on `prop` of the object at `path` (-1: none there).

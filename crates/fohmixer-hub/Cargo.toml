@@ -70,6 +70,10 @@ x509-parser = "0.18"
 # (pure Rust, BGRA input; `simd` picks AVX2 at run time on the PC)
 jpeg-encoder = { version = "0.7", features = ["simd"] }
 
+# Listen (#210): the tracks' audio to the pages as Opus (libopus 1.5 built
+# from source with CMake by opusic-sys; iemmixer's server uses the same crate)
+opus = "0.4"
+
 # The PIN pepper is DPAPI-protected on the PC; the Pro-Q 4 screen's window
 # backend (#71 PR E): the windows, their capture (GDI), touch injection and
 # the worker thread's DPI awareness

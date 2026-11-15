@@ -70,6 +70,7 @@ async fn foh_hub(dir: &Path, band: &Host, link: SocketAddr, secret: &LinkSecret)
     ];
     config.layout_poll_ms = 100;
     config.lufs.port = 0;
+    config.listen.port = 0;
     TestHub::start_config(config).await
 }
 
@@ -234,6 +235,7 @@ fn a_link_secret_the_foh_hub_cannot_read_keeps_band_and_leaves_mbc_offline() {
         ];
         config.layout_poll_ms = 100;
         config.lufs.port = 0;
+        config.listen.port = 0;
         let foh = TestHub::start_config(config).await;
         let status = foh
             .status_until(SECS_10, |s| {

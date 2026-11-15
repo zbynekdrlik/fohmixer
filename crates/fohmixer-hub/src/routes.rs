@@ -389,6 +389,7 @@ pub fn api_routes(hub: Hub) -> Router<Hub> {
             post(scene::post_scene).layer(DefaultBodyLimit::max(1_024)),
         )
         .route("/ws", get(crate::ws::ws_handler))
+        .route("/ws/audio", get(crate::listen::session::ws_audio))
         .route_layer(axum::middleware::from_fn_with_state(hub, role_gate))
 }
 
