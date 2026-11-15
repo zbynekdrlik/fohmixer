@@ -26,6 +26,8 @@ pub fn key_place(tabs: &[&str], page: &str) -> KeyPlace {
 /// Whether a page tab's pick changes nothing: its page (`picked`, the
 /// layout's page index) is the one shown (`shown`) and no extra tab lies
 /// over the page (`extra_open`; a pick that closes one changes what shows).
+/// It is about the page shown, not the phone's ☰ column, which every page
+/// tab's pick closes too.
 pub fn page_pick_same(shown: Option<usize>, extra_open: bool, picked: usize) -> bool {
     !extra_open && shown == Some(picked)
 }

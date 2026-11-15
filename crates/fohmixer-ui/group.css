@@ -105,11 +105,10 @@
    stacked LUFS can reach 69 px, the box starts at 72 px and fills from its
    foot (`column-reverse`): the group's name 50 px above the column's foot,
    the set over it. A set the zone has no room for wraps into a second
-   flex column, 16 px (the column gap) right of the box's set 13 px width
-   (an 11 px thick text and 2 px), which `overflow-x: clip` hides whole:
-   it yields, never half
-   drawn; nothing measures text (#21). The fader under the column takes
-   the touch. */
+   flex column, 16 px (the column gap) right of the box's 13 px (an 11 px
+   thick text and 2 px), which `overflow-x: clip` hides whole: it yields,
+   never half drawn; nothing measures text (#21). The fader under the
+   column takes the touch. */
 .strip-side {
     position: absolute;
     top: 52px;
