@@ -33,7 +33,7 @@ use crate::arrange::GroupLabel;
 use crate::behave::db_text::db_text;
 use crate::behave::fader::{UNITY, VolumeLaw};
 use crate::behave::hold::{HINT_MS, HOLD_MS, Hold, Lift};
-use crate::behave::label::{mark_look, shown_label};
+use crate::behave::label::{mark_look, set_text, shown_label};
 use crate::behave::live_down::LiveWord;
 use crate::behave::lufs::{
     COIL, LufsLook, SpringLook, glyphs, kind_name, look as lufs_look_of, point_key, spring,
@@ -99,14 +99,30 @@ fn LufsSpring(look: Memo<Option<SpringLook>>) -> impl IntoView {
 /// no reading, a problem or a strip without `+LUFS` show nothing, their
 /// rows kept), and on the first
 /// strip of a group's run `group_name`, the group's name read bottom to
-/// top, in grey (#127; one colour per strip, its own). It takes no
+/// top, in grey (#127; one colour per strip, its own), and the strip's own
+/// Live set (#211, `behave::label::set_text`: none when the group's name
+/// already says it), both in `.strip-side` (`group.css`: the set under the
+/// group's name, yielding whole when the zone is short). It takes no
 /// touch: the fader under it gets it.
 #[component]
 fn InfoColumn(
     group_name: Signal<Option<GroupLabel>>,
     #[prop(into)] lufs: Signal<LufsLook>,
     kind: Option<&'static str>,
+    instance: String,
 ) -> impl IntoView {
+    let set_instance = instance.clone();
+    let set = move || {
+        let text = group_name
+            .try_with(|g| set_text(&instance, g.as_ref().map(|l| l.text.as_str())))
+            .flatten()?;
+        let at = set_instance.clone();
+        Some(view! {
+            <span class="strip-set" data-testid="strip-set" data-instance=at>
+                {text}
+            </span>
+        })
+    };
     let side = move || {
         group_name
             .try_get()
@@ -159,7 +175,10 @@ fn InfoColumn(
             <div class="lufs" data-testid="lufs" data-kind=kind data-l=state>
                 <For each=places key=|place| *place children=glyph />
             </div>
-            {side}
+            <div class="strip-side" data-testid="strip-side">
+                {side}
+                {set}
+            </div>
         </div>
     }
 }
@@ -533,6 +552,8 @@ pub fn StripView(
             })
     };
     let hint_of = instance.clone();
+    // The strip's Live set in its info column (#211).
+    let set_of = instance.clone();
     let hint = move || {
         down.try_get()
             .flatten()
@@ -588,7 +609,7 @@ pub fn StripView(
             {tag}
             <div class="strip-zone" style=unity>
                 {hint}
-                <InfoColumn group_name=group_name lufs=lufs_look kind=lufs_kind />
+                <InfoColumn group_name=group_name lufs=lufs_look kind=lufs_kind instance=set_of />
                 <ScaleView law=law />
                 {spring_view}
                 {fader}
