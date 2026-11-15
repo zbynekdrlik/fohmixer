@@ -28,6 +28,12 @@ exclude_globs = [
   # tested capture.rs (the arrivals, the picture's box) and plugwin.rs's
   # rate (`grab_due`, `resting`, `Shown::due`).
   "crates/fohmixer-hub/src/plugwin/wgc.rs",
+  # Its display capture glue (#215, `wgc-display`, as wgc.rs): Windows
+  # only; the `windows` job lints it and runs its `plugwin::wgc_display::`
+  # tests, and `eq-probe --capture wgc-display` drives it on the PC. Its
+  # decisions are the tested capture/display.rs (the monitors, the frames
+  # a grab uses and holds, the editor's box in a monitor's frame).
+  "crates/fohmixer-hub/src/plugwin/wgc_display.rs",
   # The tray's Windows-only Tauri glue (#39, as iemmixer excludes iem-tray):
   # not compiled on the Linux runners; the `windows` CI job builds and lints
   # it, and Test-Fohmixer.ps1 runs the exe (start, `--exit`, the log). Its

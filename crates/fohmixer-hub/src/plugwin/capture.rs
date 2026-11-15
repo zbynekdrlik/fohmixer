@@ -28,6 +28,8 @@
 
 use serde::Deserialize;
 
+pub mod display;
+
 /// How the Windows backend grabs an editor's picture (`[eq] capture`,
 /// #215).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -40,6 +42,13 @@ pub enum Capture {
     /// The old costly path: a `BitBlt` of the picture's rectangle from the
     /// screen's DC at every grab.
     Blt,
+    /// Windows Graphics Capture of the MONITOR the editor is on, cut to the
+    /// editor's picture at a grab (#215: Windows 10 makes no capture item of
+    /// Live's owned editor window, and Live's window styles are never
+    /// touched). Nothing of ours runs per screen change: the frames are read
+    /// only at a grab ([`display::Frames`]).
+    #[serde(rename = "wgc-display")]
+    WgcDisplay,
 }
 
 impl Capture {
@@ -48,6 +57,7 @@ impl Capture {
         match self {
             Self::Wgc => "wgc",
             Self::Blt => "blt",
+            Self::WgcDisplay => "wgc-display",
         }
     }
 
@@ -56,6 +66,7 @@ impl Capture {
         match name {
             "wgc" => Some(Self::Wgc),
             "blt" => Some(Self::Blt),
+            "wgc-display" => Some(Self::WgcDisplay),
             _ => None,
         }
     }
@@ -76,11 +87,13 @@ pub const FRAME_SLACK: u32 = 2;
 
 /// A capture's own counts (the probe's `arrived=` and `lag_ms_max=`): the
 /// frames delivered and the largest delay from a frame's composition to
-/// its arrival (ms).
+/// its arrival (ms); a display capture's grabs by outcome too (`fresh=`,
+/// `current=`, `unsure=`, [`display::Tally`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct CaptureCounts {
     pub arrived: u64,
     pub lag_ms_max: f64,
+    pub display: Option<display::Tally>,
 }
 
 /// The frames a capture delivered.
@@ -118,6 +131,7 @@ impl Arrivals {
         CaptureCounts {
             arrived: self.arrived,
             lag_ms_max: self.lag_max,
+            display: None,
         }
     }
 }
@@ -363,6 +377,9 @@ mod tests {
         assert_eq!(Capture::named(""), None);
         assert_eq!(Capture::Wgc.name(), "wgc");
         assert_eq!(Capture::Blt.name(), "blt");
+        assert_eq!(Capture::named("wgc-display"), Some(Capture::WgcDisplay));
+        assert_eq!(Capture::named("wgc_display"), None);
+        assert_eq!(Capture::WgcDisplay.name(), "wgc-display");
         assert_eq!(WGC_LAG_MS, 34.0);
         assert_eq!(FRAME_SLACK, 2);
     }
@@ -384,7 +401,8 @@ mod tests {
             arrivals.counts(),
             CaptureCounts {
                 arrived: 3,
-                lag_ms_max: 9.5
+                lag_ms_max: 9.5,
+                display: None
             }
         );
         arrivals.taken();
