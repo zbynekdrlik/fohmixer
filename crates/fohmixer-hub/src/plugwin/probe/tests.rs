@@ -1,6 +1,7 @@
 use serde_json::Value;
 
 use super::*;
+use crate::plugwin::capture::display::Tally;
 use crate::plugwin::capture::{Capture, CaptureCounts, CaptureDiag};
 use crate::plugwin::sim::{REFUSED, REFUSED_QUIET, SimHandle};
 use crate::plugwin::{CAPTURE_MS, KEEPALIVE_MS, NOT_BACK, WindowId};
@@ -1459,11 +1460,26 @@ fn the_capture_is_wgc_unless_asked_and_capture_only_runs_no_gesture() {
     assert_eq!(
         arrived_text(Some(CaptureCounts {
             arrived: 17,
-            lag_ms_max: 3.25
+            lag_ms_max: 3.25,
+            display: None,
         })),
         "arrived=17 lag_ms_max=3.2"
     );
     assert_eq!(arrived_text(None), "arrived=- lag_ms_max=-");
+    assert_eq!(
+        arrived_text(Some(CaptureCounts {
+            arrived: 9,
+            lag_ms_max: 12.0,
+            display: Some(Tally {
+                fresh: 5,
+                current: 3,
+                unsure: 1
+            }),
+        })),
+        "arrived=9 lag_ms_max=12.0 fresh=5 current=3 unsure=1"
+    );
+    let display = parse(&["--pid", "1", "--capture-only", "--capture", "wgc-display"]).unwrap();
+    assert_eq!(display.capture, Capture::WgcDisplay);
 }
 
 #[test]
@@ -1528,6 +1544,7 @@ fn hub_rate_grabs_only_a_change_and_a_first_frame_is_awaited() {
     let counts = |arrived| CaptureCounts {
         arrived,
         lag_ms_max: 0.0,
+        display: None,
     };
     assert!(!arrived(Some(counts(0))), "no frame yet");
     assert!(arrived(Some(counts(1))));
@@ -1542,6 +1559,7 @@ fn a_capture_whose_first_frame_never_comes_fails_before_any_grab() {
     handle.capture_counts(Some(CaptureCounts {
         arrived: 0,
         lag_ms_max: 0.0,
+        display: None,
     }));
     let mut probe = args(42);
     probe.frames = 2;
@@ -1559,6 +1577,7 @@ fn a_capture_whose_first_frame_never_comes_fails_before_any_grab() {
     handle.capture_counts(Some(CaptureCounts {
         arrived: 3,
         lag_ms_max: 4.5,
+        display: None,
     }));
     let mut out = Vec::new();
     run(&mut sim, &probe, &mut out).unwrap();

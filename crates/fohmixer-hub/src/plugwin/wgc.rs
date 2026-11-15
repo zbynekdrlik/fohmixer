@@ -83,7 +83,7 @@ use windows::core::{IInspectable, Interface};
 
 use super::Pixels;
 use super::capture::{
-    Arrivals, CaptureCounts, CaptureDiag, apartment_name, awareness_name, frame_current,
+    Arrivals, CaptureCounts, CaptureDiag, FrameBox, apartment_name, awareness_name, frame_current,
     picture_box,
 };
 
@@ -93,32 +93,32 @@ pub const BUFFERS: i32 = 2;
 /// worker asks at every step while it has none).
 pub const START_AGAIN: Duration = Duration::from_secs(1);
 /// The frames' format: what the encoder reads (BGRA, 4 bytes a pixel).
-const FORMAT: DirectXPixelFormat = DirectXPixelFormat::B8G8R8A8UIntNormalized;
+pub(super) const FORMAT: DirectXPixelFormat = DirectXPixelFormat::B8G8R8A8UIntNormalized;
 
 /// A COM call's error as the backend's.
-fn text(what: &str, error: windows::core::Error) -> String {
+pub(super) fn text(what: &str, error: windows::core::Error) -> String {
     format!("{what}: {error}")
 }
 
 /// Takes a lock, poisoned or not (a panic on the frame thread leaves the
 /// state as it was: the next frame or grab goes on).
-fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(super) fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// The Direct3D device the captures share: its immediate context under one
 /// lock (the frame threads and the worker both use it), and its WinRT face
 /// for the frame pools.
-struct Device {
-    device: ID3D11Device,
-    context: Arc<Mutex<ID3D11DeviceContext>>,
-    direct3d: Direct3D,
+pub(super) struct Device {
+    pub(super) device: ID3D11Device,
+    pub(super) context: Arc<Mutex<ID3D11DeviceContext>>,
+    pub(super) direct3d: Direct3D,
 }
 
 /// The device's WinRT face, sent to the frame thread (a pool's `Recreate`
 /// needs it there).
 #[derive(Clone)]
-struct Direct3D(IDirect3DDevice);
+pub(super) struct Direct3D(IDirect3DDevice);
 
 // SAFETY: a WinRT Direct3D device is agile (it may be used from any
 // thread; `Device::new` refuses one that does not say `IAgileObject`); the
@@ -130,14 +130,14 @@ unsafe impl Sync for Direct3D {}
 impl Direct3D {
     /// The device (a closure that calls this captures the whole wrapper,
     /// never its field alone, which is not `Send`).
-    fn get(&self) -> &IDirect3DDevice {
+    pub(super) fn get(&self) -> &IDirect3DDevice {
         &self.0
     }
 }
 
 impl Device {
     /// A hardware device with BGRA support, multithread-protected.
-    fn new() -> Result<Self, String> {
+    pub(super) fn new() -> Result<Self, String> {
         let mut device = None;
         let mut context = None;
         // SAFETY: the out pointers outlive the call.
@@ -183,7 +183,7 @@ impl Device {
 
 /// A texture of `width` × `height` BGRA pixels, on the GPU (`staging`:
 /// false) or readable by the CPU (true).
-fn texture(
+pub(super) fn texture(
     device: &ID3D11Device,
     width: u32,
     height: u32,
@@ -220,7 +220,7 @@ fn texture(
 }
 
 /// A texture's size.
-fn size_of(texture: &ID3D11Texture2D) -> (u32, u32) {
+pub(super) fn size_of(texture: &ID3D11Texture2D) -> (u32, u32) {
     let mut desc = D3D11_TEXTURE2D_DESC::default();
     // SAFETY: fills `desc`, which outlives the call.
     unsafe { texture.GetDesc(&mut desc) };
@@ -229,7 +229,7 @@ fn size_of(texture: &ID3D11Texture2D) -> (u32, u32) {
 
 /// The performance counter now, in 100 ns units (a frame's
 /// `SystemRelativeTime` is on that clock).
-fn qpc_100ns() -> Option<i64> {
+pub(super) fn qpc_100ns() -> Option<i64> {
     let (mut count, mut frequency) = (0_i64, 0_i64);
     // SAFETY: plain reads into locals.
     unsafe { QueryPerformanceCounter(&mut count).ok()? };
@@ -281,6 +281,133 @@ struct Partial {
     closed: Option<i64>,
 }
 
+/// A started capture's parts (the window's, `wgc`, or a monitor's,
+/// `wgc-display`), its handlers' tokens to remove them at its end.
+pub(super) struct Started {
+    pub(super) pool: Direct3D11CaptureFramePool,
+    pub(super) session: GraphicsCaptureSession,
+    pub(super) frames: i64,
+    pub(super) closed: i64,
+}
+
+/// Whether this Windows has Windows Graphics Capture (asked before an item
+/// is made).
+pub(super) fn supported() -> Result<(), String> {
+    if GraphicsCaptureSession::IsSupported().unwrap_or(false) {
+        Ok(())
+    } else {
+        Err("Windows Graphics Capture is not supported here".to_string())
+    }
+}
+
+/// A capture of `item` (`size`) started on `direct3d`: a free-threaded pool
+/// of `buffers` BGRA frames, `on_frame` and `on_closed` registered, the
+/// cursor left out, the border off where Windows lets it go (from 20348:
+/// the PC's 19044 refuses, accepted on #215). Both captures start so; a
+/// half-made one is undone ([`Partial::fail`]).
+pub(super) fn start_capture(
+    direct3d: &Direct3D,
+    item: &GraphicsCaptureItem,
+    buffers: i32,
+    size: SizeInt32,
+    on_frame: &TypedEventHandler<Direct3D11CaptureFramePool, IInspectable>,
+    on_closed: &TypedEventHandler<GraphicsCaptureItem, IInspectable>,
+) -> Result<Started, String> {
+    let pool =
+        Direct3D11CaptureFramePool::CreateFreeThreaded(direct3d.get(), FORMAT, buffers, size)
+            .map_err(|e| text("CreateFreeThreaded", e))?;
+    let mut partial = Partial {
+        item: item.clone(),
+        pool: pool.clone(),
+        frames: None,
+        closed: None,
+    };
+    match pool.FrameArrived(on_frame) {
+        Ok(token) => partial.frames = Some(token),
+        Err(e) => return Err(partial.fail(text("FrameArrived", e))),
+    }
+    // Windows ends the capture when the window closes or the monitor goes:
+    // started anew at the next grab.
+    match item.Closed(on_closed) {
+        Ok(token) => partial.closed = Some(token),
+        Err(e) => return Err(partial.fail(text("Closed", e))),
+    }
+    let session = match pool.CreateCaptureSession(item) {
+        Ok(session) => session,
+        Err(e) => return Err(partial.fail(text("CreateCaptureSession", e))),
+    };
+    let _ = session.SetIsCursorCaptureEnabled(false);
+    let _ = session.SetIsBorderRequired(false);
+    if let Err(e) = session.StartCapture() {
+        let _ = session.Close();
+        return Err(partial.fail(text("StartCapture", e)));
+    }
+    Ok(Started {
+        pool,
+        session,
+        frames: partial.frames.unwrap_or_default(),
+        closed: partial.closed.unwrap_or_default(),
+    })
+}
+
+/// The device in `slot`, made when first needed (each capture keeps its
+/// own slot).
+pub(super) fn device_in(slot: &mut Option<Device>) -> Result<&Device, String> {
+    if slot.is_none() {
+        *slot = Some(Device::new()?);
+    }
+    slot.as_ref()
+        .ok_or_else(|| "no Direct3D device".to_string())
+}
+
+/// Why the device in `slot` was lost, when Direct3D says it was (after a
+/// failed read or start: then every session and the device are dropped,
+/// made anew at the next grab; the #215 review: a device lost while no
+/// session ran was never dropped).
+pub(super) fn lost(slot: &Option<Device>) -> Option<String> {
+    let device = slot.as_ref()?;
+    // SAFETY: a plain query of the device's state.
+    unsafe { device.device.GetDeviceRemovedReason() }
+        .err()
+        .map(|e| e.to_string())
+}
+
+/// The starts that failed, by session key: one is tried again no sooner
+/// than [`START_AGAIN`] (the worker asks at every grab while it has none).
+pub(super) struct Failures<K>(HashMap<K, (Instant, String)>);
+
+impl<K> Default for Failures<K> {
+    fn default() -> Self {
+        Self(HashMap::new())
+    }
+}
+
+impl<K: std::hash::Hash + Eq> Failures<K> {
+    /// The error of `key`'s start when it failed less than [`START_AGAIN`]
+    /// ago.
+    pub(super) fn recent(&self, key: &K) -> Option<String> {
+        self.0
+            .get(key)
+            .filter(|(at, _)| at.elapsed() < START_AGAIN)
+            .map(|(_, why)| why.clone())
+    }
+
+    /// `key`'s start failed now.
+    pub(super) fn failed(&mut self, key: K, why: String) {
+        self.0.insert(key, (Instant::now(), why));
+    }
+
+    /// `key`'s start went, or its capture ended.
+    pub(super) fn forget(&mut self, key: &K) {
+        self.0.remove(key);
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 impl Partial {
     fn fail(self, why: String) -> String {
         if let Some(token) = self.frames {
@@ -300,7 +427,7 @@ impl Partial {
 pub struct Wgc {
     device: Option<Device>,
     sessions: HashMap<usize, Session>,
-    failed: HashMap<usize, (Instant, String)>,
+    failed: Failures<usize>,
 }
 
 impl std::fmt::Debug for Wgc {
@@ -421,23 +548,12 @@ fn frame_bounds(window: HWND) -> Result<RECT, String> {
 }
 
 impl Wgc {
-    fn device(&mut self) -> Result<&Device, String> {
-        if self.device.is_none() {
-            self.device = Some(Device::new()?);
-        }
-        self.device
-            .as_ref()
-            .ok_or_else(|| "no Direct3D device".to_string())
-    }
-
     /// A session for `window` started, its frames kept in `newest` (a new
     /// one, or the ended session's: its newest frame serves until the new
     /// session's first).
     fn start(&mut self, window: HWND, newest: Arc<Mutex<Newest>>) -> Result<Session, String> {
-        if !GraphicsCaptureSession::IsSupported().unwrap_or(false) {
-            return Err("Windows Graphics Capture is not supported here".to_string());
-        }
-        let device = self.device()?;
+        supported()?;
+        let device = device_in(&mut self.device)?;
         let (d3d, context, direct3d) = (
             device.device.clone(),
             Arc::clone(&device.context),
@@ -453,16 +569,8 @@ impl Wgc {
         let size = item
             .Size()
             .map_err(|e| text("GraphicsCaptureItem.Size", e))?;
-        let pool =
-            Direct3D11CaptureFramePool::CreateFreeThreaded(direct3d.get(), FORMAT, BUFFERS, size)
-                .map_err(|e| text("CreateFreeThreaded", e))?;
-        let mut partial = Partial {
-            item: item.clone(),
-            pool: pool.clone(),
-            frames: None,
-            closed: None,
-        };
         let theirs = Arc::clone(&newest);
+        let recreate = direct3d.clone();
         let pool_size = Mutex::new(size);
         let handler =
             TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(move |pool, _| {
@@ -489,15 +597,11 @@ impl Wgc {
                     && content.Width > 0
                     && content.Height > 0
                 {
-                    pool.Recreate(direct3d.get(), FORMAT, BUFFERS, content)?;
+                    pool.Recreate(recreate.get(), FORMAT, BUFFERS, content)?;
                     *last = content;
                 }
                 Ok(())
             });
-        match pool.FrameArrived(&handler) {
-            Ok(token) => partial.frames = Some(token),
-            Err(e) => return Err(partial.fail(text("FrameArrived", e))),
-        }
         // Windows ends the capture when the window closes: started anew at
         // the next grab (a gone window is the worker's `alive`).
         let flagged = Arc::clone(&newest);
@@ -505,29 +609,14 @@ impl Wgc {
             locked(&flagged).ended = true;
             Ok(())
         });
-        match item.Closed(&on_closed) {
-            Ok(token) => partial.closed = Some(token),
-            Err(e) => return Err(partial.fail(text("Closed", e))),
-        }
-        let session = match pool.CreateCaptureSession(&item) {
-            Ok(session) => session,
-            Err(e) => return Err(partial.fail(text("CreateCaptureSession", e))),
-        };
-        // The cursor never in the picture; no border where Windows lets it
-        // go (from 20348: the PC's 19044 refuses, accepted on #215).
-        let _ = session.SetIsCursorCaptureEnabled(false);
-        let _ = session.SetIsBorderRequired(false);
-        if let Err(e) = session.StartCapture() {
-            let _ = session.Close();
-            return Err(partial.fail(text("StartCapture", e)));
-        }
+        let started = start_capture(&direct3d, &item, BUFFERS, size, &handler, &on_closed)?;
         locked(&newest).ended = false;
         Ok(Session {
             item,
-            pool,
-            session,
-            frames: partial.frames.unwrap_or_default(),
-            closed: partial.closed.unwrap_or_default(),
+            pool: started.pool,
+            session: started.session,
+            frames: started.frames,
+            closed: started.closed,
             newest,
         })
     }
@@ -548,18 +637,20 @@ impl Wgc {
             kept = Some(old.newest);
         }
         if !self.sessions.contains_key(&key) {
-            if let Some((at, why)) = self.failed.get(&key)
-                && at.elapsed() < START_AGAIN
-            {
-                return Err(why.clone());
+            if let Some(why) = self.failed.recent(&key) {
+                return Err(why);
             }
             match self.start(window, kept.unwrap_or_default()) {
                 Ok(session) => {
-                    self.failed.remove(&key);
+                    self.failed.forget(&key);
                     self.sessions.insert(key, session);
                 }
                 Err(why) => {
-                    self.failed.insert(key, (Instant::now(), why.clone()));
+                    if let Some(lost) = lost(&self.device) {
+                        tracing::warn!(error = %lost, "the Pro-Q 4 capture's Direct3D device was lost: made anew at the next grab");
+                        self.reset();
+                    }
+                    self.failed.failed(key, why.clone());
                     return Err(why);
                 }
             }
@@ -621,11 +712,10 @@ impl Wgc {
             .as_ref()
             .ok_or_else(|| "no Direct3D device".to_string())?;
         let read = read(device, &newest, bounds, origin, size);
-        // SAFETY: a plain query of the device's state.
         if read.is_err()
-            && let Err(e) = unsafe { device.device.GetDeviceRemovedReason() }
+            && let Some(lost) = lost(&self.device)
         {
-            tracing::warn!(error = %e, "the Pro-Q 4 capture's Direct3D device was lost: made anew at the next grab");
+            tracing::warn!(error = %lost, "the Pro-Q 4 capture's Direct3D device was lost: made anew at the next grab");
             self.reset();
         }
         read
@@ -643,7 +733,7 @@ impl Wgc {
     /// stop).
     pub fn end(&mut self, window: HWND) {
         let key = window.0 as usize;
-        self.failed.remove(&key);
+        self.failed.forget(&key);
         if let Some(session) = self.sessions.remove(&key) {
             session.stop();
         }
@@ -687,14 +777,35 @@ fn read(
     let Some(frame) = newest.frame.clone() else {
         return Err("no frame of the editor yet".to_string());
     };
-    let fits = newest
-        .staging
+    let pixels = read_box(device, &mut newest.staging, &frame, within)?;
+    newest.arrivals.taken();
+    Ok(pixels)
+}
+
+/// The box `within` of the GPU texture `frame` read back: copied on the GPU
+/// into a staging texture of its size (`staging`, kept for the next box of
+/// that size), mapped once, its rows into [`Pixels`]. The box must lie
+/// inside `frame` (checked: else an error, nothing copied).
+pub(super) fn read_box(
+    device: &Device,
+    staging: &mut Option<ID3D11Texture2D>,
+    frame: &ID3D11Texture2D,
+    within: FrameBox,
+) -> Result<Pixels, String> {
+    let (frame_w, frame_h) = size_of(frame);
+    if within.left + within.width > frame_w || within.top + within.height > frame_h {
+        return Err(format!(
+            "the box {}x{} at {},{} is past the frame's {frame_w}x{frame_h}",
+            within.width, within.height, within.left, within.top
+        ));
+    }
+    let fits = staging
         .as_ref()
         .is_some_and(|s| size_of(s) == (within.width, within.height));
     if !fits {
-        newest.staging = Some(texture(&device.device, within.width, within.height, true)?);
+        *staging = Some(texture(&device.device, within.width, within.height, true)?);
     }
-    let staging = newest.staging.clone().ok_or("no staging texture")?;
+    let staging = staging.clone().ok_or("no staging texture")?;
     let source = D3D11_BOX {
         left: within.left,
         top: within.top,
@@ -705,12 +816,11 @@ fn read(
     };
     let context = locked(&device.context);
     let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-    // SAFETY: the box lies inside `frame` (`picture_box` cut it to the
-    // content, which `keep` cut to the texture), the staging texture is the
-    // box's size, and the mapped rows are read within the pitch Direct3D
-    // gives before the unmap.
+    // SAFETY: the box lies inside `frame` (checked above), the staging
+    // texture is the box's size, and the mapped rows are read within the
+    // pitch Direct3D gives before the unmap.
     let bgra = unsafe {
-        context.CopySubresourceRegion(&staging, 0, 0, 0, 0, &frame, 0, Some(&source));
+        context.CopySubresourceRegion(&staging, 0, 0, 0, 0, frame, 0, Some(&source));
         context
             .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
             .map_err(|e| text("Map", e))?;
@@ -725,7 +835,6 @@ fn read(
         bgra
     };
     drop(context);
-    newest.arrivals.taken();
     Ok(Pixels {
         width: within.width,
         height: within.height,

@@ -130,6 +130,8 @@ pub mod undo;
 #[cfg(windows)]
 pub mod wgc;
 #[cfg(windows)]
+pub mod wgc_display;
+#[cfg(windows)]
 pub mod win;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
