@@ -47,8 +47,7 @@ pub fn longest_word_chars(text: &str) -> usize {
 /// the strip's side text (`group-side`: its group's name, or an untitled
 /// shared group's or a mixed sector layout's set, which the stylesheet
 /// shows in capitals) already says that word: every strip says its set
-/// once in its info column. (A mixed rows-page group's strip keeps its
-/// `strip-tag` pill in the head too, #63.)
+/// once, and never by a pill (the #63 instance tag is gone).
 pub fn set_text(instance: &str, side: Option<&str>) -> Option<String> {
     let text = instance.trim().to_uppercase();
     let said = side.is_some_and(|s| s.trim().to_uppercase() == text);

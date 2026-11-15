@@ -19,8 +19,8 @@
 //! block stays live and renames, adds and removes layouts, mockup v2,
 //! `behave::arrange_edit`, saved with the same tap; no undo, the owner's
 //! ruling of 29.10.2026), then the arrows of a side
-//! that does not fit, the rail and the global controls. No strip draws its
-//! instance pill here (it costs 16 px of travel); a layout that mixes Live
+//! that does not fit, the rail and the global controls. A strip says its
+//! Live set in its info column (#211); a layout that mixes Live
 //! sets names each strip's set where the group's name sits on the classic
 //! page (`binding::sectors::sector_side`), following the shown layout. A
 //! layout's empty slot is a blank cell in its place (the slot model,
@@ -278,7 +278,7 @@ pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
     });
     let rev = Memo::new(move |_| doc.try_with(|d| d.as_ref().map(|d| d.rev)).flatten());
     // The pool's controls, once for the page (a layout change mounts it
-    // anew), and each sector's instance tag.
+    // anew), and each sector's shared Live set.
     let controls = StoredValue::new(pool_controls(&head.layout));
     let instances = instances_memo(head.layout.clone(), doc.into(), nav.picks.into());
     Effect::new(move |_| {
@@ -521,8 +521,8 @@ fn SectorLineView(
 }
 
 /// One cell of a sector: an empty slot's blank (`sectors.css` outlines it
-/// only in ARRANGE), else a strip's pool control on its sector's side, with
-/// no instance pill and, while the layout its sector shows now mixes Live
+/// only in ARRANGE), else a strip's pool control on its sector's side,
+/// with, while the layout its sector shows now mixes Live
 /// sets, its own set as the side text (a memo of `instances`: a strip kept
 /// through a page follows the new layout); ARRANGE's cover over it (shown
 /// only in the mode). `data-slot` is its layout slot now (a kept strip's
@@ -565,23 +565,20 @@ fn SectorCellView(
     let control = controls
         .try_with_value(|all| all.get(&strip).cloned())
         .flatten();
-    // The strip's own Live set as its `shared`: it never draws its
-    // instance pill here (1.24.0: 16 px of travel, a bright fill); a mixed
-    // layout names the set on its side instead (`sector_side`), a memo of
-    // `instances`, so a strip kept through a page follows the layout shown.
-    let own = match &control {
-        Some(Control::Strip(strip)) => Some(strip.binding.instance.clone()),
-        _ => None,
+    // A mixed layout names the strip's set on its side (`sector_side`), a
+    // memo of `instances`, so a strip kept through a page follows the
+    // layout shown; otherwise the strip's own set mark says it (#211).
+    let own_side = match &control {
+        Some(Control::Strip(strip)) => strip.binding.instance.clone(),
+        _ => String::new(),
     };
-    let own_side = own.clone().unwrap_or_default();
-    let shared = Signal::derive(move || own.clone());
     let side_text = Memo::new(move |_| {
         instances
             .try_with(|all| sector_side(all.get(&sector).and_then(Option::as_deref), &own_side))
             .flatten()
     });
     let inner = control.map(|control| {
-        view! { <ControlView control=control shared=shared group_name=side_text /> }
+        view! { <ControlView control=control group_name=side_text /> }
     });
     let slot_attr = move || slot_now.try_get().unwrap_or(first_slot).to_string();
     view! {
@@ -1317,9 +1314,10 @@ mod tests {
     }
 
     #[test]
-    fn a_kept_strips_instance_tag_follows_its_sectors_page() {
+    fn a_kept_strips_side_set_follows_its_sectors_page() {
         // band X stays mounted while lu pages from [band X, band Y] (one
-        // set: no tag) to [band X, master A-Reverb #] (mixed: tags).
+        // set: names nothing) to [band X, master A-Reverb #] (mixed: names
+        // each set).
         let layout: Layout = serde_json::from_value(json!({
             "schema": 2, "default_page": "foh",
             "pages": [{"id": "foh", "title": "FOH",

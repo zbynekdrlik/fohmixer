@@ -91,12 +91,16 @@ test.describe("A strip", () => {
     await expect(strip(page, "B-Main repro #").getByTestId("strip-label")).toHaveText("Main");
     // #63, #127: a group whose strips share an instance names it once, on
     // the side of its run's first strip (Hand2's group is untitled: the name
-    // is the set's), not on each strip; #151: no RET on any strip.
+    // is the set's), and Hand2, further in the run, says its set by its own
+    // mark (#211); no instance pill on any strip (#211); #151: no RET on
+    // any strip.
     const named = await groupLabelOf(page, strip(page, "Hand2 #"));
     await expect(named).toHaveText("BAND");
     await expect(named).toHaveAttribute("data-instance", "band");
-    await expect(strip(page, "Hand2 #").getByTestId("strip-instance")).toHaveCount(0);
-    await expect(strip(page, "B-Main repro #").getByTestId("strip-instance")).toHaveCount(0);
+    await expect(strip(page, "Hand2 #").getByTestId("group-side")).toHaveCount(0);
+    await expect(strip(page, "Hand2 #").getByTestId("strip-set")).toHaveText("BAND");
+    await expect(page.getByTestId("strip-instance")).toHaveCount(0);
+    await expect(page.locator('[data-testid="strip"] .strip-tag')).toHaveCount(0);
     await expect(page.locator('[data-testid="strip"] .strip-ret')).toHaveCount(0);
     for (const s of await page.getByTestId("strip").all()) {
       expect(await s.textContent(), `${await s.getAttribute("data-track")}: no RET`).not.toMatch(/\bRET\b/i);
@@ -152,8 +156,8 @@ test.describe("A strip", () => {
       binding: { instance, anchor: { kind: "track", name } },
       strip_kind: "standard",
     }));
-    // A master return first: its instance tag says the instance alone (#151:
-    // no RET on a strip).
+    // A master return first: its set mark says the instance alone (#151:
+    // no RET on a strip; #211: no instance pill).
     strips.unshift({ kind: "strip", binding: { instance: "master", anchor: { kind: "return", name: "A-Reverb #" } }, strip_kind: "return" });
     foh.rows = [{ sections: [{ kind: "group", id: "narrow", title: "Narrow", controls: strips }] }];
     await page.setViewportSize({ width: 1236, height: 720 });
@@ -191,12 +195,24 @@ test.describe("A strip", () => {
         }),
       );
       expect(outside).toEqual([]);
-      await expect(cells.locator('[data-testid="strip"][data-track="A-Reverb #"]').getByTestId("strip-instance")).toHaveText(/^master$/i);
-      for (const part of ["strip-label", "strip-instance"]) {
-        for (const text of await cells.getByTestId(part).all()) {
-          expect(await clipped(text), `${part} ${await text.textContent()}`).toEqual([]);
-        }
+      await expect(cells.locator('[data-testid="strip"][data-track="A-Reverb #"]').getByTestId("strip-set")).toHaveText("MASTER");
+      await expect(cells.getByTestId("strip-instance")).toHaveCount(0);
+      for (const text of await cells.getByTestId("strip-label").all()) {
+        expect(await clipped(text), `strip-label ${await text.textContent()}`).toEqual([]);
       }
+      // Each set mark shown whole (a vertical text: its scroll sizes, never
+      // `clipped()`), or yielded whole right of its side box (#211).
+      const sets = await page.evaluate(() =>
+        [...document.querySelectorAll('.slot[data-group="narrow"] [data-testid="strip-set"]')].map((el) => {
+          const e = el as HTMLElement;
+          const box = e.closest('[data-testid="strip-side"]')!.getBoundingClientRect();
+          const b = e.getBoundingClientRect();
+          const yielded = b.left >= box.right - 0.01;
+          return { text: e.textContent, yielded, whole: yielded || (e.scrollWidth <= e.clientWidth && e.scrollHeight <= e.clientHeight && b.right <= box.right + 0.5) };
+        }),
+      );
+      expect(sets.length, "every strip of the narrow page says its set").toBe(16);
+      for (const s of sets) expect(s.whole, `${s.text}`).toBe(true);
       const scrolls = await page.evaluate(() =>
         [...document.querySelectorAll('[data-testid="line"]')]
           .filter((r) => r.scrollHeight > r.clientHeight)
@@ -601,8 +617,8 @@ test.describe("A strip", () => {
 
   test("the fader's travel on the iPad is at least 322 px", async ({ page }) => {
     // #151: the v8 head (37 + 2 + 20 px) costs the fader nothing (the FOH
-    // fixture at the iPad's 1194 × 834; a tagged strip loses the tag's
-    // ~16 px, as before).
+    // fixture at the iPad's 1194 × 834); #211: a strip of a mixed group has
+    // no instance pill any more, so every strip has the full travel.
     await page.setViewportSize({ width: 1194, height: 834 });
     await openSurface(page);
     await expect(page.getByTestId("strip").first()).toBeVisible();
@@ -611,7 +627,7 @@ test.describe("A strip", () => {
     // `evaluateAll`'s query and its read measures 0 px.
     const travels = await page.evaluate(() =>
       [...document.querySelectorAll('[data-testid="strip"]')]
-        .filter((s) => !s.querySelector('[data-testid="strip-instance"]') && s.querySelector('[data-testid="fader"]'))
+        .filter((s) => s.querySelector('[data-testid="fader"]'))
         .map((s) => ({ name: s.getAttribute("data-track"), h: s.querySelector('[data-testid="fader"]')!.getBoundingClientRect().height })),
     );
     expect(travels.length).toBeGreaterThan(0);
@@ -673,7 +689,7 @@ test.describe("A strip", () => {
     const named = await groupLabelOf(page, master);
     await expect(named).toHaveText("MASTER");
     await expect(named).toHaveAttribute("data-instance", "master");
-    await expect(master.getByTestId("strip-instance")).toHaveCount(0);
+    await expect(master.getByTestId("strip-set")).toHaveCount(0);
     await expect(master.getByTestId("db")).toHaveText(dbForm(await live.display("master", volume(track("Hand1 #")), 0.6)));
   });
 });

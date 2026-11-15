@@ -7,8 +7,8 @@
 /* Held in the hands (#63): what is read sits at the top (the name button,
    Live's dB under it), the fader zone runs down to the foot, which a hand
    holding the tablet covers. No pan (#71, D17: it is the channel detail's;
-   at the foot the iPad's home bar waits for a swipe). The instance tag
-   only in a group whose strips differ. The owner's mockup v8 (#151): the
+   at the foot the iPad's home bar waits for a swipe). No instance pill
+   (#211: the info column says the Live set). The owner's mockup v8 (#151): the
    name button is the strip's top edge (no padding above it), and the
    strip carries one colour, its Live track's (the name button's 3 px
    edge; no group colour on a strip). `--cap-w`: the fader cap's width,
@@ -29,10 +29,6 @@
     border: 1px solid transparent;
     border-radius: 9px;
     background: var(--panel);
-}
-
-.strip:has(> .strip-tag) {
-    grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 /* `--head-w`: the head's width (the strip's less its border: the name
@@ -101,32 +97,6 @@
 
 .strip:has(.fader[data-held="true"]) .strip-readout .db {
     color: #07131a;
-}
-
-.strip-tag {
-    justify-self: center;
-    padding: 1px 3px;
-    border-radius: 4px;
-    color: var(--band);
-    background: rgba(78, 205, 196, 0.14);
-    /* The strip's texts are sized from the strip width (`--strip-w`), never
-       measured (#21: measuring each text forced a layout per text, and
-       WebKit stopped drawing frames while it ran): the tag's longest form
-       "MASTER" fits from the narrowest strip up, no RET since #151 (the name: see
-       .strip-label); an ellipsis is the last guard, never an overflow (#9). */
-    font: 700 clamp(7px, calc((var(--strip-w, 76px) - 22px) / 7), 8.5px) / 1.3 var(--ui);
-    letter-spacing: 0.3px;
-    text-transform: uppercase;
-    white-space: nowrap;
-    max-width: 100%;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.strip-tag[data-instance="master"] {
-    color: var(--master);
-    background: rgba(139, 125, 255, 0.16);
 }
 
 /* A former MIDI fader's zone (params.rs; vca.css adds the backing-tracks

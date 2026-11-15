@@ -4,9 +4,9 @@
 //! channel detail's COLOR since #164, only as a 3 px edge), the name first and one marks line under it, with the status
 //! light and Live's dB readout on the line under it (a hand holding the
 //! tablet covers the bottom of the screen, so nothing to read sits there);
-//! then the instance tag when the group's strips differ and the fader
-//! zone: the info column (the LUFS slot, the group's name on the first
-//! strip of its run, #127), the fader with the stereo meter in its track,
+//! then the fader zone: the info column (the LUFS slot, the group's name
+//! on the first strip of its run, #127, and the strip's Live set, #211:
+//! no instance pill), the fader with the stereo meter in its track,
 //! the dB scale on its right, and SEL at the bottom left, whose hold opens
 //! the channel detail, with the ARM key above it on an armable track (#172).
 //! The pan left the strip for the channel detail (#71,
@@ -348,15 +348,13 @@ fn DetailKey(strip: Strip) -> impl IntoView {
     }
 }
 
-/// One strip; `shared` is the Live instance every strip of its group shares
-/// (#63: the group names it once, since #127 by its name on the side of
-/// its run's first strip, so the strip does not); `group_name` that name
-/// when the strip starts a run (#127, `InfoColumn`).
+/// One strip; `group_name` the group's name when the strip starts a run
+/// (#127, `InfoColumn`). Its Live set is said in its info column (#211),
+/// never by a pill in its head (the #63 instance tag is gone).
 #[component]
 pub fn StripView(
     strip: Strip,
     settings: Settings,
-    #[prop(optional, into)] shared: Signal<Option<String>>,
     #[prop(optional, into)] group_name: Signal<Option<GroupLabel>>,
 ) -> impl IntoView {
     let store = expect_context::<LiveStore>();
@@ -424,17 +422,6 @@ pub fn StripView(
             />
         }
     });
-    // The instance tag only where the group does not name it (#63); read
-    // reactively, so a strip kept through a sector's page follows the
-    // layout shown (#148).
-    let tagged = {
-        let instance = instance.clone();
-        move || {
-            shared
-                .try_with(|s| s.as_deref() != Some(instance.as_str()))
-                .unwrap_or(true)
-        }
-    };
     // A marker problem (#68): a conflict disables the strip, any other
     // problem marks it; the word replaces Live's dB on the readout line.
     let look = mark_look(strip.mark);
@@ -515,19 +502,6 @@ pub fn StripView(
         }
     });
     let db = volume.map(|slot| view! { <DbView state=slot /> });
-    // The instance alone, a return's too (#151: no RET on a strip).
-    let tag_of = instance.clone();
-    let tag = move || {
-        tagged().then(|| {
-            let text = tag_of.clone();
-            let tag_instance = tag_of.clone();
-            view! {
-                <span class="strip-tag" data-testid="strip-instance" data-instance=tag_instance>
-                    {text}
-                </span>
-            }
-        })
-    };
     let mark_word = look.map(|(_, word)| {
         view! { <span class="strip-mark" data-testid="strip-mark">{word}</span> }
     });
@@ -606,7 +580,6 @@ pub fn StripView(
                     </div>
                 </div>
             </div>
-            {tag}
             <div class="strip-zone" style=unity>
                 {hint}
                 <InfoColumn group_name=group_name lufs=lufs_look kind=lufs_kind instance=set_of />

@@ -8,9 +8,9 @@ import { SECTORS, band, master, openSectors, stripsOf } from "./support/sectors"
 // (`--faint`) vertical text in its info column (`strip-col`), under the
 // LUFS row, in the side box with the group's name (`strip-side`,
 // group.css): `strip-set`, or the group's name itself when that already
-// says the strip's set (behave::label::set_text), never both in the info
-// column (a mixed rows-page group's strip keeps its #63 `strip-instance`
-// pill in the head too). Nothing lit, no pill, the fader travel unchanged.
+// says the strip's set (behave::label::set_text), never both, and no
+// strip draws the old #63 instance pill (`strip-instance`) any more.
+// Nothing lit, no pill, every strip's fader travel the full 322 px.
 // On the rows page (titled, untitled and mixed groups) and the FOH sectors
 // page (a band, a master, a mixed and an MBC layout: the master `Hand1 #`
 // and the MBC `Hand 1`, the owner's case of two Lives' faders named alike,
@@ -82,6 +82,7 @@ function readSets(page: Page, scope: string): Promise<Seen> {
       const sideSays = !!side && (side.textContent ?? "").trim().toUpperCase() === want;
       const tally = (out.says[inst] ??= { set: 0, side: 0 });
       if (set && sideSays) fail("says its set twice");
+      if (s.querySelector('[data-testid="strip-instance"], .strip-tag')) fail("draws an instance pill");
       if (!set && !sideSays) fail("says no set");
       if (sideSays) tally.side++;
       const fader = s.querySelector('[data-testid="fader"]');
@@ -154,13 +155,13 @@ test.describe("Every strip says its Live set (#211)", () => {
     expect(ipad.says.band?.set).toBeGreaterThan(0);
     expect(ipad.says.master?.set).toBeGreaterThan(0);
     expect((ipad.says.band?.side ?? 0) + (ipad.says.master?.side ?? 0)).toBeGreaterThan(0);
-    // The v8 travel, unchanged (strip.spec.ts' floor): every strip without
-    // an instance pill.
+    // The v8 travel (strip.spec.ts' floor) on every strip, a mixed group's
+    // included: no instance pill takes its ~16 px any more.
     await page.setViewportSize(SIZES[0]);
     await frames(page);
     const travels = await page.evaluate(() =>
       [...document.querySelectorAll('[data-testid="strip"]')]
-        .filter((s) => !s.querySelector('[data-testid="strip-instance"]') && s.querySelector('[data-testid="fader"]'))
+        .filter((s) => s.querySelector('[data-testid="fader"]'))
         .map((s) => s.querySelector('[data-testid="fader"]')!.getBoundingClientRect().height)
         .filter((h) => h > 0),
     );

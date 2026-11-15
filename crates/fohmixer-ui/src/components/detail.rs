@@ -89,7 +89,7 @@ impl DetailStrip {
 }
 
 /// The bar's line beside the name chip: the group's title and the Live
-/// instance (a return's with "ret", as a strip's tag writes it).
+/// instance (a return's with "ret").
 pub fn bar_text(title: Option<&str>, instance: &str, ret: bool) -> String {
     let instance = if ret {
         format!("{instance} · ret")

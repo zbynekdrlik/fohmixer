@@ -750,8 +750,8 @@ pub enum Side {
 /// `docs/mockups/group-captions-v1.html`): its text, the group's title or,
 /// for an untitled group, the Live set its strips share in capitals
 /// (`BAND`, `MASTER`; `group_label`), and that shared instance (the label's
-/// colour; none when the strips differ, and then each strip keeps its
-/// instance tag).
+/// colour; none when the strips differ, and then each strip says its own
+/// set in its info column, #211).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupLabel {
     pub text: String,

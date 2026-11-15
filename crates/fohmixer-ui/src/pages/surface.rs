@@ -1455,7 +1455,6 @@ fn CellView(model: Arc<PageModel>, cell: Cell, label: Memo<Option<GroupLabel>>) 
             let Some(control) = group.controls.get(at.control).cloned() else {
                 return ().into_any();
             };
-            let shared = shared_instance(&group.controls);
             let control = match control {
                 Control::Strip(mut strip) if strip.wide && units < METRICS.wide => {
                     strip.wide = false;
@@ -1464,11 +1463,11 @@ fn CellView(model: Arc<PageModel>, cell: Cell, label: Memo<Option<GroupLabel>>) 
                 other => other,
             };
             if is_column(&control) {
-                view! { <ControlView control=control shared=shared group_name=label /> }.into_any()
+                view! { <ControlView control=control group_name=label /> }.into_any()
             } else {
                 view! {
                     <div class="cell">
-                        <ControlView control=control shared=shared />
+                        <ControlView control=control />
                     </div>
                 }
                 .into_any()
