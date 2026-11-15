@@ -165,7 +165,11 @@ async fn packets_reach_every_subscriber_and_are_counted() {
     let (listen, _records) = listen();
     let mut rx = listen.subscribe();
     listen.send_packet(Bytes::from_static(b"op"));
-    assert_eq!(rx.recv().await.unwrap(), Bytes::from_static(b"op"));
+    // Bounded: a packet that never comes fails here, never hangs the suite.
+    assert_eq!(
+        rx.try_recv().expect("the packet is in the channel at once"),
+        Bytes::from_static(b"op")
+    );
     assert_eq!(listen.status(Instant::now()).packets, 1);
     listen.counters.refuse("x");
     listen.counters.refuse("x");
