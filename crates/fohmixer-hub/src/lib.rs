@@ -803,7 +803,7 @@ fn plugwin_backend(config: &Config) -> anyhow::Result<Option<Box<dyn plugwin::Ba
             handle.undo_history(0);
             Ok(Some(Box::new(sim)))
         }
-        config::EqBackend::Windows => windows_backend().map(Some),
+        config::EqBackend::Windows => windows_backend(config.eq_capture()).map(Some),
     }
 }
 
@@ -811,7 +811,7 @@ fn plugwin_backend(config: &Config) -> anyhow::Result<Option<Box<dyn plugwin::Ba
 use crate::plugwin::win::hub_backend as windows_backend;
 
 #[cfg(not(windows))]
-fn windows_backend() -> anyhow::Result<Box<dyn plugwin::Backend>> {
+fn windows_backend(_capture: config::Capture) -> anyhow::Result<Box<dyn plugwin::Backend>> {
     anyhow::bail!("[eq] backend \"windows\" runs on Windows only")
 }
 
@@ -1817,6 +1817,7 @@ mod tests {
             config.companion = None;
             config.eq = Some(config::EqCfg {
                 backend: Some(backend),
+                capture: None,
             });
             let hub = Hub::start(config).unwrap();
             assert_eq!((hub.eq, hub.hears_clients()), (on, on), "{backend:?}");
@@ -1831,6 +1832,7 @@ mod tests {
         let mut config = Config::defaults(dir.path());
         config.eq = Some(config::EqCfg {
             backend: Some(config::EqBackend::Windows),
+            capture: None,
         });
         let refused = plugwin_backend(&config)
             .err()
@@ -1848,6 +1850,7 @@ mod tests {
         config.instances.clear();
         config.eq = Some(config::EqCfg {
             backend: Some(config::EqBackend::Sim),
+            capture: None,
         });
         let hub = Hub::start(config).unwrap();
         let plugwin = hub
@@ -1866,6 +1869,7 @@ mod tests {
         config.instances.clear();
         config.eq = Some(config::EqCfg {
             backend: Some(config::EqBackend::Off),
+            capture: None,
         });
         let hub = Hub::start(config).unwrap();
         assert!(hub.plugwin.is_none());

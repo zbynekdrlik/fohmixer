@@ -42,6 +42,7 @@ fn config(dir: &Path, host: &Host) -> Config {
     config.layout_poll_ms = 100;
     config.eq = Some(EqCfg {
         backend: Some(EqBackend::Sim),
+        capture: None,
     });
     config
 }
@@ -1110,7 +1111,12 @@ fn a_frame_waits_for_the_pages_ack_of_the_one_before_or_a_second_and_pongs_never
         let mut pings = 0;
         // The page acks each frame: they keep coming (the sim's picture
         // changes four times a second), none held back by an ack's wait.
+        // A finger rests on the editor meanwhile: an editor with no input
+        // for 2 s rests at one grab a second (#215), which would hold the
+        // frames' pace, not the acks.
+        input(&mut a, Touch::Down, 100.0, 100.0, 1).await;
         let acked = watch(&mut a, Duration::from_secs(3), true, &mut pings).await;
+        input(&mut a, Touch::Up, 100.0, 100.0, 2).await;
         let (times, others) = frame_times(&acked, session);
         assert_eq!(others, 0, "{acked:?}");
         assert!(times.len() >= 6, "frames while acked: {acked:?}");
@@ -1174,7 +1180,11 @@ fn on_a_link_slower_than_the_frames_a_pong_waits_behind_one_frame_at_most() {
         ack(&mut a, head.session, head.seq).await;
         link.rate(2 * frame.len() as u64);
         let mut pings = 0;
+        // A finger rests on the editor: it never rests at one grab a
+        // second (#215), so the picture outruns the link throughout.
+        input(&mut a, Touch::Down, 100.0, 100.0, 1).await;
         let seen = watch(&mut a, Duration::from_secs(4), true, &mut pings).await;
+        input(&mut a, Touch::Up, 100.0, 100.0, 2).await;
         let (times, others) = frame_times(&seen, session);
         assert_eq!(others, 0, "{seen:?}");
         assert!(

@@ -1317,6 +1317,190 @@ fn a_cropped_editors_guard_sends_its_whole_picture_first() {
     assert_eq!(got.lock().unwrap().len(), 1);
 }
 
+/// Steps the worker every 10 ms from `from` to `to` (ms, both included);
+/// the editor's grabs since.
+fn grabs_over(worker: &mut Worker, session: u32, from: u32, to: u32) -> u32 {
+    let before = worker.editors[&session].counts.grabs;
+    for step in from / 10..=to / 10 {
+        worker.step_at(f64::from(step * 10));
+    }
+    worker.editors[&session].counts.grabs - before
+}
+
+#[test]
+fn a_resting_editor_is_grabbed_at_most_once_a_second_and_an_input_wakes_it() {
+    // #215: the PA crackled while the EQ screen was open; dasio's sampler
+    // put it on the screen grab, about 13 a second however still the
+    // editor was. An editor with no contact down and no input for 2 s
+    // rests: at most one grab a second (the still picture's refresh).
+    let (mut worker, handle, _) = worker();
+    take(&mut worker, &handle, 1, 0.0);
+    let (sink, _frames) = sink();
+    worker.command_at(Command::Capture { session: 1, sink }, 0.0);
+    // The take counts as an input: every 40 ms for its first 2 s.
+    assert_eq!(grabs_over(&mut worker, 1, 0, 1990), 50);
+    // Resting: the last grab at 1960, then one a second.
+    assert_eq!(
+        grabs_over(&mut worker, 1, 2000, 5990),
+        4,
+        "at 2960, 3960, 4960, 5960"
+    );
+    // A page's input wakes it: every 40 ms again, from the next step.
+    worker.command_at(Command::Handled { session: 1, n: 1 }, 6000.0);
+    assert_eq!(grabs_over(&mut worker, 1, 6000, 6390), 10);
+    // A contact down keeps it awake however long it rests.
+    touch_at(&mut worker, 1, 1, Phase::Down, (10, 20), 6400.0);
+    assert_eq!(grabs_over(&mut worker, 1, 6400, 9990), 90);
+    // Its up is an input: 2 s more, then resting again.
+    touch_at(&mut worker, 1, 1, Phase::Up, (10, 20), 10_000.0);
+    assert_eq!(grabs_over(&mut worker, 1, 10_000, 11_990), 50);
+    assert_eq!(grabs_over(&mut worker, 1, 12_000, 13_990), 2);
+}
+
+#[test]
+fn an_editor_rests_2_s_after_its_last_input_with_no_contact_down() {
+    assert_eq!(REST_MS, 2000.0);
+    assert!(!resting(false, REST_MS.next_down()));
+    assert!(resting(false, REST_MS));
+    assert!(!resting(true, REST_MS), "a contact down never rests");
+    assert!(!resting(true, f64::INFINITY));
+    assert!(!resting(false, f64::NAN), "a time that is no number");
+}
+
+#[test]
+fn a_grab_is_due_once_a_second_resting_else_on_a_change_a_newer_input_or_the_refresh() {
+    // Resting: the refresh's second only, whatever changed.
+    assert!(!grab_due(REFRESH_MS.next_down(), true, true, true));
+    assert!(grab_due(REFRESH_MS, true, false, false));
+    // Awake: never within CAPTURE_MS, whatever is due.
+    assert!(!grab_due(CAPTURE_MS.next_down(), false, true, true));
+    // A change (or a backend that cannot tell, a BitBlt): every CAPTURE_MS.
+    assert!(grab_due(CAPTURE_MS, false, true, false));
+    // Nothing changed: a newer input painted, or the refresh.
+    assert!(!grab_due(CAPTURE_MS, false, false, false));
+    assert!(grab_due(CAPTURE_MS, false, false, true));
+    assert!(!grab_due(REFRESH_MS.next_down(), false, false, false));
+    assert!(grab_due(REFRESH_MS, false, false, false));
+}
+
+#[test]
+fn a_shown_input_is_due_once_painted_and_not_before_or_after_its_picture() {
+    let mut shown = Shown::default();
+    assert!(!shown.due(1000.0), "none handled");
+    shown.handled(1, 100.0);
+    shown.handled(2, 150.0);
+    assert!(!shown.due(120.0_f64.next_down()));
+    assert!(shown.due(120.0));
+    assert_eq!(shown.at_grab(120.0), 1);
+    // 1 shown: 2 is due only once painted.
+    assert!(!shown.due(169.0));
+    assert!(shown.due(170.0));
+    assert_eq!(shown.at_grab(170.0), 2);
+    assert!(!shown.due(10_000.0), "every one shown");
+}
+
+/// A worker whose editor 1 is taken and captured at 0 ms, on a sim that
+/// tells its changes (#215, as Windows Graphics Capture) and whose picture
+/// is still; the editor's frames.
+fn change_driven() -> (Worker, SimHandle, Kept) {
+    let (mut worker, handle, _) = worker();
+    handle.still(true);
+    handle.change_driven(true);
+    take(&mut worker, &handle, 1, 0.0);
+    let (sink, frames) = sink();
+    worker.command_at(Command::Capture { session: 1, sink }, 0.0);
+    (worker, handle, frames)
+}
+
+#[test]
+fn a_change_driven_editor_is_grabbed_only_when_its_picture_changed_or_its_refresh_is_due() {
+    let (mut worker, handle, frames) = change_driven();
+    // Awake (its take), but still: its first grab, then the refresh's.
+    assert_eq!(grabs_over(&mut worker, 1, 0, 990), 1);
+    wait_for("the first frame", || frames.lock().unwrap().len() == 1);
+    assert_eq!(grabs_over(&mut worker, 1, 1000, 1030), 1, "the refresh");
+    // Its picture changes (Pro-Q's ↶ drawn): grabbed at the next step.
+    handle.undo_history(1);
+    assert_eq!(grabs_over(&mut worker, 1, 1040, 1040), 1);
+    wait_for("the changed picture", || frames.lock().unwrap().len() == 3);
+    assert_eq!(grabs_over(&mut worker, 1, 1050, 1990), 0, "still again");
+    // Resting from 2000: a change waits for a second since the last grab
+    // (1040), and a still picture gets its refresh a second after that.
+    handle.undo_history(0);
+    assert_eq!(grabs_over(&mut worker, 1, 2000, 2030), 0);
+    assert_eq!(grabs_over(&mut worker, 1, 2040, 2040), 1);
+    assert_eq!(grabs_over(&mut worker, 1, 2050, 3030), 0);
+    assert_eq!(grabs_over(&mut worker, 1, 3040, 3040), 1, "the refresh");
+}
+
+#[test]
+fn an_input_that_changes_no_pixel_still_gets_a_picture_once_painted() {
+    // PR J with #215: a tap on an inert spot changes nothing, so a change-
+    // driven capture sees nothing; the page must still learn its picture
+    // caught up.
+    let (mut worker, _handle, frames) = change_driven();
+    worker.step_at(0.0);
+    wait_for("the first frame", || frames.lock().unwrap().len() == 1);
+    worker.command_at(Command::Handled { session: 1, n: 1 }, 100.0);
+    assert_eq!(grabs_over(&mut worker, 1, 100, 110), 0, "not painted yet");
+    assert_eq!(grabs_over(&mut worker, 1, 120, 120), 1);
+    wait_for("the picture again", || frames.lock().unwrap().len() == 2);
+    assert_eq!(frames.lock().unwrap()[1].2, 1, "it shows input 1");
+    assert_eq!(grabs_over(&mut worker, 1, 130, 990), 0);
+}
+
+#[test]
+fn a_picture_behind_the_screen_shows_an_input_only_a_paint_and_its_lag_after() {
+    // #215: Windows Graphics Capture's newest frame may be up to its lag
+    // behind the window; that is taken off the grab's clock.
+    let (mut worker, handle, frames) = change_driven();
+    handle.lag(Duration::from_millis(17));
+    worker.step_at(0.0);
+    wait_for("the first frame", || frames.lock().unwrap().len() == 1);
+    worker.command_at(Command::Handled { session: 1, n: 1 }, 100.0);
+    assert_eq!(grabs_over(&mut worker, 1, 100, 130), 0, "120 + 17 not yet");
+    assert_eq!(grabs_over(&mut worker, 1, 140, 140), 1);
+    wait_for("the picture again", || frames.lock().unwrap().len() == 2);
+    assert_eq!(frames.lock().unwrap()[1].2, 1);
+    // Without the lag, a grab at 130 would already show it.
+    let (mut worker, _handle, frames) = change_driven();
+    worker.step_at(0.0);
+    wait_for("the first frame", || frames.lock().unwrap().len() == 1);
+    worker.command_at(Command::Handled { session: 1, n: 1 }, 100.0);
+    assert_eq!(grabs_over(&mut worker, 1, 100, 130), 1);
+}
+
+#[test]
+fn a_backend_that_cannot_tell_a_change_is_grabbed_every_40_ms_on_its_own_clock() {
+    // #215: the trait's defaults are a BitBlt's: every grab may show a
+    // change (so an awake editor is grabbed every CAPTURE_MS) and its
+    // picture is the screen now (no lag). `Slow` keeps both defaults,
+    // whatever its sim could tell.
+    let (sim, handle) = Sim::new(None);
+    handle.still(true);
+    handle.change_driven(true);
+    let slow = Slow {
+        sim,
+        hold: Duration::ZERO,
+        grab_ms: 0.0,
+    };
+    let (mut worker, _) = worker_on(Box::new(slow));
+    take(&mut worker, &handle, 1, 0.0);
+    let (sink, _frames) = sink();
+    worker.command_at(Command::Capture { session: 1, sink }, 0.0);
+    assert_eq!(grabs_over(&mut worker, 1, 0, 70), 2, "at 0 and 40");
+    // Input 1 handled at 61: the grab at 80 is 19 ms after it, not painted.
+    worker.command_at(Command::Handled { session: 1, n: 1 }, 61.0);
+    worker.step_at(80.0);
+    assert_eq!(worker.editors[&1].counts.grabs, 3);
+    assert_eq!(worker.editors[&1].last_shown, 0);
+    // Input 2 at 100: the grab at 120 shows it, painted exactly then.
+    worker.command_at(Command::Handled { session: 1, n: 2 }, 100.0);
+    worker.step_at(120.0);
+    assert_eq!(worker.editors[&1].counts.grabs, 4);
+    assert_eq!(worker.editors[&1].last_shown, 2);
+}
+
 #[test]
 fn a_captured_editor_sends_its_pictures_skipping_a_same_one() {
     let (mut worker, handle, heard) = worker();

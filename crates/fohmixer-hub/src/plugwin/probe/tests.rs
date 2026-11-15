@@ -1,6 +1,7 @@
 use serde_json::Value;
 
 use super::*;
+use crate::plugwin::capture::{Capture, CaptureCounts};
 use crate::plugwin::sim::{REFUSED, REFUSED_QUIET, SimHandle};
 use crate::plugwin::{CAPTURE_MS, KEEPALIVE_MS, NOT_BACK, WindowId};
 
@@ -19,6 +20,9 @@ fn args(pid: u32) -> Args {
         paint: 0,
         hold: false,
         undo: false,
+        capture: Capture::Wgc,
+        capture_only: false,
+        hub_rate: false,
     }
 }
 
@@ -62,6 +66,9 @@ fn the_arguments_have_their_defaults_and_every_flag_is_read() {
             paint: 20,
             hold: true,
             undo: false,
+            capture: Capture::Wgc,
+            capture_only: false,
+            hub_rate: false,
         })
     );
     // `--undo` (#71 PR P): alone, or with no paint trial; never with
@@ -1411,4 +1418,149 @@ fn an_undo_tap_that_fails_fails_the_probe_and_hands_the_window_back() {
         ops(&handle),
         vec![op("take", "", -1, -1), op("release", "", -1, -1)]
     );
+}
+
+#[test]
+fn the_capture_is_wgc_unless_asked_and_capture_only_runs_no_gesture() {
+    // #215: `--capture wgc|blt` and `--capture-only`.
+    assert_eq!(parse(&["--pid", "1"]).unwrap().capture, Capture::Wgc);
+    let blt = parse(&["--pid", "1", "--capture", "blt"]).unwrap();
+    assert_eq!((blt.capture, blt.capture_only), (Capture::Blt, false));
+    let only = parse(&["--capture-only", "--pid", "1", "--capture", "wgc"]).unwrap();
+    assert_eq!((only.capture, only.capture_only), (Capture::Wgc, true));
+    assert_eq!(
+        parse(&["--pid", "1", "--capture", "gdi"]),
+        Err("--capture \"gdi\"".to_string())
+    );
+    assert_eq!(
+        parse(&["--pid", "1", "--capture"]),
+        Err("--capture needs a value".to_string())
+    );
+    let alone = |flags: &[&str]| {
+        let mut all = vec!["--pid", "1", "--capture-only"];
+        all.extend_from_slice(flags);
+        parse(&all)
+    };
+    for flags in [
+        &["--min-probe"][..],
+        &["--hold"],
+        &["--paint", "1"],
+        &["--undo"],
+        &["--close"],
+    ] {
+        assert_eq!(alone(flags), Err(CAPTURE_ALONE.to_string()), "{flags:?}");
+    }
+    assert!(alone(&["--size", "800x600", "--frames", "2"]).is_ok());
+    assert_eq!(
+        arrived_text(Some(CaptureCounts {
+            arrived: 17,
+            lag_ms_max: 3.25
+        })),
+        "arrived=17 lag_ms_max=3.2"
+    );
+    assert_eq!(arrived_text(None), "arrived=- lag_ms_max=-");
+}
+
+#[test]
+fn a_capture_only_probe_takes_grabs_and_releases_nothing_else() {
+    let (mut sim, handle, window) = one_window(42);
+    let mut probe = args(42);
+    probe.frames = 3;
+    probe.capture_only = true;
+    probe.capture = Capture::Blt;
+    let mut out = Vec::new();
+    run(&mut sim, &probe, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 7, "{text}");
+    assert_eq!(lines[2], "frames=3 sent=1 same=2");
+    assert!(
+        lines[5].starts_with("fps=") && lines[5].ends_with(" capture=blt arrived=- lag_ms_max=-"),
+        "{text}"
+    );
+    assert_eq!(lines[6], "release=ok");
+    // Taken and released: nothing touched, resized or set.
+    assert_eq!(
+        ops(&handle),
+        vec![op("take", "", -1, -1), op("release", "", -1, -1)]
+    );
+    assert!(handle.windows().contains(&window));
+}
+
+#[test]
+fn hub_rate_grabs_only_a_change_and_a_first_frame_is_awaited() {
+    // #215 review: `--hub-rate` grabs as an awake editor of the hub (a
+    // change or the second's refresh); a capture's first frame comes a
+    // little after the take, and a grab waits for it.
+    let (mut sim, handle, _) = one_window(42);
+    handle.change_driven(true);
+    let mut probe = args(42);
+    probe.frames = 5;
+    probe.capture_only = true;
+    probe.hub_rate = true;
+    assert_eq!(
+        parse(&[
+            "--pid",
+            "42",
+            "--capture-only",
+            "--hub-rate",
+            "--frames",
+            "5"
+        ]),
+        Ok(probe.clone())
+    );
+    let mut out = Vec::new();
+    run(&mut sim, &probe, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[2], "frames=5 sent=1 same=0", "{text}");
+    assert!(
+        lines[5].ends_with(" capture=wgc arrived=- lag_ms_max=- hub_rate=on skipped=4"),
+        "{text}"
+    );
+    assert_eq!(handle.grabs(), 1, "the still window grabbed once");
+    assert!(arrived(None), "a backend that grabs the screen");
+    let counts = |arrived| CaptureCounts {
+        arrived,
+        lag_ms_max: 0.0,
+    };
+    assert!(!arrived(Some(counts(0))), "no frame yet");
+    assert!(arrived(Some(counts(1))));
+    assert_eq!(FIRST_FRAME_LOOKS, 50);
+}
+
+#[test]
+fn a_capture_whose_first_frame_never_comes_fails_before_any_grab() {
+    // #215 review: Windows Graphics Capture's first frame comes after the
+    // take; one that never comes fails the probe after 500 ms, no grab.
+    let (mut sim, handle, _) = one_window(42);
+    handle.capture_counts(Some(CaptureCounts {
+        arrived: 0,
+        lag_ms_max: 0.0,
+    }));
+    let mut probe = args(42);
+    probe.frames = 2;
+    probe.capture_only = true;
+    let started = Instant::now();
+    let mut out = Vec::new();
+    assert_eq!(
+        run(&mut sim, &probe, &mut out),
+        Err("capture: no frame of the window within 500 ms".to_string())
+    );
+    assert!(started.elapsed() >= Duration::from_millis(500));
+    assert_eq!(handle.grabs(), 0);
+    // It comes: the grabs go, its counts on the rate's line.
+    let (mut sim, handle, _) = one_window(42);
+    handle.capture_counts(Some(CaptureCounts {
+        arrived: 3,
+        lag_ms_max: 4.5,
+    }));
+    let mut out = Vec::new();
+    run(&mut sim, &probe, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(
+        text.contains(" capture=wgc arrived=3 lag_ms_max=4.5\n"),
+        "{text}"
+    );
+    assert_eq!(handle.grabs(), 2);
 }

@@ -23,8 +23,16 @@
 //!   until then another window may cover it, and a grab or a touch would
 //!   meet that window. One not on top within [`FIND_MS`] of its take is
 //!   handed back, and the open fails ([`NOT_ON_TOP`], [`placed`]).
-//! - **The capture:** every [`CAPTURE_MS`] (25 fps) while its holder views
-//!   it: a picture equal to the last one is skipped (unless it shows a newer
+//! - **The capture (#215, the PA's crackle):** a grab of an editor whose
+//!   holder views it is due by [`grab_due`]: while it rests ([`resting`]:
+//!   no contact of its session down and no input for [`REST_MS`]) at most
+//!   every [`REFRESH_MS`]; else at most every [`CAPTURE_MS`] (25 fps), and
+//!   only when its picture may have changed ([`Backend::changed`]: Windows
+//!   Graphics Capture knows, `capture::Capture::Wgc`; a BitBlt cannot), a
+//!   handled input is painted by now ([`Shown::due`]) or the refresh is
+//!   due. A grab's picture may be [`Backend::lag_ms`] behind the screen,
+//!   so that is taken off its clock before it says which input it shows.
+//!   A picture equal to the last one is skipped (unless it shows a newer
 //!   input of the page, PR J: [`Shown`], the input the router last handed
 //!   over as handled at least `PAINT_MS` before the grab), another goes to
 //!   the encoder, a thread of its own: it makes the JPEG ([`QUALITY`]) and hands
@@ -115,9 +123,12 @@
 //!   take and after each settled resize ([`PlugwinEvent::UndoRead`]: the
 //!   band Live's check that the read finds it).
 
+pub mod capture;
 pub mod probe;
 pub mod sim;
 pub mod undo;
+#[cfg(windows)]
+pub mod wgc;
 #[cfg(windows)]
 pub mod win;
 
@@ -131,6 +142,7 @@ use bytes::Bytes;
 use fohmixer_proto::eq::{Area, Crop, FrameHead, PAINT_MS, Part, UNDO_APART_MS, reason};
 use tokio::sync::oneshot;
 
+use self::capture::CaptureCounts;
 use self::undo::Undo;
 use crate::eq::size::editor_size;
 
@@ -565,8 +577,27 @@ pub trait Backend: Send {
     /// The picture's size now (PR G): a read that sends the window no
     /// message.
     fn client(&mut self, taken: &Taken) -> Result<(u32, u32), String>;
-    /// The picture now.
+    /// The picture now (#215: with Windows Graphics Capture the newest
+    /// frame the window delivered, up to [`Backend::lag_ms`] behind it).
     fn grab(&mut self, taken: &Taken) -> Result<Pixels, String>;
+    /// Whether the taken window's picture may have changed since the last
+    /// grab (#215): false only when the backend knows nothing arrived since
+    /// (Windows Graphics Capture); a backend that cannot tell (a BitBlt sees
+    /// only by grabbing) says true.
+    fn changed(&mut self, _taken: &Taken) -> bool {
+        true
+    }
+    /// How far behind the screen a grab's picture may be (ms, #215): 0 for
+    /// a grab of the screen itself; Windows Graphics Capture's newest frame
+    /// came up to about [`capture::WGC_LAG_MS`] after the window changed.
+    fn lag_ms(&self) -> f64 {
+        0.0
+    }
+    /// The capture's own counts of the taken window (#215, the probe's
+    /// `arrived=`): none for a backend that grabs the screen.
+    fn capture_counts(&mut self, _taken: &Taken) -> Option<CaptureCounts> {
+        None
+    }
     /// A contact phase at picture point `at`: a down or an update lands only
     /// when the point's window is the editor's (else an error, nothing
     /// injected); an up or a cancel always goes. The system cursor is put
@@ -702,6 +733,13 @@ impl Shown {
             self.waiting.pop_back();
         }
         self.waiting.push_back((n, at));
+    }
+
+    /// Whether a picture grabbed at `t` would show an input it shows not
+    /// yet (#215: an input that changed no pixel still gets the picture
+    /// that says it caught up).
+    pub fn due(&self, t: f64) -> bool {
+        self.waiting.front().is_some_and(|(_, at)| painted(*at, t))
     }
 
     /// The last input a picture grabbed at `t` shows.
@@ -876,6 +914,32 @@ pub fn repost(changed: bool, closed: bool, since_ms: f64) -> Repost {
 /// Whether a capture last made `since_ms` ago is due.
 pub fn capture_due(since_ms: f64) -> bool {
     since_ms >= CAPTURE_MS
+}
+
+/// How long after its last input an editor rests (ms, #215): from then on
+/// it is grabbed at most every [`REFRESH_MS`].
+pub const REST_MS: f64 = 2000.0;
+
+/// Whether an editor rests (#215): no contact of its session `down` and
+/// its last input (its take, the page's start of viewing it, a touch
+/// phase, a handled input, an undo, a view, a resize) `since_input_ms`
+/// ago, at least [`REST_MS`].
+pub fn resting(down: bool, since_input_ms: f64) -> bool {
+    !down && since_input_ms >= REST_MS
+}
+
+/// Whether an editor last grabbed `since_grab_ms` ago is grabbed now
+/// (#215): resting, only once [`REFRESH_MS`] passed (the still picture's
+/// refresh, the most a resting editor costs); else once [`CAPTURE_MS`]
+/// passed and its picture may have `changed` ([`Backend::changed`]), an
+/// input it shows not yet is painted (`newer`, [`Shown::due`]), or the
+/// refresh is due.
+pub fn grab_due(since_grab_ms: f64, resting: bool, changed: bool, newer: bool) -> bool {
+    if resting {
+        refresh_due(since_grab_ms)
+    } else {
+        capture_due(since_grab_ms) && (changed || newer || refresh_due(since_grab_ms))
+    }
 }
 
 /// Whether an equal picture last handed to the encoder `since_ms` ago goes
@@ -1053,6 +1117,9 @@ struct Editor {
     parted: bool,
     /// When it was last grabbed and when its minute began (worker ms).
     grabbed: f64,
+    /// When its session's last input came (worker ms; its take first): it
+    /// rests [`REST_MS`] after it ([`resting`], #215).
+    input: f64,
     minute: f64,
     counts: Counts,
     /// Its picture's size as the worker last knew it (the take's, a
@@ -1425,6 +1492,8 @@ impl Worker {
                 });
             }
             Command::Capture { session, sink } => {
+                // A page starting to view it counts as an input (#215).
+                self.heard(session);
                 if let Some(editor) = self.editors.get_mut(&session) {
                     editor.sink = Some(sink);
                     self.encoder.capture(session);
@@ -1434,26 +1503,37 @@ impl Worker {
                 session,
                 area,
                 reply,
-            } => self.resize(session, area, reply),
+            } => {
+                self.heard(session);
+                self.resize(session, area, reply);
+            }
             Command::Touch {
                 session,
                 contact,
                 phase,
                 at,
-            } => self.touch(session, contact, phase, at),
+            } => {
+                self.heard(session);
+                self.touch(session, contact, phase, at);
+            }
             Command::Handled { session, n } => {
+                self.heard(session);
                 let now = self.now();
                 if let Some(editor) = self.editors.get_mut(&session) {
                     editor.shown.handled(n, now);
                 }
             }
             Command::View { session, part } => {
+                self.heard(session);
                 if let Some(editor) = self.editors.get_mut(&session) {
                     editor.part = part;
                 }
             }
             Command::Guard { session, reply } => self.guard(session, reply),
-            Command::Undo { session, n, reply } => self.undo(session, n, reply),
+            Command::Undo { session, n, reply } => {
+                self.heard(session);
+                self.undo(session, n, reply);
+            }
             Command::Release {
                 session,
                 closed,
@@ -1484,6 +1564,15 @@ impl Worker {
         for session in sessions {
             self.capture(session);
             self.keep_alive();
+        }
+    }
+
+    /// An input of `session` came now: its editor rests [`REST_MS`] after
+    /// it at the earliest (#215).
+    fn heard(&mut self, session: u32) {
+        let now = self.now();
+        if let Some(editor) = self.editors.get_mut(&session) {
+            editor.input = now;
         }
     }
 
@@ -1610,6 +1699,7 @@ impl Worker {
                         last_crop: None,
                         parted: false,
                         grabbed: f64::NEG_INFINITY,
+                        input: now,
                         minute: now,
                         counts: Counts::default(),
                         size,
@@ -1908,7 +1998,16 @@ impl Worker {
         let Some(sink) = editor.sink.clone() else {
             return;
         };
-        if !capture_due(now - editor.grabbed) {
+        // The change-driven rate (#215): a resting editor at most once a
+        // second, an active one when its picture may have changed or must
+        // say it shows a newer input. A picture may be `lag` behind the
+        // screen: that much is taken off the grab's clock.
+        let down = self.contact.is_some_and(|held| held.session == session);
+        let lag = self.backend.lag_ms();
+        let at = now - lag;
+        let rests = resting(down, now - editor.input);
+        let changed = self.backend.changed(&editor.taken);
+        if !grab_due(now - editor.grabbed, rests, changed, editor.shown.due(at)) {
             return;
         }
         editor.grabbed = now;
@@ -1939,7 +2038,7 @@ impl Worker {
         // Pro-Q's ↶ read once after the take and after each settled
         // resize, once Pro-Q had its paint time (#71 PR P2a: the band Live's
         // check; never tapped), on the whole picture.
-        if editor.read_undo.is_some_and(|at| painted(at, now)) {
+        if editor.read_undo.is_some_and(|since| painted(since, at)) {
             editor.read_undo = None;
             (self.events)(PlugwinEvent::UndoRead {
                 session,
@@ -1961,7 +2060,7 @@ impl Worker {
             Some(crop) => cropped(&pixels, crop),
             None => pixels,
         };
-        let shown = editor.shown.at_grab(now);
+        let shown = editor.shown.at_grab(at);
         if editor.last.as_deref() == Some(&pixels)
             && crop == editor.last_crop
             && shown == editor.last_shown
