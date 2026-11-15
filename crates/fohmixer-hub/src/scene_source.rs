@@ -26,6 +26,7 @@ use fohmixer_proto::scenes::scene_name;
 use serde_json::{Value, json};
 use tokio::time::MissedTickBehavior;
 
+use crate::ableset::link::{Link as Reach, Note, link_step};
 use crate::events::EventLog;
 use crate::http_client::{HttpClient, Reply};
 use crate::ration::{self, Ration};
@@ -34,8 +35,9 @@ use crate::ration::{self, Ration};
 pub const POLL: Duration = Duration::from_millis(500);
 /// The bound of one read (the request and its whole answer).
 pub const TIMEOUT: Duration = Duration::from_secs(2);
-/// Failed reads in a row that make Companion down.
-pub const DOWN_AFTER: u32 = 2;
+/// Failed reads in a row that make Companion down: AbleSet's link rule,
+/// shared (`ableset::link::link_step`).
+pub use crate::ableset::link::DOWN_AFTER;
 /// The `source` of a scene read from Companion (its `scene` record).
 pub const SOURCE: &str = "companion";
 /// The most refusal lines per `ration::GAP` (a variable that flips between
@@ -80,65 +82,70 @@ pub struct Outcome {
 /// The poll's state: the known value, Companion up or down.
 #[derive(Debug, Default)]
 pub struct Follow {
-    /// The value a change is judged against; none at the start and after an
-    /// outage.
+    /// The scene a change is judged against: none at the start and after an
+    /// outage; empty when the first value read was no scene name.
     known: Option<String>,
-    /// The value read last (kept through an outage, for the status).
+    /// The value read last (kept through an outage, for the status, and so
+    /// a refused value is said once while it stays).
     last: Option<String>,
-    /// Companion answers: none before the first decision.
-    up: Option<bool>,
-    /// Failed reads in a row.
-    failures: u32,
+    /// Up or down and the failed reads in a row, by AbleSet's `link_step`.
+    reach: Reach,
     /// The last failed read's error.
     error: Option<String>,
-    /// UTC ms of the last change of `up`.
+    /// UTC ms of the last change of up or down.
     since: Option<u64>,
 }
 
 impl Follow {
-    /// A value read at `now_ms` (UTC).
+    /// A value read at `now_ms` (UTC). A refused value never replaces the
+    /// known scene, so Companion naming that scene again moves nothing.
     pub fn value(&mut self, raw: &str, now_ms: u64) -> Outcome {
+        let was_down = self.reach.online == Some(false);
+        let (reach, note) = link_step(self.reach, true);
+        self.reach = reach;
         let mut outcome = Outcome::default();
-        if self.up != Some(true) {
-            let down_ms = match (self.up, self.since) {
-                (Some(false), Some(since)) => Some(now_ms.saturating_sub(since)),
-                _ => None,
-            };
-            outcome.link = Some(Link::Up {
-                failures: self.failures,
-                down_ms,
-            });
-            self.up = Some(true);
+        if let Some(Note::Up { failures }) = note {
+            let down_ms = self
+                .since
+                .filter(|_| was_down)
+                .map(|since| now_ms.saturating_sub(since));
+            outcome.link = Some(Link::Up { failures, down_ms });
             self.since = Some(now_ms);
         }
-        self.failures = 0;
         self.error = None;
         let value = raw.trim();
+        let changed = self.last.as_deref() != Some(value);
         self.last = Some(value.to_string());
-        if self.known.as_deref() == Some(value) {
-            return outcome;
-        }
-        let first = self.known.replace(value.to_string()).is_none();
         match scene_name(value) {
-            Err(why) => outcome.refused = Some((value.to_string(), why)),
-            Ok(name) if !first => outcome.scene = Some(name),
-            Ok(_) => {}
+            Err(why) => {
+                // The known state of a first value that is no scene: none.
+                self.known.get_or_insert_with(String::new);
+                if changed {
+                    outcome.refused = Some((value.to_string(), why));
+                }
+            }
+            Ok(name) => {
+                if self.known.as_deref() != Some(name.as_str()) {
+                    let first = self.known.replace(name.clone()).is_none();
+                    outcome.scene = (!first).then_some(name);
+                }
+            }
         }
         outcome
     }
 
     /// A read that failed at `now_ms` (UTC), `error` why.
     pub fn failed(&mut self, error: &str, now_ms: u64) -> Outcome {
-        self.failures = self.failures.saturating_add(1);
+        let (reach, note) = link_step(self.reach, false);
+        self.reach = reach;
         self.error = Some(error.to_string());
         let mut outcome = Outcome::default();
-        if self.failures >= DOWN_AFTER && self.up != Some(false) {
-            self.up = Some(false);
+        if let Some(Note::Down { failures }) = note {
             self.since = Some(now_ms);
             self.known = None;
             outcome.link = Some(Link::Down {
                 error: error.to_string(),
-                failures: self.failures,
+                failures,
             });
         }
         outcome
@@ -150,8 +157,11 @@ impl Follow {
         SceneSourceStatus {
             on: true,
             last: self.last.as_deref().map(|v| ration::clip(v).into_owned()),
-            ok: self.up,
-            error: self.error.clone().filter(|_| self.up != Some(true)),
+            ok: self.reach.online,
+            error: self
+                .error
+                .clone()
+                .filter(|_| self.reach.online != Some(true)),
             since: self.since,
         }
     }
