@@ -196,3 +196,21 @@ async fn a_port_taken_is_recorded_and_shown() {
         task.abort();
     }
 }
+
+#[test]
+fn at_most_256_devices_are_kept() {
+    assert_eq!(MAX_DEVICES, 256);
+    assert!(keeps(false, 255));
+    assert!(!keeps(false, 256));
+    assert!(keeps(true, 256), "a known device always");
+    let (listen, _records) = listen();
+    let t0 = Instant::now();
+    for device in 1..=257 {
+        listen.heard(announce(device, "Vox 1", "FOH Band"), t0);
+    }
+    let status = listen.status(t0);
+    assert_eq!(status.devices.len(), 256);
+    assert_eq!(status.refused.get("devices"), Some(&1));
+    listen.heard(announce(5, "Vox 2", "FOH Band"), t0);
+    assert_eq!(listen.status(t0).refused.get("devices"), Some(&1));
+}

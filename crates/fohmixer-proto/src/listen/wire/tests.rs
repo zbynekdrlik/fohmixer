@@ -162,3 +162,34 @@ fn the_timing_constants_hold() {
     assert_eq!(FORGET_MS, 3000);
     assert_eq!(MAX_DATAGRAM, 512);
 }
+
+#[test]
+fn a_datagram_of_exactly_the_limit_is_read() {
+    let exact = (1..500)
+        .map(|n| {
+            encode_announce(&Announce {
+                version: "v".repeat(n),
+                ..golden()
+            })
+        })
+        .find(|d| d.len() == MAX_DATAGRAM)
+        .expect("an announce of exactly the limit");
+    assert!(parse_announce(&exact).is_ok());
+    let mut select = encode_select(Select { device: 1, turn: 1 });
+    select.resize(MAX_DATAGRAM, 0);
+    assert_eq!(parse_select(&select), Err(WireError::Trailing));
+}
+
+#[test]
+fn a_float_of_a_billion_or_more_is_no_whole_number() {
+    let h = Hello {
+        device: 9,
+        version: "v1.50.0".into(),
+        sample_rate: 48_000,
+    };
+    let mut billion = hello_atoms(&h);
+    billion[2] = Atom::Float(1e9);
+    assert_eq!(parse_hello(&billion), None);
+    billion[2] = Atom::Float(999_999_936.0);
+    assert_eq!(parse_hello(&billion).map(|h| h.device), Some(999_999_936));
+}

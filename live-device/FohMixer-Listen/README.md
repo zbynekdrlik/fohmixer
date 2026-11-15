@@ -7,7 +7,9 @@ the track. No parameters. Its output is silence: it goes in a rack of its own
 devices (`../FohMixer-LUFS/README.md`).
 
 - **Idle** (not selected): each second one announce datagram to the hub's
-  UDP `127.0.0.1:39111` (`/fohmixer/listen`: the device's Max id, `v<version>`,
+  UDP `127.0.0.1:39111` (`/fohmixer/listen`: the device's listen id, its Max
+  id mixed with a random number drawn at load so the PC's two Lives never
+  share one, `v<version>`,
   its four canonical parents' names, Live's sample rate, whether it streams).
   `jit.catch~` keeps copying the signal into its own buffer; nothing is
   banged out of it.

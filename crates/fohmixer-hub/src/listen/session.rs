@@ -25,7 +25,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 
 use super::{Lease, Listen};
 use crate::Hub;
-use crate::ws::{Opener, WsQuery, opener};
+use crate::ws::{Opener, SEND_TIMEOUT, WsQuery, opener};
 
 /// A socket more than this many packets behind skips to the newest.
 pub const MAX_BEHIND: usize = 4;
@@ -72,6 +72,37 @@ pub fn silent(last: Instant, now: Instant, told: bool) -> bool {
     !told && now.saturating_duration_since(last) >= Duration::from_millis(NO_SOURCE_MS)
 }
 
+/// Why a write to the page failed.
+pub const WRITE_FAILED: &str = "a write to the page failed";
+/// Why a page too slow to take a message is closed.
+pub const TOO_SLOW: &str = "the page took over 5 s to take a message";
+
+/// A write to the page within [`SEND_TIMEOUT`]: a page that takes nothing
+/// (a locked iPad keeps its TCP window shut) must not hold the hub's one
+/// track for good, so its socket ends and its lease goes.
+pub async fn bounded<E>(
+    write: impl std::future::Future<Output = Result<(), E>>,
+) -> Result<(), &'static str> {
+    match tokio::time::timeout(SEND_TIMEOUT, write).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err(WRITE_FAILED),
+        Err(_) => Err(TOO_SLOW),
+    }
+}
+
+/// Whether a write went; one warn line for a page too slow to take it.
+fn sent(who: &Opener, result: Result<(), &'static str>) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(why) => {
+            if why == TOO_SLOW {
+                tracing::warn!(peer = %who.peer, why, "listen: closing a page's audio socket");
+            }
+            false
+        }
+    }
+}
+
 /// The next packet: one more than [`MAX_BEHIND`] waiting behind it skips it.
 async fn next_packet(
     rx: &mut broadcast::Receiver<Bytes>,
@@ -94,6 +125,18 @@ struct Listening {
     told_silent: bool,
 }
 
+/// The longest instance or track name a page may ask for (a Live track's
+/// name is far shorter; the records and lines carry it).
+pub const MAX_NAME: usize = 256;
+
+/// Whether a page's instance and track names are within [`MAX_NAME`]
+/// characters and not empty.
+pub fn names_ok(instance: &str, track: &str) -> bool {
+    [instance, track]
+        .iter()
+        .all(|name| !name.is_empty() && name.chars().count() <= MAX_NAME)
+}
+
 /// What a page's start gets: listening, or the state it is told.
 fn start(
     hub: &Hub,
@@ -102,7 +145,7 @@ fn start(
     instance: &str,
     track: &str,
 ) -> Result<Listening, AudioState> {
-    if !role.reaches(instance) {
+    if !names_ok(instance, track) || !role.reaches(instance) {
         return Err(AudioState::Refused);
     }
     let set = hub.set_name(instance).ok_or(AudioState::NoSource)?;
@@ -155,7 +198,7 @@ async fn session(mut socket: WebSocket, hub: Hub, listen: Arc<Listen>, role: Rol
                     }
                     Err(_) => status(AudioState::Refused, None),
                 };
-                if socket.send(out).await.is_err() {
+                if !sent(&who, bounded(socket.send(out)).await) {
                     break;
                 }
             }
@@ -171,11 +214,11 @@ async fn session(mut socket: WebSocket, hub: Hub, listen: Arc<Listen>, role: Rol
                         l.last = Instant::now();
                         if std::mem::take(&mut l.told_silent) {
                             let again = status(AudioState::Listening, Some((&l.instance, &l.track)));
-                            if socket.send(again).await.is_err() {
+                            if !sent(&who, bounded(socket.send(again)).await) {
                                 break;
                             }
                         }
-                        if socket.send(Message::Binary(packet)).await.is_err() {
+                        if !sent(&who, bounded(socket.send(Message::Binary(packet))).await) {
                             break;
                         }
                     }
@@ -189,11 +232,11 @@ async fn session(mut socket: WebSocket, hub: Hub, listen: Arc<Listen>, role: Rol
                 {
                     l.told_silent = true;
                     let told = status(AudioState::NoSource, Some((&l.instance, &l.track)));
-                    if socket.send(told).await.is_err() {
+                    if !sent(&who, bounded(socket.send(told)).await) {
                         break;
                     }
                 }
-                if socket.send(Message::Ping(Bytes::new())).await.is_err() {
+                if !sent(&who, bounded(socket.send(Message::Ping(Bytes::new()))).await) {
                     break;
                 }
             }
@@ -232,6 +275,28 @@ mod tests {
         };
         let v: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(v["instance"], serde_json::Value::Null);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_write_the_page_never_takes_ends_after_five_seconds() {
+        let t0 = tokio::time::Instant::now();
+        let stuck = bounded(std::future::pending::<Result<(), ()>>()).await;
+        assert_eq!(stuck, Err(TOO_SLOW));
+        assert_eq!(t0.elapsed(), SEND_TIMEOUT);
+        assert_eq!(SEND_TIMEOUT, Duration::from_secs(5));
+        assert_eq!(bounded(async { Err::<(), _>(()) }).await, Err(WRITE_FAILED));
+        assert_eq!(bounded(async { Ok::<(), ()>(()) }).await, Ok(()));
+    }
+
+    #[test]
+    fn a_name_is_not_empty_and_at_most_256_characters() {
+        let at = "ž".repeat(MAX_NAME);
+        assert!(names_ok("band", &at));
+        assert!(!names_ok("band", &format!("{at}x")));
+        assert!(!names_ok("", "Vox 1"));
+        assert!(!names_ok("band", ""));
+        assert!(!names_ok(&format!("{at}x"), "Vox 1"));
+        assert_eq!(MAX_NAME, 256);
     }
 
     #[tokio::test]

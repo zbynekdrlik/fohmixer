@@ -33,6 +33,7 @@ import sys
 import time
 
 import Live
+import maxdev
 
 NAME = "FohMixer Listen"
 CLASS_NAME = "MxDeviceAudioEffect"
@@ -42,7 +43,8 @@ SELECT_ADDRESS = "/fohmixer/listen/select"
 HELLO_WORD = "fohmixer_listen"
 WIRE_VERSION = 1
 NO_PARENT = "-"
-VERSION = "v1.49.1"
+# The devices' version on the wire, one place for every device.
+VERSION = maxdev.VERSION
 RATE = 48000
 FRAME = 960
 LEFT = 0.5

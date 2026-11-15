@@ -200,7 +200,7 @@
 				"box": {
 					"id": "obj-select-mine",
 					"maxclass": "newobj",
-					"text": "== 0",
+					"text": "== -1",
 					"numinlets": 2,
 					"numoutlets": 1,
 					"outlettype": [
@@ -210,6 +210,42 @@
 						460.0,
 						120.0,
 						50.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-session-random",
+					"maxclass": "newobj",
+					"text": "random 21000",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						"int"
+					],
+					"patching_rect": [
+						700.0,
+						600.0,
+						90.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-session-id",
+					"maxclass": "newobj",
+					"text": "expr $i2 * 100000 + $i1 % 100000 + 1",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						700.0,
+						640.0,
+						220.0,
 						22.0
 					]
 				}
@@ -405,7 +441,7 @@
 				"box": {
 					"id": "obj-hello",
 					"maxclass": "newobj",
-					"text": "pack fohmixer_listen 1 0 v1.49.1 0",
+					"text": "pack fohmixer_listen 1 0 v1.49.2 0",
 					"numinlets": 5,
 					"numoutlets": 1,
 					"outlettype": [
@@ -441,7 +477,7 @@
 				"box": {
 					"id": "obj-announce",
 					"maxclass": "newobj",
-					"text": "pack /fohmixer/listen 1 0 v1.49.1 - - - - 0 0",
+					"text": "pack /fohmixer/listen 1 0 v1.49.2 - - - - 0 0",
 					"numinlets": 10,
 					"numoutlets": 1,
 					"outlettype": [
@@ -533,7 +569,7 @@
 						60.0,
 						18.0
 					],
-					"text": "v1.49.1",
+					"text": "v1.49.2",
 					"varname": "version"
 				}
 			},
@@ -1903,7 +1939,43 @@
 			{
 				"patchline": {
 					"source": [
+						"obj-thisdevice",
+						0
+					],
+					"destination": [
+						"obj-session-random",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-session-random",
+						0
+					],
+					"destination": [
+						"obj-session-id",
+						1
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
 						"obj-id-route",
+						0
+					],
+					"destination": [
+						"obj-session-id",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-session-id",
 						0
 					],
 					"destination": [
@@ -1915,7 +1987,7 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-id-route",
+						"obj-session-id",
 						0
 					],
 					"destination": [
@@ -1927,7 +1999,7 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-id-route",
+						"obj-session-id",
 						0
 					],
 					"destination": [

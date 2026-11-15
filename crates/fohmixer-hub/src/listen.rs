@@ -32,6 +32,15 @@ use crate::events::EventLog;
 
 /// The packets the channel keeps for a slow socket (1.28 s).
 pub const PACKETS: usize = 64;
+/// The most devices kept at once (both Lives' listenable tracks fit many
+/// times; a flood of ids is counted, never kept).
+pub const MAX_DEVICES: usize = 256;
+
+/// Whether a device's announce is kept: one already known always, a new one
+/// while fewer than [`MAX_DEVICES`] are.
+pub fn keeps(known: bool, devices: usize) -> bool {
+    known || devices < MAX_DEVICES
+}
 
 /// A device that matches a listened track, or why none does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,17 +265,23 @@ impl Listen {
         if target.listeners == 0
             && let Some(target) = state.target.take()
         {
-            tracing::info!(instance = %target.instance, track = %target.track, turn, "listen: stopped");
+            tracing::info!(instance = ?target.instance, track = ?target.track, turn, "listen: stopped");
             self.events
                 .record("listen", target_fields("stop", &target, turn));
             self.wake.notify_one();
         }
     }
 
-    /// An announce heard at `now`; devices unheard for [`FORGET_MS`] go.
+    /// An announce heard at `now`; devices unheard for [`FORGET_MS`] go,
+    /// and a new one past [`MAX_DEVICES`] is counted (`devices`), not kept.
     pub fn heard(&self, announce: Announce, now: Instant) {
         let mut state = self.state();
         state.devices.retain(|_, h| fresh(h.at, now));
+        let known = state.devices.contains_key(&announce.device);
+        if !keeps(known, state.devices.len()) {
+            self.counters.refuse("devices");
+            return;
+        }
         state
             .devices
             .insert(announce.device, Heard { announce, at: now });

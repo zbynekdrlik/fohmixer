@@ -17,7 +17,15 @@ own:
 - the announce: one `udpsend 127.0.0.1 <DEFAULT_PORT>` fed by one
   `pack /fohmixer/listen 1 0 v<version> - - - - 0 0`;
 - the hello: one `pack fohmixer_listen 1 0 v<version> 0` into the
-  `jit.net.send`'s right inlet.
+  `jit.net.send`'s right inlet;
+- the select logic, box by box (`BOXES`, `WIRING`): a select's id compared
+  (`== -1` until the device has its own, so a stop select of 0 never turns
+  it on) with the device's listen id (`expr`: its Max id mixed with a
+  `random` drawn at load, unique across the PC's two Lives), a match
+  restarting the hold before it turns the device on, another id or the
+  hold's end turning it off, a change to on sending the hello before the
+  `qmetro` starts, and the listen id alone into the announce, the hello and
+  the comparison.
 
 The numbers are read from `crates/fohmixer-proto/src/listen.rs` and
 `listen/wire.rs`. Exit 0 when all hold, else 1 with one `::error::` line per
@@ -43,6 +51,78 @@ LISTEN_RS = Path("crates") / "fohmixer-proto" / "src" / "listen.rs"
 WIRE_RS = Path("crates") / "fohmixer-proto" / "src" / "listen" / "wire.rs"
 QMETRO = ["qmetro", "10"]
 SWITCHES = ("0", "1")
+# The select logic's boxes (id: words) and lines ((box, outlet), (box,
+# inlet)); the patch's ids are its own, fixed like the LUFS check's
+# `obj-send-trigger`.
+BOXES = {
+    "obj-select-route": ["route", "/fohmixer/listen/select"],
+    "obj-select-unpack": ["unpack", "0", "0"],
+    "obj-select-mine": ["==", "-1"],
+    "obj-select-sel": ["sel", "1"],
+    "obj-select-t": ["t", "b", "b"],
+    "obj-select-on": ["1"],
+    "obj-select-off": ["0"],
+    "obj-state": ["change"],
+    "obj-state-sel": ["sel", "1", "0"],
+    "obj-start": ["t", "b", "b"],
+    "obj-run": ["1"],
+    "obj-halt": ["0"],
+    "obj-session-random": ["random", "21000"],
+    "obj-session-id": ["expr", "$i2", "*", "100000", "+", "$i1", "%", "100000", "+", "1"],
+}
+WIRING = (
+    (("obj-udpreceive", 0), ("obj-select-route", 0)),
+    (("obj-select-route", 0), ("obj-select-unpack", 0)),
+    (("obj-select-unpack", 0), ("obj-select-mine", 0)),
+    (("obj-select-mine", 0), ("obj-select-sel", 0)),
+    (("obj-select-sel", 0), ("obj-select-t", 0)),
+    (("obj-select-sel", 1), ("obj-select-off", 0)),
+    (("obj-select-t", 1), ("obj-select-hold", 0)),
+    (("obj-select-t", 0), ("obj-select-on", 0)),
+    (("obj-select-hold", 0), ("obj-select-off", 0)),
+    (("obj-select-on", 0), ("obj-state", 0)),
+    (("obj-select-off", 0), ("obj-state", 0)),
+    (("obj-state", 0), ("obj-state-sel", 0)),
+    (("obj-state-sel", 0), ("obj-start", 0)),
+    (("obj-state-sel", 1), ("obj-halt", 0)),
+    (("obj-start", 1), ("obj-hello", 0)),
+    (("obj-start", 0), ("obj-run", 0)),
+    (("obj-run", 0), ("obj-qmetro", 0)),
+    (("obj-halt", 0), ("obj-qmetro", 0)),
+    (("obj-thisdevice", 0), ("obj-session-random", 0)),
+    (("obj-session-random", 0), ("obj-session-id", 1)),
+    (("obj-id-route", 0), ("obj-session-id", 0)),
+    (("obj-session-id", 0), ("obj-announce", 2)),
+    (("obj-session-id", 0), ("obj-hello", 2)),
+    (("obj-session-id", 0), ("obj-select-mine", 1)),
+)
+# Inlets only the listen id may feed.
+SESSION_ONLY = (("obj-announce", 2), ("obj-hello", 2), ("obj-select-mine", 1))
+
+
+def wiring_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
+    """The select logic's boxes and lines, as `BOXES` and `WIRING` say."""
+    ids = {b.get("id"): b for b in every}
+    errors = [
+        f"{where}: {box} must be '{' '.join(words)}', has {lufs.words(ids.get(box, {}))}"
+        for box, words in BOXES.items()
+        if lufs.words(ids.get(box, {})) != words
+    ]
+    lines = {
+        (tuple(ln["patchline"]["source"]), tuple(ln["patchline"]["destination"]))
+        for ln in patcher.get("lines", [])
+        if "patchline" in ln
+    }
+    errors += [
+        f"{where}: the line {src[0]}:{src[1]} -> {dst[0]}:{dst[1]} is missing"
+        for src, dst in WIRING
+        if (src, dst) not in lines
+    ]
+    for box, inlet in SESSION_ONLY:
+        fed = lufs.feeds(patcher, box, inlet)
+        if fed != [["obj-session-id", 0]]:
+            errors.append(f"{where}: {box}:{inlet} takes the listen id alone, has {fed}")
+    return errors
 
 
 def constant(text: str, name: str) -> int | None:
@@ -139,6 +219,7 @@ def patch_errors(where: str, text: str, version: str, numbers: dict[str, int]) -
         errors.append(f"{where}: the jit.net.send's right inlet takes the hello alone")
     if udpsend and announce and lufs.feeds(patcher, udpsend, 0) != [[announce, 0]]:
         errors.append(f"{where}: the udpsend takes the announce alone")
+    errors += wiring_errors(where, patcher, every)
     messages = {str(b.get("text", "")) for b in every if b.get("maxclass") == "message"}
     errors += [f"{where}: no '{path}' message" for path in lufs.IDENTITY if path not in messages]
     shown = [b.get("text") for b in every if b.get("varname") == "version"]

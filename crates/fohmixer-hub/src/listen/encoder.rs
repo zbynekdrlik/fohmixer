@@ -29,7 +29,8 @@ impl Encoder {
         self.0.encode_vec_float(frame, MAX_PACKET)
     }
 
-    /// The bit rate libopus holds.
+    /// The bit rate libopus holds (the tests' check).
+    #[cfg(test)]
     pub fn bitrate(&mut self) -> Result<Bitrate, opus::Error> {
         self.0.get_bitrate()
     }

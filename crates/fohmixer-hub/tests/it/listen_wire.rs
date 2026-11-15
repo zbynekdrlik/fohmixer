@@ -1,6 +1,6 @@
 //! Listen's device side without SimLive (#210): bound to 127.0.0.1 only,
 //! an announce kept, junk and every stream a device may not send counted by
-//! reason, at most eight audio connections, `/ws/audio` refused without a
+//! reason, at most 64 audio connections, `/ws/audio` refused without a
 //! token and when Listen is off. Host-free: it also runs in the `windows`
 //! job (the hub's platform, its libopus build).
 
@@ -121,16 +121,16 @@ fn a_device_side_that_may_not_stream_is_counted_by_its_reason() {
 }
 
 #[test]
-fn at_most_eight_audio_connections() {
+fn at_most_64_audio_connections() {
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
         let hub = hub(dir.path(), free_port()).await;
         let port = port_of(&hub.status().await);
-        let held: Vec<TcpStream> = (0..8)
+        let held: Vec<TcpStream> = (0..64)
             .map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap())
             .collect();
-        hub.status_until(SECS_10, |s| s.listen.connections == 8)
+        hub.status_until(SECS_10, |s| s.listen.connections == 64)
             .await;
         let mut ninth = TcpStream::connect(("127.0.0.1", port)).unwrap();
         refused_until(&hub, "connections", 1).await;

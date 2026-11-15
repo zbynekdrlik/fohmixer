@@ -280,7 +280,33 @@ fn a_track_without_a_device_or_an_unknown_instance_is_no_source() {
         assert_eq!(silent["track"], VOX);
         let target = hub.status().await.listen.target.unwrap();
         assert_eq!(target.problem.as_deref(), Some("no device"));
+        // A device for the track comes: told listening again, before its
+        // first packet.
+        let mut host = host;
+        assert_eq!(host.listendev("listendev track 1 add rack"), 1);
+        assert_eq!(host.listendev("tone track 1 1000"), 1000);
+        let deadline = Instant::now() + SECS_10;
+        let again = loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let msg = tokio::time::timeout(left, a.next())
+                .await
+                .expect("a message within 10 s")
+                .expect("the socket is open")
+                .unwrap();
+            match msg {
+                Message::Text(text) => break serde_json::from_str::<Value>(&text).unwrap(),
+                Message::Binary(_) => panic!("a packet before the listening status"),
+                _ => {}
+            }
+        };
+        assert_eq!(again["status"], "listening");
+        assert_eq!(again["track"], VOX);
+        assert!(!packets(&mut a, 3).await.is_empty());
         send(&mut a, json!({"type": "listen"})).await;
+        assert_eq!(told(&mut a).await["status"], "refused");
+        // Too long a name is refused too.
+        let long = "x".repeat(257);
+        send(&mut a, start(&long)).await;
         assert_eq!(told(&mut a).await["status"], "refused");
         hub.stop().await;
         host.stop();

@@ -76,6 +76,7 @@ fn a_chunk_split_anywhere_waits_for_its_bytes() {
         let mut reader = Reader::default();
         reader.push(&bytes[..cut]);
         let first = read_all(&mut reader);
+        assert!(reader.buffered() > 0, "cut at {cut}: the rest waits");
         reader.push(&bytes[cut..]);
         let mut all = first;
         all.extend(read_all(&mut reader));
@@ -339,4 +340,40 @@ fn errors_name_their_reason() {
     assert_eq!(MAX_DATA, 1_048_576);
     assert_eq!(MAX_MESSAGE, 4096);
     assert_eq!(MAX_ATOMS, 64);
+}
+
+#[test]
+fn a_one_row_matrix_is_written_with_one_dimension() {
+    let bytes = encode_matrix(Order::Big, 1, 4, 1, &[0.0; 4], 0.0);
+    let field = |at: usize| i32::from_be_bytes(bytes[CHUNK_HEADER + at..][..4].try_into().unwrap());
+    assert_eq!(field(DIMCOUNT), 1);
+    assert_eq!(field(STRIDE0), 4);
+    assert_eq!(field(STRIDE1), 0, "no second stride");
+    let two = encode_matrix(Order::Big, 2, 4, 2, &[0.0; 16], 0.0);
+    let field = |at: usize| i32::from_be_bytes(two[CHUNK_HEADER + at..][..4].try_into().unwrap());
+    assert_eq!(
+        (field(DIMCOUNT), field(STRIDE1), field(STRIDE1 + 4)),
+        (2, 32, 0)
+    );
+}
+
+#[test]
+fn the_cells_are_bounded_by_the_data_limit() {
+    // Exactly MAX_DATA / 4 mono cells: taken.
+    let cells = MAX_DATA / 4;
+    let mut reader = Reader::default();
+    reader.push(&encode_matrix(
+        Order::Big,
+        1,
+        cells,
+        1,
+        &vec![0.0; cells],
+        0.0,
+    ));
+    assert!(matches!(reader.next_chunk(), Ok(Some(Chunk::Matrix(m))) if m.cells == cells));
+    // One cell more is a dimension refused before the data is judged.
+    let mut header = encode_matrix(Order::Big, 1, 4, 1, &[0.0; 4], 0.0);
+    let at = CHUNK_HEADER + DIM0;
+    header[at..at + 4].copy_from_slice(&((cells + 1) as i32).to_be_bytes());
+    assert_eq!(error_of(&header), JitError::Dims);
 }

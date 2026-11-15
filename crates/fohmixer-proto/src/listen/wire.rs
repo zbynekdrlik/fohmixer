@@ -9,7 +9,7 @@
 //! | # | type | value |
 //! |---|---|---|
 //! | 1 | `i` | the wire version, [`WIRE_VERSION`] |
-//! | 2 | `i` | the device's Max id (`live.path this_device`) |
+//! | 2 | `i` | the device's listen id: its Max id (`live.path this_device`, per Live process) mixed with a random number drawn at load, so the two Lives on the PC never share one |
 //! | 3 | `s` | `v<version.txt>` |
 //! | 4–7 | `s` | its first four canonical parents' names, nearest first (`-` past the top) |
 //! | 8 | `i` | Live's sample rate (`dspstate~`) |

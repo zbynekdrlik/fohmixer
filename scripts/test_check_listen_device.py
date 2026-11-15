@@ -140,6 +140,37 @@ class ListenDeviceTests(unittest.TestCase):
         self.assertTrue(any("absolute file path" in e for e in errors(TEXT + " C:\\\\x")))
         self.assertTrue(any("not a Max patcher" in e for e in errors("{}")))
 
+    def test_every_line_of_the_select_logic_is_held(self) -> None:
+        for src, dst in cl.WIRING:
+
+            def cut(p: dict, src=src, dst=dst) -> None:
+                p["lines"] = [
+                    ln
+                    for ln in p["lines"]
+                    if (ln["patchline"]["source"], ln["patchline"]["destination"])
+                    != (list(src), list(dst))
+                ]
+
+            found = errors(edited(cut))
+            want = f"p: the line {src[0]}:{src[1]} -> {dst[0]}:{dst[1]} is missing"
+            self.assertIn(want, found)
+
+    def test_a_select_of_zero_never_matches_a_device_without_its_id(self) -> None:
+        def zero(p: dict) -> None:
+            box(p, "obj-select-mine")["text"] = "== 0"
+
+        found = errors(edited(zero))
+        self.assertIn("p: obj-select-mine must be '== -1', has ['==', '0']", found)
+
+    def test_only_the_listen_id_names_the_device(self) -> None:
+        def max_id(p: dict) -> None:
+            p["lines"].append(
+                {"patchline": {"source": ["obj-id-route", 0], "destination": ["obj-announce", 2]}}
+            )
+
+        found = errors(edited(max_id))
+        self.assertTrue(any("obj-announce:2 takes the listen id alone" in e for e in found), found)
+
     def test_constants_read_with_underscores(self) -> None:
         self.assertEqual(cl.constant("pub const X: u32 = 48_000;\n", "X"), 48000)
         self.assertIsNone(cl.constant("pub const Y: u32 = 1;\n", "X"))

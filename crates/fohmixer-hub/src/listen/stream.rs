@@ -11,12 +11,12 @@
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use fohmixer_proto::listen::SAMPLE_RATE;
 use fohmixer_proto::listen::frames::Framer;
-use fohmixer_proto::listen::jitnet::{Chunk, Matrix, Reader, latency};
+use fohmixer_proto::listen::jitnet::{Chunk, LATENCY_LEN, Matrix, Reader, latency};
 use fohmixer_proto::listen::wire::{Hello, parse_hello};
 use serde_json::json;
 use tokio::io::AsyncReadExt;
@@ -26,9 +26,15 @@ use tokio::task::JoinHandle;
 use super::Listen;
 use super::encoder::Encoder;
 
-/// The most audio connections at once (one device streams at a time; a
-/// few more cover a device's reconnect and a stray one).
-pub const MAX_CONNECTIONS: usize = 8;
+/// The most audio connections at once. One device streams at a time, but
+/// `jit.net.send` may connect at load and stay connected while idle (probe
+/// P2 on #210 tells): 64 covers every listenable track of both Lives.
+pub const MAX_CONNECTIONS: usize = 64;
+/// A chunk begun and not finished for this long ends its connection (a
+/// stuck sender never holds a slot and a buffer for good).
+pub const STALL: Duration = Duration::from_secs(5);
+/// How often a quiet connection is looked at for a stall.
+pub const STALL_CHECK: Duration = Duration::from_secs(1);
 /// One socket read.
 pub const READ: usize = 64 * 1024;
 
@@ -54,6 +60,40 @@ pub fn take(hello: Option<&Hello>, selected: impl FnOnce(i32) -> bool) -> Take {
         return Take::Refused("not_selected");
     }
     Take::Frames
+}
+
+/// Whether a connection holding `buffered` bytes of an unfinished chunk,
+/// whose last bytes came at `since`, is stalled at `now`.
+pub fn stalled(buffered: usize, since: Instant, now: Instant) -> bool {
+    buffered > 0 && now.saturating_duration_since(since) >= STALL
+}
+
+/// What became of a latency answer's write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answer {
+    /// Written whole.
+    Sent,
+    /// The socket's buffer was full: nothing written, counted.
+    Dropped,
+    /// Part of it written, or the socket failed: the device would read a
+    /// broken stream, so the connection ends.
+    Broken,
+}
+
+/// The outcome of a non-blocking write of one latency answer.
+pub fn answer_of(result: &std::io::Result<usize>) -> Answer {
+    match result {
+        Ok(n) if *n == LATENCY_LEN => Answer::Sent,
+        Ok(_) => Answer::Broken,
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Answer::Dropped,
+        Err(_) => Answer::Broken,
+    }
+}
+
+/// Whether a hello is news on its connection (the device sends it again
+/// each second while it streams: only a change is recorded).
+pub fn hello_news(old: Option<&Hello>, new: &Hello) -> bool {
+    old != Some(new)
 }
 
 /// Whether one more connection fits.
@@ -104,6 +144,8 @@ struct Conn {
     framer: Framer,
     encoder: Option<Encoder>,
     opened: Instant,
+    /// When its last bytes came.
+    heard: Instant,
     /// Whether its last matrix was taken (a change is one record).
     taking: bool,
 }
@@ -116,15 +158,24 @@ async fn connection(mut socket: TcpStream, listen: &Listen) -> &'static str {
         framer: Framer::default(),
         encoder: None,
         opened: Instant::now(),
+        heard: Instant::now(),
         taking: false,
     };
     let mut buf = vec![0u8; READ];
     loop {
-        let n = match socket.read(&mut buf).await {
-            Ok(0) => return "closed",
-            Ok(n) => n,
-            Err(_) => return "read error",
+        let n = match tokio::time::timeout(STALL_CHECK, socket.read(&mut buf)).await {
+            Err(_) => {
+                if stalled(conn.reader.buffered(), conn.heard, Instant::now()) {
+                    listen.counters.refuse("stalled");
+                    return "stalled";
+                }
+                continue;
+            }
+            Ok(Ok(0)) => return "closed",
+            Ok(Ok(n)) => n,
+            Ok(Err(_)) => return "read error",
         };
+        conn.heard = Instant::now();
         conn.reader.push(&buf[..n]);
         for _ in 0..=n {
             match conn.reader.next_chunk() {
@@ -138,8 +189,13 @@ async fn connection(mut socket: TcpStream, listen: &Listen) -> &'static str {
                     let after = conn.opened.elapsed().as_secs_f64() * 1000.0;
                     // Never wait on the device: a full socket drops it.
                     let answer = latency(m.order, m.time, before, after);
-                    if socket.try_write(&answer).is_err() {
-                        listen.counters.refuse("latency_dropped");
+                    match answer_of(&socket.try_write(&answer)) {
+                        Answer::Sent => {}
+                        Answer::Dropped => listen.counters.refuse("latency_dropped"),
+                        Answer::Broken => {
+                            listen.counters.refuse("latency_broken");
+                            return "latency_broken";
+                        }
                     }
                 }
                 Ok(None) => break,
@@ -153,6 +209,9 @@ async fn connection(mut socket: TcpStream, listen: &Listen) -> &'static str {
 }
 
 fn on_hello(conn: &mut Conn, hello: Hello, listen: &Listen) {
+    if !hello_news(conn.hello.as_ref(), &hello) {
+        return;
+    }
     tracing::info!(device = hello.device, version = %hello.version, sample_rate = hello.sample_rate, "listen: a device connected");
     listen.events.record(
         "listen",
@@ -234,10 +293,48 @@ mod tests {
     }
 
     #[test]
-    fn at_most_eight_connections() {
-        assert_eq!(MAX_CONNECTIONS, 8);
-        assert!(admits(7));
-        assert!(!admits(8));
+    fn at_most_64_connections() {
+        assert_eq!(MAX_CONNECTIONS, 64);
+        assert!(admits(63));
+        assert!(!admits(64));
         assert_eq!(READ, 65_536);
+    }
+
+    #[test]
+    fn an_unfinished_chunk_stalls_after_five_seconds() {
+        let t0 = Instant::now();
+        let s = Duration::from_millis;
+        assert!(!stalled(10, t0, t0 + s(4999)));
+        assert!(stalled(10, t0, t0 + s(5000)));
+        assert!(
+            !stalled(0, t0, t0 + s(60_000)),
+            "an idle connection is no stall"
+        );
+        assert!(!stalled(10, t0 + s(10), t0), "a clock that went back");
+        assert_eq!((STALL, STALL_CHECK), (s(5000), s(1000)));
+    }
+
+    #[test]
+    fn a_latency_answer_written_in_part_breaks_the_stream() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(answer_of(&Ok(LATENCY_LEN)), Answer::Sent);
+        assert_eq!(answer_of(&Ok(LATENCY_LEN - 1)), Answer::Broken);
+        assert_eq!(answer_of(&Ok(0)), Answer::Broken);
+        assert_eq!(
+            answer_of(&Err(Error::from(ErrorKind::WouldBlock))),
+            Answer::Dropped
+        );
+        assert_eq!(
+            answer_of(&Err(Error::from(ErrorKind::ConnectionReset))),
+            Answer::Broken
+        );
+    }
+
+    #[test]
+    fn only_a_changed_hello_is_news() {
+        let h = hello(48_000);
+        assert!(hello_news(None, &h));
+        assert!(!hello_news(Some(&h), &h));
+        assert!(hello_news(Some(&hello(44_100)), &h));
     }
 }
