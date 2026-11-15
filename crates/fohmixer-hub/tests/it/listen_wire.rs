@@ -168,3 +168,38 @@ fn the_audio_socket_needs_a_token_and_listen_on() {
         off.stop().await;
     });
 }
+
+#[test]
+fn a_chunk_dripping_a_byte_at_a_time_ends_five_seconds_after_it_began() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = hub(dir.path(), free_port()).await;
+        let port = port_of(&hub.status().await);
+        let bytes = matrix();
+        let began = std::time::Instant::now();
+        // A byte every 0.9 s: each read is quick, the chunk never ends.
+        let drip = std::thread::spawn(move || {
+            let Ok(mut tcp) = TcpStream::connect(("127.0.0.1", port)) else {
+                return;
+            };
+            for byte in bytes.iter().take(12) {
+                if tcp.write_all(&[*byte]).is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(900));
+            }
+        });
+        hub.status_until(Duration::from_secs(15), |s| {
+            s.listen.refused.get("stalled") == Some(&1)
+        })
+        .await;
+        let ended = began.elapsed();
+        assert!(
+            ended >= Duration::from_secs(4) && ended < Duration::from_secs(8),
+            "ended after {ended:?}"
+        );
+        drip.join().unwrap();
+        hub.stop().await;
+    });
+}
