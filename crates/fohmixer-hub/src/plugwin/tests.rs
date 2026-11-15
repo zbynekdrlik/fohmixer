@@ -1434,6 +1434,43 @@ fn a_change_driven_editor_is_grabbed_only_when_its_picture_changed_or_its_refres
 }
 
 #[test]
+fn a_touch_on_a_resting_editor_is_grabbed_at_once_and_every_frame_while_awake_at_the_capture_rate()
+{
+    // #215, the owner's hard requirement: the EQ stays fully responsive
+    // under the finger. A resting editor (one grab a second) touched is
+    // awake at once: the frame its touch brings is grabbed at the next
+    // step, never at the second's refresh, and while the finger works it
+    // every frame Windows delivers is grabbed, CAPTURE_MS (40 ms) apart.
+    let (mut worker, handle, _frames) = change_driven();
+    assert_eq!(grabs_over(&mut worker, 1, 0, 2990), 3, "at 0, 1000, 2000");
+    // Resting: a frame waits for the refresh, a second after 2000.
+    handle.undo_history(1);
+    assert_eq!(
+        grabs_over(&mut worker, 1, 3000, 3490),
+        1,
+        "the refresh at 3000"
+    );
+    // A finger down at 3500, its frame with it: grabbed at that step.
+    touch_at(&mut worker, 1, 1, Phase::Down, (10, 20), 3500.0);
+    handle.undo_history(0);
+    assert_eq!(
+        grabs_over(&mut worker, 1, 3500, 3500),
+        1,
+        "within one CAPTURE_MS"
+    );
+    // The finger works the editor: a frame at every composition, grabbed
+    // every 40 ms (25 a second) as long as the contact is down.
+    handle.restless(true);
+    assert_eq!(
+        grabs_over(&mut worker, 1, 3510, 3530),
+        0,
+        "not within 40 ms"
+    );
+    assert_eq!(grabs_over(&mut worker, 1, 3540, 4490), 24, "3540 … 4460");
+    assert_eq!(CAPTURE_MS, 40.0);
+}
+
+#[test]
 fn an_input_that_changes_no_pixel_still_gets_a_picture_once_painted() {
     // PR J with #215: a tap on an inert spot changes nothing, so a change-
     // driven capture sees nothing; the page must still learn its picture
