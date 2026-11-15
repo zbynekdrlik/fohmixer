@@ -1,6 +1,8 @@
 //! The control column's head (#212, the owner's approved
 //! `docs/mockups/column-calm-v2.html`): where the sectors page's ARRANGE
-//! key (`⇄`) is drawn in the pages' bar.
+//! key (`⇄`) is drawn in the pages' bar, and whether a pick there changes
+//! anything (the recorder's `tab` event counts every press, a touch being
+//! a use, and says `same` for one that changed nothing).
 
 /// Where the ⇄ key is drawn in the pages' bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,9 +23,40 @@ pub fn key_place(tabs: &[&str], page: &str) -> KeyPlace {
         .map_or(KeyPlace::End, KeyPlace::Beside)
 }
 
+/// Whether a page tab's pick changes nothing: its page (`picked`, the
+/// layout's page index) is the one shown (`shown`) and no extra tab lies
+/// over the page (`extra_open`; a pick that closes one changes what shows).
+pub fn page_pick_same(shown: Option<usize>, extra_open: bool, picked: usize) -> bool {
+    !extra_open && shown == Some(picked)
+}
+
+/// Whether a layout tab's pick changes nothing: its sector shows that
+/// layout (`shown`, the sector's shown layout id) already.
+pub fn layout_pick_same(shown: Option<&str>, picked: &str) -> bool {
+    shown == Some(picked)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_page_tabs_pick_is_the_same_only_on_the_page_shown_with_no_extra_tab() {
+        assert!(page_pick_same(Some(1), false, 1));
+        assert!(!page_pick_same(Some(0), false, 1));
+        // A pick that closes STREAM DECK (or any extra tab) shows the page.
+        assert!(!page_pick_same(Some(1), true, 1));
+        assert!(!page_pick_same(Some(0), true, 1));
+        // Nothing shown yet (a disposed selection): no pick is the same.
+        assert!(!page_pick_same(None, false, 1));
+    }
+
+    #[test]
+    fn a_layout_tabs_pick_is_the_same_only_on_the_layout_shown() {
+        assert!(layout_pick_same(Some("lu-2"), "lu-2"));
+        assert!(!layout_pick_same(Some("lu-1"), "lu-2"));
+        assert!(!layout_pick_same(None, "lu-2"));
+    }
 
     #[test]
     fn the_key_sits_beside_its_own_pages_tab() {

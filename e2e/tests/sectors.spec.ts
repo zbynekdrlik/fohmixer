@@ -426,7 +426,18 @@ test.describe("The fader sectors", () => {
       await openSectors(page);
       const since = await page.evaluate(() => performance.timeOrigin + performance.now());
       const tab = (id: string) => page.locator(`[data-testid="sector-tab"][data-layout="${id}"]`);
-      await page.locator('[data-testid="tabbar"][data-level="0"] [data-testid="tab"][data-page="foh"]').click();
+      const pageTab = (id: string) => page.locator(`[data-testid="tabbar"][data-level="0"] [data-testid="tab"][data-page="${id}"]`);
+      // A real switch to CUE and back to FOH, then a re-tap of FOH (same).
+      await pageTab("cue").click();
+      await expect(pageTab("cue")).toHaveAttribute("data-selected", "true");
+      await expect(sectorsPage(page)).toHaveCount(0);
+      await pageTab("foh").click();
+      await expect(sectorsPage(page)).toBeVisible();
+      await pageTab("foh").click();
+      await expect(pageTab("foh")).toHaveAttribute("data-selected", "true");
+      // A real layout switch, then a re-tap of the layout shown (same).
+      await tab("lu-2").click();
+      await expect(tab("lu-2")).toHaveAttribute("aria-pressed", "true");
       await tab("lu-2").click();
       await expect(tab("lu-2")).toHaveAttribute("aria-pressed", "true");
       const arrange = page.getByTestId("arrange");
@@ -451,24 +462,29 @@ test.describe("The fader sectors", () => {
       await frames(page);
       await expect(tab("lu-2")).toHaveAttribute("aria-pressed", "true");
       await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "false");
-      await page.locator('[data-testid="tabbar"][data-level="0"] [data-testid="tab"][data-page="foh"]').click();
+      await pageTab("foh").click();
       await expect(page.getByTestId("deck")).toHaveCount(0);
       const picks = await until(
         async () =>
           pageEvents(await hubEvents())
             .filter((e) => e.ev === "tab" && e.t >= since)
             .map(({ ev, t, ...rest }) => rest),
-        (p) => p.length >= 6,
+        (p) => p.length >= 9,
         "the page's tab events",
         15000,
       );
+      // `same`: whether the pick changed anything (a re-tap did not; the FOH
+      // tab that closes the deck did: it shows the page again).
       expect(picks).toEqual([
-        { what: "page", id: "foh" },
-        { what: "layout", sector: "lu", id: "lu-2", title: "ALT", arrange: false },
+        { what: "page", id: "cue", same: false },
+        { what: "page", id: "foh", same: false },
+        { what: "page", id: "foh", same: true },
+        { what: "layout", sector: "lu", id: "lu-2", title: "ALT", arrange: false, same: false },
+        { what: "layout", sector: "lu", id: "lu-2", title: "ALT", arrange: false, same: true },
         { what: "arrange", act: "start" },
-        { what: "layout", sector: "ld", id: "ld-2", title: "FX", arrange: true },
+        { what: "layout", sector: "ld", id: "ld-2", title: "FX", arrange: true, same: false },
         { what: "arrange", act: "save" },
-        { what: "page", id: "foh" },
+        { what: "page", id: "foh", same: false },
       ]);
     });
   });

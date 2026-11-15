@@ -43,6 +43,7 @@ use crate::behave::arrange_drag::{
     Arrange, ArrangeEnd, Drag, Held, NoteTimer, Tap, arrange_note, tap_act,
 };
 use crate::behave::arrange_edit::{REMOVE_ASK, TabRow, TabTap, field_text, tab_rows};
+use crate::behave::column::layout_pick_same;
 use crate::binding::sectors::{
     Picks, picked, pool_controls, sector_instances, sector_name, sector_side,
 };
@@ -929,6 +930,10 @@ fn LayoutTab(sector: SectorId, layout: String, rows: Memo<Vec<TabRow>>) -> impl 
             return;
         };
         let arranging = mode.try_with_untracked(Arrange::is_on).unwrap_or(false);
+        // The layout its sector shows before the tap (`layout_pick_same`).
+        let shown = rows
+            .try_with_untracked(|rows| rows.iter().find(|r| r.selected).map(|r| r.id.clone()))
+            .flatten();
         let tapped = change_mode(mode, |m| m.edit().map(|e| e.tab_tapped(&id))).flatten();
         if tapped != Some(TabTap::Removed) {
             // The pick goes to the recorder (#212: the column's use counted
@@ -944,6 +949,7 @@ fn LayoutTab(sector: SectorId, layout: String, rows: Memo<Vec<TabRow>>) -> impl 
                     id: &id,
                     title: &title,
                     arranging,
+                    same: layout_pick_same(shown.as_deref(), &id),
                 },
             ));
             nav.pick(sector, &id);

@@ -260,15 +260,18 @@ pub fn rail(t: f64, what: &str, button: &str, keys: &[String], pointer: i32) -> 
 /// hub's event log).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TabStep<'a> {
-    /// A mixer page's tab (FOH), by its page id.
-    Page { id: &'a str },
-    /// A layout's tab in the LAYOUTS block: its sector, id and title, and
-    /// whether ARRANGE was on.
+    /// A mixer page's tab (FOH), by its page id; `same` when it changed
+    /// nothing (`behave::column::page_pick_same`).
+    Page { id: &'a str, same: bool },
+    /// A layout's tab in the LAYOUTS block: its sector, id and title,
+    /// whether ARRANGE was on, and `same` when its sector showed it already
+    /// (`behave::column::layout_pick_same`).
     Layout {
         sector: &'a str,
         id: &'a str,
         title: &'a str,
         arranging: bool,
+        same: bool,
     },
     /// The ⇄ key (ARRANGE): what its press did
     /// (`behave::arrange_drag::tap_act`).
@@ -279,14 +282,17 @@ pub enum TabStep<'a> {
 /// dropped one would undercount what it exists to count.
 pub fn tab(t: f64, step: TabStep<'_>) -> Value {
     match step {
-        TabStep::Page { id } => json!({"ev": "tab", "t": t, "what": "page", "id": id}),
+        TabStep::Page { id, same } => {
+            json!({"ev": "tab", "t": t, "what": "page", "id": id, "same": same})
+        }
         TabStep::Layout {
             sector,
             id,
             title,
             arranging,
+            same,
         } => json!({"ev": "tab", "t": t, "what": "layout", "sector": sector, "id": id,
-                    "title": title, "arrange": arranging}),
+                    "title": title, "arrange": arranging, "same": same}),
         TabStep::Arrange { act } => json!({"ev": "tab", "t": t, "what": "arrange", "act": act}),
     }
 }

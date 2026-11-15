@@ -32,7 +32,7 @@ use crate::arrange::{
 };
 use crate::behave::ableset::tab_dot;
 use crate::behave::arrange_drag::Arrange;
-use crate::behave::column::{KeyPlace, key_place};
+use crate::behave::column::{KeyPlace, key_place, page_pick_same};
 use crate::behave::iem::alive_after;
 use crate::behave::live_down::{LiveWord, foot_lives};
 use crate::behave::presenter::{TAB_TITLE as PRESENTER_TAB, tab_dot as presenter_tab_dot};
@@ -770,8 +770,14 @@ fn TabBar(
             let picked = StoredValue::new(id.clone());
             let on_down = move |_| {
                 if page_tab {
+                    // Whether it changes anything (`page_pick_same`), read
+                    // before the select.
+                    let shown = selected.try_get_untracked().flatten();
+                    let extra_open =
+                        nav.shown.try_get_untracked().unwrap_or_default() != Extra::None;
+                    let same = page_pick_same(shown, extra_open, index);
                     let _ = picked.try_with_value(|id| {
-                        diag::record(&trace::tab(dom::epoch_now(), TabStep::Page { id }));
+                        diag::record(&trace::tab(dom::epoch_now(), TabStep::Page { id, same }));
                     });
                 }
                 nav.select(level, index);

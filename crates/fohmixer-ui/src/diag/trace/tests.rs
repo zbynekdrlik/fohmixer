@@ -949,8 +949,24 @@ fn a_rail_press_step_is_an_essential_event_with_its_button_and_keys() {
 fn a_column_pick_is_an_essential_event_with_what_was_picked() {
     // #212: the column's use counted from the hub's event log.
     assert_eq!(
-        tab(1.0, TabStep::Page { id: "foh" }),
-        json!({"ev": "tab", "t": 1.0, "what": "page", "id": "foh"})
+        tab(
+            1.0,
+            TabStep::Page {
+                id: "foh",
+                same: false
+            }
+        ),
+        json!({"ev": "tab", "t": 1.0, "what": "page", "id": "foh", "same": false})
+    );
+    assert_eq!(
+        tab(
+            1.5,
+            TabStep::Page {
+                id: "cue",
+                same: true
+            }
+        ),
+        json!({"ev": "tab", "t": 1.5, "what": "page", "id": "cue", "same": true})
     );
     assert_eq!(
         tab(
@@ -960,10 +976,11 @@ fn a_column_pick_is_an_essential_event_with_what_was_picked() {
                 id: "ru-2",
                 title: "BAND B",
                 arranging: false,
+                same: false,
             }
         ),
         json!({"ev": "tab", "t": 2.0, "what": "layout", "sector": "ru", "id": "ru-2",
-               "title": "BAND B", "arrange": false})
+               "title": "BAND B", "arrange": false, "same": false})
     );
     assert_eq!(
         tab(
@@ -973,10 +990,11 @@ fn a_column_pick_is_an_essential_event_with_what_was_picked() {
                 id: "ld-1",
                 title: "EFFECTS",
                 arranging: true,
+                same: true,
             }
         ),
         json!({"ev": "tab", "t": 3.0, "what": "layout", "sector": "ld", "id": "ld-1",
-               "title": "EFFECTS", "arrange": true})
+               "title": "EFFECTS", "arrange": true, "same": true})
     );
     assert_eq!(
         tab(4.0, TabStep::Arrange { act: "save" }),
