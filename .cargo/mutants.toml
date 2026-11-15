@@ -22,6 +22,12 @@ exclude_globs = [
   # call (.claude/rules/plugin-window.md). Its decisions (the phases' flags
   # aside, pinned by its own test) are the tested plugwin.rs and eq.rs.
   "crates/fohmixer-hub/src/plugwin/win.rs",
+  # Its Windows Graphics Capture glue (#215, as win.rs): Windows only; the
+  # `windows` job lints it and runs its `plugwin::wgc::` tests, and
+  # `eq-probe --capture wgc` drives it on the PC. Its decisions are the
+  # tested capture.rs (the arrivals, the picture's box) and plugwin.rs's
+  # rate (`grab_due`, `resting`, `Shown::due`).
+  "crates/fohmixer-hub/src/plugwin/wgc.rs",
   # The tray's Windows-only Tauri glue (#39, as iemmixer excludes iem-tray):
   # not compiled on the Linux runners; the `windows` CI job builds and lints
   # it, and Test-Fohmixer.ps1 runs the exe (start, `--exit`, the log). Its
