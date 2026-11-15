@@ -255,7 +255,7 @@ test.describe("A Live that is down (#178)", () => {
             const zone = s.querySelector(".strip-zone")!.getBoundingClientRect();
             if (!hint) return { track: s.getAttribute("data-track"), hint: false, inside: false, meets: [] as string[] };
             const h = hint.getBoundingClientRect();
-            const meets = [...s.querySelectorAll(".scale .tick, .group-side, .lufs, .lufs-cap")]
+            const meets = [...s.querySelectorAll(".scale .tick, .group-side, .strip-set, .lufs, .lufs-cap")]
               .filter((t) => {
                 const cs = getComputedStyle(t);
                 const r = t.getBoundingClientRect();

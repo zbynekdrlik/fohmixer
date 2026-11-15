@@ -38,6 +38,15 @@ import { openSurface } from "./support/live";
 // the blocks one after another (never `writing-mode`, which overlapped the
 // digits in WebKit); inside the column, above the group's name, which
 // stays above SEL.
+//
+// The strip's Live set (#211, docs/mockups/strip-instance-v1.html): calm
+// `--faint` text in the display face, read bottom to top, in the info
+// column's side box with the group's name (`.strip-side`, group.css): alone
+// at the group's name's place (52 px under the column's top, on a narrow
+// strip 50 px above its foot), with a name 8 px past it, under the LUFS
+// row, clear of the name and of SEL, and, in a zone too short for both,
+// yielded whole (outside the side box's clip), never half drawn; the
+// group's name keeps its place either way.
 
 const WIDTHS = [64, 72, 76, 77.99, 78, 83.16, 88, 120];
 const LABELS = ["Vox 1", "Klavir 2"];
@@ -75,6 +84,10 @@ type Case = {
   group?: string;
   /** The LUFS readings shown in turn (the plain strip and the group's). */
   lufs?: boolean;
+  /** The strip's Live set (#211, behave::label::set_text), none when the group's name says it. */
+  set?: string;
+  /** The strip's height (420 px when absent): a short one leaves no room for the set under a name. */
+  h?: number;
 };
 
 /** A LUFS reading as behave::lufs::look gives it: its text, `data-l` and caption. */
@@ -118,6 +131,16 @@ function sweepCases(): Case[] {
             }
   // A conflict's readout and a group's name under the LUFS at every width.
   for (const w of WIDTHS) out.push({ w, label: "Vox 1", link: null, flag: false, muted: false, fader: "", conflict: true, group: "Stage", lufs: true });
+  // The strip's Live set (#211): alone, under a group's name, and a long
+  // name with the longest set, in a tall zone (both shown) and a short one
+  // (the set yields, the name stays).
+  const plain = { label: "Vox 1", link: null as Link, flag: false, muted: false, fader: "" as Case["fader"], lufs: true };
+  for (const w of WIDTHS)
+    for (const h of [420, 320]) {
+      out.push({ ...plain, w, h, set: "MBC" });
+      out.push({ ...plain, w, h, set: "MASTER", group: "Stage" });
+      out.push({ ...plain, w, h, set: "MASTER", group: "Backing vocals" });
+    }
   return out;
 }
 
@@ -171,7 +194,7 @@ async function sweep([list, readings]: [Case[], Reading[]]): Promise<Result> {
     const wrap = document.createElement("div");
     wrap.setAttribute("data-narrow", String(c.w < 78));
     wrap.setAttribute("data-narrow-wide", String(c.w * 1.1 < 78));
-    wrap.style.cssText = `--strip-w:${c.w}px;display:flex;height:420px;`;
+    wrap.style.cssText = `--strip-w:${c.w}px;display:flex;height:${c.h ?? 420}px;`;
     const s = document.createElement("div");
     s.className = "strip";
     s.setAttribute("data-testid", "strip");
@@ -190,7 +213,9 @@ async function sweep([list, readings]: [Case[], Reading[]]): Promise<Result> {
       `</div>` +
       `<div class="strip-zone" style="--u:0.85;">` +
       `<div class="strip-col" data-testid="strip-col" aria-hidden="true"><div class="lufs-cap" data-testid="lufs-cap" data-shown="false"><span></span><span></span></div><div class="lufs" data-testid="lufs" data-l="none"></div>` +
-      `${c.group ? `<span class="group-side" data-testid="group-side">${c.group}</span>` : ""}</div>` +
+      `<div class="strip-side" data-testid="strip-side">` +
+      `${c.group ? `<span class="group-side" data-testid="group-side">${c.group}</span>` : ""}` +
+      `${c.set ? `<span class="strip-set" data-testid="strip-set">${c.set}</span>` : ""}</div></div>` +
       `<div class="scale" data-testid="scale" aria-hidden="true">${scale}</div>` +
       `<div class="fader" data-testid="fader" style="--p:0;"><div class="fader-track" data-testid="meter">${bar}${bar}</div>` +
       `<div class="fader-ghost"></div><div class="fader-rail"><div class="fader-cap" data-testid="fader-cap"></div></div></div>` +
@@ -309,7 +334,7 @@ async function sweep([list, readings]: [Case[], Reading[]]): Promise<Result> {
     const s = strips[i];
     const narrow = c.w < 78;
     const muted = c.link ? c.link.state === "muted" : c.muted;
-    const name = `${c.w} px "${c.label}" ${c.link ? `${c.link.state} ${c.link.text}` : c.muted ? "unlinked muted" : "unlinked"}${c.flag ? " !" : ""}${c.fader ? ` ${c.fader}` : ""}${c.conflict ? " conflict" : ""}`;
+    const name = `${c.w} px "${c.label}" ${c.link ? `${c.link.state} ${c.link.text}` : c.muted ? "unlinked muted" : "unlinked"}${c.flag ? " !" : ""}${c.fader ? ` ${c.fader}` : ""}${c.conflict ? " conflict" : ""}${c.group ? ` group "${c.group}"` : ""}${c.set ? ` set ${c.set}` : ""}${c.h ? ` ${c.h} px high` : ""}`;
     const fail = (what: string) => problems.push(`${name}: ${what}`);
     const strip = s.getBoundingClientRect();
     const button = s.querySelector(".strip-head > .mute")!.getBoundingClientRect();
@@ -463,9 +488,60 @@ async function sweep([list, readings]: [Case[], Reading[]]): Promise<Result> {
         if (g.bottom > sel.top + 0.5) say(`the group's name reaches SEL (${at(g.bottom - col.top)} > ${at(sel.top - col.top)})`);
         if (side.scrollWidth > side.clientWidth || side.scrollHeight > side.clientHeight) say("the group's name is clipped");
       }
+      // The strip's Live set (#211), when it shows: under the reading,
+      // clear of the group's name and SEL, whole.
+      const setEl = colEl.querySelector(".strip-set") as HTMLElement | null;
+      if (setEl) {
+        const sb = setEl.getBoundingClientRect();
+        const box = colEl.querySelector(".strip-side")!.getBoundingClientRect();
+        if (sb.left < box.right - 0.01) {
+          if (nb.bottom > sb.top + 0.5) say(`over the set (${at(nb.bottom - col.top)} > ${at(sb.top - col.top)})`);
+          if (sb.bottom > sel.top + 0.5) say(`the set reaches SEL (${at(sb.bottom - col.top)} > ${at(sel.top - col.top)})`);
+          if (side) {
+            const g = side.getBoundingClientRect();
+            if (sb.top < g.bottom - 0.01 && sb.bottom > g.top + 0.01) say("the set overlaps the group's name");
+          }
+        }
+      }
       if (r.text === "−25.9" && !digits[key]) digits[key] = { size, digit: digitHeight(n) };
     }
     if (c.lufs) setReading(colEl, null);
+    // The strip's Live set (#211): seen whole or yielded whole, never half
+    // drawn; yielded only beside a group's name in a short zone; calm and
+    // in the display face; alone at the group's name's place, with a name
+    // 8 px past it.
+    const setEl = colEl.querySelector(".strip-set") as HTMLElement | null;
+    if (c.set && setEl) {
+      const sb = seenBox(setEl, s)!;
+      const box = colEl.querySelector(".strip-side")!.getBoundingClientRect();
+      const out = sb.left >= box.right - 0.01;
+      const cs = getComputedStyle(setEl);
+      if (setEl.textContent !== c.set) fail(`the set reads ${setEl.textContent}`);
+      if (cs.color !== "rgb(92, 92, 120)") fail(`the set is ${cs.color}, not --faint`);
+      if (!cs.fontFamily.startsWith('"Barlow Condensed"')) fail(`the set's face is ${cs.fontFamily}`);
+      if (cs.backgroundColor !== "rgba(0, 0, 0, 0)" || cs.borderTopStyle !== "none" || cs.boxShadow !== "none") fail("the set is drawn as a shape");
+      if (cs.writingMode !== "vertical-rl") fail(`the set's writing-mode is ${cs.writingMode}`);
+      const wantOut = !!c.group && (c.h ?? 420) < 420;
+      if (out !== wantOut) fail(`the set ${out ? "yielded" : "shows"} (zone ${at(col.height)} px)`);
+      if (!out) {
+        if (!sb.seen) fail(`the set is not seen whole (${at(sb.left - col.left)}..${at(sb.right - col.left)} x ${at(sb.top - col.top)}..${at(sb.bottom - col.top)})`);
+        if (sb.left < col.left - 0.5 || sb.right > col.right + 0.5) fail("the set passes the info column");
+        if (setEl.scrollWidth > setEl.clientWidth || setEl.scrollHeight > setEl.clientHeight) fail("the set is clipped");
+        const g = side?.getBoundingClientRect();
+        if (!g && !narrow && Math.abs(sb.top - col.top - 52) > 0.5) fail(`the set alone starts ${at(sb.top - col.top)} px under the column's top`);
+        if (!g && narrow && Math.abs(col.bottom - sb.bottom - 50) > 0.5) fail(`the set alone ends ${at(col.bottom - sb.bottom)} px above the column's foot`);
+        if (g && !narrow && Math.abs(sb.top - g.bottom - 8) > 0.5) fail(`the set starts ${at(sb.top - g.bottom)} px under the group's name`);
+        if (g && narrow && Math.abs(g.top - sb.bottom - 8) > 0.5) fail(`the set ends ${at(g.top - sb.bottom)} px over the group's name`);
+      } else if (sb.seen) fail("the yielded set is seen");
+    } else if (c.set) fail("no set drawn");
+    // The group's name keeps its place: 52 px under the column's top, on a
+    // narrow strip 50 px above its foot, 96 px long.
+    if (side) {
+      const g = side.getBoundingClientRect();
+      if (!narrow && Math.abs(g.top - col.top - 52) > 0.5) fail(`the group's name starts ${at(g.top - col.top)} px under the column's top`);
+      if (narrow && Math.abs(col.bottom - g.bottom - 50) > 0.5) fail(`the group's name ends ${at(col.bottom - g.bottom)} px above the column's foot`);
+      if (Math.abs(g.height - 96) > 0.5) fail(`the group's name is ${at(g.height)} px long`);
+    }
     // Nothing passes the strip's right or bottom edge (the fader's rail is
     // a transparent layer as tall as the track, moved by --p; a bar's moving
     // layers are clipped by the bar).

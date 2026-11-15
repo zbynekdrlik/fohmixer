@@ -106,9 +106,8 @@ pub fn sector_instances(
 /// the Live set its sector's shown layout shares ([`shown_instance`]). A
 /// layout of one set names nothing; a mixed one names each strip's own set
 /// in capitals (`BAND`, `MASTER`, as `arrange::group_label` names an
-/// untitled group's), drawn where the group's name sits on the classic page.
-/// The strip itself never draws its instance pill there: it would take
-/// 16 px of fader travel.
+/// untitled group's), drawn where the group's name sits on the classic page
+/// (the strip's own set mark then stays away, `behave::label::set_text`).
 pub fn sector_side(shared: Option<&str>, instance: &str) -> Option<GroupLabel> {
     shared.is_none().then(|| GroupLabel {
         text: instance.to_uppercase(),
