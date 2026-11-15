@@ -135,11 +135,17 @@ use super::{
 };
 
 /// The CLI's usage line.
-pub const USAGE: &str = "usage: fohmixer-hub eq-probe --pid <pid> [--frames <n>] [--capture wgc|blt] [--capture-only] [--hub-rate] [--size <w>x<h>] [--min-probe] [--hold] [--paint <n>] [--undo] [--band <x,y>] [--to <x,y>] [--inert <x,y>] [--out <folder>] [--close] [--sim]";
+pub const USAGE: &str = "usage: fohmixer-hub eq-probe --pid <pid> [--frames <n>] [--capture wgc|blt] [--capture-only] [--hub-rate] [--rest] [--input <x,y>] [--size <w>x<h>] [--min-probe] [--hold] [--paint <n>] [--undo] [--band <x,y>] [--to <x,y>] [--inert <x,y>] [--out <folder>] [--close] [--sim]";
 /// Why `--capture-only` was refused with a gesture's flag (#215): it runs
 /// none.
 pub const CAPTURE_ALONE: &str =
     "--capture-only cannot run with --min-probe, --hold, --paint, --undo or --close";
+/// Why `--input` was refused without `--capture-only` (#215): the
+/// gestures make contacts of their own.
+pub const INPUT_ALONE: &str = "--input runs only with --capture-only";
+/// Why `--rest` was refused (#215): it is a way of `--hub-rate`, and a
+/// contact down never rests.
+pub const REST_ALONE: &str = "--rest runs only with --hub-rate and without --input";
 /// Why `--undo` was refused with `--hold` or `--paint` (#71 PR P): each
 /// makes changes of its own, which the undo would count.
 pub const UNDO_ALONE: &str = "--undo cannot run with --hold or --paint";
@@ -245,6 +251,13 @@ pub struct Args {
     /// Whether the capture's ticks grab only as an awake editor of the hub
     /// would (#215: a change or the second's refresh).
     pub hub_rate: bool,
+    /// With `--hub-rate`: as a resting editor of the hub instead (no
+    /// contact, no input for 2 s: one grab a second).
+    pub rest: bool,
+    /// With `--capture-only`: a contact down at this point for the whole
+    /// capture, moved [`PAINT_STEP`] px up and back at every tick (#215:
+    /// the grabs a second while a finger works the window).
+    pub input: Option<(i32, i32)>,
 }
 
 /// `x,y` as a point.
@@ -288,6 +301,8 @@ pub fn parse(args: &[&str]) -> Result<Args, String> {
         capture: Capture::Wgc,
         capture_only: false,
         hub_rate: false,
+        rest: false,
+        input: None,
     };
     let mut pid = None;
     let mut rest = args.iter();
@@ -304,8 +319,9 @@ pub fn parse(args: &[&str]) -> Result<Args, String> {
             "--undo" => parsed.undo = true,
             "--capture-only" => parsed.capture_only = true,
             "--hub-rate" => parsed.hub_rate = true,
+            "--rest" => parsed.rest = true,
             "--pid" | "--frames" | "--band" | "--to" | "--inert" | "--out" | "--size"
-            | "--paint" | "--capture" => {
+            | "--paint" | "--capture" | "--input" => {
                 let value = rest.next().ok_or(format!("{flag} needs a value"))?;
                 let bad = || format!("{flag} {value:?}");
                 match *flag {
@@ -315,6 +331,7 @@ pub fn parse(args: &[&str]) -> Result<Args, String> {
                     "--band" => parsed.band = point(value).ok_or_else(bad)?,
                     "--to" => parsed.to = point(value).ok_or_else(bad)?,
                     "--inert" => parsed.inert = Some(point(value).ok_or_else(bad)?),
+                    "--input" => parsed.input = Some(point(value).ok_or_else(bad)?),
                     "--size" => parsed.size = Some(size(value).ok_or_else(bad)?),
                     "--capture" => parsed.capture = Capture::named(value).ok_or_else(bad)?,
                     _ => parsed.out = Some(PathBuf::from(*value)),
@@ -331,6 +348,12 @@ pub fn parse(args: &[&str]) -> Result<Args, String> {
         parsed.min_probe || parsed.hold || parsed.paint > 0 || parsed.undo || parsed.close;
     if parsed.capture_only && gestures {
         return Err(CAPTURE_ALONE.to_string());
+    }
+    if parsed.input.is_some() && !parsed.capture_only {
+        return Err(INPUT_ALONE.to_string());
+    }
+    if parsed.rest && (!parsed.hub_rate || parsed.input.is_some()) {
+        return Err(REST_ALONE.to_string());
     }
     Ok(parsed)
 }
@@ -368,6 +391,48 @@ pub const PERIOD: Duration = Duration::from_millis(40);
 /// When capture `n` is due after the first.
 pub fn due_at(n: u32) -> Duration {
     PERIOD * n
+}
+
+/// The step the probe is at (#215: a step that never returns is named by
+/// the CLI's watchdog, never a silent hang).
+static AT_STEP: std::sync::Mutex<&str> = std::sync::Mutex::new("start");
+
+/// The probe is at `step` from now on.
+pub fn at_step(step: &'static str) {
+    *AT_STEP
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = step;
+}
+
+/// The step the probe is at.
+pub fn step_now() -> &'static str {
+    *AT_STEP
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The most a probe of `args` may run before the CLI's watchdog ends it
+/// (#215: on the PC a WGC capture-only probe of Notepad never finished):
+/// [`DEADLINE_BASE`], [`DEADLINE_FRAME`] a frame and [`DEADLINE_PAINT`] a
+/// paint trial, far above what each step takes (a hold probe's real holds
+/// about 30 s).
+pub fn deadline(args: &Args) -> Duration {
+    DEADLINE_BASE + DEADLINE_FRAME * args.frames + DEADLINE_PAINT * args.paint
+}
+
+/// The watchdog's base bound.
+pub const DEADLINE_BASE: Duration = Duration::from_secs(120);
+/// The watchdog's bound a frame (the hub's 40 ms, with room).
+pub const DEADLINE_FRAME: Duration = Duration::from_millis(100);
+/// The watchdog's bound a paint trial (at most about 0.7 s).
+pub const DEADLINE_PAINT: Duration = Duration::from_secs(1);
+
+/// What the CLI's watchdog says when it ends a probe stuck at `step`.
+pub fn stuck_text(step: &str, after: Duration) -> String {
+    format!(
+        "stuck at the step {step:?} after {} s: ended by its watchdog",
+        after.as_secs()
+    )
 }
 
 /// Frames a second: `frames` in `seconds` (0 for no time).
@@ -731,26 +796,65 @@ fn drag(held: &mut Held<'_>, from: (i32, i32), to: (i32, i32)) -> Result<usize, 
     Ok(points.len())
 }
 
+/// The point of `--input`'s contact at tick `n`: [`PAINT_STEP`] px up on
+/// every other tick, so each tick moves it (#215: a finger working the
+/// window, never a still contact Windows would make a right click).
+pub fn input_point(at: (i32, i32), n: u32) -> (i32, i32) {
+    if n.is_multiple_of(2) {
+        (at.0, at.1 - PAINT_STEP)
+    } else {
+        at
+    }
+}
+
+/// How the capture's ticks grab: every tick, or as the hub's editor would
+/// (`--hub-rate`), resting (`--rest`) or not; and the contact `--input`
+/// keeps down meanwhile.
+#[derive(Debug, Clone, Copy)]
+struct Rate {
+    hub_rate: bool,
+    rest: bool,
+    input: Option<(i32, i32)>,
+}
+
 /// Grabs `frames` pictures at the hub's rate and reports them.
 fn capture(
     held: &mut Held<'_>,
     frames: u32,
     how: Capture,
-    hub_rate: bool,
+    rate_of: Rate,
     report: &mut Report<'_>,
 ) -> Result<(), String> {
+    at_step("first_frame");
     first_frame(held)?;
+    at_step("grabs");
     let (mut grabs, mut encodes, mut sizes) = (Vec::new(), Vec::new(), Vec::new());
     let mut last: Option<Pixels> = None;
     let (mut same, mut skipped) = (0_u32, 0_u32);
     let mut grabbed: Option<Instant> = None;
+    if let Some(at) = rate_of.input {
+        held.touch(Phase::Down, at, "input")?;
+    }
     let started = Instant::now();
     for n in 0..frames {
         std::thread::sleep(due_at(n).saturating_sub(started.elapsed()));
-        // `--hub-rate` (#215): a tick grabs only as an awake editor of the
-        // hub would (a change, or the second's refresh).
+        // `--input` (#215): the contact moves at every tick, 40 ms apart,
+        // well within Windows' 100 ms for a contact with no frame.
+        if let Some(at) = rate_of.input {
+            held.touch(Phase::Update, input_point(at, n), "input")?;
+        }
+        // `--hub-rate` (#215): a tick grabs only as an editor of the hub
+        // would: awake (a change, or the second's refresh), or resting
+        // (`--rest`: the refresh only).
         let since = grabbed.map_or(f64::INFINITY, |at| millis(at.elapsed()));
-        if hub_rate && !grab_due(since, false, held.backend.changed(&held.taken), false) {
+        if rate_of.hub_rate
+            && !grab_due(
+                since,
+                rate_of.rest,
+                held.backend.changed(&held.taken),
+                false,
+            )
+        {
             skipped += 1;
             continue;
         }
@@ -770,6 +874,10 @@ fn capture(
         last = Some(pixels);
     }
     let seconds = started.elapsed().as_secs_f64();
+    if let Some(at) = rate_of.input {
+        let end = input_point(at, frames.saturating_sub(1));
+        held.touch(Phase::Up, end, "input")?;
+    }
     let (grab_mean, grab_max) = stats(&grabs);
     let (encode_mean, encode_max) = stats(&encodes);
     let (bytes_mean, _) = stats(&sizes);
@@ -781,18 +889,31 @@ fn capture(
         "encode_ms_mean={encode_mean:.1} encode_ms_max={encode_max:.1} bytes_mean={bytes_mean:.0}"
     ))?;
     // #215: on the rate's line, so the lines after it keep their places.
-    let rate_text = if hub_rate {
-        format!(" hub_rate=on skipped={skipped}")
-    } else {
-        String::new()
-    };
     report.line(&format!(
-        "fps={:.1} capture={} {}{rate_text}",
+        "fps={:.1} grabs_per_s={:.1} capture={} {}{}",
         rate(frames, seconds),
+        rate(grabs.len() as u32, seconds),
         how.name(),
-        arrived_text(held.backend.capture_counts(&held.taken))
+        arrived_text(held.backend.capture_counts(&held.taken)),
+        rate_text(rate_of, skipped)
     ))?;
     Ok(())
+}
+
+/// The end of the rate's line: how the ticks grabbed (#215), nothing for
+/// a grab at every tick with no contact.
+fn rate_text(rate_of: Rate, skipped: u32) -> String {
+    let mut text = String::new();
+    if rate_of.hub_rate {
+        text.push_str(&format!(" hub_rate=on skipped={skipped}"));
+    }
+    if rate_of.rest {
+        text.push_str(" rest=on");
+    }
+    if rate_of.input.is_some() {
+        text.push_str(" input=on");
+    }
+    text
 }
 
 /// The looks for a capture's first frame before the first grab, [`STEP`]
@@ -1224,11 +1345,19 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
     if let Some(folder) = args.out.as_deref() {
         std::fs::create_dir_all(folder).map_err(|e| format!("--out: {e}"))?;
     }
+    at_step("windows");
     let windows = backend.windows_of(args.pid)?;
     report.line(&format!("windows={}", windows.len()))?;
     let window = *windows
         .first()
         .ok_or(format!("no visible window of process {}", args.pid))?;
+    // #215: what decides whether the capture can start, before the take
+    // starts it (the PC's WGC refused Live's editor).
+    at_step("capture_diag");
+    if let Some(diag) = backend.capture_diag(window) {
+        report.line(&format!("capture_diag={}", diag.text()))?;
+    }
+    at_step("take");
     let taken = backend.take(window)?;
     let mut held = Held {
         backend,
@@ -1237,6 +1366,7 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
         released: false,
         changed: false,
     };
+    at_step("on_top");
     on_top(&mut held)?;
     report.line(&format!(
         "picture={}x{} child={} was_topmost={}",
@@ -1245,6 +1375,12 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
         held.taken.picture != held.taken.window,
         held.taken.was_topmost
     ))?;
+    // A capture that did not start ends the probe (#215: it went on and
+    // its grabs failed or it waited), its window handed back.
+    at_step("capture_start");
+    held.backend
+        .capture_started(&held.taken)
+        .map_err(|why| format!("capture: start: {why}"))?;
     let original = held.original();
     if args.min_probe {
         // Pro-Q's own minimum: the size it takes for a far smaller ask (it
@@ -1284,18 +1420,26 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
         scaled(args.band, original, now),
         scaled(args.to, original, now),
     );
+    at_step("capture");
     capture(
         &mut held,
         args.frames,
         args.capture,
-        args.hub_rate,
+        Rate {
+            hub_rate: args.hub_rate,
+            rest: args.rest,
+            input: args.input,
+        },
         &mut report,
     )?;
     if args.capture_only {
+        at_step("release");
         held.release();
         report.line("release=ok")?;
+        at_step("done");
         return Ok(());
     }
+    at_step("gestures");
     double_tap(&mut held, band, "band")?;
     report.line(&format!("band=ok at={},{}", band.0, band.1))?;
     settle(&mut held, "after-band.jpg", &mut report)?;
@@ -1324,6 +1468,7 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
     // The guard, as the hub's: the picture placed at the size the inert
     // spot is known at, whatever size it has, each placement seen to land
     // (#74 review, round 2); not so, no tap.
+    at_step("guard");
     let back = held.known().map_err(|why| format!("restore: {why}"))?;
     report.line(&format!("restore=ok {}", back.figures()))?;
     let spot = args.inert.unwrap_or_else(|| inert_spot(KNOWN_SIZE.0));
@@ -1336,12 +1481,14 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
         GUARD_TAP.as_millis()
     ))?;
     settle(&mut held, "after-guard.jpg", &mut report)?;
+    at_step("release");
     held.release();
     report.line("release=ok")?;
     if args.close {
         held.backend.close_window(&held.taken);
         report.line("close=sent")?;
     }
+    at_step("done");
     Ok(())
 }
 

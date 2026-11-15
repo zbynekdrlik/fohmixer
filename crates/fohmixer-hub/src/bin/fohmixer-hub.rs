@@ -271,6 +271,30 @@ fn probe_command(args: &[&str]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // #215: the backend's own lines (a capture's failed start, its
+    // warnings) on stderr, so a probe on the PC shows them.
+    let rust_log = std::env::var("RUST_LOG").ok();
+    match fohmixer_hub::log_filter(rust_log.as_deref()) {
+        Ok(filter) => tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .init(),
+        Err(why) => {
+            eprintln!("fohmixer-hub: eq-probe: {why:#}");
+            return ExitCode::from(2);
+        }
+    }
+    // #215: a step that never returns (a WGC probe of Notepad on the PC ran
+    // past 120 s) ends the probe, named, never a silent hang.
+    let bound = probe::deadline(&parsed);
+    std::thread::spawn(move || {
+        std::thread::sleep(bound);
+        eprintln!(
+            "fohmixer-hub: eq-probe: {}",
+            probe::stuck_text(probe::step_now(), bound)
+        );
+        std::process::exit(1);
+    });
     if let Err(why) = backend.start() {
         eprintln!("fohmixer-hub: eq-probe: {why}");
         return ExitCode::FAILURE;

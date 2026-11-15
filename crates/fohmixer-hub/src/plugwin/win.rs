@@ -92,7 +92,7 @@ use windows::core::{BOOL, HRESULT, w};
 
 use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
 
-use super::capture::{Capture, CaptureCounts, WGC_LAG_MS};
+use super::capture::{Capture, CaptureCounts, CaptureDiag, WGC_LAG_MS};
 use super::wgc::Wgc;
 use super::{Backend, Phase, Pixels, Rect, Taken, WindowId};
 
@@ -660,6 +660,18 @@ impl Backend for Win {
 
     fn capture_counts(&mut self, taken: &Taken) -> Option<CaptureCounts> {
         self.wgc.counts(hwnd(taken.window))
+    }
+
+    fn capture_diag(&mut self, window: WindowId) -> Option<CaptureDiag> {
+        (self.capture == Capture::Wgc).then(|| super::wgc::diag(hwnd(window)))
+    }
+
+    fn capture_started(&mut self, taken: &Taken) -> Result<(), String> {
+        if self.capture == Capture::Wgc {
+            self.wgc.started(hwnd(taken.window))
+        } else {
+            Ok(())
+        }
     }
 
     fn touch(&mut self, taken: &Taken, phase: Phase, at: (i32, i32)) -> Result<(), String> {

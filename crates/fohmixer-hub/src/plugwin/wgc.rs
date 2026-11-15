@@ -50,7 +50,7 @@ use windows::Graphics::Capture::{
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Graphics::SizeInt32;
-use windows::Win32::Foundation::{HMODULE, HWND, RECT};
+use windows::Win32::Foundation::{CO_E_NOTINITIALIZED, HMODULE, HWND, RECT};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BOX, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ,
@@ -58,20 +58,32 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Multithread,
     ID3D11Texture2D,
 };
-use windows::Win32::Graphics::Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
+use windows::Win32::Graphics::Dwm::{
+    DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
+};
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
-use windows::Win32::System::Com::IAgileObject;
+use windows::Win32::System::Com::{APTTYPE, APTTYPEQUALIFIER, CoGetApartmentType, IAgileObject};
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
 };
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
-use windows::Win32::UI::WindowsAndMessaging::IsIconic;
+use windows::Win32::UI::HiDpi::{
+    AreDpiAwarenessContextsEqual, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    GetAwarenessFromDpiAwarenessContext, GetThreadDpiAwarenessContext,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GA_ROOT, GW_OWNER, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetWindow, GetWindowLongW,
+    IsIconic, IsWindow, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+};
 use windows::core::{IInspectable, Interface};
 
 use super::Pixels;
-use super::capture::{Arrivals, CaptureCounts, frame_current, picture_box};
+use super::capture::{
+    Arrivals, CaptureCounts, CaptureDiag, apartment_name, awareness_name, frame_current,
+    picture_box,
+};
 
 /// The frame pool's buffers: one DWM writes while the other is copied.
 pub const BUFFERS: i32 = 2;
@@ -328,6 +340,67 @@ fn keep(
     Ok(())
 }
 
+/// What decides whether a capture can start on `window` (#215): its own
+/// facts (the class name's length, never a title) and this thread's
+/// apartment and DPI awareness, read with calls that send the window no
+/// message.
+pub fn diag(window: HWND) -> CaptureDiag {
+    let mut class = [0_u16; 256];
+    // SAFETY: plain reads of a handle into a local buffer; a stale handle
+    // reads empty.
+    let class_len = unsafe { GetClassNameW(window, &mut class) };
+    // SAFETY: as above.
+    let is_window = unsafe { IsWindow(Some(window)) }.as_bool();
+    // SAFETY: as above.
+    let root = unsafe { GetAncestor(window, GA_ROOT) } == window;
+    // SAFETY: as above.
+    let owned = unsafe { GetWindow(window, GW_OWNER) }.is_ok_and(|owner| !owner.is_invalid());
+    // SAFETY: as above.
+    let ex = unsafe { GetWindowLongW(window, GWL_EXSTYLE) } as u32;
+    let mut cloaked = 0_u32;
+    // SAFETY: `cloaked` outlives the call and is the attribute's size.
+    let cloaked = unsafe {
+        DwmGetWindowAttribute(
+            window,
+            DWMWA_CLOAKED,
+            (&mut cloaked as *mut u32).cast(),
+            std::mem::size_of::<u32>() as u32,
+        )
+    }
+    .ok()
+    .map(|()| cloaked);
+    let (mut apttype, mut qualifier) = (APTTYPE(0), APTTYPEQUALIFIER(0));
+    // SAFETY: reads this thread's apartment into locals.
+    let apartment = match unsafe { CoGetApartmentType(&mut apttype, &mut qualifier) } {
+        Ok(()) => apartment_name(apttype.0),
+        Err(e) if e.code() == CO_E_NOTINITIALIZED => "none".to_string(),
+        Err(e) => format!("error_{:08x}", e.code().0),
+    };
+    // SAFETY: reads this thread's DPI awareness context.
+    let context = unsafe { GetThreadDpiAwarenessContext() };
+    // SAFETY: plain reads of a context handle.
+    let (awareness, v2) = unsafe {
+        (
+            GetAwarenessFromDpiAwarenessContext(context).0,
+            AreDpiAwarenessContextsEqual(context, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+                .as_bool(),
+        )
+    };
+    CaptureDiag {
+        class_len: usize::try_from(class_len).unwrap_or(0),
+        is_window,
+        root,
+        owned,
+        tool: ex & WS_EX_TOOLWINDOW.0 != 0,
+        app: ex & WS_EX_APPWINDOW.0 != 0,
+        noactivate: ex & WS_EX_NOACTIVATE.0 != 0,
+        cloaked,
+        apartment,
+        dpi: awareness_name(awareness, v2).to_string(),
+        supported: GraphicsCaptureSession::IsSupported().ok(),
+    }
+}
+
 /// A window's extended frame bounds (its visible rectangle, the origin of
 /// its captured frames).
 fn frame_bounds(window: HWND) -> Result<RECT, String> {
@@ -371,8 +444,10 @@ impl Wgc {
         let interop = windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()
             .map_err(|e| text("IGraphicsCaptureItemInterop", e))?;
         // SAFETY: a capture item of a window handle; a stale one fails.
-        let item: GraphicsCaptureItem =
-            unsafe { interop.CreateForWindow(window) }.map_err(|e| text("CreateForWindow", e))?;
+        // Windows 10 refuses a window Alt+Tab would not list (#215: Live's
+        // editor on the PC's 19044): the window's facts go with the error.
+        let item: GraphicsCaptureItem = unsafe { interop.CreateForWindow(window) }
+            .map_err(|e| format!("{} ({})", text("CreateForWindow", e), diag(window).text()))?;
         let size = item
             .Size()
             .map_err(|e| text("GraphicsCaptureItem.Size", e))?;
@@ -490,6 +565,12 @@ impl Wgc {
         self.sessions
             .get(&key)
             .ok_or_else(|| "no capture session".to_string())
+    }
+
+    /// Whether `window`'s capture runs: started now when it has none (a
+    /// start that failed less than [`START_AGAIN`] ago answers its error).
+    pub fn started(&mut self, window: HWND) -> Result<(), String> {
+        self.session(window).map(|_| ())
     }
 
     /// Starts the capture of a taken editor's `window` (its first frame

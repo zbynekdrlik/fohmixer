@@ -23,6 +23,8 @@ fn args(pid: u32) -> Args {
         capture: Capture::Wgc,
         capture_only: false,
         hub_rate: false,
+        rest: false,
+        input: None,
     }
 }
 
@@ -69,6 +71,8 @@ fn the_arguments_have_their_defaults_and_every_flag_is_read() {
             capture: Capture::Wgc,
             capture_only: false,
             hub_rate: false,
+            rest: false,
+            input: None,
         })
     );
     // `--undo` (#71 PR P): alone, or with no paint trial; never with
@@ -1630,4 +1634,153 @@ fn a_capture_that_fails_to_start_ends_the_probe_with_its_error_before_any_grab()
         "{text}"
     );
     assert_eq!(handle.grabs(), 2);
+}
+
+#[test]
+fn input_and_rest_are_read_and_each_runs_only_where_it_means_something() {
+    let only = parse(&["--pid", "1", "--capture-only", "--input", " 100 , 200 "]).unwrap();
+    assert_eq!(only.input, Some((100, 200)));
+    assert!(!only.rest);
+    assert_eq!(
+        parse(&["--pid", "1", "--input", "100,200"]),
+        Err(INPUT_ALONE.to_string())
+    );
+    assert_eq!(
+        parse(&["--pid", "1", "--capture-only", "--input", "100"]),
+        Err("--input \"100\"".to_string())
+    );
+    let rest = parse(&["--pid", "1", "--capture-only", "--hub-rate", "--rest"]).unwrap();
+    assert!(rest.rest && rest.hub_rate);
+    assert_eq!(
+        parse(&["--pid", "1", "--capture-only", "--rest"]),
+        Err(REST_ALONE.to_string()),
+        "a way of --hub-rate"
+    );
+    assert_eq!(
+        parse(&[
+            "--pid",
+            "1",
+            "--capture-only",
+            "--hub-rate",
+            "--rest",
+            "--input",
+            "1,2"
+        ]),
+        Err(REST_ALONE.to_string()),
+        "a contact down never rests"
+    );
+    assert!(USAGE.contains(" [--rest] [--input <x,y>] "), "{USAGE}");
+    // The contact moves at every tick: up, back, up …
+    assert_eq!(input_point((100, 200), 0), (100, 192));
+    assert_eq!(input_point((100, 200), 1), (100, 200));
+    assert_eq!(input_point((100, 200), 2), (100, 192));
+    assert_eq!(input_point((100, 200), 7), (100, 200));
+}
+
+#[test]
+fn an_input_keeps_a_contact_moving_through_the_capture_and_lifts_it_at_its_end() {
+    // #215, the owner's requirement: the probe measures the grabs a second
+    // while a finger works the window, against a resting one.
+    let (mut sim, handle, _) = one_window(42);
+    handle.change_driven(true);
+    let mut probe = args(42);
+    probe.frames = 3;
+    probe.capture_only = true;
+    probe.hub_rate = true;
+    probe.input = Some((100, 200));
+    let mut out = Vec::new();
+    run(&mut sim, &probe, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(
+        lines[5].ends_with(" hub_rate=on skipped=2 input=on"),
+        "{text}"
+    );
+    assert!(lines[5].contains(" grabs_per_s="), "{text}");
+    assert_eq!(
+        ops(&handle),
+        vec![
+            op("take", "", -1, -1),
+            op("touch", "down", 100, 200),
+            op("touch", "update", 100, 192),
+            op("touch", "update", 100, 200),
+            op("touch", "update", 100, 192),
+            op("touch", "up", 100, 192),
+            op("release", "", -1, -1),
+        ]
+    );
+}
+
+#[test]
+fn a_resting_hub_rate_grabs_once_a_second_whatever_changes() {
+    // #215: `--rest` grabs as a resting editor of the hub: a picture that
+    // changes at every grab is grabbed once, then not within the second.
+    let (mut sim, handle, _) = one_window(42);
+    handle.restless(true);
+    let mut probe = args(42);
+    probe.frames = 5;
+    probe.capture_only = true;
+    probe.hub_rate = true;
+    probe.rest = true;
+    let mut out = Vec::new();
+    run(&mut sim, &probe, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(
+        lines[5].ends_with(" hub_rate=on skipped=4 rest=on"),
+        "{text}"
+    );
+    assert_eq!(handle.grabs(), 1);
+    // Awake, the same picture is grabbed again within the second.
+    let (mut sim, handle, _) = one_window(42);
+    handle.restless(true);
+    probe.rest = false;
+    run(&mut sim, &probe, &mut Vec::new()).unwrap();
+    assert!(handle.grabs() >= 2, "{}", handle.grabs());
+}
+
+#[test]
+fn the_grabs_a_second_are_the_grabs_over_the_capture_s_time() {
+    let (mut sim, _handle, _) = one_window(42);
+    let mut probe = args(42);
+    probe.frames = 3;
+    probe.capture_only = true;
+    let mut out = Vec::new();
+    run(&mut sim, &probe, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let line = text.lines().nth(5).unwrap();
+    let field = |name: &str| -> f64 {
+        line.split(' ')
+            .find_map(|f| f.strip_prefix(name))
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    // Three grabs over the two 40 ms periods between them (and the last
+    // grab's time): the same count as the ticks, so the same rate.
+    assert_eq!(field("grabs_per_s="), field("fps="), "{line}");
+    assert!(field("grabs_per_s=") > 0.0, "{line}");
+}
+
+#[test]
+fn the_watchdogs_bound_grows_with_the_frames_and_the_paint_trials_and_names_the_step() {
+    let mut probe = args(1);
+    probe.frames = 0;
+    assert_eq!(deadline(&probe), Duration::from_secs(120));
+    probe.frames = 100;
+    assert_eq!(deadline(&probe), Duration::from_secs(130));
+    probe.paint = 40;
+    assert_eq!(deadline(&probe), Duration::from_secs(170));
+    assert_eq!(
+        stuck_text("first_frame", Duration::from_millis(125_900)),
+        "stuck at the step \"first_frame\" after 125 s: ended by its watchdog"
+    );
+    // A probe run marks its steps; it ends at `done`.
+    let (mut sim, _handle, _) = one_window(42);
+    let mut only = args(42);
+    only.frames = 1;
+    only.capture_only = true;
+    at_step("start");
+    run(&mut sim, &only, &mut Vec::new()).unwrap();
+    assert_eq!(step_now(), "done");
 }
