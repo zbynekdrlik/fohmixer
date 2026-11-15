@@ -598,6 +598,18 @@ pub trait Backend: Send {
     fn capture_counts(&mut self, _taken: &Taken) -> Option<CaptureCounts> {
         None
     }
+    /// What decides whether a capture can start on `window` (#215, the
+    /// probe's `capture_diag=` line before its take): none for a backend
+    /// that grabs the screen.
+    fn capture_diag(&mut self, _window: WindowId) -> Option<capture::CaptureDiag> {
+        None
+    }
+    /// Whether the taken window's capture started (#215: the probe ends
+    /// on a failed start, never grabs on): always for a backend that grabs
+    /// the screen.
+    fn capture_started(&mut self, _taken: &Taken) -> Result<(), String> {
+        Ok(())
+    }
     /// A contact phase at picture point `at`: a down or an update lands only
     /// when the point's window is the editor's (else an error, nothing
     /// injected); an up or a cancel always goes. The system cursor is put

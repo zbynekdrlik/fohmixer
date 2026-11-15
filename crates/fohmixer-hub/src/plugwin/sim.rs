@@ -65,7 +65,7 @@ use std::time::{Duration, Instant};
 use fohmixer_proto::eq::reason;
 use serde_json::{Value, json};
 
-use super::capture::CaptureCounts;
+use super::capture::{CaptureCounts, CaptureDiag};
 use super::{Backend, Phase, Pixels, Rect, Taken, WindowId, undo};
 
 /// The simulated picture's width (Pro-Q 4's at 100 %).
@@ -333,6 +333,11 @@ struct State {
     /// The capture's own counts it reports (none: a backend that grabs the
     /// screen; #215, the probe's first-frame wait).
     counts: Option<CaptureCounts>,
+    /// What it tells of a window before a capture's start, and why the
+    /// capture's start failed (none: it started; #215, the probe's
+    /// `capture_diag=` line and its end on a failed start).
+    diag: Option<CaptureDiag>,
+    start_failure: Option<String>,
     /// The last picture drawn, its count and its ↶ (lit, grey, or none): a
     /// grab draws only a new count, ↶ or size (drawing one costs the worker
     /// tens of ms in a test build).
@@ -474,6 +479,8 @@ impl Sim {
             last_grab: None,
             lag_ms: 0.0,
             counts: None,
+            diag: None,
+            start_failure: None,
             drawn: None,
             records: Vec::new(),
             file,
@@ -555,6 +562,18 @@ impl SimHandle {
     /// Graphics Capture's frames; none, the default, a screen grab's).
     pub fn capture_counts(&self, counts: Option<CaptureCounts>) {
         self.lock().counts = counts;
+    }
+
+    /// What it tells of a window before a capture starts (#215).
+    pub fn capture_diag(&self, diag: Option<CaptureDiag>) {
+        self.lock().diag = diag;
+    }
+
+    /// Why a capture's start fails from now on (#215: Windows Graphics
+    /// Capture refusing the window; none: it starts). Its grabs still
+    /// answer, as a screen grab would.
+    pub fn capture_fails(&self, why: Option<&str>) {
+        self.lock().start_failure = why.map(str::to_string);
     }
 
     /// How far behind the screen its pictures are from now on (#215).
@@ -861,6 +880,14 @@ impl Backend for Sim {
 
     fn capture_counts(&mut self, _taken: &Taken) -> Option<CaptureCounts> {
         self.lock().counts
+    }
+
+    fn capture_diag(&mut self, _window: WindowId) -> Option<CaptureDiag> {
+        self.lock().diag.clone()
+    }
+
+    fn capture_started(&mut self, _taken: &Taken) -> Result<(), String> {
+        self.lock().start_failure.clone().map_or(Ok(()), Err)
     }
 
     fn touch(&mut self, taken: &Taken, phase: Phase, at: (i32, i32)) -> Result<(), String> {
