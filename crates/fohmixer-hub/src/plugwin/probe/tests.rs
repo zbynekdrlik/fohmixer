@@ -1,7 +1,7 @@
 use serde_json::Value;
 
 use super::*;
-use crate::plugwin::capture::{Capture, CaptureCounts};
+use crate::plugwin::capture::{Capture, CaptureCounts, CaptureDiag};
 use crate::plugwin::sim::{REFUSED, REFUSED_QUIET, SimHandle};
 use crate::plugwin::{CAPTURE_MS, KEEPALIVE_MS, NOT_BACK, WindowId};
 
@@ -1560,6 +1560,73 @@ fn a_capture_whose_first_frame_never_comes_fails_before_any_grab() {
     let text = String::from_utf8(out).unwrap();
     assert!(
         text.contains(" capture=wgc arrived=3 lag_ms_max=4.5\n"),
+        "{text}"
+    );
+    assert_eq!(handle.grabs(), 2);
+}
+
+/// An owned window's facts on an MTA thread (Live's editor on the PC).
+fn owned_window() -> CaptureDiag {
+    CaptureDiag {
+        class_len: 15,
+        is_window: true,
+        root: true,
+        owned: true,
+        tool: false,
+        app: false,
+        noactivate: false,
+        cloaked: Some(0),
+        apartment: "mta".to_string(),
+        dpi: "per_monitor".to_string(),
+        supported: Some(true),
+    }
+}
+
+#[test]
+fn a_capture_that_fails_to_start_ends_the_probe_with_its_error_before_any_grab() {
+    // #215, the FOH PC: Windows Graphics Capture refused Live's editor
+    // (`CreateForWindow` answered E_INVALIDARG) and the probe went on as if
+    // nothing failed. A failed start ends it, its error said, nothing
+    // grabbed; the window's facts come first, before the take starts it.
+    let (mut sim, handle, _) = one_window(42);
+    let mut diag = owned_window();
+    handle.capture_diag(Some(diag.clone()));
+    handle.capture_fails(Some(
+        "CreateForWindow: The parameter is incorrect. (0x80070057)",
+    ));
+    let mut probe = args(42);
+    probe.frames = 2;
+    probe.capture_only = true;
+    let mut out = Vec::new();
+    assert_eq!(
+        run(&mut sim, &probe, &mut out),
+        Err(
+            "capture: start: CreateForWindow: The parameter is incorrect. (0x80070057)".to_string()
+        )
+    );
+    assert_eq!(handle.grabs(), 0, "nothing grabbed after a failed start");
+    let text = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "windows=1");
+    assert_eq!(lines[1], format!("capture_diag={}", diag.text()));
+    assert!(lines[2].starts_with("picture="), "{text}");
+    assert_eq!(lines.len(), 3, "{text}");
+    assert!(
+        handle.records().iter().any(|r| r["op"] == "release"),
+        "its window handed back all the same"
+    );
+    // A start that works goes on: the facts, then the capture's lines.
+    let (mut sim, handle, _) = one_window(42);
+    diag.owned = false;
+    handle.capture_diag(Some(diag.clone()));
+    let mut out = Vec::new();
+    run(&mut sim, &probe, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(
+        text.contains(&format!(
+            "windows=1\ncapture_diag={}\npicture=",
+            diag.text()
+        )),
         "{text}"
     );
     assert_eq!(handle.grabs(), 2);
