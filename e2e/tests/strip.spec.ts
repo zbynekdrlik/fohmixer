@@ -717,7 +717,10 @@ for (const size of [
       // A bound, unmarked track strip whole on the screen, picked in one task
       // inside the page (#198): a removed strip's box is all zeros, so
       // "whole on the screen".
-      const pick = await page.evaluate(() => {
+      // Polled: right after the open a strip's binding can still be pending
+      // (`aria-disabled` true) for a frame or two, and a single read then
+      // finds none (the push run of 5a5f7731, Chromium at 390 × 844).
+      const pickOne = () => page.evaluate(() => {
         for (const s of document.querySelectorAll('[data-testid="strip"]')) {
           const r = s.getBoundingClientRect();
           const fader = s.querySelector('[data-testid="fader"]');
@@ -728,6 +731,8 @@ for (const size of [
         }
         return null;
       });
+      await expect.poll(pickOne, { message: "a strip whole on the screen", timeout: 10_000 }).not.toBeNull();
+      const pick = await pickOne();
       expect(pick, "a strip whole on the screen").not.toBeNull();
       const key: string = JSON.parse(pick!.keys)[0];
       const [instance, target, prop] = key.split("|");
