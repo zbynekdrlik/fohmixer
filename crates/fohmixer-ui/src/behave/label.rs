@@ -40,6 +40,19 @@ pub fn longest_word_chars(text: &str) -> usize {
         .max(1)
 }
 
+/// The Live set a strip says it belongs to (#211, the owner's approved
+/// `docs/mockups/strip-instance-v1.html`): its instance in capitals (`BAND`,
+/// `MASTER`, `MBC`; the layout names no instance otherwise), dim in its info
+/// column. None when the instance is empty, or when the strip's side text
+/// (`group-side`: its group's name, or an untitled shared group's or a mixed
+/// sector layout's set, which the stylesheet shows in capitals) already
+/// says that word: every strip says its set once.
+pub fn set_text(instance: &str, side: Option<&str>) -> Option<String> {
+    let text = instance.trim().to_uppercase();
+    let said = side.is_some_and(|s| s.trim().to_uppercase() == text);
+    (!text.is_empty() && !said).then_some(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,5 +97,23 @@ mod tests {
         assert_eq!(longest_word_chars("Klavír x"), 6);
         assert_eq!(longest_word_chars("  "), 1);
         assert_eq!(longest_word_chars(""), 1);
+    }
+
+    #[test]
+    fn a_strip_says_its_live_set_once() {
+        assert_eq!(set_text("band", None).as_deref(), Some("BAND"));
+        assert_eq!(set_text("master", None).as_deref(), Some("MASTER"));
+        assert_eq!(set_text("mbc", None).as_deref(), Some("MBC"));
+        // A group's title leaves the set to the mark, another set's word too.
+        assert_eq!(set_text("band", Some("Stage")).as_deref(), Some("BAND"));
+        assert_eq!(set_text("mbc", Some("MASTER")).as_deref(), Some("MBC"));
+        // The side already says it (shown in capitals): no second word.
+        assert_eq!(set_text("band", Some("BAND")), None);
+        assert_eq!(set_text("master", Some("Master")), None);
+        assert_eq!(set_text("master", Some(" master ")), None);
+        assert_eq!(set_text(" mbc ", Some("MBC")), None);
+        // No instance, no mark.
+        assert_eq!(set_text("", None), None);
+        assert_eq!(set_text("  ", Some("")), None);
     }
 }
