@@ -18,7 +18,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use fohmixer_proto::client::{ScenesStatus, ServerMsg, set_key};
+use fohmixer_proto::client::{SceneSourceStatus, ScenesStatus, ServerMsg, set_key};
 use fohmixer_proto::layout::Layout;
 use fohmixer_proto::roles;
 use fohmixer_proto::scenes::{self as model, SceneRule};
@@ -567,6 +567,8 @@ impl Router {
             last: self.scenes.last.as_ref().map(|l| l.name.clone()),
             glides: self.scenes.rule.glides(),
             writes: self.scenes.rule.writes(),
+            // The poll's own state (`scene_source`), filled by `Hub::status`.
+            companion: SceneSourceStatus::default(),
         }
     }
 }

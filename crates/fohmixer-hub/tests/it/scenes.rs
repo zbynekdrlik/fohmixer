@@ -19,13 +19,13 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-const SECS_5: Duration = Duration::from_secs(5);
+pub(crate) const SECS_5: Duration = Duration::from_secs(5);
 /// An invented automation token (the CLI's shape: 32+ visible characters).
 const TOKEN: &str = "test-automation-token-0123456789abcdef";
-const HAND1: &str = "live_set tracks[name=Hand1 #] mixer_device volume";
+pub(crate) const HAND1: &str = "live_set tracks[name=Hand1 #] mixer_device volume";
 
 /// One page with Hand1 # and Hand2 # by name.
-fn layout(dir: &Path) {
+pub(crate) fn layout(dir: &Path) {
     let layout = json!({"schema": 2, "default_page": "p", "pages": [{"id": "p", "title": "P",
         "rows": [{"sections": [{"kind": "group", "id": "g", "title": "G", "controls": [
             {"kind": "strip", "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Hand1 #"}},
@@ -85,7 +85,7 @@ async fn scene(addr: SocketAddr, name: &str) -> (u16, Value) {
     post_scene(addr, Some(TOKEN), &json!({"scene": name}).to_string(), &[]).await
 }
 
-fn hand1() -> StripRef {
+pub(crate) fn hand1() -> StripRef {
     StripRef {
         instance: "band".into(),
         label: "Hand1 #".into(),
@@ -93,7 +93,7 @@ fn hand1() -> StripRef {
 }
 
 /// A page's rule for Hand1 # and `scene`, answered `result`.
-async fn set_rule(c: &mut Client, id: &str, scene: &str, rule: Option<SceneRule>) {
+pub(crate) async fn set_rule(c: &mut Client, id: &str, scene: &str, rule: Option<SceneRule>) {
     c.send(&ClientMsg::SetSceneRule {
         id: id.into(),
         strip: hand1(),
@@ -116,13 +116,13 @@ async fn set_rule(c: &mut Client, id: &str, scene: &str, rule: Option<SceneRule>
 }
 
 /// Hand1 #'s volume, read with a command.
-async fn volume(c: &mut Client) -> f64 {
+pub(crate) async fn volume(c: &mut Client) -> f64 {
     c.get("band", HAND1, "value").await.as_f64().unwrap()
 }
 
 /// Waits until the hub holds Hand1 #'s volume (the rule follows the same
 /// entry).
-async fn heard(c: &mut Client) {
+pub(crate) async fn heard(c: &mut Client) {
     if let ServerMsg::Subbed { value: Some(_), .. } = c.sub("band", HAND1, "value", false).await {
         return;
     }
@@ -131,7 +131,7 @@ async fn heard(c: &mut Client) {
 }
 
 /// The `scene_glide` records of Hand1 #, in order.
-fn glides(records: &[Value]) -> Vec<Value> {
+pub(crate) fn glides(records: &[Value]) -> Vec<Value> {
     records
         .iter()
         .filter(|r| r["ev"] == "scene_glide")

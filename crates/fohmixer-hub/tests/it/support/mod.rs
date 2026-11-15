@@ -28,6 +28,7 @@ mod host;
 #[allow(unused_imports)] // the host-free test binaries do not use it
 pub use host::Host;
 pub mod companion;
+pub mod companion_http;
 pub mod presenter;
 pub mod throttle;
 

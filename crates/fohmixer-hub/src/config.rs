@@ -56,6 +56,12 @@
 //! bitmap_px = 144        # 32..=512, the keys' image size
 //! title = "Stream Deck"  # 1..=24 characters, the tab's title
 //!
+//! # The service's scene read from Companion (#207), optional: its custom
+//! # variable on [companion]'s host, polled every 500 ms (`config/scenes.rs`)
+//! [scenes]
+//! companion_variable = "scena"
+//! companion_http_port = 8000  # the default, Companion's web server
+//!
 //! # The instance link (#184), optional: the MBC hub serves its local
 //! # instance on a given LAN address (never every address), and another
 //! # hub reaches it as a linked instance (`link` instead of `port`):
@@ -94,6 +100,8 @@ use serde::Deserialize;
 
 mod link;
 pub use link::{LinkCfg, is_link_url};
+mod scenes;
+pub use scenes::{DEFAULT_COMPANION_HTTP_PORT, ScenesCfg};
 
 /// The configuration file inside the data folder.
 pub const CONFIG_FILE: &str = "fohmixer-hub.toml";
@@ -621,6 +629,9 @@ pub struct Config {
     /// The Stream Deck tab (#52); none: no tab.
     #[serde(default)]
     pub companion: Option<CompanionCfg>,
+    /// The scene read from Companion (#207); none: no poll.
+    #[serde(default)]
+    pub scenes: Option<ScenesCfg>,
     /// The Pro-Q 4 screen (#71 PR E); none: the platform's backend.
     #[serde(default)]
     pub eq: Option<EqCfg>,
@@ -656,6 +667,7 @@ impl Config {
             iem: None,
             presenter: None,
             companion: None,
+            scenes: None,
             eq: None,
             lufs: LufsCfg::default(),
             autotune: AutotuneCfg::default(),
@@ -737,6 +749,7 @@ impl Config {
             link::validate_listen(cfg, &self.instances)?;
         }
         self.validate_companion()?;
+        scenes::validate(self.scenes.as_ref(), self.companion.as_ref())?;
         if self.autotune.engage_delay_ms > MAX_ENGAGE_DELAY_MS {
             bail!(
                 "[autotune] engage_delay_ms {} is above {MAX_ENGAGE_DELAY_MS}",

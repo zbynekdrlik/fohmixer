@@ -235,6 +235,7 @@ pub fn is_warn(record: &Value) -> bool {
                 | "scene"
                 | "scene_rule"
                 | "scene_glide"
+                | "scene_source"
                 | "script"
         )
         || (ev == "trace" && holds_warn_event(record))
