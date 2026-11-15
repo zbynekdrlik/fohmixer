@@ -2,6 +2,7 @@
 
     python3 sim/host.py --port P [--instance band] [--site sim/fixtures/test-site.json]
                         [--meters-hz 30] [--log-dir DIR] [--lufs-port P]
+                        [--listen-port P --select-port S]
 
 The process's main thread is SimLive's single Live main thread: it runs the
 script's timer, its scheduled messages and the optional meter animation.
@@ -97,6 +98,27 @@ WebSocket server is bound. Control lines on stdin (never over the WebSocket):
                                 hub's bound's test); prints ``FLOOD <devices
                                 sending>`` or ``FLOOD -1``
 
+    listendev <track|return|master> <index> <add|remove> [rack]
+                                a ``FohMixer Listen`` device (#210,
+                                ``sim/listendev.py``) added at the end of the
+                                track's chain (with ``rack``, inside a new rack
+                                ``Listen``: an empty ``Dry`` chain and a
+                                ``Listen`` chain holding it), or the newest one
+                                removed; it announces itself to
+                                ``--listen-port`` (UDP) once a second and,
+                                while the hub's selects on ``--select-port``
+                                name it, streams to ``--listen-port`` (TCP);
+                                prints ``LISTENDEV <devices on the track>``, or
+                                ``LISTENDEV -1``
+    tone <track|return|master> <index> <hz>
+                                the newest Listen device there plays a sine of
+                                <hz> (0: silence); prints ``TONE <hz>`` or
+                                ``TONE -1``
+    streamed <track|return|master> <index>
+                                prints ``STREAMED <samples per channel>`` the
+                                newest Listen device there streamed since it
+                                was added, or ``STREAMED -1``
+
 While Live plays, the song clock moves ``current_song_time`` at the tempo
 (``SongClock``, 30 Hz, as Live's playhead does between the script's ticks).
 
@@ -115,6 +137,7 @@ import threading
 import time
 
 import Live
+import listendev
 import maxdev
 import site_builder
 from c_instance import CInstance
@@ -137,6 +160,8 @@ def parse_args(argv):
     parser.add_argument("--meters-hz", type=float, default=0.0)
     parser.add_argument("--log-dir", default=None)
     parser.add_argument("--lufs-port", type=int, default=None)
+    parser.add_argument("--listen-port", type=int, default=None)
+    parser.add_argument("--select-port", type=int, default=None)
     return parser.parse_args(argv)
 
 
@@ -467,9 +492,29 @@ def maxdev_answer(main_thread, song, line, maxdevs):
     return f"{word} {main_thread.call(lambda: maxdev.reading_control(maxdevs, song, parsed))}"
 
 
-def control(main_thread, song, line, held, maxdevs=None):
+def listendev_answer(main_thread, song, line, listens):
+    """A Listen device line's answer (#210), or None for another line."""
+    words = line.split()
+    if not words or words[0] not in ("listendev", "tone", "streamed"):
+        return None
+    word = words[0].upper()
+    if words[0] == "listendev":
+        parsed = listendev.device_line(line)
+        control_of = listendev.device_control
+    else:
+        parsed = listendev.tone_line(line)
+        control_of = listendev.tone_control
+    if parsed is None or listens is None:
+        return f"{word} -1"
+    return f"{word} {main_thread.call(lambda: control_of(listens, song, parsed))}"
+
+
+def control(main_thread, song, line, held, maxdevs=None, listens=None):
     """One control line: the answer to print, or None."""
     answer = maxdev_answer(main_thread, song, line, maxdevs)
+    if answer is not None:
+        return answer
+    answer = listendev_answer(main_thread, song, line, listens)
     if answer is not None:
         return answer
     words = line.split(None, 2)
@@ -531,9 +576,9 @@ def control(main_thread, song, line, held, maxdevs=None):
     return None
 
 
-def read_controls(main_thread, song, held, maxdevs):
+def read_controls(main_thread, song, held, maxdevs, listens=None):
     for line in sys.stdin:
-        answer = control(main_thread, song, line, held, maxdevs)
+        answer = control(main_thread, song, line, held, maxdevs, listens)
         if answer is not None:
             print(answer, flush=True)
 
@@ -561,19 +606,22 @@ def main(argv=None):
     song_clock.start()
     maxdevs = maxdev.MaxDevices(song, args.lufs_port)
     maxdevs.start()
+    listens = listendev.ListenDevices(song, args.listen_port, args.select_port)
+    listens.start()
 
     def on_stop():
         if animation is not None:
             animation.stop()
         song_clock.stop()
         maxdevs.stop()
+        listens.stop()
         surface.disconnect()
 
     signal.signal(signal.SIGTERM, lambda signum, frame: main_thread.request_stop())
     signal.signal(signal.SIGINT, lambda signum, frame: main_thread.request_stop())
     threading.Thread(target=announce_ready, args=(surface,), daemon=True).start()
     threading.Thread(
-        target=read_controls, args=(main_thread, song, held, maxdevs), daemon=True
+        target=read_controls, args=(main_thread, song, held, maxdevs, listens), daemon=True
     ).start()
     main_thread.run_forever(on_stop=on_stop)
     main_thread.uninstall()

@@ -382,6 +382,7 @@ fn a_play_starts_switch_on_waits_the_engage_delay_and_a_stop_within_it_writes_no
         config.instances = vec![host.cfg()];
         config.layout_poll_ms = 100;
         config.lufs.port = 0;
+        config.listen.port = 0;
         config.autotune.engage_delay_ms = 1000;
         let hub = TestHub::start_config(config).await;
         let status = hub

@@ -1,7 +1,7 @@
 use serde_json::Value;
 
 use super::*;
-use crate::plugwin::capture::{Capture, CaptureCounts};
+use crate::plugwin::capture::{Capture, CaptureCounts, CaptureDiag};
 use crate::plugwin::sim::{REFUSED, REFUSED_QUIET, SimHandle};
 use crate::plugwin::{CAPTURE_MS, KEEPALIVE_MS, NOT_BACK, WindowId};
 
@@ -23,6 +23,8 @@ fn args(pid: u32) -> Args {
         capture: Capture::Wgc,
         capture_only: false,
         hub_rate: false,
+        rest: false,
+        input: None,
     }
 }
 
@@ -69,6 +71,8 @@ fn the_arguments_have_their_defaults_and_every_flag_is_read() {
             capture: Capture::Wgc,
             capture_only: false,
             hub_rate: false,
+            rest: false,
+            input: None,
         })
     );
     // `--undo` (#71 PR P): alone, or with no paint trial; never with
@@ -1405,6 +1409,7 @@ fn an_undo_tap_that_fails_fails_the_probe_and_hands_the_window_back() {
         let mut report = Report {
             out: &mut out,
             folder: None,
+            steps: Steps::default(),
         };
         handle.refuse(true);
         assert_eq!(
@@ -1563,4 +1568,245 @@ fn a_capture_whose_first_frame_never_comes_fails_before_any_grab() {
         "{text}"
     );
     assert_eq!(handle.grabs(), 2);
+}
+
+/// An owned window's facts on an MTA thread (Live's editor on the PC).
+fn owned_window() -> CaptureDiag {
+    CaptureDiag {
+        class_len: 15,
+        is_window: true,
+        root: true,
+        owned: true,
+        tool: false,
+        app: false,
+        noactivate: false,
+        cloaked: Some(0),
+        apartment: "mta".to_string(),
+        dpi: "per_monitor".to_string(),
+        supported: Some(true),
+    }
+}
+
+#[test]
+fn a_capture_that_fails_to_start_ends_the_probe_with_its_error_before_any_grab() {
+    // #215, the FOH PC: Windows Graphics Capture refused Live's editor
+    // (`CreateForWindow` answered E_INVALIDARG) and the probe went on as if
+    // nothing failed. A failed start ends it, its error said, nothing
+    // grabbed; the window's facts come first, before the take starts it.
+    let (mut sim, handle, _) = one_window(42);
+    let mut diag = owned_window();
+    handle.capture_diag(Some(diag.clone()));
+    handle.capture_fails(Some(
+        "CreateForWindow: The parameter is incorrect. (0x80070057)",
+    ));
+    let mut probe = args(42);
+    probe.frames = 2;
+    probe.capture_only = true;
+    let mut out = Vec::new();
+    assert_eq!(
+        run(&mut sim, &probe, &mut out),
+        Err(
+            "capture: start: CreateForWindow: The parameter is incorrect. (0x80070057)".to_string()
+        )
+    );
+    assert_eq!(handle.grabs(), 0, "nothing grabbed after a failed start");
+    let text = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "windows=1");
+    assert_eq!(lines[1], format!("capture_diag={}", diag.text()));
+    assert!(lines[2].starts_with("picture="), "{text}");
+    assert_eq!(lines.len(), 3, "{text}");
+    assert!(
+        handle.records().iter().any(|r| r["op"] == "release"),
+        "its window handed back all the same"
+    );
+    // A start that works goes on: the facts, then the capture's lines.
+    let (mut sim, handle, _) = one_window(42);
+    diag.owned = false;
+    handle.capture_diag(Some(diag.clone()));
+    let mut out = Vec::new();
+    run(&mut sim, &probe, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(
+        text.contains(&format!(
+            "windows=1\ncapture_diag={}\npicture=",
+            diag.text()
+        )),
+        "{text}"
+    );
+    assert_eq!(handle.grabs(), 2);
+}
+
+#[test]
+fn input_and_rest_are_read_and_each_runs_only_where_it_means_something() {
+    let only = parse(&["--pid", "1", "--capture-only", "--input", " 100 , 200 "]).unwrap();
+    assert_eq!(only.input, Some((100, 200)));
+    assert!(!only.rest);
+    assert_eq!(
+        parse(&["--pid", "1", "--input", "100,200"]),
+        Err(INPUT_ALONE.to_string())
+    );
+    assert_eq!(
+        parse(&["--pid", "1", "--capture-only", "--input", "100"]),
+        Err("--input \"100\"".to_string())
+    );
+    let rest = parse(&["--pid", "1", "--capture-only", "--hub-rate", "--rest"]).unwrap();
+    assert!(rest.rest && rest.hub_rate);
+    assert_eq!(
+        parse(&["--pid", "1", "--capture-only", "--rest"]),
+        Err(REST_ALONE.to_string()),
+        "a way of --hub-rate"
+    );
+    assert_eq!(
+        parse(&[
+            "--pid",
+            "1",
+            "--capture-only",
+            "--hub-rate",
+            "--rest",
+            "--input",
+            "1,2"
+        ]),
+        Err(REST_ALONE.to_string()),
+        "a contact down never rests"
+    );
+    assert!(USAGE.contains(" [--rest] [--input <x,y>] "), "{USAGE}");
+    // The contact moves at every tick: up, back, up …
+    assert_eq!(input_point((100, 200), 0), (100, 192));
+    assert_eq!(input_point((100, 200), 1), (100, 200));
+    assert_eq!(input_point((100, 200), 2), (100, 192));
+    assert_eq!(input_point((100, 200), 7), (100, 200));
+}
+
+#[test]
+fn an_input_keeps_a_contact_moving_through_the_capture_and_lifts_it_at_its_end() {
+    // #215, the owner's requirement: the probe measures the grabs a second
+    // while a finger works the window, against a resting one.
+    let (mut sim, handle, _) = one_window(42);
+    handle.change_driven(true);
+    let mut probe = args(42);
+    probe.frames = 3;
+    probe.capture_only = true;
+    probe.hub_rate = true;
+    probe.input = Some((100, 200));
+    let mut out = Vec::new();
+    run(&mut sim, &probe, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(
+        lines[5].ends_with(" hub_rate=on skipped=2 input=on"),
+        "{text}"
+    );
+    assert!(lines[5].contains(" grabs_per_s="), "{text}");
+    assert_eq!(
+        ops(&handle),
+        vec![
+            op("take", "", -1, -1),
+            op("touch", "down", 100, 200),
+            op("touch", "update", 100, 192),
+            op("touch", "update", 100, 200),
+            op("touch", "update", 100, 192),
+            op("touch", "up", 100, 192),
+            op("release", "", -1, -1),
+        ]
+    );
+    // No tick: the contact lifts where it went down.
+    let (mut sim, handle, _) = one_window(42);
+    probe.frames = 0;
+    run(&mut sim, &probe, &mut Vec::new()).unwrap();
+    assert_eq!(
+        ops(&handle),
+        vec![
+            op("take", "", -1, -1),
+            op("touch", "down", 100, 200),
+            op("touch", "up", 100, 200),
+            op("release", "", -1, -1),
+        ]
+    );
+}
+
+#[test]
+fn a_resting_hub_rate_grabs_once_a_second_whatever_changes() {
+    // #215: `--rest` grabs as a resting editor of the hub: a picture that
+    // changes at every grab is grabbed once, then not within the second.
+    let (mut sim, handle, _) = one_window(42);
+    handle.restless(true);
+    let mut probe = args(42);
+    probe.frames = 5;
+    probe.capture_only = true;
+    probe.hub_rate = true;
+    probe.rest = true;
+    let mut out = Vec::new();
+    run(&mut sim, &probe, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(
+        lines[5].ends_with(" hub_rate=on skipped=4 rest=on"),
+        "{text}"
+    );
+    assert_eq!(handle.grabs(), 1);
+    // Awake, the same picture is grabbed again within the second.
+    let (mut sim, handle, _) = one_window(42);
+    handle.restless(true);
+    probe.rest = false;
+    run(&mut sim, &probe, &mut Vec::new()).unwrap();
+    assert!(handle.grabs() >= 2, "{}", handle.grabs());
+}
+
+#[test]
+fn the_grabs_a_second_are_the_grabs_over_the_capture_s_time() {
+    let (mut sim, _handle, _) = one_window(42);
+    let mut probe = args(42);
+    probe.frames = 3;
+    probe.capture_only = true;
+    let mut out = Vec::new();
+    run(&mut sim, &probe, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let line = text.lines().nth(5).unwrap();
+    let field = |name: &str| -> f64 {
+        line.split(' ')
+            .find_map(|f| f.strip_prefix(name))
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    // Three grabs over the two 40 ms periods between them (and the last
+    // grab's time): the same count as the ticks, so the same rate.
+    assert_eq!(field("grabs_per_s="), field("fps="), "{line}");
+    assert!(field("grabs_per_s=") > 0.0, "{line}");
+}
+
+#[test]
+fn the_watchdogs_bound_grows_with_the_frames_and_the_paint_trials_and_names_the_step() {
+    let mut probe = args(1);
+    probe.frames = 0;
+    assert_eq!(deadline(&probe), Duration::from_secs(120));
+    probe.frames = 100;
+    assert_eq!(deadline(&probe), Duration::from_secs(130));
+    probe.paint = 40;
+    assert_eq!(deadline(&probe), Duration::from_secs(170));
+    assert_eq!(
+        stuck_text("first_frame", Duration::from_millis(125_900)),
+        "stuck at the step \"first_frame\" after 125 s: ended by its watchdog, the window not handed back (check its place, its size and its z-order)"
+    );
+    // A probe run marks its steps where the watchdog reads them: a clone
+    // reads the same step; it ends at `done`.
+    let steps = Steps::default();
+    let watched = steps.clone();
+    assert_eq!(watched.now(), "start");
+    steps.at("take");
+    assert_eq!(watched.now(), "take");
+    let (mut sim, _handle, _) = one_window(42);
+    let mut only = args(42);
+    only.frames = 1;
+    only.capture_only = true;
+    run_with(&mut sim, &only, &mut Vec::new(), steps).unwrap();
+    assert_eq!(watched.now(), "done");
+    // A failed step leaves the step it failed at.
+    let (mut sim, handle, _) = one_window(42);
+    handle.capture_fails(Some("refused"));
+    let steps = Steps::default();
+    let watched = steps.clone();
+    assert!(run_with(&mut sim, &only, &mut Vec::new(), steps).is_err());
+    assert_eq!(watched.now(), "capture_start");
 }

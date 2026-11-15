@@ -162,7 +162,7 @@ pub fn track_and_set(parents: &[String]) -> Option<(&str, &str)> {
 
 /// An OSC string at the start of `buf`: its text and the rest after its
 /// padding (the NUL and up to three more, to a multiple of four).
-fn osc_string(buf: &[u8]) -> Result<(&str, &[u8]), WireError> {
+pub(crate) fn osc_string(buf: &[u8]) -> Result<(&str, &[u8]), WireError> {
     let len = buf
         .iter()
         .position(|&b| b == 0)
@@ -181,7 +181,7 @@ fn osc_string(buf: &[u8]) -> Result<(&str, &[u8]), WireError> {
 }
 
 /// A big-endian OSC int at the start of `buf`, and the rest.
-fn osc_i32(buf: &[u8]) -> Result<(i32, &[u8]), WireError> {
+pub(crate) fn osc_i32(buf: &[u8]) -> Result<(i32, &[u8]), WireError> {
     let (head, rest) = buf.split_at_checked(4).ok_or(WireError::Truncated)?;
     let bytes = <[u8; 4]>::try_from(head).map_err(|_| WireError::Truncated)?;
     Ok((i32::from_be_bytes(bytes), rest))
@@ -240,7 +240,7 @@ pub fn parse(datagram: &[u8]) -> Result<Reading, WireError> {
 }
 
 /// Appends an OSC string: its bytes, a NUL and the padding to four.
-fn push_string(out: &mut Vec<u8>, text: &str) {
+pub(crate) fn push_string(out: &mut Vec<u8>, text: &str) {
     out.extend_from_slice(text.as_bytes());
     let padded = (text.len() + 4) & !3;
     out.resize(out.len() + padded - text.len(), 0);

@@ -16,6 +16,7 @@ fn every_api_route_has_a_role_decision() {
     assert_eq!(route_role("/api/layout"), Some(RouteAccess::AnyRole));
     assert_eq!(route_role("/api/status"), Some(RouteAccess::AnyRole));
     assert_eq!(route_role("/ws"), Some(RouteAccess::AnyRole));
+    assert_eq!(route_role("/ws/audio"), Some(RouteAccess::AnyRole));
     for path in ["/api/markers/migration", "/api/eq/picture", "/api/songmap"] {
         assert_eq!(route_role(path), Some(RouteAccess::EngineerOnly), "{path}");
     }

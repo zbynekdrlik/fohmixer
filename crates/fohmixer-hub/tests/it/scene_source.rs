@@ -58,6 +58,7 @@ fn companions_variable_moves_faders_only_when_it_changes() {
         config.instances = vec![host.cfg()];
         config.layout_poll_ms = 100;
         config.lufs.port = 0;
+        config.listen.port = 0;
         // Companion's Satellite port is closed (the Stream Deck stays
         // offline); its web server is the fake.
         config.companion = Some(CompanionCfg {

@@ -237,6 +237,7 @@ pub fn is_warn(record: &Value) -> bool {
                 | "scene_glide"
                 | "scene_source"
                 | "script"
+                | "listen"
         )
         || (ev == "trace" && holds_warn_event(record))
         || (ev == "songmap" && problems_changed(record))
