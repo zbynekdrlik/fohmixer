@@ -1317,6 +1317,46 @@ fn a_cropped_editors_guard_sends_its_whole_picture_first() {
     assert_eq!(got.lock().unwrap().len(), 1);
 }
 
+/// Steps the worker every 10 ms from `from` to `to` (ms, both included);
+/// the editor's grabs since.
+fn grabs_over(worker: &mut Worker, session: u32, from: u32, to: u32) -> u32 {
+    let before = worker.editors[&session].counts.grabs;
+    for step in from / 10..=to / 10 {
+        worker.step_at(f64::from(step * 10));
+    }
+    worker.editors[&session].counts.grabs - before
+}
+
+#[test]
+fn a_resting_editor_is_grabbed_at_most_once_a_second_and_an_input_wakes_it() {
+    // #215: the PA crackled while the EQ screen was open; dasio's sampler
+    // put it on the screen grab, about 13 a second however still the
+    // editor was. An editor with no contact down and no input for 2 s
+    // rests: at most one grab a second (the still picture's refresh).
+    let (mut worker, handle, _) = worker();
+    take(&mut worker, &handle, 1, 0.0);
+    let (sink, _frames) = sink();
+    worker.command_at(Command::Capture { session: 1, sink }, 0.0);
+    // The take counts as an input: every 40 ms for its first 2 s.
+    assert_eq!(grabs_over(&mut worker, 1, 0, 1990), 50);
+    // Resting: the last grab at 1960, then one a second.
+    assert_eq!(
+        grabs_over(&mut worker, 1, 2000, 5990),
+        4,
+        "at 2960, 3960, 4960, 5960"
+    );
+    // A page's input wakes it: every 40 ms again, from the next step.
+    worker.command_at(Command::Handled { session: 1, n: 1 }, 6000.0);
+    assert_eq!(grabs_over(&mut worker, 1, 6000, 6390), 10);
+    // A contact down keeps it awake however long it rests.
+    touch_at(&mut worker, 1, 1, Phase::Down, (10, 20), 6400.0);
+    assert_eq!(grabs_over(&mut worker, 1, 6400, 9990), 90);
+    // Its up is an input: 2 s more, then resting again.
+    touch_at(&mut worker, 1, 1, Phase::Up, (10, 20), 10_000.0);
+    assert_eq!(grabs_over(&mut worker, 1, 10_000, 11_990), 50);
+    assert_eq!(grabs_over(&mut worker, 1, 12_000, 13_990), 2);
+}
+
 #[test]
 fn a_captured_editor_sends_its_pictures_skipping_a_same_one() {
     let (mut worker, handle, heard) = worker();
