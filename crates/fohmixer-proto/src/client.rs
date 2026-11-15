@@ -1720,6 +1720,10 @@ pub struct HubStatus {
     /// (and in an older hub's answer).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<LinkStatus>,
+    /// Listen (#210): the devices heard, the track listened to, the counts;
+    /// the defaults in an older hub's answer.
+    #[serde(default)]
+    pub listen: crate::listen::ListenStatus,
 }
 
 /// `/api/status` `link` (#184): the instance link a hub serves: where it

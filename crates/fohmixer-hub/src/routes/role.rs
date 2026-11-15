@@ -45,6 +45,7 @@ pub const API_PATHS: &[&str] = &[
     "/api/songmap",
     "/api/scene",
     "/ws",
+    "/ws/audio",
 ];
 
 /// The role decision of an API route (none: a route with no decision,
@@ -54,7 +55,7 @@ pub fn route_role(path: &str) -> Option<RouteAccess> {
         "/api/version" | "/api/client-error" | "/api/client-report" | "/api/auth" => {
             Some(RouteAccess::Open)
         }
-        "/api/layout" | "/api/status" | "/ws" => Some(RouteAccess::AnyRole),
+        "/api/layout" | "/api/status" | "/ws" | "/ws/audio" => Some(RouteAccess::AnyRole),
         "/api/markers/migration" | "/api/eq/picture" | "/api/songmap" => {
             Some(RouteAccess::EngineerOnly)
         }
@@ -161,6 +162,7 @@ pub fn status_for(role: Role, status: HubStatus) -> HubStatus {
                 companion: fohmixer_proto::client::SceneSourceStatus::default(),
             },
             link: None,
+            listen: Default::default(),
         },
     }
 }

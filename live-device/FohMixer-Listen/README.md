@@ -1,0 +1,31 @@
+# FohMixer Listen (Max for Live audio effect, #210)
+
+Streams its input, the track's sound before the track's fader, to the
+FohMixer hub on `127.0.0.1` while the hub selects it, so a page can listen to
+the track. No parameters. Its output is silence: it goes in a rack of its own
+(an empty dry chain plus the device's chain), never in series, as the LUFS
+devices (`../FohMixer-LUFS/README.md`).
+
+- **Idle** (not selected): each second one announce datagram to the hub's
+  UDP `127.0.0.1:39111` (`/fohmixer/listen`: the device's listen id, its Max
+  id mixed with a random number drawn at load so the PC's two Lives never
+  share one, `v<version>`,
+  its four canonical parents' names, Live's sample rate, whether it streams).
+  `jit.catch~` keeps copying the signal into its own buffer; nothing is
+  banged out of it.
+- **Selected** (the hub's `/fohmixer/listen/select <id> <turn>` datagrams on
+  UDP `127.0.0.1:39112`, every 500 ms, naming this device): it sends its hello
+  (`fohmixer_listen 1 <id> v<version> <sample rate>`) through `jit.net.send`'s
+  right inlet, then a `qmetro 10` bangs `jit.catch~ 2 @mode 1 @framesize 960`,
+  whose matrices (2 planes of float32, 960 × k cells: whole 20 ms frames at
+  48 kHz) `jit.net.send` writes to the hub's TCP `127.0.0.1:39111`. Another
+  id, or 1.5 s with no select naming it, stops it.
+
+The wire, the hub's side and the PC probe: `.claude/rules/listen.md` and the
+design comment on #210. `scripts/check_listen_device.py` (CI) holds the patch
+to it. Built like the other devices (never committed as `.amxd`):
+
+    python3 live-device/FohMixer-LUFS/build_amxd.py --patch "live-device/FohMixer-Listen/FohMixer Listen.maxpat"
+
+`--port` and `--select-port` rewrite its three port boxes for another hub
+config. `version.txt` is the workspace version (`scripts/check_version.py`).

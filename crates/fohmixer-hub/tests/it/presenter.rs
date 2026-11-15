@@ -24,6 +24,7 @@ async fn hub(dir: &std::path::Path, url: Option<String>) -> TestHub {
     let mut config = Config::defaults(dir);
     config.instances.clear();
     config.lufs.port = 0;
+    config.listen.port = 0;
     config.presenter = url.map(|url| PresenterCfg { url });
     TestHub::start_config(config).await
 }
