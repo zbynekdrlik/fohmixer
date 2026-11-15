@@ -3,30 +3,49 @@
 # (Get-FohInstalledEqToml, Resolve-FohEq: the Pro-Q 4 screen, #71;
 # Get-FohCompanionToml, Get-FohInstalledCompanionToml, Resolve-FohCompanion:
 # the Stream Deck tab, #52; Get-FohPresenterToml, Get-FohInstalledPresenterToml,
-# Resolve-FohPresenter: Presenter's stage tab, #90), dot-sourced by
+# Resolve-FohPresenter: Presenter's stage tab, #90; Resolve-FohScenes: the
+# scene read from Companion, #207, a table written by hand like [eq]), dot-sourced by
 # FohmixerPc.psm1 and shipped in the bundle next to it. Windows PowerShell
 # 5.1, ASCII only.
 
-function Get-FohInstalledEqToml {
-    # The [eq] table of an installed fohmixer-hub.toml's text (#71): the Pro-Q
-    # 4 screen, turned on by hand (.claude/rules/deploy-pc.md), so an update
-    # keeps it as it is (its backend value included; the new hub checks it).
-    # Its lines from [eq] to the next table or the end, looked for only
-    # before [tls]: from there on the text is the remote tables, kept or
-    # rewritten as a whole (Get-FohInstalledRemoteToml), so an [eq] there is
-    # never taken twice. Written by hand, it may have no blank line before
-    # it, LF line ends or trailing blanks: it comes back as New-FohHubToml
-    # writes a table (a blank line before it, CRLF lines, blank lines
-    # dropped); '' without one.
-    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+function Get-FohInstalledHandTable {
+    # A table written by hand into an installed fohmixer-hub.toml's text ([eq],
+    # #71; [scenes], #207), so an update keeps it as it is (its values
+    # included; the new hub checks them). Its lines from [<Name>] to the next
+    # table or the end, looked for only before [tls]: from there on the text
+    # is the remote tables, kept or rewritten as a whole
+    # (Get-FohInstalledRemoteToml), so a table there is never taken twice.
+    # Written by hand, it may have no blank line before it, LF line ends or
+    # trailing blanks: it comes back as New-FohHubToml writes a table (a
+    # blank line before it, CRLF lines, blank lines dropped); '' without one.
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text, [Parameter(Mandatory)][string]$Name)
     $head = $Text
     $tls = [regex]::Match($Text, '\r?\n\[tls\]\r?\n')
     if ($tls.Success) { $head = $Text.Substring(0, $tls.Index) }
     # The header may carry a comment, or end the file (#77 review).
-    $m = [regex]::Match($head, '(?s)\r?\n\[eq\][ \t]*(?:#[^\r\n]*)?(?:\r?\n.*?(?=\r?\n\[|\z)|\z)')
+    $m = [regex]::Match($head, ('(?s)\r?\n\[' + [regex]::Escape($Name) + '\][ \t]*(?:#[^\r\n]*)?(?:\r?\n.*?(?=\r?\n\[|\z)|\z)'))
     if (-not $m.Success) { return '' }
     $lines = @($m.Value -split '\r?\n' | ForEach-Object { $_.TrimEnd() } | Where-Object { $_ })
     return ("`r`n" + ($lines -join "`r`n") + "`r`n")
+}
+
+function Get-FohInstalledEqToml {
+    # The [eq] table of an installed fohmixer-hub.toml's text (#71): the Pro-Q
+    # 4 screen, turned on by hand (.claude/rules/deploy-pc.md), kept as
+    # Get-FohInstalledHandTable reads it; '' without one.
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+    return (Get-FohInstalledHandTable -Text $Text -Name 'eq')
+}
+
+function Resolve-FohScenes {
+    # The [scenes] table of an install (#207, the scene read from Companion):
+    # written by hand on the FOH PC (.claude/rules/deploy-pc.md), the
+    # installed toml's as it is (Get-FohInstalledHandTable), else '' (a first
+    # install: no poll). The new hub checks it with the rest of the config.
+    param([Parameter(Mandatory)][string]$DataDir)
+    $toml = Join-Path (Resolve-FohPath $DataDir) 'fohmixer-hub.toml'
+    if (-not (Test-Path -LiteralPath $toml -PathType Leaf)) { return '' }
+    return (Get-FohInstalledHandTable -Text ([IO.File]::ReadAllText($toml)) -Name 'scenes')
 }
 
 function Resolve-FohEq {

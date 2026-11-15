@@ -22,7 +22,9 @@ to make in Live (it never edits Live's preferences). Then, in order:
   3. writes <DataDir>\fohmixer-hub.toml (HTTP port, the band and master
      instances, layout.json; an [eq] table the installed file has before
      [tls], the Pro-Q 4 screen turned on by hand, is kept after the
-     instances; a first install writes none, the screen stays off);
+     instances; a first install writes none, the screen stays off; a
+     [scenes] table before [tls], the scene read from Companion (#207),
+     written by hand, is kept after [companion] and [presenter]);
   4. copies -Layout (the import's output) to <DataDir>\layout.json;
   5. installs FohMixer into each Live user's User Library\Remote Scripts with
      that user's INSTANCE and PORT in Config.py (replaced only when version.py
@@ -217,13 +219,15 @@ try {
     $presenter = Resolve-FohPresenter -DataDir $DataDir -PresenterUrl $PresenterUrl
     # The Pro-Q 4 screen (#71): an installed [eq] table is kept as it is.
     $eq = Resolve-FohEq -DataDir $DataDir
+    # The scene read from Companion (#207): an installed [scenes] table is kept as it is.
+    $scenes = Resolve-FohScenes -DataDir $DataDir
     # The MBC Live through its link (#184): checked before any change, kept when not given.
     $linked = Resolve-FohMbcLink -DataDir $DataDir -MbcLink $MbcLink
     $result = Invoke-FohInstall -BundleZip $BundleZip -BandUser $BandUser -MasterUser $MasterUser -DataDir $DataDir `
         -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Layout $Layout `
         -BandUserLibrary $BandUserLibrary -MasterUserLibrary $MasterUserLibrary `
         -BandAbletonPrefs $BandAbletonPrefs -MasterAbletonPrefs $MasterAbletonPrefs -NoTask:$NoTask -Companion $companion `
-        -Eq $eq -Presenter $presenter -Remote $remote -Linked $linked
+        -Eq $eq -Presenter $presenter -Scenes $scenes -Remote $remote -Linked $linked
     ConvertTo-Json -InputObject $result -Depth 5
 } catch {
     # One unwrapped line (a 5.1 error record wraps at the console width), then where it failed.
