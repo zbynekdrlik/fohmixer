@@ -32,6 +32,7 @@ use crate::arrange::{
 };
 use crate::behave::ableset::tab_dot;
 use crate::behave::arrange_drag::Arrange;
+use crate::behave::column::{KeyPlace, key_place};
 use crate::behave::iem::alive_after;
 use crate::behave::live_down::{LiveWord, foot_lives};
 use crate::behave::presenter::{TAB_TITLE as PRESENTER_TAB, tab_dot as presenter_tab_dot};
@@ -742,10 +743,19 @@ fn TabBar(
     beside: Option<(String, ViewFnOnce)>,
 ) -> impl IntoView {
     let nav = expect_context::<Nav>();
-    let mut beside = beside;
+    // Where the key goes (#212, `behave::column::key_place`): beside its
+    // page's tab, else at the bar's end.
+    let (place, mut key) = match beside {
+        Some((page, key)) => {
+            let ids: Vec<&str> = tabs.iter().map(|(_, id, _)| id.as_str()).collect();
+            (key_place(&ids, &page), Some(key))
+        }
+        None => (KeyPlace::Nowhere, None),
+    };
     let buttons = tabs
         .into_iter()
-        .map(|(index, id, title)| {
+        .enumerate()
+        .map(|(at, (index, id, title))| {
             let lit = move || {
                 // A disposed selection (a layout change) lights nothing.
                 selected.try_get().flatten() == Some(index)
@@ -758,7 +768,6 @@ fn TabBar(
             // A mixer page's pick goes to the recorder (#212: the column's
             // use counted from the event log).
             let picked = StoredValue::new(id.clone());
-            let id_of = id.clone();
             let on_down = move |_| {
                 if page_tab {
                     let _ = picked.try_with_value(|id| {
@@ -782,11 +791,13 @@ fn TabBar(
                     {title}
                 </button>
             };
-            // The tab `beside` names takes its key into its row (#212); the
+            // The tab the key goes beside takes it into its row (#212); the
             // tab takes the row's rest.
-            let takes = beside.as_ref().is_some_and(|(page, _)| *page == *id_of);
-            match takes.then(|| beside.take()).flatten() {
-                Some((_, key)) => view! {
+            match (place == KeyPlace::Beside(at))
+                .then(|| key.take())
+                .flatten()
+            {
+                Some(key) => view! {
                     <div class="page-row" data-testid="page-row">
                         {tab}
                         {key.run()}

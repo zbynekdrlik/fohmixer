@@ -22,6 +22,7 @@ pub mod arrange_drag;
 pub mod arrange_edit;
 pub mod autotune;
 pub mod colour;
+pub mod column;
 pub mod db_text;
 pub mod deck;
 pub mod eq;
