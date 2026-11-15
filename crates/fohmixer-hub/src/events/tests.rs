@@ -264,6 +264,23 @@ fn a_trace_with_a_rail_step_outlives_the_cap() {
 }
 
 #[test]
+fn a_trace_with_a_column_pick_outlives_the_cap() {
+    // #212: the column's use (a page tab, a layout tab, the ARRANGE key) is
+    // counted from the event log, the day's cap included.
+    let trace = |events: Value| json!({"ev": "trace", "client": 3, "events": events});
+    for what in ["page", "layout", "arrange"] {
+        let record = trace(json!([
+            {"ev": "ping", "t": 1.0, "n": 4},
+            {"ev": "tab", "t": 2.0, "what": what}
+        ]));
+        assert!(is_warn(&record), "{what}");
+    }
+    assert!(!is_warn(
+        &json!({"ev": "set", "events": [{"ev": "tab", "what": "page"}]})
+    ));
+}
+
+#[test]
 fn the_cap_is_crossed_by_a_line_past_it() {
     assert!(!over_cap(10, 5, 15));
     assert!(over_cap(10, 6, 15));

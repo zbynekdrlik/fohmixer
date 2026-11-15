@@ -126,6 +126,39 @@ async function carry(page: Page, sector: string, strip: string, to: number) {
   ]);
 }
 
+/**
+ * ARRANGE's ⇄ key beside the page tab (#212, the owner's approved
+ * docs/mockups/column-calm-v2.html): in the FOH tab's row, at its right,
+ * about 30 px wide and as high as the tab, the tab taking the rest of the
+ * row; named ARRANGE; nothing of it clipped; its centre hit-tests as the key
+ * (reachable, nothing over it).
+ */
+async function arrangeKeyBesideTheTab(page: Page) {
+  const key = page.getByTestId("arrange");
+  await expect(key).toBeVisible();
+  await expect(key).toHaveText("⇄");
+  await expect(key).toHaveAttribute("aria-label", "ARRANGE");
+  const fohTab = page.locator('[data-testid="page-row"] > [data-testid="tab"][data-page="foh"]');
+  await expect(fohTab).toHaveCount(1);
+  await expect(page.locator('[data-testid="page-row"] > [data-testid="arrange"]')).toHaveCount(1);
+  const k = (await key.boundingBox())!;
+  const t = (await fohTab.boundingBox())!;
+  const row = (await page.getByTestId("page-row").boundingBox())!;
+  expect(Math.abs(k.width - 30), "the key about 30 px wide").toBeLessThan(1);
+  expect(Math.abs(k.y - t.y), "the key in the tab's row").toBeLessThan(0.5);
+  expect(Math.abs(k.height - t.height), "the key as high as the tab").toBeLessThan(0.5);
+  expect(k.x, "the key right of the tab").toBeGreaterThanOrEqual(t.x + t.width - 0.5);
+  expect(Math.abs(k.x + k.width - (row.x + row.width)), "the key at the row's right end").toBeLessThan(0.5);
+  expect(Math.abs(t.x - row.x), "the tab from the row's left end").toBeLessThan(0.5);
+  expect(await clipped(key), "the key").toEqual([]);
+  expect(await clipped(fohTab), "the FOH tab").toEqual([]);
+  const hit = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('[data-testid="arrange"]') != null, {
+    x: k.x + k.width / 2,
+    y: k.y + k.height / 2,
+  });
+  expect(hit, "the key's centre is the key").toBe(true);
+}
+
 test.afterEach(async () => {
   await resetSectors();
 });
@@ -272,14 +305,41 @@ test.describe("The fader sectors", () => {
         await expect(page.getByTestId("sector-undo")).toHaveCount(0);
         await frames(page);
         expect(await columnHeadAndFoot(page)).toEqual([]);
-        // ARRANGE takes its row alone: as wide as the LAYOUTS block.
-        const arrange = (await page.locator(".arrange-btn").boundingBox())!;
-        const block = (await page.getByTestId("sector-layouts").boundingBox())!;
-        expect(Math.abs(arrange.width - block.width), "ARRANGE as wide as the LAYOUTS block").toBeLessThan(1);
-        // The selected FOH tab keeps today's mark.
+        // #212 (the owner's approved docs/mockups/column-calm-v2.html): no
+        // LAYOUTS caption, and ARRANGE a small ⇄ key at the right of the FOH
+        // tab, in its row; the tab takes the rest and keeps today's size.
+        await expect(page.getByTestId("sector-layouts-title")).toHaveCount(0);
+        await expect(page.locator(".sector-actions, .arrange-btn")).toHaveCount(0);
         const fohTab = page.locator('[data-testid="tabbar"][data-level="0"] [data-testid="tab"][data-page="foh"]');
+        await arrangeKeyBesideTheTab(page);
+        expect(await fohTab.evaluate((t) => getComputedStyle(t).fontSize)).toBe("19px");
+        for (const id of ["deck-tab", "ableset-tab"]) {
+          expect(await page.getByTestId(id).evaluate((t) => getComputedStyle(t).fontSize), id).toBe("10px");
+        }
+        // The selected FOH tab keeps today's mark.
         await expect(fohTab).toHaveAttribute("data-selected", "true");
         expect(await fohTab.evaluate((t) => getComputedStyle(t).boxShadow)).toMatch(/inset/);
+        // The head's freed room goes to the rail (#212): with the site's rail
+        // and every extra tab the stage miniature is the rail's whole width at
+        // 16:9 (the picture fills its box) and every rail row keeps 44 px.
+        for (const id of ["ableset-tab", "iem-tab", "presenter-tab"]) await expect(page.getByTestId(id), id).toBeVisible();
+        const mini = page.getByTestId("stage-mini");
+        await expect(mini).toBeVisible();
+        await frames(page, 4);
+        const fit = await page.evaluate(() => {
+          const box = (s: string) => document.querySelector(s)!.getBoundingClientRect();
+          return {
+            rail: box('[data-testid="rail"]').width,
+            mini: box('[data-testid="stage-mini"]').width,
+            area: box('[data-testid="mini-stage"]'),
+            rows: getComputedStyle(document.querySelector('[data-testid="rail"] .rail-main')!).gridTemplateRows,
+          };
+        });
+        console.log(`sectors column (${test.info().project.name}): rail ${fit.rail.toFixed(1)} px, picture ${fit.area.width.toFixed(1)} x ${fit.area.height.toFixed(1)}, rows ${fit.rows}`);
+        expect(Math.abs(fit.area.width - (fit.rail - 10)), "the picture as wide as the rail less its box").toBeLessThan(0.6);
+        expect(Math.abs(fit.area.width - (fit.mini - 10)), "the picture fills its box").toBeLessThan(0.6);
+        expect(Math.abs(fit.area.width / fit.area.height - 16 / 9), "16:9").toBeLessThan(0.02);
+        expect(fit.rows.split(" ").every((t) => t === "44px"), fit.rows).toBe(true);
       } finally {
         await harness("/hub/layout/reset");
         await until(servedLayout, (l) => l.pages.find((p: any) => p.id === "foh").rail.length === rails, "the hub serving the fixture again");
@@ -357,6 +417,111 @@ test.describe("The fader sectors", () => {
       await expect(slots(page, "ld").locator('[data-testid="group-side"]')).toHaveCount(0);
     });
   });
+
+  test.describe("the column's picks go to the event log (#212)", () => {
+    test.use({ viewport: { width: 1194, height: 834 } });
+
+    test("a page tab, a layout tab and the ARRANGE key each leave a tab event, a REMOVE? confirm and an inert tap none", async ({ page }) => {
+      await setSectors(DOC);
+      await openSectors(page);
+      const since = await page.evaluate(() => performance.timeOrigin + performance.now());
+      const tab = (id: string) => page.locator(`[data-testid="sector-tab"][data-layout="${id}"]`);
+      const pageTab = (id: string) => page.locator(`[data-testid="tabbar"][data-level="0"] [data-testid="tab"][data-page="${id}"]`);
+      // A real switch to CUE and back to FOH, then a re-tap of FOH (same).
+      await pageTab("cue").click();
+      await expect(pageTab("cue")).toHaveAttribute("data-selected", "true");
+      await expect(sectorsPage(page)).toHaveCount(0);
+      await pageTab("foh").click();
+      await expect(sectorsPage(page)).toBeVisible();
+      await pageTab("foh").click();
+      await expect(pageTab("foh")).toHaveAttribute("data-selected", "true");
+      // A real layout switch, then a re-tap of the layout shown (same).
+      await tab("lu-2").click();
+      await expect(tab("lu-2")).toHaveAttribute("aria-pressed", "true");
+      await tab("lu-2").click();
+      await expect(tab("lu-2")).toHaveAttribute("aria-pressed", "true");
+      const arrange = page.getByTestId("arrange");
+      await arrange.click();
+      await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "true");
+      await tab("ld-2").click();
+      await expect(tab("ld-2")).toHaveAttribute("aria-pressed", "true");
+      // ✕ asks on ld-2's tab; the tab's tap confirms the removal: no pick.
+      await page.locator('.lay-ed[data-layout="ld-2"] [data-testid="remove"]').click();
+      await expect(tab("ld-2")).toHaveText("REMOVE?");
+      await tab("ld-2").click();
+      await expect(tab("ld-2")).toHaveCount(0);
+      // The second press saves the edit.
+      await arrange.click();
+      await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "false");
+      // Under STREAM DECK LU's layouts and ARRANGE are inert: a dispatched
+      // down on them changes nothing and records nothing; the FOH tab that
+      // closes the deck is the next pick.
+      await openDeck(page);
+      await tab("lu-1").dispatchEvent("pointerdown");
+      await arrange.dispatchEvent("pointerdown");
+      await frames(page);
+      await expect(tab("lu-2")).toHaveAttribute("aria-pressed", "true");
+      await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "false");
+      await pageTab("foh").click();
+      await expect(page.getByTestId("deck")).toHaveCount(0);
+      const picks = await until(
+        async () =>
+          pageEvents(await hubEvents())
+            .filter((e) => e.ev === "tab" && e.t >= since)
+            .map(({ ev, t, ...rest }) => rest),
+        (p) => p.length >= 9,
+        "the page's tab events",
+        15000,
+      );
+      // `same`: whether the pick changed anything (a re-tap did not; the FOH
+      // tab that closes the deck did: it shows the page again).
+      expect(picks).toEqual([
+        { what: "page", id: "cue", same: false },
+        { what: "page", id: "foh", same: false },
+        { what: "page", id: "foh", same: true },
+        { what: "layout", sector: "lu", id: "lu-2", title: "ALT", arrange: false, same: false },
+        { what: "layout", sector: "lu", id: "lu-2", title: "ALT", arrange: false, same: true },
+        { what: "arrange", act: "start" },
+        { what: "layout", sector: "ld", id: "ld-2", title: "FX", arrange: true, same: false },
+        { what: "arrange", act: "save" },
+        { what: "page", id: "foh", same: false },
+      ]);
+    });
+  });
+
+  // Phones (#212): the ⇄ key sits in the ☰ column beside the page tab, whole
+  // and reachable, and a tap on it starts and leaves ARRANGE.
+  for (const size of [
+    { width: 844, height: 390 },
+    { width: 390, height: 844 },
+  ]) {
+    test.describe(`on a phone, ${size.width}×${size.height}`, () => {
+      test.use({ viewport: size });
+
+      test("the ARRANGE key is whole and reachable in the ☰ column", async ({ page }) => {
+        await setSectors(DOC);
+        await openSectors(page);
+        await page.getByTestId("thin-burger").dispatchEvent("pointerdown");
+        await expect(sectorsPage(page)).toHaveAttribute("data-column-open", "true");
+        await expect(page.getByTestId("column")).toBeVisible();
+        await frames(page);
+        await arrangeKeyBesideTheTab(page);
+        expect(await columnHeadAndFoot(page)).toEqual([]);
+        const column = (await page.getByTestId("column").boundingBox())!;
+        const key = (await page.getByTestId("arrange").boundingBox())!;
+        expect(key.x).toBeGreaterThanOrEqual(column.x - 0.5);
+        expect(key.x + key.width).toBeLessThanOrEqual(column.x + column.width + 0.5);
+        expect(key.y + key.height).toBeLessThanOrEqual(size.height);
+        // A real tap at its centre starts the mode; the column stays open.
+        await page.mouse.click(key.x + key.width / 2, key.y + key.height / 2);
+        await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "true");
+        await expect(page.getByTestId("arrange")).toHaveAttribute("aria-pressed", "true");
+        await expect(sectorsPage(page)).toHaveAttribute("data-column-open", "true");
+        await page.mouse.click(key.x + key.width / 2, key.y + key.height / 2);
+        await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "false");
+      });
+    });
+  }
 
   test.describe("ARRANGE with empty slots (the slot model)", () => {
     test.use({ viewport: { width: 1194, height: 834 } });
@@ -539,7 +704,7 @@ test.describe("The fader sectors", () => {
         const fx = row(page, "ld-2").getByTestId("rename-input");
         await expect(fx).toBeFocused();
         await fx.fill("effects");
-        await page.getByTestId("sector-layouts-title").click();
+        await page.getByTestId("arrange-note").click();
         await expect(row(page, "ld-2")).toHaveAttribute("data-renaming", "false");
         await expect.poll(() => titles(page, "ld")).toEqual(["HANDS", "EFFECTS"]);
 
@@ -563,7 +728,6 @@ test.describe("The fader sectors", () => {
           const block = column.querySelector('[data-testid="sector-layouts"]') as HTMLElement;
           const order = [
             block,
-            column.querySelector(".sector-actions"),
             column.querySelector('[data-testid="arrange-note"]'),
             column.querySelector('[data-testid="rail"]'),
           ].map(box);
@@ -598,7 +762,7 @@ test.describe("The fader sectors", () => {
         await expect(tabOf(page, "lu-2")).toHaveText("REMOVE?");
         await expect(tabOf(page, "lu-2")).toHaveClass(/confirm/);
         expect(await whole(tabOf(page, "lu-2")), "REMOVE? whole").toBe(true);
-        await page.getByTestId("sector-layouts-title").click();
+        await page.getByTestId("arrange-note").click();
         await expect(tabOf(page, "lu-2")).toHaveText("ALT");
         // Asked again, the tab's second tap removes it; the + is back.
         await row(page, "lu-2").getByTestId("remove").click();
@@ -712,6 +876,26 @@ test.describe("The fader sectors", () => {
       await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "true");
       await expect(arrange).toHaveAttribute("aria-pressed", "true");
       await expect(page.getByTestId("arrange-note")).toHaveText(ARRANGE_NOTE);
+      // The ⇄ key is lit as the big button was (#212: the panel's lighter
+      // ground and the yellow underline) and stays live at full opacity
+      // while the rest of the head dims and takes no touch.
+      const head = await page.evaluate(() => {
+        const key = document.querySelector('[data-testid="arrange"]')!;
+        const tab = document.querySelector('[data-testid="page-row"] > [data-testid="tab"]')!;
+        const deck = document.querySelector('[data-testid="deck-tab"]')!;
+        const style = (e: Element) => getComputedStyle(e);
+        return {
+          lit: key.classList.contains("selected"),
+          shadow: style(key).boxShadow,
+          keyOpacity: style(key).opacity,
+          keyTouch: style(key).pointerEvents,
+          tabOpacity: style(tab).opacity,
+          tabTouch: style(tab).pointerEvents,
+          deckOpacity: style(deck).opacity,
+        };
+      });
+      expect(head).toEqual({ ...head, lit: true, keyOpacity: "1", keyTouch: "auto", tabOpacity: "0.3", tabTouch: "none", deckOpacity: "0.3" });
+      expect(head.shadow).toMatch(/inset/);
 
       // Every strip lies under its cover: a real, hit-tested gesture on
       // Vocal 1 repro#'s fader cap and on its SEL meets the cover, moves no

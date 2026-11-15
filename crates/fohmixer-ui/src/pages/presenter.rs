@@ -210,11 +210,9 @@ fn measure_rail(rail: &web_sys::HtmlDivElement) -> Option<RailRoom> {
 /// The column's stage miniature (1.37.0; way A of the owner's approved
 /// `docs/mockups/presenter-stage-v2.html`): the same stage frame as the
 /// PRESENTER pane, in the rail above TECHALERT (`rail`: the `.rail` it lies
-/// in, measured on every resize), as wide as the rail or, since 1.38.2,
-/// shrunk to the room the rail's rows leave at their full 44 px, never under
-/// its least picture (40 px high, unless the rail is too narrow for it):
-/// below that the rows give the room up, the faders never
-/// (`behave::presenter::mini_fit`). A dim `STAGE` caption with the layout on
+/// in, measured on every resize), since #212 always as wide as the rail at
+/// 16:9, the picture filling its box: the rail's rows give it the room, the
+/// faders never (`behave::presenter::mini_fit`). A dim `STAGE` caption with the layout on
 /// stage, `offline` in red and the picture dimmed while Presenter is down. A
 /// tap opens the PRESENTER tab; while it is open, on a phone or with no
 /// `[presenter]` it is not there at all. Each

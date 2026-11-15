@@ -1,0 +1,114 @@
+<!doctype html>
+<!-- fohmixer #212: mockup v1 of a calmer column (owner, 2026-11-15: the column is
+     too crowded; no LAYOUTS heading; ARRANGE a tiny key or an icon, it is used
+     rarely). Left: today's FOH column (as on the live surface at 1194 x 834).
+     Right: the proposal: the heading gone, ARRANGE a small icon beside the page tab, the page tab and the extra tabs a little lower; the stage
+     miniature as tall as its picture's 16:9 shape, the picture filling it (owner,
+     2026-11-15: it has real value for the engineer), the room freed goes to it. Tokens from style.css,
+     the app's fonts by relative path. Invented names, no site data. -->
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Column calm v1</title>
+<style>
+@font-face { font-family: "Barlow Condensed"; font-weight: 700; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 600; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-weight: 500; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2"); }
+:root {
+    color-scheme: dark;
+    --bg: #07070c; --page: #0b0b12; --section: #151522; --panel: #1a1a28; --panel-hi: #20203a; --line: #2a2a44;
+    --accent: #4ecdc4; --text: #eaeaf0; --muted: #9a9ab4; --faint: #5c5c78; --gold: #e0b44a;
+    --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+    --ui: "Barlow", -apple-system, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--ui); }
+body { padding: 16px; }
+.doc { max-width: 900px; margin: 0 auto 14px; line-height: 1.5; font-size: 15px; }
+.doc h1 { font-family: var(--display); font-size: 26px; margin: 0 0 6px; letter-spacing: 0.04em; }
+.doc p, .doc li { color: var(--muted); }
+.doc b { color: var(--text); }
+.pair { display: flex; gap: 60px; justify-content: center; align-items: flex-start; }
+.lbl { font-family: var(--display); color: var(--muted); letter-spacing: 0.08em; text-align: center; margin-bottom: 6px; }
+.col { width: 132px; height: 822px; background: var(--section); border: 1px solid var(--line); border-radius: 10px;
+    padding: 8px 6px; display: flex; flex-direction: column; gap: 5px; }
+.ptab { font-family: var(--display); font-size: 22px; letter-spacing: 0.08em; text-align: center; padding: 8px 0;
+    border-radius: 8px; background: var(--panel-hi); border-bottom: 2px solid var(--accent); }
+.xt { font-family: var(--display); font-size: 12px; color: var(--muted); text-align: center; letter-spacing: 0.06em; padding: 3px 0; }
+.h { font-family: var(--display); font-size: 12px; color: var(--muted); letter-spacing: 0.1em; text-align: center; }
+.lays { border: 1px solid var(--line); border-radius: 8px; display: grid; grid-template-columns: 1fr 1fr; position: relative; }
+.lays div.c { font-family: var(--display); font-size: 12px; text-align: center; padding: 7px 2px; color: var(--muted); }
+.lays div.on { color: var(--text); background: var(--panel-hi); border-bottom: 2px solid var(--gold); border-radius: 6px; margin: 2px; }
+.lays .sep { grid-column: 1 / -1; height: 1px; background: var(--line); }
+.arr { font-family: var(--display); font-size: 15px; letter-spacing: 0.08em; text-align: center; padding: 11px 0;
+    border-radius: 8px; border: 1px solid var(--line); color: var(--muted); }
+.lufs { text-align: center; }
+.lufs small { display: block; font-family: var(--display); font-size: 11px; color: var(--muted); letter-spacing: 0.08em; }
+.lufs b { font-family: var(--display); font-size: 30px; }
+.lufs i { display: block; font-style: normal; font-family: var(--mono); font-size: 10px; color: var(--faint); }
+.rb { font-family: var(--display); font-size: 14px; padding: 10px 8px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--panel); display: flex; align-items: center; gap: 6px; }
+.rb .d { width: 6px; height: 6px; border-radius: 3px; background: var(--faint); }
+.rb .a { margin-left: auto; font-size: 10px; border: 1px solid var(--muted); border-radius: 4px; padding: 1px 4px; }
+.mini { border: 1px solid var(--line); border-radius: 8px; padding: 4px; }
+.mini small { display: flex; justify-content: space-between; font-family: var(--display); font-size: 10px; color: var(--muted); }
+.mini div { background: #000; border-radius: 4px; margin-top: 4px; }
+/* NEW: the miniature as tall as the stage picture's own shape (16:9), the picture filling it. */
+.new .mini div { aspect-ratio: 16 / 9; height: auto !important; background: linear-gradient(135deg, #1d3a4a, #0c1620); display: flex; align-items: center; justify-content: center; font-family: var(--display); font-size: 12px; color: #cfe; }
+.foot { margin-top: auto; text-align: center; font-family: var(--mono); font-size: 10px; color: var(--faint); line-height: 1.5; }
+/* NEW: ARRANGE as a small icon key in the layouts block's top-right corner. */
+.top { display: flex; gap: 4px; }
+.top .ptab { flex: 1; }
+.ico { flex: 0 0 30px; border-radius: 8px; border: 1px solid var(--line); color: var(--muted); font-size: 14px;
+    display: flex; align-items: center; justify-content: center; }
+.new .ptab { font-size: 19px; padding: 5px 0; }
+.new .xt { font-size: 11px; padding: 1px 0; }
+.new .lays { margin-top: 2px; }
+</style>
+</head>
+<body>
+<div class="doc">
+    <h1>Pokojnejší stredný stĺpec — návrh (#212)</h1>
+    <ul>
+        <li><b>Nadpis LAYOUTS</b> zmizne.</li>
+        <li><b>ARRANGE</b> je len malá ikonka <b>⇄</b> vedľa záložky FOH (používa sa výnimočne). V ARRANGE svieti, ako dnes veľké tlačidlo.</li>
+        <li>Záložka <b>FOH</b> a riadky STREAM DECK / ABLESET / IEM MIXER / PRESENTER sú o kúsok nižšie.</li>
+        <li><b>Náhľad STAGE</b> má výšku podľa tvaru obrazu (16:9), takže obraz vyplní celý rámik a nezmenšuje sa. Dostane prednosť pred ostatným a uvoľnené miesto ide jemu.</li>
+    </ul>
+    <p>Vľavo dnešný stĺpec, vpravo návrh. Texty sú vymyslené.</p>
+</div>
+<div class="pair">
+    <div><div class="lbl">DNES</div><div class="col" id="old"></div></div>
+    <div><div class="lbl">NÁVRH</div><div class="col new" id="new"></div></div>
+</div>
+<script>
+"use strict";
+function column(el, calm) {
+    const add = (html) => el.insertAdjacentHTML("beforeend", html);
+    add(calm ? '<div class="top"><div class="ptab">FOH</div><div class="ico" title="ARRANGE">⇄</div></div>' : '<div class="ptab">FOH</div>');
+    for (const t of ["STREAM DECK", "ABLESET", "IEM MIXER", "PRESENTER"]) add(`<div class="xt">${t}</div>`);
+    if (!calm) add('<div class="h">LAYOUTS</div>');
+    add(`<div class="lays">
+        <div class="c on">BAND</div><div class="c on">MAIN</div><div class="c">BAND B</div><div class="c"></div><div class="c">OTHERS</div><div class="c"></div>
+        <div class="sep"></div>
+        <div class="c on">EFFECTS</div><div class="c">PA</div><div class="c">MASTER</div><div class="c">HANDS</div><div class="c"></div><div class="c on">MBC 1</div><div class="c"></div><div class="c">MBC 2</div></div>`);
+    if (!calm) add('<div class="arr">ARRANGE</div>');
+    add('<div class="lufs"><small>STREAM LUFS</small><b>−14.2</b><i>target −14</i></div>');
+    add('<div class="rb"><span class="d"></span>STAGE<span class="a">AUTO</span></div>');
+    add('<div class="rb"><span class="d"></span>REVERB<span class="a">AUTO</span></div>');
+    add('<div class="rb"><span class="d"></span>AUTOTUNE<span class="a">AUTO</span></div>');
+    add('<div class="rb"><span class="d"></span>TALKBACK</div>');
+    add(`<div class="mini"><small><span>STAGE</span><span>SONG 1</span></small><div style="height:${calm ? 0 : 46}px">${calm ? "STAGE PICTURE" : ""}</div></div>`);
+    add('<div class="rb"><span class="d"></span>TECHALERT</div>');
+    add('<div class="foot">scene intro · 10:00<br>BAND on · MASTER on<br>v1.47.0</div>');
+}
+column(document.getElementById("old"), false);
+column(document.getElementById("new"), true);
+</script>
+</body>
+</html>

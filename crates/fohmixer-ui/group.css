@@ -94,20 +94,47 @@
     pointer-events: none;
 }
 
+/* A strip's side texts (#211, the owner's approved
+   docs/mockups/strip-instance-v1.html): the group's name on its run's
+   first strip and the strip's own Live set, read bottom to top in the info
+   column. One box from 52 px under the column's top (under the LUFS row at
+   its tallest: v10 A, the owner's ruling of 29.10, 45.5 px at 120 px) to
+   50 px above its foot (clear of SEL, strip-head.spec.ts' sweep), a flex
+   column that wraps: the group's name first, at the box's top, the set
+   8 px under it, or at the top when alone. On a narrow strip, whose
+   stacked LUFS can reach 69 px, the box starts at 72 px and fills from its
+   foot (`column-reverse`): the group's name 50 px above the column's foot,
+   the set over it. A set the zone has no room for wraps into a second
+   flex column, 16 px (the column gap) right of the box's 13 px (an 11 px
+   thick text and 2 px), which `overflow-x: clip` hides whole: it yields,
+   never half drawn; nothing measures text (#21). The fader under the
+   column takes the touch. */
+.strip-side {
+    position: absolute;
+    top: 52px;
+    bottom: 50px;
+    left: 0;
+    width: 13px;
+    display: flex;
+    flex-flow: column wrap;
+    gap: 8px 16px;
+    overflow-x: clip;
+    overflow-y: visible;
+    pointer-events: none;
+}
+
+:is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .strip-side {
+    top: 72px;
+    flex-direction: column-reverse;
+}
+
 /* A group's name on its side in its run's first strip (variant B of
    docs/mockups/group-captions-v1.html; #151, mockup v8: in the info
    column, calm grey, no group colour): its title, or an untitled group's
-   shared Live set (BAND, MASTER). 52 px under the column's top, under the
-   LUFS row at its tallest (v10 A, the owner's ruling of 29.10: 45.5 px at
-   120 px); on a narrow strip, whose stacked LUFS can reach 69 px, 50 px
-   above the column's foot, clear of SEL (strip-head.spec.ts' sweep). Read
-   bottom to top, 11 px thick and 96 px long, so a long name ends in an
-   ellipsis and never widens anything. The fader under the column takes
-   the touch. */
+   shared Live set (BAND, MASTER). 11 px thick and 96 px long, so a long
+   name ends in an ellipsis and never widens anything. */
 .group-side {
-    position: absolute;
-    top: 52px;
-    left: 0;
+    flex: none;
     width: 11px;
     height: 96px;
     overflow: hidden;
@@ -119,10 +146,22 @@
     text-transform: uppercase;
     white-space: nowrap;
     text-overflow: ellipsis;
-    pointer-events: none;
 }
 
-:is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .group-side {
-    top: auto;
-    bottom: 50px;
+/* The strip's Live set (#211, mockup v1's `.set`): BAND, MASTER, MBC in the
+   display face, calm and dim (`--faint`), no pill, nothing lit; as long as
+   its word, 96 px at most (an ellipsis then, as the group's name); its
+   line 13 px, the face's content area, so nothing scrolls. */
+.strip-set {
+    flex: none;
+    width: 13px;
+    max-height: 96px;
+    overflow: hidden;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    color: var(--faint);
+    font: 700 11px/13px var(--display);
+    letter-spacing: 0.08em;
+    white-space: nowrap;
+    text-overflow: ellipsis;
 }

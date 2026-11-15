@@ -100,7 +100,7 @@ test.describe("STREAM LUFS (#184 PR C)", () => {
     await resetSectors();
   });
 
-  test("the MBC page shows STREAM LUFS under ARRANGE", async ({ page }) => {
+  test("the MBC page shows STREAM LUFS under the LAYOUTS block", async ({ page }) => {
     await openMbc(page);
     const box = readout(page);
     await expect(box).toBeVisible({ timeout: UP });
@@ -127,11 +127,12 @@ test.describe("STREAM LUFS (#184 PR C)", () => {
     await streamReads(-130);
     await expect(n).toHaveText("−13.0", { timeout: UP });
     await expect(n).toHaveAttribute("data-l", "in");
-    // Under ARRANGE, inside the column, and it takes no touch.
-    const arrange = (await page.getByTestId("arrange").boundingBox())!;
+    // Under the LAYOUTS block (ARRANGE is the page tab's ⇄ key since #212),
+    // inside the column, and it takes no touch.
+    const layouts = (await page.getByTestId("sector-layouts").boundingBox())!;
     const at = (await box.boundingBox())!;
     const column = (await page.getByTestId("column").boundingBox())!;
-    expect(at.y).toBeGreaterThanOrEqual(arrange.y + arrange.height);
+    expect(at.y).toBeGreaterThanOrEqual(layouts.y + layouts.height);
     expect(at.x).toBeGreaterThanOrEqual(column.x);
     expect(at.x + at.width).toBeLessThanOrEqual(column.x + column.width + 0.5);
     await expect(box).toHaveCSS("pointer-events", "none");
@@ -217,13 +218,16 @@ test.describe("STREAM LUFS (#184 PR C)", () => {
   test("the MBC page's column matches the mockup", async ({ page }) => {
     await openMbc(page);
     const column = page.getByTestId("column");
-    for (const id of ["sector-layouts-title", "arrange", "stream-lufs-box", "login-line", "logout", "version"]) {
+    for (const id of ["arrange", "sector-layouts", "stream-lufs-box", "login-line", "logout", "version"]) {
       await expect(column.getByTestId(id), id).toBeVisible({ timeout: UP });
     }
+    // No LAYOUTS caption since #212 (the owner's approved column-calm-v2).
+    await expect(column.getByTestId("sector-layouts-title")).toHaveCount(0);
     await expect(page.getByTestId("login-line")).toHaveText("logged in: ENGINEER");
-    // Top to bottom as mockup v3: LAYOUTS, ARRANGE, STREAM LUFS, the login, LOG OUT.
+    // Top to bottom as mockup v3 with #212's head: the page tab's row with
+    // ARRANGE's key, LAYOUTS, STREAM LUFS, the login, LOG OUT.
     const ys: number[] = [];
-    for (const id of ["sector-layouts-title", "arrange", "stream-lufs-box", "login-line", "logout"]) {
+    for (const id of ["arrange", "sector-layouts", "stream-lufs-box", "login-line", "logout"]) {
       ys.push((await column.getByTestId(id).boundingBox())!.y);
     }
     expect([...ys].sort((a, b) => a - b)).toEqual(ys);
@@ -233,7 +237,7 @@ test.describe("STREAM LUFS (#184 PR C)", () => {
       await expect(page.getByTestId(id), id).toHaveCount(0);
     }
     await expect(page.locator('[data-testid="rail"] .btn')).toHaveCount(0);
-    for (const id of ["sector-layouts-title", "stream-lufs-cap", "stream-lufs-goal", "login-line", "logout"]) {
+    for (const id of ["arrange", "stream-lufs-cap", "stream-lufs-goal", "login-line", "logout"]) {
       expect(await clipped(column.getByTestId(id)), id).toEqual([]);
     }
   });

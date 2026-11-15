@@ -8,8 +8,9 @@
 //! cells (`SectorCell::key`), so paging one sector remounts only that
 //! sector's strips that change; the strip width depends on the document and
 //! the screen only, never on the picks. The column holds the LAYOUTS block
-//! (a 2 × 2 grid of the sectors' layout tabs: a tap pages that sector, on
-//! this device only), ARRANGE (the reorder mode, `behave::arrange_drag`:
+//! (a 2 × 2 grid of the sectors' layout tabs, no caption since #212: a tap
+//! pages that sector, on this device only), ARRANGE (since #212 a small
+//! `⇄` key at the right of the page tab; the reorder mode, `behave::arrange_drag`:
 //! while it is on every strip lies under a cover with a ⠿ handle that owns
 //! its touches, the faders, MUTE, SEL and the column's other controls are
 //! dimmed and inert, every position a sector can show is a cell, the empty
@@ -19,8 +20,8 @@
 //! block stays live and renames, adds and removes layouts, mockup v2,
 //! `behave::arrange_edit`, saved with the same tap; no undo, the owner's
 //! ruling of 29.10.2026), then the arrows of a side
-//! that does not fit, the rail and the global controls. No strip draws its
-//! instance pill here (it costs 16 px of travel); a layout that mixes Live
+//! that does not fit, the rail and the global controls. A strip says its
+//! Live set in its info column (#211); a layout that mixes Live
 //! sets names each strip's set where the group's name sits on the classic
 //! page (`binding::sectors::sector_side`), following the shown layout. A
 //! layout's empty slot is a blank cell in its place (the slot model,
@@ -38,13 +39,18 @@ use wasm_bindgen::closure::Closure;
 
 use crate::arrange::sectors::{SectorArrangement, SectorCell, WindowKey, arrange_sectors};
 use crate::arrange::{Arrangement, LineKey, METRICS, Shift, Sides, narrow};
-use crate::behave::arrange_drag::{Arrange, ArrangeEnd, Drag, Held, NoteTimer, Tap, arrange_note};
+use crate::behave::arrange_drag::{
+    Arrange, ArrangeEnd, Drag, Held, NoteTimer, Tap, arrange_note, tap_act,
+};
 use crate::behave::arrange_edit::{REMOVE_ASK, TabRow, TabTap, field_text, tab_rows};
+use crate::behave::column::layout_pick_same;
 use crate::binding::sectors::{
     Picks, picked, pool_controls, sector_instances, sector_name, sector_side,
 };
 use crate::components::stream_lufs::stream_readouts;
 use crate::components::{ControlView, down_of, owns_touches};
+use crate::diag;
+use crate::diag::trace::{self, TabStep};
 use crate::dom;
 use crate::pages::presenter::StageMini;
 use crate::pages::surface::{
@@ -246,9 +252,9 @@ fn flash_note(
     );
 }
 
-/// The default page with sectors: its lines, the column (its head, the
-/// LAYOUTS block, ARRANGE and ↶, the arrows of a side that does not fit,
-/// the rail and the global controls). Measured as `PageView` is
+/// The default page with sectors: its lines, the column (its head with the
+/// ARRANGE key beside the page tab, #212; the LAYOUTS block, the arrows of a
+/// side that does not fit, the rail and the global controls). Measured as `PageView` is
 /// (`surface::measure_page`); `--strip-w` and `data-narrow` as there.
 #[component]
 pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
@@ -278,7 +284,7 @@ pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
     });
     let rev = Memo::new(move |_| doc.try_with(|d| d.as_ref().map(|d| d.rev)).flatten());
     // The pool's controls, once for the page (a layout change mounts it
-    // anew), and each sector's instance tag.
+    // anew), and each sector's shared Live set.
     let controls = StoredValue::new(pool_controls(&head.layout));
     let instances = instances_memo(head.layout.clone(), doc.into(), nav.picks.into());
     Effect::new(move |_| {
@@ -398,6 +404,12 @@ pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
     };
     let arranging = move || mode.try_with(Arrange::is_on).unwrap_or(false).to_string();
     let stream = stream_readouts(&head.layout, shown_doc, nav.picks);
+    // ARRANGE's key beside the page tab (#212, the owner's approved
+    // `docs/mockups/column-calm-v2.html`).
+    let arrange_key = (
+        page.id.clone(),
+        ViewFnOnce::from(move || view! { <ArrangeButton carrier=carrier refused=refused /> }),
+    );
     view! {
         <div
             class="body"
@@ -425,11 +437,8 @@ pub(crate) fn SectorsView(page: Page, global: Vec<Control>) -> impl IntoView {
                 >
                     "✕ CLOSE"
                 </button>
-                <ColumnHead />
+                <ColumnHead beside=arrange_key />
                 <LayoutsBlock shown=shown_doc />
-                <div class="sector-actions">
-                    <ArrangeButton carrier=carrier refused=refused />
-                </div>
                 <div class="saved-note" data-testid="arrange-note">{note}</div>
                 {stream}
                 <div class="shifts">
@@ -521,8 +530,8 @@ fn SectorLineView(
 }
 
 /// One cell of a sector: an empty slot's blank (`sectors.css` outlines it
-/// only in ARRANGE), else a strip's pool control on its sector's side, with
-/// no instance pill and, while the layout its sector shows now mixes Live
+/// only in ARRANGE), else a strip's pool control on its sector's side,
+/// with, while the layout its sector shows now mixes Live
 /// sets, its own set as the side text (a memo of `instances`: a strip kept
 /// through a page follows the new layout); ARRANGE's cover over it (shown
 /// only in the mode). `data-slot` is its layout slot now (a kept strip's
@@ -565,23 +574,20 @@ fn SectorCellView(
     let control = controls
         .try_with_value(|all| all.get(&strip).cloned())
         .flatten();
-    // The strip's own Live set as its `shared`: it never draws its
-    // instance pill here (1.24.0: 16 px of travel, a bright fill); a mixed
-    // layout names the set on its side instead (`sector_side`), a memo of
-    // `instances`, so a strip kept through a page follows the layout shown.
-    let own = match &control {
-        Some(Control::Strip(strip)) => Some(strip.binding.instance.clone()),
-        _ => None,
+    // A mixed layout names the strip's set on its side (`sector_side`), a
+    // memo of `instances`, so a strip kept through a page follows the
+    // layout shown; otherwise the strip's own set mark says it (#211).
+    let own_side = match &control {
+        Some(Control::Strip(strip)) => strip.binding.instance.clone(),
+        _ => String::new(),
     };
-    let own_side = own.clone().unwrap_or_default();
-    let shared = Signal::derive(move || own.clone());
     let side_text = Memo::new(move |_| {
         instances
             .try_with(|all| sector_side(all.get(&sector).and_then(Option::as_deref), &own_side))
             .flatten()
     });
     let inner = control.map(|control| {
-        view! { <ControlView control=control shared=shared group_name=side_text /> }
+        view! { <ControlView control=control group_name=side_text /> }
     });
     let slot_attr = move || slot_now.try_get().unwrap_or(first_slot).to_string();
     view! {
@@ -776,8 +782,9 @@ fn LayoutsBlock(shown: Memo<Option<SectorsDoc>>) -> impl IntoView {
         .into_iter()
         .map(|sector| view! { <LayoutCell sector=sector shown=shown /> })
         .collect_view();
+    // No caption over it since #212 (the owner's approved
+    // `docs/mockups/column-calm-v2.html`).
     view! {
-        <div class="cap-title" data-testid="sector-layouts-title">"Layouts"</div>
         <div class="sectors" role="group" aria-label="sector layouts" data-testid="sector-layouts">
             {cells}
         </div>
@@ -922,8 +929,29 @@ fn LayoutTab(sector: SectorId, layout: String, rows: Memo<Vec<TabRow>>) -> impl 
         let Some(id) = id.try_get_value() else {
             return;
         };
+        let arranging = mode.try_with_untracked(Arrange::is_on).unwrap_or(false);
+        // The layout its sector shows before the tap (`layout_pick_same`).
+        let shown = rows
+            .try_with_untracked(|rows| rows.iter().find(|r| r.selected).map(|r| r.id.clone()))
+            .flatten();
         let tapped = change_mode(mode, |m| m.edit().map(|e| e.tab_tapped(&id))).flatten();
         if tapped != Some(TabTap::Removed) {
+            // The pick goes to the recorder (#212: the column's use counted
+            // from the event log); a REMOVE? confirm is no pick.
+            let title = row
+                .try_with_untracked(|r| r.as_ref().map(|r| r.title.clone()))
+                .flatten()
+                .unwrap_or_default();
+            diag::record(&trace::tab(
+                dom::epoch_now(),
+                TabStep::Layout {
+                    sector: sector.as_str(),
+                    id: &id,
+                    title: &title,
+                    arranging,
+                    same: layout_pick_same(shown.as_deref(), &id),
+                },
+            ));
             nav.pick(sector, &id);
         }
     };
@@ -1065,7 +1093,10 @@ fn LayoutTab(sector: SectorId, layout: String, rows: Memo<Vec<TabRow>>) -> impl 
 /// and leaves once the hub's new document arrives (a refusal: at once, the
 /// hub's document shows again with a short note), or just leaves with
 /// nothing changed (`Arrange::tap`). Lit while on; it stays live, and so
-/// does the LAYOUTS block, while the rest of the column is inert.
+/// does the LAYOUTS block, while the rest of the column is inert. Since
+/// #212 a small `⇄` key at the right of the page tab (`ColumnHead`'s
+/// `beside`), named ARRANGE for assistive tech; each press goes to the
+/// recorder (`tab` `arrange` with `tap_act`).
 #[component]
 fn ArrangeButton(carrier: Carrier, refused: RwSignal<Option<&'static str>>) -> impl IntoView {
     let nav = expect_context::<Nav>();
@@ -1088,7 +1119,18 @@ fn ArrangeButton(carrier: Carrier, refused: RwSignal<Option<&'static str>>) -> i
             return;
         };
         let _ = refused.try_set(None);
-        let tap = change_mode(mode, |m| m.tap(&doc)).flatten();
+        // A disposed mode (`change_mode`'s outer none) is no press to
+        // record; a save on its way is `busy`.
+        let tapped = change_mode(mode, |m| m.tap(&doc));
+        if let Some(tap) = tapped.as_ref() {
+            diag::record(&trace::tab(
+                dom::epoch_now(),
+                TabStep::Arrange {
+                    act: tap_act(tap.as_ref()),
+                },
+            ));
+        }
+        let tap = tapped.flatten();
         carrier.leave();
         if let Some(Tap::Send(sectors, rev)) = tap {
             let done: ResultFn = Box::new(move |outcome| {
@@ -1104,20 +1146,20 @@ fn ArrangeButton(carrier: Carrier, refused: RwSignal<Option<&'static str>>) -> i
     // It owns its touches (#43 PR G); it writes no key.
     let no_keys: Vec<String> = Vec::new();
     view! {
-        <div class="seg arrange-btn">
-            <button
-                type="button"
-                class="tab"
-                use:owns_touches=no_keys
-                class:selected=lit
-                data-testid="arrange"
-                aria-pressed=move || lit().to_string()
-                aria-disabled=move || nav.left_covered().to_string()
-                on:pointerdown=on_down
-            >
-                "ARRANGE"
-            </button>
-        </div>
+        <button
+            type="button"
+            class="tab arrange-key"
+            use:owns_touches=no_keys
+            class:selected=lit
+            data-testid="arrange"
+            aria-label="ARRANGE"
+            title="ARRANGE"
+            aria-pressed=move || lit().to_string()
+            aria-disabled=move || nav.left_covered().to_string()
+            on:pointerdown=on_down
+        >
+            "⇄"
+        </button>
     }
 }
 
@@ -1317,9 +1359,10 @@ mod tests {
     }
 
     #[test]
-    fn a_kept_strips_instance_tag_follows_its_sectors_page() {
+    fn a_kept_strips_side_set_follows_its_sectors_page() {
         // band X stays mounted while lu pages from [band X, band Y] (one
-        // set: no tag) to [band X, master A-Reverb #] (mixed: tags).
+        // set: names nothing) to [band X, master A-Reverb #] (mixed: names
+        // each set).
         let layout: Layout = serde_json::from_value(json!({
             "schema": 2, "default_page": "foh",
             "pages": [{"id": "foh", "title": "FOH",

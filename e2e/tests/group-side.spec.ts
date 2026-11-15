@@ -251,9 +251,12 @@ test.describe("A group's name on its side (#127)", () => {
       else await expect(label).not.toHaveAttribute("data-instance");
       await expect(label).toHaveCSS("color", grey);
       await expect(label).toHaveCSS("pointer-events", "none");
-      // Its strips' own instance tags: only where the strips differ.
-      const strips = group.controls.filter((c: any) => c.kind === "strip").length;
-      await expect(page.locator(`.slot[data-group="${group.id}"]`).getByTestId("strip-instance")).toHaveCount(shared ? 0 : strips);
+      // No instance pill (#211); the first strip's own set mark only where
+      // its name does not already say the set (an untitled shared group's).
+      await expect(page.locator(`.slot[data-group="${group.id}"]`).getByTestId("strip-instance")).toHaveCount(0);
+      const mark = s.getByTestId("strip-set");
+      if (!group.title && shared) await expect(mark).toHaveCount(0);
+      else await expect(mark).toHaveText(first.binding.instance.toUpperCase());
       // In the info column: 52 px under its top (#151, v10 A: under the
       // bigger LUFS row), 96 px long, under the LUFS row, the whole name
       // shown.

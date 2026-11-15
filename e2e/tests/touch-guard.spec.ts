@@ -195,7 +195,7 @@ test("a line wider than the screen keeps its pinned strip; its arrows own their 
   // the column's arrows. The pinned strip, a master strip sixth in the row,
   // ends the first window (the right side) and starts the next (the left):
   // it changes side and must not be rebuilt. The group's strips differ, so
-  // each shows its instance tag (#63), a part of a strip that is no control.
+  // each says its own Live set (#211), a part of a strip that is no control.
   const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
   const BAND = ["Hand1 #", "Hand2 #", "Hand3 #", "Hand4 #", "Vocal 1 repro#", "Vocal 2 repro#", "Vocal 3 repro#", "Keys 1", "Drums #", "Bass #"];
   const changed = JSON.parse(readFileSync(LAYOUT, "utf-8"));
@@ -222,11 +222,11 @@ test("a line wider than the screen keeps its pinned strip; its arrows own their 
     const start = (await where.textContent())!;
     const next = shift.getByTestId("shift-next");
     const back = shift.getByTestId("shift-back");
-    // The arrows own their touches; a line's background and a strip's tag keep theirs.
+    // The arrows own their touches; a line's background and a strip's set mark keep theirs.
     expect(await prevented(next, "touchstart"), "a touchstart on ▶").toBe(true);
     expect(await prevented(back, "touchstart"), "a touchstart on ◀").toBe(true);
     expect(await prevented(page.getByTestId("line").first(), "touchstart"), "a touchstart on a line's background").toBe(false);
-    expect(await prevented(cells.getByTestId("strip-instance").first(), "touchstart"), "a touchstart on a strip's tag").toBe(false);
+    expect(await prevented(cells.getByTestId("strip-set").first(), "touchstart"), "a touchstart on a strip's set mark").toBe(false);
     expect(await prevented(cells.getByTestId("fader").first(), "touchstart"), "a touchstart on a fader in it").toBe(true);
     // ▶ moves the window; the pinned strip stays, the same element (a
     // rebuilt strip would lose the mark, and a finger on it its touch).

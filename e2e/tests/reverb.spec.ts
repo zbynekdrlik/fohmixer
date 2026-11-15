@@ -215,11 +215,17 @@ test.describe("REVERB and REVERB AUT", () => {
     expect(await rail.nth(0).getAttribute("data-testid")).toBe("stage-mics");
     expect(await rail.nth(1).getAttribute("data-testid")).toBe("reverb");
     await expect(button.locator(".btn-text")).toHaveText("REVERB");
-    // The rail's 118 × 44 (#130 PC check; review M4).
+    // The rail's 118 px width (#130 PC check; review M4), and a rail row's
+    // height, the same as STAGE's: since #212 the stage miniature keeps its
+    // 16:9 picture and a crowded rail (this fixture's, longer than the
+    // site's) gives it the room from its rows; on the site's rail the rows
+    // keep 44 px (sectors.spec, column.spec).
     const size = (await button.boundingBox())!;
-    console.log(`reverb button (${test.info().project.name}): ${size.width} × ${size.height} px`);
+    const stage = (await rail.nth(0).boundingBox())!;
+    console.log(`reverb button (${test.info().project.name}): ${size.width} × ${size.height} px, stage row ${stage.height} px`);
     expect(Math.abs(size.width - 118), `118 px wide: ${size.width}`).toBeLessThanOrEqual(1);
-    expect(Math.abs(size.height - 44), `44 px high: ${size.height}`).toBeLessThanOrEqual(1);
+    expect(Math.abs(size.height - stage.height), `a rail row high: ${size.height} vs ${stage.height}`).toBeLessThanOrEqual(1);
+    expect(size.height, `a usable touch target: ${size.height}`).toBeGreaterThanOrEqual(30);
     await travelsPinned(page, "song level");
     await expect(button).toHaveClass(/\bon\b/);
     await expect(button).toHaveAttribute("data-aut", "off");

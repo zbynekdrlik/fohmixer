@@ -416,7 +416,7 @@ test.describe("The LUFS reading on a strip", () => {
     // The travel: the reading costs the fader nothing.
     const travels = await page.evaluate(() =>
       [...document.querySelectorAll('[data-testid="strip"]')]
-        .filter((s) => !s.querySelector('[data-testid="strip-instance"]') && s.querySelector('[data-testid="fader"]'))
+        .filter((s) => s.querySelector('[data-testid="fader"]'))
         .map((s) => ({
           label: s.getAttribute("data-label"),
           lufs: s.hasAttribute("data-lufs"),
