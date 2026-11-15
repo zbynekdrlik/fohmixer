@@ -100,6 +100,8 @@ mod sectors;
 mod colors;
 #[path = "router/marks.rs"]
 mod marks;
+#[path = "router/scenes.rs"]
+mod scenes;
 #[path = "router/songmap.rs"]
 mod songmap;
 #[cfg(test)]
@@ -109,6 +111,7 @@ mod unfold;
 
 pub use lufs::LUFS_TICK;
 pub(crate) use lufs::lufs_ticks;
+pub use scenes::SCENES_CLIENT;
 pub use songmap::Missing as SongMapMissing;
 
 /// The router's own subscriber for the rules (#130, D18): every instance's
@@ -584,6 +587,29 @@ pub enum RouterMsg {
     },
     /// The layout poll's tick (#203): `mute_guards.json` is read again.
     MuteGuardsPoll,
+    /// A page's rule for a strip and a scene (#207, `set_scene_rule`).
+    SetSceneRule {
+        client: ClientId,
+        id: String,
+        strip: StripRef,
+        scene: String,
+        rule: Option<fohmixer_proto::scenes::SceneRule>,
+    },
+    /// The layout poll's tick (#207): `scenes.json` is read again.
+    ScenesPoll,
+    /// A scene came (#207, `POST /api/scene`; its name checked): `source`
+    /// and `peer` for its record; `reply` gets how many faders it moves.
+    Scene {
+        name: String,
+        source: String,
+        peer: String,
+        reply: tokio::sync::oneshot::Sender<u32>,
+    },
+    /// The scene rule's wake `generation` came (#207: a glide's next step
+    /// is due); a newer armed wake makes it stale.
+    ScenesWake {
+        generation: u64,
+    },
     /// The script watch's verdict on a local instance changed (#184 PR D,
     /// `script_watch`): Live runs without its FohMixer script answering.
     ScriptMissing {
@@ -627,6 +653,8 @@ pub struct RouterStatus {
     pub mute_alarms: fohmixer_proto::client::MuteAlarmsStatus,
     /// The faders whose mute the tablet guards (#203).
     pub mute_guards: fohmixer_proto::client::MuteGuardsStatus,
+    /// The scene automation (#207).
+    pub scenes: fohmixer_proto::client::ScenesStatus,
     pub clients: usize,
     pub unresolved: Vec<Unresolved>,
 }
@@ -710,6 +738,8 @@ pub struct Router {
     mute_alarms: marks::MarksIo<fohmixer_proto::mute_alarms::MuteAlarmsDoc>,
     /// The mute guard's marks (#203): `mute_guards.json`.
     mute_guards: marks::MarksIo<fohmixer_proto::mute_guards::MuteGuardsDoc>,
+    /// The scene automation (#207): `scenes.json` and the rule.
+    scenes: scenes::ScenesIo,
     /// Every instance's transport (#104, D18), by instance.
     transport: BTreeMap<String, TransportWatch>,
     layout_rev: u64,
@@ -801,12 +831,16 @@ impl Router {
         };
         let mute_alarms = marks::MarksIo::open(&data_dir);
         let mute_guards = marks::MarksIo::open(&data_dir);
+        let scenes = scenes::ScenesIo::open(&data_dir);
         Self {
             subs,
             names: NameCheck::default(),
             clients: HashMap::new(),
             // The REVERB rule's writes name it in the event log (#130).
-            peers: HashMap::from([(reverb::REVERB_CLIENT, reverb::REVERB_PEER.to_string())]),
+            peers: HashMap::from([
+                (reverb::REVERB_CLIENT, reverb::REVERB_PEER.to_string()),
+                (scenes::SCENES_CLIENT, scenes::SCENES_PEER.to_string()),
+            ]),
             lan: HashMap::new(),
             roles: HashMap::new(),
             states: live
@@ -831,6 +865,7 @@ impl Router {
             colors,
             mute_alarms,
             mute_guards,
+            scenes,
             state,
             transport,
             layout_rev: 0,
@@ -911,6 +946,7 @@ impl Router {
                 self.colors_attach(&outbox);
                 self.marks_attach::<fohmixer_proto::mute_alarms::MuteAlarmsDoc>(&outbox);
                 self.marks_attach::<fohmixer_proto::mute_guards::MuteGuardsDoc>(&outbox);
+                self.scenes_attach(&outbox);
                 if self.layout_rev > 0 {
                     outbox.layout(self.layout_rev);
                 }
@@ -1088,6 +1124,7 @@ impl Router {
                 self.autotune_layout(autotune);
                 self.lufs_layout(lufs);
                 self.links_layout(fader_leaders);
+                self.scenes_watch();
                 let actions = self.unfold.set_strips(strips);
                 self.unfold_apply(actions);
                 self.names.set_targets(targets);
@@ -1127,6 +1164,7 @@ impl Router {
                                 songmap::SONGMAP_CLIENT,
                                 lufs::LEVELS_CLIENT,
                                 rec::REC_CLIENT,
+                                scenes::SCENES_CLIENT,
                             ];
                             (n.clone(), self.subs.subscriptions_besides(n, &own))
                         })
@@ -1144,6 +1182,7 @@ impl Router {
                                 songmap::SONGMAP_CLIENT,
                                 lufs::LEVELS_CLIENT,
                                 rec::REC_CLIENT,
+                                scenes::SCENES_CLIENT,
                             ];
                             (n.clone(), self.subs.listeners_besides(n, &own))
                         })
@@ -1163,6 +1202,7 @@ impl Router {
                     colors: self.colors_status(),
                     mute_alarms: self.marks_status::<fohmixer_proto::mute_alarms::MuteAlarmsDoc>(),
                     mute_guards: self.marks_status::<fohmixer_proto::mute_guards::MuteGuardsDoc>(),
+                    scenes: self.scenes_status(),
                     clients: self.clients.len(),
                     unresolved: self.names.unresolved(),
                 });
@@ -1252,6 +1292,24 @@ impl Router {
                 ms,
             } => self.presenter_switched(client, seq, (code, from), result, Some(ms)),
             RouterMsg::ReverbWake { generation } => self.reverb_wake(generation),
+            RouterMsg::ScenesWake { generation } => self.scenes_wake(generation),
+            RouterMsg::SetSceneRule {
+                client,
+                id,
+                strip,
+                scene,
+                rule,
+            } => self.scenes_set(client, id, &strip, &scene, rule),
+            RouterMsg::ScenesPoll => self.scenes_poll(),
+            RouterMsg::Scene {
+                name,
+                source,
+                peer,
+                reply,
+            } => {
+                let moved = self.scene_came(&name, &source, &peer);
+                let _ = reply.send(moved);
+            }
             RouterMsg::AutotuneFound { key, walk, outcome } => {
                 self.autotune_found(&key, walk, outcome);
             }
@@ -1446,6 +1504,7 @@ impl Router {
                 self.songmap_offline(instance);
                 self.lufs_offline(instance);
                 self.rec_offline(instance);
+                self.scenes_offline(instance);
                 self.broadcast_instance(instance);
             }
             LiveEvent::Busy {

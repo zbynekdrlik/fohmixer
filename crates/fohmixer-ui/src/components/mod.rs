@@ -7,11 +7,13 @@
 
 mod autotune_panel;
 pub mod buttons;
+mod channel_select;
 pub mod detail;
 mod detail_alarm;
 mod detail_color;
 mod detail_guard;
 mod detail_layouts;
+mod detail_scenes;
 pub mod eq;
 pub mod fader;
 mod fader_link;
@@ -23,6 +25,8 @@ pub mod pan;
 pub mod params;
 pub mod rail;
 pub mod rec;
+pub mod scene_news;
+mod sheet;
 pub mod stream_lufs;
 pub mod strip;
 

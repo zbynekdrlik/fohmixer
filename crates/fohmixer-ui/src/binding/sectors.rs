@@ -150,9 +150,10 @@ pub fn sectored_controls<'a>(
     out
 }
 
-/// One layout's checkbox in a strip's channel detail: ticked (`on`) when
-/// the layout holds the strip; `full` when it does not and the strip would
-/// not fit (FULL, disabled).
+/// One layout as a strip's channel detail sees it: `on` when the layout
+/// holds the strip (a row of LAYOUTS, #208); `full` when it does not and
+/// the strip would not fit (a FULL pick, disabled;
+/// `binding::detail_layouts`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TickRow {
     pub layout: String,
@@ -161,7 +162,7 @@ pub struct TickRow {
     pub full: bool,
 }
 
-/// A sector's checkboxes, under its name (`LU`, `LD`, `RU`, `RD`).
+/// A sector's layouts, under its name (`LU`, `LD`, `RU`, `RD`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TickGroup {
     pub sector: SectorId,
@@ -203,19 +204,9 @@ pub fn tick_rows(doc: &SectorsDoc, pool: &[Pooled], strip: &StripRef) -> Vec<Tic
         .collect()
 }
 
-/// The detail's ◀ ▶: the pool's strip before or after `now` (`forward`),
-/// the parameter faders skipped; none at either end, and none when `now`
-/// is no strip of the pool.
-pub fn pool_step(pool: &[Pooled], now: &StripRef, forward: bool) -> Option<Strip> {
-    let strips: Vec<&Pooled> = pool.iter().filter(|p| p.strip().is_some()).collect();
-    let at = strips.iter().position(|p| p.id == *now)?;
-    let next = if forward { at + 1 } else { at.checked_sub(1)? };
-    strips.get(next).and_then(|p| p.strip()).cloned()
-}
-
 /// Whether the hub's document places faders at all (the channel detail's
-/// LAYOUTS and its ◀ ▶ show only then; an empty document keeps today's
-/// detail).
+/// LAYOUTS and its channel selector, #205, show only then; an empty
+/// document keeps today's detail).
 pub fn sectors_live(doc: Option<&SectorsDoc>) -> bool {
     doc.is_some_and(SectorsDoc::is_on)
 }
@@ -234,7 +225,7 @@ pub enum DetailTicks {
     Off,
     /// The section's note: the strip has no identity to place.
     NoRef,
-    /// The strip's identity and every layout's checkbox, sector by sector.
+    /// The strip's identity and every layout, sector by sector.
     Rows {
         id: StripRef,
         groups: Vec<TickGroup>,
@@ -242,18 +233,6 @@ pub enum DetailTicks {
 }
 
 impl DetailTicks {
-    /// The checkboxes of `sector` (none outside `Rows`).
-    pub fn rows_of(&self, sector: SectorId) -> Vec<TickRow> {
-        match self {
-            DetailTicks::Rows { groups, .. } => groups
-                .iter()
-                .filter(|g| g.sector == sector)
-                .flat_map(|g| g.rows.iter().cloned())
-                .collect(),
-            _ => Vec::new(),
-        }
-    }
-
     /// The strip's identity, while it has rows.
     pub fn id(&self) -> Option<&StripRef> {
         match self {
@@ -276,72 +255,6 @@ pub fn detail_ticks(doc: Option<&SectorsDoc>, layout: &Layout, strip: &Strip) ->
         },
         None => DetailTicks::NoRef,
     }
-}
-
-impl TickRow {
-    /// What a tap on this checkbox asks: the strip in (`true`) or out; none
-    /// for a FULL one (disabled).
-    pub fn tap(&self) -> Option<bool> {
-        (!self.full).then_some(!self.on)
-    }
-}
-
-/// The detail's ◀ ▶: the pool's strips before and after the one shown.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Steps {
-    pub back: Option<Strip>,
-    pub next: Option<Strip>,
-}
-
-impl Steps {
-    /// The strip a step `forward` (else back) opens.
-    pub fn to(&self, forward: bool) -> Option<&Strip> {
-        if forward {
-            self.next.as_ref()
-        } else {
-            self.back.as_ref()
-        }
-    }
-}
-
-/// The `why` of a detail opened by its ◀ ▶ (the flight recorder's `open`).
-pub const STEP_WHY: &str = "step";
-
-/// What a step of the detail's ◀ ▶ opens: the strip, the open's `why`
-/// ([`STEP_WHY`]) and the keys the recorder names it by.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Stepped {
-    pub strip: Strip,
-    pub why: &'static str,
-    pub keys: Vec<String>,
-}
-
-/// The step `forward` (else back) from the detail's `steps`: none without
-/// steps or at that end.
-pub fn stepped(steps: Option<&Steps>, forward: bool) -> Option<Stepped> {
-    let strip = steps?.to(forward)?.clone();
-    let keys = super::detail_keys(&strip);
-    Some(Stepped {
-        strip,
-        why: STEP_WHY,
-        keys,
-    })
-}
-
-/// The detail's ◀ ▶ for `strip`: none while the document places no fader
-/// (the bar as today); either end none at the pool's ends and for a strip
-/// with no identity.
-pub fn detail_steps(doc: Option<&SectorsDoc>, layout: &Layout, strip: &Strip) -> Option<Steps> {
-    if !sectors_live(doc) {
-        return None;
-    }
-    let pool = pool(layout);
-    let id = detail_ref(strip);
-    let step = |forward: bool| id.as_ref().and_then(|id| pool_step(&pool, id, forward));
-    Some(Steps {
-        back: step(false),
-        next: step(true),
-    })
 }
 
 #[cfg(test)]
@@ -630,42 +543,6 @@ mod tests {
     }
 
     #[test]
-    fn the_pool_step_goes_to_the_next_strip_and_stops_at_the_ends() {
-        let layout = layout();
-        let pool = pool(&layout);
-        let label = |s: Option<Strip>| s.map(|s| s.binding.anchor.clone());
-        let named = |name: &str| {
-            Some(fohmixer_proto::layout::Anchor::Track {
-                name: name.to_string(),
-            })
-        };
-        assert_eq!(
-            label(pool_step(&pool, &band("Vox 1"), true)),
-            named("Vox 2")
-        );
-        assert_eq!(
-            label(pool_step(&pool, &band("Vox 2"), false)),
-            named("Vox 1")
-        );
-        // Podklady (a parameter fader) is skipped both ways.
-        assert_eq!(label(pool_step(&pool, &band("Vox 2"), true)), named("Bass"));
-        assert_eq!(
-            label(pool_step(&pool, &band("Bass"), false)),
-            named("Vox 2")
-        );
-        assert_eq!(
-            label(pool_step(&pool, &band("Bass"), true)),
-            named("Keys 1")
-        );
-        // The ends.
-        assert_eq!(pool_step(&pool, &band("Vox 1"), false), None);
-        assert_eq!(pool_step(&pool, &band("Keys 1"), true), None);
-        // No strip of the pool: nowhere to step from.
-        assert_eq!(pool_step(&pool, &band("Podklady"), true), None);
-        assert_eq!(pool_step(&pool, &band("Gone"), true), None);
-    }
-
-    #[test]
     fn a_sectors_instance_tag_is_the_set_its_shown_strips_share() {
         let mut layout = layout();
         layout.pages[1].rows[0].sections = serde_json::from_value(json!([group(
@@ -739,7 +616,6 @@ mod tests {
             detail_ticks(Some(&doc), &layout, &marker),
             DetailTicks::NoRef
         );
-        assert_eq!(DetailTicks::NoRef.rows_of(SectorId::Lu), Vec::new());
         assert_eq!(DetailTicks::NoRef.id(), None);
         // No document, or one that places nothing: no section at all.
         let vox = strip_of(strip("Vox 1"));
@@ -752,21 +628,13 @@ mod tests {
         // A strip with its identity: every layout, sector by sector.
         let ticks = detail_ticks(Some(&doc), &layout, &vox);
         assert_eq!(ticks.id(), Some(&band("Vox 1")));
-        let row = |layout: &str, title: &str, on: bool| TickRow {
-            layout: layout.to_string(),
-            title: title.to_string(),
-            on,
-            full: false,
-        };
-        assert_eq!(
-            ticks.rows_of(SectorId::Lu),
-            vec![row("lu-1", "VOX", true), row("lu-2", "KEYS", false)]
-        );
-        assert_eq!(
-            ticks.rows_of(SectorId::Ru),
-            vec![row("ru-1", "MAIN", false)]
-        );
-        assert_eq!(ticks.rows_of(SectorId::Ld), Vec::new());
+        // The block's rows and picks (#208, `binding::detail_layouts`).
+        let held = crate::binding::detail_layouts::held(&ticks);
+        let held: Vec<(&str, &str)> = held.iter().map(|r| (r.sector, r.title.as_str())).collect();
+        assert_eq!(held, vec![("LU", "VOX")]);
+        let picks = crate::binding::detail_layouts::picks(&ticks);
+        let picks: Vec<(&str, &str)> = picks.iter().map(|p| (p.sector, p.title.as_str())).collect();
+        assert_eq!(picks, vec![("LU", "KEYS"), ("RU", "MAIN")]);
         assert_eq!(
             ticks,
             DetailTicks::Rows {
@@ -777,80 +645,9 @@ mod tests {
     }
 
     #[test]
-    fn a_tick_asks_the_other_state_and_a_full_one_asks_nothing() {
-        let row = |on: bool, full: bool| TickRow {
-            layout: "lu-1".to_string(),
-            title: "VOX".to_string(),
-            on,
-            full,
-        };
-        assert_eq!(row(false, false).tap(), Some(true));
-        assert_eq!(row(true, false).tap(), Some(false));
-        assert_eq!(row(false, true).tap(), None);
-    }
-
-    #[test]
-    fn the_detail_steps_show_only_while_the_sectors_place_faders() {
-        let layout = layout();
-        let doc = sample();
-        let vox = strip_of(strip("Vox 1"));
-        assert_eq!(detail_steps(None, &layout, &vox), None);
-        assert_eq!(
-            detail_steps(Some(&SectorsDoc::empty()), &layout, &vox),
-            None
-        );
+    fn the_sectors_are_live_only_with_a_document_that_places_faders() {
         assert!(!sectors_live(None));
         assert!(!sectors_live(Some(&SectorsDoc::empty())));
-        assert!(sectors_live(Some(&doc)));
-        let named = |s: Option<&Strip>| s.map(|s| s.binding.anchor.clone());
-        let track = |name: &str| {
-            Some(fohmixer_proto::layout::Anchor::Track {
-                name: name.to_string(),
-            })
-        };
-        let steps = detail_steps(Some(&doc), &layout, &vox).expect("steps");
-        assert_eq!(steps.back, None);
-        assert_eq!(named(steps.to(false)), None);
-        assert_eq!(named(steps.to(true)), track("Vox 2"));
-        let bass = strip_of(strip("Bass"));
-        let steps = detail_steps(Some(&doc), &layout, &bass).expect("steps");
-        assert_eq!(named(steps.to(false)), track("Vox 2"));
-        assert_eq!(named(steps.to(true)), track("Keys 1"));
-        // A strip with no identity: nowhere to step from.
-        let mut marker = strip("x");
-        marker["binding"]["anchor"] = json!({"kind": "track_at", "index": 0});
-        marker["label"] = json!("#1");
-        let steps = detail_steps(Some(&doc), &layout, &strip_of(marker)).expect("steps");
-        assert_eq!(
-            steps,
-            Steps {
-                back: None,
-                next: None
-            }
-        );
-    }
-
-    #[test]
-    fn a_step_opens_the_pools_neighbour_recorded_as_step() {
-        let layout = layout();
-        let doc = sample();
-        let bass = strip_of(strip("Bass"));
-        let steps = detail_steps(Some(&doc), &layout, &bass);
-        let next = stepped(steps.as_ref(), true).expect("a next strip");
-        assert_eq!(Some(&next.strip), steps.as_ref().and_then(|s| s.to(true)));
-        assert_eq!(next.why, "step");
-        assert_eq!(STEP_WHY, "step");
-        assert_eq!(next.keys, super::super::detail_keys(&next.strip));
-        assert!(!next.keys.is_empty());
-        let back = stepped(steps.as_ref(), false).expect("a strip before");
-        assert_eq!(Some(&back.strip), steps.as_ref().and_then(|s| s.to(false)));
-        assert_ne!(back.strip, next.strip);
-        assert_eq!(back.keys, super::super::detail_keys(&back.strip));
-        // At an end, or with no steps: nothing.
-        let vox = strip_of(strip("Vox 1"));
-        let first = detail_steps(Some(&doc), &layout, &vox);
-        assert_eq!(stepped(first.as_ref(), false), None);
-        assert!(stepped(first.as_ref(), true).is_some());
-        assert_eq!(stepped(None, true), None);
+        assert!(sectors_live(Some(&sample())));
     }
 }

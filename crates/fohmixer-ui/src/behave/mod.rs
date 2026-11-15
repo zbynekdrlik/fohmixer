@@ -48,6 +48,8 @@ pub mod rail;
 pub mod rec;
 pub mod reverb;
 pub mod scale;
+pub mod scenes;
+pub mod sheet;
 pub mod solo;
 pub mod status;
 pub mod timing;

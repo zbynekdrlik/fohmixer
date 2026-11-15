@@ -15,6 +15,8 @@ use fohmixer_proto::layout::{
 };
 use fohmixer_proto::markers::has_placeholder_label;
 
+pub mod channels;
+pub mod detail_layouts;
 pub mod sectors;
 
 /// One subscription: an instance, a LOM target, a property and whether

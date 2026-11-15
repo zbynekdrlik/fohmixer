@@ -21,7 +21,10 @@
 //!
 //! REVERB (#130, D18, `router/reverb.rs`) writes through here too, as its
 //! own client (`REVERB_CLIENT`): every page's write of a key reaches the
-//! rule first (the hand), and the acks of the rule's writes go to it.
+//! rule first (the hand), and the acks of the rule's writes go to it. The
+//! scene rule (#207, `router/scenes.rs`) writes through here as its own
+//! client too (`SCENES_CLIENT`), and every other writer's key stops its
+//! glide.
 
 use std::collections::BTreeSet;
 
@@ -29,6 +32,7 @@ use fohmixer_proto::client::{AckItem, MAX_SETS, set_key};
 use serde_json::{Value, json};
 
 use super::reverb::REVERB_CLIENT;
+use super::scenes::SCENES_CLIENT;
 use super::{Router, RouterMsg};
 use crate::clock::one_way_delay;
 use crate::live::subs::ClientId;
@@ -162,6 +166,11 @@ impl Router {
         let key = set_key(&set.instance, &set.target, &set.prop);
         if set.client != REVERB_CLIENT {
             self.reverb_hand(&key, set.client);
+        }
+        // The scene rule's glides (#207): any other writer's set of a key
+        // under a glide stops it (the hand wins).
+        if set.client != SCENES_CLIENT {
+            self.scenes_hand(&key);
         }
         let now = self.now_ms();
         let want = Want {

@@ -33,6 +33,7 @@ use crate::auth::{Rejection, error_response};
 use crate::{Assets, Hub};
 
 pub mod role;
+pub mod scene;
 
 pub use role::{API_PATHS, RouteAccess, route_role};
 use role::{role_gate, status_for};
@@ -382,6 +383,11 @@ pub fn api_routes(hub: Hub) -> Router<Hub> {
         )
         .route("/api/eq/picture", get(get_eq_picture))
         .route("/api/songmap", get(get_songmap))
+        .route(
+            "/api/scene",
+            // 1 KiB, a literal for cargo-mutants (a name is 64 characters).
+            post(scene::post_scene).layer(DefaultBodyLimit::max(1_024)),
+        )
         .route("/ws", get(crate::ws::ws_handler))
         .route_layer(axum::middleware::from_fn_with_state(hub, role_gate))
 }

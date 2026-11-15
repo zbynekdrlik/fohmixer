@@ -64,12 +64,15 @@
     box-shadow: inset 0 -2px 0 var(--solo);
 }
 
-/* The channel detail's LAYOUTS (#148, mockup v1): the layouts this fader
-   shows in, a group per sector (LU, LD, RU, RD), a tick per layout; ticked:
-   the panel's lighter ground, the box filled in the accent; unticked: dim
-   text. A layout with no room cannot be ticked: FULL. Only while the hub's
-   document places faders (components/detail_layouts.rs); the right box
-   scrolls then rather than clip it. */
+/* The channel detail's LAYOUTS (#148; since #208 the owner's approved
+   mockup docs/mockups/scenes-v3.html, frame 1: a settings list shows only
+   what is set, plus one ADD): one compact row per layout that holds the
+   fader (its sector tag, its title, a ✕ that takes it out), the empty
+   line, and the dashed `+ ADD TO LAYOUT`, which opens a sheet over the
+   whole detail with the other layouts (a full one dimmed and disabled,
+   FULL). Only while the hub's document places faders
+   (components/detail_layouts.rs); the right box scrolls then rather than
+   clip it. */
 .detail-right:has(.lay-sec) {
     overflow-y: auto;
 }
@@ -77,139 +80,100 @@
 .lay-sec {
     display: grid;
     flex: none;
-    gap: 8px;
+    gap: 6px;
     margin-top: 6px;
     padding-top: 8px;
     border-top: 1px solid var(--line);
 }
 
-.lay-groups {
+.lay-rows {
     display: grid;
-    gap: 8px;
+    gap: 5px;
 }
 
-.lay-group {
-    display: grid;
-    gap: 4px;
-}
-
-.lay-where {
-    color: var(--muted);
-    font: 700 10px/12px var(--ui);
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+.lay-rows:empty {
+    display: none;
 }
 
 .lay-row {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 4px;
-}
-
-.tick-btn {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     min-width: 0;
-    min-height: 40px;
-    padding: 0 6px;
-    border: 1px solid var(--line);
+    min-height: 44px;
+    padding: 0 0 0 8px;
     border-radius: 8px;
-    background: #181826;
-    color: var(--muted);
-    font: 700 11px/14px var(--ui);
-    letter-spacing: 0.3px;
-    text-transform: uppercase;
+    background: #15151f;
+}
+
+/* The hub refused the ✕ (the link down): the refusal's flash. */
+.lay-row[data-refused="true"] {
+    box-shadow: inset 0 0 0 1px var(--mute);
+}
+
+.lay-where {
+    flex: none;
+    width: 22px;
+    color: var(--faint);
+    font: 600 11px/14px var(--display);
+    letter-spacing: 0.08em;
+}
+
+.lay-what {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text);
+    font: 600 16px/20px var(--display);
+    letter-spacing: 0.03em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.lay-remove {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--faint);
+    font: 600 16px/1 var(--ui);
     cursor: pointer;
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
 }
 
-.tick-btn .box {
-    display: grid;
-    flex: none;
-    place-items: center;
-    width: 16px;
-    height: 16px;
-    padding: 0;
-    border: 1.5px solid var(--faint);
-    border-radius: 4px;
-    background: none;
-    color: #07131a;
-    font: 800 12px/1 var(--ui);
-}
-
-.tick-btn .tname {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.tick-btn[aria-checked="true"] {
-    background: var(--panel-hi);
-    color: var(--text);
-}
-
-.tick-btn[aria-checked="true"] .box {
-    border-color: var(--accent);
-    background: var(--accent);
-}
-
-.tick-btn:disabled {
-    opacity: 0.4;
-    cursor: default;
-}
-
-/* The hub refused the tick (another page filled the layout, the link
-   down): the refusal's flash. */
-.tick-btn[data-refused="true"] {
-    border-color: var(--mute);
-}
-
-.tick-btn .tcol {
-    display: grid;
-    gap: 2px;
-    min-width: 0;
-}
-
-.tick-btn small {
-    overflow: hidden;
+.lay-empty {
     color: var(--faint);
-    font: 700 8px/10px var(--ui);
-    letter-spacing: 0.04em;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    font: 600 12px/16px var(--ui);
+}
+
+.lay-add {
+    min-height: 40px;
+    padding: 0;
+    border: 1px dashed var(--line);
+    border-radius: 8px;
+    background: none;
+    color: var(--accent);
+    font: 600 14px/18px var(--display);
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+}
+
+/* The hub refused the pick (another page filled the layout, the link
+   down): ADD flashes. */
+.lay-add[data-refused="true"] {
+    border-color: var(--mute);
 }
 
 .lay-note {
     color: var(--faint);
     font: 600 10.5px/14px var(--ui);
-}
-
-/* The detail bar's ◀ ▶: the pool's strip before and after (#148). */
-.detail-steps {
-    display: flex;
-    flex: none;
-    gap: 6px;
-    height: 100%;
-}
-
-.detail-step {
-    width: 48px;
-    height: 100%;
-    padding: 0;
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    background: var(--panel);
-    color: var(--text);
-    font: 700 16px/1 var(--ui);
-    cursor: pointer;
-    touch-action: manipulation;
-}
-
-.detail-step.end {
-    opacity: 0.35;
 }
 
 /* ARRANGE (#148, mockups v1 and v2), the edit mode: what talks to Live

@@ -448,6 +448,20 @@ pub type HubMuteAlarms = HubTold<fohmixer_proto::mute_alarms::MuteAlarmsDoc>;
 /// guarded), stale until the next connection's document.
 pub type HubMuteGuards = HubTold<fohmixer_proto::mute_guards::MuteGuardsDoc>;
 
+/// The scene rules as the hub last told them (#207, `ServerMsg::Scenes`):
+/// only a hub with an automation token sends them, so none means no SCENES
+/// section; kept through an outage, stale until the next connection's.
+pub type HubScenes = HubTold<fohmixer_proto::scenes::ScenesDoc>;
+
+/// The last scene the hub told (#207, `ServerMsg::Scene`): its name, when
+/// (the hub's UTC ms) and how many faders it moved.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneNews {
+    pub name: String,
+    pub at_ms: f64,
+    pub moved: u32,
+}
+
 /// One loudness point as the hub last sent it (#151): its reading in
 /// tenths and its problem, none of either until the hub says.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

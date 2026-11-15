@@ -19,6 +19,8 @@ fn every_api_route_has_a_role_decision() {
     for path in ["/api/markers/migration", "/api/eq/picture", "/api/songmap"] {
         assert_eq!(route_role(path), Some(RouteAccess::EngineerOnly), "{path}");
     }
+    // #207: the automation token, checked by the handler.
+    assert_eq!(route_role("/api/scene"), Some(RouteAccess::Automation));
 }
 
 #[test]
@@ -26,6 +28,7 @@ fn only_an_mbc_token_on_an_engineer_route_or_a_route_without_a_decision_is_refus
     for role in [None, Some(Role::Engineer), Some(Role::Mbc)] {
         assert!(!refused(Some(RouteAccess::Open), role), "{role:?}");
         assert!(!refused(Some(RouteAccess::AnyRole), role), "{role:?}");
+        assert!(!refused(Some(RouteAccess::Automation), role), "{role:?}");
         assert!(refused(None, role), "{role:?}");
     }
     assert!(refused(Some(RouteAccess::EngineerOnly), Some(Role::Mbc)));
@@ -44,6 +47,8 @@ fn the_mbc_status_holds_its_live_set_only() {
             {"instance": "band", "target": "t", "error": "x"},
             {"instance": "mbc", "target": "u", "error": "y"}]},
         "stage_aut": {"on": true, "writes": 3}, "clients": 4,
+        "scenes": {"on": true, "strips": 3, "unknown": 1, "known": 4, "last": "intro",
+                   "glides": 2, "writes": 9},
     }))
     .unwrap();
     for name in ["band", "mbc", "master"] {
@@ -67,4 +72,18 @@ fn the_mbc_status_holds_its_live_set_only() {
     assert!(!mbc.stage_aut.on);
     assert_eq!(mbc.stage_aut.writes, 0);
     assert_eq!(mbc.clients, 0);
+    // #207: whether the hub takes scenes, nothing of the FOH side's rules.
+    assert_eq!(
+        mbc.scenes,
+        fohmixer_proto::client::ScenesStatus {
+            on: true,
+            strips: 0,
+            unknown: 0,
+            error: None,
+            known: 0,
+            last: None,
+            glides: 0,
+            writes: 0,
+        }
+    );
 }

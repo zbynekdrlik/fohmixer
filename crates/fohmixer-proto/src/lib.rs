@@ -11,7 +11,8 @@
 //! scale and pan law ([`meter`], #151), and the strips' colours chosen on
 //! the tablet ([`colors`], #164), the faders marked for the mute alarm
 //! ([`mute_alarms`], #188) and for the hold-guarded mute ([`mute_guards`],
-//! #203), both sets of marks one logic ([`strip_marks`]).
+//! #203), both sets of marks one logic ([`strip_marks`]), and the scene
+//! automation's rules ([`scenes`], #207).
 
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +27,7 @@ pub mod mute_alarms;
 pub mod mute_guards;
 pub mod path;
 pub mod roles;
+pub mod scenes;
 pub mod sectors;
 pub mod songmap;
 pub mod strip_marks;

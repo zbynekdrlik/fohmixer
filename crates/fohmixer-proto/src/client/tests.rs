@@ -926,6 +926,16 @@ fn api_bodies_round_trip() {
             unknown: 1,
             error: None,
         },
+        scenes: ScenesStatus {
+            on: true,
+            strips: 2,
+            unknown: 0,
+            error: None,
+            known: 3,
+            last: Some("intro".into()),
+            glides: 1,
+            writes: 40,
+        },
         link: Some(LinkStatus {
             listen: "10.0.0.5:39201".into(),
             instance: "mbc".into(),
@@ -949,6 +959,20 @@ fn api_bodies_round_trip() {
             .unwrap()
             .mute_guards,
         MuteGuardsStatus::default()
+    );
+    // #207: the scenes, the defaults for an older hub.
+    assert_eq!(
+        json["scenes"],
+        json!({"on": true, "strips": 2, "unknown": 0, "known": 3, "last": "intro",
+               "glides": 1, "writes": 40})
+    );
+    let mut older_hub = json.clone();
+    older_hub.as_object_mut().unwrap().remove("scenes");
+    assert_eq!(
+        serde_json::from_value::<HubStatus>(older_hub)
+            .unwrap()
+            .scenes,
+        ScenesStatus::default()
     );
     assert_eq!(json["link"]["refusals"], 1);
     let back: HubStatus = serde_json::from_value(json.clone()).unwrap();
@@ -2073,6 +2097,7 @@ fn an_older_hubs_status_reads_with_default_sectors() {
         colors: ColorsStatus::default(),
         mute_alarms: MuteAlarmsStatus::default(),
         mute_guards: MuteGuardsStatus::default(),
+        scenes: ScenesStatus::default(),
         link: None,
     };
     let mut json = serde_json::to_value(&status).unwrap();
@@ -2347,4 +2372,68 @@ fn the_mute_guards_message_carries_the_document() {
         json!({"type": "mute_guards", "doc": {"mute_guards": {"band": ["Vox 1"]}}})
     );
     assert_eq!(serde_json::from_value::<ServerMsg>(json).unwrap(), msg);
+}
+
+#[test]
+fn a_set_scene_rule_reads_as_the_page_sends_it() {
+    let strip = StripRef {
+        instance: "band".into(),
+        label: "Vox 1".into(),
+    };
+    round_trip_client(
+        ClientMsg::SetSceneRule {
+            id: "s1".into(),
+            strip: strip.clone(),
+            scene: "intro".into(),
+            rule: Some(crate::scenes::SceneRule {
+                db: Some(-10.0),
+                mute: Some(crate::scenes::SceneMute::Unmute),
+                time_ms: 2000,
+            }),
+        },
+        json!({"type": "set_scene_rule", "id": "s1",
+               "strip": {"instance": "band", "label": "Vox 1"}, "scene": "intro",
+               "rule": {"db": -10.0, "mute": "unmute", "time_ms": 2000}}),
+    );
+    round_trip_client(
+        ClientMsg::SetSceneRule {
+            id: "s2".into(),
+            strip,
+            scene: "intro".into(),
+            rule: None,
+        },
+        json!({"type": "set_scene_rule", "id": "s2",
+               "strip": {"instance": "band", "label": "Vox 1"}, "scene": "intro",
+               "rule": null}),
+    );
+}
+
+#[test]
+fn the_scenes_and_scene_messages_carry_the_document_and_the_scene() {
+    let doc = crate::scenes::heard(&crate::scenes::ScenesDoc::empty(), "intro").unwrap();
+    let msg = ServerMsg::Scenes { doc };
+    let json = serde_json::to_value(&msg).unwrap();
+    assert_eq!(
+        json,
+        json!({"type": "scenes", "doc": {"known": ["intro"], "rules": {}}})
+    );
+    assert_eq!(serde_json::from_value::<ServerMsg>(json).unwrap(), msg);
+    let scene = ServerMsg::Scene {
+        name: "talk".into(),
+        at_ms: 1_700_000_000_000.0,
+        moved: 2,
+        live: true,
+    };
+    let json = serde_json::to_value(&scene).unwrap();
+    assert_eq!(
+        json,
+        json!({"type": "scene", "name": "talk", "at_ms": 1_700_000_000_000.0, "moved": 2, "live": true})
+    );
+    assert_eq!(serde_json::from_value::<ServerMsg>(json).unwrap(), scene);
+    // An older hub's message: not live.
+    let older = json!({"type": "scene", "name": "talk", "at_ms": 1.0, "moved": 0});
+    assert!(matches!(
+        serde_json::from_value::<ServerMsg>(older).unwrap(),
+        ServerMsg::Scene { live: false, .. }
+    ));
 }

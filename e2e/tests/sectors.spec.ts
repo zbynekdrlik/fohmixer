@@ -3,6 +3,7 @@ import { test, expect } from "./support/fixtures";
 import {
   LiveClient,
   centre,
+  clipped,
   columnHeadAndFoot,
   dispatchPointer,
   frames,
@@ -24,14 +25,31 @@ import {
   type StripRef,
   fixtureLayout,
 } from "./support/live";
+import {
+  DOC,
+  KEYS,
+  SECTORS,
+  VOCAL,
+  band,
+  master,
+  name,
+  openSectors,
+  sectorSteps,
+  sectorsPage,
+  slots,
+  slotsCss,
+  stripWidth,
+  stripsOf,
+  watchConsole,
+} from "./support/sectors";
 
 // The fader sectors (#148; spec docs/superpowers/specs/2026-10-28-sectors-design.md,
 // the approved looks docs/mockups/sectors-v1.html and sectors-v2.html): with
 // a sectors document that places faders, the FOH page is four sectors around
 // the column (lu ru over ld rd), each paging through its own layouts in the
-// column's LAYOUTS block; a strip's channel detail ticks the layouts it is
-// in, ARRANGE reorders a sector's strips and renames, adds and removes its
-// layouts (saved as one change); there is no undo (the owner's ruling of
+// column's LAYOUTS block; ARRANGE reorders a sector's strips and renames,
+// adds and removes its layouts (saved as one change); the channel detail's
+// LAYOUTS and channel selector are sector-detail.spec.ts (#208, #205); there is no undo (the owner's ruling of
 // 29.10.2026: the ↶ beside ARRANGE is gone, ARRANGE takes its row alone). The hub owns
 // sectors.json; the harness starts it empty (sectors off) and each test puts
 // the empty document back.
@@ -40,44 +58,6 @@ import {
 // fixtures/expected-layout.json), a frame strip's identity being its anchor's
 // name (fohmixer_proto::sectors::strip_ref). Band Hand2 #, B-Main repro # and
 // master A-Echo are wide (1.1 units); every other strip takes 1.
-
-const band = (label: string): StripRef => ({ instance: "band", label });
-const master = (label: string): StripRef => ({ instance: "master", label });
-
-const VOCAL = band("Vocal 1 repro#");
-const KEYS = band("Keys 1");
-
-/** Every sector placed; lu and ld with two layouts each. */
-const DOC: SectorsDoc = {
-  rev: 0,
-  sectors: {
-    lu: [
-      { id: "lu-1", title: "STAGE", strips: [VOCAL, KEYS] },
-      { id: "lu-2", title: "ALT", strips: [band("Hand2 #")] },
-    ],
-    ru: [{ id: "ru-1", title: "MAIN", strips: [band("B-Main repro #")] }],
-    ld: [
-      { id: "ld-1", title: "HANDS", strips: [master("Hand1 #"), master("Hand4 #")] },
-      { id: "ld-2", title: "FX", strips: [band("A-Reverb #")] },
-    ],
-    rd: [{ id: "rd-1", title: "MAIN", strips: [master("A-Echo")] }],
-  },
-};
-
-/** lu's STAGE at exactly 6 units (full: one more strip is refused) and master Hand2 # on the page in ld. */
-const FULL_DOC: SectorsDoc = {
-  rev: 0,
-  sectors: {
-    lu: [
-      {
-        id: "lu-1",
-        title: "STAGE",
-        strips: [VOCAL, KEYS, band("A-Reverb #"), master("A-Reverb #"), master("Hand1 #"), master("Hand4 #")],
-      },
-    ],
-    ld: [{ id: "ld-1", title: "HANDS", strips: [master("Hand2 #")] }],
-  },
-};
 
 /** ld mixes master and band strips; the other sectors hold one Live set each. */
 const MIXED_DOC: SectorsDoc = {
@@ -115,14 +95,6 @@ const GAP_DOC: SectorsDoc = {
 /** The note under ARRANGE while it is on (the approved mockup v2's). */
 const ARRANGE_NOTE = "drag · ✎ ✕ + · tap to save";
 
-/** The sectors page, as CSS (for a read in one task inside the page, #198). */
-const SECTORS = '[data-testid="page"][data-sectors="true"]';
-const sectorsPage = (page: Page) => page.locator(SECTORS);
-
-/** A sector's slots on the sectors page, in their order: as CSS, and as a locator. */
-const slotsCss = (sector: string) => `${SECTORS} .slot[data-sector="${sector}"]`;
-const slots = (page: Page, sector: string) => page.locator(slotsCss(sector));
-
 /** A sector's cells in their order: a strip as `<instance>|<track>`, an empty slot as `_`. */
 async function cellsOf(page: Page, sector: string): Promise<string[]> {
   return slots(page, sector).evaluateAll((all) =>
@@ -152,41 +124,6 @@ async function carry(page: Page, sector: string, strip: string, to: number) {
     { type: "pointermove", dx, dy: 0 },
     { type: "pointerup", dx, dy: 0 },
   ]);
-}
-
-/** A sector's strips as `<instance>|<track>`, in their order. */
-async function stripsOf(page: Page, sector: string): Promise<string[]> {
-  return slots(page, sector)
-    .locator('[data-testid="strip"]')
-    .evaluateAll((all) => all.map((s) => `${s.getAttribute("data-instance")}|${s.getAttribute("data-track")}`));
-}
-
-const name = (r: StripRef) => `${r.instance}|${r.label}`;
-
-/** Opens the surface and waits for the sectors page. */
-async function openSectors(page: Page) {
-  await openSurface(page);
-  await expect(sectorsPage(page)).toBeVisible();
-}
-
-/** The page's `--strip-w`. */
-function stripWidth(page: Page): Promise<string> {
-  return sectorsPage(page).evaluate((e) => (e as HTMLElement).style.getPropertyValue("--strip-w"));
-}
-
-/** A second page's console (the fixture's guard watches the test's own page only). */
-function watchConsole(page: Page): string[] {
-  const problems: string[] = [];
-  page.on("console", (msg) => {
-    if (msg.type() === "error" || msg.type() === "warning") problems.push(`[${msg.type()}] ${msg.text()}`);
-  });
-  page.on("pageerror", (error) => problems.push(`[pageerror] ${error.message}`));
-  return problems;
-}
-
-/** The hub's `sectors` records since `since` (the runner's clock), each `what`. */
-async function sectorSteps(since: number): Promise<string[]> {
-  return (await hubEvents()).filter((r: any) => r.ev === "sectors" && r.ts >= since).map((r: any) => r.what);
 }
 
 test.afterEach(async () => {
@@ -759,70 +696,6 @@ test.describe("The fader sectors", () => {
     });
   });
 
-  test("a tick in SEL shows the strip in that layout and a second page sees it", async ({ page, context }) => {
-    await setSectors(DOC);
-    const other = await context.newPage();
-    const otherConsole = watchConsole(other);
-    await openSectors(other);
-    await openSectors(page);
-    const since = Date.now();
-    const detail = await openDetail(page, "Hand4 #", "master");
-    const layouts = detail.getByTestId("detail-layouts");
-    await expect(layouts).toBeVisible();
-    // Every layout of every sector, Hand4 #'s own ticked.
-    const tick = (id: string) => layouts.locator(`[data-testid="sector-tick"][data-layout="${id}"]`);
-    await expect(layouts.getByTestId("sector-tick")).toHaveCount(6);
-    await expect(tick("ld-1")).toHaveAttribute("aria-checked", "true");
-    await expect(tick("lu-1")).toHaveAttribute("aria-checked", "false");
-    await expect(detail.getByTestId("detail-steps")).toBeVisible();
-
-    await tick("lu-1").click();
-    await expect(tick("lu-1")).toHaveAttribute("aria-checked", "true");
-    await expect(tick("lu-1")).toHaveAttribute("data-refused", "false");
-    // It joins STAGE at its end, on both pages; it stays in HANDS.
-    const stage = [name(VOCAL), name(KEYS), "master|Hand4 #"];
-    await expect.poll(() => stripsOf(page, "lu")).toEqual(stage);
-    await expect.poll(() => stripsOf(other, "lu")).toEqual(stage);
-    await expect.poll(() => stripsOf(other, "ld")).toEqual(["master|Hand1 #", "master|Hand4 #"]);
-    const steps = await until(() => sectorSteps(since), (s) => s.includes("tick"), "the hub's tick record");
-    expect(steps).toEqual(["tick"]);
-    const record = (await hubEvents()).find((r: any) => r.ev === "sectors" && r.ts >= since);
-    expect(record.layout).toBe("lu-1");
-    expect(record.strip).toEqual(master("Hand4 #"));
-    expect(record.on).toBe(true);
-
-    expect(otherConsole, "the second page's console").toEqual([]);
-    await other.close();
-  });
-
-  test("a full layout reads FULL and a tick is refused", async ({ page }) => {
-    await setSectors(FULL_DOC);
-    await openSectors(page);
-    await expect.poll(async () => (await stripsOf(page, "lu")).length).toBe(6);
-    const detail = await openDetail(page, "Hand2 #", "master");
-    const tick = detail.locator('[data-testid="sector-tick"][data-layout="lu-1"]');
-    await expect(tick).toHaveAttribute("aria-checked", "false");
-    await expect(tick).toBeDisabled();
-    await expect(tick).toContainText("FULL");
-    // Its own layout is not full for it: it is in it already.
-    const own = detail.locator('[data-testid="sector-tick"][data-layout="ld-1"]');
-    await expect(own).toHaveAttribute("aria-checked", "true");
-    await expect(own).toBeEnabled();
-
-    // The hub refuses the tick itself (another client asking past the page).
-    const live = await LiveClient.open();
-    try {
-      const before = (await hubStatus()).sectors.rev;
-      const answer = await live.ask({ type: "sector_tick", layout: "lu-1", strip: master("Hand2 #"), on: true });
-      expect(answer.type).toBe("error");
-      expect(answer.message).toBe("FULL");
-      expect((await hubStatus()).sectors.rev).toBe(before);
-      await expect.poll(async () => (await stripsOf(page, "lu")).length).toBe(6);
-    } finally {
-      live.close();
-    }
-  });
-
   test("ARRANGE reorders, saves, a second page sees it, and nothing reaches Live", async ({ page, context, browserName }) => {
     await setSectors(DOC);
     await openSectors(page);
@@ -923,38 +796,6 @@ test.describe("The fader sectors", () => {
     }
   });
 
-  test("the detail's ◀ ▶ step to the pool's neighbouring strips", async ({ page }) => {
-    await setSectors(DOC);
-    await openSectors(page);
-    const since = await page.evaluate(() => performance.timeOrigin + performance.now());
-    // The fixture's pool in document order: … band Keys 1, master Hand1 #
-    // (the FOH page's OTHERS sub-page), band B-Main repro # (a return) …
-    const detail = await openDetail(page, "Hand1 #", "master");
-    await expect(detail.getByTestId("detail-steps")).toBeVisible();
-    await detail.getByTestId("detail-next").click();
-    await expect(detail).toHaveAttribute("data-track", "B-Main repro #");
-    await expect(detail).toHaveAttribute("data-instance", "band");
-    await detail.getByTestId("detail-prev").click();
-    await expect(detail).toHaveAttribute("data-track", "Hand1 #");
-    await expect(detail).toHaveAttribute("data-instance", "master");
-    // Each step is an open recorded with why "step" and the strip's keys.
-    const steps = await until(
-      async () =>
-        pageEvents(await hubEvents())
-          .filter((e: any) => e.ev === "detail" && e.what === "open" && e.why === "step" && e.t >= since)
-          .sort((a: any, b: any) => a.t - b.t),
-      (all) => all.length >= 2,
-      "the two steps in the event log",
-      15_000,
-    );
-    expect(steps.length).toBe(2);
-    const names = (e: any, instance: string, track: string) =>
-      (e.keys as string[]).some((k) => k.startsWith(`${instance}|`) && k.includes(track));
-    expect(names(steps[0], "band", "B-Main repro #"), JSON.stringify(steps[0])).toBe(true);
-    expect(names(steps[1], "master", "Hand1 #"), JSON.stringify(steps[1])).toBe(true);
-    expect(typeof steps[0].pointer).toBe("number");
-  });
-
   test("the existing FOH page is unchanged with the empty document", async ({ page }) => {
     await setSectors(DOC);
     await openSectors(page);
@@ -970,9 +811,11 @@ test.describe("The fader sectors", () => {
     await expect(pager.locator('[data-testid="tab"][data-page="stage"]')).toBeVisible();
     await expect(pager.locator('[data-testid="tab"][data-page="others"]')).toBeVisible();
     await expect(page.locator('[data-testid="strip"][data-track="Vocal 1 repro#"][data-instance="band"]')).toBeVisible();
-    // The detail shows no LAYOUTS and no ◀ ▶.
+    // The detail shows no LAYOUTS and no channel selector: the name chip
+    // as before.
     const detail = await openDetail(page, "Vocal 1 repro#");
     await expect(detail.getByTestId("detail-layouts")).toHaveCount(0);
-    await expect(detail.getByTestId("detail-steps")).toHaveCount(0);
+    await expect(detail.getByTestId("chan-open")).toHaveCount(0);
+    await expect(detail.getByTestId("detail-name")).toHaveText("Vocal");
   });
 });
