@@ -287,11 +287,13 @@ fn probe_command(args: &[&str]) -> ExitCode {
     // #215: a step that never returns (a WGC probe of Notepad on the PC ran
     // past 120 s) ends the probe, named, never a silent hang.
     let bound = probe::deadline(&parsed);
+    let steps = probe::Steps::default();
+    let watched = steps.clone();
     std::thread::spawn(move || {
         std::thread::sleep(bound);
         eprintln!(
             "fohmixer-hub: eq-probe: {}",
-            probe::stuck_text(probe::step_now(), bound)
+            probe::stuck_text(watched.now(), bound)
         );
         std::process::exit(1);
     });
@@ -300,7 +302,7 @@ fn probe_command(args: &[&str]) -> ExitCode {
         return ExitCode::FAILURE;
     }
     let stdout = std::io::stdout();
-    match probe::run(backend.as_mut(), &parsed, &mut stdout.lock()) {
+    match probe::run_with(backend.as_mut(), &parsed, &mut stdout.lock(), steps) {
         Ok(()) => ExitCode::SUCCESS,
         Err(why) => {
             eprintln!("fohmixer-hub: eq-probe: {why}");

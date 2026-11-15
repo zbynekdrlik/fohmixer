@@ -393,22 +393,34 @@ pub fn due_at(n: u32) -> Duration {
     PERIOD * n
 }
 
-/// The step the probe is at (#215: a step that never returns is named by
-/// the CLI's watchdog, never a silent hang).
-static AT_STEP: std::sync::Mutex<&str> = std::sync::Mutex::new("start");
+/// The step a probe run is at (#215: a step that never returns is named
+/// by the CLI's watchdog, never a silent hang); a clone reads the same
+/// step from another thread.
+#[derive(Debug, Clone)]
+pub struct Steps(std::sync::Arc<std::sync::Mutex<&'static str>>);
 
-/// The probe is at `step` from now on.
-pub fn at_step(step: &'static str) {
-    *AT_STEP
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = step;
+impl Default for Steps {
+    fn default() -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new("start")))
+    }
 }
 
-/// The step the probe is at.
-pub fn step_now() -> &'static str {
-    *AT_STEP
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+impl Steps {
+    /// The run is at `step` from now on.
+    pub fn at(&self, step: &'static str) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = step;
+    }
+
+    /// The step the run is at.
+    pub fn now(&self) -> &'static str {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 /// The most a probe of `args` may run before the CLI's watchdog ends it
@@ -430,7 +442,7 @@ pub const DEADLINE_PAINT: Duration = Duration::from_secs(1);
 /// What the CLI's watchdog says when it ends a probe stuck at `step`.
 pub fn stuck_text(step: &str, after: Duration) -> String {
     format!(
-        "stuck at the step {step:?} after {} s: ended by its watchdog",
+        "stuck at the step {step:?} after {} s: ended by its watchdog, the window not handed back (check its place, its size and its z-order)",
         after.as_secs()
     )
 }
@@ -518,10 +530,12 @@ pub fn drag_points(from: (i32, i32), to: (i32, i32), steps: i32) -> Vec<(i32, i3
         .collect()
 }
 
-/// What the probe found, line by line, and where its pictures go.
+/// What the probe found, line by line, where its pictures go, and the
+/// step it is at (#215: the CLI's watchdog reads it).
 struct Report<'a> {
     out: &'a mut dyn Write,
     folder: Option<PathBuf>,
+    steps: Steps,
 }
 
 impl Report<'_> {
@@ -825,9 +839,9 @@ fn capture(
     rate_of: Rate,
     report: &mut Report<'_>,
 ) -> Result<(), String> {
-    at_step("first_frame");
+    report.steps.at("first_frame");
     first_frame(held)?;
-    at_step("grabs");
+    report.steps.at("grabs");
     let (mut grabs, mut encodes, mut sizes) = (Vec::new(), Vec::new(), Vec::new());
     let mut last: Option<Pixels> = None;
     let (mut same, mut skipped) = (0_u32, 0_u32);
@@ -875,7 +889,8 @@ fn capture(
     }
     let seconds = started.elapsed().as_secs_f64();
     if let Some(at) = rate_of.input {
-        let end = input_point(at, frames.saturating_sub(1));
+        // At the last point injected (its down's with no tick).
+        let end = held.contact.unwrap_or(at);
         held.touch(Phase::Up, end, "input")?;
     }
     let (grab_mean, grab_max) = stats(&grabs);
@@ -1338,14 +1353,26 @@ fn undo_taps(held: &mut Held<'_>, report: &mut Report<'_>) -> Result<(), String>
 /// `out`; the first step that failed, if one did. Once the window is taken,
 /// every way out ends a contact still down and hands the window back.
 pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Result<(), String> {
+    run_with(backend, args, out, Steps::default())
+}
+
+/// [`run`], its steps marked in `steps` as it goes (#215: the CLI's
+/// watchdog names the step a stuck probe is at).
+pub fn run_with(
+    backend: &mut dyn Backend,
+    args: &Args,
+    out: &mut dyn Write,
+    steps: Steps,
+) -> Result<(), String> {
     let mut report = Report {
         out,
         folder: args.out.clone(),
+        steps,
     };
     if let Some(folder) = args.out.as_deref() {
         std::fs::create_dir_all(folder).map_err(|e| format!("--out: {e}"))?;
     }
-    at_step("windows");
+    report.steps.at("windows");
     let windows = backend.windows_of(args.pid)?;
     report.line(&format!("windows={}", windows.len()))?;
     let window = *windows
@@ -1353,11 +1380,11 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
         .ok_or(format!("no visible window of process {}", args.pid))?;
     // #215: what decides whether the capture can start, before the take
     // starts it (the PC's WGC refused Live's editor).
-    at_step("capture_diag");
+    report.steps.at("capture_diag");
     if let Some(diag) = backend.capture_diag(window) {
         report.line(&format!("capture_diag={}", diag.text()))?;
     }
-    at_step("take");
+    report.steps.at("take");
     let taken = backend.take(window)?;
     let mut held = Held {
         backend,
@@ -1366,7 +1393,7 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
         released: false,
         changed: false,
     };
-    at_step("on_top");
+    report.steps.at("on_top");
     on_top(&mut held)?;
     report.line(&format!(
         "picture={}x{} child={} was_topmost={}",
@@ -1377,7 +1404,7 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
     ))?;
     // A capture that did not start ends the probe (#215: it went on and
     // its grabs failed or it waited), its window handed back.
-    at_step("capture_start");
+    report.steps.at("capture_start");
     held.backend
         .capture_started(&held.taken)
         .map_err(|why| format!("capture: start: {why}"))?;
@@ -1420,7 +1447,7 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
         scaled(args.band, original, now),
         scaled(args.to, original, now),
     );
-    at_step("capture");
+    report.steps.at("capture");
     capture(
         &mut held,
         args.frames,
@@ -1433,13 +1460,13 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
         &mut report,
     )?;
     if args.capture_only {
-        at_step("release");
+        report.steps.at("release");
         held.release();
         report.line("release=ok")?;
-        at_step("done");
+        report.steps.at("done");
         return Ok(());
     }
-    at_step("gestures");
+    report.steps.at("gestures");
     double_tap(&mut held, band, "band")?;
     report.line(&format!("band=ok at={},{}", band.0, band.1))?;
     settle(&mut held, "after-band.jpg", &mut report)?;
@@ -1468,7 +1495,7 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
     // The guard, as the hub's: the picture placed at the size the inert
     // spot is known at, whatever size it has, each placement seen to land
     // (#74 review, round 2); not so, no tap.
-    at_step("guard");
+    report.steps.at("guard");
     let back = held.known().map_err(|why| format!("restore: {why}"))?;
     report.line(&format!("restore=ok {}", back.figures()))?;
     let spot = args.inert.unwrap_or_else(|| inert_spot(KNOWN_SIZE.0));
@@ -1481,14 +1508,14 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
         GUARD_TAP.as_millis()
     ))?;
     settle(&mut held, "after-guard.jpg", &mut report)?;
-    at_step("release");
+    report.steps.at("release");
     held.release();
     report.line("release=ok")?;
     if args.close {
         held.backend.close_window(&held.taken);
         report.line("close=sent")?;
     }
-    at_step("done");
+    report.steps.at("done");
     Ok(())
 }
 

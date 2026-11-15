@@ -231,11 +231,13 @@ impl CaptureDiag {
 }
 
 /// A thread's apartment as the diagnostic line writes it:
-/// `CoGetApartmentType`'s `APTTYPE` (0 STA, 1 MTA, 2 NA, 3 main STA), else
-/// its number.
-pub fn apartment_name(apttype: i32) -> String {
+/// `CoGetApartmentType`'s `APTTYPE` (0 STA, 1 MTA, `mta_implicit` when
+/// its qualifier says the thread only joined the MTA implicitly, 2 NA, 3
+/// main STA), else its number.
+pub fn apartment_name(apttype: i32, implicit: bool) -> String {
     match apttype {
         0 => "sta".to_string(),
+        1 if implicit => "mta_implicit".to_string(),
         1 => "mta".to_string(),
         2 => "na".to_string(),
         3 => "main_sta".to_string(),
@@ -263,12 +265,14 @@ mod tests {
 
     #[test]
     fn a_threads_apartment_and_dpi_awareness_have_their_names() {
-        assert_eq!(apartment_name(0), "sta");
-        assert_eq!(apartment_name(1), "mta");
-        assert_eq!(apartment_name(2), "na");
-        assert_eq!(apartment_name(3), "main_sta");
-        assert_eq!(apartment_name(-1), "apttype_-1");
-        assert_eq!(apartment_name(4), "apttype_4");
+        assert_eq!(apartment_name(0, false), "sta");
+        assert_eq!(apartment_name(0, true), "sta");
+        assert_eq!(apartment_name(1, false), "mta");
+        assert_eq!(apartment_name(1, true), "mta_implicit");
+        assert_eq!(apartment_name(2, false), "na");
+        assert_eq!(apartment_name(3, false), "main_sta");
+        assert_eq!(apartment_name(-1, false), "apttype_-1");
+        assert_eq!(apartment_name(4, true), "apttype_4");
         assert_eq!(awareness_name(0, false), "unaware");
         assert_eq!(awareness_name(0, true), "unaware");
         assert_eq!(awareness_name(1, false), "system");

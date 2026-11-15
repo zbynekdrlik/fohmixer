@@ -63,7 +63,9 @@ use windows::Win32::Graphics::Dwm::{
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
-use windows::Win32::System::Com::{APTTYPE, APTTYPEQUALIFIER, CoGetApartmentType, IAgileObject};
+use windows::Win32::System::Com::{
+    APTTYPE, APTTYPEQUALIFIER, APTTYPEQUALIFIER_IMPLICIT_MTA, CoGetApartmentType, IAgileObject,
+};
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
@@ -372,7 +374,7 @@ pub fn diag(window: HWND) -> CaptureDiag {
     let (mut apttype, mut qualifier) = (APTTYPE(0), APTTYPEQUALIFIER(0));
     // SAFETY: reads this thread's apartment into locals.
     let apartment = match unsafe { CoGetApartmentType(&mut apttype, &mut qualifier) } {
-        Ok(()) => apartment_name(apttype.0),
+        Ok(()) => apartment_name(apttype.0, qualifier == APTTYPEQUALIFIER_IMPLICIT_MTA),
         Err(e) if e.code() == CO_E_NOTINITIALIZED => "none".to_string(),
         Err(e) => format!("error_{:08x}", e.code().0),
     };

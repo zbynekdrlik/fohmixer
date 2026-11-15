@@ -1409,6 +1409,7 @@ fn an_undo_tap_that_fails_fails_the_probe_and_hands_the_window_back() {
         let mut report = Report {
             out: &mut out,
             folder: None,
+            steps: Steps::default(),
         };
         handle.refuse(true);
         assert_eq!(
@@ -1709,6 +1710,19 @@ fn an_input_keeps_a_contact_moving_through_the_capture_and_lifts_it_at_its_end()
             op("release", "", -1, -1),
         ]
     );
+    // No tick: the contact lifts where it went down.
+    let (mut sim, handle, _) = one_window(42);
+    probe.frames = 0;
+    run(&mut sim, &probe, &mut Vec::new()).unwrap();
+    assert_eq!(
+        ops(&handle),
+        vec![
+            op("take", "", -1, -1),
+            op("touch", "down", 100, 200),
+            op("touch", "up", 100, 200),
+            op("release", "", -1, -1),
+        ]
+    );
 }
 
 #[test]
@@ -1773,14 +1787,26 @@ fn the_watchdogs_bound_grows_with_the_frames_and_the_paint_trials_and_names_the_
     assert_eq!(deadline(&probe), Duration::from_secs(170));
     assert_eq!(
         stuck_text("first_frame", Duration::from_millis(125_900)),
-        "stuck at the step \"first_frame\" after 125 s: ended by its watchdog"
+        "stuck at the step \"first_frame\" after 125 s: ended by its watchdog, the window not handed back (check its place, its size and its z-order)"
     );
-    // A probe run marks its steps; it ends at `done`.
+    // A probe run marks its steps where the watchdog reads them: a clone
+    // reads the same step; it ends at `done`.
+    let steps = Steps::default();
+    let watched = steps.clone();
+    assert_eq!(watched.now(), "start");
+    steps.at("take");
+    assert_eq!(watched.now(), "take");
     let (mut sim, _handle, _) = one_window(42);
     let mut only = args(42);
     only.frames = 1;
     only.capture_only = true;
-    at_step("start");
-    run(&mut sim, &only, &mut Vec::new()).unwrap();
-    assert_eq!(step_now(), "done");
+    run_with(&mut sim, &only, &mut Vec::new(), steps).unwrap();
+    assert_eq!(watched.now(), "done");
+    // A failed step leaves the step it failed at.
+    let (mut sim, handle, _) = one_window(42);
+    handle.capture_fails(Some("refused"));
+    let steps = Steps::default();
+    let watched = steps.clone();
+    assert!(run_with(&mut sim, &only, &mut Vec::new(), steps).is_err());
+    assert_eq!(watched.now(), "capture_start");
 }

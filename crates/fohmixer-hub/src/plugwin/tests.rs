@@ -1545,6 +1545,12 @@ fn a_backend_that_cannot_tell_a_change_is_grabbed_every_40_ms_on_its_own_clock()
     }));
     let taken = worker.editors[&1].taken.clone();
     assert_eq!(worker.backend.capture_counts(&taken), None);
+    // Nor any facts or failed start of a capture (#215: the trait's
+    // defaults; the probe prints no `capture_diag=` line for it).
+    handle.capture_diag(Some(crate::plugwin::capture::CaptureDiag::default()));
+    handle.capture_fails(Some("refused"));
+    assert_eq!(worker.backend.capture_diag(taken.window), None);
+    assert_eq!(worker.backend.capture_started(&taken), Ok(()));
 }
 
 #[test]
