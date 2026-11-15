@@ -283,15 +283,15 @@ fn the_lines_and_records_name_the_change() {
     };
     assert_eq!(
         link_line(&up_again, peer),
-        "scenes: Companion at 10.0.0.7:8000 answers again after 1500 ms, 3 failed reads"
+        "scenes: Companion's variable at 10.0.0.7:8000 is read again after 1500 ms, 3 failed reads"
     );
     assert_eq!(
         link_line(&first, peer),
-        "scenes: Companion at 10.0.0.7:8000 answers, 0 failed reads before"
+        "scenes: Companion's variable at 10.0.0.7:8000 is read, 0 failed reads before"
     );
     assert_eq!(
         link_line(&down, peer),
-        "scenes: Companion at 10.0.0.7:8000 is DOWN after 2 failed reads: refused"
+        "scenes: Companion's variable at 10.0.0.7:8000 is NOT READ after 2 failed reads: refused"
     );
     assert_eq!(
         link_fields(&up_again, peer),
@@ -364,4 +364,14 @@ fn an_outcome_is_recorded_rationed_and_its_scene_handed_on() {
         .find(|r| r.get("refused").is_some())
         .expect("a refusal record");
     assert_eq!(line["skipped"], 2);
+}
+
+#[test]
+fn a_source_whose_poll_could_not_start_says_why() {
+    let source = SceneSource::new("http://c/x".into(), "c:8000".into());
+    source.no_client("no HTTP client: roots".into());
+    let status = source.status();
+    assert_eq!(status.ok, None);
+    assert_eq!(status.error.as_deref(), Some("no HTTP client: roots"));
+    assert!(status.on);
 }

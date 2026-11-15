@@ -400,7 +400,6 @@ impl HubInner {
         answer.await.unwrap_or(Err(router::SongMapMissing::NotRead))
     }
 
-    /// `GET /api/status`.
     /// The router's `scenes` with Companion's poll (#207).
     fn scenes_status(
         &self,
@@ -412,6 +411,7 @@ impl HubInner {
         scenes
     }
 
+    /// `GET /api/status`.
     pub async fn status(&self) -> HubStatus {
         let now = auth::now_secs() as i64;
         let https = self.https.get().map(Arc::as_ref);
@@ -1148,7 +1148,13 @@ where
     }
     start_link(&hub, ableset::link::PERIOD);
     start_presenter(&hub);
-    start_scene_source(&hub);
+    // The scene read from Companion (#207, `[scenes]`): only the served hub
+    // reads it.
+    if let Some(source) = &hub.scene_source
+        && let Some(task) = scene_source::spawn(source, hub.router.clone(), hub.events.clone())
+    {
+        hub.add_task(task);
+    }
     tracing::info!(
         addr = %local,
         version = %fohmixer_proto::full_version(),
@@ -1261,42 +1267,6 @@ fn start_presenter(hub: &Hub) {
         });
         hub.add_task(tokio::spawn(switches));
     }
-}
-
-/// The scene read from Companion (#207): with `[scenes]`, the served hub
-/// reads the variable (`scene_source::follow`) and hands each scene to the
-/// router as `POST /api/scene` does. A hub only built (`Hub::start`, the
-/// router tests) never reads Companion by itself.
-fn start_scene_source(hub: &Hub) {
-    let Some(source) = &hub.scene_source else {
-        return;
-    };
-    let client = match http_client::HttpClient::new() {
-        Ok(client) => client.with_timeout(scene_source::TIMEOUT),
-        Err(e) => {
-            tracing::warn!("scenes: no HTTP client, Companion is not read: {e:#}");
-            return;
-        }
-    };
-    let router = hub.router.clone();
-    let peer = source.peer.clone();
-    let follow = scene_source::follow(
-        Arc::clone(source),
-        client,
-        hub.events.clone(),
-        move |name| {
-            // The router answers how many faders moved; its own record and
-            // line say so, nothing waits for it here.
-            let (reply, _) = oneshot::channel();
-            let _ = router.send(RouterMsg::Scene {
-                name,
-                source: scene_source::SOURCE.to_string(),
-                peer: peer.clone(),
-                reply,
-            });
-        },
-    );
-    hub.add_task(tokio::spawn(follow));
 }
 
 /// The warning when the HTTPS listener had not ended within the backstop

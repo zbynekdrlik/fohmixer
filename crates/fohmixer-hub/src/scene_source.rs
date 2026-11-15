@@ -15,8 +15,15 @@
 //! (one lost read on a kept-alive connection is no outage), which forgets
 //! the known value; it is up again at its first answer. One warn line and
 //! one `scene_source` record per outage, one info line and record when it
-//! answers again (also at its first answer after the start).
-//! `/api/status` `scenes.companion` is [`Follow::status`].
+//! answers again (also at its first answer after the start). A read that
+//! gives no value (Companion down, a timeout, a misspelled variable's 404)
+//! is a failed read: the lines name the variable's read, not Companion's
+//! health. `/api/status` `scenes.companion` is [`Follow::status`].
+//!
+//! The client keeps its connection (no `pool_max_idle_per_host(0)` as
+//! AbleSet's proxy): a read every 500 ms never lets it idle near Node's
+//! 5 s keep-alive, and one read lost on a closing connection is no outage
+//! ([`DOWN_AFTER`]).
 
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -24,12 +31,15 @@ use std::time::{Duration, Instant};
 use fohmixer_proto::client::SceneSourceStatus;
 use fohmixer_proto::scenes::scene_name;
 use serde_json::{Value, json};
+use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
 use crate::ableset::link::{Link as Reach, Note, link_step};
 use crate::events::EventLog;
 use crate::http_client::{HttpClient, Reply};
 use crate::ration::{self, Ration};
+use crate::router::RouterMsg;
 
 /// How often the variable is read.
 pub const POLL: Duration = Duration::from_millis(500);
@@ -174,14 +184,16 @@ pub fn link_line(link: &Link, peer: &str) -> String {
             failures,
             down_ms: Some(ms),
         } => format!(
-            "scenes: Companion at {peer} answers again after {ms} ms, {failures} failed reads"
+            "scenes: Companion's variable at {peer} is read again after {ms} ms, {failures} failed reads"
         ),
         Link::Up { failures, .. } => {
-            format!("scenes: Companion at {peer} answers, {failures} failed reads before")
+            format!(
+                "scenes: Companion's variable at {peer} is read, {failures} failed reads before"
+            )
         }
-        Link::Down { error, failures } => {
-            format!("scenes: Companion at {peer} is DOWN after {failures} failed reads: {error}")
-        }
+        Link::Down { error, failures } => format!(
+            "scenes: Companion's variable at {peer} is NOT READ after {failures} failed reads: {error}"
+        ),
     }
 }
 
@@ -231,6 +243,14 @@ impl SceneSource {
             Ok(value) => follow.value(&value, now_ms),
             Err(error) => follow.failed(&error, now_ms),
         }
+    }
+
+    /// The poll could not start (`why`): the status says so.
+    pub fn no_client(&self, why: String) {
+        self.follow
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .error = Some(why);
     }
 
     /// `/api/status` `scenes.companion`.
@@ -302,6 +322,42 @@ pub async fn follow(
         let outcome = source.heard(read, now_ms());
         act(&source, &events, &mut refusals, outcome, &scene);
     }
+}
+
+/// Starts the poll of `source` (the served hub, `serve_bounded`): each
+/// scene goes to `router` as `POST /api/scene`'s does (the answer, how many
+/// faders moved, is the router's own `scene` record; nothing waits for it).
+/// None, a warn line and the status's `error` when no HTTP client can be
+/// made.
+pub fn spawn(
+    source: &Arc<SceneSource>,
+    router: mpsc::UnboundedSender<RouterMsg>,
+    events: EventLog,
+) -> Option<JoinHandle<()>> {
+    let client = match HttpClient::new() {
+        Ok(client) => client.with_timeout(TIMEOUT),
+        Err(e) => {
+            let why = format!("no HTTP client: {e:#}");
+            tracing::warn!("scenes: {why}; Companion is not read");
+            source.no_client(why);
+            return None;
+        }
+    };
+    let peer = source.peer.clone();
+    Some(tokio::spawn(follow(
+        Arc::clone(source),
+        client,
+        events,
+        move |name| {
+            let (reply, _) = oneshot::channel();
+            let _ = router.send(RouterMsg::Scene {
+                name,
+                source: SOURCE.to_string(),
+                peer: peer.clone(),
+                reply,
+            });
+        },
+    )))
 }
 
 #[cfg(test)]

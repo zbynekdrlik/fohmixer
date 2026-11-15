@@ -1,8 +1,10 @@
 //! The hub's own HTTP client (#17): the Access signing keys, the Cloudflare
 //! DNS API and cloudflared's readiness. HTTPS checks the server against the
 //! platform's roots (the Windows certificate store on the PC); plain http is
-//! only ever used for a loopback URL (`config::url_allowed` decides what a
-//! config may name; the Cloudflare API is a constant https URL). Every
+//! used for a loopback URL (`config::url_allowed` decides what a config may
+//! name; the Cloudflare API is a constant https URL) and for one LAN read:
+//! the scene poll's GET of Companion's variable (#207, `scene_source`, on
+//! `[companion]`'s host, no token sent). Every
 //! exchange is bounded in time and in size, and an error names the URL,
 //! never a token.
 

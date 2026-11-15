@@ -112,7 +112,7 @@ fn companions_variable_moves_faders_only_when_it_changes() {
             Some(SceneRule {
                 db: Some(-10.0),
                 mute: None,
-                time_ms: 1000,
+                time_ms: 300,
             }),
         )
         .await;
@@ -147,7 +147,7 @@ fn companions_variable_moves_faders_only_when_it_changes() {
             Some(SceneRule {
                 db: Some(0.0),
                 mute: None,
-                time_ms: 500,
+                time_ms: 300,
             }),
         )
         .await;
@@ -159,7 +159,8 @@ fn companions_variable_moves_faders_only_when_it_changes() {
             .await;
         assert!(status.scenes.companion.error.is_some());
         assert_eq!(status.scenes.companion.last.as_deref(), Some("intro"));
-        tokio::time::sleep(Duration::from_millis(1200)).await;
+        // Two more failed reads: still one record for the outage.
+        tokio::time::sleep(Duration::from_millis(1000)).await;
         let records = hub.events();
         let down: Vec<Value> = sources(&records)
             .into_iter()
