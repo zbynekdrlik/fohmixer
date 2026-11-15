@@ -20,6 +20,7 @@ pub mod client;
 pub mod colors;
 pub mod eq;
 pub mod layout;
+pub mod listen;
 pub mod lufs;
 pub mod markers;
 pub mod meter;

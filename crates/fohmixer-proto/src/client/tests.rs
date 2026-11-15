@@ -954,9 +954,45 @@ fn api_bodies_round_trip() {
             lufs_dropped: 0,
             error: None,
         }),
+        listen: crate::listen::ListenStatus {
+            addr: Some("127.0.0.1:39111".into()),
+            error: None,
+            devices: vec![crate::listen::ListenDeviceStatus {
+                device: 9,
+                version: "v1.50.0".into(),
+                track: "Vox 1".into(),
+                set: "FOH Band".into(),
+                sample_rate: 48_000,
+                sending: true,
+                age_ms: 120,
+            }],
+            target: Some(crate::listen::ListenTargetStatus {
+                instance: "band".into(),
+                set: "FOH Band".into(),
+                track: "Vox 1".into(),
+                listeners: 2,
+                device: Some(9),
+                problem: None,
+            }),
+            connections: 1,
+            frames: 50,
+            packets: 50,
+            selects: 3,
+            refused: [("not_selected".to_string(), 4)].into(),
+        },
     };
     let json = serde_json::to_value(&status).unwrap();
     assert_eq!(json["link"]["listen"], "10.0.0.5:39201");
+    // #210: Listen, the defaults for an older hub.
+    assert_eq!(json["listen"]["target"]["device"], 9);
+    assert_eq!(json["listen"]["devices"][0]["track"], "Vox 1");
+    assert_eq!(json["listen"]["refused"]["not_selected"], 4);
+    let mut older = json.clone();
+    older.as_object_mut().unwrap().remove("listen");
+    assert_eq!(
+        serde_json::from_value::<HubStatus>(older).unwrap().listen,
+        crate::listen::ListenStatus::default()
+    );
     // #203: the guards beside the alarms, the defaults for an older hub.
     assert_eq!(json["mute_guards"], json!({"strips": 3, "unknown": 1}));
     let mut older_hub = json.clone();
@@ -2129,6 +2165,7 @@ fn an_older_hubs_status_reads_with_default_sectors() {
         mute_guards: MuteGuardsStatus::default(),
         scenes: ScenesStatus::default(),
         link: None,
+        listen: crate::listen::ListenStatus::default(),
     };
     let mut json = serde_json::to_value(&status).unwrap();
     assert!(json.get("link").is_none(), "no [link]: no field");
