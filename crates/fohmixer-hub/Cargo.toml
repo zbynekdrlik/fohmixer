@@ -74,8 +74,25 @@ jpeg-encoder = { version = "0.7", features = ["simd"] }
 # backend (#71 PR E): the windows, their capture (GDI), touch injection and
 # the worker thread's DPI awareness
 [target.'cfg(windows)'.dependencies]
+# #215: Windows Graphics Capture of a Pro-Q 4 editor (`plugwin/wgc.rs`):
+# Foundation, Graphics_* and the WinRT/Direct3D11/DXGI/DWM/Performance
+# features
 windows = { version = "0.61", features = [
+    "Foundation",
+    "Graphics",
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
     "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_System_Performance",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
     "Win32_Security_Cryptography",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_Graphics_Gdi",

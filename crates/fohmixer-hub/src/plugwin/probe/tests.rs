@@ -1,6 +1,7 @@
 use serde_json::Value;
 
 use super::*;
+use crate::plugwin::capture::{Capture, CaptureCounts};
 use crate::plugwin::sim::{REFUSED, REFUSED_QUIET, SimHandle};
 use crate::plugwin::{CAPTURE_MS, KEEPALIVE_MS, NOT_BACK, WindowId};
 
@@ -19,6 +20,8 @@ fn args(pid: u32) -> Args {
         paint: 0,
         hold: false,
         undo: false,
+        capture: Capture::Wgc,
+        capture_only: false,
     }
 }
 
@@ -62,6 +65,8 @@ fn the_arguments_have_their_defaults_and_every_flag_is_read() {
             paint: 20,
             hold: true,
             undo: false,
+            capture: Capture::Wgc,
+            capture_only: false,
         })
     );
     // `--undo` (#71 PR P): alone, or with no paint trial; never with
@@ -1411,4 +1416,71 @@ fn an_undo_tap_that_fails_fails_the_probe_and_hands_the_window_back() {
         ops(&handle),
         vec![op("take", "", -1, -1), op("release", "", -1, -1)]
     );
+}
+
+#[test]
+fn the_capture_is_wgc_unless_asked_and_capture_only_runs_no_gesture() {
+    // #215: `--capture wgc|blt` and `--capture-only`.
+    assert_eq!(parse(&["--pid", "1"]).unwrap().capture, Capture::Wgc);
+    let blt = parse(&["--pid", "1", "--capture", "blt"]).unwrap();
+    assert_eq!((blt.capture, blt.capture_only), (Capture::Blt, false));
+    let only = parse(&["--capture-only", "--pid", "1", "--capture", "wgc"]).unwrap();
+    assert_eq!((only.capture, only.capture_only), (Capture::Wgc, true));
+    assert_eq!(
+        parse(&["--pid", "1", "--capture", "gdi"]),
+        Err("--capture \"gdi\"".to_string())
+    );
+    assert_eq!(
+        parse(&["--pid", "1", "--capture"]),
+        Err("--capture needs a value".to_string())
+    );
+    let alone = |flags: &[&str]| {
+        let mut all = vec!["--pid", "1", "--capture-only"];
+        all.extend_from_slice(flags);
+        parse(&all)
+    };
+    for flags in [
+        &["--min-probe"][..],
+        &["--hold"],
+        &["--paint", "1"],
+        &["--undo"],
+        &["--close"],
+    ] {
+        assert_eq!(alone(flags), Err(CAPTURE_ALONE.to_string()), "{flags:?}");
+    }
+    assert!(alone(&["--size", "800x600", "--frames", "2"]).is_ok());
+    assert_eq!(
+        arrived_text(Some(CaptureCounts {
+            arrived: 17,
+            lag_ms_max: 3.25
+        })),
+        "arrived=17 lag_ms_max=3.2"
+    );
+    assert_eq!(arrived_text(None), "arrived=- lag_ms_max=-");
+}
+
+#[test]
+fn a_capture_only_probe_takes_grabs_and_releases_nothing_else() {
+    let (mut sim, handle, window) = one_window(42);
+    let mut probe = args(42);
+    probe.frames = 3;
+    probe.capture_only = true;
+    probe.capture = Capture::Blt;
+    let mut out = Vec::new();
+    run(&mut sim, &probe, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 7, "{text}");
+    assert_eq!(lines[2], "frames=3 sent=1 same=2");
+    assert!(
+        lines[5].starts_with("fps=") && lines[5].ends_with(" capture=blt arrived=- lag_ms_max=-"),
+        "{text}"
+    );
+    assert_eq!(lines[6], "release=ok");
+    // Taken and released: nothing touched, resized or set.
+    assert_eq!(
+        ops(&handle),
+        vec![op("take", "", -1, -1), op("release", "", -1, -1)]
+    );
+    assert!(handle.windows().contains(&window));
 }

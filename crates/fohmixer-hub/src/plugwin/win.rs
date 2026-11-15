@@ -20,9 +20,12 @@
 //!   editor: Live's other instance's window or a plug-in opened by hand at
 //!   that moment), before it touches the window; the probe's
 //!   ([`Win::new`]) takes the window's client area then.
-//! - **Grab:** a `BitBlt` of the picture's screen rectangle from the
-//!   screen's DC (the window is on top, so the screen holds it; nothing runs
-//!   on the window's own thread, which is Live's).
+//! - **Grab (#215):** with `[eq] capture = "wgc"` (the default) Windows
+//!   Graphics Capture of the editor window's own surface (`wgc.rs`: a frame
+//!   only when the window changed, read back only at a grab); with `blt`,
+//!   the old costly path, a `BitBlt` of the picture's screen rectangle from
+//!   the screen's DC at every grab (the window is on top, so the screen
+//!   holds it). Neither runs on the window's own thread, which is Live's.
 //! - **Touch:** `InjectTouchInput` (one contact, `TOUCH_FEEDBACK_NONE`; never
 //!   `POINTER_FLAG_PRIMARY`, which fails every call with 87): a down
 //!   `INRANGE|INCONTACT|DOWN`, an update `INRANGE|INCONTACT|UPDATE`, an up
@@ -87,6 +90,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, HRESULT, w};
 
+use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+
+use super::capture::{Capture, CaptureCounts, WGC_LAG_MS};
+use super::wgc::Wgc;
 use super::{Backend, Phase, Pixels, Rect, Taken, WindowId};
 
 /// The class of Live's top-level plug-in editor windows.
@@ -375,17 +382,29 @@ pub struct Win {
     /// Each window's press-and-hold property before the hub set it (0:
     /// none), put back when it is turned on again (PR O review).
     held_props: HashMap<usize, usize>,
+    /// How it grabs (#215), and its Windows Graphics Capture sessions.
+    capture: Capture,
+    wgc: Wgc,
 }
 
-/// The `eq-probe` backend: it takes any window of the process it is given.
-pub fn probe_backend() -> Result<Box<dyn Backend>, String> {
-    Ok(Box::new(Win::new()))
+/// The `eq-probe` backend: it takes any window of the process it is
+/// given, and grabs as `--capture` says.
+pub fn probe_backend(capture: Capture) -> Result<Box<dyn Backend>, String> {
+    let mut win = Win::new();
+    win.capture = capture;
+    Ok(Box::new(win))
 }
 
 /// The hub's backend (`[eq] backend = "windows"`): it takes only a window
-/// with Pro-Q's own child.
-pub fn hub_backend() -> anyhow::Result<Box<dyn Backend>> {
-    Ok(Box::new(Win::for_hub()))
+/// with Pro-Q's own child, and grabs as `[eq] capture` says.
+pub fn hub_backend(capture: Capture) -> anyhow::Result<Box<dyn Backend>> {
+    tracing::info!(
+        capture = capture.name(),
+        "the Pro-Q 4 screen grabs its editors"
+    );
+    let mut win = Win::for_hub();
+    win.capture = capture;
+    Ok(Box::new(win))
 }
 
 impl Win {
@@ -402,6 +421,8 @@ impl Win {
             last: None,
             needs_child: true,
             held_props: HashMap::new(),
+            capture: Capture::default(),
+            wgc: Wgc::default(),
         }
     }
 
@@ -441,6 +462,12 @@ impl Backend for Win {
     fn start(&mut self) -> Result<(), String> {
         // SAFETY: changes this thread's DPI awareness only.
         unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+        // Windows Graphics Capture's objects are WinRT's (#215): this thread
+        // in the multithreaded apartment (one already set up is fine).
+        // SAFETY: sets up WinRT for this thread only.
+        if let Err(e) = unsafe { RoInitialize(RO_INIT_MULTITHREADED) } {
+            tracing::debug!(error = %e, "RoInitialize on the window worker's thread");
+        }
         // SAFETY: sets up touch injection for this process.
         unsafe { InitializeTouchInjection(1, TOUCH_FEEDBACK_NONE) }
             .map_err(|e| format!("InitializeTouchInjection: {e}"))
@@ -479,6 +506,9 @@ impl Backend for Win {
         let rect = window_rect(handle)?;
         place(handle, true)?;
         let (width, height) = client_size(picture)?;
+        if self.capture == Capture::Wgc {
+            self.wgc.begin(handle);
+        }
         Ok(Taken {
             window,
             picture: id_of(picture),
@@ -544,6 +574,13 @@ impl Backend for Win {
             return Err("the picture is empty".to_string());
         }
         let origin = to_screen(picture, (0, 0))?;
+        if self.capture == Capture::Wgc {
+            return self.wgc.grab(
+                hwnd(taken.window),
+                (origin.x, origin.y),
+                (width as u32, height as u32),
+            );
+        }
         let mut bgra = vec![0_u8; width as usize * height as usize * 4];
         let mut info = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
@@ -610,6 +647,21 @@ impl Backend for Win {
         })
     }
 
+    fn changed(&mut self, taken: &Taken) -> Option<bool> {
+        (self.capture == Capture::Wgc).then(|| self.wgc.changed(hwnd(taken.window)))
+    }
+
+    fn lag_ms(&self) -> f64 {
+        match self.capture {
+            Capture::Wgc => WGC_LAG_MS,
+            Capture::Blt => 0.0,
+        }
+    }
+
+    fn capture_counts(&mut self, taken: &Taken) -> Option<CaptureCounts> {
+        self.wgc.counts(hwnd(taken.window))
+    }
+
     fn touch(&mut self, taken: &Taken, phase: Phase, at: (i32, i32)) -> Result<(), String> {
         let down = self.last.is_some();
         let injected = self.inject_at(taken, phase, at);
@@ -627,6 +679,7 @@ impl Backend for Win {
 
     fn release(&mut self, taken: &Taken) {
         let window = hwnd(taken.window);
+        self.wgc.end(window);
         if exists(window)
             && let Err(why) = place(window, taken.was_topmost)
         {
@@ -811,5 +864,12 @@ mod tests {
         assert_eq!(picture_of(None, window, true), Err(NO_PICTURE.to_string()));
         assert!(Win::for_hub().needs_child);
         assert!(!Win::new().needs_child);
+        // #215: Windows Graphics Capture unless the config names blt.
+        assert_eq!(Win::for_hub().capture, Capture::Wgc);
+        assert_eq!(Win::new().capture, Capture::Wgc);
+        assert_eq!(Win::new().lag_ms(), WGC_LAG_MS);
+        let mut blt = Win::new();
+        blt.capture = Capture::Blt;
+        assert_eq!(blt.lag_ms(), 0.0);
     }
 }

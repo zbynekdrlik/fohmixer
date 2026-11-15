@@ -47,6 +47,13 @@
 //! recorded (`{"op": "undo", "window", "left"}`, the changes left). Without
 //! a history no ↶ is drawn and nothing is kept, so the pictures are as
 //! before.
+//!
+//! **Change-driven frames (#215):** by default the sim cannot tell
+//! whether its picture changed ([`Backend::changed`] none: every grab
+//! looks, as a BitBlt does); `change_driven` makes it tell, as Windows
+//! Graphics Capture does (a change of the counter, the ↶ or the size since
+//! the last grab), and `lag` makes its pictures that far behind the screen
+//! ([`Backend::lag_ms`]).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Write as _;
@@ -316,6 +323,12 @@ struct State {
     /// lifted (sim ms; none: the next tap is no double tap's second).
     undo: Option<u32>,
     last_tap: Option<f64>,
+    /// Whether it tells a change since the last grab (#215, as Windows
+    /// Graphics Capture does), what the last grab showed (its count, ↶ and
+    /// size), and how far behind the screen its pictures are (ms).
+    change_driven: bool,
+    last_grab: Option<(u64, Option<bool>, (u32, u32))>,
+    lag_ms: f64,
     /// The last picture drawn, its count and its ↶ (lit, grey, or none): a
     /// grab draws only a new count, ↶ or size (drawing one costs the worker
     /// tens of ms in a test build).
@@ -326,6 +339,18 @@ struct State {
 }
 
 impl State {
+    /// The counter the picture shows now: the grabs so far when restless,
+    /// the time's when moving, the inputs painted when still.
+    fn count(&self) -> u64 {
+        let now = self.started.elapsed().as_secs_f64() * 1000.0;
+        match (self.restless, self.still, self.paint_after) {
+            (true, _, _) => self.grabs,
+            (false, false, _) => counter(now),
+            (false, true, None) => 0,
+            (false, true, Some(after)) => painted(&self.injected, after, now),
+        }
+    }
+
     fn add(&mut self, pid: u32) -> WindowId {
         self.next += 1;
         let window = WindowId(self.next);
@@ -435,6 +460,9 @@ impl Sim {
             size_kept: false,
             undo: None,
             last_tap: None,
+            change_driven: false,
+            last_grab: None,
+            lag_ms: 0.0,
             drawn: None,
             records: Vec::new(),
             file,
@@ -504,6 +532,17 @@ impl SimHandle {
     /// Whether the picture changes at every grab (#71 PR M).
     pub fn restless(&self, on: bool) {
         self.lock().restless = on;
+    }
+
+    /// Whether the sim tells a change since the last grab (#215), as
+    /// Windows Graphics Capture does; off, it cannot tell (a BitBlt).
+    pub fn change_driven(&self, on: bool) {
+        self.lock().change_driven = on;
+    }
+
+    /// How far behind the screen its pictures are from now on (#215).
+    pub fn lag(&self, lag: Duration) {
+        self.lock().lag_ms = lag.as_secs_f64() * 1000.0;
     }
 
     /// The grabs so far.
@@ -766,16 +805,11 @@ impl Backend for Sim {
         let Some(size) = state.windows.get(&taken.window).map(|w| w.size) else {
             return Err("no such window".to_string());
         };
-        let now = state.started.elapsed().as_secs_f64() * 1000.0;
         state.grabs += 1;
-        let count = match (state.restless, state.still, state.paint_after) {
-            (true, _, _) => state.grabs,
-            (false, false, _) => counter(now),
-            (false, true, None) => 0,
-            (false, true, Some(after)) => painted(&state.injected, after, now),
-        };
+        let count = state.count();
         // Pro-Q's ↶ (#71 PR P): lit while the history holds a change.
         let glyph = state.undo.map(|left| left > 0);
+        state.last_grab = Some((count, glyph, size));
         let drawn = state
             .drawn
             .as_ref()
@@ -791,6 +825,26 @@ impl Backend for Sim {
         }
         self.lock().drawn = Some((count, glyph, pixels.clone()));
         Ok(pixels)
+    }
+
+    fn changed(&mut self, taken: &Taken) -> Option<bool> {
+        let state = self.lock();
+        if !state.change_driven {
+            return None;
+        }
+        let size = state.windows.get(&taken.window).map(|w| w.size)?;
+        // A restless picture changes at every grab.
+        let count = if state.restless {
+            state.grabs + 1
+        } else {
+            state.count()
+        };
+        let glyph = state.undo.map(|left| left > 0);
+        Some(state.last_grab != Some((count, glyph, size)))
+    }
+
+    fn lag_ms(&self) -> f64 {
+        self.lock().lag_ms
     }
 
     fn touch(&mut self, taken: &Taken, phase: Phase, at: (i32, i32)) -> Result<(), String> {

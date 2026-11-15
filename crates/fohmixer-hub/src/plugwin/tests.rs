@@ -1358,6 +1358,121 @@ fn a_resting_editor_is_grabbed_at_most_once_a_second_and_an_input_wakes_it() {
 }
 
 #[test]
+fn an_editor_rests_2_s_after_its_last_input_with_no_contact_down() {
+    assert_eq!(REST_MS, 2000.0);
+    assert!(!resting(false, REST_MS.next_down()));
+    assert!(resting(false, REST_MS));
+    assert!(!resting(true, REST_MS), "a contact down never rests");
+    assert!(!resting(true, f64::INFINITY));
+    assert!(!resting(false, f64::NAN), "a time that is no number");
+}
+
+#[test]
+fn a_grab_is_due_once_a_second_resting_else_on_a_change_a_newer_input_or_the_refresh() {
+    // Resting: the refresh's second only, whatever changed.
+    assert!(!grab_due(REFRESH_MS.next_down(), true, Some(true), true));
+    assert!(grab_due(REFRESH_MS, true, Some(false), false));
+    // Awake: never within CAPTURE_MS, whatever is due.
+    assert!(!grab_due(CAPTURE_MS.next_down(), false, Some(true), true));
+    assert!(!grab_due(CAPTURE_MS.next_down(), false, None, false));
+    // A backend that cannot tell (a BitBlt): every CAPTURE_MS.
+    assert!(grab_due(CAPTURE_MS, false, None, false));
+    // One that can: a change, a newer input painted, or the refresh.
+    assert!(grab_due(CAPTURE_MS, false, Some(true), false));
+    assert!(!grab_due(CAPTURE_MS, false, Some(false), false));
+    assert!(grab_due(CAPTURE_MS, false, Some(false), true));
+    assert!(!grab_due(REFRESH_MS.next_down(), false, Some(false), false));
+    assert!(grab_due(REFRESH_MS, false, Some(false), false));
+}
+
+#[test]
+fn a_shown_input_is_due_once_painted_and_not_before_or_after_its_picture() {
+    let mut shown = Shown::default();
+    assert!(!shown.due(1000.0), "none handled");
+    shown.handled(1, 100.0);
+    shown.handled(2, 150.0);
+    assert!(!shown.due(120.0_f64.next_down()));
+    assert!(shown.due(120.0));
+    assert_eq!(shown.at_grab(120.0), 1);
+    // 1 shown: 2 is due only once painted.
+    assert!(!shown.due(169.0));
+    assert!(shown.due(170.0));
+    assert_eq!(shown.at_grab(170.0), 2);
+    assert!(!shown.due(10_000.0), "every one shown");
+}
+
+/// A worker whose editor 1 is taken and captured at 0 ms, on a sim that
+/// tells its changes (#215, as Windows Graphics Capture) and whose picture
+/// is still; the editor's frames.
+fn change_driven() -> (Worker, SimHandle, Kept) {
+    let (mut worker, handle, _) = worker();
+    handle.still(true);
+    handle.change_driven(true);
+    take(&mut worker, &handle, 1, 0.0);
+    let (sink, frames) = sink();
+    worker.command_at(Command::Capture { session: 1, sink }, 0.0);
+    (worker, handle, frames)
+}
+
+#[test]
+fn a_change_driven_editor_is_grabbed_only_when_its_picture_changed_or_its_refresh_is_due() {
+    let (mut worker, handle, frames) = change_driven();
+    // Awake (its take), but still: its first grab, then the refresh's.
+    assert_eq!(grabs_over(&mut worker, 1, 0, 990), 1);
+    wait_for("the first frame", || frames.lock().unwrap().len() == 1);
+    assert_eq!(grabs_over(&mut worker, 1, 1000, 1030), 1, "the refresh");
+    // Its picture changes (Pro-Q's ↶ drawn): grabbed at the next step.
+    handle.undo_history(1);
+    assert_eq!(grabs_over(&mut worker, 1, 1040, 1040), 1);
+    wait_for("the changed picture", || frames.lock().unwrap().len() == 3);
+    assert_eq!(grabs_over(&mut worker, 1, 1050, 1990), 0, "still again");
+    // Resting from 2000: a change waits for a second since the last grab
+    // (1040), and a still picture gets its refresh a second after that.
+    handle.undo_history(0);
+    assert_eq!(grabs_over(&mut worker, 1, 2000, 2030), 0);
+    assert_eq!(grabs_over(&mut worker, 1, 2040, 2040), 1);
+    assert_eq!(grabs_over(&mut worker, 1, 2050, 3030), 0);
+    assert_eq!(grabs_over(&mut worker, 1, 3040, 3040), 1, "the refresh");
+}
+
+#[test]
+fn an_input_that_changes_no_pixel_still_gets_a_picture_once_painted() {
+    // PR J with #215: a tap on an inert spot changes nothing, so a change-
+    // driven capture sees nothing; the page must still learn its picture
+    // caught up.
+    let (mut worker, _handle, frames) = change_driven();
+    worker.step_at(0.0);
+    wait_for("the first frame", || frames.lock().unwrap().len() == 1);
+    worker.command_at(Command::Handled { session: 1, n: 1 }, 100.0);
+    assert_eq!(grabs_over(&mut worker, 1, 100, 110), 0, "not painted yet");
+    assert_eq!(grabs_over(&mut worker, 1, 120, 120), 1);
+    wait_for("the picture again", || frames.lock().unwrap().len() == 2);
+    assert_eq!(frames.lock().unwrap()[1].2, 1, "it shows input 1");
+    assert_eq!(grabs_over(&mut worker, 1, 130, 990), 0);
+}
+
+#[test]
+fn a_picture_behind_the_screen_shows_an_input_only_a_paint_and_its_lag_after() {
+    // #215: Windows Graphics Capture's newest frame may be up to its lag
+    // behind the window; that is taken off the grab's clock.
+    let (mut worker, handle, frames) = change_driven();
+    handle.lag(Duration::from_millis(17));
+    worker.step_at(0.0);
+    wait_for("the first frame", || frames.lock().unwrap().len() == 1);
+    worker.command_at(Command::Handled { session: 1, n: 1 }, 100.0);
+    assert_eq!(grabs_over(&mut worker, 1, 100, 130), 0, "120 + 17 not yet");
+    assert_eq!(grabs_over(&mut worker, 1, 140, 140), 1);
+    wait_for("the picture again", || frames.lock().unwrap().len() == 2);
+    assert_eq!(frames.lock().unwrap()[1].2, 1);
+    // Without the lag, a grab at 130 would already show it.
+    let (mut worker, _handle, frames) = change_driven();
+    worker.step_at(0.0);
+    wait_for("the first frame", || frames.lock().unwrap().len() == 1);
+    worker.command_at(Command::Handled { session: 1, n: 1 }, 100.0);
+    assert_eq!(grabs_over(&mut worker, 1, 100, 130), 1);
+}
+
+#[test]
 fn a_captured_editor_sends_its_pictures_skipping_a_same_one() {
     let (mut worker, handle, heard) = worker();
     handle.still(true);

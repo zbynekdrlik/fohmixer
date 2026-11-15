@@ -20,7 +20,15 @@
 //!    below then run at the new size, `--band` and `--to` scaled by it
 //!    ([`scaled`]);
 //! 4. `--frames` captures at the hub's rate: their sizes, how many differed,
-//!    the grab and encode times, the frame sizes, the rate reached;
+//!    the grab and encode times, the frame sizes, the rate reached, and
+//!    (#215) the capture's own counts: `arrived=` frames Windows Graphics
+//!    Capture delivered meanwhile and `lag_ms_max=` the largest delay from
+//!    a frame's composition to its arrival (`-` for a BitBlt), on the
+//!    `fps=` line with `capture=wgc|blt`. The grabs
+//!    use `--capture wgc|blt` (default `wgc`, the hub's default); with
+//!    `--capture-only` the probe stops here, releases the window and runs
+//!    no gesture, no resize back and no guard, so it measures the capture
+//!    alone on any process's window (an idle Notepad: dasio's comparison);
 //! 5. a double tap at `--band` (on a fresh Pro-Q's curve: a new band);
 //! 6. a drag from `--band` to `--to` (updates every 16 ms, a rest with the
 //!    resends, the up at the last point);
@@ -110,6 +118,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use super::capture::{Capture, CaptureCounts};
 use super::sim::Sim;
 use super::undo::{self, Undo};
 #[cfg(windows)]
@@ -121,7 +130,11 @@ use super::{
 };
 
 /// The CLI's usage line.
-pub const USAGE: &str = "usage: fohmixer-hub eq-probe --pid <pid> [--frames <n>] [--size <w>x<h>] [--min-probe] [--hold] [--paint <n>] [--undo] [--band <x,y>] [--to <x,y>] [--inert <x,y>] [--out <folder>] [--close] [--sim]";
+pub const USAGE: &str = "usage: fohmixer-hub eq-probe --pid <pid> [--frames <n>] [--capture wgc|blt] [--capture-only] [--size <w>x<h>] [--min-probe] [--hold] [--paint <n>] [--undo] [--band <x,y>] [--to <x,y>] [--inert <x,y>] [--out <folder>] [--close] [--sim]";
+/// Why `--capture-only` was refused with a gesture's flag (#215): it runs
+/// none.
+pub const CAPTURE_ALONE: &str =
+    "--capture-only cannot run with --min-probe, --hold, --paint, --undo or --close";
 /// Why `--undo` was refused with `--hold` or `--paint` (#71 PR P): each
 /// makes changes of its own, which the undo would count.
 pub const UNDO_ALONE: &str = "--undo cannot run with --hold or --paint";
@@ -220,6 +233,10 @@ pub struct Args {
     pub hold: bool,
     /// Whether to tap Pro-Q's own undo until it reads grey (#71 PR P).
     pub undo: bool,
+    /// How the Windows backend grabs (#215), and whether the probe only
+    /// captures.
+    pub capture: Capture,
+    pub capture_only: bool,
 }
 
 /// `x,y` as a point.
@@ -260,6 +277,8 @@ pub fn parse(args: &[&str]) -> Result<Args, String> {
         paint: 0,
         hold: false,
         undo: false,
+        capture: Capture::Wgc,
+        capture_only: false,
     };
     let mut pid = None;
     let mut rest = args.iter();
@@ -274,8 +293,9 @@ pub fn parse(args: &[&str]) -> Result<Args, String> {
             "--min-probe" => parsed.min_probe = true,
             "--hold" => parsed.hold = true,
             "--undo" => parsed.undo = true,
+            "--capture-only" => parsed.capture_only = true,
             "--pid" | "--frames" | "--band" | "--to" | "--inert" | "--out" | "--size"
-            | "--paint" => {
+            | "--paint" | "--capture" => {
                 let value = rest.next().ok_or(format!("{flag} needs a value"))?;
                 let bad = || format!("{flag} {value:?}");
                 match *flag {
@@ -286,6 +306,7 @@ pub fn parse(args: &[&str]) -> Result<Args, String> {
                     "--to" => parsed.to = point(value).ok_or_else(bad)?,
                     "--inert" => parsed.inert = Some(point(value).ok_or_else(bad)?),
                     "--size" => parsed.size = Some(size(value).ok_or_else(bad)?),
+                    "--capture" => parsed.capture = Capture::named(value).ok_or_else(bad)?,
                     _ => parsed.out = Some(PathBuf::from(*value)),
                 }
             }
@@ -295,6 +316,11 @@ pub fn parse(args: &[&str]) -> Result<Args, String> {
     parsed.pid = pid.ok_or("--pid is required")?;
     if parsed.undo && (parsed.hold || parsed.paint > 0) {
         return Err(UNDO_ALONE.to_string());
+    }
+    let gestures =
+        parsed.min_probe || parsed.hold || parsed.paint > 0 || parsed.undo || parsed.close;
+    if parsed.capture_only && gestures {
+        return Err(CAPTURE_ALONE.to_string());
     }
     Ok(parsed)
 }
@@ -308,11 +334,11 @@ pub fn backend(args: &Args) -> Result<Box<dyn Backend>, String> {
         handle.add_window(args.pid);
         return Ok(Box::new(sim));
     }
-    platform()
+    platform(args.capture)
 }
 
 #[cfg(not(windows))]
-fn platform() -> Result<Box<dyn Backend>, String> {
+fn platform(_capture: Capture) -> Result<Box<dyn Backend>, String> {
     Err("eq-probe drives Windows windows: run it on the PC (or with --sim)".to_string())
 }
 
@@ -696,7 +722,12 @@ fn drag(held: &mut Held<'_>, from: (i32, i32), to: (i32, i32)) -> Result<usize, 
 }
 
 /// Grabs `frames` pictures at the hub's rate and reports them.
-fn capture(held: &mut Held<'_>, frames: u32, report: &mut Report<'_>) -> Result<(), String> {
+fn capture(
+    held: &mut Held<'_>,
+    frames: u32,
+    how: Capture,
+    report: &mut Report<'_>,
+) -> Result<(), String> {
     let (mut grabs, mut encodes, mut sizes) = (Vec::new(), Vec::new(), Vec::new());
     let mut last: Option<Pixels> = None;
     let mut same = 0_u32;
@@ -728,8 +759,26 @@ fn capture(held: &mut Held<'_>, frames: u32, report: &mut Report<'_>) -> Result<
     report.line(&format!(
         "encode_ms_mean={encode_mean:.1} encode_ms_max={encode_max:.1} bytes_mean={bytes_mean:.0}"
     ))?;
-    report.line(&format!("fps={:.1}", rate(frames, seconds)))?;
+    // #215: on the rate's line, so the lines after it keep their places.
+    report.line(&format!(
+        "fps={:.1} capture={} {}",
+        rate(frames, seconds),
+        how.name(),
+        arrived_text(held.backend.capture_counts(&held.taken))
+    ))?;
     Ok(())
+}
+
+/// The capture's own counts as the probe prints them (#215): `-` for a
+/// backend that grabs the screen.
+pub fn arrived_text(counts: Option<CaptureCounts>) -> String {
+    match counts {
+        Some(counts) => format!(
+            "arrived={} lag_ms_max={:.1}",
+            counts.arrived, counts.lag_ms_max
+        ),
+        None => "arrived=- lag_ms_max=-".to_string(),
+    }
 }
 
 /// The contact at `at` resent when `KEEPALIVE_MS` passed since `sent`,
@@ -1182,7 +1231,12 @@ pub fn run(backend: &mut dyn Backend, args: &Args, out: &mut dyn Write) -> Resul
         scaled(args.band, original, now),
         scaled(args.to, original, now),
     );
-    capture(&mut held, args.frames, &mut report)?;
+    capture(&mut held, args.frames, args.capture, &mut report)?;
+    if args.capture_only {
+        held.release();
+        report.line("release=ok")?;
+        return Ok(());
+    }
     double_tap(&mut held, band, "band")?;
     report.line(&format!("band=ok at={},{}", band.0, band.1))?;
     settle(&mut held, "after-band.jpg", &mut report)?;
