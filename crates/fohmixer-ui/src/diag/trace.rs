@@ -159,7 +159,7 @@ pub fn takes_batch(buffered: u32) -> bool {
 /// #52's Stream Deck presses, #71's channel detail steps and the Pro-Q 4
 /// screen's fingers and undos, #51's idle turns, #90's AbleSet tab, #166's
 /// IEM frame, #90's PRESENTER tab, the
-/// rail buttons' presses, #104/#130); rank 0, first, for the
+/// rail buttons' presses, #104/#130, and #212's column picks); rank 0, first, for the
 /// round-trip summaries, long frames and any other kind; rank 1, last, for
 /// the moves (the only per-frame data of a drag the hub cannot see). A
 /// touch's first moves are pushed as essential ([`Recorder::push_essential`]).
@@ -167,7 +167,7 @@ pub fn drop_rank(ev: &str) -> Option<u8> {
     match ev {
         "touch" | "dropout" | "reset" | "sock" | "visibility" | "overflow" | "intent" | "sys"
         | "zoom" | "deck" | "detail" | "eq_touch" | "eq_mv" | "eq_lat" | "eq_view" | "eq_undo"
-        | "idle" | "ableset_view" | "ableset" | "iem" | "presenter" | "rail" => None,
+        | "idle" | "ableset_view" | "ableset" | "iem" | "presenter" | "rail" | "tab" => None,
         "mv" => Some(1),
         _ => Some(0),
     }
@@ -254,6 +254,41 @@ pub fn detail(
 /// "the mute switched by itself" report is read from.
 pub fn rail(t: f64, what: &str, button: &str, keys: &[String], pointer: i32) -> Value {
     json!({"ev": "rail", "t": t, "what": what, "button": button, "keys": keys, "pointer": pointer})
+}
+
+/// A pick in the column (#212: so the column's use can be counted from the
+/// hub's event log).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TabStep<'a> {
+    /// A mixer page's tab (FOH), by its page id.
+    Page { id: &'a str },
+    /// A layout's tab in the LAYOUTS block: its sector, id and title, and
+    /// whether ARRANGE was on.
+    Layout {
+        sector: &'a str,
+        id: &'a str,
+        title: &'a str,
+        arranging: bool,
+    },
+    /// The ⇄ key (ARRANGE): what its press did
+    /// (`behave::arrange_drag::tap_act`).
+    Arrange { act: &'a str },
+}
+
+/// A column pick's event at `t` (#212). Essential: a few an hour, and a
+/// dropped one would undercount what it exists to count.
+pub fn tab(t: f64, step: TabStep<'_>) -> Value {
+    match step {
+        TabStep::Page { id } => json!({"ev": "tab", "t": t, "what": "page", "id": id}),
+        TabStep::Layout {
+            sector,
+            id,
+            title,
+            arranging,
+        } => json!({"ev": "tab", "t": t, "what": "layout", "sector": sector, "id": id,
+                    "title": title, "arrange": arranging}),
+        TabStep::Arrange { act } => json!({"ev": "tab", "t": t, "what": "arrange", "act": act}),
+    }
 }
 
 /// The Stream Deck tab opened (`on`) or closed (#52).

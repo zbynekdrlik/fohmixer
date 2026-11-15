@@ -264,6 +264,18 @@ pub fn refusal_note(why: &str) -> &'static str {
     }
 }
 
+/// What a press of the ⇄ key did, for the recorder's `tab` event (#212):
+/// `start` the mode, `save` the edit sent, `leave` with nothing to save,
+/// `busy` a press while a save is on its way (`Arrange::tap`'s none).
+pub fn tap_act(tap: Option<&Tap>) -> &'static str {
+    match tap {
+        Some(Tap::Start) => "start",
+        Some(Tap::Send(..)) => "save",
+        Some(Tap::Leave) => "leave",
+        None => "busy",
+    }
+}
+
 /// The note under ARRANGE: a refusal's while it shows, else the mode's.
 pub fn arrange_note(on: bool, refused: Option<&'static str>) -> &'static str {
     refused.unwrap_or(if on { ARRANGE_NOTE } else { "" })
@@ -980,5 +992,13 @@ mod tests {
         ));
         assert!(drag.leave());
         assert!(!drag.leave());
+    }
+
+    #[test]
+    fn a_keys_press_is_named_by_what_it_did() {
+        assert_eq!(tap_act(Some(&Tap::Start)), "start");
+        assert_eq!(tap_act(Some(&Tap::Send(Sectors::new(), 3))), "save");
+        assert_eq!(tap_act(Some(&Tap::Leave)), "leave");
+        assert_eq!(tap_act(None), "busy");
     }
 }
