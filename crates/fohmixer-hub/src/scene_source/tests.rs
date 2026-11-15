@@ -113,8 +113,10 @@ fn a_value_that_is_no_scene_name_is_refused_and_moves_nothing() {
         value(&mut f, "a\u{1}b", 2000).refused,
         Some(("a\u{1}b".into(), "the scene name holds a control character"))
     );
-    // A good name after a refused value is a change: a scene.
-    assert_eq!(value(&mut f, "intro", 2500).scene.as_deref(), Some("intro"));
+    // A refused value is no scene: the known one stays, so its return
+    // moves nothing, and another good name is a change.
+    assert_eq!(value(&mut f, "intro", 2500), Outcome::default());
+    assert_eq!(value(&mut f, "talk", 3000).scene.as_deref(), Some("talk"));
     // A refused first value is said too, and the next good one is a scene.
     let mut g = Follow::default();
     let first = value(&mut g, "", 0);
@@ -124,6 +126,26 @@ fn a_value_that_is_no_scene_name_is_refused_and_moves_nothing() {
     );
     assert_eq!(first.scene, None);
     assert_eq!(value(&mut g, "talk", 500).scene.as_deref(), Some("talk"));
+}
+
+#[test]
+fn a_cleared_variable_between_two_reads_of_one_scene_runs_it_not_again() {
+    // Companion clears its variable for a moment (or a bad value comes)
+    // and then names the same scene: no second glide pulling back what a
+    // hand moved since.
+    let mut f = Follow::default();
+    value(&mut f, "start", 0);
+    assert_eq!(value(&mut f, "intro", 500).scene.as_deref(), Some("intro"));
+    let cleared = value(&mut f, "", 1000);
+    assert_eq!(cleared.scene, None);
+    assert_eq!(
+        cleared.refused,
+        Some((String::new(), "the scene name is empty"))
+    );
+    // Read again while cleared: said once only.
+    assert_eq!(value(&mut f, "", 1500), Outcome::default());
+    assert_eq!(value(&mut f, "intro", 2000), Outcome::default());
+    assert_eq!(f.status().last.as_deref(), Some("intro"));
 }
 
 #[test]
