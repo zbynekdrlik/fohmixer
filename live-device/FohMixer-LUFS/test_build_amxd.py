@@ -83,6 +83,49 @@ class AmxdTests(unittest.TestCase):
             self.assertEqual(ba.main(["--patch", str(patch)]), 0)
             self.assertTrue((Path(tmp) / "Some Device.amxd").is_file())
 
+    def test_builds_the_listen_patch_with_its_defaults(self) -> None:
+        patch = ba.LISTEN_MAXPAT.read_bytes()
+        self.assertTrue(ba.is_listen(patch))
+        self.assertFalse(ba.is_listen(ba.MAXPAT.read_bytes()))
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "l.amxd"
+            self.assertEqual(ba.main(["--patch", str(ba.LISTEN_MAXPAT), "--out", str(out)]), 0)
+            device = out.read_bytes()
+        self.assertEqual(ba.patch_of(device), patch)
+        self.assertIn(b"pack /fohmixer/listen ", device)
+
+    def test_the_listen_ports_rewrite_their_three_boxes(self) -> None:
+        patch = ba.LISTEN_MAXPAT.read_bytes()
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "l.amxd"
+            args = ["--patch", str(ba.LISTEN_MAXPAT), "--port", "40001", "--select-port", "40002"]
+            self.assertEqual(ba.main([*args, "--out", str(out)]), 0)
+            built = ba.patch_of(out.read_bytes())
+        swaps = [
+            (b'"udpsend 127.0.0.1 39111"', b'"udpsend 127.0.0.1 40001"'),
+            (
+                b'"jit.net.send @ip 127.0.0.1 @port 39111"',
+                b'"jit.net.send @ip 127.0.0.1 @port 40001"',
+            ),
+            (b'"udpreceive 39112"', b'"udpreceive 40002"'),
+        ]
+        back = built
+        for old, new in swaps:
+            self.assertEqual(built.count(new), 1)
+            back = back.replace(new, old)
+        self.assertEqual(back, patch)
+        self.assertEqual(ba.with_ports(patch), patch)
+        only_port = ba.with_ports(patch, 40001)
+        self.assertIn(b'"udpreceive 39112"', only_port)
+        self.assertIn(b"@port 40001", only_port)
+        for port, select in ((0, None), (None, 65536), (70000, 1)):
+            with self.assertRaises(ValueError):
+                ba.with_ports(patch, port, select)
+        with self.assertRaises(ValueError):
+            ba.with_ports(ba.MAXPAT.read_bytes(), 39110, 39112)
+        with self.assertRaises(ValueError):
+            ba.with_ports(patch.replace(b'"udpreceive 39112"', b'"udpreceive 1"'))
+
     def test_text_that_is_no_patcher_is_refused(self) -> None:
         with self.assertRaises(ValueError):
             ba.amxd(b'{"box": {}}')
