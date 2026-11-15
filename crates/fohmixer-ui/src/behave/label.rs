@@ -41,12 +41,14 @@ pub fn longest_word_chars(text: &str) -> usize {
 }
 
 /// The Live set a strip says it belongs to (#211, the owner's approved
-/// `docs/mockups/strip-instance-v1.html`): its instance in capitals (`BAND`,
-/// `MASTER`, `MBC`; the layout names no instance otherwise), dim in its info
-/// column. None when the instance is empty, or when the strip's side text
-/// (`group-side`: its group's name, or an untitled shared group's or a mixed
-/// sector layout's set, which the stylesheet shows in capitals) already
-/// says that word: every strip says its set once.
+/// `docs/mockups/strip-instance-v1.html`): its instance's name in capitals
+/// (`BAND`, `MASTER`, `MBC`; the layout gives an instance no other display
+/// name), dim in its info column. None when the instance is empty, or when
+/// the strip's side text (`group-side`: its group's name, or an untitled
+/// shared group's or a mixed sector layout's set, which the stylesheet
+/// shows in capitals) already says that word: every strip says its set
+/// once in its info column. (A mixed rows-page group's strip keeps its
+/// `strip-tag` pill in the head too, #63.)
 pub fn set_text(instance: &str, side: Option<&str>) -> Option<String> {
     let text = instance.trim().to_uppercase();
     let said = side.is_some_and(|s| s.trim().to_uppercase() == text);

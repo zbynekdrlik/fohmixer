@@ -8,13 +8,16 @@ import { SECTORS, band, master, openSectors, stripsOf } from "./support/sectors"
 // (`--faint`) vertical text in its info column (`strip-col`), under the
 // LUFS row, in the side box with the group's name (`strip-side`,
 // group.css): `strip-set`, or the group's name itself when that already
-// says the strip's set (behave::label::set_text), never both. Nothing lit,
-// no pill, the fader travel unchanged. On the rows page (titled, untitled
-// and mixed groups) and the FOH sectors page (a band, a master, a mixed
-// and an MBC layout: a master and an MBC fader of the same name told
-// apart), at the iPad's 1194 x 834 and both phones: the set seen whole or
-// yielded whole (outside the side box's clip), never over the LUFS row,
-// the group's name or SEL, never clipped.
+// says the strip's set (behave::label::set_text), never both in the info
+// column (a mixed rows-page group's strip keeps its #63 `strip-instance`
+// pill in the head too). Nothing lit, no pill, the fader travel unchanged.
+// On the rows page (titled, untitled and mixed groups) and the FOH sectors
+// page (a band, a master, a mixed and an MBC layout: the master `Hand1 #`
+// and the MBC `Hand 1`, the owner's case of two Lives' faders named alike,
+// each with its own word) and the MBC hub's page, at the iPad's
+// 1194 x 834 and both phones: the set seen whole or yielded whole
+// (outside the side box's clip), never over the LUFS row, the group's
+// name or SEL, never clipped.
 
 const SIZES = [
   { width: 1194, height: 834 },
@@ -165,7 +168,7 @@ test.describe("Every strip says its Live set (#211)", () => {
     for (const h of travels) expect(h).toBeGreaterThanOrEqual(322 - 0.5);
   });
 
-  test("on the FOH sectors page: a band, a master, a mixed and an MBC layout, a master and an MBC fader of one name told apart", async ({ page }) => {
+  test("on the FOH sectors page: a band, a master, a mixed and an MBC layout, a master and an MBC fader named alike told apart", async ({ page }) => {
     await setSectors(SET_DOC);
     await page.setViewportSize(SIZES[0]);
     await openSectors(page);
@@ -180,18 +183,17 @@ test.describe("Every strip says its Live set (#211)", () => {
     expect(ipad.says.mbc?.set).toBe(2);
     expect(ipad.says.band?.side).toBe(1);
     expect(ipad.says.master?.side).toBe(2);
-    // The owner's case: master Hand 1 and MBC Hand 1 side by side, each
-    // with its own word.
-    const word = (inst: string, label: string) =>
-      page
-        .locator(`${SECTORS} [data-testid="strip"][data-instance="${inst}"][data-label="${label}"]`)
-        .getByTestId("strip-set");
-    await expect(word("mbc", "Hand 1")).toHaveText("MBC");
-    await expect(page.locator(`${SECTORS} [data-testid="strip"][data-instance="master"][data-track="Hand1 #"]`).getByTestId("strip-set")).toHaveText("MASTER");
+    // The owner's case: the master `Hand1 #` and the MBC `Hand 1`, faders
+    // of two Lives named alike, each with its own word.
+    const strips = `${SECTORS} [data-testid="strip"]`;
+    await expect(page.locator(`${strips}[data-instance="mbc"][data-label="Hand 1"]`).getByTestId("strip-set")).toHaveText("MBC");
+    await expect(page.locator(`${strips}[data-instance="master"][data-track="Hand1 #"]`).getByTestId("strip-set")).toHaveText("MASTER");
     // The travel unchanged: every strip of the four sectors (sectors.spec.ts' floor).
     await page.setViewportSize(SIZES[0]);
     await frames(page);
-    for (const h of (await readSets(page, SECTORS)).travels) expect(h).toBeGreaterThanOrEqual(322 - 0.5);
+    const travels = (await readSets(page, SECTORS)).travels;
+    expect(travels.length).toBe(9);
+    for (const h of travels) expect(h).toBeGreaterThanOrEqual(322 - 0.5);
   });
 
   test("on the MBC hub's page every strip says MBC", async ({ page }) => {
