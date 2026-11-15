@@ -83,7 +83,7 @@ use windows::core::{IInspectable, Interface};
 
 use super::Pixels;
 use super::capture::{
-    Arrivals, CaptureCounts, CaptureDiag, apartment_name, awareness_name, frame_current,
+    Arrivals, CaptureCounts, CaptureDiag, FrameBox, apartment_name, awareness_name, frame_current,
     picture_box,
 };
 
@@ -93,32 +93,32 @@ pub const BUFFERS: i32 = 2;
 /// worker asks at every step while it has none).
 pub const START_AGAIN: Duration = Duration::from_secs(1);
 /// The frames' format: what the encoder reads (BGRA, 4 bytes a pixel).
-const FORMAT: DirectXPixelFormat = DirectXPixelFormat::B8G8R8A8UIntNormalized;
+pub(super) const FORMAT: DirectXPixelFormat = DirectXPixelFormat::B8G8R8A8UIntNormalized;
 
 /// A COM call's error as the backend's.
-fn text(what: &str, error: windows::core::Error) -> String {
+pub(super) fn text(what: &str, error: windows::core::Error) -> String {
     format!("{what}: {error}")
 }
 
 /// Takes a lock, poisoned or not (a panic on the frame thread leaves the
 /// state as it was: the next frame or grab goes on).
-fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(super) fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// The Direct3D device the captures share: its immediate context under one
 /// lock (the frame threads and the worker both use it), and its WinRT face
 /// for the frame pools.
-struct Device {
-    device: ID3D11Device,
-    context: Arc<Mutex<ID3D11DeviceContext>>,
-    direct3d: Direct3D,
+pub(super) struct Device {
+    pub(super) device: ID3D11Device,
+    pub(super) context: Arc<Mutex<ID3D11DeviceContext>>,
+    pub(super) direct3d: Direct3D,
 }
 
 /// The device's WinRT face, sent to the frame thread (a pool's `Recreate`
 /// needs it there).
 #[derive(Clone)]
-struct Direct3D(IDirect3DDevice);
+pub(super) struct Direct3D(IDirect3DDevice);
 
 // SAFETY: a WinRT Direct3D device is agile (it may be used from any
 // thread; `Device::new` refuses one that does not say `IAgileObject`); the
@@ -130,14 +130,14 @@ unsafe impl Sync for Direct3D {}
 impl Direct3D {
     /// The device (a closure that calls this captures the whole wrapper,
     /// never its field alone, which is not `Send`).
-    fn get(&self) -> &IDirect3DDevice {
+    pub(super) fn get(&self) -> &IDirect3DDevice {
         &self.0
     }
 }
 
 impl Device {
     /// A hardware device with BGRA support, multithread-protected.
-    fn new() -> Result<Self, String> {
+    pub(super) fn new() -> Result<Self, String> {
         let mut device = None;
         let mut context = None;
         // SAFETY: the out pointers outlive the call.
@@ -183,7 +183,7 @@ impl Device {
 
 /// A texture of `width` × `height` BGRA pixels, on the GPU (`staging`:
 /// false) or readable by the CPU (true).
-fn texture(
+pub(super) fn texture(
     device: &ID3D11Device,
     width: u32,
     height: u32,
@@ -220,7 +220,7 @@ fn texture(
 }
 
 /// A texture's size.
-fn size_of(texture: &ID3D11Texture2D) -> (u32, u32) {
+pub(super) fn size_of(texture: &ID3D11Texture2D) -> (u32, u32) {
     let mut desc = D3D11_TEXTURE2D_DESC::default();
     // SAFETY: fills `desc`, which outlives the call.
     unsafe { texture.GetDesc(&mut desc) };
@@ -229,7 +229,7 @@ fn size_of(texture: &ID3D11Texture2D) -> (u32, u32) {
 
 /// The performance counter now, in 100 ns units (a frame's
 /// `SystemRelativeTime` is on that clock).
-fn qpc_100ns() -> Option<i64> {
+pub(super) fn qpc_100ns() -> Option<i64> {
     let (mut count, mut frequency) = (0_i64, 0_i64);
     // SAFETY: plain reads into locals.
     unsafe { QueryPerformanceCounter(&mut count).ok()? };
@@ -274,15 +274,15 @@ impl Session {
 
 /// A session's parts made so far: on a failure every handler is removed
 /// and the pool closed before the error goes back.
-struct Partial {
-    item: GraphicsCaptureItem,
-    pool: Direct3D11CaptureFramePool,
-    frames: Option<i64>,
-    closed: Option<i64>,
+pub(super) struct Partial {
+    pub(super) item: GraphicsCaptureItem,
+    pub(super) pool: Direct3D11CaptureFramePool,
+    pub(super) frames: Option<i64>,
+    pub(super) closed: Option<i64>,
 }
 
 impl Partial {
-    fn fail(self, why: String) -> String {
+    pub(super) fn fail(self, why: String) -> String {
         if let Some(token) = self.frames {
             let _ = self.pool.RemoveFrameArrived(token);
         }
@@ -687,14 +687,35 @@ fn read(
     let Some(frame) = newest.frame.clone() else {
         return Err("no frame of the editor yet".to_string());
     };
-    let fits = newest
-        .staging
+    let pixels = read_box(device, &mut newest.staging, &frame, within)?;
+    newest.arrivals.taken();
+    Ok(pixels)
+}
+
+/// The box `within` of the GPU texture `frame` read back: copied on the GPU
+/// into a staging texture of its size (`staging`, kept for the next box of
+/// that size), mapped once, its rows into [`Pixels`]. The box must lie
+/// inside `frame` (checked: else an error, nothing copied).
+pub(super) fn read_box(
+    device: &Device,
+    staging: &mut Option<ID3D11Texture2D>,
+    frame: &ID3D11Texture2D,
+    within: FrameBox,
+) -> Result<Pixels, String> {
+    let (frame_w, frame_h) = size_of(frame);
+    if within.left + within.width > frame_w || within.top + within.height > frame_h {
+        return Err(format!(
+            "the box {}x{} at {},{} is past the frame's {frame_w}x{frame_h}",
+            within.width, within.height, within.left, within.top
+        ));
+    }
+    let fits = staging
         .as_ref()
         .is_some_and(|s| size_of(s) == (within.width, within.height));
     if !fits {
-        newest.staging = Some(texture(&device.device, within.width, within.height, true)?);
+        *staging = Some(texture(&device.device, within.width, within.height, true)?);
     }
-    let staging = newest.staging.clone().ok_or("no staging texture")?;
+    let staging = staging.clone().ok_or("no staging texture")?;
     let source = D3D11_BOX {
         left: within.left,
         top: within.top,
@@ -705,12 +726,11 @@ fn read(
     };
     let context = locked(&device.context);
     let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-    // SAFETY: the box lies inside `frame` (`picture_box` cut it to the
-    // content, which `keep` cut to the texture), the staging texture is the
-    // box's size, and the mapped rows are read within the pitch Direct3D
-    // gives before the unmap.
+    // SAFETY: the box lies inside `frame` (checked above), the staging
+    // texture is the box's size, and the mapped rows are read within the
+    // pitch Direct3D gives before the unmap.
     let bgra = unsafe {
-        context.CopySubresourceRegion(&staging, 0, 0, 0, 0, &frame, 0, Some(&source));
+        context.CopySubresourceRegion(&staging, 0, 0, 0, 0, frame, 0, Some(&source));
         context
             .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
             .map_err(|e| text("Map", e))?;
@@ -725,7 +745,6 @@ fn read(
         bgra
     };
     drop(context);
-    newest.arrivals.taken();
     Ok(Pixels {
         width: within.width,
         height: within.height,

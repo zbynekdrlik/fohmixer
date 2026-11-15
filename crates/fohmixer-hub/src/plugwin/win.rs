@@ -94,6 +94,7 @@ use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
 
 use super::capture::{Capture, CaptureCounts, CaptureDiag, WGC_LAG_MS};
 use super::wgc::Wgc;
+use super::wgc_display::Display;
 use super::{Backend, Phase, Pixels, Rect, Taken, WindowId};
 
 /// The class of Live's top-level plug-in editor windows.
@@ -385,6 +386,7 @@ pub struct Win {
     /// How it grabs (#215), and its Windows Graphics Capture sessions.
     capture: Capture,
     wgc: Wgc,
+    display: Display,
 }
 
 /// The `eq-probe` backend: it takes any window of the process it is
@@ -423,6 +425,7 @@ impl Win {
             held_props: HashMap::new(),
             capture: Capture::default(),
             wgc: Wgc::default(),
+            display: Display::default(),
         }
     }
 
@@ -506,8 +509,10 @@ impl Backend for Win {
         let rect = window_rect(handle)?;
         place(handle, true)?;
         let (width, height) = client_size(picture)?;
-        if self.capture == Capture::Wgc {
-            self.wgc.begin(handle);
+        match self.capture {
+            Capture::Wgc => self.wgc.begin(handle),
+            Capture::WgcDisplay => self.display.begin(handle),
+            Capture::Blt => {}
         }
         Ok(Taken {
             window,
@@ -574,12 +579,23 @@ impl Backend for Win {
             return Err("the picture is empty".to_string());
         }
         let origin = to_screen(picture, (0, 0))?;
-        if self.capture == Capture::Wgc {
-            return self.wgc.grab(
-                hwnd(taken.window),
-                (origin.x, origin.y),
-                (width as u32, height as u32),
-            );
+        match self.capture {
+            Capture::Wgc => {
+                return self.wgc.grab(
+                    hwnd(taken.window),
+                    (origin.x, origin.y),
+                    (width as u32, height as u32),
+                );
+            }
+            // #215: the monitor's frame, cut to the picture.
+            Capture::WgcDisplay => {
+                return self.display.grab(
+                    hwnd(taken.window),
+                    (origin.x, origin.y),
+                    (width as u32, height as u32),
+                );
+            }
+            Capture::Blt => {}
         }
         let mut bgra = vec![0_u8; width as usize * height as usize * 4];
         let mut info = BITMAPINFO {
@@ -648,18 +664,24 @@ impl Backend for Win {
     }
 
     fn changed(&mut self, taken: &Taken) -> bool {
+        // A monitor's frame tells nothing about the editor (#215,
+        // `wgc-display`): the worker's rate alone decides, as for `blt`.
         self.capture != Capture::Wgc || self.wgc.changed(hwnd(taken.window))
     }
 
     fn lag_ms(&self) -> f64 {
         match self.capture {
-            Capture::Wgc => WGC_LAG_MS,
+            Capture::Wgc | Capture::WgcDisplay => WGC_LAG_MS,
             Capture::Blt => 0.0,
         }
     }
 
     fn capture_counts(&mut self, taken: &Taken) -> Option<CaptureCounts> {
-        self.wgc.counts(hwnd(taken.window))
+        match self.capture {
+            Capture::Wgc => self.wgc.counts(hwnd(taken.window)),
+            Capture::WgcDisplay => self.display.counts(hwnd(taken.window)),
+            Capture::Blt => None,
+        }
     }
 
     fn capture_diag(&mut self, window: WindowId) -> Option<CaptureDiag> {
@@ -667,10 +689,10 @@ impl Backend for Win {
     }
 
     fn capture_started(&mut self, taken: &Taken) -> Result<(), String> {
-        if self.capture == Capture::Wgc {
-            self.wgc.started(hwnd(taken.window))
-        } else {
-            Ok(())
+        match self.capture {
+            Capture::Wgc => self.wgc.started(hwnd(taken.window)),
+            Capture::WgcDisplay => self.display.started(hwnd(taken.window)),
+            Capture::Blt => Ok(()),
         }
     }
 
@@ -692,6 +714,7 @@ impl Backend for Win {
     fn release(&mut self, taken: &Taken) {
         let window = hwnd(taken.window);
         self.wgc.end(window);
+        self.display.end(window);
         if exists(window)
             && let Err(why) = place(window, taken.was_topmost)
         {
@@ -883,5 +906,8 @@ mod tests {
         let mut blt = Win::new();
         blt.capture = Capture::Blt;
         assert_eq!(blt.lag_ms(), 0.0);
+        let mut display = Win::new();
+        display.capture = Capture::WgcDisplay;
+        assert_eq!(display.lag_ms(), WGC_LAG_MS);
     }
 }
