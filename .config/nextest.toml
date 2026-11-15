@@ -37,7 +37,7 @@ test-group = 'hub-hosts'
 [profile.mutants]
 # A mutant is caught at its first failing test: stop there and end the tests
 # still running, so a mutant that makes some tests hang is caught by a bounded
-# test in seconds instead of holding the run until cargo-mutants' 220 s
+# test in seconds instead of holding the run until cargo-mutants' 260 s
 # timeout (TIMEOUT; .claude/rules/ci.md).
 fail-fast = { max-fail = 1, terminate = "immediate" }
 # Every test is bounded: a test still running after 2 × 5 s is ended and
