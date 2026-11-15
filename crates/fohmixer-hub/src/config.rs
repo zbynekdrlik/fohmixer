@@ -77,9 +77,14 @@
 //! # says so), "windows" (Live's editor windows: written by hand on the PC
 //! # only after `eq-probe` passed against Carla's bridge,
 //! # `.claude/rules/plugin-window.md`) or "sim" (a synthetic picture: the
-//! # default elsewhere, the tests and the E2E harness).
+//! # default elsewhere, the tests and the E2E harness). `capture` (#215):
+//! # how the Windows backend grabs an editor: "wgc" (the default: Windows
+//! # Graphics Capture, a frame only when the editor changed) or "blt" (the
+//! # old costly path: a BitBlt of the screen at every grab, kept so the PC
+//! # can switch back without a rebuild).
 //! [eq]
 //! backend = "windows"
+//! capture = "wgc"
 //! ```
 //!
 //! Every key is optional; a missing file is the defaults. `allowed_hosts`
@@ -97,6 +102,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, bail};
 use serde::Deserialize;
+
+pub use crate::plugwin::capture::Capture;
 
 mod link;
 pub use link::{LinkCfg, is_link_url};
@@ -434,12 +441,15 @@ pub struct AutotuneCfg {
     pub engage_delay_ms: u64,
 }
 
-/// `[eq]` (#71 PR E): the Pro-Q 4 screen's backend.
+/// `[eq]` (#71 PR E): the Pro-Q 4 screen's backend, and how the Windows
+/// backend grabs an editor (#215).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EqCfg {
     #[serde(default)]
     pub backend: Option<EqBackend>,
+    #[serde(default)]
+    pub capture: Option<Capture>,
 }
 
 /// The backend when `[eq]` names none: never Live's windows. On Windows
@@ -769,6 +779,15 @@ impl Config {
             .as_ref()
             .and_then(|eq| eq.backend)
             .unwrap_or_else(default_eq_backend)
+    }
+
+    /// How the Windows backend grabs an editor (#215): `[eq]`'s, else
+    /// Windows Graphics Capture.
+    pub fn eq_capture(&self) -> Capture {
+        self.eq
+            .as_ref()
+            .and_then(|eq| eq.capture)
+            .unwrap_or_default()
     }
 
     /// `[companion]` (#52): a host without spaces or quotes, a port, the
@@ -1846,6 +1865,20 @@ mod tests {
         assert_eq!(eq_backend_of("[eq]\n"), default_eq_backend());
         assert!(eq_refused("[eq]\nbackend = \"mac\"\n").contains("unknown variant"));
         assert!(eq_refused("[eq]\nscreen = 1\n").contains("unknown field"));
+    }
+
+    #[test]
+    fn eq_capture_is_the_tables_or_windows_graphics_capture() {
+        let capture = |text: &str| Config::parse(text, &data()).unwrap().eq_capture();
+        assert_eq!(capture(""), Capture::Wgc);
+        assert_eq!(capture("[eq]\n"), Capture::Wgc);
+        assert_eq!(capture("[eq]\ncapture = \"wgc\"\n"), Capture::Wgc);
+        assert_eq!(capture("[eq]\ncapture = \"blt\"\n"), Capture::Blt);
+        assert_eq!(
+            capture("[eq]\nbackend = \"sim\"\ncapture = \"blt\"\n"),
+            Capture::Blt
+        );
+        assert!(eq_refused("[eq]\ncapture = \"gdi\"\n").contains("unknown variant"));
     }
 
     // Live's windows are never the default: on Windows the screen is off

@@ -707,9 +707,10 @@ test.describe("The Pro-Q 4 screen", () => {
 
   test("the page acks each frame and the frames keep coming; its fingers on the picture reach the flight recorder", async ({ page }) => {
     // #71 PR I: one frame in flight per page. The hub sends the next frame
-    // only once the page acked the one before (or 1 s passed), so without
-    // the page's acks the sim's four frames a second would come one a
-    // second.
+    // only once the page acked the one before (or 1 s passed). #215: an
+    // editor with no input for 2 s rests at one grab a second, so an
+    // untouched screen draws at least one frame a second; the flow control
+    // under a faster picture is `tests/it/eq.rs`' (a finger resting there).
     const since = Date.now();
     const acks: any[] = [];
     page.on("websocket", (ws) => {
@@ -729,8 +730,8 @@ test.describe("The Pro-Q 4 screen", () => {
     const acked = acks.length;
     await page.waitForTimeout(4_000);
     const frameCount = (await drawn()) - first;
-    expect(frameCount, "frames drawn in 4 s (one a second without acks)").toBeGreaterThanOrEqual(8);
-    expect(acks.length - acked, "the page's acks").toBeGreaterThanOrEqual(8);
+    expect(frameCount, "frames drawn in 4 s (at least one a second: a resting editor's refresh, #215)").toBeGreaterThanOrEqual(3);
+    expect(acks.length - acked, "the page's acks").toBeGreaterThanOrEqual(3);
     expect(acks.every((a) => a.session === session), JSON.stringify(acks.slice(0, 3))).toBe(true);
     // Each ack names its frame (the PR I review): the hub numbers a
     // session's frames from 1, and the page acks every one in order.
@@ -1681,7 +1682,8 @@ test.describe("The Pro-Q 4 screen and touch-idle (#51)", () => {
         "no idle while the screen is open",
       ).toEqual([]);
       await expect(surface).toHaveAttribute("data-idle", "false");
-      expect((await drawn()) - first, "frames drawn in 4 s").toBeGreaterThanOrEqual(8);
+      // #215: untouched, the editor rests at one grab a second.
+      expect((await drawn()) - first, "frames drawn in 4 s").toBeGreaterThanOrEqual(3);
 
       // Closed: the page goes idle the layout's seconds after the exit's
       // touch, its meters paced.

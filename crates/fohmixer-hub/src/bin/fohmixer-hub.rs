@@ -21,7 +21,8 @@
 //!   fohmixer-hub markers frame <layout> <out>
 //!                                       write <layout> converted to tags groups to <out>, a new
 //!                                       file: exit 0, or 2 with why
-//!   fohmixer-hub eq-probe --pid <pid> [--frames <n>] [--size <w>x<h>] [--min-probe]
+//!   fohmixer-hub eq-probe --pid <pid> [--frames <n>] [--capture wgc|blt] [--capture-only]
+//!                         [--size <w>x<h>] [--min-probe]
 //!                         [--band <x,y>] [--to <x,y>] [--inert <x,y>] [--out <folder>]
 //!                         [--close] [--sim]
 //!                                       drive the plug-in window backend against a window of
