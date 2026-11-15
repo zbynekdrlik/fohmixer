@@ -222,22 +222,13 @@ pub const MINI_HEAD: &str = "STAGE";
 /// The miniature's caption on its right while Presenter can't be reached.
 pub const MINI_OFFLINE: &str = "offline";
 
-/// A rail button's row at its full height and the rows' gap (`page.css`
-/// `.rail-main`: `minmax(24px, 44px)`, 4 px apart): with less room the rows
-/// shrink, which the miniature must never cause.
-pub const RAIL_ROW: f64 = 44.0;
-pub const RAIL_ROW_GAP: f64 = 4.0;
-
 /// The gap between the rail's parts (`page.css` `.rail`): the miniature
 /// adds one.
 pub const RAIL_GAP: f64 = 6.0;
 
 /// The miniature's box around its picture (`presenter.css` `.stage-mini`):
-/// its border and padding on each side, its caption's line and the gap
-/// under it.
+/// its border and padding on each side.
 pub const MINI_EDGE: f64 = 5.0;
-pub const MINI_CAPTION: f64 = 11.0;
-pub const MINI_CAPTION_GAP: f64 = 3.0;
 
 /// The widest screen that is a phone (`page.css`: `max-width: 520px` or
 /// `max-height: 520px`, the thin strip with ☰ in the column's place).
@@ -248,22 +239,11 @@ pub fn phone(width: f64, height: f64) -> bool {
     width <= PHONE_MAX || height <= PHONE_MAX
 }
 
-/// The least picture the miniature shows (px high, #90's DECIDED of
-/// 2026-11-09 evening: the caption and about 40 px of picture); with less
-/// room the rail's rows shrink for it.
-pub const MINI_MIN_PICTURE: f64 = 40.0;
-
 /// The miniature's picture width in a rail `rail_width` px wide (none when
 /// there is no room for one).
 pub fn mini_width(rail_width: f64) -> Option<f64> {
     let width = rail_width - 2.0 * MINI_EDGE;
     (width > 0.0).then_some(width)
-}
-
-/// The miniature's box around a picture `height` px high: its border and
-/// padding, its caption's line and the gap under it.
-pub fn mini_height(height: f64) -> f64 {
-    2.0 * MINI_EDGE + MINI_CAPTION + MINI_CAPTION_GAP + height
 }
 
 /// The rail's rows from its resolved `grid-template-rows` (each track a
@@ -285,29 +265,16 @@ pub struct RailRoom {
     pub rows: usize,
 }
 
-/// The rows' height at their full 44 px, 4 px apart.
-pub fn rows_height(rows: usize) -> f64 {
-    let gaps = rows.saturating_sub(1);
-    rows as f64 * RAIL_ROW + gaps as f64 * RAIL_ROW_GAP
-}
-
-/// The miniature's picture (width, height) in the rail (#90's DECIDED of
-/// 2026-11-09 evening, option A): 16:9, as wide as the rail allows, as high
-/// as the room the rail's rows leave at their full 44 px (less the
-/// miniature's box and its 6 px gap), a whole px high when that room cuts
-/// it, and never under `MINI_MIN_PICTURE` (unless the rail is too narrow for
-/// it: its width at 16:9): below it the rows give the room up (`page.css`
-/// lets them shrink to 24 px); the faders never. None only for a rail with
-/// no width for a picture.
+/// The miniature's picture (width, height) in the rail (#212, the owner's
+/// approved `docs/mockups/column-calm-v2.html`: "stage preview by mal byt
+/// tak vysoky aby preview realne vyplnilo ten preview"): the rail's whole
+/// width less the box's edges, at 16:9, so the picture fills its box; it
+/// has the priority over the rail's rows, which give it the room
+/// (`page.css`'s `minmax(24px, 44px)`, the rail scrolling under 24 px);
+/// the faders never. None only for a rail with no width for a picture.
+/// The rows and the room stay in `RailRoom` for the recorder's `mini_fit`.
 pub fn mini_picture(rail: RailRoom) -> Option<(f64, f64)> {
-    let widest = mini_width(rail.width)?;
-    let full = widest * STAGE_H / STAGE_W;
-    let room = rail.room - rows_height(rail.rows) - RAIL_GAP - mini_height(0.0);
-    if room >= full {
-        return Some((widest, full));
-    }
-    let height = room.floor().max(MINI_MIN_PICTURE).min(full);
-    Some((height * STAGE_W / STAGE_H, height))
+    mini_width(rail.width).map(|width| (width, width * STAGE_H / STAGE_W))
 }
 
 /// Why the miniature is not there.
@@ -534,18 +501,12 @@ mod tests {
     }
 
     #[test]
-    fn the_miniatures_box_is_the_rails_width_less_its_edges_and_its_caption() {
+    fn the_miniatures_picture_is_the_rails_width_less_its_edges() {
         assert_eq!(mini_width(118.0), Some(108.0));
         assert_eq!(mini_width(10.5), Some(0.5));
         assert_eq!(mini_width(10.0), None);
         assert_eq!(mini_width(0.0), None);
-        // 10 for the box, 11 + 3 for the caption, then the picture.
-        assert_eq!(mini_height(108.0), 132.0);
-        assert_eq!(mini_height(0.0), 24.0);
-        assert_eq!(
-            (MINI_EDGE, MINI_CAPTION, MINI_CAPTION_GAP, MINI_MIN_PICTURE),
-            (5.0, 11.0, 3.0, 40.0)
-        );
+        assert_eq!((MINI_EDGE, RAIL_GAP), (5.0, 6.0));
     }
 
     #[test]
@@ -557,76 +518,23 @@ mod tests {
         assert_eq!(track_count("[a] 44px [b] 24px"), 2);
     }
 
-    #[test]
-    fn the_rows_keep_44_px_each_and_4_px_between() {
-        assert_eq!(rows_height(0), 0.0);
-        assert_eq!(rows_height(1), 44.0);
-        assert_eq!(rows_height(3), 140.0);
-        assert_eq!((RAIL_ROW, RAIL_ROW_GAP, RAIL_GAP), (44.0, 4.0, 6.0));
-    }
-
     fn rail(width: f64, room: f64, rows: usize) -> RailRoom {
         RailRoom { width, room, rows }
     }
 
     #[test]
-    fn with_room_the_picture_is_the_rails_whole_width() {
-        // 118 px rail: a 108 x 60.75 picture, its box 84.75 px. Three rows
-        // 140 px, the gap 6: 230.75 px of room is exactly enough.
-        assert_eq!(mini_picture(rail(118.0, 230.75, 3)), Some((108.0, 60.75)));
-        assert_eq!(mini_picture(rail(118.0, 500.0, 3)), Some((108.0, 60.75)));
-    }
-
-    #[test]
-    fn with_less_room_the_picture_shrinks_to_a_whole_px_high_16_by_9() {
-        // 230.5 px: 60.5 px of picture height left, floored to 60.
-        assert_eq!(
-            mini_picture(rail(118.0, 230.5, 3)),
-            Some((60.0 * 16.0 / 9.0, 60.0))
-        );
-        // 50 px of room left for the picture.
-        assert_eq!(
-            mini_picture(rail(118.0, 220.0, 3)),
-            Some((50.0 * 16.0 / 9.0, 50.0))
-        );
-        // 40.99 px left: 40.
-        assert_eq!(
-            mini_picture(rail(118.0, 210.99, 3)),
-            Some((40.0 * 16.0 / 9.0, 40.0))
-        );
-    }
-
-    #[test]
-    fn under_the_least_picture_the_rows_give_up_the_room() {
-        let least = Some((40.0 * 16.0 / 9.0, 40.0));
-        // Exactly the least picture after 3 rows at 44 px.
-        assert_eq!(mini_picture(rail(118.0, 210.0, 3)), least);
-        // Less: still the least picture, the rows shrink.
-        assert_eq!(mini_picture(rail(118.0, 209.99, 3)), least);
-        assert_eq!(mini_picture(rail(118.0, 100.0, 8)), least);
-        assert_eq!(mini_picture(rail(118.0, 0.0, 0)), least);
-        // One row, no gap between rows: 44 + 6 + 24 + 41 = 115.
-        assert_eq!(
-            mini_picture(rail(118.0, 115.0, 1)),
-            Some((41.0 * 16.0 / 9.0, 41.0))
-        );
-        // No buttons: 6 + 24 + 41 = 71.
-        assert_eq!(
-            mini_picture(rail(118.0, 71.0, 0)),
-            Some((41.0 * 16.0 / 9.0, 41.0))
-        );
-    }
-
-    #[test]
-    fn a_narrow_rail_caps_the_picture_by_its_width() {
-        // 90 px rail: at most 80 x 45; with no room the least picture.
-        assert_eq!(mini_picture(rail(90.0, 500.0, 0)), Some((80.0, 45.0)));
-        assert_eq!(
-            mini_picture(rail(90.0, 0.0, 8)),
-            Some((40.0 * 16.0 / 9.0, 40.0))
-        );
-        // A rail narrower than the least picture: its width, under 40 px high.
-        assert_eq!(mini_picture(rail(50.0, 0.0, 0)), Some((40.0, 22.5)));
+    fn the_picture_is_the_rails_whole_width_at_16_by_9_whatever_the_rows() {
+        // 118 px rail: a 108 x 60.75 picture filling its box (#212), with
+        // room or without: the rows give it the room, never the picture.
+        let whole = Some((108.0, 60.75));
+        assert_eq!(mini_picture(rail(118.0, 500.0, 3)), whole);
+        assert_eq!(mini_picture(rail(118.0, 230.5, 3)), whole);
+        assert_eq!(mini_picture(rail(118.0, 100.0, 8)), whole);
+        assert_eq!(mini_picture(rail(118.0, 0.0, 0)), whole);
+        // Another width: its own 16:9.
+        assert_eq!(mini_picture(rail(90.0, 0.0, 8)), Some((80.0, 45.0)));
+        assert_eq!(mini_picture(rail(10.5, 0.0, 0)), Some((0.5, 0.28125)));
+        // No width for a picture.
         assert_eq!(mini_picture(rail(10.0, 500.0, 0)), None);
     }
 
@@ -657,10 +565,7 @@ mod tests {
         );
         assert_eq!(
             mini_fit(true, false, false, Some(rail(118.0, 100.0, 3))),
-            MiniFit::Shown {
-                width: 40.0 * 16.0 / 9.0,
-                height: 40.0
-            }
+            shown
         );
         assert_eq!(
             mini_fit(true, false, false, Some(rail(10.0, 500.0, 3))),
