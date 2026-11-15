@@ -19,7 +19,8 @@
 //!   queued: the held one). With the pool FULL (the held frame and a queued
 //!   one), changes after the queued frame may have been dropped: the held
 //!   frame is closed, and the grab waits at most [`WAIT_MS`] for a fresh
-//!   arrival ([`Frames::settle`]). Only the editor's box of the frame used
+//!   arrival ([`Frames::settle`]); so does a grab with no frame at all (a
+//!   session's first, one after a frame was given back). Only the editor's box of the frame used
 //!   is read back, and that frame stays held.
 //! - **The doubt:** no source says whether DWM delivers a change it dropped
 //!   once a buffer frees, so the code assumes it does not. A queued frame
@@ -27,6 +28,9 @@
 //!   change; that picture and every one from the same held frame are
 //!   counted `unsure` until a fresh frame, or a queued one with a buffer
 //!   free beside it, comes.
+//! - **[`pool_act`]:** a frame not of the monitor's size now is given back;
+//!   a new size makes the pool anew (decided from the monitor's live
+//!   rectangle, never the capture item's size).
 //! - **[`display_box`]:** the editor's picture in a frame of its monitor
 //!   (both physical pixels under the worker's per-monitor-v2 awareness).
 
@@ -231,6 +235,34 @@ impl Frames {
     /// The grabs' outcomes so far.
     pub fn tally(&self) -> Tally {
         self.tally
+    }
+}
+
+/// What a grab does with its frame and the pool, by sizes (px): the pool's
+/// buffers, the frame's content, the monitor's `rcMonitor` now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoolAct {
+    /// The frame is read.
+    Keep,
+    /// The monitor's size changed: the pool is made anew at the frame's
+    /// size (DWM's, as `wgc` and the `windows-capture` crate follow it),
+    /// and the frame, from the old buffers, is given back.
+    Recreate((u32, u32)),
+    /// A frame not of the monitor's size now (queued before a change of
+    /// resolution): given back, never read.
+    Retire,
+}
+
+/// The pool's act for a frame (the #215 re-review: decided from the
+/// monitor's live rectangle, never the capture item's size, which may stay
+/// the one it was made with).
+pub fn pool_act(pool: (u32, u32), content: (u32, u32), screen: (u32, u32)) -> PoolAct {
+    if !frame_current(content, screen) {
+        PoolAct::Retire
+    } else if content != pool {
+        PoolAct::Recreate(content)
+    } else {
+        PoolAct::Keep
     }
 }
 
@@ -502,6 +534,25 @@ mod tests {
             Some(Outcome::Current),
             "the doubt went with the frame"
         );
+    }
+
+    #[test]
+    fn a_frame_of_the_monitors_size_is_read_and_a_new_size_makes_the_pool_anew() {
+        let fhd = (1920, 1080);
+        assert_eq!(pool_act(fhd, fhd, fhd), PoolAct::Keep);
+        // Within the 2 px slack of the monitor, but not the pool's: anew.
+        assert_eq!(
+            pool_act(fhd, (1921, 1080), fhd),
+            PoolAct::Recreate((1921, 1080))
+        );
+        // The resolution changed: the new frames' size, the pool follows.
+        let qhd = (2560, 1440);
+        assert_eq!(pool_act(fhd, qhd, qhd), PoolAct::Recreate(qhd));
+        assert_eq!(pool_act(qhd, qhd, qhd), PoolAct::Keep);
+        // An old frame queued before the change: given back.
+        assert_eq!(pool_act(qhd, fhd, qhd), PoolAct::Retire);
+        assert_eq!(pool_act(fhd, fhd, qhd), PoolAct::Retire);
+        assert_eq!(pool_act(fhd, (1923, 1080), fhd), PoolAct::Retire);
     }
 
     #[test]

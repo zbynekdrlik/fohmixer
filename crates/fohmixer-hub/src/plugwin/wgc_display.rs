@@ -19,7 +19,9 @@
 //!   the pool between two grabs and drops the rest.
 //! - **A grab** drains the pool to its newest frame (closing the older),
 //!   waits for one fresh arrival at most [`WAIT_MS`] only when the pool was
-//!   full (a change may have been dropped), keeps the newest frame it has
+//!   full (a change may have been dropped) or no frame is there at all (a
+//!   session's first grab, one after a frame given back), keeps the newest
+//!   frame it has
 //!   ([`Frames`]), and reads back
 //!   only the editor's box of it ([`super::wgc::read_box`]: a GPU copy into
 //!   a staging texture, one map).
@@ -53,7 +55,9 @@ use windows::core::{IInspectable, Interface};
 
 use super::Pixels;
 use super::capture::CaptureCounts;
-use super::capture::display::{BUFFERS, Frame, Frames, Monitors, Outcome, WAIT_MS, display_box};
+use super::capture::display::{
+    BUFFERS, Frame, Frames, Monitors, Outcome, PoolAct, WAIT_MS, display_box, pool_act,
+};
 use super::wgc::{
     Device, FORMAT, Failures, device_in, locked, lost, qpc_100ns, read_box, start_capture,
     supported, text,
@@ -412,8 +416,8 @@ fn read(
     match settled.close {
         Some(Frame::Queued) => close(queued.take()),
         Some(Frame::Held) => close(screen.held.take()),
-        Some(Frame::Fresh) => close(fresh.take()),
-        None => {}
+        // `settle` never closes the fresh frame it uses.
+        Some(Frame::Fresh) | None => {}
     }
     let used = match settled.frame {
         Frame::Fresh => fresh.take(),
@@ -452,13 +456,14 @@ fn read(
 }
 
 /// An error after which the frame used is given back, never held: it is of
-/// another size than the monitor's now.
+/// another size than the monitor's now, or the pool was made anew.
 struct Retired(String);
 
-/// The editor's box of `frame` read back. A monitor whose size changed
-/// recreates the pool for it, and a frame of another size than the monitor
-/// (one queued before that) is given back: `Err(Retired)`, the next grab
-/// takes a frame of the new size. Any other failure is `Ok(Err)` (the
+/// The editor's box of `frame` read back. The pool's act is
+/// [`pool_act`]'s, from the monitor's live rectangle: a frame of another
+/// size than the monitor (queued before a change of resolution) is given
+/// back, a new size makes the pool anew (`Err(Retired)`: the next grab
+/// takes a frame of the new size). Any other failure is `Ok(Err)` (the
 /// frame stays held).
 fn picture_of(
     device: &Device,
@@ -468,38 +473,44 @@ fn picture_of(
     origin: (i32, i32),
     size: (u32, u32),
 ) -> Result<Result<Pixels, String>, Retired> {
-    let now = screen
-        .item
-        .Size()
-        .map_err(|e| Retired(text("GraphicsCaptureItem.Size", e)))?;
-    if (now.Width, now.Height) != (screen.size.Width, screen.size.Height)
-        && now.Width > 0
-        && now.Height > 0
-    {
-        let why = format!(
-            "the screen is {}x{} now, its frames {}x{}: its pool made anew",
-            now.Width, now.Height, screen.size.Width, screen.size.Height
-        );
-        screen
-            .pool
-            .Recreate(device.direct3d.get(), FORMAT, BUFFERS, now)
-            .map_err(|e| Retired(text("Recreate", e)))?;
-        screen.size = now;
-        return Err(Retired(why));
-    }
     let content = frame
         .ContentSize()
         .map_err(|e| Retired(text("ContentSize", e)))?;
-    if (content.Width, content.Height) != (now.Width, now.Height) {
-        return Err(Retired(format!(
-            "a frame of {}x{}, the screen {}x{}: one of its size awaited",
-            content.Width, content.Height, now.Width, now.Height
-        )));
-    }
     let side = |v: i32| u32::try_from(v).unwrap_or(0);
+    let span = |from: i32, to: i32| u32::try_from(i64::from(to) - i64::from(from)).unwrap_or(0);
+    let content = (side(content.Width), side(content.Height));
+    let pool = (side(screen.size.Width), side(screen.size.Height));
+    let now = (
+        span(monitor.left, monitor.right),
+        span(monitor.top, monitor.bottom),
+    );
+    match pool_act(pool, content, now) {
+        PoolAct::Keep => {}
+        PoolAct::Retire => {
+            return Err(Retired(format!(
+                "a frame of {}x{}, the screen {}x{}: one of its size awaited",
+                content.0, content.1, now.0, now.1
+            )));
+        }
+        PoolAct::Recreate((width, height)) => {
+            let to = SizeInt32 {
+                Width: i32::try_from(width).unwrap_or(i32::MAX),
+                Height: i32::try_from(height).unwrap_or(i32::MAX),
+            };
+            screen
+                .pool
+                .Recreate(device.direct3d.get(), FORMAT, BUFFERS, to)
+                .map_err(|e| Retired(text("Recreate", e)))?;
+            screen.size = to;
+            return Err(Retired(format!(
+                "the screen's frames are {width}x{height} now, its pool {}x{}: made anew",
+                pool.0, pool.1
+            )));
+        }
+    }
     let within = match display_box(
         (monitor.left, monitor.top, monitor.right, monitor.bottom),
-        (side(content.Width), side(content.Height)),
+        content,
         origin,
         size,
     ) {
