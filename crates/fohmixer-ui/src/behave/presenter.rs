@@ -5,8 +5,8 @@
 //! key's 1 s hold may switch the stage. `pages/presenter.rs` carries it out.
 //! Since 1.37.0 also the column's stage miniature (way A of the owner's
 //! approved `docs/mockups/presenter-stage-v2.html`): whether it shows and
-//! its size (since 1.38.2 never under its least picture: the rail's rows
-//! give it room, the faders never) and its caption.
+//! its size (since #212 the rail's whole width at 16:9, the picture filling
+//! its box: the rail's rows give it room, the faders never) and its caption.
 
 use fohmixer_proto::client::StageLayout;
 

@@ -1116,13 +1116,18 @@ fn ArrangeButton(carrier: Carrier, refused: RwSignal<Option<&'static str>>) -> i
             return;
         };
         let _ = refused.try_set(None);
-        let tap = change_mode(mode, |m| m.tap(&doc)).flatten();
-        diag::record(&trace::tab(
-            dom::epoch_now(),
-            TabStep::Arrange {
-                act: tap_act(tap.as_ref()),
-            },
-        ));
+        // A disposed mode (`change_mode`'s outer none) is no press to
+        // record; a save on its way is `busy`.
+        let tapped = change_mode(mode, |m| m.tap(&doc));
+        if let Some(tap) = tapped.as_ref() {
+            diag::record(&trace::tab(
+                dom::epoch_now(),
+                TabStep::Arrange {
+                    act: tap_act(tap.as_ref()),
+                },
+            ));
+        }
+        let tap = tapped.flatten();
         carrier.leave();
         if let Some(Tap::Send(sectors, rev)) = tap {
             let done: ResultFn = Box::new(move |outcome| {

@@ -421,7 +421,7 @@ test.describe("The fader sectors", () => {
   test.describe("the column's picks go to the event log (#212)", () => {
     test.use({ viewport: { width: 1194, height: 834 } });
 
-    test("a page tab, a layout tab and the ARRANGE key each leave a tab event", async ({ page }) => {
+    test("a page tab, a layout tab and the ARRANGE key each leave a tab event, a REMOVE? confirm and an inert tap none", async ({ page }) => {
       await setSectors(DOC);
       await openSectors(page);
       const since = await page.evaluate(() => performance.timeOrigin + performance.now());
@@ -434,15 +434,31 @@ test.describe("The fader sectors", () => {
       await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "true");
       await tab("ld-2").click();
       await expect(tab("ld-2")).toHaveAttribute("aria-pressed", "true");
-      // Nothing changed: the second press leaves the mode with nothing to save.
+      // ✕ asks on ld-2's tab; the tab's tap confirms the removal: no pick.
+      await page.locator('.lay-ed[data-layout="ld-2"] [data-testid="remove"]').click();
+      await expect(tab("ld-2")).toHaveText("REMOVE?");
+      await tab("ld-2").click();
+      await expect(tab("ld-2")).toHaveCount(0);
+      // The second press saves the edit.
       await arrange.click();
       await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "false");
+      // Under STREAM DECK LU's layouts and ARRANGE are inert: a dispatched
+      // down on them changes nothing and records nothing; the FOH tab that
+      // closes the deck is the next pick.
+      await openDeck(page);
+      await tab("lu-1").dispatchEvent("pointerdown");
+      await arrange.dispatchEvent("pointerdown");
+      await frames(page);
+      await expect(tab("lu-2")).toHaveAttribute("aria-pressed", "true");
+      await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "false");
+      await page.locator('[data-testid="tabbar"][data-level="0"] [data-testid="tab"][data-page="foh"]').click();
+      await expect(page.getByTestId("deck")).toHaveCount(0);
       const picks = await until(
         async () =>
           pageEvents(await hubEvents())
             .filter((e) => e.ev === "tab" && e.t >= since)
             .map(({ ev, t, ...rest }) => rest),
-        (p) => p.length >= 5,
+        (p) => p.length >= 6,
         "the page's tab events",
         15000,
       );
@@ -451,7 +467,8 @@ test.describe("The fader sectors", () => {
         { what: "layout", sector: "lu", id: "lu-2", title: "ALT", arrange: false },
         { what: "arrange", act: "start" },
         { what: "layout", sector: "ld", id: "ld-2", title: "FX", arrange: true },
-        { what: "arrange", act: "leave" },
+        { what: "arrange", act: "save" },
+        { what: "page", id: "foh" },
       ]);
     });
   });
