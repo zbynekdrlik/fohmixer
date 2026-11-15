@@ -79,9 +79,11 @@
 //! # `.claude/rules/plugin-window.md`) or "sim" (a synthetic picture: the
 //! # default elsewhere, the tests and the E2E harness). `capture` (#215):
 //! # how the Windows backend grabs an editor: "wgc" (the default: Windows
-//! # Graphics Capture, a frame only when the editor changed) or "blt" (the
-//! # old costly path: a BitBlt of the screen at every grab, kept so the PC
-//! # can switch back without a rebuild).
+//! # Graphics Capture, a frame only when the editor changed), "wgc-display"
+//! # (Windows Graphics Capture of the editor's monitor, cut to the editor at
+//! # a grab: for an editor window Windows 10 makes no capture of) or "blt"
+//! # (the old costly path: a BitBlt of the screen at every grab, kept so the
+//! # PC can switch back without a rebuild).
 //! [eq]
 //! backend = "windows"
 //! capture = "wgc"
@@ -1933,6 +1935,11 @@ mod tests {
         assert_eq!(capture("[eq]\n"), Capture::Wgc);
         assert_eq!(capture("[eq]\ncapture = \"wgc\"\n"), Capture::Wgc);
         assert_eq!(capture("[eq]\ncapture = \"blt\"\n"), Capture::Blt);
+        assert_eq!(
+            capture("[eq]\ncapture = \"wgc-display\"\n"),
+            Capture::WgcDisplay
+        );
+        assert!(eq_refused("[eq]\ncapture = \"wgc_display\"\n").contains("unknown variant"));
         assert_eq!(
             capture("[eq]\nbackend = \"sim\"\ncapture = \"blt\"\n"),
             Capture::Blt

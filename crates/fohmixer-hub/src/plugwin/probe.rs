@@ -24,8 +24,8 @@
 //!    (#215) the capture's own counts: `arrived=` frames Windows Graphics
 //!    Capture delivered meanwhile and `lag_ms_max=` the largest delay from
 //!    a frame's composition to its arrival (`-` for a BitBlt), on the
-//!    `fps=` line with `capture=wgc|blt`. The grabs
-//!    use `--capture wgc|blt` (default `wgc`, the hub's default); with
+//!    `fps=` line with `capture=wgc|wgc-display|blt`. The grabs
+//!    use `--capture wgc|wgc-display|blt` (default `wgc`, the hub's default); with
 //!    `--capture-only` the probe stops here, releases the window and runs
 //!    no gesture, no resize back and no guard, so it measures the capture
 //!    alone on any process's window (an idle Notepad: dasio's comparison).
@@ -135,7 +135,7 @@ use super::{
 };
 
 /// The CLI's usage line.
-pub const USAGE: &str = "usage: fohmixer-hub eq-probe --pid <pid> [--frames <n>] [--capture wgc|blt] [--capture-only] [--hub-rate] [--rest] [--input <x,y>] [--size <w>x<h>] [--min-probe] [--hold] [--paint <n>] [--undo] [--band <x,y>] [--to <x,y>] [--inert <x,y>] [--out <folder>] [--close] [--sim]";
+pub const USAGE: &str = "usage: fohmixer-hub eq-probe --pid <pid> [--frames <n>] [--capture wgc|wgc-display|blt] [--capture-only] [--hub-rate] [--rest] [--input <x,y>] [--size <w>x<h>] [--min-probe] [--hold] [--paint <n>] [--undo] [--band <x,y>] [--to <x,y>] [--inert <x,y>] [--out <folder>] [--close] [--sim]";
 /// Why `--capture-only` was refused with a gesture's flag (#215): it runs
 /// none.
 pub const CAPTURE_ALONE: &str =
@@ -959,13 +959,22 @@ pub fn arrived(counts: Option<CaptureCounts>) -> bool {
 }
 
 /// The capture's own counts as the probe prints them (#215): `-` for a
-/// backend that grabs the screen.
+/// backend that grabs the screen; a display capture's grabs by outcome
+/// after them (`wgc-display`).
 pub fn arrived_text(counts: Option<CaptureCounts>) -> String {
     match counts {
-        Some(counts) => format!(
-            "arrived={} lag_ms_max={:.1}",
-            counts.arrived, counts.lag_ms_max
-        ),
+        Some(counts) => {
+            let display = counts.display.map_or(String::new(), |tally| {
+                format!(
+                    " fresh={} current={} unsure={}",
+                    tally.fresh, tally.current, tally.unsure
+                )
+            });
+            format!(
+                "arrived={} lag_ms_max={:.1}{display}",
+                counts.arrived, counts.lag_ms_max
+            )
+        }
         None => "arrived=- lag_ms_max=-".to_string(),
     }
 }
