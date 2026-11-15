@@ -47,7 +47,7 @@ use crate::components::rec::RecKey;
 use crate::components::stream_lufs::page_readouts;
 use crate::components::{ControlView, Settings, fail_flash, key_of, owns_surface, owns_touches};
 use crate::diag;
-use crate::diag::trace::{self, IemStep};
+use crate::diag::trace::{self, IemStep, TabStep};
 use crate::dom;
 use crate::flow::{is_column, shared_instance};
 use crate::manual::manual_parts;
@@ -618,9 +618,15 @@ pub fn column_pages(layout: &Layout) -> (Vec<PageEntry>, Vec<PageEntry>) {
 /// tab a row of its own, larger; STREAM DECK and ABLESET under them,
 /// smaller: the owner's ruling of 29.10.2026 on #148), the pager's tabs
 /// (none on an extra tab) and SOLO ✕. The status is the column's foot
-/// ([`ColumnFoot`]).
+/// ([`ColumnFoot`]). `beside` is a page's id and a key drawn at the right
+/// of that page's tab, in its row (#212: the sectors page's ARRANGE key,
+/// `⇄`, beside its own page's tab).
 #[component]
-pub fn ColumnHead() -> impl IntoView {
+pub fn ColumnHead(
+    /// A page's id and a key beside its tab (#212), none on the rows pages.
+    #[prop(optional)]
+    beside: Option<(String, ViewFnOnce)>,
+) -> impl IntoView {
     let nav = expect_context::<Nav>();
     let Head {
         layout,
@@ -713,7 +719,7 @@ pub fn ColumnHead() -> impl IntoView {
     // hold on a down there (a tab: outside its page before the column).
     view! {
         <div class="column-head">
-            <TabBar tabs=tabs level=0 selected=page />
+            <TabBar tabs=tabs level=0 selected=page beside=beside />
             {pager_tabs}
             {views_bar}
             {solo}
@@ -730,8 +736,13 @@ fn TabBar(
     /// Dimmed and inert (#68: the pager's tabs while a view is shown).
     #[prop(optional)]
     dim: bool,
+    /// A page's id and a key at the right of its tab, in its row (#212:
+    /// ARRANGE beside the sectors page's own tab).
+    #[prop(optional_no_strip)]
+    beside: Option<(String, ViewFnOnce)>,
 ) -> impl IntoView {
     let nav = expect_context::<Nav>();
+    let mut beside = beside;
     let buttons = tabs
         .into_iter()
         .map(|(index, id, title)| {
@@ -744,7 +755,19 @@ fn TabBar(
             // page's tab (level 0) is the column's first, larger row (#148).
             let no_keys: Vec<String> = Vec::new();
             let page_tab = level == 0;
-            view! {
+            // A mixer page's pick goes to the recorder (#212: the column's
+            // use counted from the event log).
+            let picked = StoredValue::new(id.clone());
+            let id_of = id.clone();
+            let on_down = move |_| {
+                if page_tab {
+                    let _ = picked.try_with_value(|id| {
+                        diag::record(&trace::tab(dom::epoch_now(), TabStep::Page { id }));
+                    });
+                }
+                nav.select(level, index);
+            };
+            let tab = view! {
                 <button
                     type="button"
                     class="tab"
@@ -754,10 +777,23 @@ fn TabBar(
                     data-testid="tab"
                     data-page=id
                     data-selected=move || lit().to_string()
-                    on:pointerdown=move |_| nav.select(level, index)
+                    on:pointerdown=on_down
                 >
                     {title}
                 </button>
+            };
+            // The tab `beside` names takes its key into its row (#212); the
+            // tab takes the row's rest.
+            let takes = beside.as_ref().is_some_and(|(page, _)| *page == *id_of);
+            match takes.then(|| beside.take()).flatten() {
+                Some((_, key)) => view! {
+                    <div class="page-row" data-testid="page-row">
+                        {tab}
+                        {key.run()}
+                    </div>
+                }
+                .into_any(),
+                None => tab.into_any(),
             }
         })
         .collect_view();

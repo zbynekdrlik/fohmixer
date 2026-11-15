@@ -2,7 +2,7 @@
    mockup docs/mockups/sectors-v1.html; linked after group.css). The page
    itself is page.css's lines (pages/sectors.rs SectorsView): each line's
    left sector fills from the screen's left edge, its right sector from the
-   column. Here: the column's LAYOUTS block, ARRANGE and ↶. */
+   column. Here: the column's LAYOUTS block and the ARRANGE key. */
 
 /* The LAYOUTS block: a 2 x 2 grid that mirrors the screen, the top row
    the upper line's two sectors, the bottom row the lower line's. In each
@@ -44,23 +44,27 @@
     box-shadow: inset 0 -2px 0 var(--solo);
 }
 
-/* ARRANGE (the reorder mode, #148), alone on its row under the block (the
-   undo beside it is gone, the owner's ruling of 29.10.2026). */
-.column .sector-actions {
+/* ARRANGE (the reorder mode, #148): since #212 (the owner's approved
+   docs/mockups/column-calm-v2.html; it is used rarely) a small icon key
+   at the right of the page tab (page.css .page-row), about 30 px wide,
+   outlined and calm; lit in the mode as the big button was (the panel's
+   lighter ground and the yellow underline). No undo (the owner's ruling
+   of 29.10.2026). */
+.column .arrange-key {
     display: grid;
-    flex: none;
-    grid-template-columns: minmax(0, 1fr);
+    flex: 0 0 30px;
+    place-items: center;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--muted);
+    font: 600 15px/1 var(--ui);
+    letter-spacing: 0;
 }
 
-.column .arrange-btn {
-    grid-template-columns: minmax(0, 1fr);
-}
-
-.column .arrange-btn .tab {
-    width: 100%;
-}
-
-.column .arrange-btn .tab.selected {
+.column .arrange-key.selected {
+    border-color: transparent;
+    color: var(--text);
     box-shadow: inset 0 -2px 0 var(--solo);
 }
 
@@ -177,8 +181,9 @@
 }
 
 /* ARRANGE (#148, mockups v1 and v2), the edit mode: what talks to Live
-   goes inert. The column's head (the pages' tabs, the counter), ↶ and the
-   rail dim and take no touches; ARRANGE and the LAYOUTS block (paging,
+   goes inert. The column's head (the page tab, the extra tabs, the
+   counter) and the rail dim and take no touches; the ARRANGE key beside
+   the page tab (#212) and the LAYOUTS block (paging,
    ✎ ✕ +, below) stay live. Every
    strip carries a cover over its whole face (its name button, its fader,
    its SEL) that owns the touches, and nothing under it takes one (the
@@ -194,7 +199,12 @@
     text-align: center;
 }
 
-.body[data-arrange="true"] :is(.column-head > *, .rail) {
+.body[data-arrange="true"] :is(
+        .column-head > :not(.seg[data-level="0"]),
+        .column-head > .seg[data-level="0"] > :not(.page-row),
+        .page-row > .page-tab,
+        .rail
+    ) {
     opacity: 0.3;
     pointer-events: none;
 }
@@ -392,7 +402,7 @@
    on the hidden left sectors (LU's and LD's layouts, ARRANGE, a left side's
    arrows) are dimmed and inert (their handlers check it too). */
 .column .sec-cell[aria-disabled="true"],
-.column .arrange-btn > .tab[aria-disabled="true"],
+.column .arrange-key[aria-disabled="true"],
 .column .shift[aria-disabled="true"] {
     opacity: 0.35;
     pointer-events: none;

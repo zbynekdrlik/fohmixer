@@ -272,6 +272,8 @@ test.describe("Presenter's stage miniature in the column", () => {
       const shown = (await frame.boundingBox())!;
       expect(Math.abs(shown.width - area.width)).toBeLessThan(1.5);
       expect(Math.abs(shown.height - area.height)).toBeLessThan(1.5);
+      // The picture fills its box (#212): the box's width less its 10 px edges.
+      expect(Math.abs(area.width - ((await box.boundingBox())!.width - 10))).toBeLessThan(0.6);
       // In the rail, between its buttons and TECHALERT, the column's width.
       const rail = page.getByTestId("rail");
       await expect(rail.getByTestId("stage-mini")).toHaveCount(1);
@@ -361,11 +363,12 @@ test.describe("Presenter's stage miniature in the column", () => {
   });
 
   // Shorter screens (#90, 1.38.2: the owner's iPad over the internet never
-  // showed it; Safari's bars take height, another model is smaller; the
-  // main session's option A): the miniature never goes below its least
-  // picture (40 px high, 16:9, narrower than the rail), the rail's rows give
-  // that room up (shorter than 44 px, never under their 24 px floor), and
-  // the faders keep their height.
+  // showed it; Safari's bars take height, another model is smaller). Since
+  // #212 (the owner: "stage preview by mal byt tak vysoky aby preview realne
+  // vyplnilo ten preview") the picture is the rail's whole width at 16:9
+  // whatever the room, filling its box; the rail's rows give that room up
+  // (shorter than 44 px, never under their 24 px floor), and the faders keep
+  // their height.
   for (const size of [
     { width: 1180, height: 740 },
     { width: 1024, height: 700 },
@@ -373,7 +376,7 @@ test.describe("Presenter's stage miniature in the column", () => {
     test.describe(`on a shorter screen, ${size.width}×${size.height}`, () => {
       test.use({ viewport: size });
 
-      test("is there at least at its least size, the rail's rows give up room, the faders keep their height", async ({ page }) => {
+      test("fills its box at the rail's width, the rail's rows give up room, the faders keep their height", async ({ page }) => {
         await restore();
         // Page times are epoch ms on the runner's one clock (performance.timeOrigin + now).
         const since = Date.now();
@@ -397,12 +400,12 @@ test.describe("Presenter's stage miniature in the column", () => {
         const railBox = (await rail.boundingBox())!;
         const area = (await page.getByTestId("mini-stage").boundingBox())!;
         test.info().annotations.push({ type: `mini ${size.width}x${size.height}`, description: `${area.width.toFixed(1)} x ${area.height.toFixed(1)} in a ${railBox.width.toFixed(1)} px rail` });
-        // Smaller than the rail's width less the box (10 px), at least 40 px high, 16:9.
-        expect(area.width).toBeLessThan(railBox.width - 10 - 1);
-        expect(area.height).toBeGreaterThanOrEqual(39.9);
+        // The rail's width less the box (10 px), 16:9: the picture fills its box (#212).
+        expect(Math.abs(area.width - (railBox.width - 10))).toBeLessThan(0.6);
         expect(Math.abs(area.width / area.height - 16 / 9)).toBeLessThan(0.02);
-        // Centred under the caption, the stage scaled to the picture.
+        // Centred in its box, the stage scaled to the picture.
         const at = (await box.boundingBox())!;
+        expect(Math.abs(area.width - (at.width - 10))).toBeLessThan(0.6);
         expect(Math.abs(area.x + area.width / 2 - (at.x + at.width / 2))).toBeLessThan(1);
         const shown = (await page.getByTestId("mini-frame").boundingBox())!;
         expect(Math.abs(shown.width - area.width)).toBeLessThan(1.5);
@@ -444,7 +447,7 @@ test.describe("Presenter's stage miniature in the column", () => {
         expect(Math.abs(shownFit.h - area.height)).toBeLessThan(0.6);
         expect(shownFit.rows).toBe(withMini.rows.split(" ").length);
         expect(shownFit.rail_w).toBeCloseTo(railBox.width, 0);
-        expect(shownFit.h).toBeGreaterThanOrEqual(40);
+        expect(shownFit.w).toBeCloseTo(railBox.width - 10, 0);
         expect(shownFit.hide).toBeUndefined();
       });
     });

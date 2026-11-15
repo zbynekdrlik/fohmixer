@@ -188,6 +188,21 @@
     letter-spacing: 0.08em;
 }
 
+/* The page tab's row on the sectors page (#212, the owner's approved
+   docs/mockups/column-calm-v2.html): the page tab takes the row, ARRANGE
+   is a small icon key (⇄, about 30 px) at its right. The tab keeps its
+   size; the key is as high as the row. */
+.column .page-row {
+    display: flex;
+    gap: 4px;
+    min-width: 0;
+}
+
+.column .page-row > .page-tab {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
 .column .tab.extra-tab {
     padding: 5px 3px;
     font: 600 10px/1.1 var(--ui);
@@ -504,8 +519,13 @@
     }
 
     .column .tab.page-tab,
+    .column .page-row,
     .column .iem-row {
         flex: 0 0 100%;
+    }
+
+    .column .page-row > .page-tab {
+        flex: 1 1 auto;
     }
 
     .column .tab.extra-tab {

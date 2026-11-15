@@ -965,7 +965,9 @@ export async function columnHeadAndFoot(page: Page): Promise<string[]> {
     const col = box(column);
     const bar = column.querySelector('[data-testid="tabbar"][data-level="0"]');
     if (!bar) return ["no pages' bar"];
-    const tabs = [...bar.querySelectorAll(':scope > [data-testid="tab"]')];
+    // A page tab is the bar's child, or the first child of its row with
+    // ARRANGE's key on the sectors page (#212, `.page-row`).
+    const tabs = [...bar.querySelectorAll(':scope > [data-testid="tab"], :scope > .page-row > [data-testid="tab"]')];
     const extras = [...bar.querySelectorAll(":scope > .deck-tab, :scope > .ableset-tab, :scope > .iem-row > .iem-tab")];
     if (tabs.length === 0) out.push("no page tab");
     if (extras.length === 0) out.push("no extra tab");
@@ -973,6 +975,9 @@ export async function columnHeadAndFoot(page: Page): Promise<string[]> {
     for (const tab of tabs) {
       const name = tab.getAttribute("data-page");
       const b = box(tab);
+      // The row a page tab stands in: its own, or its `.page-row` with the
+      // ⇄ key (#212), which is centred on the column as a whole.
+      const row = tab.parentElement!.classList.contains("page-row") ? box(tab.parentElement!) : b;
       const sharing = all.filter((o) => o !== tab && Math.abs(box(o).top - b.top) < b.height / 2);
       if (sharing.length > 0) out.push(`${name}: shares its row`);
       const range = document.createRange();
@@ -980,7 +985,7 @@ export async function columnHeadAndFoot(page: Page): Promise<string[]> {
       const text = range.getBoundingClientRect();
       const gaps = Math.abs(text.left - b.left - (b.right - text.right));
       if (gaps > 1) out.push(`${name}: its title ${gaps.toFixed(2)} px off its centre`);
-      const centre = Math.abs(b.left + b.width / 2 - (col.left + col.width / 2));
+      const centre = Math.abs(row.left + row.width / 2 - (col.left + col.width / 2));
       if (centre > 1) out.push(`${name}: ${centre.toFixed(2)} px off the column's centre`);
       for (const extra of extras) {
         const size = parseFloat(getComputedStyle(tab).fontSize);
