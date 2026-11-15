@@ -567,6 +567,9 @@ try {
     Assert ((Get-FohInstalledEqToml -Text ($baseToml + "`r`n[eq]  `r`nbackend = `"windows`"  ")) -ceq $wantEq) 'installed-eq-table-with-trailing-blanks-at-the-end-of-the-file'
     $offEq = "`r`n[eq]`r`n# off until the next probe`r`nbackend = `"off`"`r`n"
     Assert ((Get-FohInstalledEqToml -Text ($baseToml + $offEq + $wantCompanion)) -ceq $offEq) 'installed-eq-table-keeps-its-lines-and-backend-as-they-are'
+    # #215: the capture written by hand under it is kept as written.
+    $displayEq = "`r`n[eq]`r`nbackend = `"windows`"`r`ncapture = `"wgc-display`"`r`n"
+    Assert ((Get-FohInstalledEqToml -Text ($baseToml + $displayEq + $wantCompanion)) -ceq $displayEq) 'installed-eq-table-keeps-its-capture-line'
     $commented = "`r`n[eq] # on since the probe`r`nbackend = `"windows`"`r`n"
     Assert ((Get-FohInstalledEqToml -Text ($baseToml + $commented + $wantCompanion)) -ceq $commented) 'installed-eq-header-with-a-comment-is-kept'
     Assert ((Get-FohInstalledEqToml -Text ($baseToml + "`r`n[eq]")) -ceq "`r`n[eq]`r`n") 'installed-eq-header-ending-the-file-is-kept'
