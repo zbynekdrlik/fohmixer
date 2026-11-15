@@ -1528,3 +1528,39 @@ fn hub_rate_grabs_only_a_change_and_a_first_frame_is_awaited() {
     assert!(arrived(Some(counts(1))));
     assert_eq!(FIRST_FRAME_LOOKS, 50);
 }
+
+#[test]
+fn a_capture_whose_first_frame_never_comes_fails_before_any_grab() {
+    // #215 review: Windows Graphics Capture's first frame comes after the
+    // take; one that never comes fails the probe after 500 ms, no grab.
+    let (mut sim, handle, _) = one_window(42);
+    handle.capture_counts(Some(CaptureCounts {
+        arrived: 0,
+        lag_ms_max: 0.0,
+    }));
+    let mut probe = args(42);
+    probe.frames = 2;
+    probe.capture_only = true;
+    let started = Instant::now();
+    let mut out = Vec::new();
+    assert_eq!(
+        run(&mut sim, &probe, &mut out),
+        Err("capture: no frame of the window within 500 ms".to_string())
+    );
+    assert!(started.elapsed() >= Duration::from_millis(500));
+    assert_eq!(handle.grabs(), 0);
+    // It comes: the grabs go, its counts on the rate's line.
+    let (mut sim, handle, _) = one_window(42);
+    handle.capture_counts(Some(CaptureCounts {
+        arrived: 3,
+        lag_ms_max: 4.5,
+    }));
+    let mut out = Vec::new();
+    run(&mut sim, &probe, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(
+        text.contains(" capture=wgc arrived=3 lag_ms_max=4.5\n"),
+        "{text}"
+    );
+    assert_eq!(handle.grabs(), 2);
+}

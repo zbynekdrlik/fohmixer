@@ -65,6 +65,7 @@ use std::time::{Duration, Instant};
 use fohmixer_proto::eq::reason;
 use serde_json::{Value, json};
 
+use super::capture::CaptureCounts;
 use super::{Backend, Phase, Pixels, Rect, Taken, WindowId, undo};
 
 /// The simulated picture's width (Pro-Q 4's at 100 %).
@@ -329,6 +330,9 @@ struct State {
     change_driven: bool,
     last_grab: Option<(u64, Option<bool>, (u32, u32))>,
     lag_ms: f64,
+    /// The capture's own counts it reports (none: a backend that grabs the
+    /// screen; #215, the probe's first-frame wait).
+    counts: Option<CaptureCounts>,
     /// The last picture drawn, its count and its ↶ (lit, grey, or none): a
     /// grab draws only a new count, ↶ or size (drawing one costs the worker
     /// tens of ms in a test build).
@@ -349,6 +353,12 @@ impl State {
             (false, true, None) => 0,
             (false, true, Some(after)) => painted(&self.injected, after, now),
         }
+    }
+
+    /// Pro-Q's ↶ as drawn (#71 PR P): lit while the history holds a
+    /// change, grey when it holds none, none without a history.
+    fn glyph(&self) -> Option<bool> {
+        self.undo.map(|left| left > 0)
     }
 
     fn add(&mut self, pid: u32) -> WindowId {
@@ -463,6 +473,7 @@ impl Sim {
             change_driven: false,
             last_grab: None,
             lag_ms: 0.0,
+            counts: None,
             drawn: None,
             records: Vec::new(),
             file,
@@ -538,6 +549,12 @@ impl SimHandle {
     /// Windows Graphics Capture does; off, it cannot tell (a BitBlt).
     pub fn change_driven(&self, on: bool) {
         self.lock().change_driven = on;
+    }
+
+    /// The capture's own counts it reports from now on (#215: a Windows
+    /// Graphics Capture's frames; none, the default, a screen grab's).
+    pub fn capture_counts(&self, counts: Option<CaptureCounts>) {
+        self.lock().counts = counts;
     }
 
     /// How far behind the screen its pictures are from now on (#215).
@@ -807,8 +824,7 @@ impl Backend for Sim {
         };
         state.grabs += 1;
         let count = state.count();
-        // Pro-Q's ↶ (#71 PR P): lit while the history holds a change.
-        let glyph = state.undo.map(|left| left > 0);
+        let glyph = state.glyph();
         state.last_grab = Some((count, glyph, size));
         let drawn = state
             .drawn
@@ -832,21 +848,19 @@ impl Backend for Sim {
         let Some(size) = state.windows.get(&taken.window).map(|w| w.size) else {
             return true;
         };
-        if !state.change_driven {
+        // Not telling, or a picture that changes at every grab: changed.
+        if !state.change_driven || state.restless {
             return true;
         }
-        // A restless picture changes at every grab.
-        let count = if state.restless {
-            state.grabs + 1
-        } else {
-            state.count()
-        };
-        let glyph = state.undo.map(|left| left > 0);
-        state.last_grab != Some((count, glyph, size))
+        state.last_grab != Some((state.count(), state.glyph(), size))
     }
 
     fn lag_ms(&self) -> f64 {
         self.lock().lag_ms
+    }
+
+    fn capture_counts(&mut self, _taken: &Taken) -> Option<CaptureCounts> {
+        self.lock().counts
     }
 
     fn touch(&mut self, taken: &Taken, phase: Phase, at: (i32, i32)) -> Result<(), String> {
@@ -1158,6 +1172,45 @@ mod tests {
         assert!(sim.on_top(&again));
         handle.remove_window(second);
         assert!(!sim.on_top(&again));
+    }
+
+    #[test]
+    fn a_change_driven_sim_tells_a_change_of_its_counter_undo_or_size_since_its_last_grab() {
+        // #215: as Windows Graphics Capture; off, it cannot tell (always
+        // true, a BitBlt).
+        let (mut sim, handle) = Sim::new(None);
+        handle.auto_open(false);
+        handle.still(true);
+        let window = handle.add_window(1);
+        let taken = sim.take(window).unwrap();
+        sim.grab(&taken).unwrap();
+        assert!(sim.changed(&taken), "not change-driven");
+        handle.change_driven(true);
+        assert!(!sim.changed(&taken), "nothing since the grab");
+        handle.undo_history(0);
+        assert!(sim.changed(&taken), "the ↶ drawn grey");
+        sim.grab(&taken).unwrap();
+        assert!(!sim.changed(&taken), "grey stays grey");
+        handle.undo_history(1);
+        assert!(sim.changed(&taken), "the ↶ lit");
+        sim.grab(&taken).unwrap();
+        assert!(!sim.changed(&taken));
+        handle.resize_window(window, (800, 600));
+        assert!(sim.changed(&taken), "another size");
+        sim.grab(&taken).unwrap();
+        assert!(!sim.changed(&taken));
+        handle.restless(true);
+        assert!(sim.changed(&taken), "restless");
+        sim.grab(&taken).unwrap();
+        assert!(sim.changed(&taken), "restless: at every grab");
+        handle.restless(false);
+        sim.grab(&taken).unwrap();
+        handle.remove_window(window);
+        assert!(sim.changed(&taken), "a window gone");
+        assert_eq!(sim.lag_ms(), 0.0);
+        handle.lag(Duration::from_millis(17));
+        assert_eq!(sim.lag_ms(), 17.0);
+        assert_eq!(sim.capture_counts(&taken), None);
     }
 
     #[test]
