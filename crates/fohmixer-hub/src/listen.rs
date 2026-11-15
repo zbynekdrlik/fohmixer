@@ -5,12 +5,22 @@
 //! to (the same socket, [`Listen::next_select`]), that device streams its
 //! samples over TCP (`listen/stream.rs`: Jitter chunks, 20 ms frames, Opus)
 //! and every listening socket (`listen/session.rs`, `/ws/audio`) gets the
-//! packets from one `broadcast` channel. One track at a time on a hub: a
-//! page asking for another while one is heard is told `busy`; listeners of
-//! the same track share it, and the last one leaving ends the selects.
+//! packets from one `broadcast` channel. One track at a time on a hub, the
+//! newest start wins (the main session's ruling on #210's review: a page
+//! left open must never hold it): a start of another track takes it, a
+//! `taken` record, and the pages listening to the old one are told `taken`
+//! through the turn ([`Listen::turns`]) and stop; every packet carries the
+//! turn it was sent in, so a page never hears another track's. Listeners
+//! of the same track share it, and the last one leaving ends the selects.
+//!
+//! A device is picked by its track's and Live set's NAMES (its announce's
+//! parents), never by the instance: the set's name is read again at every
+//! decision ([`SetNames`]), so a set loaded while a page listens follows;
+//! a track renamed meanwhile is no longer found (accepted on the review).
 //!
 //! This file is the shared state; its decisions are small pure functions
-//! ([`choose`], [`start_of`], [`select_now`]) with their own tests.
+//! ([`choose`], [`start_of`], [`select_now`], [`selecting`]) with their own
+//! tests.
 
 pub mod encoder;
 pub mod session;
@@ -26,7 +36,7 @@ use bytes::Bytes;
 use fohmixer_proto::listen::wire::{Announce, FORGET_MS, Select};
 use fohmixer_proto::listen::{ListenDeviceStatus, ListenStatus, ListenTargetStatus};
 use serde_json::{Value, json};
-use tokio::sync::{Notify, broadcast};
+use tokio::sync::{Notify, broadcast, watch};
 
 use crate::events::EventLog;
 
@@ -101,8 +111,8 @@ pub enum Start {
     New,
     /// The same track is heard: one more listener.
     Join,
-    /// Another track is heard.
-    Busy,
+    /// Another track is heard: the start takes the hub's one track from it.
+    Take,
 }
 
 /// A start of `instance`'s `set`'s `track` against the target now.
@@ -110,8 +120,25 @@ pub fn start_of(target: Option<&Target>, instance: &str, set: &str, track: &str)
     match target {
         None => Start::New,
         Some(t) if t.instance == instance && t.set == set && t.track == track => Start::Join,
-        Some(_) => Start::Busy,
+        Some(_) => Start::Take,
     }
+}
+
+/// Whether the select loop has anything to send: while a target exists, or
+/// while the stop (a select of 0) is still owed after one ended (`last`:
+/// the device the last select named).
+pub fn selecting(has_target: bool, last: Option<i32>) -> bool {
+    has_target || last.is_some_and(|id| id != 0)
+}
+
+/// The Live set's name of an instance as its script told it now; none while
+/// it is unknown (the hub's `HubInner::set_name`).
+pub type SetNames = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+/// A [`SetNames`] that knows no set: the target keeps the name it started
+/// with (the tests' and a hub without Live instances).
+pub fn no_sets() -> SetNames {
+    Arc::new(|_| None)
 }
 
 /// The device the next select names: the chosen one while a target has
@@ -171,6 +198,13 @@ impl Counters {
     }
 }
 
+/// The `listen` record of a start that took the track from `from`'s
+/// listeners, by the page `client` at `peer`.
+pub fn taken_fields(from: &Target, to: &Target, client: u64, peer: &str) -> Value {
+    let side = |t: &Target| json!({"instance": t.instance, "set": t.set, "track": t.track, "listeners": t.listeners});
+    json!({"what": "taken", "from": side(from), "to": side(to), "client": client, "peer": peer})
+}
+
 /// The `listen` record of a target's start or end.
 pub fn target_fields(what: &str, target: &Target, turn: i32) -> Value {
     json!({
@@ -187,77 +221,123 @@ pub fn target_fields(what: &str, target: &Target, turn: i32) -> Value {
 pub struct Listen {
     state: Mutex<State>,
     pub counters: Counters,
-    packets: broadcast::Sender<Bytes>,
+    /// The packets, each with the turn it was sent in.
+    packets: broadcast::Sender<(i32, Bytes)>,
+    /// The turn now: a page whose turn is no longer it was taken.
+    turns: watch::Sender<i32>,
     /// Wakes the select loop at a new target, so the device starts at once.
     pub wake: Notify,
     pub events: EventLog,
+    sets: SetNames,
 }
 
-/// Another track is heard (one at a time on a hub).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Busy;
-
-/// One socket's hold on the target: dropped, it leaves.
+/// One socket's hold on the target of its turn: dropped, it leaves (a
+/// lease of an older turn, its track taken, leaves nothing).
 pub struct Lease {
     listen: Arc<Listen>,
+    turn: i32,
+}
+
+impl Lease {
+    /// The turn it holds.
+    pub fn turn(&self) -> i32 {
+        self.turn
+    }
 }
 
 impl Drop for Lease {
     fn drop(&mut self) {
-        self.listen.leave();
+        self.listen.leave(self.turn);
     }
 }
 
 impl Listen {
-    pub fn new(events: EventLog) -> Arc<Self> {
+    pub fn new(events: EventLog, sets: SetNames) -> Arc<Self> {
         let (packets, _) = broadcast::channel(PACKETS);
         Arc::new(Self {
             state: Mutex::new(State::default()),
             counters: Counters::default(),
             packets,
+            turns: watch::Sender::new(0),
             wake: Notify::new(),
             events,
+            sets,
         })
     }
 
+    /// The state, the target's set name read again ([`SetNames`]; kept
+    /// while the instance's set is unknown).
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(t) = state.target.as_mut()
+            && let Some(set) = (self.sets)(&t.instance)
+        {
+            t.set = set;
+        }
+        state
     }
 
-    /// A page starts listening to `track` of `instance` (its Live set
-    /// `set`): a lease, or [`Busy`] while another track is heard.
-    pub fn start(self: &Arc<Self>, instance: &str, set: &str, track: &str) -> Result<Lease, Busy> {
+    /// A page (`client` at `peer`) starts listening to `track` of
+    /// `instance` (its Live set `set`): one more listener of the same
+    /// track, or the track from now on, taken from its listeners.
+    pub fn start(
+        self: &Arc<Self>,
+        instance: &str,
+        set: &str,
+        track: &str,
+        client: u64,
+        peer: &str,
+    ) -> Lease {
         let mut state = self.state();
+        let to = Target {
+            instance: instance.to_string(),
+            set: set.to_string(),
+            track: track.to_string(),
+            listeners: 1,
+        };
         match start_of(state.target.as_ref(), instance, set, track) {
-            Start::Busy => return Err(Busy),
             Start::Join => {
                 if let Some(t) = state.target.as_mut() {
                     t.listeners += 1;
                 }
             }
-            Start::New => {
+            start => {
                 state.turn = state.turn.wrapping_add(1);
-                let target = Target {
-                    instance: instance.to_string(),
-                    set: set.to_string(),
-                    track: track.to_string(),
-                    listeners: 1,
-                };
-                tracing::info!(instance, set, track, turn = state.turn, "listen: started");
+                if let (Start::Take, Some(from)) = (start, state.target.take()) {
+                    tracing::info!(from = ?from.track, to = ?track, listeners = from.listeners, client, peer = ?peer, "listen: a start took the track");
+                    self.events
+                        .record("listen", taken_fields(&from, &to, client, peer));
+                }
+                tracing::info!(instance = ?instance, set = ?set, track = ?track, turn = state.turn, "listen: started");
                 self.events
-                    .record("listen", target_fields("start", &target, state.turn));
-                state.target = Some(target);
+                    .record("listen", target_fields("start", &to, state.turn));
+                state.target = Some(to);
+                self.turns.send_replace(state.turn);
                 self.wake.notify_one();
             }
         }
-        Ok(Lease {
+        Lease {
             listen: Arc::clone(self),
-        })
+            turn: state.turn,
+        }
     }
 
-    fn leave(&self) {
+    /// The turn now, to watch: a page holding an older one was taken.
+    pub fn turns(&self) -> watch::Receiver<i32> {
+        self.turns.subscribe()
+    }
+
+    /// Whether the select loop has a select to send ([`selecting`]).
+    pub fn selecting(&self) -> bool {
+        let state = self.state();
+        selecting(state.target.is_some(), state.last_select)
+    }
+
+    fn leave(&self, turn: i32) {
         let mut state = self.state();
-        let turn = state.turn;
+        if state.turn != turn {
+            return;
+        }
         let Some(target) = state.target.as_mut() else {
             return;
         };
@@ -311,14 +391,19 @@ impl Listen {
         })
     }
 
-    /// A packet to every listening socket.
+    /// A packet to every listening socket, with the turn it is sent in.
     pub fn send_packet(&self, packet: Bytes) {
+        let turn = self
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .turn;
         self.counters.packets.fetch_add(1, Ordering::Relaxed);
         // No socket listening: nobody keeps it.
-        let _ = self.packets.send(packet);
+        let _ = self.packets.send((turn, packet));
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<Bytes> {
+    pub fn subscribe(&self) -> broadcast::Receiver<(i32, Bytes)> {
         self.packets.subscribe()
     }
 
@@ -388,8 +473,9 @@ pub fn spawn(
     port: u16,
     select_port: u16,
     events: EventLog,
+    sets: SetNames,
 ) -> (Arc<Listen>, Vec<tokio::task::JoinHandle<()>>) {
-    let listen = Listen::new(events.clone());
+    let listen = Listen::new(events.clone(), sets);
     let wanted = udp::bind_addr(port).to_string();
     let started = bind(port).and_then(|(tcp, socket)| {
         let addr = tcp.local_addr()?.to_string();

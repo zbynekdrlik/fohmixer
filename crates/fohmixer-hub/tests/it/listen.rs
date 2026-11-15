@@ -2,8 +2,9 @@
 //! themselves, a page's `/ws/audio` socket starts listening to a track, the
 //! hub selects that track's device, the device streams its tone as Jitter
 //! matrices, and the page decodes the hub's Opus packets back to the tone;
-//! a second page shares the track, a third one asking for another track is
-//! `busy`, and when the last page leaves the device stops streaming.
+//! a second page shares the track, a page starting another track takes the
+//! hub's one track from them (`taken`), and when the last page leaves the
+//! device stops streaming.
 #![cfg(unix)]
 
 use std::net::UdpSocket;
@@ -197,17 +198,11 @@ fn a_page_hears_the_tracks_tone_and_the_device_stops_when_it_leaves() {
         assert!(at_1k > 1000.0 * at_3k, "1 kHz {at_1k}, 3 kHz {at_3k}");
         assert_eq!(host.listendev("streamed track 2"), 0, "never selected");
 
-        // A second page shares the track; a third asking for another is busy.
+        // A second page shares the track.
         let mut b = audio(&hub).await;
         send(&mut b, start(VOX)).await;
         assert_eq!(told(&mut b).await["status"], "listening");
         assert!(!packets(&mut b, 3).await.is_empty());
-        let mut c = audio(&hub).await;
-        send(&mut c, start(OTHER)).await;
-        assert_eq!(
-            told(&mut c).await,
-            json!({"type": "audio_status", "status": "busy", "instance": "band", "track": OTHER})
-        );
         let status = hub
             .status_until(SECS_10, |s| {
                 s.listen.target.as_ref().is_some_and(|t| t.listeners == 2)
@@ -229,7 +224,8 @@ fn a_page_hears_the_tracks_tone_and_the_device_stops_when_it_leaves() {
         tokio::time::sleep(Duration::from_millis(1600)).await;
         assert_eq!(host.listendev("streamed track 1"), streamed, "stopped");
 
-        // Now the other track is free.
+        // Now the other track.
+        let mut c = audio(&hub).await;
         send(&mut c, start(OTHER)).await;
         assert_eq!(told(&mut c).await["status"], "listening");
         let (left, _) = decode(&packets(&mut c, 20).await[10..]);
@@ -308,6 +304,93 @@ fn a_track_without_a_device_or_an_unknown_instance_is_no_source() {
         let long = "x".repeat(257);
         send(&mut a, start(&long)).await;
         assert_eq!(told(&mut a).await["status"], "refused");
+        hub.stop().await;
+        host.stop();
+    });
+}
+
+/// The next message within `limit` that is no ping or pong; none when
+/// nothing came.
+async fn next_within(ws: &mut Socket, limit: Duration) -> Option<Message> {
+    let deadline = Instant::now() + limit;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match tokio::time::timeout(left, ws.next()).await {
+            Ok(Some(Ok(Message::Ping(_) | Message::Pong(_)))) => continue,
+            Ok(Some(Ok(msg))) => return Some(msg),
+            _ => return None,
+        }
+    }
+}
+
+#[test]
+fn the_newest_start_takes_the_track_from_the_pages_listening() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (port, select_port) = (free_port(), free_port());
+        let mut host = Host::start_listen("band", &site(), port, select_port);
+        assert_eq!(host.listendev("listendev track 1 add rack"), 1);
+        assert_eq!(host.listendev("tone track 1 1000"), 1000);
+        assert_eq!(host.listendev("listendev track 2 add"), 1);
+        assert_eq!(host.listendev("tone track 2 3000"), 3000);
+        let hub = hub(dir.path(), &host, port, select_port).await;
+        hub.status_until(SECS_10, |s| s.listen.devices.len() == 2)
+            .await;
+        // Two pages on one track (a tab left open, an iPad).
+        let mut a = audio(&hub).await;
+        send(&mut a, start(VOX)).await;
+        assert_eq!(told(&mut a).await["status"], "listening");
+        let mut b = audio(&hub).await;
+        send(&mut b, start(VOX)).await;
+        assert_eq!(told(&mut b).await["status"], "listening");
+        assert!(!packets(&mut a, 3).await.is_empty());
+        // A third page starts another track: it takes it, both are told.
+        let mut c = audio(&hub).await;
+        send(&mut c, start(OTHER)).await;
+        assert_eq!(
+            told(&mut c).await,
+            json!({"type": "audio_status", "status": "listening", "instance": "band", "track": OTHER})
+        );
+        for page in [&mut a, &mut b] {
+            assert_eq!(
+                told(page).await,
+                json!({"type": "audio_status", "status": "taken", "instance": "band", "track": VOX})
+            );
+        }
+        let (left, _) = decode(&packets(&mut c, 20).await[10..]);
+        assert!(power(&left, 3000.0) > 1000.0 * power(&left, 1000.0));
+        // The pages it was taken from get nothing more, and leaving changes
+        // nothing for the new one.
+        assert!(
+            next_within(&mut a, Duration::from_millis(1500))
+                .await
+                .is_none()
+        );
+        drop(a);
+        drop(b);
+        let status = hub
+            .status_until(SECS_10, |s| {
+                s.listen.target.as_ref().is_some_and(|t| t.track == OTHER)
+            })
+            .await;
+        assert_eq!(status.listen.target.unwrap().listeners, 1);
+        assert!(!packets(&mut c, 5).await.is_empty());
+        let records = hub
+            .events_until(SECS_10, |r| {
+                r.iter().any(|e| e["ev"] == "listen" && e["what"] == "taken")
+            })
+            .await;
+        let taken = records
+            .iter()
+            .find(|e| e["ev"] == "listen" && e["what"] == "taken")
+            .unwrap();
+        assert_eq!(taken["from"]["track"], VOX);
+        assert_eq!(taken["from"]["listeners"], 2);
+        assert_eq!(taken["to"]["track"], OTHER);
+        assert_eq!(taken["peer"], "127.0.0.1");
+        assert!(taken["client"].is_u64());
+        drop(c);
         hub.stop().await;
         host.stop();
     });

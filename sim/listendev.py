@@ -52,8 +52,9 @@ RIGHT = 0.25
 TICK_MS = 10.0
 ANNOUNCE_S = 1.0
 SELECT_HOLD_S = 1.5
-# At most a second's worth of frames in one tick (a stall never floods).
-MAX_FRAMES = RATE // FRAME
+# At most 25 frames in one tick (a stall never floods): the hub takes a
+# matrix of at most 25 frames (jitnet::MAX_DATA), as jit.catch~ caught them.
+MAX_FRAMES = 25
 RACK_NAME = "Listen"
 DRY_CHAIN = "Dry"
 DEVICE_CHAIN = "Listen"

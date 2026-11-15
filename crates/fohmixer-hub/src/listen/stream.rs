@@ -31,7 +31,8 @@ use super::encoder::Encoder;
 /// P2 on #210 tells): 64 covers every listenable track of both Lives.
 pub const MAX_CONNECTIONS: usize = 64;
 /// A chunk begun and not finished for this long ends its connection (a
-/// stuck sender never holds a slot and a buffer for good).
+/// stuck sender, or one dripping a byte at a time, never holds a slot and
+/// a buffer for good); judged on every pass, from the chunk's beginning.
 pub const STALL: Duration = Duration::from_secs(5);
 /// How often a quiet connection is looked at for a stall.
 pub const STALL_CHECK: Duration = Duration::from_secs(1);
@@ -63,7 +64,7 @@ pub fn take(hello: Option<&Hello>, selected: impl FnOnce(i32) -> bool) -> Take {
 }
 
 /// Whether a connection holding `buffered` bytes of an unfinished chunk,
-/// whose last bytes came at `since`, is stalled at `now`.
+/// which began at `since`, is stalled at `now`.
 pub fn stalled(buffered: usize, since: Instant, now: Instant) -> bool {
     buffered > 0 && now.saturating_duration_since(since) >= STALL
 }
@@ -142,10 +143,13 @@ struct Conn {
     reader: Reader,
     hello: Option<Hello>,
     framer: Framer,
-    encoder: Option<Encoder>,
+    /// Made at the first frame; a failure is kept, so it is logged once
+    /// per connection, never per matrix.
+    encoder: Option<Result<Encoder, ()>>,
     opened: Instant,
-    /// When its last bytes came.
-    heard: Instant,
+    /// When the unfinished chunk (the reader's buffered bytes) began: its
+    /// first bytes' read, or the read that finished the chunk before it.
+    began: Instant,
     /// Whether its last matrix was taken (a change is one record).
     taking: bool,
 }
@@ -158,32 +162,43 @@ async fn connection(mut socket: TcpStream, listen: &Listen) -> &'static str {
         framer: Framer::default(),
         encoder: None,
         opened: Instant::now(),
-        heard: Instant::now(),
+        began: Instant::now(),
         taking: false,
     };
     let mut buf = vec![0u8; READ];
     loop {
-        let n = match tokio::time::timeout(STALL_CHECK, socket.read(&mut buf)).await {
-            Err(_) => {
-                if stalled(conn.reader.buffered(), conn.heard, Instant::now()) {
-                    listen.counters.refuse("stalled");
-                    return "stalled";
-                }
-                continue;
-            }
-            Ok(Ok(0)) => return "closed",
-            Ok(Ok(n)) => n,
-            Ok(Err(_)) => return "read error",
+        // Only an unfinished chunk needs the stall check's timer; an idle
+        // connection (no bytes waiting) just waits.
+        let unfinished = conn.reader.buffered() > 0;
+        let read = if unfinished {
+            tokio::time::timeout(STALL_CHECK, socket.read(&mut buf))
+                .await
+                .ok()
+        } else {
+            Some(socket.read(&mut buf).await)
         };
-        conn.heard = Instant::now();
+        let n = match read {
+            None => 0,
+            Some(Ok(0)) => return "closed",
+            Some(Ok(n)) => n,
+            Some(Err(_)) => return "read error",
+        };
+        let now = Instant::now();
+        if !unfinished {
+            conn.began = now;
+        }
         conn.reader.push(&buf[..n]);
         for _ in 0..=n {
             match conn.reader.next_chunk() {
-                Ok(Some(Chunk::Message(atoms))) => match parse_hello(&atoms) {
-                    Some(hello) => on_hello(&mut conn, hello, listen),
-                    None => listen.counters.refuse("message"),
-                },
+                Ok(Some(Chunk::Message(atoms))) => {
+                    conn.began = now;
+                    match parse_hello(&atoms) {
+                        Some(hello) => on_hello(&mut conn, hello, listen),
+                        None => listen.counters.refuse("message"),
+                    }
+                }
                 Ok(Some(Chunk::Matrix(m))) => {
+                    conn.began = now;
                     let before = conn.opened.elapsed().as_secs_f64() * 1000.0;
                     on_matrix(&mut conn, &m, listen);
                     let after = conn.opened.elapsed().as_secs_f64() * 1000.0;
@@ -204,6 +219,11 @@ async fn connection(mut socket: TcpStream, listen: &Listen) -> &'static str {
                     return e.reason();
                 }
             }
+        }
+        // Every pass: a chunk dripping a byte at a time stalls too.
+        if stalled(conn.reader.buffered(), conn.began, Instant::now()) {
+            listen.counters.refuse("stalled");
+            return "stalled";
         }
     }
 }
@@ -242,17 +262,13 @@ fn on_matrix(conn: &mut Conn, m: &Matrix, listen: &Listen) {
     }
     for frame in conn.framer.push(m.planes, &m.samples) {
         listen.counters.frames.fetch_add(1, Ordering::Relaxed);
-        if conn.encoder.is_none() {
-            match Encoder::new() {
-                Ok(encoder) => conn.encoder = Some(encoder),
-                Err(e) => {
-                    tracing::error!(error = %e, "listen: the Opus encoder failed to start");
-                    listen.counters.refuse("encoder");
-                    return;
-                }
-            }
-        }
-        let Some(encoder) = conn.encoder.as_mut() else {
+        let made = conn.encoder.get_or_insert_with(|| {
+            Encoder::new().map_err(|e| {
+                tracing::error!(error = %e, "listen: the Opus encoder failed to start");
+            })
+        });
+        let Ok(encoder) = made.as_mut() else {
+            listen.counters.refuse("encoder");
             return;
         };
         match encoder.encode(&frame) {

@@ -27,7 +27,7 @@ fn heard(list: &[(i32, &str, Instant)]) -> BTreeMap<i32, Heard> {
 
 fn listen() -> (Arc<Listen>, std::sync::mpsc::Receiver<Value>) {
     let (events, records) = EventLog::channel(64);
-    (Listen::new(events), records)
+    (Listen::new(events, no_sets()), records)
 }
 
 #[test]
@@ -65,7 +65,7 @@ fn the_one_fresh_device_on_the_track_is_chosen() {
 }
 
 #[test]
-fn a_start_is_new_a_join_or_busy() {
+fn a_start_is_new_a_join_or_a_take() {
     let target = Target {
         instance: "band".into(),
         set: "FOH Band".into(),
@@ -79,15 +79,15 @@ fn a_start_is_new_a_join_or_busy() {
     );
     assert_eq!(
         start_of(Some(&target), "band", "FOH Band", "Vox 2"),
-        Start::Busy
+        Start::Take
     );
     assert_eq!(
         start_of(Some(&target), "master", "FOH Band", "Vox 1"),
-        Start::Busy
+        Start::Take
     );
     assert_eq!(
         start_of(Some(&target), "band", "Other", "Vox 1"),
-        Start::Busy
+        Start::Take
     );
 }
 
@@ -108,9 +108,9 @@ fn listeners_share_a_track_and_the_last_one_ends_it() {
     listen.heard(announce(5, "Vox 1", "FOH Band"), t0);
     assert!(!listen.accepts(5, t0), "nobody listens");
     assert_eq!(listen.next_select(t0), None);
-    let a = listen.start("band", "FOH Band", "Vox 1").unwrap();
-    let b = listen.start("band", "FOH Band", "Vox 1").unwrap();
-    assert!(listen.start("band", "FOH Band", "Vox 2").is_err());
+    let a = listen.start("band", "FOH Band", "Vox 1", 1, "10.0.0.5");
+    let b = listen.start("band", "FOH Band", "Vox 1", 2, "10.0.0.6");
+    assert_eq!((a.turn(), b.turn()), (1, 1), "a join keeps the turn");
     assert!(listen.accepts(5, t0));
     assert!(!listen.accepts(6, t0));
     let status = listen.status(t0);
@@ -132,7 +132,7 @@ fn listeners_share_a_track_and_the_last_one_ends_it() {
     assert_eq!(records.try_recv().unwrap()["what"], "stop");
     assert!(records.try_recv().is_err(), "a join records nothing");
     // The next track is the next turn.
-    let _c = listen.start("band", "FOH Band", "Vox 2").unwrap();
+    let _c = listen.start("band", "FOH Band", "Vox 2", 3, "10.0.0.7");
     assert_eq!(
         listen.next_select(t0),
         Some(Select { device: 0, turn: 2 }),
@@ -167,7 +167,9 @@ async fn packets_reach_every_subscriber_and_are_counted() {
     listen.send_packet(Bytes::from_static(b"op"));
     // Bounded: a packet that never comes fails here, never hangs the suite.
     assert_eq!(
-        rx.try_recv().expect("the packet is in the channel at once"),
+        rx.try_recv()
+            .expect("the packet is in the channel at once")
+            .1,
         Bytes::from_static(b"op")
     );
     assert_eq!(listen.status(Instant::now()).packets, 1);
@@ -182,7 +184,7 @@ async fn a_port_taken_is_recorded_and_shown() {
     let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = taken.local_addr().unwrap().port();
     let (events, records) = EventLog::channel(16);
-    let (listen, tasks) = spawn(port, 1, events);
+    let (listen, tasks) = spawn(port, 1, events, no_sets());
     assert!(tasks.is_empty());
     let status = listen.status(Instant::now());
     assert_eq!(status.addr, None);
@@ -191,7 +193,7 @@ async fn a_port_taken_is_recorded_and_shown() {
     assert_eq!(record["what"], "listening");
     assert!(record["error"].is_string());
     let (events, records) = EventLog::channel(16);
-    let (listen, tasks) = spawn(0, 1, events);
+    let (listen, tasks) = spawn(0, 1, events, no_sets());
     assert_eq!(tasks.len(), 2);
     let addr = listen.status(Instant::now()).addr.unwrap();
     assert!(addr.starts_with("127.0.0.1:"), "{addr}");
@@ -217,4 +219,98 @@ fn at_most_256_devices_are_kept() {
     assert_eq!(status.refused.get("devices"), Some(&1));
     listen.heard(announce(5, "Vox 2", "FOH Band"), t0);
     assert_eq!(listen.status(t0).refused.get("devices"), Some(&1));
+}
+
+#[test]
+fn the_select_loop_runs_only_while_a_select_is_owed() {
+    assert!(selecting(true, None));
+    assert!(selecting(true, Some(0)));
+    assert!(selecting(false, Some(4)), "the stop is owed");
+    assert!(!selecting(false, Some(0)));
+    assert!(!selecting(false, None));
+    let (listen, _records) = listen();
+    assert!(!listen.selecting(), "an idle hub keeps no timer");
+    let lease = listen.start("band", "FOH Band", "Vox 1", 1, "10.0.0.5");
+    assert!(listen.selecting());
+    drop(lease);
+    assert!(
+        !listen.selecting(),
+        "no device was ever named: no stop owed"
+    );
+}
+
+#[tokio::test]
+async fn the_newest_start_takes_the_track_and_the_old_leases_leave_nothing() {
+    let (listen, records) = listen();
+    let t0 = Instant::now();
+    listen.heard(announce(5, "Vox 1", "FOH Band"), t0);
+    listen.heard(announce(6, "Vox 2", "FOH Band"), t0);
+    let mut turns = listen.turns();
+    let a = listen.start("band", "FOH Band", "Vox 1", 1, "10.0.0.5");
+    let b = listen.start("band", "FOH Band", "Vox 1", 2, "10.0.0.6");
+    assert_eq!(*turns.borrow_and_update(), 1);
+    let c = listen.start("band", "FOH Band", "Vox 2", 3, "10.0.0.7");
+    assert_eq!(c.turn(), 2);
+    assert!(turns.has_changed().unwrap());
+    assert_eq!(
+        *turns.borrow_and_update(),
+        2,
+        "the old pages see a new turn"
+    );
+    assert!(listen.accepts(6, t0) && !listen.accepts(5, t0));
+    // A packet carries the turn it was sent in.
+    let mut rx = listen.subscribe();
+    listen.send_packet(Bytes::from_static(b"x"));
+    assert_eq!(rx.try_recv().unwrap().0, 2);
+    // The taken pages leaving changes nothing.
+    drop(a);
+    drop(b);
+    let target = listen.status(t0).target.unwrap();
+    assert_eq!((target.track.as_str(), target.listeners), ("Vox 2", 1));
+    drop(c);
+    assert_eq!(listen.status(t0).target, None);
+    let all: Vec<Value> = records.try_iter().collect();
+    let mut taken: Vec<Value> = all
+        .iter()
+        .filter(|r| r["what"] == "taken")
+        .cloned()
+        .collect();
+    assert_eq!(taken.len(), 1);
+    let record = taken[0].as_object_mut().unwrap();
+    assert_eq!(record.remove("ev"), Some(serde_json::json!("listen")));
+    assert!(record.remove("ts").is_some());
+    assert_eq!(
+        taken[0],
+        serde_json::json!({"what": "taken",
+            "from": {"instance": "band", "set": "FOH Band", "track": "Vox 1", "listeners": 2},
+            "to": {"instance": "band", "set": "FOH Band", "track": "Vox 2", "listeners": 1},
+            "client": 3, "peer": "10.0.0.7"})
+    );
+    let whats: Vec<&str> = all.iter().filter_map(|r| r["what"].as_str()).collect();
+    assert_eq!(whats, ["start", "taken", "start", "stop"]);
+}
+
+#[test]
+fn a_set_loaded_while_listening_is_followed() {
+    let (events, _records) = EventLog::channel(16);
+    let set = Arc::new(Mutex::new(Some("FOH Band".to_string())));
+    let read = Arc::clone(&set);
+    let sets: SetNames = Arc::new(move |instance: &str| {
+        assert_eq!(instance, "band");
+        read.lock().unwrap().clone()
+    });
+    let listen = Listen::new(events, sets);
+    let t0 = Instant::now();
+    listen.heard(announce(5, "Vox 1", "FOH Band"), t0);
+    listen.heard(announce(9, "Vox 1", "Other Set"), t0);
+    let _lease = listen.start("band", "FOH Band", "Vox 1", 1, "10.0.0.5");
+    assert!(listen.accepts(5, t0));
+    assert_eq!(listen.next_select(t0).map(|s| s.device), Some(5));
+    *set.lock().unwrap() = Some("Other Set".to_string());
+    assert!(listen.accepts(9, t0) && !listen.accepts(5, t0));
+    assert_eq!(listen.next_select(t0).map(|s| s.device), Some(9));
+    assert_eq!(listen.status(t0).target.unwrap().set, "Other Set");
+    // An instance whose set is unknown for a moment keeps the last one.
+    *set.lock().unwrap() = None;
+    assert!(listen.accepts(9, t0));
 }

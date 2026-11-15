@@ -168,3 +168,76 @@ fn the_audio_socket_needs_a_token_and_listen_on() {
         off.stop().await;
     });
 }
+
+#[test]
+fn a_chunk_dripping_a_byte_at_a_time_ends_five_seconds_after_it_began() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = hub(dir.path(), free_port()).await;
+        let port = port_of(&hub.status().await);
+        let bytes = matrix();
+        let began = std::time::Instant::now();
+        // A byte every 0.9 s: each read is quick, the chunk never ends.
+        let drip = std::thread::spawn(move || {
+            let Ok(mut tcp) = TcpStream::connect(("127.0.0.1", port)) else {
+                return;
+            };
+            for byte in bytes.iter().take(12) {
+                if tcp.write_all(&[*byte]).is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(900));
+            }
+        });
+        hub.status_until(Duration::from_secs(15), |s| {
+            s.listen.refused.get("stalled") == Some(&1)
+        })
+        .await;
+        let ended = began.elapsed();
+        assert!(
+            ended >= Duration::from_secs(4) && ended < Duration::from_secs(8),
+            "ended after {ended:?}"
+        );
+        drip.join().unwrap();
+        hub.stop().await;
+    });
+}
+
+#[test]
+fn an_empty_matrix_is_answered_and_the_stream_goes_on() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = hub(dir.path(), free_port()).await;
+        let port = port_of(&hub.status().await);
+        let mut tcp = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        tcp.set_read_timeout(Some(SECS_10)).unwrap();
+        tcp.write_all(&hello(48_000)).unwrap();
+        // jit.catch~ with less than a frame caught: 960 x 0 cells, no data.
+        let mut empty = encode_matrix(Order::Big, 2, 960, 2, &[0.0; 3840], 2.0);
+        let dim1 = 8 + 24;
+        empty[dim1..dim1 + 4].copy_from_slice(&0i32.to_be_bytes());
+        let datasize = 8 + 20 + 8 * 32;
+        empty[datasize..datasize + 4].copy_from_slice(&0i32.to_be_bytes());
+        empty.truncate(8 + 288);
+        tcp.write_all(&empty).unwrap();
+        let mut answer = [0u8; 32];
+        tcp.read_exact(&mut answer).unwrap();
+        assert_eq!(&answer[..4], b"JMLP");
+        assert_eq!(&answer[8..16], &2.0f64.to_be_bytes());
+        // The connection stays: the next matrix is answered too.
+        tcp.write_all(&matrix()).unwrap();
+        tcp.read_exact(&mut answer).unwrap();
+        assert_eq!(&answer[8..16], &1.0f64.to_be_bytes());
+        let status = refused_until(&hub, "not_selected", 2).await;
+        assert_eq!(status.listen.connections, 1);
+        assert_eq!(status.listen.frames, 0);
+        assert!(
+            !status.listen.refused.contains_key("matrix_dims"),
+            "{:?}",
+            status.listen.refused
+        );
+        hub.stop().await;
+    });
+}

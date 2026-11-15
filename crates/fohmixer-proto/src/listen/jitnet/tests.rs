@@ -148,8 +148,10 @@ fn a_bad_matrix_header_is_refused_with_its_reason() {
         assert_eq!(error_of(&with_field(order, PLANES, -1)), JitError::Planes);
         assert_eq!(error_of(&with_field(order, DIMCOUNT, 0)), JitError::Dims);
         assert_eq!(error_of(&with_field(order, DIMCOUNT, 3)), JitError::Dims);
-        assert_eq!(error_of(&with_field(order, DIM0, 0)), JitError::Dims);
-        assert_eq!(error_of(&with_field(order, DIM1, 0)), JitError::Dims);
+        // A zero dimension with data behind it is inconsistent (#210 review:
+        // with a datasize of 0 it is an empty matrix, see below).
+        assert_eq!(error_of(&with_field(order, DIM0, 0)), JitError::Strides);
+        assert_eq!(error_of(&with_field(order, DIM1, 0)), JitError::Strides);
         assert_eq!(error_of(&with_field(order, DIM0, i32::MAX)), JitError::Dims);
         assert_eq!(error_of(&with_field(order, STRIDE0, 7)), JitError::Strides);
         assert_eq!(error_of(&with_field(order, STRIDE1, 31)), JitError::Strides);
@@ -337,7 +339,7 @@ fn errors_name_their_reason() {
     for (e, word) in all {
         assert_eq!(e.reason(), word);
     }
-    assert_eq!(MAX_DATA, 1_048_576);
+    assert_eq!(MAX_DATA, 192_000);
     assert_eq!(MAX_MESSAGE, 4096);
     assert_eq!(MAX_ATOMS, 64);
 }
@@ -376,4 +378,30 @@ fn the_cells_are_bounded_by_the_data_limit() {
     let at = CHUNK_HEADER + DIM0;
     header[at..at + 4].copy_from_slice(&((cells + 1) as i32).to_be_bytes());
     assert_eq!(error_of(&header), JitError::Dims);
+}
+
+#[test]
+fn a_matrix_with_a_zero_dimension_is_an_empty_matrix_never_an_error() {
+    for (cols, rows) in [(960, 0), (0, 1)] {
+        let mut bytes = encode_matrix(Order::Big, 2, 960, 2, &[0.0; 3840], 3.0);
+        let field = |b: &mut Vec<u8>, at: usize, v: i32| {
+            b[CHUNK_HEADER + at..CHUNK_HEADER + at + 4].copy_from_slice(&v.to_be_bytes());
+        };
+        field(&mut bytes, DIM0, cols);
+        field(&mut bytes, DIM1, rows);
+        field(&mut bytes, DATASIZE, 0);
+        bytes.truncate(CHUNK_HEADER + MATRIX_HEADER);
+        bytes.extend(encode_message(Order::Big, &[Atom::Long(7)]));
+        let mut reader = Reader::default();
+        reader.push(&bytes);
+        let Ok(Some(Chunk::Matrix(m))) = reader.next_chunk() else {
+            panic!("an empty matrix for {cols} x {rows}");
+        };
+        assert_eq!((m.cells, m.samples.len(), m.time), (0, 0, 3.0));
+        assert_eq!(
+            reader.next_chunk(),
+            Ok(Some(Chunk::Message(vec![Atom::Long(7)]))),
+            "the stream goes on"
+        );
+    }
 }

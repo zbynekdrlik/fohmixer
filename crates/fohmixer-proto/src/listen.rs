@@ -7,7 +7,8 @@
 //! samples to the hub over TCP as Jitter matrices ([`jitnet`]). The hub
 //! cuts them into 20 ms frames at 48 kHz ([`frames`]), encodes Opus and
 //! sends one packet per frame on `/ws/audio` ([`AudioClientMsg`],
-//! [`AudioServerMsg`]). One track at a time on a hub.
+//! [`AudioServerMsg`]). One track at a time on a hub: the newest start
+//! wins, the pages it takes the track from are told `taken`.
 //!
 //! Pure: no I/O.
 
@@ -53,8 +54,9 @@ pub enum AudioState {
     /// The track's sound does not come: no device, two devices, the
     /// instance offline, or nothing heard for a while.
     NoSource,
-    /// Another track is heard on this hub (one at a time).
-    Busy,
+    /// Another page started another track: this one stopped (one track at
+    /// a time on a hub; the newest start wins).
+    Taken,
     /// The role reaches no such instance, or the message did not parse.
     Refused,
 }
