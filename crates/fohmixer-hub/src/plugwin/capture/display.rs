@@ -38,9 +38,13 @@ use super::{FrameBox, frame_current, picture_box};
 /// after it.
 pub const BUFFERS: i32 = 2;
 
-/// How long a grab waits for a fresh frame once a change was queued (ms):
-/// two 60 Hz compositions, under the worker's 40 ms step.
-pub const WAIT_MS: u64 = 34;
+/// How long a grab waits for a fresh frame when the pool was full (ms): a
+/// changing monitor sends one within a 60 Hz composition and its delivery.
+/// The worker waits with it, so it stays far under what a resting contact
+/// can bear: the worker's keep-alive is due 50 ms after an injection and
+/// Windows cancels a contact silent for 100 ms (50 + a 10 ms step + this +
+/// the box's copy stays under 100: the #215 review).
+pub const WAIT_MS: u64 = 25;
 
 /// Which editors' windows are on which monitor (the glue's handles as
 /// numbers): one capture session per monitor in use.
@@ -155,8 +159,12 @@ impl Frames {
 
     /// After the wait (`fresh`: a frame came): the frame the grab uses, the
     /// one it closes then (the held one is closed already when a frame was
-    /// queued, [`Frames::plan`]), how it stands; none without any frame
-    /// (the session's first has not come yet). The frame used stays held.
+    /// queued, [`Frames::plan`]; a held one is closed here only when a
+    /// fresh frame came with none queued, which no plan of a held frame
+    /// waits for: kept so no frame is ever left open), how it stands; none
+    /// without any frame (the session's first has not come yet). The frame
+    /// used stays held; the grab is counted only once its picture was read
+    /// ([`Frames::counted`]).
     pub fn settle(&mut self, queued: u32, fresh: bool) -> Option<Settled> {
         let settled = if fresh {
             let close = if queued > 0 {
@@ -187,12 +195,17 @@ impl Frames {
             return None;
         };
         self.held = true;
-        match settled.outcome {
+        Some(settled)
+    }
+
+    /// A grab's picture was read: counted by its outcome (a failed read
+    /// counts none: the #215 review).
+    pub fn counted(&mut self, outcome: Outcome) {
+        match outcome {
             Outcome::Fresh => self.tally.fresh += 1,
             Outcome::Current => self.tally.current += 1,
             Outcome::Unsure => self.tally.unsure += 1,
         }
-        Some(settled)
     }
 
     /// A frame not fresh: unsure while the doubt stands.
@@ -225,8 +238,10 @@ impl Frames {
 /// `size`) in a frame of `content` size of the monitor whose rectangle is
 /// `monitor` (left, top, right, bottom): the frame must be of the
 /// monitor's size now ([`frame_current`]: a frame from before a change of
-/// resolution is not taken), the picture cut at the frame's right and
-/// bottom edges ([`picture_box`]).
+/// resolution is not taken), and the WHOLE picture must lie in it (a
+/// window across two monitors gives no picture: a cut one would read as a
+/// resize of the editor, as `frame_current` keeps out for `wgc`; the #215
+/// review).
 pub fn display_box(
     monitor: (i32, i32, i32, i32),
     content: (u32, u32),
@@ -242,7 +257,8 @@ pub fn display_box(
         ));
     }
     picture_box((monitor.0, monitor.1), picture, size, content)
-        .ok_or_else(|| "the editor's picture lies outside its monitor".to_string())
+        .filter(|within| (within.width, within.height) == size)
+        .ok_or_else(|| "the editor's picture is not whole on its monitor".to_string())
 }
 
 #[cfg(test)]
@@ -252,7 +268,7 @@ mod tests {
     #[test]
     fn the_constants_are_the_designs() {
         assert_eq!(BUFFERS, 2);
-        assert_eq!(WAIT_MS, 34);
+        assert_eq!(WAIT_MS, 25);
     }
 
     #[test]
@@ -300,12 +316,24 @@ mod tests {
             })
         );
         assert!(frames.held());
+        assert_eq!(frames.tally(), Tally::default(), "settling counts nothing");
+    }
+
+    #[test]
+    fn a_grab_is_counted_by_its_outcome_once_read() {
+        let mut frames = Frames::default();
+        frames.counted(Outcome::Fresh);
+        frames.counted(Outcome::Fresh);
+        frames.counted(Outcome::Current);
+        frames.counted(Outcome::Unsure);
+        frames.counted(Outcome::Unsure);
+        frames.counted(Outcome::Unsure);
         assert_eq!(
             frames.tally(),
             Tally {
-                fresh: 1,
-                current: 0,
-                unsure: 0
+                fresh: 2,
+                current: 1,
+                unsure: 3
             }
         );
     }
@@ -368,7 +396,6 @@ mod tests {
                 outcome: Outcome::Current
             })
         );
-        assert_eq!(frames.tally().current, 1);
     }
 
     #[test]
@@ -391,7 +418,6 @@ mod tests {
                 outcome: Outcome::Fresh
             })
         );
-        assert_eq!(frames.tally().fresh, 2);
     }
 
     #[test]
@@ -412,7 +438,36 @@ mod tests {
             frames.settle(0, false).map(|s| (s.frame, s.outcome)),
             Some((Frame::Held, Outcome::Unsure))
         );
-        // A fresh frame ends the doubt; the held one goes.
+        // The next change: the pool full again, a fresh frame comes and
+        // ends the doubt.
+        assert_eq!(
+            frames.plan(1),
+            Plan {
+                close_held: true,
+                wait: true
+            }
+        );
+        assert_eq!(
+            frames.settle(1, true),
+            Some(Settled {
+                frame: Frame::Fresh,
+                close: Some(Frame::Queued),
+                outcome: Outcome::Fresh
+            })
+        );
+        assert_eq!(
+            frames.settle(0, false).map(|s| s.outcome),
+            Some(Outcome::Current)
+        );
+    }
+
+    #[test]
+    fn a_fresh_frame_beside_a_held_one_and_none_queued_closes_the_held_one() {
+        // No plan of a held frame waits with nothing queued; should a fresh
+        // frame come anyway, the held one is never left open.
+        let mut frames = Frames::default();
+        frames.settle(0, true);
+        frames.settle(1, false);
         assert_eq!(
             frames.settle(0, true),
             Some(Settled {
@@ -423,15 +478,8 @@ mod tests {
         );
         assert_eq!(
             frames.settle(0, false).map(|s| s.outcome),
-            Some(Outcome::Current)
-        );
-        assert_eq!(
-            frames.tally(),
-            Tally {
-                fresh: 2,
-                current: 1,
-                unsure: 2
-            }
+            Some(Outcome::Current),
+            "a fresh frame ends the doubt"
         );
     }
 
@@ -469,20 +517,38 @@ mod tests {
                 height: 809
             })
         );
-        // Cut at the monitor's right edge.
+        let not_whole = Err("the editor's picture is not whole on its monitor".to_string());
+        // Past the monitor's right or bottom edge: none, never a cut one.
         assert_eq!(
             display_box(monitor, (1920, 1080), (4000, 100), (1349, 809)),
+            not_whole
+        );
+        assert_eq!(
+            display_box(monitor, (1920, 1080), (2568, 300), (1349, 809)),
+            not_whole
+        );
+        // Exactly at the right and bottom edges: whole.
+        assert_eq!(
+            display_box(monitor, (1920, 1080), (4470, 1070), (10, 10)),
             Ok(FrameBox {
-                left: 1440,
-                top: 100,
-                width: 480,
-                height: 809
+                left: 1910,
+                top: 1070,
+                width: 10,
+                height: 10
             })
+        );
+        assert_eq!(
+            display_box(monitor, (1920, 1080), (4471, 1070), (10, 10)),
+            not_whole
+        );
+        assert_eq!(
+            display_box(monitor, (1920, 1080), (4470, 1071), (10, 10)),
+            not_whole
         );
         // Left of the monitor (the window straddles the first one): none.
         assert_eq!(
             display_box(monitor, (1920, 1080), (2559, 31), (10, 10)),
-            Err("the editor's picture lies outside its monitor".to_string())
+            not_whole
         );
         // A monitor left of and above the primary one.
         assert_eq!(

@@ -25,9 +25,12 @@
 //!   a staging texture, one map).
 //! - A session Windows ended (the item's `Closed`: the monitor went) is
 //!   started anew at the next grab; a start that failed is tried again no
-//!   sooner than [`START_AGAIN`]; a frame of another size (the resolution
-//!   changed) recreates the pool and fails that grab; a lost GPU device
-//!   drops every session and the device, made anew at the next grab.
+//!   sooner than `wgc::START_AGAIN`; a frame of another size (the resolution
+//!   changed) recreates the pool and fails that grab (a frame of the old
+//!   size queued before is given back, never read); a lost GPU device
+//!   (after a failed read or start) drops every session and the device,
+//!   made anew at the next grab. The start, the device and the start's
+//!   retry are `wgc.rs`' own (`start_capture`, `device_in`, `Failures`).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};
@@ -45,17 +48,16 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::WinRT::Direct3D11::IDirect3DDxgiInterfaceAccess;
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
-use windows::Win32::UI::WindowsAndMessaging::IsIconic;
+use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindow};
 use windows::core::{IInspectable, Interface};
 
 use super::Pixels;
 use super::capture::CaptureCounts;
 use super::capture::display::{BUFFERS, Frame, Frames, Monitors, Outcome, WAIT_MS, display_box};
-use super::wgc::{Device, FORMAT, Partial, locked, qpc_100ns, read_box, text};
-
-/// A monitor session that failed to start is tried again no sooner than
-/// this (the worker asks at every grab while it has none).
-pub const START_AGAIN: Duration = Duration::from_secs(1);
+use super::wgc::{
+    Device, FORMAT, Failures, device_in, locked, lost, qpc_100ns, read_box, start_capture,
+    supported, text,
+};
 
 /// What the pool's handlers tell the grabs: the frames delivered, and
 /// whether Windows ended the session.
@@ -194,7 +196,7 @@ pub struct Display {
     device: Option<Device>,
     screens: HashMap<isize, Screen>,
     monitors: Monitors,
-    failed: HashMap<isize, (Instant, String)>,
+    failed: Failures<isize>,
 }
 
 impl std::fmt::Debug for Display {
@@ -207,21 +209,10 @@ impl std::fmt::Debug for Display {
 }
 
 impl Display {
-    fn device(&mut self) -> Result<&Device, String> {
-        if self.device.is_none() {
-            self.device = Some(Device::new()?);
-        }
-        self.device
-            .as_ref()
-            .ok_or_else(|| "no Direct3D device".to_string())
-    }
-
-    /// A session of `monitor` started.
+    /// A session of `monitor` started (`wgc::start_capture`, as a window's).
     fn start(&mut self, monitor: HMONITOR) -> Result<Screen, String> {
-        if !GraphicsCaptureSession::IsSupported().unwrap_or(false) {
-            return Err("Windows Graphics Capture is not supported here".to_string());
-        }
-        let direct3d = self.device()?.direct3d.clone();
+        supported()?;
+        let direct3d = device_in(&mut self.device)?.direct3d.clone();
         let interop = windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()
             .map_err(|e| text("IGraphicsCaptureItemInterop", e))?;
         // SAFETY: a capture item of a monitor handle; a stale one fails.
@@ -230,15 +221,6 @@ impl Display {
         let size = item
             .Size()
             .map_err(|e| text("GraphicsCaptureItem.Size", e))?;
-        let pool =
-            Direct3D11CaptureFramePool::CreateFreeThreaded(direct3d.get(), FORMAT, BUFFERS, size)
-                .map_err(|e| text("CreateFreeThreaded", e))?;
-        let mut partial = Partial {
-            item: item.clone(),
-            pool: pool.clone(),
-            frames: None,
-            closed: None,
-        };
         let wake = Arc::new(Wake::default());
         // Only a count and a wake: no frame is taken or copied here.
         let theirs = Arc::clone(&wake);
@@ -247,37 +229,18 @@ impl Display {
                 theirs.arrived();
                 Ok(())
             });
-        match pool.FrameArrived(&on_frame) {
-            Ok(token) => partial.frames = Some(token),
-            Err(e) => return Err(partial.fail(text("FrameArrived", e))),
-        }
         let flagged = Arc::clone(&wake);
         let on_closed = TypedEventHandler::<GraphicsCaptureItem, IInspectable>::new(move |_, _| {
             flagged.ended();
             Ok(())
         });
-        match item.Closed(&on_closed) {
-            Ok(token) => partial.closed = Some(token),
-            Err(e) => return Err(partial.fail(text("Closed", e))),
-        }
-        let session = match pool.CreateCaptureSession(&item) {
-            Ok(session) => session,
-            Err(e) => return Err(partial.fail(text("CreateCaptureSession", e))),
-        };
-        // The cursor never in the picture; no border where Windows lets it
-        // go (from 20348: the PC's 19044 frames the whole monitor).
-        let _ = session.SetIsCursorCaptureEnabled(false);
-        let _ = session.SetIsBorderRequired(false);
-        if let Err(e) = session.StartCapture() {
-            let _ = session.Close();
-            return Err(partial.fail(text("StartCapture", e)));
-        }
+        let started = start_capture(&direct3d, &item, BUFFERS, size, &on_frame, &on_closed)?;
         Ok(Screen {
             item,
-            pool,
-            session,
-            frames_token: partial.frames.unwrap_or_default(),
-            closed_token: partial.closed.unwrap_or_default(),
+            pool: started.pool,
+            session: started.session,
+            frames_token: started.frames,
+            closed_token: started.closed,
             wake,
             size,
             held: None,
@@ -288,8 +251,9 @@ impl Display {
     }
 
     /// The session of `monitor`: started when it has none (a start that
-    /// failed less than [`START_AGAIN`] ago answers its error again) or
-    /// when Windows ended it.
+    /// failed less than `wgc::START_AGAIN` ago answers its error again) or
+    /// when Windows ended it. A start that failed on a lost device drops
+    /// every session and the device.
     fn screen(&mut self, monitor: HMONITOR) -> Result<&mut Screen, String> {
         let key = key_of(monitor);
         if self.screens.get(&key).is_some_and(|s| s.wake.is_ended())
@@ -299,18 +263,20 @@ impl Display {
             old.stop();
         }
         if !self.screens.contains_key(&key) {
-            if let Some((at, why)) = self.failed.get(&key)
-                && at.elapsed() < START_AGAIN
-            {
-                return Err(why.clone());
+            if let Some(why) = self.failed.recent(&key) {
+                return Err(why);
             }
             match self.start(monitor) {
                 Ok(screen) => {
-                    self.failed.remove(&key);
+                    self.failed.forget(&key);
                     self.screens.insert(key, screen);
                 }
                 Err(why) => {
-                    self.failed.insert(key, (Instant::now(), why.clone()));
+                    if let Some(lost) = lost(&self.device) {
+                        tracing::warn!(error = %lost, "the Pro-Q 4 display capture's Direct3D device was lost: made anew at the next grab");
+                        self.drop_device();
+                    }
+                    self.failed.failed(key, why.clone());
                     return Err(why);
                 }
             }
@@ -321,8 +287,13 @@ impl Display {
     }
 
     /// `window`'s monitor now: its session in use (a monitor it left ends
-    /// when no other editor is on it).
+    /// when no other editor is on it). A handle that names no window has
+    /// none.
     fn follow(&mut self, window: HWND) -> Result<(HMONITOR, RECT), String> {
+        // SAFETY: a plain query of a handle.
+        if !unsafe { IsWindow(Some(window)) }.as_bool() {
+            return Err("no such window".to_string());
+        }
         let (monitor, rect) = monitor_of(window)?;
         if let Some(left) = self.monitors.on(window.0 as usize, key_of(monitor)) {
             self.end_screen(left);
@@ -331,15 +302,15 @@ impl Display {
     }
 
     fn end_screen(&mut self, key: isize) {
-        self.failed.remove(&key);
+        self.failed.forget(&key);
         if let Some(mut screen) = self.screens.remove(&key) {
             screen.stop();
         }
     }
 
     /// Whether `window`'s monitor capture runs: started now when it has
-    /// none (a start that failed less than [`START_AGAIN`] ago answers its
-    /// error).
+    /// none (a start that failed less than `wgc::START_AGAIN` ago answers
+    /// its error).
     pub fn started(&mut self, window: HWND) -> Result<(), String> {
         let (monitor, _) = self.follow(window)?;
         self.screen(monitor).map(|_| ())
@@ -381,19 +352,18 @@ impl Display {
             return Err("no capture session".to_string());
         };
         let read = read(device, screen, rect, origin, size);
-        // SAFETY: a plain query of the device's state.
         if read.is_err()
-            && let Err(e) = unsafe { device.device.GetDeviceRemovedReason() }
+            && let Some(lost) = lost(&self.device)
         {
-            tracing::warn!(error = %e, "the Pro-Q 4 display capture's Direct3D device was lost: made anew at the next grab");
-            self.reset();
+            tracing::warn!(error = %lost, "the Pro-Q 4 display capture's Direct3D device was lost: made anew at the next grab");
+            self.drop_device();
         }
         read
     }
 
     /// Every session ended and the device dropped (the monitors forgotten:
     /// each grab looks its window's up again).
-    fn reset(&mut self) {
+    fn drop_device(&mut self) {
         for (_, mut screen) in self.screens.drain() {
             screen.stop();
         }
@@ -412,13 +382,14 @@ impl Display {
 
 impl Drop for Display {
     fn drop(&mut self) {
-        self.reset();
+        self.drop_device();
     }
 }
 
 /// A grab of the editor's box from `screen`: the pool drained to its
-/// newest frame, a fresh one awaited when a change was queued (at most
-/// [`WAIT_MS`]), the frame [`Frames::settle`] names read back and held.
+/// newest frame, a fresh one awaited when the pool was full (at most
+/// [`WAIT_MS`]), the frame [`Frames::settle`] names read back and held,
+/// the grab counted only once its picture was read.
 fn read(
     device: &Device,
     screen: &mut Screen,
@@ -455,31 +426,40 @@ fn read(
         screen.frames.dropped();
         return Err("the frame to read is gone".to_string());
     };
-    if settled.outcome == Outcome::Fresh
-        && let (Ok(time), Some(now)) = (used.SystemRelativeTime(), qpc_100ns())
-    {
-        screen.lag_max = screen.lag_max.max((now - time.Duration) as f64 / 10_000.0);
-    }
+    let age = (settled.outcome == Outcome::Fresh)
+        .then(|| {
+            let composed = used.SystemRelativeTime().ok()?.Duration;
+            qpc_100ns().map(|now| (now - composed) as f64 / 10_000.0)
+        })
+        .flatten();
     match picture_of(device, screen, &used, monitor, origin, size) {
-        Err(Recreated(why)) => {
+        Err(Retired(why)) => {
             close(Some(used));
             screen.frames.dropped();
             Err(why)
         }
         Ok(picture) => {
             screen.held = Some(used);
+            if picture.is_ok() {
+                screen.frames.counted(settled.outcome);
+                if let Some(age) = age {
+                    screen.lag_max = screen.lag_max.max(age);
+                }
+            }
             picture
         }
     }
 }
 
-/// An error after which the frame used is given back (the pool was
-/// recreated for another size).
-struct Recreated(String);
+/// An error after which the frame used is given back, never held: it is of
+/// another size than the monitor's now.
+struct Retired(String);
 
-/// The editor's box of `frame` read back; a frame of another size than
-/// the pool's recreates the pool (`Err(Recreated)`), any other failure is
-/// `Ok(Err)` (the frame stays held).
+/// The editor's box of `frame` read back. A monitor whose size changed
+/// recreates the pool for it, and a frame of another size than the monitor
+/// (one queued before that) is given back: `Err(Retired)`, the next grab
+/// takes a frame of the new size. Any other failure is `Ok(Err)` (the
+/// frame stays held).
 fn picture_of(
     device: &Device,
     screen: &mut Screen,
@@ -487,24 +467,34 @@ fn picture_of(
     monitor: RECT,
     origin: (i32, i32),
     size: (u32, u32),
-) -> Result<Result<Pixels, String>, Recreated> {
-    let content = frame
-        .ContentSize()
-        .map_err(|e| Recreated(text("ContentSize", e)))?;
-    if (content.Width, content.Height) != (screen.size.Width, screen.size.Height)
-        && content.Width > 0
-        && content.Height > 0
+) -> Result<Result<Pixels, String>, Retired> {
+    let now = screen
+        .item
+        .Size()
+        .map_err(|e| Retired(text("GraphicsCaptureItem.Size", e)))?;
+    if (now.Width, now.Height) != (screen.size.Width, screen.size.Height)
+        && now.Width > 0
+        && now.Height > 0
     {
         let why = format!(
-            "the screen's frames are {}x{} now, its pool {}x{}: made anew",
-            content.Width, content.Height, screen.size.Width, screen.size.Height
+            "the screen is {}x{} now, its frames {}x{}: its pool made anew",
+            now.Width, now.Height, screen.size.Width, screen.size.Height
         );
         screen
             .pool
-            .Recreate(device.direct3d.get(), FORMAT, BUFFERS, content)
-            .map_err(|e| Recreated(text("Recreate", e)))?;
-        screen.size = content;
-        return Err(Recreated(why));
+            .Recreate(device.direct3d.get(), FORMAT, BUFFERS, now)
+            .map_err(|e| Retired(text("Recreate", e)))?;
+        screen.size = now;
+        return Err(Retired(why));
+    }
+    let content = frame
+        .ContentSize()
+        .map_err(|e| Retired(text("ContentSize", e)))?;
+    if (content.Width, content.Height) != (now.Width, now.Height) {
+        return Err(Retired(format!(
+            "a frame of {}x{}, the screen {}x{}: one of its size awaited",
+            content.Width, content.Height, now.Width, now.Height
+        )));
     }
     let side = |v: i32| u32::try_from(v).unwrap_or(0);
     let within = match display_box(
@@ -553,15 +543,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_window_that_is_none_gives_no_picture_and_no_session() {
-        // Whatever the runner has (a GPU, WARP or neither), a handle that
-        // names no window gives no picture and keeps no window of it.
+    fn a_handle_that_names_no_window_starts_no_capture_and_gives_no_picture() {
+        // Whatever the runner has (a GPU, WARP or neither, a desktop or
+        // none), a handle that names no window is refused before any
+        // monitor is looked up: no session, no monitor, no device.
         let mut display = Display::default();
         let none = HWND(std::ptr::null_mut());
+        assert_eq!(
+            display.grab(none, (0, 0), (10, 10)).err(),
+            Some("no such window".to_string())
+        );
+        assert_eq!(display.started(none), Err("no such window".to_string()));
         assert!(display.counts(none).is_none());
-        let _ = display.grab(none, (0, 0), (10, 10));
+        display.begin(none);
         display.end(none);
-        assert_eq!(display.monitors.monitor(0), None);
-        assert_eq!(START_AGAIN, Duration::from_secs(1));
+        assert!(display.screens.is_empty());
+        assert_eq!(display.monitors, Monitors::default());
+        assert!(display.failed.is_empty());
+        assert!(display.device.is_none());
     }
 }

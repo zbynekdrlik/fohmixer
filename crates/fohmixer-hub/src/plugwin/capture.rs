@@ -46,7 +46,7 @@ pub enum Capture {
     /// editor's picture at a grab (#215: Windows 10 makes no capture item of
     /// Live's owned editor window, and Live's window styles are never
     /// touched). Nothing of ours runs per screen change: the frames are read
-    /// only at a grab ([`DisplayPick`]).
+    /// only at a grab ([`display::Frames`]).
     #[serde(rename = "wgc-display")]
     WgcDisplay,
 }
