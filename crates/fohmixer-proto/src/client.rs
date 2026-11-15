@@ -1814,6 +1814,28 @@ pub struct ScenesStatus {
     pub glides: usize,
     /// Every glide step written since the start.
     pub writes: u64,
+    /// Companion's scene variable as the hub reads it (#207, `[scenes]`);
+    /// `on` false without the table (an older hub's answer too).
+    #[serde(default)]
+    pub companion: SceneSourceStatus,
+}
+
+/// `/api/status` `scenes.companion` (#207): the hub reads Companion's
+/// scene variable (`on`), the value it read last (`last`), whether
+/// Companion answers (`ok`, none before the first read), why it does not
+/// (`error`, while it does not) and since when (`since`, UTC ms of the
+/// last change of `ok`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneSourceStatus {
+    pub on: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ok: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<u64>,
 }
 
 /// `/api/status` `sectors` (#148): the served document's revision, its

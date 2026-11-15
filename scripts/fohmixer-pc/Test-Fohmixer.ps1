@@ -43,6 +43,10 @@
 #   (as the install writes it and as written by hand: no blank line, LF,
 #   trailing blanks, a UTF-8 byte order mark; never after [tls]), checked by
 #   the hub, none from a first install, kept by an update;
+# - the scene read from Companion's [scenes] table (#207): written by hand
+#   like [eq], read back before [tls] (Get-FohInstalledHandTable), after
+#   [companion] and [presenter] in the toml, checked by the hub (refused
+#   without [companion]), kept by an update;
 # - the tray (#39, FohmixerTray.ps1, -TrayExe the job's debug build): in the
 #   bundle, its two tasks registered and read back, the installed tray started
 #   exactly as its task starts it (it reads the installed toml and polls the
@@ -573,6 +577,21 @@ try {
     Assert ((Test-FohHubToml -Exe $HubExe -Text $eqToml -Dir $checkDir) -like '*: OK*') 'hub-toml-check-accepts-the-eq-table-on-windows'
     $badEq = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Eq "`r`n[eq]`r`nbackend = `"nope`"`r`n"
     Assert ((ErrorOf { Test-FohHubToml -Exe $HubExe -Text $badEq -Dir $checkDir }) -like '*refused by the hub (exit 2)*unknown variant*') 'hub-toml-check-refuses-a-bad-eq-backend'
+    # ---- the scene read from Companion (#207): an installed [scenes] table is kept ----
+    $wantScenes = "`r`n[scenes]`r`ncompanion_variable = `"scena`"`r`n"
+    $withScenes = New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3 -Eq $wantEq -Companion $wantCompanion -Presenter $wantP -Scenes $wantScenes -Remote $gotRemote
+    Assert ($withScenes -ceq ($baseToml + $wantEq + $wantCompanion + $wantP + $wantScenes + $gotRemote)) 'scenes-table-after-companion-and-presenter-before-tls'
+    Assert ((Get-FohInstalledHandTable -Text $withScenes -Name 'scenes') -ceq $wantScenes) 'installed-scenes-table-read-back-before-tls'
+    Assert ((Get-FohInstalledEqToml -Text $withScenes) -ceq $wantEq -and (Get-FohInstalledPresenterToml -Text $withScenes) -ceq $wantP -and (Get-FohInstalledRemoteToml -Text $withScenes) -ceq $gotRemote) 'installed-eq-presenter-and-remote-tables-unchanged-by-scenes'
+    $scenesByHand = $baseToml + $wantCompanion + "[scenes]`ncompanion_variable = `"scena`"  `n" + $gotRemote
+    Assert ((Get-FohInstalledHandTable -Text $scenesByHand -Name 'scenes') -ceq $wantScenes) 'installed-scenes-table-written-by-hand-comes-back-as-written-by-the-install'
+    Assert ((Get-FohInstalledHandTable -Text ($baseToml + $gotRemote + $wantScenes) -Name 'scenes') -ceq '') 'installed-scenes-after-tls-is-left-to-the-remote-tables'
+    Assert ((Get-FohInstalledHandTable -Text ($baseToml + "`r`n[scenesx]`r`nx = 1`r`n") -Name 'scenes') -ceq '') 'installed-scenes-another-table-name-is-not-scenes'
+    $scenesToml = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Companion $wantCompanion -Scenes $wantScenes
+    Assert ((Test-FohHubToml -Exe $HubExe -Text $scenesToml -Dir $checkDir) -like '*: OK*') 'hub-toml-check-accepts-the-scenes-table'
+    $lonelyScenes = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Scenes $wantScenes
+    $lonelyError = ErrorOf { Test-FohHubToml -Exe $HubExe -Text $lonelyScenes -Dir $checkDir }
+    Assert (($lonelyError -like '*refused by the hub (exit 2)*') -and $lonelyError.Contains('add [companion]')) 'hub-toml-check-refuses-scenes-without-companion'
     Assert (@(Get-ChildItem -LiteralPath $checkDir -Force).Count -eq 0) 'hub-toml-check-of-the-eq-table-leaves-no-file'
     # The hosts file keeps its encoding: ANSI (a non-ASCII byte in a comment), UTF-8 with a byte order mark.
     $ansiHosts = Join-Path $base 'hosts-ansi'
@@ -1017,6 +1036,15 @@ try {
     Assert ($r11.code -eq 0) 'install-11-again-exits-0'
     $newer = @(Get-ChangedFiles $watchE)
     Assert ($newer.Count -eq 0 -and [IO.File]::ReadAllText($tomlC) -ceq $wantEqC) "install-11-again-keeps-the-eq-table-writing-nothing ($($newer -join ', '))"
+    # ---- install 11b (#207): a [scenes] table written by hand after [companion] is kept ----
+    $wantScenesC = $wantEqC + "`r`n[scenes]`r`ncompanion_variable = `"scena`"`r`n"
+    [IO.File]::WriteAllText($tomlC, $wantScenesC)
+    $r11b = Invoke-Ps $install (Get-InstallArgs @{ DataDir = $dataC })
+    Assert ($r11b.code -eq 0 -and $r11b.out.Contains('the [scenes] table kept as installed')) "install-11b-with-a-scenes-table-exits-0 ($($r11b.out))"
+    Assert ([IO.File]::ReadAllText($tomlC) -ceq $wantScenesC) 'install-11b-keeps-the-scenes-table-after-companion'
+    Assert ($r11b.out -match '"scenes":\s*true') 'install-11b-result-says-scenes'
+    # Back to the toml the later steps expect.
+    [IO.File]::WriteAllText($tomlC, $wantEqC)
     # A config the hub refuses stops the install before any change: checked
     # by the new hub itself (the kept [tls] on the new HTTP port included).
     foreach ($r in @(

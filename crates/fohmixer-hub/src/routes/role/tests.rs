@@ -84,6 +84,7 @@ fn the_mbc_status_holds_its_live_set_only() {
             last: None,
             glides: 0,
             writes: 0,
+            companion: fohmixer_proto::client::SceneSourceStatus::default(),
         }
     );
 }

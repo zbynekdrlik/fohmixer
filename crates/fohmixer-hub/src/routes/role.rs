@@ -158,6 +158,7 @@ pub fn status_for(role: Role, status: HubStatus) -> HubStatus {
                 last: None,
                 glides: 0,
                 writes: 0,
+                companion: fohmixer_proto::client::SceneSourceStatus::default(),
             },
             link: None,
         },
