@@ -51,7 +51,7 @@ fn the_hubs_status_message_reads_as_the_page_expects() {
     for (state, word) in [
         (AudioState::Listening, "listening"),
         (AudioState::Stopped, "stopped"),
-        (AudioState::Busy, "busy"),
+        (AudioState::Taken, "taken"),
         (AudioState::Refused, "refused"),
     ] {
         assert_eq!(serde_json::to_value(state).unwrap(), word);

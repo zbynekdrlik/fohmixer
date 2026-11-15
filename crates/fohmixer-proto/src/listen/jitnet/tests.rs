@@ -339,7 +339,7 @@ fn errors_name_their_reason() {
     for (e, word) in all {
         assert_eq!(e.reason(), word);
     }
-    assert_eq!(MAX_DATA, 1_048_576);
+    assert_eq!(MAX_DATA, 192_000);
     assert_eq!(MAX_MESSAGE, 4096);
     assert_eq!(MAX_ATOMS, 64);
 }

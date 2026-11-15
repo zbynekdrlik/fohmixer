@@ -20,7 +20,8 @@
 //! Which order Max really writes is probe P3 on #210 (`.claude/rules/listen.md`).
 //!
 //! The hub takes float32 matrices of 1 or 2 planes (the channels) in 1 or 2
-//! dimensions (`jit.catch~ @mode 1` gives `framesize` × k cells), at most
+//! dimensions (`jit.catch~ @mode 1` gives `framesize` × k cells; a 0
+//! dimension with no data is an empty matrix), at most
 //! [`MAX_DATA`] bytes; anything else is a [`JitError`] and the connection
 //! ends (its framing can no longer be trusted).
 //!
@@ -30,10 +31,13 @@
 pub const CHUNK_HEADER: usize = 8;
 /// The matrix header (its own `id` and `size` included).
 pub const MATRIX_HEADER: usize = 288;
-/// The most matrix data one chunk may carry (1 MiB: ~2.7 s of stereo
-/// float32 at 48 kHz; `jit.catch~` hands out what came since its last
-/// bang, 10 ms apart).
-pub const MAX_DATA: usize = 1 << 20;
+/// The most matrix data one chunk may carry: 25 of `jit.catch~`'s
+/// 960-sample frames of 2 float32 channels (25 × 960 × 2 × 4 = 192 000
+/// bytes, 0.5 s of sound). Its `qmetro 10` takes one frame or two at a
+/// time; 25 covers Live's low-priority queue held up for half a second,
+/// and a matrix is never more than ~25 Opus frames of encoding on the
+/// hub's async path.
+pub const MAX_DATA: usize = 25 * 960 * 2 * 4;
 /// The largest message chunk.
 pub const MAX_MESSAGE: usize = 4096;
 /// The most atoms one message may carry.
@@ -271,11 +275,28 @@ fn layout(h: &[u8]) -> Result<(Layout, f64), JitError> {
     let row_stride = if dimcount == 2 { stride(1)? } else { 0 };
     let datasize = field(order, h, 20 + 8 * MAX_DIMS, JitError::DataSize)?;
     let time = order.f64(eight(h, 24 + 8 * MAX_DIMS).ok_or(JitError::Size)?);
-    if cols == 0 || rows == 0 || cols.checked_mul(rows).is_none_or(|n| n > MAX_DATA / 4) {
+    if cols.checked_mul(rows).is_none_or(|n| n > MAX_DATA / 4) {
         return Err(JitError::Dims);
     }
     if datasize > MAX_DATA {
         return Err(JitError::DataSize);
+    }
+    if cols == 0 || rows == 0 {
+        // No cell: an empty matrix (`jit.catch~` with less than a frame
+        // caught), consumed and answered; data behind it is inconsistent.
+        if datasize != 0 {
+            return Err(JitError::Strides);
+        }
+        let layout = Layout {
+            order,
+            planes,
+            cols,
+            rows,
+            col_stride,
+            row_stride,
+            datasize,
+        };
+        return Ok((layout, time));
     }
     if col_stride < cell
         || (rows > 1 && cols.checked_mul(col_stride).is_none_or(|n| row_stride < n))

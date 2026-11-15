@@ -7,6 +7,9 @@
 //! the newest (iemmixer's rule), so a slow link hears the track late by at
 //! most that much. Nothing heard for [`NO_SOURCE_MS`] while listening is
 //! told `no_source` once (and `listening` again when packets come back).
+//! Another page starting another track takes the hub's one track: this page
+//! sees the turn change and is told `taken` (and hears no packet of the new
+//! turn, [`passes`]).
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -20,7 +23,7 @@ use bytes::Bytes;
 use fohmixer_proto::listen::{AudioClientMsg, AudioServerMsg, AudioState};
 use fohmixer_proto::roles::Role;
 use serde_json::json;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use tokio::time::{Instant, MissedTickBehavior};
 
 use super::{Lease, Listen};
@@ -103,22 +106,30 @@ fn sent(who: &Opener, result: Result<(), &'static str>) -> bool {
     }
 }
 
-/// The next packet: one more than [`MAX_BEHIND`] waiting behind it skips it.
+/// Whether a packet sent in `sent` is for a page of `turn`, with `behind`
+/// more waiting behind it: its own turn's, and at most [`MAX_BEHIND`]
+/// behind (a slow socket skips to the newest).
+pub fn passes(sent: i32, turn: i32, behind: usize) -> bool {
+    sent == turn && behind <= MAX_BEHIND
+}
+
+/// The next packet of `turn` ([`passes`]).
 async fn next_packet(
-    rx: &mut broadcast::Receiver<Bytes>,
+    rx: &mut broadcast::Receiver<(i32, Bytes)>,
+    turn: i32,
 ) -> Result<Bytes, broadcast::error::RecvError> {
     loop {
-        let packet = rx.recv().await?;
-        if rx.len() <= MAX_BEHIND {
+        let (sent, packet) = rx.recv().await?;
+        if passes(sent, turn, rx.len()) {
             return Ok(packet);
         }
     }
 }
 
-/// A socket's listening: its lease, its packets and the track.
+/// A socket's listening: its lease, its packets, the turn and the track.
 struct Listening {
-    _lease: Lease,
-    rx: broadcast::Receiver<Bytes>,
+    lease: Lease,
+    rx: broadcast::Receiver<(i32, Bytes)>,
     instance: String,
     track: String,
     last: Instant,
@@ -142,6 +153,7 @@ fn start(
     hub: &Hub,
     listen: &Arc<Listen>,
     role: Role,
+    who: (u64, &str),
     instance: &str,
     track: &str,
 ) -> Result<Listening, AudioState> {
@@ -149,12 +161,11 @@ fn start(
         return Err(AudioState::Refused);
     }
     let set = hub.set_name(instance).ok_or(AudioState::NoSource)?;
-    let lease = listen
-        .start(instance, &set, track)
-        .map_err(|_| AudioState::Busy)?;
+    let rx = listen.subscribe();
+    let lease = listen.start(instance, &set, track, who.0, who.1);
     Ok(Listening {
-        _lease: lease,
-        rx: listen.subscribe(),
+        lease,
+        rx,
         instance: instance.to_string(),
         track: track.to_string(),
         last: Instant::now(),
@@ -163,8 +174,11 @@ fn start(
 }
 
 async fn session(mut socket: WebSocket, hub: Hub, listen: Arc<Listen>, role: Role, who: Opener) {
-    tracing::info!(peer = %who.peer, source = who.source, "listen: a page's audio socket opened");
+    let client = hub.next_client();
+    tracing::info!(client, peer = %who.peer, source = who.source, "listen: a page's audio socket opened");
     let mut listening: Option<Listening> = None;
+    // The turn now: a turn not this page's own means its track was taken.
+    let mut turns: watch::Receiver<i32> = listen.turns();
     let mut ping = tokio::time::interval(Duration::from_millis(PING_MS));
     ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
@@ -180,7 +194,7 @@ async fn session(mut socket: WebSocket, hub: Hub, listen: Arc<Listen>, role: Rol
                 let out = match serde_json::from_str::<AudioClientMsg>(&text) {
                     Ok(AudioClientMsg::ListenStart { instance, track }) => {
                         listening = None;
-                        match start(&hub, &listen, role, &instance, &track) {
+                        match start(&hub, &listen, role, (client, &who.peer), &instance, &track) {
                             Ok(l) => {
                                 listen.events.record("listen", json!({"what": "page", "on": true,
                                     "instance": instance, "track": track, "peer": who.peer}));
@@ -202,9 +216,22 @@ async fn session(mut socket: WebSocket, hub: Hub, listen: Arc<Listen>, role: Rol
                     break;
                 }
             }
+            taken = turns.changed(), if has => {
+                let turn = taken.map(|()| *turns.borrow_and_update());
+                // The newest start took the track: this page stops.
+                let Some(l) = listening.as_ref() else { continue };
+                if turn.is_ok_and(|turn| turn == l.lease.turn()) {
+                    continue;
+                }
+                let told = status(AudioState::Taken, Some((&l.instance, &l.track)));
+                listening = None;
+                if !sent(&who, bounded(socket.send(told)).await) {
+                    break;
+                }
+            }
             got = async {
                 match listening.as_mut() {
-                    Some(l) => next_packet(&mut l.rx).await,
+                    Some(l) => next_packet(&mut l.rx, l.lease.turn()).await,
                     None => std::future::pending().await,
                 }
             }, if has => {
@@ -262,13 +289,13 @@ mod tests {
 
     #[test]
     fn a_status_names_its_track() {
-        let Message::Text(text) = status(AudioState::Busy, Some(("band", "Vox 1"))) else {
+        let Message::Text(text) = status(AudioState::Taken, Some(("band", "Vox 1"))) else {
             panic!("text");
         };
         let v: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(
             v,
-            json!({"type": "audio_status", "status": "busy", "instance": "band", "track": "Vox 1"})
+            json!({"type": "audio_status", "status": "taken", "instance": "band", "track": "Vox 1"})
         );
         let Message::Text(text) = status(AudioState::Stopped, None) else {
             panic!("text");
@@ -303,13 +330,28 @@ mod tests {
     async fn a_slow_socket_skips_to_the_newest_packet() {
         let (tx, mut rx) = broadcast::channel(64);
         for k in 0..10u8 {
-            tx.send(Bytes::from(vec![k])).unwrap();
+            tx.send((3, Bytes::from(vec![k]))).unwrap();
         }
         // Ten waiting: the first that leaves at most four behind it.
-        assert_eq!(next_packet(&mut rx).await.unwrap()[0], 5);
-        assert_eq!(next_packet(&mut rx).await.unwrap()[0], 6);
+        assert_eq!(next_packet(&mut rx, 3).await.unwrap()[0], 5);
+        assert_eq!(next_packet(&mut rx, 3).await.unwrap()[0], 6);
         for k in 7..10u8 {
-            assert_eq!(next_packet(&mut rx).await.unwrap()[0], k);
+            assert_eq!(next_packet(&mut rx, 3).await.unwrap()[0], k);
         }
+    }
+
+    #[tokio::test]
+    async fn a_page_hears_only_its_own_turns_packets() {
+        let (tx, mut rx) = broadcast::channel(64);
+        tx.send((2, Bytes::from_static(b"old"))).unwrap();
+        tx.send((3, Bytes::from_static(b"new"))).unwrap();
+        assert_eq!(
+            next_packet(&mut rx, 3).await.unwrap(),
+            Bytes::from_static(b"new")
+        );
+        assert!(passes(3, 3, MAX_BEHIND));
+        assert!(!passes(3, 3, MAX_BEHIND + 1));
+        assert!(!passes(2, 3, 0));
+        assert!(!passes(4, 3, 0));
     }
 }

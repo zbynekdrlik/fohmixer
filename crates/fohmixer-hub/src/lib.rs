@@ -264,10 +264,7 @@ impl HubInner {
     /// #210: the devices name their set); none while it is unknown (no
     /// such instance, never connected) or empty.
     pub fn set_name(&self, instance: &str) -> Option<String> {
-        self.live
-            .get(instance)
-            .map(|live| live.snapshot().info.set_name)
-            .filter(|name| !name.is_empty())
+        set_name_of(&self.live, instance)
     }
 
     /// Closes every client and ends the hub's tasks (idempotent). The
@@ -727,10 +724,14 @@ impl Hub {
         // Listen (#210): 127.0.0.1 only; a port taken is recorded and
         // shown, and the hub runs on without it.
         let listen = (config.listen.port != 0).then(|| {
+            let sets_of = live.clone();
+            let sets: listen::SetNames =
+                Arc::new(move |instance: &str| set_name_of(&sets_of, instance));
             let (listen, listen_tasks) = listen::spawn(
                 config.listen.port,
                 config.listen.select_port,
                 events.clone(),
+                sets,
             );
             tasks.extend(listen_tasks);
             listen
@@ -811,6 +812,14 @@ pub fn live_events(
             });
         }
     })
+}
+
+/// The Live set's name of `instance` in `live` as its script told it; none
+/// while unknown or empty (`HubInner::set_name`, Listen's [`listen::SetNames`]).
+pub fn set_name_of(live: &BTreeMap<String, LiveHandle>, instance: &str) -> Option<String> {
+    live.get(instance)
+        .map(|live| live.snapshot().info.set_name)
+        .filter(|name| !name.is_empty())
 }
 
 /// Whether the LUFS rule's tick runs: a listener of its own, or a linked

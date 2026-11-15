@@ -4,8 +4,9 @@
 //! pure) and kept; a refused one is only counted (`/api/status`
 //! `listen.refused`, `announce_<reason>`). The same task sends the selects
 //! to `127.0.0.1:<[listen] select_port>` every
-//! [`SELECT_EVERY_MS`](fohmixer_proto::listen::wire::SELECT_EVERY_MS), and
-//! at once when a target starts or ends ([`Listen::wake`]).
+//! [`SELECT_EVERY_MS`](fohmixer_proto::listen::wire::SELECT_EVERY_MS) while
+//! a select is owed ([`Listen::selecting`]), and at once when a target
+//! starts or ends ([`Listen::wake`]); with nothing owed it keeps no timer.
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
@@ -57,6 +58,10 @@ async fn run(socket: UdpSocket, to: SocketAddr, listen: Arc<Listen>) {
     let mut tick = tokio::time::interval(Duration::from_millis(SELECT_EVERY_MS));
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
+        // The tick runs only while a select is owed (a target, or the
+        // stop after one): an idle hub has no timer here, the wake starts
+        // it again.
+        let armed = listen.selecting();
         tokio::select! {
             got = socket.recv(&mut buf) => match got {
                 Ok(n) => handle_datagram(&listen, &buf[..n], Instant::now()),
@@ -68,7 +73,7 @@ async fn run(socket: UdpSocket, to: SocketAddr, listen: Arc<Listen>) {
                     tokio::time::sleep(ERROR_PAUSE).await;
                 }
             },
-            _ = tick.tick() => send_select(&socket, to, &listen).await,
+            _ = tick.tick(), if armed => send_select(&socket, to, &listen).await,
             () = listen.wake.notified() => send_select(&socket, to, &listen).await,
         }
     }
@@ -111,7 +116,7 @@ mod tests {
     #[test]
     fn an_announce_is_kept_and_junk_counted() {
         let (events, _records) = EventLog::channel(16);
-        let listen = Listen::new(events);
+        let listen = Listen::new(events, super::super::no_sets());
         let now = Instant::now();
         handle_datagram(&listen, &announce(4), now);
         handle_datagram(&listen, b"junk", now);
@@ -125,7 +130,7 @@ mod tests {
     #[tokio::test]
     async fn a_start_selects_the_device_at_once_and_the_end_stops_it() {
         let (events, _records) = EventLog::channel(16);
-        let listen = Listen::new(events);
+        let listen = Listen::new(events, super::super::no_sets());
         let devices = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         devices
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -142,7 +147,7 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        let lease = listen.start("band", "FOH Band", "Vox 1").unwrap();
+        let lease = listen.start("band", "FOH Band", "Vox 1", 1, "10.0.0.5");
         let mut buf = [0u8; 64];
         let n = tokio::task::spawn_blocking({
             let devices = devices.try_clone().unwrap();
