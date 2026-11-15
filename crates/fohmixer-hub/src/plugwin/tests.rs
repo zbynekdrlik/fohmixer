@@ -1499,6 +1499,15 @@ fn a_backend_that_cannot_tell_a_change_is_grabbed_every_40_ms_on_its_own_clock()
     worker.step_at(120.0);
     assert_eq!(worker.editors[&1].counts.grabs, 4);
     assert_eq!(worker.editors[&1].last_shown, 2);
+    // ... and it reports no capture counts (a grab of the screen has none),
+    // whatever its sim would say (#215: the trait's default, the probe's
+    // `arrived=-`).
+    handle.capture_counts(Some(CaptureCounts {
+        arrived: 7,
+        lag_ms_max: 3.0,
+    }));
+    let taken = worker.editors[&1].taken.clone();
+    assert_eq!(worker.backend.capture_counts(&taken), None);
 }
 
 #[test]
