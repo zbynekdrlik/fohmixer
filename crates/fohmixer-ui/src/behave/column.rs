@@ -8,18 +8,17 @@ pub enum KeyPlace {
     /// At the right of the bar's tab at this position, in its row.
     Beside(usize),
     /// At the bar's end, in a row of its own: no tab of the bar is the
-    /// sectors page's.
+    /// sectors page's (ARRANGE stays reachable).
     End,
-    /// Not drawn.
-    Nowhere,
 }
 
 /// Where the key goes in a bar of `tabs` (the level-0 tabs' page ids, in
-/// order) for the sectors page `page`: beside that page's own tab.
+/// order) for the sectors page `page`: beside that page's own tab, else
+/// at the bar's end.
 pub fn key_place(tabs: &[&str], page: &str) -> KeyPlace {
     tabs.iter()
         .position(|id| *id == page)
-        .map_or(KeyPlace::Nowhere, KeyPlace::Beside)
+        .map_or(KeyPlace::End, KeyPlace::Beside)
 }
 
 #[cfg(test)]

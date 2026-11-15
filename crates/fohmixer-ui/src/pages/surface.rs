@@ -748,9 +748,9 @@ fn TabBar(
     let (place, mut key) = match beside {
         Some((page, key)) => {
             let ids: Vec<&str> = tabs.iter().map(|(_, id, _)| id.as_str()).collect();
-            (key_place(&ids, &page), Some(key))
+            (Some(key_place(&ids, &page)), Some(key))
         }
-        None => (KeyPlace::Nowhere, None),
+        None => (None, None),
     };
     let buttons = tabs
         .into_iter()
@@ -793,7 +793,7 @@ fn TabBar(
             };
             // The tab the key goes beside takes it into its row (#212); the
             // tab takes the row's rest.
-            match (place == KeyPlace::Beside(at))
+            match (place == Some(KeyPlace::Beside(at)))
                 .then(|| key.take())
                 .flatten()
             {
@@ -827,10 +827,22 @@ fn TabBar(
             <Show when=has_presenter><PresenterTab /></Show>
         }
     });
+    // No tab takes the key: it ends the bar in a row of its own (#212).
+    let key_row = (place == Some(KeyPlace::End))
+        .then(|| key.take())
+        .flatten()
+        .map(|key| {
+            view! {
+                <div class="page-row key-row" data-testid="key-row">
+                    {key.run()}
+                </div>
+            }
+        });
     view! {
         <div class="seg" class:dim=dim data-testid="tabbar" data-level={level.to_string()}>
             {buttons}
             {extra_tabs}
+            {key_row}
         </div>
     }
 }
