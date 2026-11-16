@@ -28,9 +28,10 @@ to make in Live (it never edits Live's preferences). Then, in order:
   4. copies -Layout (the import's output) to <DataDir>\layout.json;
   5. installs FohMixer into each Live user's User Library\Remote Scripts with
      that user's INSTANCE and PORT in Config.py (replaced only when version.py
-     differs), and the two Max for Live devices (#151, FohMixer LUFS.amxd
-     and FohMixer Meter.amxd) into each User Library\Presets\Audio
-     Effects\Max Audio Effect (written only when they differ); Live's
+     differs), and the three Max for Live devices (#151, FohMixer LUFS.amxd
+     and FohMixer Meter.amxd; #210, FohMixer Listen.amxd) into each User
+     Library\Presets\Audio Effects\Max Audio Effect (written only when
+     they differ); Live's
      preferences and a running Live are never touched;
   6. registers the tasks fohmixer-hub (at the band user's logon, Interactive,
      Limited, no time limit, IgnoreNew, never ended hard, in a console without

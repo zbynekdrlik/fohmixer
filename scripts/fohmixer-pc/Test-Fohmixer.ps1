@@ -641,11 +641,12 @@ try {
     # ---- the bundle ----
     $out = Join-Path $base 'out'
     New-Item -ItemType Directory -Force -Path $out | Out-Null
-    # The two Max for Live devices (#151), built as the bundle job builds them.
+    # The Max for Live devices (#151; #210 Listen), built as the bundle job builds them.
     $deviceDir = Join-Path $base 'devices'
     New-Item -ItemType Directory -Force -Path $deviceDir | Out-Null
     $buildAmxd = Join-Path $repo 'live-device\FohMixer-LUFS\build_amxd.py'
-    foreach ($patch in @('live-device\FohMixer-LUFS\FohMixer LUFS.maxpat', 'live-device\FohMixer-Meter\FohMixer Meter.maxpat')) {
+    foreach ($patch in @('live-device\FohMixer-LUFS\FohMixer LUFS.maxpat', 'live-device\FohMixer-Meter\FohMixer Meter.maxpat',
+            'live-device\FohMixer-Listen\FohMixer Listen.maxpat')) {
         $name = [IO.Path]::GetFileNameWithoutExtension($patch) + '.amxd'
         & python $buildAmxd --patch (Join-Path $repo $patch) --out (Join-Path $deviceDir $name)
         if ($LASTEXITCODE -ne 0) { throw "build_amxd.py failed for $patch ($LASTEXITCODE)" }
@@ -670,10 +671,10 @@ try {
     foreach ($n in @('VERSION', 'SHA256SUMS', 'fohmixer-hub.exe', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1', 'FohmixerLivePrefs.ps1', 'FohmixerFirewall.ps1', 'FohmixerRemote.ps1', 'Start-FohmixerHub.ps1',
             'Stop-FohmixerHub.ps1', 'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py', 'FohMixer/transport/server.py',
             'fohmixer-tray.exe', 'FohmixerTray.ps1', 'FohmixerHubProcess.ps1', 'FohmixerTasks.ps1', 'THIRD-PARTY-NOTICES.md',
-            'live-device/FohMixer LUFS.amxd', 'live-device/FohMixer Meter.amxd')) {
+            'live-device/FohMixer LUFS.amxd', 'live-device/FohMixer Meter.amxd', 'live-device/FohMixer Listen.amxd')) {
         Assert ($entries -ccontains $n) "bundle-holds-$n"
     }
-    foreach ($d in @('FohMixer LUFS.amxd', 'FohMixer Meter.amxd')) {
+    foreach ($d in @('FohMixer LUFS.amxd', 'FohMixer Meter.amxd', 'FohMixer Listen.amxd')) {
         Assert ((Get-FohSha256 (Join-Path $b1.stage "live-device\$d")) -ceq (Get-FohSha256 (Join-Path $deviceDir $d))) "bundle-holds-the-built-$d"
     }
     # The IJG credit jpeg-encoder's licence asks of the shipped hub's documentation (#71).
@@ -746,19 +747,19 @@ try {
     $bandDevices = Join-Path $bandLib 'Presets\Audio Effects\Max Audio Effect'
     $masterDevices = Join-Path $masterLib 'Presets\Audio Effects\Max Audio Effect'
     foreach ($lib in @($bandDevices, $masterDevices)) {
-        foreach ($d in @('FohMixer LUFS.amxd', 'FohMixer Meter.amxd')) {
+        foreach ($d in @('FohMixer LUFS.amxd', 'FohMixer Meter.amxd', 'FohMixer Listen.amxd')) {
             $installed = Join-Path $lib $d
             Assert ((Test-Path -LiteralPath $installed -PathType Leaf) -and
                 (Get-FohSha256 $installed) -ceq (Get-FohSha256 (Join-Path $appV1 "live-device\$d"))) "install-1-puts-$d-into-each-user-library"
         }
-        Assert (@(Get-ChildItem -LiteralPath $lib -File).Count -eq 2) 'install-1-leaves-no-temp-file-beside-the-devices'
+        Assert (@(Get-ChildItem -LiteralPath $lib -File).Count -eq 3) 'install-1-leaves-no-temp-file-beside-the-devices'
     }
-    Assert ($r1.out -like "*the band user's Max devices in Presets\Audio Effects\Max Audio Effect (written: FohMixer LUFS.amxd, FohMixer Meter.amxd)*") 'install-1-says-which-devices-it-wrote'
+    Assert ($r1.out -like "*the band user's Max devices in Presets\Audio Effects\Max Audio Effect (written: FohMixer LUFS.amxd, FohMixer Meter.amxd, FohMixer Listen.amxd)*") 'install-1-says-which-devices-it-wrote'
     # In-process on a library of its own: a changed device is written again, an equal one never, a missing library refused.
     $devLib = Join-Path $base 'devices-lib'
     New-Item -ItemType Directory -Force -Path $devLib | Out-Null
     $w = @(Install-FohUserDevices -Source (Join-Path $appV1 'live-device') -UserLibrary $devLib)
-    Assert ($w.Count -eq 2) 'devices-first-run-writes-both'
+    Assert ($w.Count -eq 3) 'devices-first-run-writes-all-three'
     Assert (@(Install-FohUserDevices -Source (Join-Path $appV1 'live-device') -UserLibrary $devLib).Count -eq 0) 'devices-second-run-writes-nothing'
     [IO.File]::WriteAllText((Join-Path $devLib 'Presets\Audio Effects\Max Audio Effect\FohMixer Meter.amxd'), 'frozen by hand')
     $w = @(Install-FohUserDevices -Source (Join-Path $appV1 'live-device') -UserLibrary $devLib)

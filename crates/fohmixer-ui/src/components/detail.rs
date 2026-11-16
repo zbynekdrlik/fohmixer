@@ -27,6 +27,7 @@ use super::detail_scenes::DetailScenes;
 use super::eq::EqCards;
 use super::fader::{FaderView, Law, Target};
 use super::fader_link::{FaderFollowView, FaderLinkView, link_parts};
+use super::listen::ListenKey;
 use super::meter::{MeterView, StatusView};
 use super::pan::PanView;
 use super::strip::{DbView, ScaleView};
@@ -193,6 +194,8 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
     // selector (#205).
     let layouts_strip = strip.clone();
     let select_strip = strip.clone();
+    // Listen (#210): the 🎧 key beside the chip.
+    let listen_strip = strip.clone();
     let chip_label = label.clone();
     // The scene rules (#207): SCENES after LAYOUTS.
     let scenes_strip = strip.clone();
@@ -381,6 +384,7 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
                 </button>
                 <div class="detail-name">
                     <ChannelSelect strip=select_strip label=chip_label chip=Signal::derive(chip) />
+                    <ListenKey strip=listen_strip />
                     <span class="detail-sub" data-testid="detail-sub">
                         {sub}
                     </span>

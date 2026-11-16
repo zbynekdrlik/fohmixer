@@ -339,7 +339,8 @@ fn errors_name_their_reason() {
     for (e, word) in all {
         assert_eq!(e.reason(), word);
     }
-    assert_eq!(MAX_DATA, 192_000);
+    // 0.5 s of stereo float32 at 96 kHz (#210: the master Live's rate).
+    assert_eq!(MAX_DATA, 384_000);
     assert_eq!(MAX_MESSAGE, 4096);
     assert_eq!(MAX_ATOMS, 64);
 }

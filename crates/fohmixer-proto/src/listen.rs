@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod frames;
 pub mod jitnet;
+pub mod resample;
 pub mod wire;
 
 /// The hub's default port: TCP for the devices' audio and UDP for their

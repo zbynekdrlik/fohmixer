@@ -340,6 +340,10 @@ fn remembered_picks() -> Picks {
 /// The surface of a logged-in device.
 #[component]
 pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoView {
+    // Listen (#210): its own socket with the same token; it outlives the
+    // detail, so the foot says what the page listens to.
+    let listener = crate::listen::Listener::new(token.clone());
+    provide_context(listener);
     let store = LiveStore::new(token, session);
     provide_context(store);
     let viewport = RwSignal::new(dom::viewport());
@@ -377,7 +381,10 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
             eq.close("detail", None);
         }
     });
-    on_cleanup(move || store.stop());
+    on_cleanup(move || {
+        store.stop();
+        listener.stop();
+    });
     store.start();
     // AbleSet's sign-in comes back to `#ableset` (#90 §5.4): the hash goes
     // at once, and the tab opens once the hub tells of AbleSet's page.
@@ -891,6 +898,7 @@ pub fn ColumnFoot() -> impl IntoView {
         <div class="column-foot" data-testid="column-foot">
             <crate::components::login_line::LoginLine />
             <crate::components::scene_news::SceneLine />
+            <crate::components::listen::ListenLine />
             <StatusCluster />
         </div>
     }

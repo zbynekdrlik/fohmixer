@@ -16,6 +16,7 @@
     <link data-trunk rel="css" href="rule.css" />
     <link data-trunk rel="css" href="autotune.css" />
     <link data-trunk rel="css" href="detail.css" />
+    <link data-trunk rel="css" href="listen.css" />
     <link data-trunk rel="css" href="sheet.css" />
     <link data-trunk rel="css" href="rec.css" />
     <link data-trunk rel="css" href="colour.css" />
@@ -34,6 +35,9 @@
     <link data-trunk rel="rust" href="Cargo.toml" data-wasm-opt="0" data-integrity="none" />
     <link data-trunk rel="copy-file" href="manifest.json" />
     <link data-trunk rel="copy-file" href="sw.js" />
+    <!-- Listen's limiter (#210), an AudioWorklet module loaded by
+         listen_player.js (a wasm-bindgen snippet Trunk copies itself). -->
+    <link data-trunk rel="copy-file" href="listen-limiter-worklet.js" />
     <link data-trunk rel="copy-file" href="znacky.html" />
     <link data-trunk rel="copy-dir" href="icons" />
     <!-- The fonts ship with the app (the mixer works on the LAN without the

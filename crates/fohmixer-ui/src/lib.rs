@@ -7,7 +7,8 @@
 //!   hub connection;
 //! - `store`: the hub connection and Live's state (`LiveStore`);
 //! - `components`, `pages`: the view; `raf`: the shared animation loop;
-//!   `dom`, `auth`: browser helpers;
+//!   `dom`, `auth`: browser helpers; `listen`: a track's sound in the
+//!   browser (#210, its glue);
 //! - `diag`: the page's diagnostic reports to the hub (#26).
 
 pub mod app;
@@ -20,6 +21,7 @@ pub mod diag;
 pub mod dom;
 pub mod flow;
 pub mod lifecycle;
+pub mod listen;
 pub mod manual;
 pub mod net;
 pub mod pages;

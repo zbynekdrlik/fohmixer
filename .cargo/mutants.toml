@@ -375,6 +375,14 @@ exclude_re = [
   # strip.spec.ts reads every strip bar's data-level against SimLive's
   # level (level and lr), resilience.spec.ts and idle.spec.ts the meter's.
   "fohmixer-ui/src/components/meter\\.rs.*(replace|in) (animate_bars|bar_view)( |$)",
+  # listen.rs (#210 phase 2): Listen's glue, one browser call each: the
+  # audio socket (open, its handlers, close, send), the player's JS calls
+  # (listen_player.js: WebCodecs, Web Audio), the timer of a reopen, the
+  # `get_prop name` read of a strip bound by its place, the signals. Every
+  # decision is the tested behave::listen (Listen, track_name, name_of,
+  # gain, volume_at, foot_text) and net::audio_url; listen.spec.ts drives
+  # the glue in Chromium and WebKit against SimLive's Listen device.
+  "fohmixer-ui/src/listen\\.rs.*(replace|in) (Listener::(new|stop|set_volume|tap|follow|resolve|answer|run|act|open|on_text)|AudioSocket::close|label_of)( |$)",
   # components/fader_link.rs (#130): link_parts, the fader link's glue:
   # signals over the hub values and the store; its decisions are
   # behave::fader_link (tested), driven end to end by fader-link.spec.ts
