@@ -40,7 +40,7 @@ use crate::behave::lufs::{
 };
 use crate::behave::mute_alarm::strip_attr;
 use crate::behave::reverb::held_low;
-use crate::behave::scale::{tick_label, tick_pos, ticks, unity_style};
+use crate::behave::scale::{is_home_tick, tick_label, tick_pos, ticks, unity_style};
 use crate::binding::{detail_keys, strip_subs};
 use crate::dom;
 use crate::store::{LiveStore, Slot};
@@ -50,12 +50,17 @@ use crate::store::{LiveStore, Slot};
 /// scale gets it. A strip's sits right of its fader's track (#151,
 /// `strip.css`), the detail's left of its meter.
 #[component]
-pub fn ScaleView(law: VolumeLaw) -> impl IntoView {
+pub fn ScaleView(
+    law: VolumeLaw,
+    /// The strip's home level (#225): its label is the brighter one.
+    #[prop(default = None)]
+    home_db: Option<f64>,
+) -> impl IntoView {
     let labels = ticks(law)
         .iter()
         .map(|db| {
             let top = format!("top:{:.3}%;", (1.0 - tick_pos(law, *db)) * 100.0);
-            let unity = *db == 0.0;
+            let unity = is_home_tick(*db, home_db);
             view! {
                 <span class="tick" class:unity=unity data-db=db.to_string() style=top>
                     {tick_label(*db)}
@@ -394,7 +399,8 @@ pub fn StripView(
     // readout in the rule's colour while the rule holds it low.
     let reverb = strip.reverb;
     // The strip's home (#225): its unity mark and its double tap's target.
-    let home_level = home_volume(strip.home_db);
+    let home_db = strip.home_db;
+    let home_level = home_volume(home_db);
     let volume_key = StoredValue::new(subs.volume.as_ref().map(key_of).unwrap_or_default());
     let low = move || {
         reverb
@@ -587,7 +593,7 @@ pub fn StripView(
             <div class="strip-zone" style=unity>
                 {hint}
                 <InfoColumn group_name=group_name lufs=lufs_look kind=lufs_kind instance=set_of />
-                <ScaleView law=law />
+                <ScaleView law=law home_db=home_db />
                 {spring_view}
                 {fader}
                 <DetailKey strip=key_strip />

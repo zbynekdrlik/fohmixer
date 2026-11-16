@@ -291,7 +291,8 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
     // rule holds it low (the detail covers the strip).
     let reverb = strip.reverb;
     // The strip's home (#225): its unity line and its double tap's target.
-    let home_level = home_volume(strip.home_db);
+    let home_db = strip.home_db;
+    let home_level = home_volume(home_db);
     let volume_key = StoredValue::new(subs.volume.as_ref().map(key_of).unwrap_or_default());
     let low = move || {
         reverb
@@ -403,7 +404,7 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
                         {db}
                     </div>
                     <div class="detail-fz" style=unity>
-                        <ScaleView law=law />
+                        <ScaleView law=law home_db=home_db />
                         <MeterView levels=meters law=law />
                         {fader}
                     </div>

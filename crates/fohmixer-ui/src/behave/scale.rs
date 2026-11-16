@@ -32,6 +32,12 @@ pub fn unity_style(law: VolumeLaw, home: f64) -> String {
     format!("--u:{:.4};", law.to_pos(home))
 }
 
+/// Whether the label of `db` is the brighter one (#151's 0 dB label; #225:
+/// the strip's home level's, `home_db`, else 0 dB's).
+pub fn is_home_tick(db: f64, home_db: Option<f64>) -> bool {
+    db == home_db.unwrap_or(0.0)
+}
+
 /// Where the meter turns yellow and red (TouchOSC's meter colours, dB on the
 /// fader scale).
 pub const YELLOW_DB: f64 = -12.0;
@@ -153,6 +159,20 @@ mod tests {
             "--u:0.7000;"
         );
         assert_eq!(unity_style(VolumeLaw::Live, 1.0), "--u:1.0000;");
+    }
+
+    #[test]
+    fn the_brighter_label_is_the_homes() {
+        assert!(is_home_tick(0.0, None));
+        assert!(!is_home_tick(-6.0, None));
+        assert!(is_home_tick(-6.0, Some(-6.0)));
+        assert!(!is_home_tick(0.0, Some(-6.0)));
+        // A home level with no label of its own brightens none.
+        assert!(
+            ticks(VolumeLaw::Live)
+                .iter()
+                .all(|db| !is_home_tick(*db, Some(-4.5)))
+        );
     }
 
     #[test]
