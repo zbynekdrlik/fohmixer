@@ -6,7 +6,10 @@
 //!   `tempo`, `signature_numerator`, `signature_denominator`) and the
 //!   track's `arrangement_clips` are followed by the rule's own subscriber
 //!   [`CLAPS_CLIENT`] (in the `Status` `own` lists); the transport is the
-//!   rules' own (`on_transport`).
+//!   rules' own (`on_transport`). A layout whose Claps track is the same
+//!   track at another index ([`track_change`]) keeps what claps and
+//!   follows its clips at the new place; any other change stops it (the
+//!   device told `on 0` first).
 //! - The clips are read (each one's `start_time`, `end_time` and `muted`,
 //!   through its `$ref`, in calls of at most `TIME_CHUNK`) at every value
 //!   of the list (its first one after a connect too) and at every transport
@@ -42,9 +45,9 @@ use super::{Router, RouterMsg, transport_heard};
 use crate::eq::walk::{answered, get, refused};
 use crate::live::subs::{Cached, ClientId};
 use crate::outbox::Outbox;
-use crate::rules::autotune::keys::lookahead_beats;
 use crate::rules::claps::{
-    Claps, Clip, Refusal, active, covers, four_four, position_at, ring_off, signature_text,
+    Claps, Clip, Refusal, SILENCE_AHEAD_BEATS, active, covers, four_four, position_at, ring_off,
+    signature_text,
 };
 
 /// The rule's own subscriber (the playhead, the tempo, the signature, the
@@ -85,6 +88,30 @@ pub struct ClapsSetup {
 /// an offset yet.
 pub fn tap_ms(t: f64, hub_ms: f64, offset_ms: Option<f64>) -> f64 {
     offset_ms.map_or(hub_ms, |offset| (t + offset).min(hub_ms))
+}
+
+/// What a new layout's Claps track is to the one followed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackChange {
+    /// The same track at the same place: nothing to do.
+    Same,
+    /// The same track (its Live set and label) at another index: what
+    /// claps goes on, its clips are followed at the new place.
+    Moved,
+    /// Another track, a new one or none: the rule starts afresh.
+    Afresh,
+}
+
+/// How `wanted` follows `current` (a track is known by its Live set and
+/// label, as REVERB knows a fader: an index moves with every track
+/// inserted above it).
+pub fn track_change(current: Option<&ClapsTrack>, wanted: Option<&ClapsTrack>) -> TrackChange {
+    match (current, wanted) {
+        (None, None) => TrackChange::Same,
+        (Some(a), Some(b)) if a == b => TrackChange::Same,
+        (Some(a), Some(b)) if a.instance == b.instance && a.label == b.label => TrackChange::Moved,
+        _ => TrackChange::Afresh,
+    }
 }
 
 /// The reads of every clip's start, end and switch, through its `$ref`, in
@@ -286,8 +313,15 @@ impl Router {
     /// (or none) stops what claps, lets go of the old subscriptions and
     /// follows the new track's set.
     pub(super) fn claps_layout(&mut self, track: Option<ClapsTrack>) {
-        if self.claps.track == track {
-            return;
+        match track_change(self.claps.track.as_ref(), track.as_ref()) {
+            TrackChange::Same => return,
+            TrackChange::Moved => {
+                if let Some(track) = track {
+                    self.claps_moved(track);
+                }
+                return;
+            }
+            TrackChange::Afresh => {}
         }
         let from = self
             .claps
@@ -302,6 +336,9 @@ impl Router {
             self.subs.unsubscribe(CLAPS_CLIENT, &key);
         }
         self.claps.rule.stop();
+        // The old track's device is told to stop while it is still the
+        // track (`claps_send` sends nothing without one).
+        self.claps_send(false);
         let same_set =
             matches!((&self.claps.track, &track), (Some(a), Some(b)) if a.instance == b.instance);
         if !same_set {
@@ -349,6 +386,47 @@ impl Router {
         let now = crate::live::wall_ms().unwrap_or(0.0);
         for (part, value) in cached {
             self.claps_part(part, Some(value), now);
+        }
+        self.claps_changed(None);
+    }
+
+    /// The same Claps track at another index (a track inserted or deleted
+    /// above it): what claps goes on; only its clips are followed afresh
+    /// (an index path is bound to its object when it resolves).
+    fn claps_moved(&mut self, track: ClapsTrack) {
+        self.claps_record(
+            json!({"step": "track", "moved": true,
+                   "from": self.claps.track.as_ref().map(|t| &t.track), "to": track.track}),
+            None,
+        );
+        let clips: Vec<String> = self
+            .claps
+            .subs
+            .iter()
+            .filter(|(_, part)| **part == Part::Clips)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in clips {
+            self.claps.subs.remove(&key);
+            self.subs.unsubscribe(CLAPS_CLIENT, &key);
+        }
+        self.claps.clips.clear();
+        self.claps.reading = None;
+        self.claps.dirty = false;
+        let follow = self
+            .subs
+            .subscribe(CLAPS_CLIENT, &track.instance, &track.track, CLIPS, false);
+        self.claps.track = Some(track);
+        match follow {
+            Ok(reply) => {
+                self.claps.subs.insert(reply.key, Part::Clips);
+                if matches!(reply.cached, Some(Cached::Value { .. })) {
+                    self.claps_read();
+                }
+            }
+            Err((_, error)) => {
+                tracing::warn!(error = %error, "claps: cannot follow the moved track's clips");
+            }
         }
         self.claps_changed(None);
     }
@@ -572,16 +650,12 @@ impl Router {
     }
 
     /// After anything changed: the clip silence judged at the playhead
-    /// (one tick ahead while Live plays), the device told what changed, the
+    /// (`SILENCE_AHEAD_BEATS` ahead while Live plays), the device told what changed, the
     /// pages what changed (`asker` is told even when nothing did: its page
     /// shows what the hub holds).
     fn claps_changed(&mut self, asker: Option<ClientId>) {
         let playing = self.claps_playing();
-        let ahead = if playing {
-            lookahead_beats(self.claps.tempo)
-        } else {
-            0.0
-        };
+        let ahead = if playing { SILENCE_AHEAD_BEATS } else { 0.0 };
         let silent = self
             .claps
             .time

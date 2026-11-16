@@ -18,8 +18,12 @@ untouched (`midiin` straight into `midiout`). No parameters.
   every beat while Live plays (it is silent while Live stops); `transport`
   gives the bar's beat (a tick a hair before a beat counts as that beat).
   On beat 1 an armed device starts; on every beat while it runs and is not
-  silent, a beat of the pattern plays each pitch with `makenote 100 8n`
-  (velocity 100, half a beat, as the track's clips) into `noteout`.
+  silent, a beat of the pattern plays each pitch with `makenote 100 150`
+  (velocity 100, 150 ms: half a beat at 200 bpm; a length in ms, so a stop of
+  Live's transport never freezes a note-off) into `noteout`.
+- **Its watchdog:** every word from the hub restarts a `delay 3000`; when it
+  runs out (the hub gone: it sends every second) the device stops and
+  forgets its switch, so the hub's next `on 1` arms it again.
 - **Its hello**, UDP to the hub's `127.0.0.1:39113` each second:
   `/fohmixer/claps 1 v<version> <1 while it claps>` (`/api/status`
   `claps.device`).

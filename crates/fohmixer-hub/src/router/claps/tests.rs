@@ -251,6 +251,110 @@ async fn a_claps_track_is_followed_and_a_layout_without_it_lets_go() {
     assert_eq!(steps(&rx)[0]["from"], "band CLAPS");
 }
 
+#[test]
+fn a_track_is_known_by_its_set_and_label_not_its_index() {
+    let at = |index: u32, label: &str, instance: &str| ClapsTrack {
+        instance: instance.into(),
+        index,
+        track: format!("live_set tracks {index}"),
+        label: label.into(),
+    };
+    let claps = at(4, "CLAPS", "band");
+    assert_eq!(track_change(None, None), TrackChange::Same);
+    assert_eq!(track_change(Some(&claps), Some(&claps)), TrackChange::Same);
+    assert_eq!(
+        track_change(Some(&claps), Some(&at(5, "CLAPS", "band"))),
+        TrackChange::Moved
+    );
+    for other in [at(4, "OTHER", "band"), at(4, "CLAPS", "master")] {
+        assert_eq!(
+            track_change(Some(&claps), Some(&other)),
+            TrackChange::Afresh,
+            "{other:?}"
+        );
+    }
+    assert_eq!(track_change(Some(&claps), None), TrackChange::Afresh);
+    assert_eq!(track_change(None, Some(&claps)), TrackChange::Afresh);
+}
+
+#[tokio::test]
+async fn a_layout_without_the_claps_track_switches_the_device_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let (router, _own, rx) = offline_router(dir.path());
+    let (mut router, socket) = device(router);
+    ready(&mut router);
+    router.claps_beat(1, 1, true);
+    let sent = words(&socket, 8);
+    assert_eq!(sent[7], Word::On(true));
+    let _ = steps(&rx);
+    router.claps_layout(None);
+    assert_eq!(
+        words(&socket, 4),
+        vec![
+            Word::Notes(vec![52, 57]),
+            Word::Pattern([false; 4]),
+            Word::Silent(false),
+            Word::On(false),
+        ],
+        "told while it is still the track"
+    );
+    let got = steps(&rx);
+    assert!(
+        got.iter().any(|r| r["step"] == "on" && r["on"] == false),
+        "{got:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_moved_claps_track_keeps_what_claps_and_follows_its_clips_anew() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, _own, rx) = offline_router(dir.path());
+    ready(&mut router);
+    router.claps_beat(1, 1, true);
+    router.claps.clips = vec![Clip {
+        start: 0.0,
+        end: 4.0,
+        muted: false,
+    }];
+    router.claps.reading = Some(7);
+    let before = router.subs.subscriptions("band");
+    let _ = steps(&rx);
+    let moved = ClapsTrack {
+        instance: "band".into(),
+        index: 6,
+        track: "live_set tracks 6".into(),
+        label: "CLAPS".into(),
+    };
+    router.claps_layout(Some(moved.clone()));
+    assert_eq!(router.claps.track.as_ref(), Some(&moved));
+    assert_eq!(
+        router.claps.rule.pattern(),
+        [false, true, false, false],
+        "still clapping"
+    );
+    assert!(router.claps.words().on);
+    assert!(
+        router.claps.clips.is_empty(),
+        "the old place's clips are gone"
+    );
+    assert_eq!(router.claps.reading, None, "the old place's read is void");
+    assert_eq!(router.subs.subscriptions("band"), before);
+    assert_eq!(
+        router.claps.subs.get(&key("live_set tracks 6", CLIPS)),
+        Some(&Part::Clips)
+    );
+    assert!(
+        !router
+            .claps
+            .subs
+            .contains_key(&key("live_set tracks 4", CLIPS))
+    );
+    let got = steps(&rx);
+    assert_eq!(got[0]["step"], "track");
+    assert_eq!(got[0]["moved"], true);
+    assert_eq!(got[0]["to"], "live_set tracks 6");
+}
+
 #[tokio::test]
 async fn taps_choose_the_beats_and_live_claps_them_from_the_next_bar() {
     let dir = tempfile::tempdir().unwrap();
@@ -415,14 +519,21 @@ async fn an_active_clip_over_the_playhead_silences_the_device() {
     heard(&mut router, 15.0, 2_500.0);
     let _ = told(&page);
     let _ = steps(&rx);
-    // One tick ahead at 120 bpm is 0.07 beats: 15.95 already counts.
-    heard(&mut router, 15.95, 2_975.0);
+    // Half a beat ahead: 15.49 does not count yet, 15.5 does.
+    heard(&mut router, 15.49, 2_745.0);
+    assert!(steps(&rx).is_empty(), "not silent yet");
+    heard(&mut router, 15.5, 2_750.0);
     let got = steps(&rx);
     assert_eq!(got[0]["step"], "silent");
     assert_eq!(got[0]["silent"], true);
     assert_eq!(words(&socket, 4)[2], Word::Silent(true));
     assert_eq!(told(&page).last().unwrap().state, ClapsPhase::Clip);
-    heard(&mut router, 23.95, 7_000.0);
+    heard(&mut router, 23.49, 6_745.0);
+    assert!(
+        steps(&rx).is_empty(),
+        "the clip's last beat is still the clip's"
+    );
+    heard(&mut router, 23.5, 6_750.0);
     assert_eq!(steps(&rx)[0]["silent"], false);
     assert_eq!(told(&page).last().unwrap().state, ClapsPhase::On);
 }

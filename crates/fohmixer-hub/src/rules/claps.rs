@@ -17,7 +17,7 @@
 //!   claps, it starts that beat from the next bar; the last beat cleared
 //!   stops it. A 1 s hold of TAP stops everything ([`Claps::stop`]).
 //! - One clap source: while an active arrangement clip of the Claps track
-//!   covers the playhead (one tick ahead), the device is silent
+//!   covers the playhead (half a beat ahead), the device is silent
 //!   ([`covers`]); the clip claps.
 //! - 4/4 only: another time signature claps nothing and takes no tap.
 
@@ -30,6 +30,14 @@ pub const BAR: f64 = 4.0;
 pub const STALE_MS: f64 = 2000.0;
 /// No beat claps.
 pub const NONE: Pattern = [false; BEATS];
+/// How far ahead of the playhead heard an active clip silences the device
+/// (beats) while Live plays: the playhead is up to a script tick old when
+/// it arrives, and the word takes the router and UDP to the device, so a
+/// tick ahead could let the device clap a clip's first beat too. The
+/// device claps whole beats only, so half a beat early silences no beat
+/// before the clip, and half a beat before the clip's end (a bar line)
+/// none of the clip's.
+pub const SILENCE_AHEAD_BEATS: f64 = 0.5;
 
 /// The whole beat of the bar nearest `pos` (beats from the song's start; a
 /// bar starts at a multiple of 4), 0 to 3.

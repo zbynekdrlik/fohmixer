@@ -19,13 +19,19 @@ the face's version, no absolute path. Its own, box by box (`BOXES`,
   tick a hair before a beat counts as that beat), beat 0 turns an armed
   device into a running one (the next bar's first beat);
 - a clap: the beat's pattern step AND running AND NOT silent bangs the
-  pitches through `iter` into `makenote 100 8n` (velocity 100, half a beat,
-  as the Claps track's clips) into `noteout`;
+  pitches through `iter` into `makenote 100 150` (velocity 100, 150 ms: half
+  a beat at 200 bpm; a length in ms, so a note-off is never frozen by a stop
+  of Live's transport) into `noteout`;
+- the watchdog: every word from the hub restarts a `delay <FORGET_MS>`;
+  when it runs out (the hub is gone: it sends every second) the device
+  stops and its `change` forgets the switch (`set 0`), so the hub's next
+  `on 1` arms it again;
 - the hello: one `udpsend 127.0.0.1 <HUB_PORT>` fed by one
   `pack /fohmixer/claps 1 v<version> 0` each second, its last inlet the
   running state.
 
-The ports are read from `crates/fohmixer-proto/src/claps.rs`. Exit 0 when
+The ports and the watchdog's time are read from
+`crates/fohmixer-proto/src/claps.rs`. Exit 0 when
 all hold, else 1 with one `::error::` line per problem.
 """
 
@@ -71,7 +77,9 @@ BOXES = {
     "obj-run": ["1"],
     "obj-hit-sel": ["sel", "1"],
     "obj-iter": ["iter"],
-    "obj-makenote": ["makenote", "100", "8n"],
+    "obj-makenote": ["makenote", "100", "150"],
+    "obj-heard": ["t", "b"],
+    "obj-forget": ["set", "0"],
     "obj-noteout": ["noteout"],
     "obj-hello-metro": ["metro", "1000"],
 }
@@ -115,6 +123,11 @@ WIRING = (
     (("obj-makenote", 1), ("obj-noteout", 1)),
     (("obj-hello-metro", 0), ("obj-hello", 0)),
     (("obj-hello", 0), ("obj-udpsend", 0)),
+    (("obj-udpreceive", 0), ("obj-heard", 0)),
+    (("obj-heard", 0), ("obj-watchdog", 0)),
+    (("obj-watchdog", 0), ("obj-stop", 0)),
+    (("obj-watchdog", 0), ("obj-forget", 0)),
+    (("obj-forget", 0), ("obj-on-change", 0)),
 )
 # Inlets only these sources may feed (a stray line there plays or arms).
 ONLY = {
@@ -139,7 +152,11 @@ def constant(text: str, name: str) -> int | None:
 def numbers_of(root: Path) -> dict[str, int] | str:
     """The ports from the proto crate, or the problem."""
     text = (root / CLAPS_RS).read_text(encoding="utf-8")
-    found = {"hub": constant(text, "HUB_PORT"), "device": constant(text, "DEVICE_PORT")}
+    found = {
+        "hub": constant(text, "HUB_PORT"),
+        "device": constant(text, "DEVICE_PORT"),
+        "forget": constant(text, "FORGET_MS"),
+    }
     missing = [name for name, value in found.items() if value is None]
     if missing:
         return f"{CLAPS_RS.as_posix()}: no constant for {missing}"
@@ -170,6 +187,7 @@ def patch_errors(where: str, text: str, version: str, numbers: dict[str, int]) -
         "obj-udpreceive": ["udpreceive", str(numbers["device"])],
         "obj-udpsend": ["udpsend", "127.0.0.1", str(numbers["hub"])],
         "obj-hello": ["pack", "/fohmixer/claps", "1", f"v{version}", "0"],
+        "obj-watchdog": ["delay", str(numbers["forget"])],
     }
     errors += [
         f"{where}: {box} must be '{' '.join(words)}', has {lufs.words(ids.get(box, {}))}"

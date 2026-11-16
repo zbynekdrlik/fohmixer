@@ -236,6 +236,60 @@
 			},
 			{
 				"box": {
+					"id": "obj-heard",
+					"maxclass": "newobj",
+					"text": "t b",
+					"numinlets": 1,
+					"numoutlets": 1,
+					"outlettype": [
+						"bang"
+					],
+					"patching_rect": [
+						380.0,
+						30.0,
+						40.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-watchdog",
+					"maxclass": "newobj",
+					"text": "delay 3000",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						"bang"
+					],
+					"patching_rect": [
+						380.0,
+						110.0,
+						80.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-forget",
+					"maxclass": "message",
+					"text": "set 0",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						480.0,
+						150.0,
+						40.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
 					"id": "obj-armed",
 					"maxclass": "newobj",
 					"text": "i",
@@ -505,7 +559,7 @@
 				"box": {
 					"id": "obj-makenote",
 					"maxclass": "newobj",
-					"text": "makenote 100 8n",
+					"text": "makenote 100 150",
 					"numinlets": 3,
 					"numoutlets": 2,
 					"outlettype": [
@@ -786,6 +840,66 @@
 					],
 					"destination": [
 						"obj-stop",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-udpreceive",
+						0
+					],
+					"destination": [
+						"obj-heard",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-heard",
+						0
+					],
+					"destination": [
+						"obj-watchdog",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-watchdog",
+						0
+					],
+					"destination": [
+						"obj-forget",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-watchdog",
+						0
+					],
+					"destination": [
+						"obj-stop",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-forget",
+						0
+					],
+					"destination": [
+						"obj-on-change",
 						0
 					]
 				}
