@@ -24,6 +24,7 @@ Two branches: `master` (production) and `dev`. Work on `dev`; open a PR `dev` �
 - Forensics timeline (#43: reading the event log and the page's flight recorder back for a time window, its CLI, its summary, running it on the Ableton PC) → `.claude/rules/forensics.md` (auto-loads on `tools/forensics/**`)
 - Presenter's stage tab (#90: Presenter's stage page on fohmixer's origin, reads only, the link, the switch, the tab, the column's miniature and its rail fit, the fake Presenter) → `.claude/rules/presenter.md` (auto-loads on its files)
 - Listen (#210: the silent `FohMixer Listen` device, `jit.catch~` → `jit.net.send` to the hub, the selects, Opus on `/ws/audio`, the page's 🎧 key and WebCodecs player, the PC probe kit `tools/listen-probe`) → `.claude/rules/listen.md` (auto-loads on its files)
+- Claps from the surface (#220: the `+CLAPS` track, the `FohMixer Claps` MIDI effect and its UDP words, the hub's rule, the strip's TAP column, `[claps]`) → `.claude/rules/claps.md` (auto-loads on its files)
 - A plug-in's editor on the surface (#71: Live's `is_editor_open`, the window, capture, injected touch, the isolated Carla host, never in a running Live first; PR E's Pro-Q 4 screen: the protocol and binary frames, the close guard and its inert spot, the window backends, `eq-probe`) → `.claude/rules/plugin-window.md` (auto-loads on the hub's, proto's and UI's eq and plug-in-window files)
 
 ## Always-apply rules
