@@ -101,6 +101,7 @@ fn what_a_touch_and_an_outage_need_is_essential_moves_round_trips_and_long_frame
         "iem",
         "presenter",
         "tab",
+        "listen",
     ] {
         assert!(is_essential(ev), "{ev}");
     }
@@ -1002,4 +1003,19 @@ fn a_column_pick_is_an_essential_event_with_what_was_picked() {
     );
     assert_eq!(drop_rank("tab"), None);
     assert!(is_essential("tab"));
+}
+
+#[test]
+fn a_listen_step_is_an_essential_event_with_its_track() {
+    assert_eq!(
+        listen(5.0, "tap", "opening", Some(("band", "Vox 1"))),
+        json!({"ev": "listen", "t": 5.0, "what": "tap", "phase": "opening",
+               "instance": "band", "track": "Vox 1"})
+    );
+    assert_eq!(
+        listen(6.0, "close", "off", None),
+        json!({"ev": "listen", "t": 6.0, "what": "close", "phase": "off"})
+    );
+    assert_eq!(drop_rank("listen"), None);
+    assert!(is_essential("listen"));
 }

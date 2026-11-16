@@ -31,6 +31,13 @@ pub fn ws_url(page_scheme: &str, host: &str, token: &str) -> String {
     format!("{scheme}://{host}/ws?token={token}&proto={UI_PROTO}")
 }
 
+/// The audio socket's URL (#210, the hub's `/ws/audio`): the page's own
+/// host and scheme, the same token as the hub socket's.
+pub fn audio_url(page_scheme: &str, host: &str, token: &str) -> String {
+    let scheme = if page_scheme == "https:" { "wss" } else { "ws" };
+    format!("{scheme}://{host}/ws/audio?token={token}")
+}
+
 /// What the page does about the handshake.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
@@ -222,6 +229,14 @@ mod tests {
 
     #[test]
     fn the_socket_url_carries_the_token_and_the_protocol() {
+        assert_eq!(
+            audio_url("http:", "10.0.0.5:8480", "t.k.n"),
+            "ws://10.0.0.5:8480/ws/audio?token=t.k.n"
+        );
+        assert_eq!(
+            audio_url("https:", "foh.local", "x"),
+            "wss://foh.local/ws/audio?token=x"
+        );
         assert_eq!(
             ws_url("http:", "10.0.0.5:8480", "t.k.n"),
             "ws://10.0.0.5:8480/ws?token=t.k.n&proto=2"

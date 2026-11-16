@@ -11,7 +11,7 @@
         [--fake-iem-port N --iem-url URL --iem-cert FILE --iem-key FILE
          [--iem-ancestors ORIGIN]] [--fake-presenter-port N]
         [--mbc-hub-port N [--mbc-port 39103] [--mbc-link-port 39196]
-         [--mbc-lufs-port 39111]]
+         [--mbc-lufs-port 39111]] [--listen-port N --listen-select-port N]
 
 It starts ``sim/host.py`` for ``band`` and ``master`` (the real FohMixer script on
 SimLive), writes the hub's config and layout into the data folder, starts the hub
@@ -263,6 +263,10 @@ ANSWERS = {
     "lufs": "LUFS",
     "level": "LEVEL",
     "flood": "FLOOD",
+    # #210: SimLive's Listen devices and their tone (listen.spec.ts).
+    "listendev": "LISTENDEV",
+    "tone": "TONE",
+    "streamed": "STREAMED",
 }
 
 
@@ -277,6 +281,7 @@ def hub_config(
     iem=None,
     presenter=None,
     mbc_link=None,
+    listen=None,
 ):
     """The hub's ``fohmixer-hub.toml`` for the two hosts (layout polled fast) and
     the Pro-Q 4 screen on the simulated window backend (#71 PR E), with the
@@ -289,7 +294,8 @@ def hub_config(
     ``[iem]`` of ``iem``, its page's address, when given (#166), and
     ``[presenter]`` of ``presenter``, its server's address (#90), and the
     linked instance ``mbc`` at ``mbc_link`` (``ws://host:port``) when given
-    (#184)."""
+    (#184), and ``[listen]`` on ``listen`` (its port, the devices' select
+    port) when given (#210: the band host's SimLive Listen devices)."""
     text = (
         f"http_port = {http_port}\n"
         'layout = "layout.json"\n'
@@ -306,6 +312,9 @@ def hub_config(
     text += '[eq]\nbackend = "sim"\n'
     if lufs_port is not None:
         text += f"[lufs]\nport = {lufs_port}\n"
+    if listen:
+        port, select_port = listen
+        text += f"[listen]\nport = {port}\nselect_port = {select_port}\n"
     if companion:
         host, port = companion
         text += f'[companion]\nhost = "{host}"\nport = {port}\n'
@@ -340,7 +349,8 @@ def with_stream_readout(layout):
 def mbc_hub_config(http_port, mbc_port, link_port, lufs_port):
     """The MBC hub's ``fohmixer-hub.toml`` (#184): its one local instance
     ``mbc``, the instance link on ``127.0.0.1:<link_port>``, its own LUFS
-    listener, the layout polled fast."""
+    listener, the layout polled fast, and Listen off (#210: its default port
+    is the FOH hub's and, here, the MBC hub's own LUFS port)."""
     return (
         f"http_port = {http_port}\n"
         'layout = "layout.json"\n'
@@ -349,6 +359,7 @@ def mbc_hub_config(http_port, mbc_port, link_port, lufs_port):
         'name = "mbc"\n'
         f"port = {mbc_port}\n"
         f"[lufs]\nport = {lufs_port}\n"
+        "[listen]\nport = 0\n"
         f'[link]\nlisten = "127.0.0.1:{link_port}"\ninstance = "mbc"\n'
     )
 
@@ -657,11 +668,13 @@ def copy_cert(cert, key, folder):
 class Host:
     """One ``sim/host.py`` process with its stdin and stdout lines."""
 
-    def __init__(self, name, port, meters_hz, log_dir, lufs_port=None, site=SITE):
+    def __init__(self, name, port, meters_hz, log_dir, lufs_port=None, site=SITE, listen=None):
         self.name = name
         self.port = port
         self.meters_hz = meters_hz
         self.lufs_port = lufs_port
+        # #210: the hub's Listen port and the devices' select port.
+        self.listen = listen
         self.log_dir = os.path.join(log_dir, f"host-{name}")
         os.makedirs(self.log_dir, exist_ok=True)
         self.lock = threading.Lock()
@@ -687,6 +700,11 @@ class Host:
                 "--log-dir",
                 self.log_dir,
                 *(["--lufs-port", str(self.lufs_port)] if self.lufs_port else []),
+                *(
+                    ["--listen-port", str(self.listen[0]), "--select-port", str(self.listen[1])]
+                    if self.listen
+                    else []
+                ),
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -821,7 +839,16 @@ class Harness:
         os.makedirs(log_dir, exist_ok=True)
         self.hosts = {}
         self.lufs_port = args.lufs_port
-        self.hosts["band"] = Host("band", args.band_port, args.meters_hz, log_dir, args.lufs_port)
+        # #210: Listen's ports, the band host's devices only (one process
+        # binds the select port); none when not both given.
+        self.listen = (
+            (args.listen_port, args.listen_select_port)
+            if args.listen_port and args.listen_select_port
+            else None
+        )
+        self.hosts["band"] = Host(
+            "band", args.band_port, args.meters_hz, log_dir, args.lufs_port, listen=self.listen
+        )
         self.hosts["master"] = Host(
             "master", args.master_port, args.meters_hz, log_dir, args.lufs_port
         )
@@ -931,6 +958,7 @@ class Harness:
                     self.iem if self.iem_on else None,
                     self.presenter_url(),
                     f"ws://127.0.0.1:{self.mbc_link_port}" if self.mbc else None,
+                    self.listen,
                 )
             )
 
@@ -1300,6 +1328,8 @@ def fixed_ports(args):
         args.fake_ableset_port,
         args.fake_iem_port,
         args.fake_presenter_port,
+        args.listen_port,
+        args.listen_select_port,
         *(
             [args.mbc_hub_port, args.mbc_port, args.mbc_link_port, args.mbc_lufs_port]
             if args.mbc_hub_port is not None
@@ -1339,6 +1369,10 @@ def parse_args(argv):
     parser.add_argument("--meters-hz", type=float, default=30.0)
     # #151: the hub's [lufs] port and the hosts' SimLive devices' target.
     parser.add_argument("--lufs-port", type=int, default=39110)
+    # #210: the hub's [listen] port (TCP and UDP) and the devices' select port.
+    # Both given turn it on (CI: 39197, 39198; in the reserved range).
+    parser.add_argument("--listen-port", type=int, default=None)
+    parser.add_argument("--listen-select-port", type=int, default=None)
     parser.add_argument("--log-dir", default=None)
     # The impair proxy's port (#43); 0 takes any free one (the harness's own tests).
     parser.add_argument("--link-port", type=int, default=0)

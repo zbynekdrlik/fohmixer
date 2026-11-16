@@ -167,7 +167,9 @@ pub fn drop_rank(ev: &str) -> Option<u8> {
     match ev {
         "touch" | "dropout" | "reset" | "sock" | "visibility" | "overflow" | "intent" | "sys"
         | "zoom" | "deck" | "detail" | "eq_touch" | "eq_mv" | "eq_lat" | "eq_view" | "eq_undo"
-        | "idle" | "ableset_view" | "ableset" | "iem" | "presenter" | "rail" | "tab" => None,
+        | "idle" | "ableset_view" | "ableset" | "iem" | "presenter" | "rail" | "tab" | "listen" => {
+            None
+        }
         "mv" => Some(1),
         _ => Some(0),
     }
@@ -295,6 +297,20 @@ pub fn tab(t: f64, step: TabStep<'_>) -> Value {
                     "title": title, "arrange": arranging, "same": same}),
         TabStep::Arrange { act } => json!({"ev": "tab", "t": t, "what": "arrange", "act": act}),
     }
+}
+
+/// A step of Listen (#210 phase 2): `what` `tap` (the 🎧 key), `follow`
+/// (another channel picked while listening), `open`, `close` (the audio
+/// socket) or `status` (the hub's word); `phase` the page's phase after it
+/// (`behave::listen::Phase::name`); the instance and track asked for.
+/// Essential: rare, and what a "the sound stopped" report is read from.
+pub fn listen(t: f64, what: &str, phase: &str, track: Option<(&str, &str)>) -> Value {
+    let mut event = json!({"ev": "listen", "t": t, "what": what, "phase": phase});
+    if let Some((instance, track)) = track {
+        event["instance"] = json!(instance);
+        event["track"] = json!(track);
+    }
+    event
 }
 
 /// The Stream Deck tab opened (`on`) or closed (#52).
