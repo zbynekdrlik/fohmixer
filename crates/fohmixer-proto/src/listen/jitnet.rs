@@ -36,8 +36,10 @@ pub const MATRIX_HEADER: usize = 288;
 /// bytes, 0.5 s of sound at 96 kHz, the master Live's rate: #210's PC
 /// probe; 1 s at 48 kHz). Its `qmetro 10` takes one frame or two at a
 /// time; 50 covers Live's low-priority queue held up for half a second at
-/// 96 kHz, and a matrix is never more than ~25 Opus frames of encoding on
-/// the hub's async path at that rate.
+/// 96 kHz. A matrix is at most 25 Opus frames of encoding on the hub's
+/// async path at 96 kHz and 50 at 48 kHz (1 s of sound, about 10 to 20 ms
+/// of libopus at 128 kbit/s: a queue held up that long is no live sound
+/// anyway).
 pub const MAX_DATA: usize = 50 * 960 * 2 * 4;
 /// The largest message chunk.
 pub const MAX_MESSAGE: usize = 4096;

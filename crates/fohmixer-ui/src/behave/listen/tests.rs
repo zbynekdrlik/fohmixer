@@ -318,6 +318,22 @@ fn refused_stops_whatever_it_names() {
 }
 
 #[test]
+fn a_late_refusal_of_a_track_asked_before_a_follow_changes_nothing() {
+    let mut l = listening("Vox 1");
+    follow_to(&mut l, "Vox 2");
+    assert_eq!(
+        l.status(AudioState::Refused, Some("band"), Some("Vox 1")),
+        Vec::new()
+    );
+    assert!(l.lit());
+    assert_eq!(
+        l.status(AudioState::Refused, Some("band"), Some("Vox 2")),
+        vec![Act::Close, Act::Silence]
+    );
+    assert_eq!(l.phase(), Phase::Refused);
+}
+
+#[test]
 fn a_status_while_nothing_is_wanted_changes_nothing() {
     let mut l = Listen::new();
     assert_eq!(l.status(AudioState::Refused, None, None), Vec::new());
@@ -365,19 +381,24 @@ fn opens_that_never_open_stop_after_three() {
     assert_eq!(l.phase(), Phase::Unavailable);
     assert!(!l.lit());
     assert_eq!(MAX_FAILED_OPENS, 3);
-    // A socket that opened starts the count over.
+    // Once a socket opened, a loss is an outage (a hub restart, a Wi-Fi
+    // gap): it keeps trying however long it lasts.
     let mut l = Listen::new();
     tap_on(&mut l, "Vox 1");
     l.closed();
     l.closed();
     l.opened();
-    assert_eq!(l.closed(), vec![Act::Reopen(3)]);
-    assert_eq!(l.closed(), vec![Act::Reopen(4)]);
-    assert_eq!(l.closed(), vec![Act::Reopen(5)]);
-    assert_eq!(l.closed(), vec![Act::Close, Act::Silence]);
-    // A new tap starts the count over.
+    for turn in 3..13 {
+        assert_eq!(l.closed(), vec![Act::Reopen(turn)]);
+        assert_eq!(l.phase(), Phase::Lost);
+    }
+    // A new tap counts afresh: three that never open end it.
+    l.tap("VOX 1".into(), true);
     tap_on(&mut l, "Vox 1");
-    assert_eq!(l.closed(), vec![Act::Reopen(6)]);
+    assert_eq!(l.closed(), vec![Act::Reopen(13)]);
+    assert_eq!(l.closed(), vec![Act::Reopen(14)]);
+    assert_eq!(l.closed(), vec![Act::Close, Act::Silence]);
+    assert_eq!(l.phase(), Phase::Unavailable);
 }
 
 #[test]
@@ -468,9 +489,18 @@ fn the_volume_is_silent_at_zero_and_a_straight_db_line_above() {
 
 #[test]
 fn only_the_lift_of_the_finger_that_went_down_is_a_tap() {
-    assert!(lift_taps(Some(3), 3));
-    assert!(!lift_taps(Some(3), 4));
-    assert!(!lift_taps(None, 3));
+    assert!(lift_taps(Some(3), 3, true));
+    assert!(!lift_taps(Some(3), 4, true));
+    assert!(!lift_taps(None, 3, true));
+    assert!(!lift_taps(Some(3), 3, false), "slid off the key");
+    let b = (10.0, 20.0, 50.0, 60.0);
+    assert!(inside_box(10.0, 20.0, b));
+    assert!(inside_box(50.0, 60.0, b));
+    assert!(inside_box(30.0, 40.0, b));
+    assert!(!inside_box(9.99, 40.0, b));
+    assert!(!inside_box(50.01, 40.0, b));
+    assert!(!inside_box(30.0, 19.99, b));
+    assert!(!inside_box(30.0, 60.01, b));
 }
 
 #[test]

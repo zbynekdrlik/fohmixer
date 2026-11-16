@@ -75,6 +75,11 @@ pub fn reframe(framer: &Framer, rate: i32) -> Option<Framer> {
     Framer::for_rate(rate)
 }
 
+/// Whether a matrix made a value silence (the framer's count went up).
+pub fn non_finite_news(before: u64, after: u64) -> bool {
+    after > before
+}
+
 /// Whether a connection holding `buffered` bytes of an unfinished chunk,
 /// which began at `since`, is stalled at `now`.
 pub fn stalled(buffered: usize, since: Instant, now: Instant) -> bool {
@@ -278,7 +283,14 @@ fn on_matrix(conn: &mut Conn, m: &Matrix, listen: &Listen) {
     {
         conn.framer = fresh;
     }
-    for frame in conn.framer.push(m.planes, &m.samples) {
+    let before = conn.framer.non_finite;
+    let frames = conn.framer.push(m.planes, &m.samples);
+    // A matrix holding a value that is no number (made silence) is
+    // counted, so `/api/status` shows a device sending garbage.
+    if non_finite_news(before, conn.framer.non_finite) {
+        listen.counters.refuse("non_finite");
+    }
+    for frame in frames {
         listen.counters.frames.fetch_add(1, Ordering::Relaxed);
         let made = conn.encoder.get_or_insert_with(|| {
             Encoder::new().map_err(|e| {
@@ -306,6 +318,14 @@ mod tests {
             version: "v1.50.0".into(),
             sample_rate: rate,
         }
+    }
+
+    #[test]
+    fn a_matrix_that_made_a_value_silence_is_news() {
+        assert!(non_finite_news(0, 1));
+        assert!(non_finite_news(4, 6));
+        assert!(!non_finite_news(3, 3));
+        assert!(!non_finite_news(0, 0));
     }
 
     #[test]

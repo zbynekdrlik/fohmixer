@@ -16,9 +16,8 @@ const HOLE_MS = 60;
 const SHRINK_AFTER_MS = 10000;
 // Scheduled further ahead than this (a stall, then a burst): back to live.
 const MAX_AHEAD_S = 0.5;
-// While the context is not running yet, at most this many packets wait.
-const MAX_WAITING = 50;
-// Of the packets that waited, the newest this many are played (100 ms).
+// While the context is not running (its start, or iOS suspended it), only
+// the newest this many packets wait (100 ms): the sound stays live.
 const DRAIN_NEWEST = 5;
 
 let context = null;
@@ -28,6 +27,9 @@ let decoder = null;
 let gain = 1;
 let nextStart = 0;
 let packets = 0;
+// Every packet handed to the player, even with no context (the E2E's
+// proof that a stopped page gets none).
+let arrived = 0;
 let decoded = 0;
 let played = 0;
 let dropouts = 0;
@@ -97,7 +99,7 @@ export function startListenPlayer() {
       // Only the newest packets: the sound is live, never a burst of the
       // past (a context resumed after iOS suspended it).
       nextStart = 0;
-      for (const packet of waiting.splice(0).slice(-DRAIN_NEWEST)) decode(packet);
+      for (const packet of waiting.splice(0)) decode(packet);
     }
   };
 }
@@ -145,6 +147,7 @@ export function setListenGain(value) {
 
 /** One Opus packet from the hub (its bytes). */
 export function feedListenPacket(bytes) {
+  arrived++;
   if (!context) return;
   packets++;
   const now = performance.now();
@@ -157,7 +160,8 @@ export function feedListenPacket(bytes) {
     bufferMs = Math.max(bufferMs - 1, MIN_BUFFER_MS);
   }
   if (context.state !== "running") {
-    if (waiting.length < MAX_WAITING) waiting.push(bytes);
+    waiting.push(bytes);
+    if (waiting.length > DRAIN_NEWEST) waiting.shift();
     return;
   }
   decode(bytes);
@@ -233,6 +237,7 @@ export function listenStats() {
     running: context !== null && context.state === "running",
     limiter: limiter !== null,
     packets,
+    arrived,
     decoded,
     played,
     dropouts,

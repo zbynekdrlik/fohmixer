@@ -173,6 +173,9 @@ pub struct Listen {
     pending: Option<(Purpose, String)>,
     turn: u64,
     fails: u32,
+    /// A socket opened since the tap: later losses are an outage (a hub
+    /// restarting, a Wi-Fi gap), never a hub without Listen.
+    opened_once: bool,
 }
 
 impl Default for Listen {
@@ -192,6 +195,7 @@ impl Listen {
             pending: None,
             turn: 0,
             fails: 0,
+            opened_once: false,
         }
     }
 
@@ -253,6 +257,7 @@ impl Listen {
         }
         self.phase = Phase::Opening;
         self.fails = 0;
+        self.opened_once = false;
         let n = self.ask(Purpose::Start, label);
         (vec![Act::Play], Some(n))
     }
@@ -331,7 +336,7 @@ impl Listen {
     /// The audio socket opened: the wanted track is asked for; with none
     /// wanted any more it closes again.
     pub fn opened(&mut self) -> Vec<Act> {
-        self.fails = 0;
+        self.opened_once = true;
         self.open = true;
         match &self.want {
             Some(target) => vec![Act::Send(target.start())],
@@ -343,11 +348,12 @@ impl Listen {
     }
 
     /// The audio socket closed: while a track is wanted it opens again,
-    /// unless [`MAX_FAILED_OPENS`] opens in a row closed before they opened
-    /// (a hub with Listen off answers the handshake 503).
+    /// unless the first [`MAX_FAILED_OPENS`] opens since the tap all closed
+    /// before they opened (a hub with Listen off answers the handshake 503;
+    /// once a socket opened, a loss is an outage and it keeps trying).
     pub fn closed(&mut self) -> Vec<Act> {
         let was_open = std::mem::take(&mut self.open);
-        if !was_open {
+        if !was_open && !self.opened_once {
             self.fails += 1;
         }
         if self.want.is_none() {
@@ -383,7 +389,12 @@ impl Listen {
             AudioState::Listening if ours => self.phase = Phase::Listening,
             AudioState::NoSource if ours => self.phase = Phase::NoSource,
             AudioState::Taken if ours => return self.end(Phase::Taken),
-            AudioState::Refused => return self.end(Phase::Refused),
+            // A refusal of the wanted track, or of a message the hub could
+            // not read (none named); never a late one of a track asked
+            // before a follow.
+            AudioState::Refused if ours || instance.is_none() => {
+                return self.end(Phase::Refused);
+            }
             _ => {}
         }
         Vec::new()
@@ -430,9 +441,17 @@ pub fn gain(pos: f64) -> f64 {
 }
 
 /// Whether the key's lift is a tap: the lift of the finger that went down
-/// on it (a finger slid onto the key from elsewhere is none).
-pub fn lift_taps(down: Option<i32>, up: i32) -> bool {
-    down == Some(up)
+/// on it (a finger slid onto the key from elsewhere is none), `inside` the
+/// key (a touch stays captured by its down's target, so a finger that slid
+/// off and lifted elsewhere still lifts on the key: no tap).
+pub fn lift_taps(down: Option<i32>, up: i32, inside: bool) -> bool {
+    inside && down == Some(up)
+}
+
+/// Whether the point (`x`, `y`) lies in the box from (`left`, `top`) to
+/// (`right`, `bottom`), its edges included.
+pub fn inside_box(x: f64, y: f64, (left, top, right, bottom): (f64, f64, f64, f64)) -> bool {
+    (left..=right).contains(&x) && (top..=bottom).contains(&y)
 }
 
 /// The volume's place under a finger at `x` on a slider from `left`,

@@ -10,7 +10,7 @@ use fohmixer_proto::layout::Strip;
 use leptos::prelude::*;
 
 use super::{owns_touches, trace_touch};
-use crate::behave::listen::{foot_text, lift_taps, volume_at};
+use crate::behave::listen::{foot_text, inside_box, lift_taps, volume_at};
 use crate::listen::Listener;
 use crate::store::LiveStore;
 
@@ -46,7 +46,18 @@ pub fn ListenKey(strip: Strip) -> impl IntoView {
     let on_up = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
         let pressed = down.try_update_value(Option::take).flatten();
-        if !lift_taps(pressed, ev.pointer_id()) {
+        let inside = ev
+            .current_target()
+            .and_then(|t| wasm_bindgen::JsCast::dyn_into::<web_sys::Element>(t).ok())
+            .is_some_and(|el| {
+                let r = el.get_bounding_client_rect();
+                inside_box(
+                    f64::from(ev.client_x()),
+                    f64::from(ev.client_y()),
+                    (r.left(), r.top(), r.right(), r.bottom()),
+                )
+            });
+        if !lift_taps(pressed, ev.pointer_id(), inside) {
             return;
         }
         let Some(listener) = listener else {

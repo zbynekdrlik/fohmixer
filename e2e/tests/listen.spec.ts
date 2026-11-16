@@ -36,6 +36,7 @@ type Stats = {
   running: boolean;
   limiter: boolean;
   packets: number;
+  arrived: number;
   decoded: number;
   played: number;
   level: number;
@@ -50,9 +51,11 @@ async function stats(page: Page): Promise<Stats> {
 /** The page's player is stopped (its audio context closed) and takes no packet. */
 async function playerStopped(page: Page) {
   await until(() => stats(page), (s) => !s.running, "the player stopped");
-  const packets = (await stats(page)).packets;
+  // Every packet the page's socket hands on counts, player or not: none
+  // comes once the socket is closed.
+  const arrived = (await stats(page)).arrived;
   await page.waitForTimeout(500);
-  expect((await stats(page)).packets).toBe(packets);
+  expect((await stats(page)).arrived).toBe(arrived);
 }
 
 function key(detail: Locator): Locator {
