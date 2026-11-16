@@ -1,5 +1,6 @@
 use super::*;
 use chrono::Days;
+use std::time::Duration;
 
 fn date(y: i32, m: u32, d: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(y, m, d).unwrap()
@@ -33,7 +34,7 @@ fn the_limits_are_sixty_days_and_256_mb() {
     assert_eq!(QUEUE, 8192);
     assert_eq!(SWEEP_EVERY, Duration::from_secs(3600));
     assert_eq!(
-        Limits::default(),
+        LIMITS,
         Limits {
             keep_days: 60,
             day_cap: 268_435_456
@@ -304,7 +305,7 @@ fn only_the_first_write_failure_of_a_run_is_noted() {
 fn records_go_to_the_file_of_their_day() {
     let dir = tempfile::tempdir().unwrap();
     let logs = dir.path().join("logs");
-    let mut writer = Writer::new(logs.clone(), Limits::default());
+    let mut writer = Writer::new(logs.clone(), LIMITS);
     let dropped = AtomicU64::new(0);
     let day1 = date(2026, 10, 3);
     let day2 = date(2026, 10, 4);
@@ -317,7 +318,7 @@ fn records_go_to_the_file_of_their_day() {
     assert_eq!(first[0]["seq"], 1);
     assert_eq!(evs(&lines(&logs, day2)), vec!["set"]);
     // A new writer (a hub restart) appends to the day's file.
-    let mut again = Writer::new(logs.clone(), Limits::default());
+    let mut again = Writer::new(logs.clone(), LIMITS);
     again.take(&stamp("ping", noon(day2) + 5, json!({"n": 0})), &dropped);
     again.flush();
     assert_eq!(evs(&lines(&logs, day2)), vec!["set", "ping"]);
@@ -334,7 +335,7 @@ fn dropped_records_are_counted_before_the_next_one() {
     assert_eq!(first["seq"], 1);
     assert!(rx.try_recv().is_err(), "the rest was dropped");
     let dir = tempfile::tempdir().unwrap();
-    let mut writer = Writer::new(dir.path().to_path_buf(), Limits::default());
+    let mut writer = Writer::new(dir.path().to_path_buf(), LIMITS);
     writer.take(&first, &log.dropped);
     writer.take(
         &stamp("set", ts_of(&first), json!({"seq": 4})),
@@ -430,7 +431,7 @@ fn a_sweep_deletes_only_day_files_past_retention() {
     ] {
         std::fs::write(dir.path().join(name), "{}\n").unwrap();
     }
-    let mut writer = Writer::new(dir.path().to_path_buf(), Limits::default());
+    let mut writer = Writer::new(dir.path().to_path_buf(), LIMITS);
     assert_eq!(writer.sweep(today), 2);
     let mut left: Vec<String> = std::fs::read_dir(dir.path())
         .unwrap()
@@ -447,7 +448,7 @@ fn a_sweep_deletes_only_day_files_past_retention() {
         ]
     );
     // A folder that does not exist yet has nothing to sweep.
-    let mut nowhere = Writer::new(dir.path().join("missing"), Limits::default());
+    let mut nowhere = Writer::new(dir.path().join("missing"), LIMITS);
     assert_eq!(nowhere.sweep(today), 0);
 }
 
@@ -456,7 +457,7 @@ fn the_first_record_of_a_day_sweeps_the_folder() {
     let dir = tempfile::tempdir().unwrap();
     let old = dir.path().join("events-2026-01-01.jsonl");
     std::fs::write(&old, "{}\n").unwrap();
-    let mut writer = Writer::new(dir.path().to_path_buf(), Limits::default());
+    let mut writer = Writer::new(dir.path().to_path_buf(), LIMITS);
     let dropped = AtomicU64::new(0);
     writer.take(&stamp("set", noon(date(2026, 3, 1)), json!({})), &dropped);
     assert!(old.exists(), "59 days: kept");
@@ -470,17 +471,17 @@ fn a_write_failure_is_noted_and_the_writer_goes_on() {
     // A file where the folder should be: every open fails.
     let blocked = dir.path().join("logs");
     std::fs::write(&blocked, "not a folder").unwrap();
-    let mut writer = Writer::new(blocked.clone(), Limits::default());
+    let mut writer = Writer::new(blocked.clone(), LIMITS);
     let dropped = AtomicU64::new(0);
     let day = date(2026, 10, 3);
     writer.take(&stamp("set", noon(day), json!({"seq": 1})), &dropped);
-    assert!(writer.failing);
+    assert!(writer.files.failing());
     writer.take(&stamp("set", noon(day), json!({"seq": 2})), &dropped);
-    assert!(writer.failing);
+    assert!(writer.files.failing());
     // The folder comes back: the next record is written.
     std::fs::remove_file(&blocked).unwrap();
     writer.take(&stamp("set", noon(day), json!({"seq": 3})), &dropped);
-    assert!(!writer.failing);
+    assert!(!writer.files.failing());
     writer.flush();
     let written = lines(&blocked, day);
     assert_eq!(written.len(), 1);
@@ -496,7 +497,7 @@ fn the_writer_thread_writes_sweeps_at_start_and_ends_with_its_handles() {
     let expired_day = today - Days::new(61);
     let old = logs.join(file_name(expired_day));
     std::fs::write(&old, "{}\n").unwrap();
-    let (log, writer) = EventLog::start_with(logs.clone(), Limits::default()).unwrap();
+    let (log, writer) = EventLog::start_with(logs.clone(), LIMITS).unwrap();
     // No record yet: only the start's sweep can delete it.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while old.exists() {

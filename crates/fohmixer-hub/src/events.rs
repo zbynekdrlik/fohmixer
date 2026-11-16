@@ -22,16 +22,16 @@
 //! `deck_ok`, `deck_release`, `deck_key`, `deck_keys`, `deck_view` (an image
 //! only as its hash and size). A page going idle or waking (#51): `idle`.
 
-use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
-use std::time::Duration;
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 
-use chrono::{DateTime, NaiveDate};
+use chrono::NaiveDate;
 use serde_json::{Map, Value, json};
+
+use crate::day_files::{self, DayFiles, Sink};
+pub use crate::day_files::{Limits, SWEEP_EVERY, date_of, expired, over_cap};
 
 /// Records waiting for the writer before new ones are dropped.
 pub const QUEUE: usize = 8192;
@@ -39,24 +39,13 @@ pub const QUEUE: usize = 8192;
 pub const KEEP_DAYS: i64 = 60;
 /// A day file's size past which only warn-class records are written.
 pub const DAY_CAP: u64 = 256 * 1024 * 1024;
-/// How long the writer waits idle before it checks the retention again.
-pub const SWEEP_EVERY: Duration = Duration::from_secs(3600);
-
-/// The writer's limits (the tests shrink them).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Limits {
-    pub keep_days: i64,
-    pub day_cap: u64,
-}
-
-impl Default for Limits {
-    fn default() -> Self {
-        Self {
-            keep_days: KEEP_DAYS,
-            day_cap: DAY_CAP,
-        }
-    }
-}
+/// The event log's limits.
+pub const LIMITS: Limits = Limits {
+    keep_days: KEEP_DAYS,
+    day_cap: DAY_CAP,
+};
+/// The day files' stem: `events-YYYY-MM-DD.jsonl`.
+pub const STEM: &str = "events";
 
 /// The producers' handle (cheap to clone).
 #[derive(Debug, Clone)]
@@ -69,7 +58,7 @@ impl EventLog {
     /// The log in `dir` (`<data>/logs`), written by a thread of its own
     /// that ends when the last handle is dropped.
     pub fn start(dir: PathBuf) -> std::io::Result<Self> {
-        Self::start_with(dir, Limits::default()).map(|(log, _)| log)
+        Self::start_with(dir, LIMITS).map(|(log, _)| log)
     }
 
     /// [`EventLog::start`] with other limits; the writer thread's handle.
@@ -81,7 +70,7 @@ impl EventLog {
         let dropped = Arc::clone(&log.dropped);
         let writer = std::thread::Builder::new()
             .name("event-log".into())
-            .spawn(move || run(Writer::new(dir, limits), &rx, &dropped))?;
+            .spawn(move || day_files::run(Writer::new(dir, limits).with_dropped(dropped), &rx))?;
         Ok((log, writer))
     }
 
@@ -140,28 +129,14 @@ pub fn ts_of(record: &Value) -> i64 {
     record.get("ts").and_then(Value::as_i64).unwrap_or(0)
 }
 
-/// The UTC date of `ts` (ms since the Unix epoch).
-pub fn date_of(ts: i64) -> NaiveDate {
-    DateTime::from_timestamp_millis(ts)
-        .unwrap_or(DateTime::UNIX_EPOCH)
-        .date_naive()
-}
-
 /// The day file of `date`.
 pub fn file_name(date: NaiveDate) -> String {
-    format!("events-{}.jsonl", date.format("%Y-%m-%d"))
+    day_files::file_name(STEM, date)
 }
 
 /// The date of a day file's name; `None` for any other file.
 pub fn date_of_file(name: &str) -> Option<NaiveDate> {
-    let day = name.strip_prefix("events-")?.strip_suffix(".jsonl")?;
-    NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()
-}
-
-/// Whether the day file of `file` is past retention on `today`: more than
-/// `keep_days` days old.
-pub fn expired(file: NaiveDate, today: NaiveDate, keep_days: i64) -> bool {
-    today.signed_duration_since(file).num_days() > keep_days
+    day_files::date_of_file(STEM, name)
 }
 
 /// Whether a record is still written past a day file's cap: a socket or a
@@ -266,46 +241,32 @@ fn holds_warn_event(record: &Value) -> bool {
         })
 }
 
-/// Whether a line of `len` bytes takes a day file of `size` bytes past
-/// `cap`.
-pub fn over_cap(size: u64, len: u64, cap: u64) -> bool {
-    size + len > cap
-}
-
 /// The hub log's note on a write error: only the first of a run of
 /// failures is noted (`was_failing`: the previous write failed too).
 pub fn failure_note(was_failing: bool, error: &std::io::Error) -> Option<String> {
-    (!was_failing).then(|| format!("cannot write the event log: {error}"))
+    day_files::failure_note("event log", was_failing, error)
 }
 
-/// The open day file.
-struct Day {
-    date: NaiveDate,
-    out: BufWriter<File>,
-    size: u64,
-    capped: bool,
-}
-
-/// The writer: the day files of one folder.
+/// The writer: the event log's day files.
 pub struct Writer {
-    dir: PathBuf,
-    limits: Limits,
-    day: Option<Day>,
-    /// The date the retention was last checked for.
-    swept: Option<NaiveDate>,
-    /// The last write failed.
-    failing: bool,
+    files: DayFiles,
+    /// The producers' count of dropped records (the thread's; a test hands
+    /// its own to [`Writer::take`]).
+    dropped: Arc<AtomicU64>,
 }
 
 impl Writer {
     pub fn new(dir: PathBuf, limits: Limits) -> Self {
         Self {
-            dir,
-            limits,
-            day: None,
-            swept: None,
-            failing: false,
+            files: DayFiles::new(dir, STEM, "event log", limits),
+            dropped: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// The writer with the producers' count of dropped records.
+    fn with_dropped(mut self, dropped: Arc<AtomicU64>) -> Self {
+        self.dropped = dropped;
+        self
     }
 
     /// Writes `record`; first a `dropped` record when producers dropped
@@ -318,132 +279,40 @@ impl Writer {
         self.write(record);
     }
 
+    /// Writes `record`; at the cap a `cap` record goes first, and past it
+    /// only warn-class records ([`is_warn`]).
     fn write(&mut self, record: &Value) {
-        match self.try_write(record) {
-            Ok(()) => self.failing = false,
-            Err(error) => {
-                if let Some(note) = failure_note(self.failing, &error) {
-                    tracing::warn!(dir = %self.dir.display(), "{note}");
-                }
-                self.failing = true;
-            }
-        }
-    }
-
-    fn try_write(&mut self, record: &Value) -> std::io::Result<()> {
         let ts = ts_of(record);
-        let date = date_of(ts);
-        if self.swept != Some(date) {
-            self.sweep(date);
-        }
-        let cap = self.limits.day_cap;
-        let day = self.open(date)?;
+        let cap = self.files.limits().day_cap;
+        let note = format!("{}\n", stamp("cap", ts, json!({"cap_bytes": cap})));
         let line = format!("{record}\n");
-        if !day.capped && over_cap(day.size, line.len() as u64, cap) {
-            let note = format!("{}\n", stamp("cap", ts, json!({"cap_bytes": cap})));
-            // Past the cap the size is never compared again.
-            day.out.write_all(note.as_bytes())?;
-            day.capped = true;
-        }
-        if day.capped && !is_warn(record) {
-            return Ok(());
-        }
-        day.out.write_all(line.as_bytes())?;
-        day.size += line.len() as u64;
-        Ok(())
-    }
-
-    /// The day file of `date`, opened (appending) when another one is open.
-    fn open(&mut self, date: NaiveDate) -> std::io::Result<&mut Day> {
-        if self.day.as_ref().is_some_and(|d| d.date != date) {
-            self.flush();
-            self.day = None;
-        }
-        if self.day.is_none() {
-            std::fs::create_dir_all(&self.dir)?;
-            let file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(self.dir.join(file_name(date)))?;
-            let size = file.metadata()?.len();
-            self.day = Some(Day {
-                date,
-                out: BufWriter::new(file),
-                size,
-                capped: false,
-            });
-        }
-        Ok(self.day.as_mut().expect("opened above"))
+        self.files.append(ts, &line, Some(&note), is_warn(record));
     }
 
     /// Writes out what the open day file buffers.
     pub fn flush(&mut self) {
-        let failed = self.day.as_mut().and_then(|d| d.out.flush().err());
-        if let Some(error) = failed {
-            if let Some(note) = failure_note(self.failing, &error) {
-                tracing::warn!(dir = %self.dir.display(), "{note}");
-            }
-            self.failing = true;
-        }
+        self.files.flush();
     }
 
     /// Deletes the day files past retention on `today`; how many it
     /// deleted.
     pub fn sweep(&mut self, today: NaiveDate) -> usize {
-        self.swept = Some(today);
-        let Ok(entries) = std::fs::read_dir(&self.dir) else {
-            return 0;
-        };
-        let mut deleted = 0;
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let Some(date) = date_of_file(&name) else {
-                continue;
-            };
-            if !expired(date, today, self.limits.keep_days) {
-                continue;
-            }
-            match std::fs::remove_file(entry.path()) {
-                Ok(()) => {
-                    deleted += 1;
-                    tracing::info!(file = %name, keep_days = self.limits.keep_days, "event log: deleted a day file past retention");
-                }
-                Err(error) => {
-                    tracing::warn!(file = %name, error = %error, "event log: cannot delete a day file past retention");
-                }
-            }
-        }
-        deleted
+        self.files.sweep(today)
     }
 }
 
-/// Today's UTC date.
-fn today() -> NaiveDate {
-    date_of(now_ms())
-}
+impl Sink<Value> for Writer {
+    fn take(&mut self, record: Value) {
+        let dropped = Arc::clone(&self.dropped);
+        Writer::take(self, &record, &dropped);
+    }
 
-/// The writer thread: writes every record it receives, flushes after each
-/// burst, checks the retention at start and every [`SWEEP_EVERY`] while
-/// idle, and ends when every handle is gone.
-fn run(mut writer: Writer, rx: &Receiver<Value>, dropped: &AtomicU64) {
-    writer.sweep(today());
-    loop {
-        match rx.recv_timeout(SWEEP_EVERY) {
-            Ok(record) => {
-                writer.take(&record, dropped);
-                for more in rx.try_iter() {
-                    writer.take(&more, dropped);
-                }
-                writer.flush();
-            }
-            Err(RecvTimeoutError::Timeout) => {
-                writer.sweep(today());
-            }
-            Err(RecvTimeoutError::Disconnected) => {
-                writer.flush();
-                return;
-            }
-        }
+    fn flush(&mut self) {
+        Writer::flush(self);
+    }
+
+    fn sweep(&mut self, today: NaiveDate) {
+        Writer::sweep(self, today);
     }
 }
 

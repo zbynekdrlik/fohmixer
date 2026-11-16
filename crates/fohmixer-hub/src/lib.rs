@@ -72,6 +72,7 @@ pub mod cloudflare;
 pub mod colors;
 pub mod companion;
 pub mod config;
+pub mod day_files;
 pub mod deck;
 pub mod doc_store;
 #[cfg(windows)]
