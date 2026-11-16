@@ -558,17 +558,16 @@ pub fn time_step(span: i64) -> i64 {
 }
 
 /// The ticks of `t0..=t1` (UTC ms) at whole local steps (`offset`: local
-/// minus UTC, ms).
+/// minus UTC, ms). At most [`MAX_TICKS`] + 1: the walk is bounded by a
+/// count, never a hand-stepped loop a mutant could spin forever
+/// (`.claude/rules/hub-rust.md`; PR #223's mutation shard 37 hung on it).
 pub fn time_ticks(t0: i64, t1: i64, offset: i64) -> Vec<i64> {
     let step = time_step(t1 - t0);
     let first = -((-(t0 + offset)).div_euclid(step)) * step - offset;
-    let mut ticks = Vec::new();
-    let mut t = first;
-    while t <= t1 {
-        ticks.push(t);
-        t += step;
-    }
-    ticks
+    (0..=MAX_TICKS)
+        .map(|i| first + i * step)
+        .take_while(|&t| t <= t1)
+        .collect()
 }
 
 /// A time's x in the box over `t0..t1`.
