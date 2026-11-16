@@ -749,5 +749,50 @@ pub fn days_answer(status: u16, body: &str) -> Result<Vec<HistoryDay>, String> {
     }
 }
 
+/// Red stubs (#219): replaced by the fix.
+pub fn utc_day(_t: i64) -> i64 {
+    0
+}
+
+/// Red stub.
+pub fn day_chip_at(_day: HistoryDay, _now: i64) -> (String, bool) {
+    (String::new(), false)
+}
+
+/// Red stub: every label with the window end's offset, as before.
+pub fn tick_marks(t0: i64, t1: i64, offset_of: impl Fn(i64) -> i64) -> Vec<(i64, String)> {
+    let offset = offset_of(t1);
+    time_ticks(t0, t1, offset)
+        .into_iter()
+        .map(|t| (t, hh_mm(t, offset)))
+        .collect()
+}
+
+/// Red stub.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Answers {
+    _stub: u64,
+}
+
+impl Answers {
+    pub fn ask(&mut self) -> u64 {
+        0
+    }
+    pub fn answer(&mut self, _n: u64, _got: Option<HistorySeries>) -> bool {
+        false
+    }
+    pub fn drawn(&self) -> Option<&HistorySeries> {
+        None
+    }
+    pub fn failed(&self) -> bool {
+        false
+    }
+}
+
+/// Red stub.
+pub fn retry_series(_tick: u32, _failed: bool) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests;

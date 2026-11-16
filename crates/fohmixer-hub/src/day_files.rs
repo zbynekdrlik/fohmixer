@@ -70,6 +70,11 @@ pub fn failure_note(what: &str, was_failing: bool, error: &std::io::Error) -> Op
     (!was_failing).then(|| format!("cannot write the {what}: {error}"))
 }
 
+/// Red stub (#219).
+pub fn needs_newline(_last: Option<u8>) -> bool {
+    false
+}
+
 /// The open day file.
 struct Day {
     date: NaiveDate,

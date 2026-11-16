@@ -152,6 +152,58 @@ fn an_older_window_is_read_from_the_day_files_and_ram_answers_its_own_hour() {
 }
 
 #[test]
+fn a_window_whose_arithmetic_would_overflow_is_a_window_error_never_a_panic() {
+    let dir = tempfile::tempdir().unwrap();
+    let (history, _rx) = LufsHistory::channel(Some(dir.path().to_path_buf()), 8);
+    history.sample(T0, || vec![item("band", VOX, Some(-230))]);
+    for (from, to) in [
+        (i64::MIN, 0),
+        (9_223_372_036_854_775_000, 9_223_372_036_854_775_800),
+    ] {
+        assert!(
+            history.history("band", VOX, from, to).is_err(),
+            "{from}..{to}"
+        );
+    }
+}
+
+#[test]
+fn a_bad_line_in_a_day_file_is_skipped_and_the_lines_after_it_are_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let m = T0 - 7_200_000;
+    let mut bytes = format!("{}\n", line(m, &[-250; 60])).into_bytes();
+    // A line that is no UTF-8 (a torn write), then a line that is no JSON.
+    bytes.extend_from_slice(b"{\"m\":\xff\xfe\n");
+    bytes.extend_from_slice(b"not a line\n");
+    bytes.extend_from_slice(format!("{}\n", line(m + 60_000, &[-240; 60])).as_bytes());
+    std::fs::write(dir.path().join("lufs-2026-11-15.jsonl"), bytes).unwrap();
+    let (history, _rx) = LufsHistory::channel(Some(dir.path().to_path_buf()), 8);
+    let series = history.history("band", VOX, m, m + 120_000).unwrap();
+    assert_eq!(series.values[0], Some(-250));
+    assert_eq!(series.values[60], Some(-240), "the line after the bad ones");
+    assert_eq!(
+        history.days("band", VOX),
+        [HistoryDay {
+            first_ms: m,
+            last_ms: m + 119_000,
+        }]
+    );
+}
+
+#[test]
+fn a_day_files_bad_lines_are_noted_once_with_their_count() {
+    assert_eq!(bad_lines_note("lufs-2026-11-15.jsonl", 0), None);
+    assert_eq!(
+        bad_lines_note("lufs-2026-11-15.jsonl", 1).as_deref(),
+        Some("LUFS history: skipped 1 unreadable line in lufs-2026-11-15.jsonl")
+    );
+    assert_eq!(
+        bad_lines_note("lufs-2026-11-15.jsonl", 3).as_deref(),
+        Some("LUFS history: skipped 3 unreadable lines in lufs-2026-11-15.jsonl")
+    );
+}
+
+#[test]
 fn the_files_answer_up_to_the_first_second_ram_holds() {
     assert_eq!(files_until(None, T0), T0);
     assert_eq!(files_until(Some(T0 - 1000), T0), T0 - 1000);

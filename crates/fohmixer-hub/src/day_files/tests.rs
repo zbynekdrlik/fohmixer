@@ -96,6 +96,50 @@ fn past_the_cap_a_line_goes_only_when_let_through_and_the_note_once() {
 }
 
 #[test]
+fn a_line_a_crash_left_unfinished_is_ended_before_the_next_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let limits = Limits {
+        keep_days: 14,
+        day_cap: 1000,
+    };
+    let day = date(2026, 11, 3);
+    let torn = dir.path().join(file_name("lufs", day));
+    std::fs::write(&torn, "{\"m\":1").unwrap();
+    let mut files = DayFiles::new(dir.path().to_path_buf(), "lufs", "LUFS history", limits);
+    assert_eq!(
+        files.append(noon(day), "line\n", None, false),
+        Appended::Written
+    );
+    files.flush();
+    assert_eq!(read(dir.path(), "lufs", day), "{\"m\":1\nline\n");
+    // A whole file and an empty one get nothing added.
+    let next = date(2026, 11, 4);
+    std::fs::write(dir.path().join(file_name("lufs", next)), "whole\n").unwrap();
+    assert_eq!(
+        files.append(noon(next), "line\n", None, false),
+        Appended::Written
+    );
+    files.flush();
+    assert_eq!(read(dir.path(), "lufs", next), "whole\nline\n");
+    let last = date(2026, 11, 5);
+    std::fs::write(dir.path().join(file_name("lufs", last)), "").unwrap();
+    assert_eq!(
+        files.append(noon(last), "line\n", None, false),
+        Appended::Written
+    );
+    files.flush();
+    assert_eq!(read(dir.path(), "lufs", last), "line\n");
+}
+
+#[test]
+fn only_a_file_whose_last_byte_is_no_newline_needs_one() {
+    assert!(!needs_newline(None));
+    assert!(!needs_newline(Some(b'\n')));
+    assert!(needs_newline(Some(b'}')));
+    assert!(needs_newline(Some(0)));
+}
+
+#[test]
 fn a_sweep_deletes_only_its_own_stems_files_past_retention() {
     let dir = tempfile::tempdir().unwrap();
     let today = date(2026, 11, 16);

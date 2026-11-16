@@ -762,3 +762,114 @@ fn a_day_chip_is_today_only_for_todays_first_reading() {
     assert_eq!(day_chip(20_773, 20_773), ("TODAY".to_string(), true));
     assert_eq!(day_chip(20_772, 20_773), ("SUN 15.11".to_string(), false));
 }
+
+/// 2026-11-14 00:00 UTC (a Saturday) and a day in ms.
+const SAT_UTC: i64 = 20_771 * 86_400_000;
+const D: i64 = 86_400_000;
+const H: i64 = 3_600_000;
+
+#[test]
+fn a_day_chip_names_the_utc_day_its_file_holds_and_today_is_judged_alike() {
+    // PR #223's review: at UTC+1 the 14.11 file's first reading at 23:30
+    // UTC is 15.11 locally; labelled by the local day both files read
+    // `SUN 15.11` and both were TODAY.
+    let late = day(
+        SAT_UTC + 23 * H + 30 * 60_000,
+        SAT_UTC + 23 * H + 59 * 60_000,
+    );
+    let sunday = day(SAT_UTC + D + 9 * H, SAT_UTC + D + 12 * H);
+    let noon = SAT_UTC + D + 12 * H;
+    assert_eq!(day_chip_at(late, noon), ("SAT 14.11".to_string(), false));
+    assert_eq!(day_chip_at(sunday, noon), ("TODAY".to_string(), true));
+    // 00:30 on Monday at UTC+1 is still Sunday in UTC: its file is today.
+    let monday_local = SAT_UTC + D + 23 * H + 30 * 60_000;
+    assert_eq!(
+        day_chip_at(sunday, monday_local),
+        ("TODAY".to_string(), true)
+    );
+    assert_eq!(
+        day_chip_at(late, monday_local),
+        ("SAT 14.11".to_string(), false)
+    );
+    // A day later Sunday's file is a past day.
+    assert_eq!(
+        day_chip_at(sunday, SAT_UTC + 2 * D),
+        ("SUN 15.11".to_string(), false)
+    );
+    assert_eq!(utc_day(SAT_UTC), 20_771);
+    assert_eq!(utc_day(SAT_UTC - 1), 20_770);
+    assert_eq!(utc_day(SAT_UTC + D - 1), 20_771);
+}
+
+#[test]
+fn each_time_tick_is_labelled_with_its_own_offset_across_a_dst_switch() {
+    // 2026-10-25: CEST (UTC+2) ends at 01:00 UTC, CET (UTC+1) after it.
+    let midnight = 20_751 * D;
+    let switch = midnight + H;
+    let offset_of = |t: i64| if t < switch { 2 * H } else { H };
+    let marks = tick_marks(midnight, midnight + 2 * H, offset_of);
+    let times: Vec<i64> = marks.iter().map(|(t, _)| t - midnight).collect();
+    assert_eq!(times, [0, 30 * 60_000, H, H + 30 * 60_000, 2 * H]);
+    let labels: Vec<&str> = marks.iter().map(|(_, l)| l.as_str()).collect();
+    assert_eq!(labels, ["02:00", "02:30", "02:00", "02:30", "03:00"]);
+    // The cursor over a tick reads the tick's own time.
+    assert!(
+        cursor_text(
+            midnight + 30 * 60_000,
+            None,
+            offset_of(midnight + 30 * 60_000)
+        )
+        .starts_with("02:30:00")
+    );
+    // One offset: the ticks of `time_ticks`, each `hh_mm`.
+    assert_eq!(
+        tick_marks(0, 600_000, |_| 0),
+        time_ticks(0, 600_000, 0)
+            .into_iter()
+            .map(|t| (t, hh_mm(t, 0)))
+            .collect::<Vec<_>>()
+    );
+}
+
+fn series_from(from: i64) -> HistorySeries {
+    HistorySeries {
+        from,
+        step_ms: 1000,
+        values: vec![Some(-230)],
+    }
+}
+
+#[test]
+fn the_last_answer_is_kept_apart_from_the_last_ask() {
+    let mut a = Answers::default();
+    assert_eq!(a.drawn(), None);
+    assert!(!a.failed());
+    let first = a.ask();
+    assert!(a.answer(first, Some(series_from(1))));
+    assert_eq!(a.drawn(), Some(&series_from(1)));
+    // The newest ask fails: the last answer stays, marked as failed.
+    let second = a.ask();
+    assert!(!a.failed(), "an ask on its way has not failed");
+    assert!(!a.answer(second, None));
+    assert!(a.failed());
+    assert_eq!(a.drawn(), Some(&series_from(1)));
+    // A newer ask clears the failure; an older answer is dropped.
+    let third = a.ask();
+    assert!(!a.failed());
+    assert!(!a.answer(second, Some(series_from(2))));
+    assert!(!a.answer(first, None));
+    assert!(!a.failed());
+    assert_eq!(a.drawn(), Some(&series_from(1)));
+    assert!(a.answer(third, Some(series_from(3))));
+    assert_eq!(a.drawn(), Some(&series_from(3)));
+    assert!(!a.failed());
+    assert_eq!(third, first + 2);
+}
+
+#[test]
+fn a_failed_ask_is_asked_again_every_5_s() {
+    assert!(retry_series(5, true));
+    assert!(retry_series(10, true));
+    assert!(!retry_series(6, true));
+    assert!(!retry_series(5, false));
+}

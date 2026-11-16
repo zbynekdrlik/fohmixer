@@ -229,6 +229,24 @@ fn a_window_is_whole_seconds_up_to_24_h() {
 }
 
 #[test]
+fn a_window_whose_arithmetic_would_overflow_is_refused() {
+    // PR #223's review: `to - from` wrapped negative, passed the 24 h check
+    // and made a vector of the wrapped length; a start near the top made
+    // `start + n * 1000` overflow.
+    for (from, to) in [
+        (i64::MIN, 0),
+        (i64::MIN, i64::MIN + 1),
+        (9_223_372_036_854_775_000, 9_223_372_036_854_775_800),
+        (i64::MAX - 1000, i64::MAX),
+    ] {
+        assert!(window(from, to).is_err(), "{from}..{to}");
+    }
+    // The last whole second whose end still fits.
+    let top = i64::MAX - i64::MAX.rem_euclid(1000) - 1000;
+    assert_eq!(window(top, top + 1000), Ok((top, 1)));
+}
+
+#[test]
 fn a_bucket_holds_at_most_900_values() {
     assert_eq!(step_for(0), 1);
     assert_eq!(step_for(600), 1);

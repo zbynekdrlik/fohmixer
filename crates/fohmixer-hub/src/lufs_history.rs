@@ -256,6 +256,11 @@ fn lines_of(path: &Path) -> impl Iterator<Item = MinuteLine> {
         .filter_map(|line| MinuteLine::parse(&line))
 }
 
+/// Red stub (#219).
+pub fn bad_lines_note(_file: &str, _bad: usize) -> Option<String> {
+    None
+}
+
 /// The point's day in a day file: its first and last second heard.
 fn day_of(path: &Path, instance: &str, target: &str) -> Option<HistoryDay> {
     lines_of(path)
