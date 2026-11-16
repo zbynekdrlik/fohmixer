@@ -32,8 +32,8 @@ use super::meter::StatusView;
 use super::rec::ArmKey;
 use super::{Settings, key_of, owns_touches, trace_detail};
 use crate::arrange::GroupLabel;
-use crate::behave::db_text::db_text;
-use crate::behave::fader::{UNITY, VolumeLaw};
+use crate::behave::db_text::db_text_at;
+use crate::behave::fader::{VolumeLaw, home_volume};
 use crate::behave::hold::{HINT_MS, HOLD_MS, Hold, Lift};
 use crate::behave::label::{mark_look, set_text, shown_label};
 use crate::behave::live_down::LiveWord;
@@ -42,7 +42,7 @@ use crate::behave::lufs::{
 };
 use crate::behave::mute_alarm::strip_attr;
 use crate::behave::reverb::held_low;
-use crate::behave::scale::{tick_label, tick_pos, ticks};
+use crate::behave::scale::{is_home_tick, tick_label, tick_pos, ticks, unity_style};
 use crate::binding::{detail_keys, strip_subs};
 use crate::dom;
 use crate::store::{LiveStore, Slot};
@@ -52,12 +52,17 @@ use crate::store::{LiveStore, Slot};
 /// scale gets it. A strip's sits right of its fader's track (#151,
 /// `strip.css`), the detail's left of its meter.
 #[component]
-pub fn ScaleView(law: VolumeLaw) -> impl IntoView {
+pub fn ScaleView(
+    law: VolumeLaw,
+    /// The strip's home level (#225): its label is the brighter one.
+    #[prop(default = None)]
+    home_db: Option<f64>,
+) -> impl IntoView {
     let labels = ticks(law)
         .iter()
         .map(|db| {
             let top = format!("top:{:.3}%;", (1.0 - tick_pos(law, *db)) * 100.0);
-            let unity = *db == 0.0;
+            let unity = is_home_tick(*db, home_db);
             view! {
                 <span class="tick" class:unity=unity data-db=db.to_string() style=top>
                     {tick_label(*db)}
@@ -188,8 +193,17 @@ fn InfoColumn(
 /// Live's dB readout in TouchOSC's form (one decimal, no unit, white exactly
 /// at 0 dB).
 #[component]
-pub fn DbView(state: RwSignal<Slot>) -> impl IntoView {
-    let text = Memo::new(move |_| state.try_with(|s| s.display().and_then(db_text)).flatten());
+pub fn DbView(
+    state: RwSignal<Slot>,
+    /// The strip's home level (#225): white exactly there, 0 dB without.
+    #[prop(optional)]
+    home_db: f64,
+) -> impl IntoView {
+    let text = Memo::new(move |_| {
+        state
+            .try_with(|s| s.display().and_then(|d| db_text_at(d, home_db)))
+            .flatten()
+    });
     let shown = move || text.try_get().flatten().map(|t| t.text).unwrap_or_default();
     let unity = move || text.try_get().flatten().is_some_and(|t| t.unity);
     view! {
@@ -398,6 +412,9 @@ pub fn StripView(
     // A reverb strip (#130, D18): REVERB's marks on its fader, and its
     // readout in the rule's colour while the rule holds it low.
     let reverb = strip.reverb;
+    // The strip's home (#225): its unity mark and its double tap's target.
+    let home_db = strip.home_db;
+    let home_level = home_volume(home_db);
     let volume_key = StoredValue::new(subs.volume.as_ref().map(key_of).unwrap_or_default());
     let low = move || {
         reverb
@@ -424,6 +441,7 @@ pub fn StripView(
                 link_on=link_on
                 reverb=reverb
                 meters=track_meters
+                home_level=home_level
             />
         }
     });
@@ -506,7 +524,8 @@ pub fn StripView(
             })
         }
     });
-    let db = volume.map(|slot| view! { <DbView state=slot /> });
+    let home_at = strip.home_db.unwrap_or(0.0);
+    let db = volume.map(|slot| view! { <DbView state=slot home_db=home_at /> });
     let mark_word = look.map(|(_, word)| {
         view! { <span class="strip-mark" data-testid="strip-mark">{word}</span> }
     });
@@ -552,8 +571,9 @@ pub fn StripView(
     let strip_instance = instance;
     let wide = strip.wide;
     let law = settings.law;
-    // The unity mark at 0 dB on the fader's law (`strip.css` `.fader::after`).
-    let unity = format!("--u:{:.4};", law.to_pos(UNITY));
+    // The unity mark at the strip's home on the fader's law (#225; 0 dB
+    // unless its Tuner carries `+HOME:<dB>`; `strip.css` `.fader::after`).
+    let unity = unity_style(law, home_level);
     // The fader link's mark (#130): `link.css` gives a leader's cap line
     // the accent.
     let flink_attr = move || flink.try_get().unwrap_or_default().name();
@@ -589,7 +609,7 @@ pub fn StripView(
             <div class="strip-zone" style=unity>
                 {hint}
                 <InfoColumn group_name=group_name lufs=lufs_look kind=lufs_kind instance=set_of />
-                <ScaleView law=law />
+                <ScaleView law=law home_db=home_db />
                 {spring_view}
                 {fader}
                 <DetailKey strip=key_strip />

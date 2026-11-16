@@ -685,6 +685,7 @@ fn a_marker_without_a_label_shows_its_tracks_number_and_is_known_by_it() {
         fader_link: None,
         fader_follows: Vec::new(),
         lufs: None,
+        home_db: None,
     };
     assert!(has_placeholder_label(&bound(
         Anchor::TrackAt { index: 2 },
@@ -2802,4 +2803,159 @@ fn a_stream_ctrl_tag_alone_makes_no_strip() {
     assert_eq!(m.ctrls, [CtrlId::Stream]);
     // A Tuner of this tag alone makes no strip: no label or group asked.
     assert_eq!(m.problems, vec![]);
+}
+
+#[test]
+fn a_home_tag_takes_a_level_from_minus_60_to_plus_6_whole_or_with_one_decimal() {
+    let good = [
+        ("-6", -60),
+        ("-6.0", -60),
+        ("-6.5", -65),
+        ("-0.5", -5),
+        ("0", 0),
+        ("-0", 0),
+        ("6", 60),
+        ("6.0", 60),
+        ("06", 60),
+        ("-60", -600),
+        ("-60.0", -600),
+        ("-12.3", -123),
+        ("3.7", 37),
+    ];
+    for (arg, tenths) in good {
+        assert_eq!(home_arg(arg), Some(tenths), "{arg}");
+    }
+    let bad = [
+        "", "-", "+6", "6.1", "7", "-60.1", "-61", "-100", "060", "-6.25", "-6,5", ".5", "-.5",
+        "5.", "6..0", "a", "-6dB", "1e1", " 6", "--6", "6-",
+    ];
+    for arg in bad {
+        assert_eq!(home_arg(arg), None, "{arg:?}");
+    }
+    assert_eq!(home_db(-60), -6.0);
+    assert_eq!(home_db(-65), -6.5);
+    assert_eq!(home_db(37), 3.7);
+}
+
+#[test]
+fn a_bad_or_second_home_tag_is_a_problem_and_the_first_good_one_counts() {
+    let m = parse(r#""CG" +G:VOCALS +HOME:-6"#);
+    assert_eq!(m.home, Some(-60));
+    assert!(m.problems.is_empty(), "{:?}", m.problems);
+    assert_eq!(parse(r#""Vox 1" +G:VOCALS"#).home, None);
+
+    let m = parse(r#""CG" +G:VOCALS +HOME:-61 +HOME:-3 +HOME:-6 +HOME:x"#);
+    assert_eq!(m.home, Some(-30));
+    assert_eq!(
+        m.problems,
+        vec![
+            TagProblem::BadHome {
+                tag: "+HOME:-61".into()
+            },
+            TagProblem::SecondHome {
+                tag: "+HOME:-6".into()
+            },
+            TagProblem::BadHome {
+                tag: "+HOME:x".into()
+            },
+        ]
+    );
+    // A bare `+HOME` names no level: an unknown tag.
+    assert_eq!(
+        parse(r#""CG" +G:VOCALS +HOME"#).problems,
+        vec![TagProblem::UnknownTag {
+            tag: "+HOME".into()
+        }]
+    );
+}
+
+#[test]
+fn the_home_problems_say_bad_home_tag_and_serialize_with_their_codes() {
+    let problems = vec![
+        TagProblem::BadHome {
+            tag: "+HOME:-61".into(),
+        },
+        TagProblem::SecondHome {
+            tag: "+HOME:-6".into(),
+        },
+    ];
+    assert_eq!(
+        serde_json::to_value(&problems).unwrap(),
+        json!([
+            {"code": "bad_home", "tag": "+HOME:-61"},
+            {"code": "second_home", "tag": "+HOME:-6"},
+        ])
+    );
+    for p in &problems {
+        assert_eq!(p.home_text(), Some("bad HOME tag"));
+        assert_eq!(p.lufs_text(), None);
+    }
+    assert_eq!(TagProblem::NoGroup.home_text(), None);
+    assert_eq!(
+        TagProblem::BadLufs {
+            tag: "+LUFS:-5".into()
+        }
+        .home_text(),
+        None
+    );
+}
+
+#[test]
+fn a_tuner_of_only_home_tags_needs_a_label_and_a_group() {
+    // A strip feature, as `+REVERB`: its label and group count.
+    assert_eq!(
+        parse("+HOME:-6").problems,
+        vec![TagProblem::NoLabel, TagProblem::NoGroup]
+    );
+    assert_eq!(
+        parse("+MUTE:A +HOME:-6").problems,
+        vec![TagProblem::NoLabel, TagProblem::NoGroup]
+    );
+    assert_eq!(parse("+MUTE:A").problems, vec![]);
+}
+
+#[test]
+fn compose_carries_the_home_level_to_the_strip() {
+    let composed = compose(
+        &frame(),
+        &[
+            found("band", TrackKind::Track, 3, r#""CG" +G:VOCALS +HOME:-6"#),
+            found(
+                "band",
+                TrackKind::Track,
+                4,
+                r#""Vox 1" +G:VOCALS +HOME:-2.5"#,
+            ),
+            found("band", TrackKind::Track, 5, r#""Vox 2" +G:VOCALS"#),
+        ],
+    );
+    assert_eq!(
+        strip_in(&composed.layout, "vocals", "CG").home_db,
+        Some(-6.0)
+    );
+    assert_eq!(
+        strip_in(&composed.layout, "vocals", "Vox 1").home_db,
+        Some(-2.5)
+    );
+    assert_eq!(strip_in(&composed.layout, "vocals", "Vox 2").home_db, None);
+    // Served as `home_db`, left out when none.
+    let served = serde_json::to_value(&composed.layout).unwrap().to_string();
+    assert!(served.contains(r#""home_db":-6.0"#), "{served}");
+    assert_eq!(served.matches("home_db").count(), 2, "{served}");
+}
+
+#[test]
+fn a_frame_strip_cannot_carry_a_home_level() {
+    let frame: Layout = serde_json::from_value(
+        json!({"schema": 2, "default_page": "p", "pages": [{"id": "p", "title": "P",
+        "rows": [{"sections": [{"kind": "group", "id": "g", "controls": [{"kind": "strip",
+            "binding": {"instance": "band", "anchor": {"kind": "track", "name": "CG #"}},
+            "strip_kind": "standard", "home_db": -6.0}]}]}]}]}),
+    )
+    .unwrap();
+    let messages: Vec<String> = frame_problems(&frame)
+        .into_iter()
+        .map(|e| e.message)
+        .collect();
+    assert_eq!(messages, ["a home level: the Tuner markers make those"]);
 }

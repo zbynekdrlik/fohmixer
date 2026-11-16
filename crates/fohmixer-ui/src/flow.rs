@@ -54,6 +54,7 @@ mod tests {
             fader_link: None,
             fader_follows: Vec::new(),
             lufs: None,
+            home_db: None,
         }))
     }
 

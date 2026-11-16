@@ -7,7 +7,8 @@
 //!   `+MUTE:<id>` (#127), the fader link's `+FADER:<id>` and the REVERB
 //!   rule's `+REVERB` (#130), the AUTOTUNE rule's `+AUTOTUNE` (#104), a
 //!   frame control's `+CTRL:<id>` (#104), the Claps track's `+CLAPS`
-//!   (#220), and every problem as a value
+//!   (#220), the strip's home level `+HOME:<dB>` (#225), and every
+//!   problem as a value
 //!   (never an error: a problem is shown on the strip, I9).
 //! - [`compose`] turns the frame (the layout file: pages, rows, the rail)
 //!   and the markers the hub found into the served layout: a frame group
@@ -40,6 +41,10 @@ pub const MAX_GROUP_NAME: usize = 32;
 pub const MAX_PLACE: u32 = 999;
 /// A view page's id: this prefix and its group's name.
 pub const VIEW_PREFIX: &str = "view-";
+/// The lowest home level a `+HOME:<dB>` tag takes, in tenths of a dB (#225).
+pub const HOME_MIN_TENTHS: i16 = -600;
+/// The highest home level a `+HOME:<dB>` tag takes, in tenths of a dB.
+pub const HOME_MAX_TENTHS: i16 = 60;
 
 /// Where a `+AUTOTUNE` track's autotune is on (#104): `+AUTOTUNE` on 127
 /// (off 0, the stream racks), `+AUTOTUNE:0` on 0 (off 127, the repro racks).
@@ -106,6 +111,9 @@ pub struct Marker {
     pub ctrls: Vec<CtrlId>,
     /// `+CLAPS` (#220): the track the surface claps on (one per Live set).
     pub claps: bool,
+    /// `+HOME:<dB>` (#225): the strip's home level in tenths of a dB, where
+    /// its unity mark sits and its double tap glides to.
+    pub home: Option<i16>,
     pub problems: Vec<TagProblem>,
 }
 
@@ -126,6 +134,7 @@ impl Marker {
             && !self.reverb
             && !self.claps
             && self.lufs.is_none()
+            && self.home.is_none()
             && self.problems.first() == Some(&TagProblem::NoLabel)
     }
 }
@@ -200,6 +209,11 @@ pub enum TagProblem {
     /// Another Tuner of the Live set carries `+CLAPS` too: which track
     /// claps is not known, so neither does (#220).
     DuplicateClaps,
+    /// A `+HOME:` tag whose level is not −60 to +6 dB, whole or with one
+    /// decimal (#225).
+    BadHome { tag: String },
+    /// A second `+HOME:` tag (the first counts; #225).
+    SecondHome { tag: String },
 }
 
 impl TagProblem {
@@ -208,6 +222,15 @@ impl TagProblem {
     pub fn lufs_text(&self) -> Option<&'static str> {
         match self {
             TagProblem::DuplicateLufs { .. } | TagProblem::BadLufs { .. } => Some("bad LUFS tag"),
+            _ => None,
+        }
+    }
+
+    /// The words of a home tag's problem (#225): `bad HOME tag` for both;
+    /// none for the other problems.
+    pub fn home_text(&self) -> Option<&'static str> {
+        match self {
+            TagProblem::BadHome { .. } | TagProblem::SecondHome { .. } => Some("bad HOME tag"),
             _ => None,
         }
     }
@@ -323,6 +346,8 @@ pub fn parse(name: &str) -> Marker {
                     lufs_tag(&mut marker, token, lufs_arg(arg));
                 } else if let Some(arg) = tag.strip_prefix("CTRL:") {
                     ctrl_tag(&mut marker, token, arg);
+                } else if let Some(arg) = tag.strip_prefix("HOME:") {
+                    home_tag(&mut marker, token, home_arg(arg));
                 } else {
                     marker.problems.push(TagProblem::UnknownTag {
                         tag: token.to_string(),
@@ -417,6 +442,49 @@ fn lufs_tag(marker: &mut Marker, token: &str, spec: Option<LufsSpec>) {
     }
 }
 
+/// A `+HOME:<dB>` tag's argument (#225): the level in tenths of a dB, from
+/// [`HOME_MIN_TENTHS`] to [`HOME_MAX_TENTHS`]: an optional leading `-`, one
+/// or two digits, and at most one decimal after a `.`.
+pub fn home_arg(arg: &str) -> Option<i16> {
+    let (negative, number) = match arg.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, arg),
+    };
+    let (whole, tenth) = match number.split_once('.') {
+        Some((whole, decimal)) => (whole, Some(decimal)),
+        None => (number, None),
+    };
+    let digits = |text: &str, most: usize| {
+        (1..=most).contains(&text.len()) && text.bytes().all(|b| b.is_ascii_digit())
+    };
+    if !digits(whole, 2) || !tenth.is_none_or(|t| digits(t, 1)) {
+        return None;
+    }
+    let size = whole.parse::<i16>().ok()? * 10 + tenth.map_or(Some(0), |t| t.parse().ok())?;
+    let tenths = if negative { -size } else { size };
+    (HOME_MIN_TENTHS..=HOME_MAX_TENTHS)
+        .contains(&tenths)
+        .then_some(tenths)
+}
+
+/// A `+HOME:` tag (`token`; `tenths` none: a bad level), once (#225).
+fn home_tag(marker: &mut Marker, token: &str, tenths: Option<i16>) {
+    match tenths {
+        None => marker.problems.push(TagProblem::BadHome {
+            tag: token.to_string(),
+        }),
+        Some(_) if marker.home.is_some() => marker.problems.push(TagProblem::SecondHome {
+            tag: token.to_string(),
+        }),
+        Some(tenths) => marker.home = Some(tenths),
+    }
+}
+
+/// A home level in tenths of a dB as the strip carries it, in dB (#225).
+pub fn home_db(tenths: i16) -> f64 {
+    f64::from(tenths) / 10.0
+}
+
 /// A `+CTRL:<id>` tag (`token`, its argument `arg`): one of [`CtrlId`],
 /// each once (#104).
 fn ctrl_tag(marker: &mut Marker, token: &str, arg: &str) {
@@ -458,7 +526,8 @@ fn link_tag(
 /// markers' `+ID` and `+MUTE`, never the frame's) or with `reverb` (#130:
 /// the markers' `+REVERB`), a strip with a fader link or a follow, a
 /// linked fader with its own targets, or one link on two faders (#130), an
-/// autotune control naming tracks (#104: the markers' `+AUTOTUNE`), or a
+/// autotune control naming tracks (#104: the markers' `+AUTOTUNE`), a strip
+/// with a home level (#225: the markers' `+HOME`), or a
 /// `ctrl` anchor on a control that takes none (#104: [`names_ctrl_wrongly`]).
 pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
     let mut out = Vec::new();
@@ -551,6 +620,12 @@ pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
         &mut out,
         |c| matches!(c, Control::ParamFader { link: Some(_), targets, .. } if !targets.is_empty()),
         "a linked fader's tracks: the Tuner markers make those",
+    );
+    refuse(
+        frame,
+        &mut out,
+        |c| matches!(c, Control::Strip(s) if s.home_db.is_some()),
+        "a home level: the Tuner markers make those",
     );
     refuse(
         frame,
@@ -826,6 +901,7 @@ impl Entry<'_> {
             fader_link: self.leads.clone(),
             fader_follows: self.follows.clone(),
             lufs: self.marker.lufs,
+            home_db: self.marker.home.map(home_db),
         }
     }
 }

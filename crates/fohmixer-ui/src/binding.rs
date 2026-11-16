@@ -208,7 +208,8 @@ pub enum DetailChange {
     /// The layout's strip it resolves to (a marker moved to another index,
     /// its label, guard or mark changed): written back, so the wanted set
     /// subscribes the keys the detail's slots read.
-    Follow(Strip),
+    /// Boxed: a strip is large beside a close's reason (#225 grew it).
+    Follow(Box<Strip>),
     /// It closes, and why (the flight recorder's `close`): `layout` (the
     /// layout has no such strip), `placeholder` (a placeholder-labelled
     /// marker carried into a new layout) or `conflict` (the layout holds it
@@ -229,7 +230,7 @@ pub fn detail_update(layout: &Layout, held: Option<&Strip>, carried: bool) -> Op
     }
     match detail_strip(layout, held) {
         Some(found) if found == *held => None,
-        Some(found) => Some(DetailChange::Follow(found)),
+        Some(found) => Some(DetailChange::Follow(Box::new(found))),
         None if in_conflict(layout, held) => Some(DetailChange::Close(CLOSE_CONFLICT)),
         None => Some(DetailChange::Close(CLOSE_LAYOUT)),
     }
