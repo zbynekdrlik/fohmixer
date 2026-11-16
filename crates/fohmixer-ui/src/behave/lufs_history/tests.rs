@@ -756,3 +756,9 @@ fn a_window_that_starts_later_places_its_samples_the_same() {
     assert_eq!(cursor_time(1.0, base, base + 1000), base + 1000);
     assert_eq!(x_of(base + 250, base, base + 1000), 250.0);
 }
+
+#[test]
+fn a_day_chip_is_today_only_for_todays_first_reading() {
+    assert_eq!(day_chip(20_773, 20_773), ("TODAY".to_string(), true));
+    assert_eq!(day_chip(20_772, 20_773), ("SUN 15.11".to_string(), false));
+}

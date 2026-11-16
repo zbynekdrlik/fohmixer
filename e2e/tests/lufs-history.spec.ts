@@ -137,6 +137,22 @@ test.describe("A fader's LUFS history in its channel detail", () => {
     await expect(graph.locator('[data-testid="lufs-line"][data-green="false"]').first()).toBeAttached({ timeout: 15_000 });
     await expect(graph.locator('[data-testid="lufs-line"][data-green="false"]').first()).toHaveCSS("stroke", "rgb(154, 154, 180)");
 
+    // A finger held still at the live edge of 10 MIN (2 s columns) shows
+    // the cursor: its time and the reading there, −30.0 since the line went
+    // grey.
+    // At least 4 grey columns (8 s of −30.0) first: the finger sits 2-4 s
+    // back from now.
+    const greyPoints = () => graph.locator('[data-testid="lufs-line"][data-green="false"]').last().evaluate((e) => (e.getAttribute("points") ?? "").split(" ").length);
+    await expect.poll(greyPoints, { timeout: 20_000 }).toBeGreaterThanOrEqual(5);
+    const cursor = history.getByTestId("lufs-history-cursor");
+    const edge = (await graph.boundingBox())!.width / 2 - 4;
+    await dispatchPointer(graph, [{ type: "pointerdown", dx: edge }, { wait: 600 }], 22);
+    await expect(graph.getByTestId("lufs-cursor")).toBeAttached();
+    await expect(cursor).toHaveText(/^\d\d:\d\d:\d\d · −30\.0$/);
+    await dispatchPointer(graph, [{ type: "pointerup", dx: edge }], 22);
+    await expect(graph.getByTestId("lufs-cursor")).toHaveCount(0);
+    await expect(cursor).toHaveText("");
+
     // The day that holds it: today.
     const days = history.getByTestId("lufs-days").getByTestId("lufs-day");
     await expect(days.first()).toHaveText("TODAY", { timeout: 15_000 });
@@ -172,17 +188,6 @@ test.describe("A fader's LUFS history in its channel detail", () => {
     await expect(nowChip).toBeHidden();
     await expect(windows.nth(1)).toHaveAttribute("aria-pressed", "true");
 
-    // A finger held still at the live edge shows the cursor: its time and
-    // the reading there (−30.0, the reading since the line went grey).
-    const cursor = history.getByTestId("lufs-history-cursor");
-    const edge = (await graph.boundingBox())!.width / 2 - 4;
-    await dispatchPointer(graph, [{ type: "pointerdown", dx: edge }, { wait: 600 }], 22);
-    await expect(graph.getByTestId("lufs-cursor")).toBeAttached();
-    await expect(cursor).toHaveText(/^\d\d:\d\d:\d\d · −30\.0$/);
-    await dispatchPointer(graph, [{ type: "pointerup", dx: edge }], 22);
-    await expect(graph.getByTestId("lufs-cursor")).toHaveCount(0);
-    await expect(cursor).toHaveText("");
-
     // Back to the mix and in again: the LUFS tab and 1 H are kept, and the
     // fresh card draws the hub's history (its answer holds readings).
     await tap(detail.getByTestId("detail-exit"));
@@ -206,7 +211,8 @@ test.describe("A fader's LUFS history in its channel detail", () => {
     await expect(plain.getByTestId("lufs-history")).toHaveCount(0);
     await tap(plain.getByTestId("detail-exit"));
 
-    // In again: EQ chosen there is kept, its pane shown, the history gone.
+    // In again: the LUFS tab still kept; EQ tapped shows its pane, the
+    // history gone.
     const third = await openVox(page);
     await expect(third.getByTestId("detail-middle")).toHaveAttribute("data-tab", "lufs");
     await tap(third.getByTestId("detail-tab").nth(0));

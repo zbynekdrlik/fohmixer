@@ -607,6 +607,13 @@ pub fn day_label(day: i64, today: i64) -> String {
     format!("{weekday} {date}.{month}")
 }
 
+/// A day chip (#219): its label and whether it is today (the live
+/// edge), by the local day of its first reading (`first_day`); the hub's
+/// days are UTC files, so one chip per file.
+pub fn day_chip(first_day: i64, today: i64) -> (String, bool) {
+    (day_label(first_day, today), first_day == today)
+}
+
 /// The calendar date of a day since 1970-01-01 (H. Hinnant's
 /// `civil_from_days`): year, month 1-12, day 1-31.
 pub fn civil(days: i64) -> (i64, i64, i64) {

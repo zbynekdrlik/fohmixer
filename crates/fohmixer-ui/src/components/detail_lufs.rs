@@ -19,7 +19,7 @@ use super::{down_of, owns_touches};
 use crate::behave::lufs::{look, point_key};
 use crate::behave::lufs_history::{
     BOX, DEFAULT_SPAN_MS, Gesture, HOLD_MS, MINUTE_MS, OnDown, Press, SECOND_MS, Tab, View,
-    WINDOWS, band, column_at, columns, cursor_text, cursor_time, day_label, edge_reading, hh_mm,
+    WINDOWS, band, column_at, columns, cursor_text, cursor_time, day_chip, edge_reading, hh_mm,
     keep_tail, local_day, on_down, pct, push_reading, refresh, runs, samples, scale, second_of,
     series_end, shown_tab, tab_row, tabs, target_text, tick_label, time_ticks, x_frac, x_of, y_of,
 };
@@ -673,9 +673,8 @@ fn LufsGraph(lh: Lh) -> impl IntoView {
 }
 
 /// The days that hold this point (newest first; only those, the
-/// show-only-used rule): a past day whole, today the live edge. A day is
-/// named by its last reading's local day, so readings after local midnight
-/// that the hub keeps in yesterday's UTC file still read TODAY.
+/// show-only-used rule): a past day whole, today the live edge, each named
+/// by its first reading's local day (`day_chip`).
 #[component]
 fn LufsDays(lh: Lh) -> impl IntoView {
     let chips = move || {
@@ -688,9 +687,8 @@ fn LufsDays(lh: Lh) -> impl IntoView {
             .unwrap_or_default()
             .into_iter()
             .map(|d| {
-                let this = local_day(d.last_ms, offset_at(d.last_ms));
-                let label = day_label(this, today);
-                let is_today = this == today;
+                let first = local_day(d.first_ms, offset_at(d.first_ms));
+                let (label, is_today) = day_chip(first, today);
                 let keys: Vec<String> = Vec::new();
                 let on = move || {
                     lh.shown
