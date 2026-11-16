@@ -107,6 +107,9 @@ impl TestHub {
         // for one: parallel test hubs would all bind the default ports.
         config.lufs.port = 0;
         config.listen.port = 0;
+        // Nor claps' (#220).
+        config.claps.port = 0;
+        config.claps.device_port = 0;
         Self::start_config(config).await
     }
 
