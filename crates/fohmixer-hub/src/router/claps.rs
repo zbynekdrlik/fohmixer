@@ -234,6 +234,9 @@ pub(super) struct ClapsIo {
     /// The track's clips as last read, and why the last read failed.
     pub clips: Vec<Clip>,
     pub clips_error: Option<String>,
+    /// The Claps track's clips could not be followed: unknown clips keep
+    /// the device silent (never clap over a clip nobody can see).
+    pub unfollowed: bool,
     /// The reads' counter, the one on its way, and whether another is owed
     /// after it.
     pub reads: u64,
@@ -350,6 +353,7 @@ impl Router {
         }
         self.claps.clips.clear();
         self.claps.clips_error = None;
+        self.claps.unfollowed = false;
         self.claps.reading = None;
         self.claps.dirty = false;
         self.claps.track = track;
@@ -380,6 +384,7 @@ impl Router {
                 }
                 Err((_, error)) => {
                     tracing::warn!(instance = %track.instance, target = %target, prop = %prop, error = %error, "claps: cannot follow a value");
+                    self.claps.unfollowed |= part == Part::Clips;
                 }
             }
         }
@@ -391,7 +396,7 @@ impl Router {
     }
 
     /// The same Claps track at another index (a track inserted or deleted
-    /// above it): what claps goes on; only its clips are followed afresh
+    /// above it): what claps goes on; its clips are followed afresh, the ones read kept until the new read answers
     /// (an index path is bound to its object when it resolves).
     fn claps_moved(&mut self, track: ClapsTrack) {
         self.claps_record(
@@ -410,7 +415,6 @@ impl Router {
             self.claps.subs.remove(&key);
             self.subs.unsubscribe(CLAPS_CLIENT, &key);
         }
-        self.claps.clips.clear();
         self.claps.reading = None;
         self.claps.dirty = false;
         let follow = self
@@ -419,6 +423,7 @@ impl Router {
         self.claps.track = Some(track);
         match follow {
             Ok(reply) => {
+                self.claps.unfollowed = false;
                 self.claps.subs.insert(reply.key, Part::Clips);
                 if matches!(reply.cached, Some(Cached::Value { .. })) {
                     self.claps_read();
@@ -426,6 +431,7 @@ impl Router {
             }
             Err((_, error)) => {
                 tracing::warn!(error = %error, "claps: cannot follow the moved track's clips");
+                self.claps.unfollowed = true;
             }
         }
         self.claps_changed(None);
@@ -656,10 +662,11 @@ impl Router {
     fn claps_changed(&mut self, asker: Option<ClientId>) {
         let playing = self.claps_playing();
         let ahead = if playing { SILENCE_AHEAD_BEATS } else { 0.0 };
-        let silent = self
-            .claps
-            .time
-            .is_some_and(|pos| covers(&self.claps.clips, pos + ahead));
+        let silent = self.claps.unfollowed
+            || self
+                .claps
+                .time
+                .is_some_and(|pos| covers(&self.claps.clips, pos + ahead));
         if silent != self.claps.silent && self.claps.track.is_some() {
             self.claps_record(json!({"step": "silent", "silent": silent}), None);
         }
