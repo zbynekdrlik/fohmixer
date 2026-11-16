@@ -701,3 +701,44 @@ async fn a_router_message_reaches_the_claps() {
     let status = super::super::tests::status(&mut router);
     assert_eq!(status.claps.track.as_deref(), Some("band CLAPS"));
 }
+
+#[tokio::test]
+async fn a_moved_claps_track_stays_silent_over_its_clip_until_the_new_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, _own, _rx) = offline_router(dir.path());
+    ready(&mut router);
+    router.claps_beat(1, 1, true);
+    router.claps.clips = vec![Clip {
+        start: 0.0,
+        end: 8.0,
+        muted: false,
+    }];
+    router.claps_delivery(vec![item(&key("live_set", SONG_TIME), json!(1.0))], 0.0);
+    assert!(router.claps.silent, "the clip covers the playhead");
+    router.claps_layout(Some(ClapsTrack {
+        instance: "band".into(),
+        index: 6,
+        track: "live_set tracks 6".into(),
+        label: "CLAPS".into(),
+    }));
+    assert!(
+        router.claps.silent,
+        "the same clips at the new index: the device stays silent"
+    );
+}
+
+#[tokio::test]
+async fn clips_the_rule_cannot_follow_keep_the_device_silent() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, _own, _rx) = offline_router(dir.path());
+    router.claps_layout(Some(ClapsTrack {
+        instance: "band".into(),
+        index: 4,
+        track: "live_set tracks ]".into(),
+        label: "CLAPS".into(),
+    }));
+    assert!(
+        router.claps.silent,
+        "clips not followed are unknown: never clap over them"
+    );
+}
