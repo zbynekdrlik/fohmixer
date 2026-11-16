@@ -57,6 +57,7 @@ html, body { margin: 0; background: #0b0b12; }
 <tr><td><code>+CTRL:stage</code></td><td>this track is the one the STAGE button drives; the same for <code>+CTRL:alert</code> (TECHALERT) and <code>+CTRL:talkback</code> (TALKBACK). No strip of its own, so a Tuner of only this tag needs no name or group. One track per id in a Live set; with none, or two, the button stays red</td></tr>
 <tr><td><code>+LUFS:-25</code></td><td>loudness of a mic after its Trim IN, judged against the target (here −25 LUFS): <code>LUFS IN</code> (below)</td></tr>
 <tr><td><code>+LUFS</code></td><td>loudness of an output (the PA return, a bus), plain: <code>LUFS OUT</code> (below)</td></tr>
+<tr><td><code>+HOME:-6</code></td><td>home level of the fader: its unity mark and a double tap go to −6 dB instead of 0 dB (below)</td></tr>
 </table>
 <p>Write tags in capital letters (as in AbleSet). A Tuner without quotes and without a <code>+</code> tag is an ordinary Tuner and fohmixer ignores it.</p>
 
@@ -97,6 +98,10 @@ html, body { margin: 0; background: #0b0b12; }
 </table>
 <p>The number is quieter than Live's dB on purpose. An armed mic also needs the <b>FohMixer Meter</b> device last in its chain (in a rack of its own, as above).</p>
 
+<h2>HOME LEVEL</h2>
+<p>A fader's highlighted unity mark sits at 0 dB and a double tap glides it there. A strip whose Tuner has <code>+HOME:</code> with a level calls that level home instead: the mark sits there, on the strip and in its detail, and a double tap glides there. The level is −60 to +6 dB, whole or with one decimal after a point: <code>+HOME:-6</code>, <code>+HOME:-4.5</code>, <code>+HOME:3</code>. It belongs on a strip's Tuner (quoted name and group), like <code>+REVERB</code>. The fader still moves over its whole range.</p>
+<p>Example: <code>"CG" +G:VOCALS +HOME:-6</code>.</p>
+
 <h2>VIEWS</h2>
 <p>A group the main view does not have is shown by a button in the middle strip (VIEWS): its faders and all pinned ones. Another tap takes you back.</p>
 
@@ -108,6 +113,7 @@ html, body { margin: 0; background: #0b0b12; }
 <li><b>Linked fader:</b> the same <code>+ID</code> on two strips (nothing links), <code>+FADER</code> with a name no strip has, <code>+FADER</code> with the name of its own strip, or the same <code>+FADER</code> twice. Podklady All with no <code>+FADER:PODKLADY</code> at all is red.</li>
 <li><b>Autotune:</b> <code>+AUTOTUNE:</code> with a value other than <code>0</code>, or a second <code>+AUTOTUNE</code> in one Tuner, is a bad tag. A track without a Latencies rack, or with two, is not switched: the AUTOTUNE button shows a yellow <b>!</b> at the top left (the other tracks still switch), and when no rack is found at all it is red. The hub status (<code>/api/status</code>, <code>autotune.targets</code>) says which track and why.</li>
 <li><b>LUFS:</b> <code>+LUFS:</code> with a target outside −40 to −10, or two <code>+LUFS</code> tags, is a bad LUFS tag. A strip with <code>+LUFS</code> but no FohMixer LUFS device on its track (<code>no LUFS meter</code>), or with two (<code>two LUFS meters</code>, also when both Live sets have one at that place), shows a yellow <b>!</b> under its name and no number; an armed <code>+LUFS:</code> mic without FohMixer Meter is <code>no meter device</code>. The hub status (<code>/api/status</code>, <code>lufs.strips</code>) says which strip and why.</li>
+<li><b>Home level:</b> <code>+HOME:</code> with a level outside −60 to +6, with more than one decimal or a comma, or a second <code>+HOME</code> in one Tuner, is a bad tag (<code>TAG?</code>); the first good one counts, and without one the mark and the double tap stay at 0 dB.</li>
 <li>A Tuner without a group (<code>+G:</code>) is shown nowhere.</li>
 </ul>
 <p>A change in Ableton shows on the iPad within a second.</p>
