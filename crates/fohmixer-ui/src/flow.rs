@@ -50,9 +50,11 @@ mod tests {
             mark: None,
             mute_links: Vec::new(),
             reverb: false,
+            claps: false,
             fader_link: None,
             fader_follows: Vec::new(),
             lufs: None,
+            home_db: None,
         }))
     }
 

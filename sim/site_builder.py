@@ -8,12 +8,14 @@ Fixture shape::
     {"name": str, "live_version": [12, 2, 5],
      "tracks": [TRACK...], "returns": [TRACK...], "master": TRACK,
      "cue_points"?: [{"name", "time"}...] (locators, #140; kept in time order),
-     "current_song_time"?: beats, "root_note"?: 0..11, "scale_name"?: str (#140)}
+     "current_song_time"?: beats, "root_note"?: 0..11, "scale_name"?: str (#140),
+     "signature"?: [numerator, denominator] (#220; 4/4 by default)}
 
     TRACK  = {"name", "color"?, "mute"?, "solo"?, "volume"?, "panning"?,
               "devices"?: [DEVICE...], "children"?: [TRACK...] (makes a group),
               "fold_state"?: 0|1 (groups),
-              "arrangement_clips"?: [{"name", "start_time", "end_time"}...] (#140)}
+              "arrangement_clips"?: [{"name", "start_time", "end_time",
+                                      "muted"? (#220)}...] (#140)}
     DEVICE = {"template": "plain"|"eq8"|"rack"|"plugin", "name", "class_name"?,
               "parameters"?: [PARAM...], "chains"?: [{"name", "devices"?}],
               "product"?: str (a plugin's class_display_name, #71),
@@ -64,6 +66,9 @@ def build_from_spec(spec):
     song._v["current_song_time"] = float(spec.get("current_song_time", 0.0))
     song._v["root_note"] = int(spec.get("root_note", 0))
     song._v["scale_name"] = str(spec.get("scale_name", "Major"))
+    numerator, denominator = spec.get("signature", (4, 4))
+    song._v["signature_numerator"] = int(numerator)
+    song._v["signature_denominator"] = int(denominator)
     Live.Application.get_application()._sim_configure(song, spec.get("live_version", (12, 2, 5)))
     return song
 
@@ -94,7 +99,7 @@ def _make_track(song, spec, group, return_names):
     track._devices = [_make_device(d) for d in spec.get("devices", ())]
     track._arrangement_clips = sorted(
         (
-            Live.Clip.Clip(c["name"], c["start_time"], c["end_time"])
+            Live.Clip.Clip(c["name"], c["start_time"], c["end_time"], c.get("muted", False))
             for c in spec.get("arrangement_clips", ())
         ),
         key=lambda clip: clip.start_time,

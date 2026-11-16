@@ -1,7 +1,8 @@
 //! One key acted on by a 1 s hold (#172 ARM and REC, #90 Presenter's stage
 //! layouts): a press as a rail button's (`behave::rail::rail_press`,
-//! `Hold::lifted`): full at `RAIL_HOLD_MS`, it acts at its lift; a tap, a
-//! slide, a cancel, a lost capture or a hidden page do nothing, and a press
+//! `Hold::lifted`): full at `RAIL_HOLD_MS`, it acts at its lift; a tap does
+//! nothing unless the key has a `tap` (#220: the Claps strip's TAP, handed
+//! the down's own page time at the lift); a slide, a cancel, a lost capture or a hidden page do nothing, and a press
 //! whose end never came ends at the next primary down of its type anywhere
 //! on the page. Each step goes to the flight recorder as a `rail` step with
 //! the key's `button` and keys. A press that cannot act (`can` false: the
@@ -29,6 +30,9 @@ type DownListener = Closure<dyn FnMut(web_sys::PointerEvent)>;
 /// The failure flash a key's action hands its write.
 pub type Flash = Box<dyn FnOnce(String)>;
 
+/// A key's tap (#220), handed the down's page time (epoch ms).
+pub type Tap = std::sync::Arc<dyn Fn(f64) + Send + Sync>;
+
 /// One key: `wanted` is what a full press's lift acts with now (none: it
 /// is refused), read at the full mark and at the lift; `can` whether a press
 /// shows its fill; `act` the lift's action, handed the key's failure flash.
@@ -45,6 +49,7 @@ pub fn HoldKey<V, W, A>(
     #[prop(into)] label: String,
     #[prop(into)] state: Signal<&'static str>,
     #[prop(optional)] name: Option<String>,
+    #[prop(optional)] tap: Option<Tap>,
     children: Children,
 ) -> impl IntoView
 where
@@ -56,6 +61,9 @@ where
     let keys = StoredValue::new(keys);
     let hold = StoredValue::new(rail_press());
     let press_kind = StoredValue::new(None::<Pointer>);
+    let tap = StoredValue::new(tap);
+    // The press's down, its own page time (a tap's moment).
+    let press_t = StoredValue::new(0.0_f64);
     let check = StoredValue::new(None::<TimeoutHandle>);
     let any_down = StoredValue::new_local(None::<DownListener>);
     let holding = RwSignal::new(false);
@@ -149,6 +157,7 @@ where
             step("lost", old);
         }
         let _ = press_kind.try_set_value(Pointer::parse(&ev.pointer_type()));
+        let _ = press_t.try_set_value(dom::event_epoch(&ev));
         step("press", id);
         if let Some(el) = dom::current_element(&ev) {
             let _ = el.set_pointer_capture(id);
@@ -197,8 +206,16 @@ where
             .unwrap_or(Lift::Nothing);
         settle();
         match lift {
-            // A tap does nothing.
-            Lift::Tap => step("tap", id),
+            // A tap does nothing, unless the key takes one (#220).
+            Lift::Tap => {
+                step("tap", id);
+                let at = press_t.try_get_value().unwrap_or(0.0);
+                let _ = tap.try_with_value(|t| {
+                    if let Some(t) = t {
+                        t(at);
+                    }
+                });
+            }
             Lift::Open => held(id),
             Lift::Nothing => {}
         }

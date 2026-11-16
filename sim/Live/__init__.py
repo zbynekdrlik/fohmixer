@@ -843,6 +843,9 @@ class _SongClass(_LiveObject):
     current_song_time = _Prop(coerce=_song_time)
     root_note = _Prop(coerce=_root_note)
     scale_name = _Prop(coerce=_str)
+    # #220: the time signature (claps from the surface are 4/4 only).
+    signature_numerator = _Prop(coerce=_int)
+    signature_denominator = _Prop(coerce=_int)
     # cue_points (#140): observable on the PC's Live 12.4.6, kept in time
     # order as Live keeps it.
     _listened = ("tracks", "return_tracks", "visible_tracks", "cue_points")
@@ -857,6 +860,8 @@ class _SongClass(_LiveObject):
             current_song_time=0.0,
             root_note=0,
             scale_name="Major",
+            signature_numerator=4,
+            signature_denominator=4,
         )
         self._tracks = []
         self._returns = []
@@ -952,14 +957,18 @@ class _ClipClass(_LiveObject):
     start_time = _Prop(readonly=True)
     end_time = _Prop(readonly=True)
     is_midi_clip = _Prop(readonly=True, observable=False)
+    # #220: Live's "deactivated" clip (the Claps track's clips are switched
+    # on where the band claps).
+    muted = _Prop(coerce=_bool)
 
-    def __init__(self, name, start_time, end_time):
+    def __init__(self, name, start_time, end_time, muted=False):
         super().__init__()
         self._v.update(
             name=name,
             start_time=_float(start_time),
             end_time=_float(end_time),
             is_midi_clip=True,
+            muted=bool(muted),
         )
 
 

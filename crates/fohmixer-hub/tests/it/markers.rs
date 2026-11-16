@@ -650,3 +650,78 @@ fn stage_aut_with_no_target_writes_nothing() {
         host.stop();
     });
 }
+
+/// The home level each marker strip of `page` carries: (label, home_db).
+fn homes(served: &LayoutResponse, page: &str) -> Vec<(String, Option<f64>)> {
+    served
+        .layout
+        .pages
+        .iter()
+        .filter(|p| p.id == page)
+        .flat_map(|p| p.controls())
+        .filter_map(|c| match c {
+            Control::Strip(s) => Some((s.label.clone().unwrap_or_default(), s.home_db)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_home_tag_gives_its_strip_its_home_level() {
+    // #225: `+HOME:-6` on a strip's Tuner is the strip's `home_db`; a bad
+    // level is a marker problem and gives none.
+    let _serial = serial();
+    runtime().block_on(async {
+        let mut host = Host::start("band");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("layout.json"),
+            serde_json::to_vec(&frame()).unwrap(),
+        )
+        .unwrap();
+        let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        let mut a = hub.client().await;
+        a.instance_state("band", true, Some(false), SECS_5).await;
+        layout_until(&hub, "the frame served", |s| s.rev > 0).await;
+
+        assert_eq!(
+            host.tuner("track", 0, "set", r#""CG" +G:VOCALS +HOME:-6"#),
+            1
+        );
+        assert_eq!(host.tuner("track", 1, "set", r#""Vox 1" +G:VOCALS"#), 1);
+        let served = layout_until(&hub, "two strips", |s| homes(s, "p").len() == 2).await;
+        assert_eq!(
+            homes(&served, "p"),
+            vec![("CG".to_string(), Some(-6.0)), ("Vox 1".to_string(), None),]
+        );
+        let status = hub
+            .status_until(SECS_5, |s| s.layout.markers.found == 2)
+            .await;
+        assert_eq!(status.layout.markers.problems, vec![]);
+
+        // A level past +6 dB: no home level, a marker problem.
+        assert_eq!(
+            host.tuner("track", 0, "set", r#""CG" +G:VOCALS +HOME:7"#),
+            1
+        );
+        let served = layout_until(&hub, "the bad level", |s| {
+            homes(s, "p")
+                .first()
+                .is_some_and(|(_, home)| home.is_none())
+        })
+        .await;
+        assert_eq!(strips(&served, "p")[0].2, Some(StripMark::Problem));
+        let status = hub
+            .status_until(SECS_5, |s| !s.layout.markers.problems.is_empty())
+            .await;
+        assert_eq!(
+            status.layout.markers.problems[0].problems,
+            vec![TagProblem::BadHome {
+                tag: "+HOME:7".into()
+            }]
+        );
+
+        hub.stop().await;
+        host.stop();
+    });
+}

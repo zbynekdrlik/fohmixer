@@ -83,5 +83,8 @@ mod tests {
         // 1 LU, silence as −∞, no amber or red.
         assert!(main.contains("<code>−∞</code>") && main.contains("within 1 LU"));
         assert!(!main.contains("amber") && !main.contains("red text"));
+        // #225: the home level's tag and its section.
+        assert!(main.contains("<code>+HOME:-6</code>"), "the tag");
+        assert!(main.contains("<h2>HOME LEVEL</h2>"), "its section");
     }
 }

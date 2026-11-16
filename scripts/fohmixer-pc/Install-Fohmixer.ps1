@@ -24,14 +24,17 @@ to make in Live (it never edits Live's preferences). Then, in order:
      [tls], the Pro-Q 4 screen turned on by hand, is kept after the
      instances; a first install writes none, the screen stays off; a
      [scenes] table before [tls], the scene read from Companion (#207),
-     written by hand, is kept after [companion] and [presenter]);
+     written by hand, is kept after [companion] and [presenter]; a [claps]
+     table before [tls], claps from the surface's pitches (#220), written
+     by hand, is kept after [scenes]);
   4. copies -Layout (the import's output) to <DataDir>\layout.json;
   5. installs FohMixer into each Live user's User Library\Remote Scripts with
      that user's INSTANCE and PORT in Config.py (replaced only when version.py
-     differs), and the three Max for Live devices (#151, FohMixer LUFS.amxd
+     differs), and the four Max for Live devices (#151, FohMixer LUFS.amxd
      and FohMixer Meter.amxd; #210, FohMixer Listen.amxd) into each User
-     Library\Presets\Audio Effects\Max Audio Effect (written only when
-     they differ); Live's
+     Library\Presets\Audio Effects\Max Audio Effect (#220, the MIDI effect
+     FohMixer Claps.amxd into Presets\MIDI Effects\Max MIDI Effect;
+     written only when they differ); Live's
      preferences and a running Live are never touched;
   6. registers the tasks fohmixer-hub (at the band user's logon, Interactive,
      Limited, no time limit, IgnoreNew, never ended hard, in a console without
@@ -222,13 +225,15 @@ try {
     $eq = Resolve-FohEq -DataDir $DataDir
     # The scene read from Companion (#207): an installed [scenes] table is kept as it is.
     $scenes = Resolve-FohScenes -DataDir $DataDir
+    # Claps from the surface (#220): an installed [claps] table is kept as it is.
+    $claps = Resolve-FohClaps -DataDir $DataDir
     # The MBC Live through its link (#184): checked before any change, kept when not given.
     $linked = Resolve-FohMbcLink -DataDir $DataDir -MbcLink $MbcLink
     $result = Invoke-FohInstall -BundleZip $BundleZip -BandUser $BandUser -MasterUser $MasterUser -DataDir $DataDir `
         -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Layout $Layout `
         -BandUserLibrary $BandUserLibrary -MasterUserLibrary $MasterUserLibrary `
         -BandAbletonPrefs $BandAbletonPrefs -MasterAbletonPrefs $MasterAbletonPrefs -NoTask:$NoTask -Companion $companion `
-        -Eq $eq -Presenter $presenter -Scenes $scenes -Remote $remote -Linked $linked
+        -Eq $eq -Presenter $presenter -Scenes $scenes -Claps $claps -Remote $remote -Linked $linked
     ConvertTo-Json -InputObject $result -Depth 5
 } catch {
     # One unwrapped line (a 5.1 error record wraps at the console width), then where it failed.

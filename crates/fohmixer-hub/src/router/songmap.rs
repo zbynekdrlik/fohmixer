@@ -322,8 +322,8 @@ pub(super) fn first_commands() -> Vec<Value> {
     ]
 }
 
-/// The objects of a list answer.
-fn objects(data: &Value) -> Vec<Object> {
+/// The objects of a list answer (the Claps track's clips too, #220).
+pub(super) fn objects(data: &Value) -> Vec<Object> {
     items(data)
         .into_iter()
         .map(|i| Object {

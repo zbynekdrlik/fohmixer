@@ -74,6 +74,8 @@ mod writes;
 mod ableset;
 #[path = "router/autotune.rs"]
 mod autotune;
+#[path = "router/claps.rs"]
+mod claps;
 #[path = "router/deck.rs"]
 mod deck;
 mod eq;
@@ -109,6 +111,7 @@ mod songmap;
 mod stage_tests;
 mod unfold;
 
+pub use claps::{CLAPS_CLIENT, ClapsSetup};
 pub use lufs::LUFS_TICK;
 pub(crate) use lufs::lufs_ticks;
 pub use scenes::SCENES_CLIENT;
@@ -236,6 +239,8 @@ pub enum RouterMsg {
         autotune: Vec<AutotuneTarget>,
         /// The loudness points (`Layout::lufs_points`, #151).
         lufs: Vec<fohmixer_proto::layout::LufsPoint>,
+        /// The Claps track (`Layout::claps_track`, #220).
+        claps: Option<fohmixer_proto::layout::ClapsTrack>,
     },
     /// The router's part of `/api/status`.
     Status {
@@ -616,6 +621,42 @@ pub enum RouterMsg {
         instance: String,
         missing: bool,
     },
+    /// A page's tap of the Claps strip's TAP (#220): its page time, its
+    /// arrival (hub UTC ms) and its socket's clock offset.
+    ClapTap {
+        client: ClientId,
+        t: f64,
+        hub_ms: f64,
+        offset_ms: Option<f64>,
+    },
+    /// A page's beat dot of the Claps strip (#220).
+    ClapBeat {
+        client: ClientId,
+        beat: u8,
+        on: bool,
+    },
+    /// A page's stop of the claps (#220: TAP held 1 s).
+    ClapStop {
+        client: ClientId,
+    },
+    /// The `FohMixer Claps` device's hello (#220, `claps_udp.rs`).
+    ClapsHello {
+        hello: fohmixer_proto::claps::Hello,
+    },
+    /// The claps' tick (#220): the device's words again.
+    ClapsTick,
+    /// The hello listener bound (its address) or not (why) (#220).
+    ClapsListen {
+        addr: String,
+        error: Option<String>,
+    },
+    /// A read of the Claps track's clips ended (#220): void unless it is
+    /// the one on its way.
+    ClapsClips {
+        read: u64,
+        outcome: Result<Vec<crate::rules::claps::Clip>, String>,
+        ms: u64,
+    },
     /// The hub stops: the Stream Deck's held keys released and its task
     /// told to stop (#52), then every client closed.
     Stop,
@@ -655,6 +696,8 @@ pub struct RouterStatus {
     pub mute_guards: fohmixer_proto::client::MuteGuardsStatus,
     /// The scene automation (#207).
     pub scenes: fohmixer_proto::client::ScenesStatus,
+    /// Claps from the surface (#220).
+    pub claps: fohmixer_proto::claps::ClapsStatus,
     pub clients: usize,
     pub unresolved: Vec<Unresolved>,
 }
@@ -740,6 +783,8 @@ pub struct Router {
     mute_guards: marks::MarksIo<fohmixer_proto::mute_guards::MuteGuardsDoc>,
     /// The scene automation (#207): `scenes.json` and the rule.
     scenes: scenes::ScenesIo,
+    /// Claps from the surface (#220).
+    claps: claps::ClapsIo,
     /// Every instance's transport (#104, D18), by instance.
     transport: BTreeMap<String, TransportWatch>,
     layout_rev: u64,
@@ -866,6 +911,7 @@ impl Router {
             mute_alarms,
             mute_guards,
             scenes,
+            claps: claps::ClapsIo::default(),
             state,
             transport,
             layout_rev: 0,
@@ -947,6 +993,7 @@ impl Router {
                 self.marks_attach::<fohmixer_proto::mute_alarms::MuteAlarmsDoc>(&outbox);
                 self.marks_attach::<fohmixer_proto::mute_guards::MuteGuardsDoc>(&outbox);
                 self.scenes_attach(&outbox);
+                self.claps_attach(&outbox);
                 if self.layout_rev > 0 {
                     outbox.layout(self.layout_rev);
                 }
@@ -1109,6 +1156,7 @@ impl Router {
                 fader_leaders,
                 autotune,
                 lufs,
+                claps,
             } => {
                 // Two producers (the file's poll and the markers, #68): an
                 // older revision arriving late never replaces a newer one.
@@ -1125,6 +1173,7 @@ impl Router {
                 self.lufs_layout(lufs);
                 self.links_layout(fader_leaders);
                 self.scenes_watch();
+                self.claps_layout(claps);
                 let actions = self.unfold.set_strips(strips);
                 self.unfold_apply(actions);
                 self.names.set_targets(targets);
@@ -1165,6 +1214,7 @@ impl Router {
                                 lufs::LEVELS_CLIENT,
                                 rec::REC_CLIENT,
                                 scenes::SCENES_CLIENT,
+                                claps::CLAPS_CLIENT,
                             ];
                             (n.clone(), self.subs.subscriptions_besides(n, &own))
                         })
@@ -1183,6 +1233,7 @@ impl Router {
                                 lufs::LEVELS_CLIENT,
                                 rec::REC_CLIENT,
                                 scenes::SCENES_CLIENT,
+                                claps::CLAPS_CLIENT,
                             ];
                             (n.clone(), self.subs.listeners_besides(n, &own))
                         })
@@ -1203,6 +1254,7 @@ impl Router {
                     mute_alarms: self.marks_status::<fohmixer_proto::mute_alarms::MuteAlarmsDoc>(),
                     mute_guards: self.marks_status::<fohmixer_proto::mute_guards::MuteGuardsDoc>(),
                     scenes: self.scenes_status(),
+                    claps: self.claps_status(std::time::Instant::now()),
                     clients: self.clients.len(),
                     unresolved: self.names.unresolved(),
                 });
@@ -1436,6 +1488,18 @@ impl Router {
             RouterMsg::ScriptMissing { instance, missing } => {
                 self.script_verdict(&instance, missing);
             }
+            RouterMsg::ClapTap {
+                client,
+                t,
+                hub_ms,
+                offset_ms,
+            } => self.claps_tap(client, t, hub_ms, offset_ms),
+            RouterMsg::ClapBeat { client, beat, on } => self.claps_beat(client, beat, on),
+            RouterMsg::ClapStop { client } => self.claps_stop(client),
+            RouterMsg::ClapsHello { hello } => self.claps_hello(hello, std::time::Instant::now()),
+            RouterMsg::ClapsTick => self.claps_tick(std::time::Instant::now()),
+            RouterMsg::ClapsListen { addr, error } => self.claps_listen(&addr, error),
+            RouterMsg::ClapsClips { read, outcome, ms } => self.claps_clips(read, outcome, ms),
             RouterMsg::Stop => return false,
         }
         true
@@ -1505,6 +1569,7 @@ impl Router {
                 self.lufs_offline(instance);
                 self.rec_offline(instance);
                 self.scenes_offline(instance);
+                self.claps_offline(instance);
                 self.broadcast_instance(instance);
             }
             LiveEvent::Busy {
@@ -1703,6 +1768,7 @@ impl Router {
         self.autotune_transport(&instance, playing, prev);
         self.songmap_transport(&instance, prev);
         self.rec_transport(&instance, Some(playing));
+        self.claps_transport(&instance, Some(playing));
     }
 
     /// The rules' transport subscription of the hub key `sub` failed: the
@@ -1721,6 +1787,7 @@ impl Router {
         self.reverb_transport_lost(&instance);
         self.autotune_transport_lost(&instance);
         self.rec_transport(&instance, None);
+        self.claps_transport(&instance, None);
     }
 
     /// A transport value for STAGE AUT.
@@ -1901,6 +1968,7 @@ impl Router {
         let mut songmap_items: Vec<ValueItem> = Vec::new();
         let mut lufs_items: Vec<ValueItem> = Vec::new();
         let mut rec_items: Vec<ValueItem> = Vec::new();
+        let mut claps_items: Vec<ValueItem> = Vec::new();
         for (client, item) in self.subs.take_deliveries() {
             if client == RULES_CLIENT {
                 if let Some(heard) = transport_heard(item.value, item.error) {
@@ -1933,6 +2001,8 @@ impl Router {
                 lufs_items.push(item);
             } else if client == rec::REC_CLIENT {
                 rec_items.push(item);
+            } else if client == claps::CLAPS_CLIENT {
+                claps_items.push(item);
             } else if let Some(outbox) = self.clients.get(&client) {
                 // A meter key that carries a point's levels (#151 §3.4)
                 // never gets Live's own value.
@@ -1962,6 +2032,7 @@ impl Router {
             self.autotune_delivery(&item.sub, item.value, item.error);
         }
         self.songmap_delivery(songmap_items);
+        self.claps_delivery(claps_items, crate::live::wall_ms().unwrap_or(0.0));
         // The keeper's values before the transport: a list change and a start
         // in one flush must find the read running, so STAGE AUT's write
         // counts as unsure (#104).
@@ -1997,6 +2068,7 @@ pub fn layout_msg(rev: u64, served: Option<&Layout>, stage_ctrl: Option<CtrlId>)
         fader_leaders: served.map(Layout::fader_leaders).unwrap_or_default(),
         autotune: served.map(Layout::autotune_targets).unwrap_or_default(),
         lufs: served.map(Layout::lufs_points).unwrap_or_default(),
+        claps: served.and_then(Layout::claps_track),
     }
 }
 
@@ -3063,6 +3135,7 @@ mod tests {
                 ServerMsg::MuteGuards {
                     doc: fohmixer_proto::mute_guards::MuteGuardsDoc::empty(),
                 },
+                ServerMsg::Claps(fohmixer_proto::claps::ClapsState::default()),
                 ServerMsg::Hub {
                     key: HUB_STAGE_AUT.into(),
                     value: json!(false)
@@ -3070,7 +3143,8 @@ mod tests {
             ],
             "no layout yet: no revision (REVERB's state, #130, AUTOTUNE's, #104, \
              the sectors' document, #148, the colours', #164, the mute \
-             alarm's, #188, and the mute guard's, #203, are replies)"
+             alarm's, #188, the mute guard's, #203, and the claps', #220, \
+             are replies)"
         );
         router.handle(RouterMsg::Layout {
             rev: 1,
@@ -3081,6 +3155,7 @@ mod tests {
             fader_leaders: Vec::new(),
             autotune: Vec::new(),
             lufs: Vec::new(),
+            claps: None,
         });
         assert_eq!(first.take().unwrap(), vec![ServerMsg::Layout { rev: 1 }]);
         let second = attach(&mut router, 2);
@@ -3113,6 +3188,7 @@ mod tests {
             fader_leaders: Vec::new(),
             autotune: Vec::new(),
             lufs: Vec::new(),
+            claps: None,
         };
         router.handle(layout(2));
         router.handle(layout(1));
@@ -3134,6 +3210,7 @@ mod tests {
             fader_leaders: Vec::new(),
             autotune: Vec::new(),
             lufs: Vec::new(),
+            claps: None,
         };
         router.handle(layout(1, vec![("band".into(), "Keys 1".into())]));
         assert_eq!(
@@ -3172,6 +3249,7 @@ mod tests {
             fader_leaders: Vec::new(),
             autotune: Vec::new(),
             lufs: Vec::new(),
+            claps: None,
         });
         // The read goes to an offline instance: its failure comes back…
         let failed = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())

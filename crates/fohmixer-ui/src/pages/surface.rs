@@ -542,7 +542,7 @@ fn Shell(layout: Arc<Layout>) -> impl IntoView {
     };
     let apply = move |change: Option<DetailChange>| match change {
         Some(DetailChange::Follow(strip)) => {
-            let _ = held.try_set(Some(strip));
+            let _ = held.try_set(Some(*strip));
         }
         Some(DetailChange::Close(why)) => detail_nav.close(why, None),
         None => {}

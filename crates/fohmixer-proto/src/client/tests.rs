@@ -984,9 +984,44 @@ fn api_bodies_round_trip() {
             selects: 3,
             refused: [("not_selected".to_string(), 4)].into(),
         },
+        claps: crate::claps::ClapsStatus {
+            track: Some("band CLAPS".into()),
+            state: crate::claps::ClapsPhase::Clip,
+            words: crate::claps::ClapsWords {
+                pattern: [false, true, false, true],
+                on: true,
+                silent: true,
+                notes: vec![50],
+            },
+            device: Some(crate::claps::ClapsDevice {
+                version: "v1.52.0".into(),
+                running: true,
+                age_ms: 300,
+            }),
+            taps: 7,
+            refused: 1,
+            clips: 272,
+            active_clips: 38,
+            clips_error: None,
+            signature: Some("4/4".into()),
+            sent: 120,
+        },
     };
     let json = serde_json::to_value(&status).unwrap();
     assert_eq!(json["link"]["listen"], "10.0.0.5:39201");
+    // #220: claps, the defaults for an older hub.
+    assert_eq!(json["claps"]["state"], "clip");
+    assert_eq!(
+        json["claps"]["words"]["pattern"],
+        json!([false, true, false, true])
+    );
+    assert_eq!(json["claps"]["device"]["version"], "v1.52.0");
+    let mut no_claps = json.clone();
+    no_claps.as_object_mut().unwrap().remove("claps");
+    assert_eq!(
+        serde_json::from_value::<HubStatus>(no_claps).unwrap().claps,
+        crate::claps::ClapsStatus::default()
+    );
     // #210: Listen, the defaults for an older hub.
     assert_eq!(json["listen"]["target"]["device"], 9);
     assert_eq!(json["listen"]["devices"][0]["track"], "Vox 1");
@@ -2170,6 +2205,7 @@ fn an_older_hubs_status_reads_with_default_sectors() {
         scenes: ScenesStatus::default(),
         link: None,
         listen: crate::listen::ListenStatus::default(),
+        claps: crate::claps::ClapsStatus::default(),
     };
     let mut json = serde_json::to_value(&status).unwrap();
     assert!(json.get("link").is_none(), "no [link]: no field");
@@ -2425,6 +2461,34 @@ fn a_set_mute_guard_reads_as_the_page_sends_it() {
     let bad = json!({"type": "set_mute_guard", "id": "g3",
                      "strip": {"instance": "band", "label": "Vox 1"}, "on": 1});
     assert!(serde_json::from_value::<ClientMsg>(bad).is_err());
+}
+
+#[test]
+fn the_claps_messages_read_as_the_page_sends_them() {
+    round_trip_client(
+        ClientMsg::ClapTap {
+            t: 1_790_000_000_123.5,
+        },
+        json!({"type": "clap_tap", "t": 1_790_000_000_123.5}),
+    );
+    round_trip_client(
+        ClientMsg::ClapBeat { beat: 3, on: false },
+        json!({"type": "clap_beat", "beat": 3, "on": false}),
+    );
+    round_trip_client(ClientMsg::ClapStop, json!({"type": "clap_stop"}));
+    let bad = json!({"type": "clap_beat", "beat": -1, "on": true});
+    assert!(serde_json::from_value::<ClientMsg>(bad).is_err());
+    let state = ServerMsg::Claps(crate::claps::ClapsState {
+        state: crate::claps::ClapsPhase::On,
+        pattern: [false, true, false, true],
+        beat: Some(17.25),
+        tempo: Some(124.0),
+    });
+    assert_eq!(
+        serde_json::to_value(&state).unwrap(),
+        json!({"type": "claps", "state": "on", "pattern": [false, true, false, true],
+               "beat": 17.25, "tempo": 124.0})
+    );
 }
 
 #[test]

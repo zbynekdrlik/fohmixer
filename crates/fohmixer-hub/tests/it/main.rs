@@ -12,6 +12,7 @@ mod autotune;
 mod autotune_keys;
 mod autotune_safe;
 mod autotune_switch;
+mod claps;
 mod colors;
 mod companion_client;
 mod config_cli;

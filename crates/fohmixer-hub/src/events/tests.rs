@@ -114,6 +114,8 @@ fn warn_class_records_are_socket_link_cap_dropped_and_errors() {
         "scene_source",
         "listen",
         "lufs_history",
+        // Claps from the surface (#220): a tap, a dot, the device's words.
+        "claps",
     ] {
         assert!(is_warn(&json!({"ev": ev})), "{ev}");
     }

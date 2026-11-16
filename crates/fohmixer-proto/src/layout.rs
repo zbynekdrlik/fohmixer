@@ -291,6 +291,10 @@ pub struct Strip {
     /// `+REVERB`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reverb: bool,
+    /// The track the surface claps on (#220): its Tuner marker's `+CLAPS`,
+    /// the only one of its Live set.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub claps: bool,
     /// The fader link this strip leads (#130, D18): its `+ID` and the
     /// tracks whose Tuners carry `+FADER:<id>`; while the hub's switch of it
     /// is on, a move of this strip's fader moves theirs by the same dB.
@@ -303,6 +307,11 @@ pub struct Strip {
     /// `+LUFS:<target>`, or a frame strip's `"lufs"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lufs: Option<LufsSpec>,
+    /// The strip's home level in dB (#225): its Tuner marker's
+    /// `+HOME:<dB>`. Its unity mark sits there and a double tap glides
+    /// there; none is 0 dB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_db: Option<f64>,
 }
 
 /// A fader link's leader: its Live set and its `+ID` (#130, D18).
@@ -765,6 +774,30 @@ impl Layout {
         tracks.into_iter().collect()
     }
 
+    /// The Claps track (#220): the first placed strip with `claps` (a
+    /// marker strip, bound by index; `+CLAPS` is one per Live set), in
+    /// Live's order (instance, then index); none without one.
+    pub fn claps_track(&self) -> Option<ClapsTrack> {
+        self.controls()
+            .into_iter()
+            .filter_map(|control| match control {
+                Control::Strip(strip) if strip.claps => {
+                    let Anchor::TrackAt { index } = strip.binding.anchor else {
+                        return None;
+                    };
+                    let track = strip.binding.target().ok()?;
+                    Some(ClapsTrack {
+                        instance: strip.binding.instance.clone(),
+                        index,
+                        track,
+                        label: strip.label.clone().unwrap_or_default(),
+                    })
+                }
+                _ => None,
+            })
+            .min_by(|a, b| (&a.instance, a.index).cmp(&(&b.instance, b.index)))
+    }
+
     /// The REVERB rule's faders: every placed strip with `reverb` (a marker
     /// strip, bound by index), each track once (a strip shows in several
     /// views), in Live's order: instance, tracks before returns, index.
@@ -846,6 +879,16 @@ impl Layout {
             .collect();
         leaders.into_iter().collect()
     }
+}
+
+/// The Claps track (#220): its Live set, its index and LOM target
+/// (`live_set tracks N`) and its strip's label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClapsTrack {
+    pub instance: String,
+    pub index: u32,
+    pub track: String,
+    pub label: String,
 }
 
 /// One fader of the REVERB rule (#130, D18): a reverb strip's track, its

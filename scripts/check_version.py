@@ -28,6 +28,7 @@ DEVICE_VERSIONS = (
     Path("live-device") / "FohMixer-LUFS" / "version.txt",
     Path("live-device") / "FohMixer-Meter" / "version.txt",
     Path("live-device") / "FohMixer-Listen" / "version.txt",
+    Path("live-device") / "FohMixer-Claps" / "version.txt",
 )
 MISSING_BASE_VERSION = "0.0.0"
 SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?$")

@@ -58,7 +58,11 @@ pub fn inbound(role: Role, msg: &ClientMsg) -> Result<(), &'static str> {
             | ClientMsg::EqInput { .. }
             | ClientMsg::EqView { .. }
             | ClientMsg::EqClose
-            | ClientMsg::EqUndo { .. } => false,
+            | ClientMsg::EqUndo { .. }
+            // The Claps track is the FOH's (#220).
+            | ClientMsg::ClapTap { .. }
+            | ClientMsg::ClapBeat { .. }
+            | ClientMsg::ClapStop => false,
         },
     };
     if ok { Ok(()) } else { Err(REFUSED) }
@@ -194,7 +198,8 @@ pub fn outbound(role: Role, msg: ServerMsg) -> Option<ServerMsg> {
         | ServerMsg::PresenterAck { .. }
         | ServerMsg::Reverb(_)
         | ServerMsg::Autotune(_)
-        | ServerMsg::Rec(_) => None,
+        | ServerMsg::Rec(_)
+        | ServerMsg::Claps(_) => None,
     }
 }
 

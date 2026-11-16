@@ -119,9 +119,11 @@ fn strip(name: &str) -> Strip {
         mark: None,
         mute_links: Vec::new(),
         reverb: false,
+        claps: false,
         fader_link: None,
         fader_follows: Vec::new(),
         lufs: None,
+        home_db: None,
     }
 }
 
@@ -760,9 +762,11 @@ fn marker(index: u32, label: &str) -> Strip {
         mark: None,
         mute_links: Vec::new(),
         reverb: false,
+        claps: false,
         fader_link: None,
         fader_follows: Vec::new(),
         lufs: None,
+        home_db: None,
     }
 }
 
@@ -897,7 +901,7 @@ fn a_marker_in_conflict_closes_its_detail_and_says_so() {
     // A held strip marked in conflict before: the layout's strip as it is now.
     assert_eq!(
         detail_update(&with_strips(&[marker(6, "Vox 1")]), Some(&second), false),
-        Some(DetailChange::Follow(marker(6, "Vox 1")))
+        Some(DetailChange::Follow(Box::new(marker(6, "Vox 1"))))
     );
     assert_eq!(
         (CLOSE_EXIT, CLOSE_LAYOUT, CLOSE_CONFLICT, CLOSE_PLACEHOLDER),
@@ -922,7 +926,7 @@ fn a_held_strip_is_written_back_only_when_the_layout_changes_it() {
     let moved = with_strips(&[marker(3, "Vox 1")]);
     assert_eq!(
         detail_update(&moved, Some(&vox), true),
-        Some(DetailChange::Follow(marker(3, "Vox 1")))
+        Some(DetailChange::Follow(Box::new(marker(3, "Vox 1"))))
     );
     // Gone: it closes.
     let gone = with_strips(&[marker(4, "Vox 2")]);
@@ -962,7 +966,7 @@ fn a_placeholder_labelled_marker_carried_into_a_new_layout_closes() {
     let named = marker(4, "#9");
     assert_eq!(
         detail_update(&with_strips(&[marker(2, "#9")]), Some(&named), true),
-        Some(DetailChange::Follow(marker(2, "#9")))
+        Some(DetailChange::Follow(Box::new(marker(2, "#9"))))
     );
 }
 

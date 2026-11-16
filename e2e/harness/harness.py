@@ -350,7 +350,8 @@ def mbc_hub_config(http_port, mbc_port, link_port, lufs_port):
     """The MBC hub's ``fohmixer-hub.toml`` (#184): its one local instance
     ``mbc``, the instance link on ``127.0.0.1:<link_port>``, its own LUFS
     listener, the layout polled fast, and Listen off (#210: its default port
-    is the FOH hub's and, here, the MBC hub's own LUFS port)."""
+    is the FOH hub's and, here, the MBC hub's own LUFS port), and claps off
+    (#220: its ports are the FOH hub's)."""
     return (
         f"http_port = {http_port}\n"
         'layout = "layout.json"\n'
@@ -360,6 +361,7 @@ def mbc_hub_config(http_port, mbc_port, link_port, lufs_port):
         f"port = {mbc_port}\n"
         f"[lufs]\nport = {lufs_port}\n"
         "[listen]\nport = 0\n"
+        "[claps]\nport = 0\ndevice_port = 0\n"
         f'[link]\nlisten = "127.0.0.1:{link_port}"\ninstance = "mbc"\n'
     )
 

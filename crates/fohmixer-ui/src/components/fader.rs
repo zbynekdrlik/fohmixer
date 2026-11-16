@@ -90,10 +90,18 @@ impl Law {
         }
     }
 
-    /// Where a double tap glides.
+    /// Where a double tap glides on a fader whose home is 0 dB.
+    #[cfg(test)]
     fn glide_to(self) -> Option<f64> {
+        self.glide_home(UNITY)
+    }
+
+    /// Where a double tap glides (#225): the fader's home, Live's volume
+    /// `home` (`behave::fader::home_volume`), on a volume law; a parameter
+    /// fader has no double tap.
+    fn glide_home(self, home: f64) -> Option<f64> {
         match self {
-            Self::Volume(law) => Some(law.to_pos(UNITY)),
+            Self::Volume(law) => Some(law.to_pos(home)),
             Self::Linear(_) => None,
         }
     }
@@ -272,6 +280,11 @@ pub fn FaderView(
     /// A strip's level slots (#151): the meter in the fader's track.
     #[prop(optional)]
     meters: Vec<RwSignal<Slot>>,
+    /// Where a volume fader's double tap glides (#225): Live's volume of
+    /// its strip's home level (`behave::fader::home_volume`), 0 dB unless
+    /// the strip's Tuner carries `+HOME:<dB>`.
+    #[prop(default = UNITY)]
+    home_level: f64,
 ) -> impl IntoView {
     let store = expect_context::<LiveStore>();
     let (slot, law) = targets.first().map_or_else(
@@ -322,7 +335,7 @@ pub fn FaderView(
     let drag = StoredValue::new(None::<Drag>);
     let home = StoredValue::new(None::<Home>);
     let ctl = StoredValue::new(
-        FaderCtl::new(shaping, law.glide_to())
+        FaderCtl::new(shaping, law.glide_home(home_level))
             .anchoring(law.anchors())
             .law(law.shaping_law()),
     );
@@ -747,6 +760,18 @@ mod tests {
         assert_eq!(live.volume_law(), Some(VolumeLaw::Live));
         assert_eq!(law.volume_law(), Some(VolumeLaw::TouchOsc));
         assert!(live.anchors() && live.ready() && live.can_map());
+    }
+
+    #[test]
+    fn a_volume_fader_glides_to_its_home_and_a_parameter_fader_nowhere() {
+        // #225: the strip's home level, as Live's volume.
+        let home = crate::behave::fader::home_volume(Some(-6.0));
+        let tosc = Law::Volume(VolumeLaw::TouchOsc);
+        assert_eq!(tosc.glide_home(home), Some(curve::to_pos(home)));
+        assert_eq!(Law::Volume(VolumeLaw::Live).glide_home(home), Some(home));
+        assert_eq!(tosc.glide_home(UNITY), tosc.glide_to());
+        let linear = Law::Linear(RwSignal::new(Some((0.0, 1.0))));
+        assert_eq!(linear.glide_home(home), None);
     }
 
     #[test]

@@ -237,6 +237,16 @@ impl Host {
             .unwrap_or_else(|| panic!("not a CLIP line: {answer}"))
     }
 
+    /// Sets SimLive's time signature as a user would (#220); the numerator
+    /// then (-1: a bad line).
+    pub fn signature(&mut self, numerator: u32, denominator: u32) -> i64 {
+        let answer = self.answer(&format!("song signature {numerator} {denominator}"));
+        answer
+            .strip_prefix("SONG ")
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("not a SONG line: {answer}"))
+    }
+
     /// Jumps SimLive's playhead to `beats` as a user would (#140); the
     /// time then (-1: a bad line).
     pub fn song_time(&mut self, beats: f64) -> f64 {

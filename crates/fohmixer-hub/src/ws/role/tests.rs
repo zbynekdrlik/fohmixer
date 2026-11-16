@@ -71,6 +71,10 @@ fn mbc_may_not_touch_hub_values_deck_presenter_or_eq() {
         json!({"type": "eq_undo", "n": 14}),
         json!({"type": "eq_list", "binding": {"instance": "mbc",
             "anchor": {"kind": "track", "name": "Hand 1"}}}),
+        // #220: the Claps track is the FOH's.
+        json!({"type": "clap_tap", "t": 1_790_000_000_123.5}),
+        json!({"type": "clap_beat", "beat": 1, "on": true}),
+        json!({"type": "clap_stop"}),
     ] {
         let msg = client(wire.clone());
         assert_eq!(inbound(Role::Mbc, &msg), Err(REFUSED), "{wire}");
@@ -133,6 +137,7 @@ fn samples() -> Vec<ServerMsg> {
         json!({"type": "reverb", "aut": true, "faders": []}),
         json!({"type": "autotune", "aut": true, "targets": []}),
         json!({"type": "rec", "playing": true, "record_mode": true, "tracks": []}),
+        json!({"type": "claps", "state": "on", "pattern": [false, true, false, true]}),
         json!({"type": "lufs", "items": [{"instance": "band", "target": "live_set tracks 1",
             "tenths": -253}]}),
         json!({"type": "sectors", "doc": {"rev": 2, "sectors": {"lu": [

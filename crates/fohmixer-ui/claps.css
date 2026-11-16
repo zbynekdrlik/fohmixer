@@ -1,0 +1,137 @@
+/* The Claps strip's left column (#220; the owner's approved mockup
+   docs/mockups/claps-v2.html): above SEL and the ARM key, where other
+   strips show LUFS, so the fader keeps its whole travel. Top down: the calm
+   state line, the four beat dots (2 x 2) and TAP. SEL's width and left
+   edge, so it stays as clear of the cap as SEL; nothing lit while off. */
+.claps-col {
+    position: absolute;
+    left: -4px;
+    bottom: 64px;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    width: min(36px, calc(100% - 24px - var(--cap-w) / 2));
+}
+
+:is([data-narrow="true"] .strip:not(.wide), [data-narrow-wide="true"] .strip.wide) .claps-col {
+    bottom: 72px;
+}
+
+/* The group's name and the set yield above the column. */
+.strip[data-claps="true"] .strip-side {
+    bottom: 210px;
+}
+
+/* The state line: calm text, a step brighter while tapping, waiting for
+   the bar or clapping; nothing while off. */
+.claps-state {
+    min-height: 24px;
+    width: 100%;
+    color: var(--faint);
+    font: 700 9px/12px var(--display);
+    letter-spacing: 0.04em;
+    text-align: center;
+    overflow-wrap: anywhere;
+    pointer-events: none;
+}
+
+.claps-state[data-lit="true"] {
+    color: var(--muted);
+}
+
+/* The beat dots: each its own target, a ring only; a set beat is filled
+   grey, Live's beat now has the accent's ring, a clap flashes it. */
+.claps-dots {
+    display: grid;
+    grid-template-columns: 14px 14px;
+    gap: 4px;
+}
+
+.claps-dot {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 7px;
+    background: none;
+    box-shadow: inset 0 0 0 1px #4a4a66;
+    color: var(--faint);
+    font: 500 8px/1 var(--mono);
+    cursor: pointer;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.claps-dot[data-set="true"] {
+    background: #4a4a66;
+    color: var(--text);
+}
+
+.claps-dot[data-now="true"] {
+    box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+
+.claps-dot[data-set="true"][data-hit="true"] {
+    background: var(--accent);
+    color: #0b0b12;
+}
+
+/* TAP: a tall key, its word vertical; a ring while tapping; the 1 s hold's
+   fill from the bottom, red as a stop. */
+.claps-tap {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 100%;
+    height: 72px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 7px;
+    background: #20202e;
+    box-shadow: inset 0 0 0 1px var(--line);
+    color: var(--muted);
+    cursor: pointer;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.claps-tap::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 7px;
+    background: #2a1a20;
+    transform: scaleY(0);
+    transform-origin: bottom;
+    pointer-events: none;
+}
+
+.claps-tap[data-holding="true"]::before {
+    transform: scaleY(1);
+    transition: transform 1000ms linear;
+}
+
+.claps-tap[data-holding="true"] {
+    color: #e8a0a8;
+}
+
+.claps-tap[data-state="tapping"] {
+    box-shadow: inset 0 0 0 1.5px rgba(78, 205, 196, 0.6);
+    color: var(--text);
+}
+
+.claps-tap-word {
+    position: relative;
+    font: 700 13px/1 var(--display);
+    letter-spacing: 0.08em;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    pointer-events: none;
+}

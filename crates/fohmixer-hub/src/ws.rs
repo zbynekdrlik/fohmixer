@@ -595,6 +595,18 @@ fn handle_text(hub: &Hub, conn: &mut Conn, text: &str) {
             scene,
             rule,
         }),
+        // Claps from the surface (#220): a tap carries its page time, which
+        // the router maps to the hub's clock by the socket's offset.
+        Ok(ClientMsg::ClapTap { t }) => hub.route(RouterMsg::ClapTap {
+            client,
+            t,
+            hub_ms: crate::live::wall_ms().unwrap_or(0.0),
+            offset_ms: conn.offset,
+        }),
+        Ok(ClientMsg::ClapBeat { beat, on }) => {
+            hub.route(RouterMsg::ClapBeat { client, beat, on });
+        }
+        Ok(ClientMsg::ClapStop) => hub.route(RouterMsg::ClapStop { client }),
         // Straight to the outbox (PR I): the writer's next frame may go.
         Ok(ClientMsg::EqFrameAck { session, seq }) => {
             outbox.frame_acked(session, seq, std::time::Instant::now());
