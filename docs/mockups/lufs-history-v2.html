@@ -1,0 +1,490 @@
+<!doctype html>
+<!-- fohmixer #219 mockup v2: a fader's LUFS history in its channel detail (SEL).
+     v2 (owner, 2026-11-16): no stacking in the middle box. The middle box gets
+     tabs (EQ, LUFS); each tab fills the whole box, nothing to scroll. Only the
+     tabs this strip has are shown; the last tab is kept per page.
+     The real detail (detail.css: the 52 px bar, the 230 px left box with MUTE,
+     dB and the tall fader, the 300 px right box, the middle with the Pro-Q 4
+     cards); the history is one calm card at the top of the middle box, only for
+     a strip with +LUFS. Its colours are the strip's own (--lufs-text, --lufs-in,
+     the spring's grey). Frame 1: an input point (VOX 1, target -23) live, the
+     last 10 minutes. Frame 2: an output point (PA OUT, no target) on a past day.
+     Tokens from style.css, the app's fonts by relative path. Invented names and
+     invented readings, no site data. Plain JS. -->
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>LUFS history v2</title>
+<style>
+
+@font-face { font-family: "Barlow Condensed"; font-weight: 700; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 600; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 700; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-weight: 500; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2"); }
+
+:root {
+    color-scheme: dark;
+    --bg: #07070c;
+    --page: #0b0b12;
+    --bar: #11111b;
+    --section: #151522;
+    --panel: #1a1a28;
+    --panel-hi: #20203a;
+    --track: #0a0a14;
+    --line: #2a2a44;
+    --accent: #4ecdc4;
+    --accent-dim: rgba(78, 205, 196, 0.28);
+    --text: #eaeaf0;
+    --muted: #9a9ab4;
+    --faint: #5c5c78;
+    --mute: #e63946;
+    --lufs-text: #e2e2ec;
+    --lufs-in: #2fc79a;
+    --eq: #ff8fd0;
+    --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+    --ui: "Barlow", -apple-system, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--ui); }
+body { padding: 16px; }
+
+.doc { max-width: 1194px; margin: 0 auto 14px; line-height: 1.5; font-size: 15px; }
+.doc h1 { font-family: var(--display); font-size: 26px; margin: 0 0 6px; letter-spacing: 0.04em; }
+.doc p, .doc li { color: var(--muted); }
+.doc b { color: var(--text); }
+.frame-title { max-width: 1194px; margin: 22px auto 8px; font-family: var(--display);
+    font-size: 18px; letter-spacing: 0.06em; color: var(--muted); }
+.fit { max-width: 1194px; margin: 0 auto; overflow: hidden; }
+.ipad { width: 1194px; height: 834px; background: var(--page); border: 1px solid var(--line);
+    border-radius: 14px; transform-origin: top left; position: relative; user-select: none;
+    -webkit-user-select: none; overflow: hidden; display: flex; flex-direction: column; }
+
+/* ---------- the detail, as detail.css draws it ---------- */
+.bar { height: 52px; flex: none; display: flex; align-items: center; gap: 10px; padding: 6px 8px;
+    border-bottom: 1px solid var(--line); background: var(--bar); }
+.exit { height: 100%; padding: 0 14px; display: flex; align-items: center; border: 1px solid rgba(78, 205, 196, 0.55);
+    border-radius: 10px; background: var(--panel); color: var(--accent); font: 700 15px/1.2 var(--display);
+    letter-spacing: 0.06em; }
+.name { flex: 1; display: flex; align-items: center; justify-content: center; gap: 10px; }
+.chip { padding: 3px 12px; border-radius: 6px; color: #10101a; font: 700 18px/1.3 var(--display);
+    letter-spacing: 0.03em; text-transform: uppercase; }
+.sub { color: var(--muted); font: 600 12px/1.4 var(--mono); }
+.body { flex: 1; min-height: 0; display: grid; grid-template-columns: 230px minmax(0, 1fr) 300px; gap: 10px; padding: 10px; }
+.box { display: flex; flex-direction: column; gap: 10px; min-height: 0; padding: 10px; border-radius: 12px; background: var(--panel); }
+.middle { overflow: hidden; }
+/* NEW v2: the middle box's tabs; each pane fills the box */
+.mtabs { flex: none; display: flex; gap: 6px; }
+.mtab { min-width: 120px; height: 44px; padding: 0 18px; display: flex; align-items: center; justify-content: center;
+    border: 1px solid var(--line); border-radius: 9px; color: var(--muted); font: 700 16px/1 var(--display);
+    letter-spacing: 0.08em; cursor: pointer; }
+.mtab.on { color: var(--text); background: var(--panel-hi); border-bottom: 2px solid var(--accent); }
+.pane { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.pane[hidden] { display: none; }
+
+/* left: MUTE, the readout, the fader zone (drawn, not working) */
+.mute { height: 52px; flex: none; border-radius: 9px; background: #181826; box-shadow: inset 0 0 0 1px var(--line);
+    display: flex; align-items: center; justify-content: center; font: 700 20px/1 var(--display); letter-spacing: 0.08em; }
+.readout { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.readout .st { width: 8px; height: 8px; border-radius: 4px; background: #36d67a; opacity: 0.8; }
+.readout .db { font: 500 26px/36px var(--mono); }
+.fz { flex: 1; position: relative; padding: 18px 0 20px; display: grid; grid-template-columns: 26px 10px 1fr; gap: 6px; }
+.scale { position: relative; }
+.scale span { position: absolute; right: 0; font: 500 11px/14px var(--mono); color: var(--faint); transform: translateY(-50%); }
+.meter { background: var(--track); border-radius: 3px; position: relative; overflow: hidden; }
+.meter i { position: absolute; left: 0; right: 0; bottom: 0; height: 62%; background: linear-gradient(#36d67a, #36d67a); opacity: 0.85; }
+.groove { position: absolute; left: calc(50% + 24px); top: 18px; bottom: 20px; width: 8px; margin-left: -4px; border-radius: 4px; background: var(--track); }
+.cap { position: absolute; left: calc(50% + 24px); top: 38%; width: 60px; height: 34px; margin: -17px 0 0 -30px;
+    border-radius: 8px; background: #2c2c40; box-shadow: inset 0 0 0 1px #4a4a66; }
+.cap::before { content: ""; position: absolute; left: 12px; right: 12px; top: 16px; height: 2px; background: #eaeaf0; }
+
+/* right: the existing sections, short */
+.title { margin: 0; color: var(--faint); font: 700 12px/1.3 var(--display); letter-spacing: 0.12em; }
+.pan { height: 64px; flex: none; border: 1px solid var(--line); border-radius: 10px; background: var(--track); position: relative; }
+.pan::after { content: ""; position: absolute; top: 8px; bottom: 8px; left: 50%; width: 48px; margin-left: -24px;
+    border-radius: 8px; background: #2c2c40; box-shadow: inset 0 0 0 1px #4a4a66; }
+.panrow { display: flex; justify-content: space-between; color: var(--faint); font: 600 12px/1.4 var(--mono); }
+.panrow b { color: var(--muted); font-weight: 600; }
+.centre { height: 44px; flex: none; border: 1px solid var(--line); border-radius: 9px; display: flex; align-items: center;
+    justify-content: center; color: var(--muted); font: 700 15px/1 var(--display); letter-spacing: 0.08em; }
+.rrow { display: flex; align-items: center; justify-content: space-between; padding: 10px 2px; border-top: 1px solid var(--line);
+    font: 700 12px/1.3 var(--display); letter-spacing: 0.12em; color: var(--faint); }
+.rrow span { color: var(--muted); letter-spacing: 0.06em; font-size: 13px; }
+
+/* middle: the Pro-Q 4 card (eq.css), unchanged */
+.eq-card { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: #12121c; }
+.eq-pic { width: 100%; aspect-ratio: 1349 / 809; border-radius: 6px; background: #000; display: flex; align-items: center;
+    justify-content: center; color: var(--faint); font: 700 14px/1 var(--display); letter-spacing: 0.1em; }
+.eq-where { color: var(--muted); font: 600 12px/1.4 var(--mono); }
+.eq-open { min-height: 48px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--eq); border-radius: 8px;
+    background: #2a1626; color: var(--eq); font: 700 16px/1.2 var(--display); letter-spacing: 0.06em; }
+
+/* ---------- NEW: the LUFS history card ---------- */
+.lh { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; padding: 8px 8px 6px; border: 1px solid var(--line);
+    border-radius: 10px; background: #12121c; }
+.lh-head { display: flex; align-items: center; gap: 10px; height: 28px; }
+.lh-cap { display: flex; flex-direction: column; color: var(--faint); font: 700 9px/10px var(--ui); letter-spacing: 0.06em; text-align: center; }
+.lh-now { min-width: 58px; color: var(--lufs-text); font: 700 22px/1 var(--display); font-variant-numeric: tabular-nums; }
+.lh-now[data-l="in"] { color: var(--lufs-in); }
+.lh-now[data-l="none"] { color: var(--faint); }
+.lh-target { color: var(--faint); font: 500 11px/1 var(--mono); }
+.lh-cursor { color: var(--muted); font: 500 12px/1 var(--mono); }
+.lh-chips { margin-left: auto; display: flex; gap: 4px; }
+.lh-chip { min-width: 52px; height: 28px; padding: 0 8px; display: flex; align-items: center; justify-content: center;
+    border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font: 700 12px/1 var(--display);
+    letter-spacing: 0.08em; cursor: pointer; white-space: nowrap; }
+.lh-chip.on { color: var(--text); background: var(--panel-hi); border-bottom: 2px solid var(--accent); }
+.lh-chip.back { color: var(--accent); border-color: rgba(78, 205, 196, 0.45); }
+.lh-chip[hidden] { display: none; }
+.lh-graph { position: relative; flex: 1; min-height: 0; touch-action: none; cursor: grab; }
+.lh-graph svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.lh-days { display: flex; gap: 4px; align-items: center; }
+.lh-days .lh-chip { min-width: 0; height: 26px; font-size: 11px; }
+.lh-empty[hidden] { display: none; }
+.lh-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--faint);
+    font: 700 13px/1 var(--display); letter-spacing: 0.1em; pointer-events: none; }
+
+.sim { max-width: 1194px; margin: 8px auto 0; display: flex; gap: 6px; flex-wrap: wrap; }
+.sim button { font-family: var(--display); font-size: 14px; letter-spacing: 0.06em; background: var(--panel);
+    color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+</style>
+</head>
+<body>
+
+<div class="doc">
+    <h1>LUFS história v detaile fadra — návrh v2 (#219)</h1>
+    <p>Podrž <b>SEL</b> na fadri, ktorý má LUFS (napr. VOX 1). Stredná časť detailu má teraz <b>záložky</b>: <b>EQ</b> a <b>LUFS</b>. Každá záložka zaberie celú strednú časť, nič sa nescroluje. Záložka sa ukáže, len keď ju fader má (bez LUFS žiadna záložka LUFS). Posledná zvolená záložka ostane. Fader, MUTE a pravý stĺpec sa nemenia.</p>
+    <ul>
+        <li><b>Čiara</b> je presne to číslo, čo ukazuje strip (krátkodobé S, raz za sekundu). Sivá, v pásme ±1 LU okolo cieľa zelená, ako na stripe. Ticho a "nič" sú medzera.</li>
+        <li><b>Cieľ</b> (TARGET −23) je tenká čiara, pásmo ±1 LU dve slabé čiarkované čiary. Výstupný bod (PA OUT) nemá cieľ ani pásmo.</li>
+        <li><b>10 MIN · 1 H · 3 H</b> vyberie okno. Potiahni graf doľava/doprava = posun späť v čase; <b>NOW ›</b> ťa vráti na teraz.</li>
+        <li><b>Dni</b> dole: len dni, keď tento fader mal LUFS (história 14 dní). Ťuk na deň ukáže celú službu toho dňa.</li>
+        <li><b>Podrž prst</b> na grafe: tenký kurzor, hore čas a hodnota.</li>
+    </ul>
+    <p>Mená aj hodnoty sú vymyslené. Vyskúšaj: okná, ťahanie, podržanie, dni; dole prepnutie na výstupný bod.</p>
+</div>
+
+<div class="frame-title">1 · VOX 1, záložka LUFS (vstup, cieľ −23), naživo, posledných 10 minút</div>
+<div class="fit"><div class="ipad" id="f1"></div></div>
+<div class="frame-title">2 · PA OUT, záložka EQ (ťukni na LUFS: minulá nedeľa celá)</div>
+<div class="fit"><div class="ipad" id="f2"></div></div>
+
+<template id="detail">
+    <div class="bar">
+        <div class="exit">← BACK TO MIX</div>
+        <div class="name"><div class="chip" data-chip></div><span class="sub" data-sub></span></div>
+    </div>
+    <div class="body">
+        <section class="box">
+            <div class="mute">MUTE</div>
+            <div class="readout"><span class="st"></span><span class="db" data-db></span></div>
+            <div class="fz">
+                <div class="scale"><span style="top:4%">+6</span><span style="top:22%">0</span><span style="top:40%">−10</span><span style="top:58%">−20</span><span style="top:76%">−40</span><span style="top:96%">−∞</span></div>
+                <div class="meter"><i></i></div>
+                <div></div>
+                <div class="groove"></div>
+                <div class="cap"></div>
+            </div>
+        </section>
+        <section class="box middle">
+            <div class="mtabs" data-tabs><div class="mtab" data-tab="eq">EQ</div><div class="mtab" data-tab="lufs">LUFS</div></div>
+            <div class="pane" data-pane="lufs">
+            <div class="lh" data-lh>
+                <div class="lh-head">
+                    <div class="lh-cap"><span>LUFS</span><span data-kind></span></div>
+                    <div class="lh-now" data-now></div>
+                    <div class="lh-target" data-target></div>
+                    <div class="lh-cursor" data-cursor></div>
+                    <div class="lh-chips" data-ranges></div>
+                </div>
+                <div class="lh-graph" data-graph><svg data-svg></svg><div class="lh-empty" data-empty hidden>NO LUFS IN THIS WINDOW</div></div>
+                <div class="lh-days" data-days></div>
+            </div>
+            </div>
+            <div class="pane" data-pane="eq">
+            <div class="eq-card">
+                <div class="eq-pic">PRO-Q 4</div>
+                <div class="eq-where">Pro-Q 4 · Vocal FX</div>
+                <div class="eq-open">OPEN EQ FULL SCREEN</div>
+            </div>
+            </div>
+        </section>
+        <section class="box">
+            <h2 class="title">PAN</h2>
+            <div class="pan"></div>
+            <div class="panrow"><span>L 50</span><b>C</b><span>R 50</span></div>
+            <div class="centre">CENTER</div>
+            <div class="rrow">LAYOUTS <span>BAND</span></div>
+            <div class="rrow">SCENES <span>2</span></div>
+            <div class="rrow">MUTE ALARM <span>OFF</span></div>
+            <div class="rrow">MUTE GUARD <span>OFF</span></div>
+            <div class="rrow">COLOR <span>ORANGE</span></div>
+        </section>
+    </div>
+</template>
+
+<div class="sim">
+    <button id="simout">Frame 1: switch to PA OUT</button>
+    <button id="simsilence">Frame 1: the singer stops (silence)</button>
+</div>
+
+<script>
+"use strict";
+
+// ---------- invented readings (deterministic) ----------
+const DAY = 86400000;
+const NOW0 = new Date(2026, 10, 16, 19, 42, 10).getTime(); // the mockup's "now": Mon 19:42 rehearsal
+let now = NOW0;
+function rng(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
+// A session: [start, end] in ms; songs and talks; one value per second (tenths, null = no reading, -700 = silence).
+function session(start, end, seed, target, out) {
+    const r = rng(seed), vals = new Map();
+    let t = start, base = target * 10, song = true, left = 0, wander = 0;
+    while (t <= end) {
+        if (left <= 0) { song = !song || r() < 0.2; left = song ? 180 + r() * 240 : 30 + r() * 120; base = (out ? -170 : target * 10) + (r() - 0.5) * (out ? 50 : 30); }
+        left -= 1;
+        wander += (r() - 0.5) * 4; wander *= 0.97;
+        let v;
+        if (!song && !out) v = r() < 0.15 ? base - 120 + r() * 40 : -700;
+        else if (!song && out) v = -260 + (r() - 0.5) * 30 + wander;
+        else v = base + wander + Math.sin(t / 9000) * 8 + (r() - 0.5) * 6;
+        vals.set(t, Math.round(v));
+        t += 1000;
+    }
+    return vals;
+}
+function at(y, m, d, h, mi) { return new Date(y, m, d, h, mi, 0).getTime(); }
+const POINTS = {
+    vox: { label: "VOX 1", chip: "#d9874a", sub: "STAGE · band", kind: "IN", target: -23, db: "−3.5", sessions: [] },
+    out: { label: "PA OUT", chip: "#8b7dff", sub: "MAIN · master", kind: "OUT", target: null, db: "0.0", sessions: [] },
+};
+for (const [key, p] of Object.entries(POINTS)) {
+    const out = key === "out", tg = p.target ?? -23;
+    p.sessions.push(session(at(2026, 10, 8, 10, 0), at(2026, 10, 8, 12, 31), out ? 11 : 1, tg, out));
+    p.sessions.push(session(at(2026, 10, 12, 18, 30), at(2026, 10, 12, 20, 10), out ? 12 : 2, tg, out));
+    p.sessions.push(session(at(2026, 10, 15, 9, 55), at(2026, 10, 15, 12, 34), out ? 13 : 3, tg, out));
+    p.sessions.push(session(at(2026, 10, 16, 18, 20), NOW0, out ? 14 : 4, tg, out));
+}
+let silenceFrom = null;
+function value(p, t) {
+    if (silenceFrom !== null && t >= silenceFrom && p === POINTS.vox) return -700;
+    for (const s of p.sessions) { const v = s.get(t); if (v !== undefined) return v; }
+    if (t > NOW0 && t <= now) { // the live edge: carry on the last session
+        const s = p.sessions[p.sessions.length - 1]; const last = s.get(NOW0);
+        return last === undefined ? null : Math.round(last + Math.sin(t / 7000) * 9 + Math.cos(t / 3100) * 4);
+    }
+    return null;
+}
+function daysOf(p) {
+    const seen = new Map();
+    for (const s of p.sessions) {
+        const ks = [...s.keys()]; const d = new Date(ks[0]); d.setHours(0, 0, 0, 0);
+        const k = d.getTime(); const span = seen.get(k) || [Infinity, -Infinity];
+        seen.set(k, [Math.min(span[0], ks[0]), Math.max(span[1], ks[ks.length - 1])]);
+    }
+    return [...seen.entries()].sort((a, b) => b[0] - a[0]);
+}
+
+// ---------- text as the strip shows it ----------
+const minus = (s) => s.replace("-", "−");
+function text(v) { return v === null ? "" : v <= -700 ? "−∞" : minus((v / 10).toFixed(1)); }
+function inBand(v, target) { return target !== null && v > -700 && Math.abs(v - target * 10) <= 10; }
+const WD = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+function dayLabel(k) { const d = new Date(k); const t = new Date(NOW0); t.setHours(0, 0, 0, 0);
+    return k === t.getTime() ? "TODAY" : `${WD[d.getDay()]} ${d.getDate()}.${d.getMonth() + 1}`; }
+const hm = (t) => { const d = new Date(t); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+const hms = (t) => `${hm(t)}:${String(new Date(t).getSeconds()).padStart(2, "0")}`;
+
+// ---------- one card ----------
+const RANGES = [["10 MIN", 600000], ["1 H", 3600000], ["3 H", 10800000]];
+function card(root, key, opts) {
+    const st = { key, span: 600000, end: null, day: null, cursor: null };
+    Object.assign(st, opts);
+    const q = (s) => root.querySelector(`[data-${s}]`);
+    const svg = q("svg"), graph = q("graph");
+    const NS = "http://www.w3.org/2000/svg";
+    function mk(tag, attrs) { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); return e; }
+
+    function window_() {
+        const p = POINTS[st.key];
+        if (st.day !== null) { const span = daysOf(p).find(([k]) => k === st.day)[1]; return [span[0], span[1]]; }
+        const end = st.end ?? now; return [end - st.span, end];
+    }
+    function draw() {
+        const p = POINTS[st.key];
+        q("chip").textContent = p.label; q("chip").style.background = p.chip; q("sub").textContent = p.sub; q("db").textContent = p.db;
+        q("kind").textContent = p.kind;
+        const cur = value(p, now - (now % 1000));
+        const nowEl = q("now"); nowEl.textContent = text(cur);
+        nowEl.dataset.l = cur === null ? "none" : inBand(cur, p.target) ? "in" : "off";
+        q("target").textContent = p.target === null ? "" : `TARGET ${minus(String(p.target))}`;
+        q("cursor").textContent = "";
+        // ranges + NOW
+        const ranges = q("ranges"); ranges.replaceChildren();
+        const live = st.day === null && st.end === null;
+        if (!live) { const b = document.createElement("div"); b.className = "lh-chip back"; b.textContent = "NOW ›";
+            b.onclick = () => { st.day = null; st.end = null; draw(); }; ranges.append(b); }
+        for (const [name, ms] of RANGES) {
+            const c = document.createElement("div"); c.className = "lh-chip" + (st.day === null && st.span === ms ? " on" : ""); c.textContent = name;
+            c.onclick = () => { st.span = ms; if (st.day !== null) { st.end = Math.min(now, window_()[0] + ms); st.day = null; } draw(); };
+            ranges.append(c);
+        }
+        // days: only those with readings of this point
+        const days = q("days"); days.replaceChildren();
+        for (const [k] of daysOf(p)) {
+            const c = document.createElement("div"); c.className = "lh-chip" + (st.day === k ? " on" : ""); c.textContent = dayLabel(k);
+            c.onclick = () => { const today = dayLabel(k) === "TODAY"; st.day = today ? null : k; st.end = null; draw(); };
+            days.append(c);
+        }
+        plot(p);
+    }
+    function scaleOf(p, vals) {
+        if (p.target !== null) return [p.target * 10 - 120, p.target * 10 + 120];
+        const live = vals.filter((v) => v !== null && v > -700);
+        if (!live.length) return [-300, -120];
+        let lo = Math.floor(Math.min(...live) / 60) * 60, hi = Math.ceil(Math.max(...live) / 60) * 60;
+        if (hi - lo < 180) { const mid = (hi + lo) / 2; lo = Math.floor((mid - 90) / 60) * 60; hi = lo + 180; }
+        return [lo, hi];
+    }
+    function plot(p) {
+        const w = graph.clientWidth, h = graph.clientHeight, left = 30, top = 4, bottom = h - 16, right = w - 2;
+        svg.setAttribute("viewBox", `0 0 ${w} ${h}`); svg.replaceChildren();
+        const [t0, t1] = window_();
+        // buckets: one per ~1 px column at most, the median of the readings above silence
+        const cols = Math.max(1, Math.floor(right - left));
+        const n = Math.round((t1 - t0) / 1000);
+        const per = Math.max(1, Math.ceil(n / cols));
+        const pts = [];
+        for (let i = 0; i <= n; i += per) {
+            const b = [];
+            let silent = 0, any = 0;
+            for (let j = 0; j < per && i + j <= n; j++) {
+                const v = value(p, t0 - (t0 % 1000) + (i + j) * 1000);
+                if (v === null) continue; any++;
+                if (v <= -700) silent++; else b.push(v);
+            }
+            const t = t0 + i * 1000;
+            if (!any) pts.push([t, null]);
+            else if (silent * 2 >= any) pts.push([t, -700]);
+            else { b.sort((x, y) => x - y); pts.push([t, b[Math.floor(b.length / 2)]]); }
+        }
+        const vals = pts.map(([, v]) => v);
+        const [lo, hi] = scaleOf(p, vals);
+        const X = (t) => left + (t - t0) / (t1 - t0) * (right - left);
+        const Y = (v) => top + (1 - (Math.max(lo, Math.min(hi, v)) - lo) / (hi - lo)) * (bottom - top);
+        // y ticks: the target and ±6, ±12 LU; an output point every 6 LU
+        const ticks = p.target !== null ? [-120, -60, 0, 60, 120].map((d) => p.target * 10 + d) : (() => { const a = []; for (let v = lo; v <= hi; v += 60) a.push(v); return a; })();
+        for (const v of ticks) {
+            const y = Y(v);
+            const main = p.target !== null && v === p.target * 10;
+            svg.append(mk("line", { x1: left, x2: right, y1: y, y2: y, stroke: main ? "rgba(255,255,255,0.32)" : "rgba(255,255,255,0.05)", "stroke-width": 1 }));
+            const tx = mk("text", { x: left - 5, y: y + 3.5, "text-anchor": "end", fill: main ? "#9a9ab4" : "#5c5c78", "font-family": "JetBrains Mono, monospace", "font-size": 10 });
+            tx.textContent = minus(String(v / 10)); svg.append(tx);
+        }
+        if (p.target !== null) for (const d of [-10, 10]) {
+            const y = Y(p.target * 10 + d);
+            svg.append(mk("line", { x1: left, x2: right, y1: y, y2: y, stroke: "rgba(47,199,154,0.35)", "stroke-width": 1, "stroke-dasharray": "3 4" }));
+        }
+        // time ticks: whole local minutes, a calm step
+        const steps = [60000, 120000, 300000, 600000, 900000, 1800000, 3600000];
+        const step = steps.find((s) => (t1 - t0) / s <= 7) || 3600000;
+        for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
+            const x = X(t);
+            svg.append(mk("line", { x1: x, x2: x, y1: top, y2: bottom, stroke: "rgba(255,255,255,0.04)", "stroke-width": 1 }));
+            const tx = mk("text", { x, y: h - 3, "text-anchor": "middle", fill: "#5c5c78", "font-family": "JetBrains Mono, monospace", "font-size": 10 });
+            tx.textContent = hm(t); svg.append(tx);
+        }
+        // the line: runs of one class (grey / green), gaps at silence and no reading
+        let run = [], cls = null, drawn = 0;
+        const flush = () => { if (run.length > 1) { svg.append(mk("polyline", { points: run.join(" "), fill: "none",
+            stroke: cls === "in" ? "#2fc79a" : "#9a9ab4", "stroke-width": 1.4, "stroke-linejoin": "round", "stroke-linecap": "round" })); drawn++; } run = []; };
+        let prev = null;
+        for (const [t, v] of pts) {
+            if (v === null || v <= -700) { flush(); cls = null; prev = null; continue; }
+            const c = inBand(v, p.target) ? "in" : "off";
+            const xy = `${X(t).toFixed(1)},${Y(v).toFixed(1)}`;
+            if (c !== cls) { if (prev) { run.push(xy); } flush(); if (prev) run.push(prev); cls = c; }
+            run.push(xy); prev = xy;
+        }
+        flush();
+        q("empty").hidden = drawn > 0;
+        // the cursor
+        if (st.cursor !== null) {
+            const t = Math.max(t0, Math.min(t1, st.cursor)); const x = X(t);
+            svg.append(mk("line", { x1: x, x2: x, y1: top, y2: bottom, stroke: "rgba(234,234,240,0.45)", "stroke-width": 1 }));
+            const near = pts.reduce((a, b) => Math.abs(b[0] - t) < Math.abs(a[0] - t) ? b : a);
+            q("cursor").textContent = `${hms(near[0])} · ${near[1] === null ? "no reading" : text(near[1])}`;
+        }
+        st.px = (t1 - t0) / (right - left); st.t0 = t0; st.left = left;
+    }
+
+    // drag = pan back in time; hold = cursor
+    let down = null, holdTimer = null;
+    const localX = (e) => { const r = graph.getBoundingClientRect(); return (e.clientX - r.left) * graph.clientWidth / r.width; };
+    graph.addEventListener("pointerdown", (e) => {
+        graph.setPointerCapture(e.pointerId);
+        down = { x: e.clientX, end: window_()[1], moved: false, scale: graph.getBoundingClientRect().width / graph.clientWidth };
+        const x0 = localX(e);
+        holdTimer = setTimeout(() => { if (!down.moved) { down.hold = true; st.cursor = st.t0 + (x0 - st.left) * st.px; plot(POINTS[st.key]); } }, 350);
+    });
+    graph.addEventListener("pointermove", (e) => {
+        if (!down) return;
+        const dx = (e.clientX - down.x) / down.scale;
+        if (down.hold) { st.cursor = st.t0 + (localX(e) - st.left) * st.px; plot(POINTS[st.key]); return; }
+        if (Math.abs(dx) < 6 && !down.moved) return;
+        down.moved = true; clearTimeout(holdTimer);
+        if (st.day !== null) { const [a, b] = window_(); st.span = Math.min(10800000, b - a); st.day = null; }
+        const end = Math.min(now, down.end - dx * st.px);
+        st.end = end >= now - 1000 ? null : end;
+        draw();
+    });
+    const up = () => { clearTimeout(holdTimer); if (down && down.hold) { st.cursor = null; draw(); } down = null; };
+    graph.addEventListener("pointerup", up); graph.addEventListener("pointercancel", up);
+    return { st, draw };
+}
+
+const cards = [];
+for (const [id, key, opts] of [["f1", "vox", {}], ["f2", "out", {}]]) {
+    const root = document.getElementById(id);
+    root.append(document.getElementById("detail").content.cloneNode(true));
+    const c = card(root, key, opts); cards.push(c);
+    const show = (name) => {
+        for (const t of root.querySelectorAll("[data-tab]")) t.classList.toggle("on", t.dataset.tab === name);
+        for (const p of root.querySelectorAll("[data-pane]")) p.hidden = p.dataset.pane !== name;
+        c.draw();
+    };
+    for (const t of root.querySelectorAll("[data-tab]")) t.onclick = () => show(t.dataset.tab);
+    show(id === "f1" ? "lufs" : "eq");
+}
+cards[1].st.day = daysOf(POINTS.out)[1][0];
+
+document.getElementById("simout").onclick = (e) => {
+    const c = cards[0]; c.st.key = c.st.key === "vox" ? "out" : "vox"; c.st.day = null; c.st.end = null;
+    e.target.textContent = c.st.key === "vox" ? "Frame 1: switch to PA OUT" : "Frame 1: switch to VOX 1"; c.draw();
+};
+document.getElementById("simsilence").onclick = (e) => {
+    silenceFrom = silenceFrom === null ? now - (now % 1000) : null;
+    e.target.textContent = silenceFrom === null ? "Frame 1: the singer stops (silence)" : "Frame 1: the singer sings again"; cards[0].draw();
+};
+
+function fit() {
+    for (const pad of document.querySelectorAll(".ipad")) {
+        const k = Math.min(1, pad.parentElement.clientWidth / 1194);
+        pad.style.transform = `scale(${k})`;
+        pad.parentElement.style.height = `${834 * k}px`;
+    }
+    for (const c of cards) c.draw();
+}
+addEventListener("resize", fit);
+fit();
+// the live edge: one value a second, as the hub keeps it
+setInterval(() => { now += 1000; for (const c of cards) if (c.st.day === null) c.draw(); }, 1000);
+</script>
+</body>
+</html>
