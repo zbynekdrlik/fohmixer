@@ -238,8 +238,8 @@ impl Listen {
     pub fn tap(&mut self, label: String, decoder: bool) -> (Vec<Act>, Option<u64>) {
         if self.lit() {
             let was = self.want.take();
+            // The ask waiting goes: its late answer finds nothing pending.
             let pending = self.pending.take().map(|(_, label)| label);
-            self.asked += 1;
             self.last = was.as_ref().map(|t| t.label.clone()).or(pending);
             self.phase = Phase::Off;
             self.open = false;
@@ -405,7 +405,6 @@ impl Listen {
     fn end(&mut self, phase: Phase) -> Vec<Act> {
         self.last = self.want.take().map(|t| t.label);
         self.pending = None;
-        self.asked += 1;
         self.phase = phase;
         self.open = false;
         vec![Act::Close, Act::Silence]
