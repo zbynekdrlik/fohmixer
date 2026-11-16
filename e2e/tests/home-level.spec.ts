@@ -24,7 +24,8 @@ import {
 // A strip's home level (#225): a Tuner's `+HOME:<dB>` moves the strip's
 // unity mark (`--u` on its fader zone, and the scale's brighter label) from
 // 0 dB to that level, on the strip and in its channel detail, and a double
-// tap glides there instead of to 0 dB. A strip without the tag keeps 0 dB.
+// tap glides there instead of to 0 dB, where its dB readout is white. A
+// strip without the tag keeps 0 dB.
 
 const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
 /** The second track of the test site (Hand2 #, band track 1). */
@@ -103,6 +104,8 @@ test.describe("A strip's home level (#225)", () => {
     await doubleTap(fader);
     await until(() => live.get("band", volume(HAND2), "value"), (v) => Math.abs(v - 0.85) < 1e-6, "0 dB", 6000);
     await expect(plain.getByTestId("db")).toHaveText("0.0");
+    // The readout is white exactly at 0 dB (`.db.unity`).
+    await expect(plain.getByTestId("db")).toHaveClass(/\bunity\b/);
   });
 
   test("a +HOME:-6 strip shows its mark at -6 dB and a double tap lands on -6.0 dB, on the strip and in its detail", async ({ page }) => {
@@ -131,6 +134,8 @@ test.describe("A strip's home level (#225)", () => {
       );
       expect(Math.abs(value2db(landed) + 6)).toBeLessThan(0.01);
       await expect(marker.getByTestId("db")).toHaveText("−6.0");
+      // White exactly at its home (#225), as a plain strip's at 0 dB.
+      await expect(marker.getByTestId("db")).toHaveClass(/\bunity\b/);
 
       // Its channel detail: the same mark, and its double tap goes there too.
       const detail = await openDetail(page, "#2");
@@ -140,6 +145,7 @@ test.describe("A strip's home level (#225)", () => {
       await doubleTap(detailFader);
       await until(() => live.get("band", volume(HAND2), "value"), (v) => Math.abs(value2db(v) + 6) < 0.05, "-6 dB from the detail", 6000);
       await expect(detail.getByTestId("db").first()).toHaveText("−6.0");
+      await expect(detail.getByTestId("db").first()).toHaveClass(/\bunity\b/);
     } finally {
       await hostLine("band", "tuner track 1 remove");
       await harness("/hub/layout/reset");

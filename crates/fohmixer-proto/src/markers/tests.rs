@@ -2831,7 +2831,7 @@ fn the_home_problems_say_bad_home_tag_and_serialize_with_their_codes() {
 }
 
 #[test]
-fn a_tuner_of_only_home_tags_makes_no_strip_of_its_own() {
+fn a_tuner_of_only_home_tags_needs_a_label_and_a_group() {
     // A strip feature, as `+REVERB`: its label and group count.
     assert_eq!(
         parse("+HOME:-6").problems,

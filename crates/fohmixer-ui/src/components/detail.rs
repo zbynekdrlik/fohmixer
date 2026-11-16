@@ -283,7 +283,8 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
             })
         }
     });
-    let db = volume.map(|slot| view! { <DbView state=slot /> });
+    let home_at = strip.home_db.unwrap_or(0.0);
+    let db = volume.map(|slot| view! { <DbView state=slot home_db=home_at /> });
     let link_on = parts.link_on;
     let link_partners = parts.partners;
     // A reverb strip (#130, D18; PR 5 review M1): REVERB's marks on the

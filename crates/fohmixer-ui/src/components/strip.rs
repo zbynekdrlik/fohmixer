@@ -30,7 +30,7 @@ use super::meter::StatusView;
 use super::rec::ArmKey;
 use super::{Settings, key_of, owns_touches, trace_detail};
 use crate::arrange::GroupLabel;
-use crate::behave::db_text::db_text;
+use crate::behave::db_text::db_text_at;
 use crate::behave::fader::{VolumeLaw, home_volume};
 use crate::behave::hold::{HINT_MS, HOLD_MS, Hold, Lift};
 use crate::behave::label::{mark_look, set_text, shown_label};
@@ -191,8 +191,17 @@ fn InfoColumn(
 /// Live's dB readout in TouchOSC's form (one decimal, no unit, white exactly
 /// at 0 dB).
 #[component]
-pub fn DbView(state: RwSignal<Slot>) -> impl IntoView {
-    let text = Memo::new(move |_| state.try_with(|s| s.display().and_then(db_text)).flatten());
+pub fn DbView(
+    state: RwSignal<Slot>,
+    /// The strip's home level (#225): white exactly there, 0 dB without.
+    #[prop(optional)]
+    home_db: f64,
+) -> impl IntoView {
+    let text = Memo::new(move |_| {
+        state
+            .try_with(|s| s.display().and_then(|d| db_text_at(d, home_db)))
+            .flatten()
+    });
     let shown = move || text.try_get().flatten().map(|t| t.text).unwrap_or_default();
     let unity = move || text.try_get().flatten().is_some_and(|t| t.unity);
     view! {
@@ -510,7 +519,8 @@ pub fn StripView(
             })
         }
     });
-    let db = volume.map(|slot| view! { <DbView state=slot /> });
+    let home_at = strip.home_db.unwrap_or(0.0);
+    let db = volume.map(|slot| view! { <DbView state=slot home_db=home_at /> });
     let mark_word = look.map(|(_, word)| {
         view! { <span class="strip-mark" data-testid="strip-mark">{word}</span> }
     });
