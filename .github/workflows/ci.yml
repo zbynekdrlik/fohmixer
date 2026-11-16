@@ -270,7 +270,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "build_amxd.py failed for the LUFS device ($LASTEXITCODE)" }
           python live-device/FohMixer-LUFS/build_amxd.py --patch 'live-device/FohMixer-Meter/FohMixer Meter.maxpat' --out (Join-Path $out 'FohMixer Meter.amxd')
           if ($LASTEXITCODE -ne 0) { throw "build_amxd.py failed for the meter device ($LASTEXITCODE)" }
-      - name: Zip the bundle (hub, tray, FohMixer script, the two devices, PC scripts, VERSION, SHA256SUMS)
+          python live-device/FohMixer-LUFS/build_amxd.py --patch 'live-device/FohMixer-Listen/FohMixer Listen.maxpat' --out (Join-Path $out 'FohMixer Listen.amxd')
+          if ($LASTEXITCODE -ne 0) { throw "build_amxd.py failed for the Listen device ($LASTEXITCODE)" }
+      - name: Zip the bundle (hub, tray, FohMixer script, the three devices, PC scripts, VERSION, SHA256SUMS)
         id: zip
         shell: powershell
         run: |
@@ -310,7 +312,7 @@ jobs:
             if (-not (Test-Path -LiteralPath (Join-Path $lib 'Remote Scripts\FohMixer\version.py') -PathType Leaf)) { throw "no FohMixer copy in $lib" }
           }
           foreach ($lib in @($band, $master)) {
-            foreach ($d in @('FohMixer LUFS.amxd', 'FohMixer Meter.amxd')) {
+            foreach ($d in @('FohMixer LUFS.amxd', 'FohMixer Meter.amxd', 'FohMixer Listen.amxd')) {
               if (-not (Test-Path -LiteralPath (Join-Path $lib "Presets\Audio Effects\Max Audio Effect\$d") -PathType Leaf)) { throw "no $d in $lib" }
             }
           }
@@ -588,6 +590,7 @@ jobs:
             --iem-ancestors https://foh.e2e.test:8443 \
             --fake-presenter-port 39195 \
             --mbc-hub-port 8490 --mbc-port 39103 --mbc-link-port 39196 --mbc-lufs-port 39111 \
+            --listen-port 39197 --listen-select-port 39198 \
             --log-dir "$RUNNER_TEMP/e2e-logs" > "$RUNNER_TEMP/e2e-logs/harness.log" 2>&1 &
           for i in $(seq 1 60); do
             if curl -sf http://127.0.0.1:39190/health > /dev/null \

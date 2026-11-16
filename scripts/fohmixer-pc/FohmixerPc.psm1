@@ -27,12 +27,12 @@ $script:BundleFiles = @('VERSION', 'fohmixer-hub.exe', 'fohmixer-tray.exe', 'THI
     'FohmixerLivePrefs.ps1', 'FohmixerFirewall.ps1', 'FohmixerRemote.ps1', 'FohmixerTray.ps1', 'FohmixerHubProcess.ps1',
     'FohmixerTasks.ps1', 'FohmixerTables.ps1', 'FohmixerMbc.ps1', 'Start-FohmixerHub.ps1', 'Stop-FohmixerHub.ps1', 'mbc-frame.json',
     'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py',
-    'live-device/FohMixer LUFS.amxd', 'live-device/FohMixer Meter.amxd')
-# The Max for Live devices (#151): the bundle's live-device\ folder, built by
+    'live-device/FohMixer LUFS.amxd', 'live-device/FohMixer Meter.amxd', 'live-device/FohMixer Listen.amxd')
+# The Max for Live devices (#151; #210 added Listen): the bundle's live-device\ folder, built by
 # live-device/FohMixer-LUFS/build_amxd.py (never committed), installed into
 # each Live user's User Library at Presets\Audio Effects\Max Audio Effect.
 $script:DeviceDir = 'live-device'
-$script:Devices = @('FohMixer LUFS.amxd', 'FohMixer Meter.amxd')
+$script:Devices = @('FohMixer LUFS.amxd', 'FohMixer Meter.amxd', 'FohMixer Listen.amxd')
 $script:DevicePresets = 'Presets\Audio Effects\Max Audio Effect'
 # The MBC hub's frame (#184), in the bundle beside the scripts.
 $script:MbcFrame = 'mbc-frame.json'
