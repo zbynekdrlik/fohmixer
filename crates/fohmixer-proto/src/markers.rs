@@ -6,7 +6,8 @@
 //!   their places, `+PIN`, `+MG`, the linked mute's `+ID:<id>` and
 //!   `+MUTE:<id>` (#127), the fader link's `+FADER:<id>` and the REVERB
 //!   rule's `+REVERB` (#130), the AUTOTUNE rule's `+AUTOTUNE` (#104), a
-//!   frame control's `+CTRL:<id>` (#104), and every problem as a value
+//!   frame control's `+CTRL:<id>` (#104), the Claps track's `+CLAPS`
+//!   (#220), and every problem as a value
 //!   (never an error: a problem is shown on the strip, I9).
 //! - [`compose`] turns the frame (the layout file: pages, rows, the rail)
 //!   and the markers the hub found into the served layout: a frame group
@@ -103,6 +104,8 @@ pub struct Marker {
     /// `+CTRL:<id>` (#104): the frame controls this track binds, each id
     /// once.
     pub ctrls: Vec<CtrlId>,
+    /// `+CLAPS` (#220): the track the surface claps on (one per Live set).
+    pub claps: bool,
     pub problems: Vec<TagProblem>,
 }
 
@@ -121,6 +124,7 @@ impl Marker {
             && !self.pin
             && !self.mute_guard
             && !self.reverb
+            && !self.claps
             && self.lufs.is_none()
             && self.problems.first() == Some(&TagProblem::NoLabel)
     }
@@ -193,6 +197,9 @@ pub enum TagProblem {
     /// Another Tuner of the Live set carries the same `+CTRL:` id: which
     /// track is meant is not known, so neither binds (#104).
     DuplicateCtrl { id: CtrlId },
+    /// Another Tuner of the Live set carries `+CLAPS` too: which track
+    /// claps is not known, so neither does (#220).
+    DuplicateClaps,
 }
 
 impl TagProblem {
@@ -284,6 +291,7 @@ pub fn parse(name: &str) -> Marker {
             "PIN" => marker.pin = true,
             "MG" => marker.mute_guard = true,
             "REVERB" => marker.reverb = true,
+            "CLAPS" => marker.claps = true,
             "AUTOTUNE" => autotune_tag(&mut marker, token, Some(AutotuneOn::Max)),
             "LUFS" => lufs_tag(&mut marker, token, Some(LufsSpec { target: None })),
             _ => {
@@ -525,6 +533,12 @@ pub fn frame_problems(frame: &Layout) -> Vec<LayoutError> {
         &mut out,
         |c| matches!(c, Control::Strip(s) if s.reverb),
         "a reverb fader: the Tuner markers make those",
+    );
+    refuse(
+        frame,
+        &mut out,
+        |c| matches!(c, Control::Strip(s) if s.claps),
+        "the Claps track: the Tuner markers make it",
     );
     refuse(
         frame,
@@ -808,6 +822,7 @@ impl Entry<'_> {
             mark,
             mute_links: self.links.clone(),
             reverb: self.marker.reverb && self.marker.label.is_some() && !self.conflict(),
+            claps: self.marker.claps && !self.problems.contains(&TagProblem::DuplicateClaps),
             fader_link: self.leads.clone(),
             fader_follows: self.follows.clone(),
             lufs: self.marker.lufs,
@@ -1007,6 +1022,20 @@ fn fill_links(layout: &mut Layout, frame: &[(LinkId, String)], partners: &[Vec<L
             *targets = partners[i].iter().map(volume_target).collect();
         }
     });
+}
+
+/// `+CLAPS` on two or more Tuners of one Live set (#220): a problem on
+/// each, and none claps (the device plays on one track).
+fn duplicate_claps(entries: &mut [Entry<'_>]) {
+    let mut count: BTreeMap<String, usize> = BTreeMap::new();
+    for entry in entries.iter().filter(|e| e.marker.claps) {
+        *count.entry(entry.found.instance.clone()).or_default() += 1;
+    }
+    for entry in entries.iter_mut().filter(|e| e.marker.claps) {
+        if count.get(&entry.found.instance).copied().unwrap_or(0) > 1 {
+            entry.problems.push(TagProblem::DuplicateClaps);
+        }
+    }
 }
 
 /// The `+AUTOTUNE` tracks (#104), placed or not, in Live's order (the
@@ -1215,6 +1244,7 @@ pub fn compose_with(frame: &Layout, found: &[Found], linked: &BTreeSet<String>) 
     let frame_partners = link_faders(&mut entries, &ids, &frame_links);
     let ctrls = ctrl::carriers(&entries);
     ctrl::mark_duplicates(&mut entries, &ctrls);
+    duplicate_claps(&mut entries);
     // A linked Live's markers (#184) are a domain of their own: their tag
     // groups never fill a frame group or a local view, and a local pin
     // never joins them (nor theirs a local view).

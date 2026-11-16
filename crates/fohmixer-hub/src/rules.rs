@@ -23,6 +23,8 @@ use serde::{Deserialize, Serialize};
 
 #[path = "rules/autotune.rs"]
 pub mod autotune;
+#[path = "rules/claps.rs"]
+pub mod claps;
 #[path = "rules/links.rs"]
 pub mod links;
 #[path = "rules/lufs.rs"]

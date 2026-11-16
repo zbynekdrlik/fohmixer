@@ -16,6 +16,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod claps;
 pub mod client;
 pub mod colors;
 pub mod eq;

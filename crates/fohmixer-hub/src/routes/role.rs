@@ -163,6 +163,7 @@ pub fn status_for(role: Role, status: HubStatus) -> HubStatus {
             },
             link: None,
             listen: Default::default(),
+            claps: Default::default(),
         },
     }
 }

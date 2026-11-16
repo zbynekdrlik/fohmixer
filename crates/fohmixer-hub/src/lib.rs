@@ -66,6 +66,7 @@ pub mod acme;
 pub mod auth;
 pub mod automation;
 pub mod cf_token;
+pub mod claps_udp;
 pub mod client_report;
 pub mod clock;
 pub mod cloudflare;
@@ -499,6 +500,7 @@ impl HubInner {
                 .as_ref()
                 .map(|l| l.status(std::time::Instant::now()))
                 .unwrap_or_default(),
+            claps: router.claps,
         }
     }
 }
@@ -668,7 +670,11 @@ impl Hub {
             .with_layout(Arc::clone(&layout))
             .with_beat(beat)
             .with_engage_delay(config.autotune.engage_delay_ms)
-            .with_scenes(automation.is_some() || scene_source.is_some());
+            .with_scenes(automation.is_some() || scene_source.is_some())
+            .with_claps(router::ClapsSetup {
+                notes: config.claps.notes.clone(),
+                device_port: config.claps.device_port,
+            });
         tasks.push(tokio::spawn(router::beat_ticks(
             router_tx.clone(),
             Duration::from_millis(live::client::ROUTER_BEAT_MS),
@@ -736,6 +742,17 @@ impl Hub {
             tasks.extend(listen_tasks);
             listen
         });
+        // Claps from the surface (#220): the device's hello on 127.0.0.1
+        // (a port taken is recorded and the hub runs on), and the tick that
+        // sends it its words again.
+        if config.claps.port != 0
+            && let Ok((_, task)) = claps_udp::spawn(config.claps.port, router_tx.clone())
+        {
+            tasks.push(task);
+        }
+        if config.claps.device_port != 0 {
+            tasks.push(tokio::spawn(claps_udp::ticks(router_tx.clone())));
+        }
         if lufs_ticks_due(config.lufs.port, &linked) {
             tasks.push(tokio::spawn(router::lufs_ticks(
                 router_tx.clone(),

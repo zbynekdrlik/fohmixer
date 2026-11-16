@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
+use fohmixer_proto::claps::ClapsState;
 use fohmixer_proto::client::{
     CLOSE_RELOAD, ClientMsg, DeckKey, LiveCommand, POLICY_META, ServerMsg,
 };
@@ -191,6 +192,9 @@ pub struct LiveStore {
     /// The recording watch (#172): the hub's last state, kept through a
     /// reconnect, stale until the hub's next.
     pub rec: RwSignal<HubRec>,
+    /// Claps from the surface (#220): the hub's last state and the page
+    /// time (epoch ms) it came at; none before a hub told one.
+    pub claps: RwSignal<Option<(ClapsState, f64)>>,
     /// The fader sectors (#148): the hub's last document,
     /// kept through a reconnect, stale until the hub's next (`HubSectors`).
     pub sectors: RwSignal<HubSectors>,
@@ -267,6 +271,7 @@ impl LiveStore {
             reverb: RwSignal::new(HubReverb::default()),
             autotune: RwSignal::new(HubAutotune::default()),
             rec: RwSignal::new(HubRec::default()),
+            claps: RwSignal::new(None),
             sectors: RwSignal::new(HubSectors::default()),
             colors: RwSignal::new(HubColors::default()),
             mute_alarms: RwSignal::new(HubMuteAlarms::default()),
@@ -690,6 +695,10 @@ impl LiveStore {
             // The recording watch (#172): the ARM keys and the foot read it.
             ServerMsg::Rec(state) => {
                 let _ = self.rec.try_update(|rec| rec.put(state));
+            }
+            // Claps from the surface (#220): the Claps strip reads it.
+            ServerMsg::Claps(state) => {
+                let _ = self.claps.try_set(Some((state, epoch)));
             }
             ServerMsg::Layout { rev } => self.on_layout(rev),
             ServerMsg::Result { id, data } => self.finish(&id, Ok(data)),

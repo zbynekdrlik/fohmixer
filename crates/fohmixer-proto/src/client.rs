@@ -318,6 +318,13 @@ pub enum ClientMsg {
         scene: String,
         rule: Option<SceneRule>,
     },
+    /// A tap of the Claps strip's TAP (#220), at page time `t` (ms): the
+    /// hub snaps it to the nearest whole beat of Live's bar.
+    ClapTap { t: f64 },
+    /// A beat dot of the Claps strip switched (#220): `beat` 0 to 3.
+    ClapBeat { beat: u8, on: bool },
+    /// TAP held 1 s (#220): nothing claps, the pattern clears.
+    ClapStop,
 }
 
 /// One write's outcome (#43, an `ack` item): Live ran it (`value`: what
@@ -629,6 +636,11 @@ pub enum ServerMsg {
     /// The recording watch (#172): the `band` Live's transport, its record
     /// button and its armable tracks; at attach and on every change.
     Rec(RecState),
+    /// Claps from the surface (#220): the Claps strip's phase, its
+    /// pattern and Live's playhead; at attach and on every change (none
+    /// a hub always tells it; a layout without a `+CLAPS` strip
+    /// shows no TAP).
+    Claps(crate::claps::ClapsState),
     /// The loudness points' readings (#151, spec §5.3): each changed
     /// strip's latest, paced with the meters (#51).
     Lufs { items: Vec<LufsItem> },
@@ -1724,6 +1736,10 @@ pub struct HubStatus {
     /// the defaults in an older hub's answer.
     #[serde(default)]
     pub listen: crate::listen::ListenStatus,
+    /// Claps from the surface (#220): the Claps track, the phase, what the
+    /// device is told and was heard; the defaults in an older hub's answer.
+    #[serde(default)]
+    pub claps: crate::claps::ClapsStatus,
 }
 
 /// `/api/status` `link` (#184): the instance link a hub serves: where it

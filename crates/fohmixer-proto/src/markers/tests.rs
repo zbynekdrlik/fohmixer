@@ -681,6 +681,7 @@ fn a_marker_without_a_label_shows_its_tracks_number_and_is_known_by_it() {
         mark: None,
         mute_links: Vec::new(),
         reverb: false,
+        claps: false,
         fader_link: None,
         fader_follows: Vec::new(),
         lufs: None,
@@ -1172,6 +1173,75 @@ fn reverb_marks_a_strip_of_the_rule_and_never_one_in_conflict() {
         "a conflict's label is no identity"
     );
     assert!(!strip_in(&composed.layout, "hands", "Rev").reverb);
+}
+
+#[test]
+fn claps_marks_the_one_claps_track_of_a_live_set() {
+    let marker = parse(r#""CLAPS" +G:VOCALS +CLAPS"#);
+    assert!(marker.claps);
+    assert!(marker.problems.is_empty(), "{:?}", marker.problems);
+    assert!(!parse(r#""Vox 1" +G:VOCALS"#).claps);
+    // A Tuner of `+CLAPS` alone is a strip's marker: it misses its label
+    // and group.
+    assert_eq!(
+        parse("+CLAPS").problems,
+        vec![TagProblem::NoLabel, TagProblem::NoGroup]
+    );
+    let composed = compose(
+        &frame(),
+        &[
+            found("band", TrackKind::Track, 4, r#""CLAPS" +G:VOCALS +CLAPS"#),
+            found("band", TrackKind::Track, 6, r#""Vox 1" +G:VOCALS"#),
+            // The other Live set's own Claps track is no second one here.
+            found("master", TrackKind::Track, 2, r#""CL M" +G:HANDS +CLAPS"#),
+        ],
+    );
+    assert!(strip_in(&composed.layout, "vocals", "CLAPS").claps);
+    assert!(!strip_in(&composed.layout, "vocals", "Vox 1").claps);
+    assert!(strip_in(&composed.layout, "hands", "CL M").claps);
+    let track = composed.layout.claps_track().expect("a claps track");
+    assert_eq!(
+        (
+            track.instance.as_str(),
+            track.index,
+            track.track.as_str(),
+            track.label.as_str()
+        ),
+        ("band", 4, "live_set tracks 4", "CLAPS")
+    );
+}
+
+#[test]
+fn a_second_claps_track_of_a_live_set_is_a_problem_on_both_and_neither_claps() {
+    let composed = compose(
+        &frame(),
+        &[
+            found("band", TrackKind::Track, 4, r#""CL A" +G:VOCALS +CLAPS"#),
+            found("band", TrackKind::Track, 6, r#""CL B" +G:VOCALS +CLAPS"#),
+        ],
+    );
+    for label in ["CL A", "CL B"] {
+        let strip = strip_in(&composed.layout, "vocals", label);
+        assert!(!strip.claps, "{label}");
+        assert_eq!(strip.mark, Some(StripMark::Problem), "{label}");
+    }
+    assert_eq!(composed.layout.claps_track(), None);
+}
+
+#[test]
+fn a_frame_strip_cannot_be_the_claps_track() {
+    let frame: Layout = serde_json::from_value(
+        json!({"schema": 2, "default_page": "p", "pages": [{"id": "p", "title": "P",
+        "rows": [{"sections": [{"kind": "group", "id": "g", "controls": [{"kind": "strip",
+            "binding": {"instance": "band", "anchor": {"kind": "track", "name": "Claps #"}},
+            "strip_kind": "standard", "claps": true}]}]}]}]}),
+    )
+    .unwrap();
+    let messages: Vec<String> = frame_problems(&frame)
+        .into_iter()
+        .map(|e| e.message)
+        .collect();
+    assert_eq!(messages, ["the Claps track: the Tuner markers make it"]);
 }
 
 #[test]
