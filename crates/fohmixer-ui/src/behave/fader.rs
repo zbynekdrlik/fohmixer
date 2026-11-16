@@ -23,6 +23,13 @@ use super::{Down, Lost, Motion, Start, Taken, TouchEnd, touch_end};
 // Live's volume law in dB, shared with the hub (#130, `fohmixer_proto::volume`).
 pub use fohmixer_proto::volume::{UNITY, audio_for_db_change, value2db};
 
+/// The Live volume a strip's fader calls home (#225): where its unity mark
+/// sits and its double tap glides. The strip's home level (its Tuner's
+/// `+HOME:<dB>`) on the strips' law, else 0 dB.
+pub fn home_volume(home_db: Option<f64>) -> f64 {
+    home_db.map_or(UNITY, fohmixer_proto::volume::volume_of)
+}
+
 /// TouchOSC's position ↔ Live volume exponent: `v = p^0.515` (−6 dB at
 /// half travel).
 pub const EXPONENT: f64 = 0.515;
@@ -830,3 +837,6 @@ mod tests;
 
 #[cfg(test)]
 mod touch_start_tests;
+
+#[cfg(test)]
+mod home_tests;

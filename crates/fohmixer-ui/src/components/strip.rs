@@ -31,7 +31,7 @@ use super::rec::ArmKey;
 use super::{Settings, key_of, owns_touches, trace_detail};
 use crate::arrange::GroupLabel;
 use crate::behave::db_text::db_text;
-use crate::behave::fader::{UNITY, VolumeLaw};
+use crate::behave::fader::{VolumeLaw, home_volume};
 use crate::behave::hold::{HINT_MS, HOLD_MS, Hold, Lift};
 use crate::behave::label::{mark_look, set_text, shown_label};
 use crate::behave::live_down::LiveWord;
@@ -40,7 +40,7 @@ use crate::behave::lufs::{
 };
 use crate::behave::mute_alarm::strip_attr;
 use crate::behave::reverb::held_low;
-use crate::behave::scale::{tick_label, tick_pos, ticks};
+use crate::behave::scale::{tick_label, tick_pos, ticks, unity_style};
 use crate::binding::{detail_keys, strip_subs};
 use crate::dom;
 use crate::store::{LiveStore, Slot};
@@ -393,6 +393,8 @@ pub fn StripView(
     // A reverb strip (#130, D18): REVERB's marks on its fader, and its
     // readout in the rule's colour while the rule holds it low.
     let reverb = strip.reverb;
+    // The strip's home (#225): its unity mark and its double tap's target.
+    let home_level = home_volume(strip.home_db);
     let volume_key = StoredValue::new(subs.volume.as_ref().map(key_of).unwrap_or_default());
     let low = move || {
         reverb
@@ -419,6 +421,7 @@ pub fn StripView(
                 link_on=link_on
                 reverb=reverb
                 meters=track_meters
+                home_level=home_level
             />
         }
     });
@@ -547,8 +550,9 @@ pub fn StripView(
     let strip_instance = instance;
     let wide = strip.wide;
     let law = settings.law;
-    // The unity mark at 0 dB on the fader's law (`strip.css` `.fader::after`).
-    let unity = format!("--u:{:.4};", law.to_pos(UNITY));
+    // The unity mark at the strip's home on the fader's law (#225; 0 dB
+    // unless its Tuner carries `+HOME:<dB>`; `strip.css` `.fader::after`).
+    let unity = unity_style(law, home_level);
     // The fader link's mark (#130): `link.css` gives a leader's cap line
     // the accent.
     let flink_attr = move || flink.try_get().unwrap_or_default().name();

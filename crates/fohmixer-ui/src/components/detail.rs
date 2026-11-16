@@ -35,10 +35,11 @@ use super::{
     Settings, fail_flash, key_of, owns_touches, readiness, readiness_now, trace_detail, trace_touch,
 };
 use crate::behave::colour::colour_style;
-use crate::behave::fader::UNITY;
+use crate::behave::fader::home_volume;
 use crate::behave::hold::guard_left;
 use crate::behave::label::shown_label;
 use crate::behave::reverb::held_low;
+use crate::behave::scale::unity_style;
 use crate::binding::channels::Picked;
 use crate::binding::{CLOSE_EXIT, SubSpec, detail_keys, detail_subs};
 use crate::dom;
@@ -289,6 +290,8 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
     // detail's fader too, and its readout in the rule's colour while the
     // rule holds it low (the detail covers the strip).
     let reverb = strip.reverb;
+    // The strip's home (#225): its unity line and its double tap's target.
+    let home_level = home_volume(strip.home_db);
     let volume_key = StoredValue::new(subs.volume.as_ref().map(key_of).unwrap_or_default());
     let low = move || {
         reverb
@@ -312,6 +315,7 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
                 partners=link_partners
                 link_on=link_on
                 reverb=reverb
+                home_level=home_level
             />
         }
     });
@@ -345,8 +349,9 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
         }
         (None, true) => None,
     };
-    // The unity line at 0 dB on the fader's law (`strip.css` `.fader::after`).
-    let unity = format!("--u:{:.4};", law.to_pos(UNITY));
+    // The unity line at the strip's home on the fader's law (#225; 0 dB
+    // unless its Tuner carries `+HOME:<dB>`; `strip.css` `.fader::after`).
+    let unity = unity_style(law, home_level);
     let pan_view = pan
         .zip(subs.pan.clone())
         .map(|(slot, spec)| view! { <PanView state=slot spec=spec /> });

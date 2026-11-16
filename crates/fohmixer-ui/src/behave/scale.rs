@@ -26,6 +26,12 @@ pub fn tick_pos(law: VolumeLaw, db: f64) -> f64 {
     law.to_pos(audio_for_db_change(UNITY, db))
 }
 
+/// The unity mark's place on law `law` as the CSS variable `--u` (#225: at
+/// the fader's home, Live's volume `home`, `fader::home_volume`).
+pub fn unity_style(law: VolumeLaw, home: f64) -> String {
+    format!("--u:{:.4};", law.to_pos(home))
+}
+
 /// Where the meter turns yellow and red (TouchOSC's meter colours, dB on the
 /// fader scale).
 pub const YELLOW_DB: f64 = -12.0;
@@ -120,6 +126,33 @@ mod tests {
         let style = zone_style(VolumeLaw::Live);
         assert!(style.starts_with("--yellow:55.0"), "{style}");
         assert!(style.contains(";--red:77.5"), "{style}");
+    }
+
+    #[test]
+    fn the_unity_mark_sits_at_the_faders_home() {
+        use crate::behave::fader::home_volume;
+        // No home level: 0 dB, as before (#225).
+        assert_eq!(
+            unity_style(VolumeLaw::Live, home_volume(None)),
+            "--u:0.8500;"
+        );
+        assert_eq!(
+            unity_style(VolumeLaw::TouchOsc, home_volume(None)),
+            format!("--u:{:.4};", VolumeLaw::TouchOsc.to_pos(UNITY))
+        );
+        // `+HOME:-6`: the −6 dB tick's place.
+        for law in LAWS {
+            assert_eq!(
+                unity_style(law, home_volume(Some(-6.0))),
+                format!("--u:{:.4};", tick_pos(law, -6.0)),
+                "{law:?}"
+            );
+        }
+        assert_eq!(
+            unity_style(VolumeLaw::Live, home_volume(Some(-6.0))),
+            "--u:0.7000;"
+        );
+        assert_eq!(unity_style(VolumeLaw::Live, 1.0), "--u:1.0000;");
     }
 
     #[test]
