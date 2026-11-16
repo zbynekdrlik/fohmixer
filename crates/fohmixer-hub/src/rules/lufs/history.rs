@@ -273,6 +273,9 @@ pub enum WindowError {
     Empty,
     /// Longer than [`MAX_SPAN_MS`].
     TooLong,
+    /// Its seconds do not fit the clock's range (PR #223's review: the
+    /// arithmetic would overflow).
+    OutOfRange,
 }
 
 impl WindowError {
@@ -280,21 +283,28 @@ impl WindowError {
         match self {
             WindowError::Empty => "the window ends before it starts",
             WindowError::TooLong => "the window is longer than 24 h",
+            WindowError::OutOfRange => "the window is out of range",
         }
     }
 }
 
 /// A window's seconds: the first whole second at or before `from` and how
-/// many seconds up to `to` (not included).
+/// many seconds up to `to` (not included). Every step is checked: a window
+/// whose start, length or end (`start + n * 1000`) leaves the clock's range
+/// is [`WindowError::OutOfRange`].
 pub fn window(from: i64, to: i64) -> Result<(i64, usize), WindowError> {
     if to <= from {
         return Err(WindowError::Empty);
     }
-    if to - from > MAX_SPAN_MS {
+    let span = to.checked_sub(from).ok_or(WindowError::TooLong)?;
+    if span > MAX_SPAN_MS {
         return Err(WindowError::TooLong);
     }
-    let start = second_of(from);
+    let start = from
+        .checked_sub(from.rem_euclid(1000))
+        .ok_or(WindowError::OutOfRange)?;
     let n = (to - start + 999) / 1000;
+    start.checked_add(n * 1000).ok_or(WindowError::OutOfRange)?;
     Ok((start, n as usize))
 }
 

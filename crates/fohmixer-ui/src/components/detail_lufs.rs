@@ -11,17 +11,17 @@
 use std::time::Duration;
 
 use fohmixer_proto::layout::{LufsSpec, Strip};
-use fohmixer_proto::lufs::{HistoryDay, HistorySeries, caption};
+use fohmixer_proto::lufs::{HistoryDay, caption};
 use leptos::html;
 use leptos::prelude::*;
 
 use super::{down_of, owns_touches};
 use crate::behave::lufs::{look, point_key};
 use crate::behave::lufs_history::{
-    BOX, DEFAULT_SPAN_MS, Gesture, HOLD_MS, MINUTE_MS, OnDown, Press, SECOND_MS, Tab, View,
-    WINDOWS, band, column_at, columns, cursor_text, cursor_time, day_chip, edge_reading, hh_mm,
-    keep_tail, local_day, on_down, pct, push_reading, refresh, runs, samples, scale, second_of,
-    series_end, shown_tab, tab_row, tabs, target_text, tick_label, time_ticks, x_frac, x_of, y_of,
+    Answers, BOX, DEFAULT_SPAN_MS, Gesture, HOLD_MS, MINUTE_MS, OnDown, Press, SECOND_MS, Tab,
+    View, WINDOWS, band, column_at, columns, cursor_text, cursor_time, day_chip_at, edge_reading,
+    keep_tail, on_down, pct, push_reading, refresh, retry_series, runs, samples, scale, second_of,
+    series_end, shown_tab, tab_row, tabs, target_text, tick_label, tick_marks, x_frac, x_of, y_of,
 };
 use crate::dom;
 use crate::store::LiveStore;
@@ -144,27 +144,24 @@ struct Lh {
     kept_span: RwSignal<i64>,
     shown: RwSignal<View>,
     now: RwSignal<i64>,
-    series: RwSignal<HistorySeries>,
+    answers: RwSignal<Answers>,
     tail: RwSignal<Vec<(i64, Option<i16>)>>,
     days: RwSignal<Vec<HistoryDay>>,
     cursor: RwSignal<Option<i64>>,
-    asked: StoredValue<u64>,
     window: Memo<(i64, i64)>,
     cols: Memo<Vec<Option<i16>>>,
 }
 
 impl Lh {
-    /// The hub's series for the window shown; an answer older than the last
-    /// ask is dropped.
+    /// The hub's series for the window shown; an answer older than the
+    /// newest ask is dropped, a failed one keeps the last answer drawn
+    /// (`Answers`).
     fn fetch(self) {
         let Some(v) = self.shown.try_get_untracked() else {
             return;
         };
         let (t0, t1) = v.window(wall_ms());
-        let Some(n) = self.asked.try_update_value(|a| {
-            *a += 1;
-            *a
-        }) else {
+        let Some(n) = self.answers.try_update(Answers::ask) else {
             return;
         };
         let Some((instance, path)) = self.point.try_get_value() else {
@@ -175,15 +172,15 @@ impl Lh {
             v.state()
         ));
         leptos::task::spawn_local(async move {
-            let Some(got) = self.store.lufs_history(&instance, &path, t0, t1).await else {
-                return;
-            };
-            if self.asked.try_get_value() != Some(n) {
-                return;
+            let got = self.store.lufs_history(&instance, &path, t0, t1).await;
+            let end = got.as_ref().map(series_end);
+            let taken = self
+                .answers
+                .try_update(|a| a.answer(n, got))
+                .unwrap_or(false);
+            if taken && let Some(end) = end {
+                let _ = self.tail.try_update(|t| keep_tail(t, end));
             }
-            let end = series_end(&got);
-            let _ = self.tail.try_update(|t| keep_tail(t, end));
-            let _ = self.series.try_set(got);
         });
     }
 
@@ -228,7 +225,11 @@ impl Lh {
             .try_with_untracked(|d| !d.is_empty())
             .unwrap_or(true);
         let again = refresh(n, v.is_live(), known);
-        if again.series {
+        let failed = self
+            .answers
+            .try_with_untracked(Answers::failed)
+            .unwrap_or(false);
+        if again.series || retry_series(n, failed) {
             self.fetch();
         }
         if again.days {
@@ -258,7 +259,7 @@ pub fn DetailLufs(strip: Strip) -> impl IntoView {
         middle.span.try_get_untracked().unwrap_or(DEFAULT_SPAN_MS),
     ));
     let now = RwSignal::new(wall_ms());
-    let series = RwSignal::new(HistorySeries::default());
+    let answers = RwSignal::new(Answers::default());
     let tail = RwSignal::new(Vec::<(i64, Option<i16>)>::new());
     let window = Memo::new(move |_| {
         let t = now.try_get().unwrap_or(0);
@@ -269,7 +270,10 @@ pub fn DetailLufs(strip: Strip) -> impl IntoView {
     });
     let cols = Memo::new(move |_| {
         let (t0, t1) = window.try_get().unwrap_or((0, 1));
-        let mut all = series.try_with(samples).unwrap_or_default();
+        let mut all = answers
+            .try_with(|a| a.drawn().map(samples))
+            .flatten()
+            .unwrap_or_default();
         all.extend(tail.try_get().unwrap_or_default());
         columns(&all, t0, t1)
     });
@@ -280,11 +284,10 @@ pub fn DetailLufs(strip: Strip) -> impl IntoView {
         kept_span: middle.span,
         shown,
         now,
-        series,
+        answers,
         tail,
         days: RwSignal::new(Vec::new()),
         cursor: RwSignal::new(None),
-        asked: StoredValue::new(0),
         window,
         cols,
     };
@@ -309,8 +312,14 @@ pub fn DetailLufs(strip: Strip) -> impl IntoView {
         }
     });
     let state = move || shown.try_with(View::state).unwrap_or("live");
+    let failed = move || {
+        answers
+            .try_with(Answers::failed)
+            .unwrap_or(false)
+            .to_string()
+    };
     view! {
-        <div class="lh" data-testid="lufs-history" data-state=state>
+        <div class="lh" data-testid="lufs-history" data-state=state data-failed=failed>
             <LufsHead lh=lh spec=spec />
             <LufsGraph lh=lh />
             <LufsDays lh=lh />
@@ -450,10 +459,9 @@ fn LufsGraph(lh: Lh) -> impl IntoView {
     });
     let x_parts = Memo::new(move |_| {
         let (t0, t1) = lh.window.try_get().unwrap_or((0, 1));
-        let offset = offset_at(t1);
-        time_ticks(t0, t1, offset)
+        tick_marks(t0, t1, offset_at)
             .into_iter()
-            .map(|t| (format!("left:{}", pct(x_of(t, t0, t1))), hh_mm(t, offset)))
+            .map(|(t, text)| (format!("left:{}", pct(x_of(t, t0, t1))), text))
             .collect::<Vec<_>>()
     });
     let y_lines = move || {
@@ -526,6 +534,7 @@ fn LufsGraph(lh: Lh) -> impl IntoView {
     };
     let drawn = move || line.try_with(Vec::len).unwrap_or(0);
     let drawn_any = move || drawn() > 0;
+    let answered = move || !lh.answers.try_with(Answers::failed).unwrap_or(false);
     let cursor_mark = move || {
         let t = lh.cursor.try_get().flatten()?;
         let (t0, t1) = lh.window.try_get()?;
@@ -664,6 +673,9 @@ fn LufsGraph(lh: Lh) -> impl IntoView {
                 <div class="lh-empty" data-testid="lufs-history-empty" hidden=drawn_any>
                     "NO LUFS IN THIS WINDOW"
                 </div>
+                <div class="lh-failed" data-testid="lufs-history-failed" hidden=answered>
+                    "NO ANSWER FROM THE HUB"
+                </div>
             </div>
             <div class="lh-x" aria-hidden="true">
                 {x_labels}
@@ -674,21 +686,19 @@ fn LufsGraph(lh: Lh) -> impl IntoView {
 
 /// The days that hold this point (newest first; only those, the
 /// show-only-used rule): a past day whole, today the live edge, each named
-/// by its first reading's local day (`day_chip`).
+/// by the UTC day its file holds (`day_chip_at`).
 #[component]
 fn LufsDays(lh: Lh) -> impl IntoView {
     let chips = move || {
         // Today from the clock of the last days read: the chips are drawn
         // again with each read (once a minute), not each second.
         let t = lh.now.try_get_untracked().unwrap_or_else(wall_ms);
-        let today = local_day(t, offset_at(t));
         lh.days
             .try_get()
             .unwrap_or_default()
             .into_iter()
             .map(|d| {
-                let first = local_day(d.first_ms, offset_at(d.first_ms));
-                let (label, is_today) = day_chip(first, today);
+                let (label, is_today) = day_chip_at(d, t);
                 let keys: Vec<String> = Vec::new();
                 let on = move || {
                     lh.shown

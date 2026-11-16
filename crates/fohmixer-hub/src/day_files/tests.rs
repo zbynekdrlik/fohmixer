@@ -203,3 +203,22 @@ fn the_thread_sweeps_first_flushes_each_burst_and_ends_with_its_handles() {
     );
     assert_eq!(SWEEP_EVERY, Duration::from_secs(3600));
 }
+
+#[test]
+fn the_newline_that_ends_a_torn_line_counts_toward_the_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let limits = Limits {
+        keep_days: 14,
+        day_cap: 12,
+    };
+    let day = date(2026, 11, 3);
+    // 7 bytes and the newline added: 8; a line of 5 takes it past 12.
+    std::fs::write(dir.path().join(file_name("lufs", day)), "partial").unwrap();
+    let mut files = DayFiles::new(dir.path().to_path_buf(), "lufs", "LUFS history", limits);
+    assert_eq!(
+        files.append(noon(day), "line\n", None, false),
+        Appended::CapReached
+    );
+    files.flush();
+    assert_eq!(read(dir.path(), "lufs", day), "partial\n");
+}

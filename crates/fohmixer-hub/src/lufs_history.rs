@@ -160,6 +160,7 @@ impl LufsHistory {
         to: i64,
     ) -> Result<HistorySeries, WindowError> {
         let (start, n) = window(from, to)?;
+        // `window` checked that the end fits.
         let end = start + n as i64 * 1000;
         let point: Point = (instance.to_string(), target.to_string());
         let covers = self.recorder().covers_from();
@@ -245,27 +246,48 @@ fn day_files_in(dir: &Path) -> Vec<(NaiveDate, PathBuf)> {
         .collect()
 }
 
-/// The minute lines of a day file, one at a time (none when it cannot be
-/// opened; a line that does not parse is skipped).
-fn lines_of(path: &Path) -> impl Iterator<Item = MinuteLine> {
-    std::fs::File::open(path)
-        .ok()
-        .map(BufReader::new)
-        .into_iter()
-        .flat_map(|reader| reader.lines().map_while(Result::ok))
-        .filter_map(|line| MinuteLine::parse(&line))
+/// Hands each minute line of a day file to `each`, one at a time (none
+/// when it cannot be opened; a read error ends the file). A line that is
+/// no UTF-8 or does not parse (a torn write) is skipped, never the rest of
+/// the file, and the file's skipped lines are noted once (#219); gives
+/// how many were skipped.
+fn each_line(path: &Path, mut each: impl FnMut(MinuteLine)) -> usize {
+    let Ok(file) = std::fs::File::open(path) else {
+        return 0;
+    };
+    let mut bad = 0;
+    for bytes in BufReader::new(file).split(b'\n').map_while(Result::ok) {
+        match std::str::from_utf8(&bytes).ok().and_then(MinuteLine::parse) {
+            Some(line) => each(line),
+            None => bad += 1,
+        }
+    }
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+    if let Some(note) = bad_lines_note(name.as_deref().unwrap_or_default(), bad) {
+        tracing::warn!("{note}");
+    }
+    bad
 }
 
-/// Red stub (#219).
-pub fn bad_lines_note(_file: &str, _bad: usize) -> Option<String> {
-    None
+/// The hub log's note on the lines of a day file `file` that were skipped
+/// (none when none was).
+pub fn bad_lines_note(file: &str, bad: usize) -> Option<String> {
+    let lines = if bad == 1 { "line" } else { "lines" };
+    (bad > 0).then(|| format!("LUFS history: skipped {bad} unreadable {lines} in {file}"))
 }
 
 /// The point's day in a day file: its first and last second heard.
 fn day_of(path: &Path, instance: &str, target: &str) -> Option<HistoryDay> {
-    lines_of(path)
-        .filter_map(|line| span_of(line.m, &line.slots(instance, target)?))
-        .fold(None, |day, span| Some(widen(day, span)))
+    let mut day = None;
+    each_line(path, |line| {
+        if let Some(span) = line
+            .slots(instance, target)
+            .and_then(|slots| span_of(line.m, &slots))
+        {
+            day = Some(widen(day, span));
+        }
+    });
+    day
 }
 
 /// Fills `slots` (one a second from `start`) from the day files of `dir`
@@ -282,14 +304,14 @@ fn read_window(dir: &Path, point: &Point, start: i64, end: i64, slots: &mut [i16
             continue;
         };
         let path = dir.join(day_files::file_name(STEM, date));
-        for line in lines_of(&path) {
+        each_line(&path, |line| {
             if line.m + MINUTE_MS <= start || line.m >= end {
-                continue;
+                return;
             }
             if let Some(values) = line.slots(&point.0, &point.1) {
                 place(line.m, &values, start, end, slots);
             }
-        }
+        });
     }
 }
 

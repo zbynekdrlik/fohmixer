@@ -13,7 +13,7 @@
 //!   each writer counts what a full queue drops on its own.
 
 use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
@@ -70,9 +70,22 @@ pub fn failure_note(what: &str, was_failing: bool, error: &std::io::Error) -> Op
     (!was_failing).then(|| format!("cannot write the {what}: {error}"))
 }
 
-/// Red stub (#219).
-pub fn needs_newline(_last: Option<u8>) -> bool {
-    false
+/// Whether a day file whose last byte is `last` (none: empty) needs a
+/// `\n` before the next line: a crash mid-write left its last line
+/// unfinished (#219), and a line appended onto it would be lost with it.
+pub fn needs_newline(last: Option<u8>) -> bool {
+    last.is_some_and(|b| b != b'\n')
+}
+
+/// The last byte of `file` (none when it is empty).
+fn last_byte(file: &mut File, size: u64) -> std::io::Result<Option<u8>> {
+    if size == 0 {
+        return Ok(None);
+    }
+    let mut byte = [0u8; 1];
+    file.seek(SeekFrom::Start(size - 1))?;
+    file.read_exact(&mut byte)?;
+    Ok(Some(byte[0]))
 }
 
 /// The open day file.
@@ -211,11 +224,17 @@ impl DayFiles {
         }
         if self.day.is_none() {
             std::fs::create_dir_all(&self.dir)?;
-            let file = OpenOptions::new()
+            let mut file = OpenOptions::new()
                 .create(true)
+                .read(true)
                 .append(true)
                 .open(self.dir.join(file_name(self.stem, date)))?;
-            let size = file.metadata()?.len();
+            let mut size = file.metadata()?.len();
+            if needs_newline(last_byte(&mut file, size)?) {
+                tracing::warn!(dir = %self.dir.display(), date = %date, "{}: the day file's last line was unfinished; ended it", self.what);
+                file.write_all(b"\n")?;
+                size += 1;
+            }
             self.day = Some(Day {
                 date,
                 out: BufWriter::new(file),

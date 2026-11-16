@@ -606,9 +606,8 @@ pub fn day_label(day: i64, today: i64) -> String {
     format!("{weekday} {date}.{month}")
 }
 
-/// A day chip (#219): its label and whether it is today (the live
-/// edge), by the local day of its first reading (`first_day`); the hub's
-/// days are UTC files, so one chip per file.
+/// A day chip's label and whether it is today, for the day `first_day`
+/// against `today` (both days since 1970-01-01; [`day_chip_at`] gives them).
 pub fn day_chip(first_day: i64, today: i64) -> (String, bool) {
     (day_label(first_day, today), first_day == today)
 }
@@ -749,49 +748,85 @@ pub fn days_answer(status: u16, body: &str) -> Result<Vec<HistoryDay>, String> {
     }
 }
 
-/// Red stubs (#219): replaced by the fix.
-pub fn utc_day(_t: i64) -> i64 {
-    0
+/// The UTC day of `t` (days since 1970-01-01): the day file it lies in.
+pub fn utc_day(t: i64) -> i64 {
+    t.div_euclid(DAY_MS)
 }
 
-/// Red stub.
-pub fn day_chip_at(_day: HistoryDay, _now: i64) -> (String, bool) {
-    (String::new(), false)
+/// A day chip (#219, PR #223's review): its label and whether it is today
+/// (the live edge), both by the UTC day its file holds (`day.first_ms`
+/// lies in it) against the UTC day of `now`. The hub keeps a file per UTC
+/// day, so every chip names another date and at most one is today; a local
+/// day would name two files alike around midnight.
+pub fn day_chip_at(day: HistoryDay, now: i64) -> (String, bool) {
+    day_chip(utc_day(day.first_ms), utc_day(now))
 }
 
-/// Red stub: every label with the window end's offset, as before.
+/// The time ticks of `t0..=t1` with their labels: placed at whole local
+/// steps by the clock at the window's end, each labelled `HH:MM` with its
+/// own offset (`offset_of`: local minus UTC at a time), so a window across
+/// a DST switch reads as the cursor does (#219, PR #223's review).
 pub fn tick_marks(t0: i64, t1: i64, offset_of: impl Fn(i64) -> i64) -> Vec<(i64, String)> {
-    let offset = offset_of(t1);
-    time_ticks(t0, t1, offset)
+    time_ticks(t0, t1, offset_of(t1))
         .into_iter()
-        .map(|t| (t, hh_mm(t, offset)))
+        .map(|t| (t, hh_mm(t, offset_of(t))))
         .collect()
 }
 
-/// Red stub.
+/// The hub's answers to the graph's asks (#219, PR #223's review): the
+/// asks numbered, the last successful answer kept apart from the newest
+/// ask, so a failed ask never replaces what is drawn and is told apart.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Answers {
-    _stub: u64,
+    /// The newest ask's number.
+    asked: u64,
+    /// The last successful answer.
+    answered: Option<HistorySeries>,
+    /// The ask whose answer failed last.
+    failed: Option<u64>,
 }
 
 impl Answers {
+    /// A new ask: its number.
     pub fn ask(&mut self) -> u64 {
-        0
+        self.asked += 1;
+        self.asked
     }
-    pub fn answer(&mut self, _n: u64, _got: Option<HistorySeries>) -> bool {
-        false
+
+    /// The answer to ask `n` (none: it failed). Only the newest ask's
+    /// counts; true when its series was taken.
+    pub fn answer(&mut self, n: u64, got: Option<HistorySeries>) -> bool {
+        if n != self.asked {
+            return false;
+        }
+        match got {
+            Some(series) => {
+                self.answered = Some(series);
+                self.failed = None;
+                true
+            }
+            None => {
+                self.failed = Some(n);
+                false
+            }
+        }
     }
+
+    /// The series drawn: the last successful answer.
     pub fn drawn(&self) -> Option<&HistorySeries> {
-        None
+        self.answered.as_ref()
     }
+
+    /// Whether the newest ask failed (what is drawn answers an older one).
     pub fn failed(&self) -> bool {
-        false
+        self.failed == Some(self.asked)
     }
 }
 
-/// Red stub.
-pub fn retry_series(_tick: u32, _failed: bool) -> bool {
-    false
+/// Whether tick `tick` asks the series again after the newest ask failed:
+/// every 5 s, a past window too (#219).
+pub fn retry_series(tick: u32, failed: bool) -> bool {
+    failed && tick.is_multiple_of(5)
 }
 
 #[cfg(test)]

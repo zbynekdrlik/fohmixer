@@ -290,6 +290,22 @@
     display: none;
 }
 
+/* the newest ask failed: the last answer stays drawn, said calmly in the
+   plot's top right corner (#219) */
+.lh-failed {
+    position: absolute;
+    top: 4px;
+    right: 6px;
+    color: var(--faint);
+    font: 700 10px/12px var(--display);
+    letter-spacing: 0.08em;
+    pointer-events: none;
+}
+
+.lh-failed[hidden] {
+    display: none;
+}
+
 /* --- the days with readings: every one reachable, a second row when
    they do not fit one (the graph gives way) --- */
 

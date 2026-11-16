@@ -377,3 +377,17 @@ fn start_writes_into_the_data_folders_lufs() {
     );
     assert_eq!(LufsHistory::default().dir, None);
 }
+
+#[test]
+fn a_day_file_reports_how_many_lines_it_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("lufs-2026-11-15.jsonl");
+    let mut bytes = format!("{}\n", line(T0, &[-250; 60])).into_bytes();
+    bytes.extend_from_slice(b"\xff\n{\"m\":\n");
+    bytes.extend_from_slice(format!("{}\n", line(T0 + 60_000, &[-240; 60])).as_bytes());
+    std::fs::write(&path, bytes).unwrap();
+    let mut read = Vec::new();
+    assert_eq!(each_line(&path, |l| read.push(l.m)), 2);
+    assert_eq!(read, [T0, T0 + 60_000]);
+    assert_eq!(each_line(&dir.path().join("none.jsonl"), |_| ()), 0);
+}

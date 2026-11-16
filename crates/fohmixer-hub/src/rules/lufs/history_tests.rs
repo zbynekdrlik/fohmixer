@@ -284,3 +284,15 @@ fn a_window_is_bucketed_from_its_start() {
     assert_eq!(short.step_ms, 1000);
     assert_eq!(short.values, vec![Some(-230), None, Some(-700)]);
 }
+
+#[test]
+fn a_window_past_the_clocks_range_says_so() {
+    assert_eq!(window(i64::MIN, i64::MIN + 1), Err(WindowError::OutOfRange));
+    assert_eq!(
+        window(i64::MAX - 1000, i64::MAX),
+        Err(WindowError::OutOfRange)
+    );
+    // A span that wraps is longer than 24 h.
+    assert_eq!(window(i64::MIN, 0), Err(WindowError::TooLong));
+    assert_eq!(WindowError::OutOfRange.text(), "the window is out of range");
+}
