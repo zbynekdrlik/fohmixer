@@ -32,6 +32,7 @@ use rust_embed::RustEmbed;
 use crate::auth::{Rejection, error_response};
 use crate::{Assets, Hub};
 
+pub mod lufs;
 pub mod role;
 pub mod scene;
 
@@ -383,6 +384,8 @@ pub fn api_routes(hub: Hub) -> Router<Hub> {
         )
         .route("/api/eq/picture", get(get_eq_picture))
         .route("/api/songmap", get(get_songmap))
+        .route("/api/lufs/history", get(lufs::get_history))
+        .route("/api/lufs/days", get(lufs::get_days))
         .route(
             "/api/scene",
             // 1 KiB, a literal for cargo-mutants (a name is 64 characters).

@@ -138,3 +138,51 @@ fn the_problems_words_and_wire_names() {
         );
     }
 }
+
+#[test]
+fn the_history_answers_read_as_the_hub_writes_them() {
+    let series = HistorySeries {
+        from: 1_794_736_800_000,
+        step_ms: 2000,
+        values: vec![Some(-230), None, Some(-700)],
+    };
+    let text = serde_json::to_string(&series).unwrap();
+    assert_eq!(
+        text,
+        r#"{"from":1794736800000,"step_ms":2000,"values":[-230,null,-700]}"#
+    );
+    assert_eq!(
+        serde_json::from_str::<HistorySeries>(&text).unwrap(),
+        series
+    );
+    let days = HistoryDays {
+        days: vec![HistoryDay {
+            first_ms: 10,
+            last_ms: 20,
+        }],
+    };
+    let text = serde_json::to_string(&days).unwrap();
+    assert_eq!(text, r#"{"days":[{"first_ms":10,"last_ms":20}]}"#);
+    assert_eq!(serde_json::from_str::<HistoryDays>(&text).unwrap(), days);
+}
+
+#[test]
+fn a_bucket_is_silence_when_half_or_more_are_silent() {
+    assert!(mostly_silent(1, 2));
+    assert!(!mostly_silent(1, 3));
+    assert!(mostly_silent(2, 3));
+    assert!(mostly_silent(0, 0));
+    assert!(!mostly_silent(0, 1));
+}
+
+#[test]
+fn a_bucket_is_the_median_above_silence() {
+    assert_eq!(bucket_of(&[]), None);
+    assert_eq!(bucket_of(&[-700]), Some(SILENT_TENTHS));
+    assert_eq!(bucket_of(&[-701, -200]), Some(SILENT_TENTHS));
+    assert_eq!(bucket_of(&[-700, -200, -210]), Some(-200));
+    assert_eq!(bucket_of(&[-250, -200, -210]), Some(-210));
+    assert_eq!(bucket_of(&[-699]), Some(-699));
+    assert_eq!(bucket_of(&[-200, -250]), Some(-200));
+    assert_eq!(bucket_of(&[-200, -240, -220, -210]), Some(-210));
+}

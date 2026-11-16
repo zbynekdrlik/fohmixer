@@ -15,7 +15,8 @@
 //! (#104, D19, `autotune`), the strip's marks line (#151, `marks`) and
 //! its loudness reading (#151, `lufs`), the sectors page's reorder
 //! mode, ARRANGE (#148, `arrange_drag`), and the recording watch's looks
-//! (#172, `rec`).
+//! (#172, `rec`), and a fader's LUFS history in its detail (#219,
+//! `lufs_history`).
 
 pub mod ableset;
 pub mod arrange_drag;
@@ -38,6 +39,7 @@ pub mod listen;
 pub mod live_down;
 pub mod login;
 pub mod lufs;
+pub mod lufs_history;
 pub mod marks;
 pub mod meter;
 pub mod mute;

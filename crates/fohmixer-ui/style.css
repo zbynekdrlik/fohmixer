@@ -19,7 +19,9 @@
    automatic mode: the merged STAGE button, #104, D18), autotune.css
    (AUTOTUNE's singers' panel, #140 PR 3c), detail.css (the
    channel detail and its pan, #71), sheet.css (a sheet over the
-   detail: ADD TO LAYOUT, #208, and the channel selector, #205), states.css
+   detail: ADD TO LAYOUT, #208, and the channel selector, #205), eq.css
+   (the Pro-Q 4 cards and screen, #71) and history.css (the detail's
+   middle tabs and a fader's LUFS history, #219), states.css
    (disabled, failed, unresolved, reduced motion) and intent.css (the look
    of a write Live has not confirmed), then deck.css (the Stream Deck tab,
    #52), ableset.css (AbleSet's tab, #90) and iem.css (iemmixer's tab,

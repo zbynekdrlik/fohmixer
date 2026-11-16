@@ -1,0 +1,211 @@
+<!doctype html>
+<!-- fohmixer #220 mockup v2: clapping from the Claps strip itself (the owner, 2026-11-16:
+     "the TAP belongs on the claps fader, so the engineer can drive it easily while he works",
+     v1's SEL tab rejected). The strip as the surface draws it (label, dB, the scale and fader,
+     SEL bottom left); the TAP key sits in the strip's left column above SEL, where other strips
+     show LUFS, so the fader keeps its whole travel. Four small beat dots above TAP show the
+     pattern. Tap along: each tap is snapped to the nearest whole beat of Live's bar; a bar with
+     no tap ends the tapping and Live claps from the next bar. A 1 s hold of TAP stops it.
+     Invented values, generic names only, no site data. Plain JS. -->
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Claps v2</title>
+<style>
+@font-face { font-family: "Barlow Condensed"; font-weight: 700; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 600; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 700; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-weight: 500; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2"); }
+
+:root {
+    color-scheme: dark;
+    --bg: #07070c;
+    --page: #0b0b12;
+    --bar: #11111b;
+    --section: #151522;
+    --panel: #1a1a28;
+    --panel-hi: #20203a;
+    --track: #0a0a14;
+    --line: #2a2a44;
+    --accent: #4ecdc4;
+    --accent-dim: rgba(78, 205, 196, 0.28);
+    --text: #eaeaf0;
+    --muted: #9a9ab4;
+    --faint: #5c5c78;
+    --mute: #e63946;
+    --lufs-text: #e2e2ec;
+    --lufs-in: #2fc79a;
+    --eq: #ff8fd0;
+    --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+    --ui: "Barlow", -apple-system, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--ui); }
+body { padding: 16px; }
+.doc { max-width: 900px; margin: 0 auto 14px; line-height: 1.5; font-size: 15px; }
+.doc h1 { font-family: var(--display); font-size: 26px; margin: 0 0 6px; letter-spacing: 0.04em; }
+.doc p, .doc li { color: var(--muted); }
+.doc b { color: var(--text); }
+.stage { display: flex; gap: 8px; justify-content: center; padding: 14px; background: #08080e; border-radius: 14px; max-width: 900px; margin: 0 auto; }
+
+/* the strip, as the surface draws it (strip.css): 132 px, label, dB, scale + fader, SEL */
+.strip { width: 140px; height: 680px; border-radius: 10px; background: #1a1a28; position: relative; user-select: none; -webkit-user-select: none; }
+.strip .label { height: 52px; margin: 0; border-radius: 10px 10px 0 0; background: #11111b; border-left: 4px solid #6a6a80;
+    display: flex; align-items: center; justify-content: center; font: 700 22px/1 var(--display); letter-spacing: 0.04em; }
+.strip .label.small { font-size: 15px; }
+.strip .db { text-align: center; padding-top: 8px; font: 500 20px/24px var(--mono); color: #7fe0a0; }
+.strip .db.blue { color: #fff; }
+.strip .db.blue span { background: #4a5ad8; border-radius: 6px; padding: 0 6px; }
+.strip .inst { position: absolute; left: 10px; top: 210px; transform: rotate(-90deg); transform-origin: left top;
+    color: var(--faint); font: 700 13px/1 var(--display); letter-spacing: 0.12em; }
+.strip .track { position: absolute; left: 76px; top: 120px; bottom: 30px; width: 18px; border-radius: 4px; background: #0a0a14; }
+.strip .scale { position: absolute; left: 100px; top: 112px; bottom: 26px; width: 34px; }
+.strip .scale span { position: absolute; font: 500 12px/14px var(--mono); color: var(--muted); }
+.strip .cap { position: absolute; left: 58px; width: 54px; height: 34px; border-radius: 8px; background: #2c2c40;
+    box-shadow: inset 0 0 0 1px #4a4a66; }
+.strip .cap::before { content: ""; position: absolute; left: 14px; right: 14px; top: 16px; height: 2px; background: #eaeaf0; }
+.strip .sel { position: absolute; left: 8px; bottom: 8px; width: 46px; height: 44px; border-radius: 9px; background: #20202e;
+    box-shadow: inset 0 0 0 1px var(--line); display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font: 700 16px/1 var(--display); letter-spacing: 0.06em; }
+
+/* NEW: the clap column (left, above SEL) */
+.claps { position: absolute; left: 8px; bottom: 60px; width: 46px; display: flex; flex-direction: column; gap: 6px; align-items: center; }
+.dots { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 6px; padding: 4px 0; }
+.dot { width: 20px; height: 20px; border-radius: 10px; box-shadow: inset 0 0 0 1px #4a4a66; display: flex; align-items: center;
+    justify-content: center; color: var(--faint); font: 700 11px/1 var(--mono); }
+.dot.set { background: #4a4a66; color: var(--text); }
+.dot.now { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.dot.hit.set { background: var(--accent); color: #0b0b12; }
+.state { color: var(--faint); font: 700 10px/12px var(--display); letter-spacing: 0.08em; text-align: center; min-height: 24px; }
+.state.on { color: var(--muted); }
+.tap { width: 46px; height: 96px; border-radius: 9px; background: #20202e; box-shadow: inset 0 0 0 1px var(--line);
+    display: flex; align-items: center; justify-content: center; color: var(--muted); font: 700 15px/1 var(--display);
+    letter-spacing: 0.08em; cursor: pointer; touch-action: none; writing-mode: vertical-rl; transform: rotate(180deg); }
+.tap.tapping { box-shadow: inset 0 0 0 1.5px rgba(78, 205, 196, 0.6); color: var(--text); }
+.tap.held { background: #2a1a20; color: #e8a0a8; }
+
+.sim { max-width: 900px; margin: 10px auto 0; display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+.sim button { font-family: var(--display); font-size: 14px; letter-spacing: 0.06em; background: var(--panel);
+    color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+.sim .info { color: var(--muted); font: 500 13px/32px var(--mono); }
+</style>
+</head>
+<body>
+<div class="doc">
+    <h1>Tlieskanie priamo na fadri CLAPS — návrh v2 (#220)</h1>
+    <p>TAP je <b>priamo na stripe CLAPS</b>, v ľavom stĺpiku nad SEL (tam, kde iné stripy ukazujú LUFS). Fader nestratí ani pixel, netreba otvárať SEL.</p>
+    <ul>
+        <li><b>Ťukaj na TAP</b> s ľuďmi, kde tlieskajú. Každé ťuknutie sa prichytí k najbližšej <b>dobe</b> taktu z Abletonu; presnosť dáva tempo Abletonu, nie prst.</li>
+        <li>Po takte bez ťuknutia sa ťukanie skončí a <b>od ďalšieho taktu tlieska Ableton</b> na tie doby, kým ho nezastavíš.</li>
+        <li><b>Štyri bodky 1–4</b> nad TAP ukazujú vzor; svetlejší rámik je doba, kde je Ableton práve teraz. Ťuknutím na bodku dobu pridáš/uberieš.</li>
+        <li><b>STOP = podrž TAP 1 s.</b> Nové ťukanie počas tlieskania vzor nahradí.</li>
+        <li>V pasáži s klipom so tlieskaním sa tlieskanie z iPadu stíši (nikdy dvakrát); keď Ableton stojí, netlieska nič. Nič nesvieti, keď je vypnuté.</li>
+    </ul>
+    <p>Vyskúšaj: ťukaj na TAP do rytmu (tempo 124), podrž TAP na zastavenie. Mená aj hodnoty sú vymyslené.</p>
+</div>
+<div class="stage">
+    <div class="strip" id="claps">
+        <div class="label">CLAPS</div>
+        <div class="db">-10.8</div>
+        <div class="inst">BAND</div>
+        <div class="track"></div>
+        <div class="scale" id="scale1"></div>
+        <div class="cap" style="top:395px"></div>
+        <div class="claps">
+            <div class="state" id="state">&nbsp;</div>
+            <div class="dots" id="dots"></div>
+            <div class="tap" id="tap">TAP</div>
+        </div>
+        <div class="sel">SEL</div>
+    </div>
+    <div class="strip">
+        <div class="label small">REVERB REPRO</div>
+        <div class="db blue"><span>-26.7</span></div>
+        <div class="inst">BAND</div>
+        <div class="track"></div>
+        <div class="scale" id="scale2"></div>
+        <div class="cap" style="top:540px"></div>
+        <div class="sel">SEL</div>
+    </div>
+    <div class="strip">
+        <div class="label small">REVERB STREAM</div>
+        <div class="db blue"><span>-27.0</span></div>
+        <div class="inst">BAND</div>
+        <div class="track"></div>
+        <div class="scale" id="scale3"></div>
+        <div class="cap" style="top:540px"></div>
+        <div class="sel">SEL</div>
+    </div>
+</div>
+<div class="sim">
+    <button id="simplay">Ableton: STOP</button>
+    <button id="simclip">Pasáž s klipom: OFF</button>
+    <span class="info" id="pos"></span>
+</div>
+<script>
+"use strict";
+for (const id of ["scale1", "scale2", "scale3"]) {
+    const el = document.getElementById(id);
+    [["+6", 0], ["0", 12], ["-6", 25], ["-12", 37], ["-18", 50], ["-24", 59], ["-30", 66], ["-40", 75], ["-60", 98]].forEach(([t, p]) => {
+        const s = document.createElement("span"); s.textContent = t; s.style.top = p + "%"; el.append(s);
+    });
+}
+const BPM = 124, BEAT = 60000 / BPM, HOLD_MS = 1000;
+const st = { pattern: [false, false, false, false], running: false, tapping: false, taps: new Set(), lastTap: 0, pendingFrom: null, playing: true, clip: false };
+const t0 = performance.now();
+const pos = () => (performance.now() - t0) / BEAT;
+const $ = (id) => document.getElementById(id);
+const dots = $("dots");
+for (let i = 0; i < 4; i++) {
+    const d = document.createElement("div"); d.className = "dot"; d.textContent = i + 1;
+    d.onpointerdown = () => { st.pattern[i] = !st.pattern[i]; if (!st.pattern.some(Boolean)) st.running = false; };
+    dots.append(d);
+}
+let holdTimer = null, held = false;
+$("tap").onpointerdown = () => {
+    held = false;
+    holdTimer = setTimeout(() => { held = true; st.running = false; st.tapping = false; st.pendingFrom = null; $("tap").classList.add("held"); }, HOLD_MS);
+    if (!st.playing) return;
+    const p = pos(), beat = Math.round(p) % 4;
+    if (!st.tapping) { st.tapping = true; st.taps = new Set(); }
+    st.taps.add(beat); st.lastTap = p;
+    st.pattern = [0, 1, 2, 3].map((i) => st.taps.has(i));
+};
+const up = () => { clearTimeout(holdTimer); if (held) { st.pattern = [false, false, false, false]; } $("tap").classList.remove("held"); };
+$("tap").onpointerup = up; $("tap").onpointercancel = up;
+$("simplay").onclick = (e) => { st.playing = !st.playing; e.target.textContent = st.playing ? "Ableton: STOP" : "Ableton: PLAY"; };
+$("simclip").onclick = (e) => { st.clip = !st.clip; e.target.textContent = st.clip ? "Pasáž s klipom: ON" : "Pasáž s klipom: OFF"; };
+let hitUntil = 0, lastBeat = -1;
+function tick() {
+    const p = pos(), cur = Math.floor(p) % 4;
+    if (st.tapping && p - st.lastTap > 4) { st.tapping = false; if (st.pattern.some(Boolean)) st.pendingFrom = Math.ceil(p / 4) * 4; }
+    if (st.pendingFrom !== null && p >= st.pendingFrom) { st.running = true; st.pendingFrom = null; }
+    if (Math.floor(p) !== lastBeat) { lastBeat = Math.floor(p); if (st.running && st.playing && !st.clip && st.pattern[cur]) hitUntil = performance.now() + 120; }
+    [...dots.children].forEach((d, i) => {
+        d.classList.toggle("set", st.pattern[i]);
+        d.classList.toggle("now", st.playing && (st.running || st.tapping) && i === cur);
+        d.classList.toggle("hit", performance.now() < hitUntil && i === cur);
+    });
+    let s = "&nbsp;", on = false;
+    if (st.tapping) { s = "TAPPING"; on = true; }
+    else if (st.pendingFrom !== null) { s = "NEXT BAR"; on = true; }
+    else if (st.running && !st.playing) { s = "WAITS"; }
+    else if (st.running && st.clip) { s = "CLIP"; }
+    else if (st.running) { s = "CLAPS"; on = true; }
+    $("state").innerHTML = s; $("state").classList.toggle("on", on);
+    $("tap").classList.toggle("tapping", st.tapping);
+    $("pos").textContent = st.playing ? `${BPM} BPM · bar ${Math.floor(p / 4) + 1} · beat ${cur + 1}` : `${BPM} BPM · Ableton stojí`;
+    requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

@@ -1,0 +1,344 @@
+/* fohmixer: the channel detail's middle-box tabs and a fader's LUFS
+   history (#219; the owner's approved mockup docs/mockups/lufs-history-v2.html;
+   linked after eq.css). The middle box gets tabs (EQ, LUFS) only on a +LUFS
+   strip; each pane fills the whole box, nothing scrolls past the tabs. The
+   history is calm: one thin grey line, green within +-1.0 LU of an input
+   point's target (the strip's own colours, --lufs-text and --lufs-in),
+   faint labels, nothing lit while idle. The plot is a 1000 x 1000 SVG box
+   stretched over its area, the lines' width not scaled; the grid lines and
+   labels sit beside it in percent. */
+
+/* --- the tabs --- */
+
+.detail-middle[data-tabs="true"] {
+    overflow: hidden;
+}
+
+.mtabs {
+    display: flex;
+    flex: none;
+    gap: 6px;
+}
+
+.mtab {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 120px;
+    height: 44px;
+    padding: 0 18px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: transparent;
+    color: var(--muted);
+    font: 700 16px/1 var(--display);
+    letter-spacing: 0.08em;
+}
+
+.mtab[aria-pressed="true"] {
+    border-bottom: 2px solid var(--accent);
+    background: var(--panel-hi);
+    color: var(--text);
+}
+
+.detail-pane {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+    min-height: 0;
+}
+
+.detail-pane[hidden] {
+    display: none;
+}
+
+/* With tabs, the EQ pane scrolls its cards when they do not fit; its title
+   is the tab. */
+.detail-middle[data-tabs="true"] .eq-pane {
+    overflow-x: hidden;
+    overflow-y: auto;
+}
+
+.detail-middle[data-tabs="true"] .eq-pane > .detail-title {
+    display: none;
+}
+
+/* --- the history card --- */
+
+.lh {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 0;
+    padding: 8px 8px 6px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #12121c;
+}
+
+.lh-head {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 10px;
+    height: 28px;
+    min-width: 0;
+}
+
+.lh-cap {
+    display: flex;
+    flex-direction: column;
+    color: var(--faint);
+    font: 700 9px/10px var(--ui);
+    letter-spacing: 0.06em;
+    text-align: center;
+}
+
+.lh-now {
+    min-width: 58px;
+    color: var(--lufs-text);
+    font: 700 22px/1 var(--display);
+    font-variant-numeric: tabular-nums;
+}
+
+.lh-now[data-l="in"] {
+    color: var(--lufs-in);
+}
+
+.lh-now[data-l="none"] {
+    color: var(--faint);
+}
+
+.lh-target {
+    color: var(--faint);
+    font: 500 11px/1 var(--mono);
+    white-space: nowrap;
+}
+
+.lh-cursor {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--muted);
+    font: 500 12px/1 var(--mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.lh-chips {
+    display: flex;
+    flex: none;
+    gap: 4px;
+    margin-left: auto;
+}
+
+.lh-chip {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 52px;
+    height: 28px;
+    padding: 0 8px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    font: 700 12px/1 var(--display);
+    letter-spacing: 0.08em;
+    white-space: nowrap;
+}
+
+.lh-chip[aria-pressed="true"] {
+    border-bottom: 2px solid var(--accent);
+    background: var(--panel-hi);
+    color: var(--text);
+}
+
+.lh-chip.back {
+    border-color: rgba(78, 205, 196, 0.45);
+    color: var(--accent);
+}
+
+.lh-chip[hidden] {
+    display: none;
+}
+
+/* --- the graph: labels left and below, the plot in between --- */
+
+.lh-graph {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    touch-action: none;
+}
+
+.lh-plot {
+    position: absolute;
+    inset: 4px 2px 16px 30px;
+}
+
+.lh-y {
+    position: absolute;
+    top: 4px;
+    bottom: 16px;
+    left: 0;
+    width: 25px;
+}
+
+.lh-x {
+    position: absolute;
+    right: 2px;
+    bottom: 0;
+    left: 30px;
+    height: 14px;
+}
+
+.lh-y span,
+.lh-x span {
+    position: absolute;
+    color: var(--faint);
+    font: 500 10px/12px var(--mono);
+    white-space: nowrap;
+}
+
+.lh-y span {
+    right: 0;
+    transform: translateY(-50%);
+}
+
+.lh-y span[data-main="true"] {
+    color: var(--muted);
+}
+
+.lh-x span {
+    bottom: 0;
+    transform: translateX(-50%);
+}
+
+.lh-hline,
+.lh-band {
+    position: absolute;
+    right: 0;
+    left: 0;
+    height: 0;
+}
+
+.lh-hline {
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.lh-hline[data-main="true"] {
+    border-top-color: rgba(255, 255, 255, 0.32);
+}
+
+.lh-band {
+    border-top: 1px dashed rgba(47, 199, 154, 0.35);
+}
+
+.lh-vline,
+.lh-cursor-line {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 0;
+}
+
+.lh-vline {
+    border-left: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.lh-cursor-line {
+    border-left: 1px solid rgba(234, 234, 240, 0.45);
+}
+
+.lh-svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+}
+
+.lh-line {
+    fill: none;
+    stroke: var(--muted);
+    stroke-width: 1.4px;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    vector-effect: non-scaling-stroke;
+}
+
+.lh-line[data-green="true"] {
+    stroke: var(--lufs-in);
+}
+
+.lh-empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--faint);
+    font: 700 13px/1 var(--display);
+    letter-spacing: 0.1em;
+    pointer-events: none;
+}
+
+.lh-empty[hidden] {
+    display: none;
+}
+
+/* the newest ask failed: the last answer stays drawn, said calmly in the
+   plot's top right corner (#219) */
+.lh-failed {
+    position: absolute;
+    top: 4px;
+    right: 6px;
+    color: var(--faint);
+    font: 700 10px/12px var(--display);
+    letter-spacing: 0.08em;
+    pointer-events: none;
+}
+
+.lh-failed[hidden] {
+    display: none;
+}
+
+/* --- the days with readings: every one reachable, a second row when
+   they do not fit one (the graph gives way) --- */
+
+.lh-days {
+    display: flex;
+    flex: none;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+    min-height: 26px;
+}
+
+.lh-days .lh-chip {
+    min-width: 0;
+    height: 26px;
+    font-size: 11px;
+}
+
+/* --- phones: the chips and the tabs tighter --- */
+
+@media (max-height: 520px), (max-width: 520px) {
+    .mtab {
+        min-width: 80px;
+        height: 36px;
+        font-size: 14px;
+    }
+
+    .lh-head {
+        flex-wrap: wrap;
+        height: auto;
+    }
+
+    .lh-chip {
+        min-width: 40px;
+    }
+}

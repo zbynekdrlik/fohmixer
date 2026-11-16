@@ -28,6 +28,56 @@ pub const BAND_TENTHS: i16 = 10;
 /// `−∞`.
 pub const SILENT_TENTHS: i16 = -700;
 
+/// `GET /api/lufs/history` (#219): a point's readings from `from` (UTC
+/// ms, a whole second), one value per `step_ms` (tenths, [`SILENT_TENTHS`]
+/// for silence, none for no reading), at most 900 of them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistorySeries {
+    pub from: i64,
+    pub step_ms: i64,
+    pub values: Vec<Option<i16>>,
+}
+
+/// One day a point's history holds (#219, `GET /api/lufs/days`): its first
+/// and last second with a reading, UTC ms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryDay {
+    pub first_ms: i64,
+    pub last_ms: i64,
+}
+
+/// `GET /api/lufs/days` (#219): newest first.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryDays {
+    pub days: Vec<HistoryDay>,
+}
+
+/// Whether a bucket of `heard` readings, `silent` of them silence, draws
+/// as silence: half or more (#219: the hub's history and the page's graph).
+pub fn mostly_silent(silent: usize, heard: usize) -> bool {
+    silent * 2 >= heard
+}
+
+/// One bucket's value from its readings (no holes among them; #219, the
+/// hub's history buckets and the page's graph columns): none without a
+/// reading, silence when half or more are silence ([`mostly_silent`]),
+/// else the median of the readings above silence (the upper middle).
+pub fn bucket_of(readings: &[i16]) -> Option<i16> {
+    if readings.is_empty() {
+        return None;
+    }
+    let mut sounding: Vec<i16> = readings
+        .iter()
+        .copied()
+        .filter(|v| *v > SILENT_TENTHS)
+        .collect();
+    if mostly_silent(readings.len() - sounding.len(), readings.len()) {
+        return Some(SILENT_TENTHS);
+    }
+    sounding.sort_unstable();
+    Some(sounding[sounding.len() / 2])
+}
+
 /// How a strip shows its reading (§6.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

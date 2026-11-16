@@ -6,7 +6,8 @@
 //! then on the left (the left thumb) the mute, Live's dB and a tall fader
 //! with its scale and meter, on the right (the right thumb) the pan with
 //! Live's display string and CENTER; in the middle the channel's Pro-Q 4
-//! instances (#71 PR E, `components/eq.rs`). Its parts are the strip's components, its
+//! instances (#71 PR E, `components/eq.rs`) and, on a `+LUFS` strip, its
+//! LUFS history under a tab of its own (#219, `components/detail_lufs.rs`). Its parts are the strip's components, its
 //! subscriptions `binding::detail_subs` (the surface's wanted set has them
 //! through `binding::wanted_subs`), its look `detail.css`.
 
@@ -23,6 +24,7 @@ use super::detail_alarm::{DetailMuteAlarm, strip_alarm};
 use super::detail_color::{DetailColor, strip_colour};
 use super::detail_guard::{DetailMuteGuard, strip_guard, strip_guard_mark};
 use super::detail_layouts::DetailLayouts;
+use super::detail_lufs::DetailMiddleBox;
 use super::detail_scenes::DetailScenes;
 use super::eq::EqCards;
 use super::fader::{FaderView, Law, Target};
@@ -190,6 +192,8 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
     let label_attr = label.clone();
     let cards_label = label.clone();
     let cards_strip = strip.clone();
+    // The middle box's tabs (#219): EQ, and LUFS on a +LUFS strip.
+    let middle_strip = strip.clone();
     // The fader sectors (#148): LAYOUTS (#208) and the bar's channel
     // selector (#205).
     let layouts_strip = strip.clone();
@@ -403,9 +407,9 @@ pub fn DetailView(strip: Strip, group: Option<String>) -> impl IntoView {
                         {fader}
                     </div>
                 </section>
-                <section class="detail-box detail-middle" data-testid="detail-middle">
+                <DetailMiddleBox strip=middle_strip>
                     <EqCards strip=cards_strip label=cards_label color=color />
-                </section>
+                </DetailMiddleBox>
                 <section class="detail-box detail-right" data-testid="detail-right">
                     <h2 class="detail-title">"PAN"</h2>
                     {pan_view}
