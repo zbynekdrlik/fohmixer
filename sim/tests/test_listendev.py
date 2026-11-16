@@ -150,6 +150,19 @@ class StreamTest(unittest.TestCase):
         self.assertEqual(device.owed(10.0), listendev.MAX_FRAMES)
         device.sent = listendev.FRAME
         self.assertEqual(device.owed(0.05), 1)
+        self.assertEqual(listendev.MAX_FRAMES, 50)
+
+    def test_a_96_khz_device_owes_a_frame_every_10_ms_of_its_tone(self):
+        device = listendev.ListenDevice(1, None, None, rate=96000)
+        device.started = 0.0
+        self.assertEqual(device.owed(0.0099), 0)
+        self.assertEqual(device.owed(0.01), 1)
+        self.assertEqual(device.owed(0.02), 2)
+        device.tone = 1000.0
+        samples = device.samples(1)
+        self.assertEqual(len(samples), 2 * listendev.FRAME)
+        # 1 kHz at 96 kHz: a quarter period is 24 samples.
+        self.assertAlmostEqual(samples[2 * 24], listendev.LEFT, places=6)
 
 
 class LineTest(unittest.TestCase):
@@ -171,8 +184,23 @@ class LineTest(unittest.TestCase):
         names = [d.name for d in self.song.tracks[1].devices]
         self.assertIn(listendev.RACK_NAME, names)
 
+    def test_a_device_at_96_khz(self):
+        self.assertEqual(self.line("listendev track 1 add rack 96000"), "LISTENDEV 1")
+        self.assertEqual(self.line("listendev track 2 add 96000"), "LISTENDEV 1")
+        self.assertEqual(self.line("listendev track 3 add rack"), "LISTENDEV 1")
+        rates = [self.devs.on(self.song.tracks[i])[-1].rate for i in (1, 2, 3)]
+        self.assertEqual(rates, [96000, 96000, 48000])
+        racked = self.devs.on(self.song.tracks[1])[-1]
+        self.assertIsNotNone(racked.rack)
+        self.assertIsNone(self.devs.on(self.song.tracks[2])[-1].rack)
+
     def test_bad_lines_answer_minus_one(self):
         for text, word in (
+            ("listendev track 1 add rack 1000", "LISTENDEV"),
+            ("listendev track 1 add rack 96k", "LISTENDEV"),
+            ("listendev track 1 add 96000 rack", "LISTENDEV"),
+            ("listendev track 1 add rack 96000 x", "LISTENDEV"),
+            ("listendev track 1 remove 96000", "LISTENDEV"),
             ("listendev track 99 add", "LISTENDEV"),
             ("listendev track 1 remove", "LISTENDEV"),
             ("listendev track 1 remove rack", "LISTENDEV"),

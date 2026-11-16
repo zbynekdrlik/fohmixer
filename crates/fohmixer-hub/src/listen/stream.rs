@@ -4,7 +4,8 @@
 //! pure `jitnet::Reader`. A connection's first message must be the device's
 //! hello; its matrices are answered with a latency chunk (never waiting on
 //! the device: a full socket drops the answer, counted) and, while the hub
-//! selects that device ([`Listen::accepts`]) at 48 kHz, cut into 20 ms
+//! selects that device ([`Listen::accepts`]) at 48 or 96 kHz (decimated
+//! 2:1, `resample`), cut into 20 ms
 //! frames, encoded and sent to the listening sockets. Anything refused is
 //! counted by reason (`/api/status` `listen.refused`); a chunk that breaks
 //! the stream's framing ends the connection.
@@ -14,9 +15,9 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use fohmixer_proto::listen::SAMPLE_RATE;
 use fohmixer_proto::listen::frames::Framer;
 use fohmixer_proto::listen::jitnet::{Chunk, LATENCY_LEN, Matrix, Reader, latency};
+use fohmixer_proto::listen::resample::decimation;
 use fohmixer_proto::listen::wire::{Hello, parse_hello};
 use serde_json::json;
 use tokio::io::AsyncReadExt;
@@ -48,19 +49,30 @@ pub enum Take {
     Refused(&'static str),
 }
 
-/// The decision for one matrix: from a device that said hello, at 48 kHz,
-/// selected now.
+/// The decision for one matrix: from a device that said hello, at 48 or
+/// 96 kHz (`resample::decimation`: 96 kHz is decimated 2:1, #210's PC
+/// probe: the master Live runs at 96 kHz), selected now.
 pub fn take(hello: Option<&Hello>, selected: impl FnOnce(i32) -> bool) -> Take {
     let Some(hello) = hello else {
         return Take::Refused("no_hello");
     };
-    if u32::try_from(hello.sample_rate) != Ok(SAMPLE_RATE) {
+    if decimation(hello.sample_rate).is_none() {
         return Take::Refused("sample_rate");
     }
     if !selected(hello.device) {
         return Take::Refused("not_selected");
     }
     Take::Frames
+}
+
+/// A new framer when the device's `rate` is not the one `framer` frames
+/// (a hello at another rate, or the 48 kHz default after a refusal); none
+/// to keep it (and for a rate no framer takes).
+pub fn reframe(framer: &Framer, rate: i32) -> Option<Framer> {
+    if framer.rate() == rate {
+        return None;
+    }
+    Framer::for_rate(rate)
 }
 
 /// Whether a connection holding `buffered` bytes of an unfinished chunk,
@@ -260,6 +272,12 @@ fn on_matrix(conn: &mut Conn, m: &Matrix, listen: &Listen) {
         listen.counters.refuse(reason);
         return;
     }
+    // The framer of the device's rate (taken: one of the rates it frames).
+    if let Some(rate) = conn.hello.as_ref().map(|h| h.sample_rate)
+        && let Some(fresh) = reframe(&conn.framer, rate)
+    {
+        conn.framer = fresh;
+    }
     for frame in conn.framer.push(m.planes, &m.samples) {
         listen.counters.frames.fetch_add(1, Ordering::Relaxed);
         let made = conn.encoder.get_or_insert_with(|| {
@@ -291,11 +309,30 @@ mod tests {
     }
 
     #[test]
-    fn a_matrix_is_taken_only_from_a_selected_device_at_48_khz() {
+    fn a_framer_is_made_again_only_for_another_rate() {
+        assert!(reframe(&Framer::default(), 48_000).is_none());
+        let high = reframe(&Framer::default(), 96_000).expect("a 96 kHz framer");
+        assert_eq!(high.rate(), 96_000);
+        assert!(reframe(&high, 96_000).is_none());
+        assert_eq!(reframe(&high, 48_000).map(|f| f.rate()), Some(48_000));
+        assert!(reframe(&Framer::default(), 44_100).is_none());
+    }
+
+    #[test]
+    fn a_matrix_is_taken_only_from_a_selected_device_at_48_or_96_khz() {
         assert_eq!(take(None, |_| true), Take::Refused("no_hello"));
         assert_eq!(
             take(Some(&hello(44_100)), |_| true),
             Take::Refused("sample_rate")
+        );
+        assert_eq!(
+            take(Some(&hello(88_200)), |_| true),
+            Take::Refused("sample_rate")
+        );
+        assert_eq!(take(Some(&hello(96_000)), |d| d == 3), Take::Frames);
+        assert_eq!(
+            take(Some(&hello(96_000)), |d| d == 4),
+            Take::Refused("not_selected")
         );
         assert_eq!(
             take(Some(&hello(-1)), |_| true),

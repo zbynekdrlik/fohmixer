@@ -254,6 +254,75 @@ fn a_page_hears_the_tracks_tone_and_the_device_stops_when_it_leaves() {
 }
 
 #[test]
+fn a_device_at_96_khz_is_decimated_to_the_pages_48_khz_tone() {
+    // #210's PC probe: the master Live runs at 96 kHz; its devices stream
+    // 10 ms matrices of 960 samples. The hub decimates them 2:1 and the
+    // page hears the tone at its own pitch and level.
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (port, select_port) = (free_port(), free_port());
+        let mut host = Host::start_listen("band", &site(), port, select_port);
+        assert_eq!(host.listendev("listendev track 1 add rack 96000"), 1);
+        assert_eq!(host.listendev("tone track 1 1000"), 1000);
+        let hub = hub(dir.path(), &host, port, select_port).await;
+        let status = hub
+            .status_until(SECS_10, |s| s.listen.devices.len() == 1)
+            .await;
+        assert_eq!(status.listen.devices[0].sample_rate, 96_000);
+
+        let mut a = audio(&hub).await;
+        send(&mut a, start(VOX)).await;
+        assert_eq!(told(&mut a).await["status"], "listening");
+        packets(&mut a, 10).await;
+        let (left, right) = decode(&packets(&mut a, 25).await);
+        // 25 packets of 20 ms at 48 kHz: half a second, as at 48 kHz.
+        assert_eq!(left.len(), 25 * FRAME);
+        let (l, r) = (rms(&left), rms(&right));
+        assert!((l - 0.354).abs() < 0.05, "left rms {l}");
+        assert!((r - 0.177).abs() < 0.03, "right rms {r}");
+        let (at_1k, at_2k) = (power(&left, 1000.0), power(&left, 2000.0));
+        assert!(at_1k > 1000.0 * at_2k, "1 kHz {at_1k}, 2 kHz {at_2k}");
+        let status = hub.status_until(SECS_10, |s| s.listen.frames > 0).await;
+        assert!(
+            !status.listen.refused.contains_key("sample_rate"),
+            "{:?}",
+            status.listen.refused
+        );
+        drop(a);
+        hub.stop().await;
+        host.stop();
+    });
+}
+
+#[test]
+fn a_device_at_another_rate_is_refused() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (port, select_port) = (free_port(), free_port());
+        let mut host = Host::start_listen("band", &site(), port, select_port);
+        assert_eq!(host.listendev("listendev track 1 add rack 44100"), 1);
+        assert_eq!(host.listendev("tone track 1 1000"), 1000);
+        let hub = hub(dir.path(), &host, port, select_port).await;
+        hub.status_until(SECS_10, |s| s.listen.devices.len() == 1)
+            .await;
+        let mut a = audio(&hub).await;
+        send(&mut a, start(VOX)).await;
+        assert_eq!(told(&mut a).await["status"], "listening");
+        let status = hub
+            .status_until(SECS_10, |s| {
+                s.listen.refused.get("sample_rate").is_some_and(|n| *n > 0)
+            })
+            .await;
+        assert_eq!(status.listen.frames, 0);
+        drop(a);
+        hub.stop().await;
+        host.stop();
+    });
+}
+
+#[test]
 fn a_track_without_a_device_or_an_unknown_instance_is_no_source() {
     let _serial = serial();
     runtime().block_on(async {

@@ -52,9 +52,14 @@ RIGHT = 0.25
 TICK_MS = 10.0
 ANNOUNCE_S = 1.0
 SELECT_HOLD_S = 1.5
-# At most 25 frames in one tick (a stall never floods): the hub takes a
-# matrix of at most 25 frames (jitnet::MAX_DATA), as jit.catch~ caught them.
-MAX_FRAMES = 25
+# At most 50 frames in one tick (a stall never floods): the hub takes a
+# matrix of at most 50 frames (jitnet::MAX_DATA: 0.5 s at 96 kHz), as
+# jit.catch~ caught them.
+MAX_FRAMES = 50
+# The rates a device may be added at (#210: the master Live runs at 96 kHz;
+# any other is for the hub's refusal).
+MIN_RATE = 8000
+MAX_RATE = 192000
 RACK_NAME = "Listen"
 DRY_CHAIN = "Dry"
 DEVICE_CHAIN = "Listen"
@@ -126,8 +131,9 @@ class ListenDevice:
     """One device: its Max id, the Live device, where it sits, its tone and
     its stream."""
 
-    def __init__(self, device_id, device, track, rack=None, chain=None):
+    def __init__(self, device_id, device, track, rack=None, chain=None, rate=RATE):
         self.id = device_id
+        self.rate = rate
         self.device = device
         self.track = track
         self.rack = rack
@@ -149,13 +155,13 @@ class ListenDevice:
 
     def owed(self, now):
         """The whole frames it owes at ``now`` since its stream started."""
-        due = int((now - self.started) * RATE + 1e-6) // FRAME
+        due = int((now - self.started) * self.rate + 1e-6) // FRAME
         return max(0, min(due - self.sent // FRAME, MAX_FRAMES))
 
     def samples(self, frames):
         """``frames`` frames of the tone from where it stands, interleaved."""
         out = []
-        step = 2.0 * math.pi * self.tone / RATE
+        step = 2.0 * math.pi * self.tone / self.rate
         for n in range(self.sent, self.sent + frames * FRAME):
             s = math.sin(step * n)
             out += [LEFT * s, RIGHT * s]
@@ -212,7 +218,7 @@ class ListenDevices:
     def on(self, track):
         return [d for d in self.devices if d.track is track]
 
-    def add(self, track, rack):
+    def add(self, track, rack, rate=RATE):
         device = Live.Device.Device(NAME, CLASS_NAME)
         if rack:
             chain = Live.Chain.Chain(DEVICE_CHAIN, [device])
@@ -220,10 +226,10 @@ class ListenDevices:
                 RACK_NAME, "AudioEffectGroupDevice", [Live.Chain.Chain(DRY_CHAIN), chain]
             )
             track._devices.append(holder)
-            placed = ListenDevice(next(self._ids), device, track, holder, chain)
+            placed = ListenDevice(next(self._ids), device, track, holder, chain, rate)
         else:
             track._devices.append(device)
-            placed = ListenDevice(next(self._ids), device, track)
+            placed = ListenDevice(next(self._ids), device, track, rate=rate)
         track._fire("devices")
         self.devices.append(placed)
         return placed
@@ -274,7 +280,7 @@ class ListenDevices:
 
     def _send_announce(self, device, now):
         data = encode_announce(
-            device.id, VERSION, device.parents(self._song), RATE, device.sending(now)
+            device.id, VERSION, device.parents(self._song), device.rate, device.sending(now)
         )
         self._announce.sendto(data, ("127.0.0.1", self._port))
 
@@ -285,7 +291,7 @@ class ListenDevices:
             except OSError as error:
                 _log(f"device {device.id} cannot connect: {error}")
                 return
-            hello = encode_message([HELLO_WORD, WIRE_VERSION, device.id, VERSION, RATE])
+            hello = encode_message([HELLO_WORD, WIRE_VERSION, device.id, VERSION, device.rate])
             device.conn.sendall(hello)
         if device.started is None:
             device.started = now
@@ -320,15 +326,28 @@ class ListenDevices:
 
 
 def device_line(line):
-    """A ``listendev`` line's ``(where, index, add, rack)``, or None."""
+    """A ``listendev`` line's ``(where, index, add, rack, rate)``, or None:
+    ``listendev <where> <i> add [rack] [<rate>]`` (48000 by default) or
+    ``listendev <where> <i> remove``."""
     words = line.split()
-    if len(words) not in (4, 5) or words[1] not in ("track", "return", "master"):
+    if len(words) < 4 or len(words) > 6 or words[1] not in ("track", "return", "master"):
         return None
     if not words[2].isdigit() or words[3] not in ("add", "remove"):
         return None
-    if len(words) == 5 and (words[4] != "rack" or words[3] != "add"):
+    rest = words[4:]
+    if rest and words[3] != "add":
         return None
-    return words[1], int(words[2]), words[3] == "add", len(words) == 5
+    rack = bool(rest) and rest[0] == "rack"
+    if rack:
+        rest = rest[1:]
+    rate = RATE
+    if rest:
+        if len(rest) != 1 or not rest[0].isdigit():
+            return None
+        rate = int(rest[0])
+        if not MIN_RATE <= rate <= MAX_RATE:
+            return None
+    return words[1], int(words[2]), words[3] == "add", rack, rate
 
 
 def tone_line(line):
@@ -353,12 +372,12 @@ def tone_line(line):
 def device_control(listens, song, parsed):
     """A ``listendev`` line on the main thread: the devices on the track
     then, -1 for no such track or nothing to remove."""
-    where, index, add, rack = parsed
+    where, index, add, rack, rate = parsed
     track = track_of(song, where, index)
     if track is None:
         return -1
     if add:
-        listens.add(track, rack)
+        listens.add(track, rack, rate)
     elif not listens.remove(track):
         return -1
     return len(listens.on(track))
