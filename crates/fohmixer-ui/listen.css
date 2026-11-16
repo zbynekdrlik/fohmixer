@@ -83,8 +83,19 @@
     }
 
     .listen-volume {
-        width: 72px;
+        width: 64px;
         height: 32px;
+    }
+
+    /* The key and the volume take their room from the chip (its name ends
+       with an ellipsis), never from the bar's exit. */
+    .detail-name {
+        gap: 6px;
+    }
+
+    .detail-name .detail-chip {
+        flex-shrink: 1;
+        min-width: 0;
     }
 }
 

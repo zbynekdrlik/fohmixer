@@ -33,8 +33,15 @@ extern "C" {
     fn stop_player();
     #[wasm_bindgen(js_name = setListenGain)]
     fn set_gain(value: f64);
+    #[wasm_bindgen(js_name = resumeListenPlayer)]
+    fn resume_player();
     #[wasm_bindgen(js_name = feedListenPacket)]
     fn feed_packet(bytes: &js_sys::Uint8Array);
+}
+
+/// The label a strip's channel shows.
+fn label_of(strip: &Strip) -> String {
+    shown_label(strip.label.as_deref(), &anchor_name(&strip.binding))
 }
 
 /// What the key and the foot show.
@@ -69,9 +76,10 @@ struct Inner {
     socket: Option<AudioSocket>,
     /// Each socket's number: a late event of an older one does nothing.
     number: u64,
-    /// A tap's name is being read: another tap waits for it.
-    resolving: bool,
     stopped: bool,
+    /// The window's listeners that resume a suspended player (removed at
+    /// `stop`).
+    resumers: Vec<WindowListenerHandle>,
 }
 
 /// The page's listening (a context of `Surface`).
@@ -86,14 +94,14 @@ pub struct Listener {
 impl Listener {
     pub fn new(token: String) -> Self {
         set_gain(gain(VOLUME_DEFAULT));
-        Self {
+        let me = Self {
             inner: StoredValue::new_local(Inner {
                 token,
                 machine: Listen::new(),
                 socket: None,
                 number: 0,
-                resolving: false,
                 stopped: false,
+                resumers: Vec::new(),
             }),
             view: RwSignal::new(ListenView {
                 phase: Phase::Off,
@@ -101,18 +109,30 @@ impl Listener {
                 label: None,
             }),
             volume: RwSignal::new(VOLUME_DEFAULT),
-        }
+        };
+        // iOS suspends a page's audio when the page is hidden or the screen
+        // locks, and only a user's gesture resumes it: the page shown again
+        // and every lift of a finger ask the player to resume (it does
+        // nothing while it plays or is stopped).
+        let resumers = vec![
+            window_event_listener_untyped("visibilitychange", |_| resume_player()),
+            window_event_listener_untyped("pointerup", |_| resume_player()),
+        ];
+        let _ = me.inner.try_update_value(|i| i.resumers = resumers);
+        me
     }
 
     /// The surface goes: the socket closes, the player stops.
     pub fn stop(self) {
-        let socket = self
-            .inner
-            .try_update_value(|i| {
-                i.stopped = true;
-                i.socket.take()
-            })
-            .flatten();
+        let Some((socket, resumers)) = self.inner.try_update_value(|i| {
+            i.stopped = true;
+            (i.socket.take(), std::mem::take(&mut i.resumers))
+        }) else {
+            return;
+        };
+        for handle in resumers {
+            handle.remove();
+        }
         if let Some(socket) = socket {
             socket.close();
         }
@@ -125,62 +145,34 @@ impl Listener {
         set_gain(gain(pos));
     }
 
-    /// The 🎧 key's tap on the detail of `strip`. The player starts here,
-    /// inside the gesture; a strip bound by its place reads its track's
-    /// name first.
+    /// The 🎧 key's tap on the detail of `strip`: the machine decides
+    /// (stop, or start: the player starts here, inside the gesture, and the
+    /// strip's track is asked for).
     pub fn tap(self, store: LiveStore, strip: &Strip) {
-        let Some((lit, resolving)) = self
-            .inner
-            .try_with_value(|i| (i.machine.lit(), i.resolving))
-        else {
-            return;
-        };
-        if resolving {
-            return;
-        }
-        if lit {
-            self.run("tap", |m| m.tap(None, true));
-            return;
-        }
         let decoder = listen_decoder();
-        if decoder {
-            start_player();
+        let label = label_of(strip);
+        if let Some(Some(n)) = self.run("tap", move |m| m.tap(label, decoder)) {
+            self.resolve(store, strip, n);
         }
-        self.target_of(store, strip, move |me, target| {
-            let started = target.is_some();
-            me.run("tap", move |m| m.tap(target, decoder));
-            if decoder && !started {
-                stop_player();
-            }
-        });
     }
 
-    /// The detail shows `strip` now: followed while listening.
+    /// The detail shows `strip` now: while listening, its track is asked
+    /// for and followed.
     pub fn follow(self, store: LiveStore, strip: &Strip) {
-        let lit = self
-            .inner
-            .try_with_value(|i| i.machine.lit())
-            .unwrap_or(false);
-        if !lit {
+        if self.inner.try_with_value(|i| i.machine.lit()) != Some(true) {
             return;
         }
-        self.target_of(store, strip, |me, target| {
-            if let Some(target) = target {
-                me.run("follow", move |m| m.follow(target));
-            }
-        });
+        let label = label_of(strip);
+        if let Some(Some(n)) = self.run("follow", move |m| (Vec::new(), m.follow(label))) {
+            self.resolve(store, strip, n);
+        }
     }
 
-    /// `strip`'s target, at once for a track by name, after Live's answer
-    /// for one by place (none: nothing to listen to).
-    fn target_of(
-        self,
-        store: LiveStore,
-        strip: &Strip,
-        then: impl FnOnce(Self, Option<Target>) + 'static,
-    ) {
+    /// Answers ask `n` with `strip`'s target: at once for a track by name,
+    /// after Live's answer for one by place (none: nothing to listen to).
+    fn resolve(self, store: LiveStore, strip: &Strip, n: u64) {
         let instance = strip.binding.instance.clone();
-        let label = shown_label(strip.label.as_deref(), &anchor_name(&strip.binding));
+        let label = label_of(strip);
         let make = move |track: Option<String>| {
             track.map(|track| Target {
                 instance: instance.clone(),
@@ -189,10 +181,9 @@ impl Listener {
             })
         };
         match track_name(&strip.binding) {
-            TrackName::Known(name) => then(self, make(Some(name))),
-            TrackName::None => then(self, None),
+            TrackName::Known(name) => self.answer(n, make(Some(name))),
+            TrackName::None => self.answer(n, None),
             TrackName::Read(path) => {
-                let _ = self.inner.try_update_value(|i| i.resolving = true);
                 let read = LiveCommand {
                     target: Value::String(path),
                     name: "get_prop".to_string(),
@@ -202,19 +193,22 @@ impl Listener {
                     &strip.binding.instance,
                     vec![read],
                     Some(Box::new(move |outcome: Result<Vec<Value>, String>| {
-                        let _ = self.inner.try_update_value(|i| i.resolving = false);
-                        then(self, make(name_of(&outcome)));
+                        self.answer(n, make(name_of(&outcome)));
                     })),
                 );
             }
         }
     }
 
-    /// Runs one step of the machine, records it, shows it and carries out
-    /// its acts.
-    fn run(self, what: &str, step: impl FnOnce(&mut Listen) -> Vec<Act>) {
-        let Some((acts, phase, track, view)) = self.inner.try_update_value(|i| {
-            let acts = step(&mut i.machine);
+    fn answer(self, n: u64, target: Option<Target>) {
+        self.run("answer", move |m| (m.answer(n, target), ()));
+    }
+
+    /// Runs one step of the machine (its acts and whatever else it
+    /// returns), records it, shows it and carries out its acts.
+    fn run<R>(self, what: &str, step: impl FnOnce(&mut Listen) -> (Vec<Act>, R)) -> Option<R> {
+        let (acts, out, phase, track, view) = self.inner.try_update_value(|i| {
+            let (acts, out) = step(&mut i.machine);
             let m = &i.machine;
             let track = m.want().map(|t| (t.instance.clone(), t.track.clone()));
             let view = ListenView {
@@ -222,10 +216,8 @@ impl Listener {
                 lit: m.lit(),
                 label: m.label().map(str::to_string),
             };
-            (acts, m.phase(), track, view)
-        }) else {
-            return;
-        };
+            (acts, out, m.phase(), track, view)
+        })?;
         crate::diag::record(&crate::diag::trace::listen(
             dom::epoch_now(),
             what,
@@ -238,20 +230,19 @@ impl Listener {
         for act in acts {
             self.act(act);
         }
+        Some(out)
     }
 
     fn act(self, act: Act) {
         match act {
+            Act::Play => start_player(),
             Act::Open => self.open(),
-            Act::Reopen => {
-                let number = self.inner.try_with_value(|i| i.number).unwrap_or(0);
+            Act::Reopen(turn) => {
                 set_timeout(
                     move || {
                         let due = self
                             .inner
-                            .try_with_value(|i| {
-                                !i.stopped && i.number == number && i.socket.is_none()
-                            })
+                            .try_with_value(|i| !i.stopped && i.machine.reopen_due(turn))
                             .unwrap_or(false);
                         if due {
                             self.open();
@@ -303,7 +294,7 @@ impl Listener {
             Ok(ws) => ws,
             Err(e) => {
                 dom::log(&format!("listen: cannot open the audio socket: {e:?}"));
-                self.run("close", |m| m.closed());
+                self.run("close", |m| (m.closed(), ()));
                 return;
             }
         };
@@ -322,7 +313,7 @@ impl Listener {
         let on_open = Closure::wrap(Box::new(move || {
             if mine(self) {
                 dom::log("listen: the audio socket opened");
-                self.run("open", |m| m.opened());
+                self.run("open", |m| (m.opened(), ()));
             }
         }) as Box<dyn FnMut()>);
         let on_message = Closure::wrap(Box::new(move |event: web_sys::MessageEvent| {
@@ -345,7 +336,7 @@ impl Listener {
                 event.code()
             ));
             let _ = self.inner.try_update_value(|i| i.socket = None);
-            self.run("close", |m| m.closed());
+            self.run("close", |m| (m.closed(), ()));
         }) as Box<dyn FnMut(web_sys::CloseEvent)>);
         ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
         ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
@@ -374,7 +365,7 @@ impl Listener {
             }) => {
                 dom::log(&format!("listen: the hub says {status:?}"));
                 self.run("status", move |m| {
-                    m.status(status, instance.as_deref(), track.as_deref())
+                    (m.status(status, instance.as_deref(), track.as_deref()), ())
                 });
             }
             Err(e) => dom::log(&format!("listen: an audio message did not parse: {e}")),

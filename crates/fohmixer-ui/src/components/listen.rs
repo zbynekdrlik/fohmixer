@@ -9,8 +9,8 @@
 use fohmixer_proto::layout::Strip;
 use leptos::prelude::*;
 
-use super::owns_touches;
-use crate::behave::listen::{foot_text, volume_at};
+use super::{owns_touches, trace_touch};
+use crate::behave::listen::{foot_text, lift_taps, volume_at};
 use crate::listen::Listener;
 use crate::store::LiveStore;
 
@@ -33,12 +33,26 @@ pub fn ListenKey(strip: Strip) -> impl IntoView {
     };
     // A tap at its lift: a browser lets a page's audio start only in a
     // user's gesture, and on a touch screen the lift is one (the down is
-    // not).
+    // not); only the lift of the finger that went down on the key
+    // (`behave::listen::lift_taps`).
+    let down = StoredValue::new(None::<i32>);
+    let on_down = move |ev: web_sys::PointerEvent| {
+        ev.prevent_default();
+        let _ = down.try_set_value(Some(ev.pointer_id()));
+    };
+    let on_cancel = move |_: web_sys::PointerEvent| {
+        let _ = down.try_set_value(None);
+    };
     let on_up = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
+        let pressed = down.try_update_value(Option::take).flatten();
+        if !lift_taps(pressed, ev.pointer_id()) {
+            return;
+        }
         let Some(listener) = listener else {
             return;
         };
+        trace_touch("tap", &[], ev.pointer_id());
         let _ = strip.try_with_value(|s| listener.tap(store, s));
     };
     let no_keys: Vec<String> = Vec::new();
@@ -51,6 +65,8 @@ pub fn ListenKey(strip: Strip) -> impl IntoView {
             data-state=state
             aria-pressed=move || lit().to_string()
             aria-label="Listen"
+            on:pointerdown=on_down
+            on:pointercancel=on_cancel
             on:pointerup=on_up
         >
             "🎧"
@@ -83,9 +99,8 @@ fn ListenVolume() -> impl IntoView {
     };
     let on_down = move |ev: web_sys::PointerEvent| {
         ev.prevent_default();
-        if held.try_get_value().flatten().is_some() {
-            return;
-        }
+        // A new finger takes the volume over: a finger whose end never
+        // came (iOS took it, #124) never holds it.
         let _ = held.try_set_value(Some(ev.pointer_id()));
         if let Some(el) = ev
             .current_target()

@@ -382,7 +382,7 @@ exclude_re = [
   # decision is the tested behave::listen (Listen, track_name, name_of,
   # gain, volume_at, foot_text) and net::audio_url; listen.spec.ts drives
   # the glue in Chromium and WebKit against SimLive's Listen device.
-  "fohmixer-ui/src/listen\\.rs.*(replace|in) (Listener::(new|stop|set_volume|tap|follow|target_of|run|act|open|on_text)|AudioSocket::close)( |$)",
+  "fohmixer-ui/src/listen\\.rs.*(replace|in) (Listener::(new|stop|set_volume|tap|follow|resolve|answer|run|act|open|on_text)|AudioSocket::close|label_of)( |$)",
   # components/fader_link.rs (#130): link_parts, the fader link's glue:
   # signals over the hub values and the store; its decisions are
   # behave::fader_link (tested), driven end to end by fader-link.spec.ts

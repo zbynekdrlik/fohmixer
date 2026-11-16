@@ -18,6 +18,8 @@ const SHRINK_AFTER_MS = 10000;
 const MAX_AHEAD_S = 0.5;
 // While the context is not running yet, at most this many packets wait.
 const MAX_WAITING = 50;
+// Of the packets that waited, the newest this many are played (100 ms).
+const DRAIN_NEWEST = 5;
 
 let context = null;
 let gainNode = null;
@@ -92,10 +94,23 @@ export function startListenPlayer() {
   }
   ctx.onstatechange = () => {
     if (context === ctx && ctx.state === "running" && waiting.length > 0) {
+      // Only the newest packets: the sound is live, never a burst of the
+      // past (a context resumed after iOS suspended it).
       nextStart = 0;
-      for (const packet of waiting.splice(0)) decode(packet);
+      for (const packet of waiting.splice(0).slice(-DRAIN_NEWEST)) decode(packet);
     }
   };
+}
+
+/**
+ * Resumes a player iOS suspended (the page hidden, the screen locked): the
+ * glue calls it when the page is shown again and at every finger's lift
+ * (a user's gesture). It does nothing while the player plays or is stopped.
+ */
+export function resumeListenPlayer() {
+  if (context && context.state !== "running" && context.state !== "closed") {
+    context.resume().catch(() => {});
+  }
 }
 
 /** Stops the player: the decoder, the context and every count. */

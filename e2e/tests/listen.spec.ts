@@ -1,6 +1,19 @@
 import type { Locator, Page } from "@playwright/test";
 import { test, expect } from "./support/fixtures";
-import { hostLine, hubEvents, hubStatus, openDetail, openSurface, pageEvents, token, until } from "./support/live";
+import {
+  MBC_MARKERS,
+  fixtureLayout,
+  harness,
+  hostLine,
+  hubEvents,
+  hubStatus,
+  openDetail,
+  openSurface,
+  pageEvents,
+  selectPage,
+  token,
+  until,
+} from "./support/live";
 
 // Listen (#210 phase 2; the owner's approved mockup docs/mockups/listen-v1.html):
 // the channel detail's 🎧 key beside the chip starts listening to that
@@ -32,6 +45,14 @@ type Stats = {
 
 async function stats(page: Page): Promise<Stats> {
   return page.evaluate(() => (window as unknown as { __fohmixerListen: () => Stats }).__fohmixerListen());
+}
+
+/** The page's player is stopped (its audio context closed) and takes no packet. */
+async function playerStopped(page: Page) {
+  await until(() => stats(page), (s) => !s.running, "the player stopped");
+  const packets = (await stats(page)).packets;
+  await page.waitForTimeout(500);
+  expect((await stats(page)).packets).toBe(packets);
 }
 
 function key(detail: Locator): Locator {
@@ -122,8 +143,10 @@ test.describe("Listen to a fader in the browser (#210)", () => {
     await expect(detail.getByTestId("listen-volume")).toHaveCount(0);
     await expect(footLine(page)).toHaveCount(0);
     await until(() => hubTarget(bearer), (t) => t === null, "the hub stopped sending");
+    await playerStopped(page);
 
-    // The page's flight recorder: the tap, the open, the hub's word, the stop.
+    // The page's flight recorder: the tap, its answer, the open, the hub's
+    // word, the stop.
     const steps = await until(
       async () =>
         pageEvents(await hubEvents()).filter((e) => e.ev === "listen" && e.t >= since),
@@ -133,13 +156,17 @@ test.describe("Listen to a fader in the browser (#210)", () => {
     );
     expect(steps.map((e) => `${e.what}:${e.phase}`)).toEqual([
       "tap:opening",
+      "answer:opening",
       "open:opening",
       "status:listening",
       // The detail opened again on the same channel: followed, nothing sent.
       "follow:listening",
+      "answer:listening",
       "tap:off",
     ]);
-    expect(steps[0]).toMatchObject({ instance: "band", track: HAND2.name });
+    // The tap asks for the channel's track; its answer names it.
+    expect(steps[0].track).toBeUndefined();
+    expect(steps[1]).toMatchObject({ instance: "band", track: HAND2.name });
   });
 
   test("another channel's detail is followed while listening", async ({ page }) => {
@@ -220,6 +247,7 @@ test.describe("Listen to a fader in the browser (#210)", () => {
     await expect(key(first)).toHaveAttribute("aria-pressed", "false");
     await expect(key(first)).toHaveAttribute("data-state", "taken");
     await expect(footLine(page)).toHaveText(`${HAND2.label}: taken by another page`);
+    await playerStopped(page);
     await expect(key(second)).toHaveAttribute("data-state", "listening");
     // A tap on the taken page starts it again and takes it back.
     await key(first).click();
@@ -244,4 +272,84 @@ test.describe("Listen to a fader in the browser (#210)", () => {
     await key(detail).click();
     await expect(footLine(page)).toHaveCount(0);
   });
+
+  test("the key and the volume fit the detail's bar on the tablet and on a phone either way", async ({ page }) => {
+    await openSurface(page);
+    const detail = await openDetail(page, HAND2.name);
+    await key(detail).click();
+    await expect(detail.getByTestId("listen-volume")).toBeVisible();
+    for (const size of [
+      { width: 1194, height: 834 },
+      { width: 844, height: 390 },
+      { width: 390, height: 844 },
+    ]) {
+      await page.setViewportSize(size);
+      const problems = await page.evaluate(() => {
+        const out: string[] = [];
+        const bar = document.querySelector(".detail-bar") as HTMLElement;
+        const b = bar.getBoundingClientRect();
+        if (bar.scrollWidth > bar.clientWidth) out.push(`the bar scrolls ${bar.scrollWidth} > ${bar.clientWidth}`);
+        for (const id of ["detail-exit", "detail-name", "listen-key", "listen-volume"]) {
+          const el = document.querySelector(`.detail-bar [data-testid="${id}"]`) as HTMLElement | null;
+          if (!el) {
+            out.push(`no ${id}`);
+            continue;
+          }
+          const r = el.getBoundingClientRect();
+          if (r.width < 1 || r.left < b.left - 0.5 || r.right > b.right + 0.5 || r.top < b.top - 0.5 || r.bottom > b.bottom + 0.5) {
+            out.push(`${id} outside the bar: ${JSON.stringify([r.left, r.right, r.top, r.bottom])} of ${JSON.stringify([b.left, b.right])}`);
+          }
+        }
+        // Nothing in the bar overlaps the key or the volume.
+        const keyBox = document.querySelector('[data-testid="listen-key"]')!.getBoundingClientRect();
+        const name = document.querySelector('.detail-bar [data-testid="detail-name"]')!.getBoundingClientRect();
+        if (name.right > keyBox.left + 0.5) out.push(`the chip runs into the key: ${name.right} > ${keyBox.left}`);
+        return out;
+      });
+      expect(problems, `at ${size.width} x ${size.height}`).toEqual([]);
+      await expect(key(detail)).toBeVisible();
+    }
+    await page.setViewportSize({ width: 1194, height: 834 });
+    await key(detail).click();
+  });
+
+  test("a marker strip (its track by place) is heard by its track's name in Live", async ({ page }) => {
+    const bearer = await token();
+    await openSurface(page);
+    try {
+      await harness("/hub/layout", { layout: withMarkers() });
+      await selectPage(page, "foh");
+      expect(await hostLine("band", `tuner track 1 set '"Vox 1" +G:MARKERS'`)).toBe("TUNER 1");
+      const marker = page.locator('.slot[data-group="markers"] [data-testid="strip"][data-label="Vox 1"]');
+      await expect(marker).toHaveAttribute("data-track", "#2");
+      let detail = await openDetail(page, "#2");
+      await key(detail).click();
+      // The page read the track's name (Hand2 #) before it asked the hub.
+      await until(() => hubTarget(bearer), (t) => t?.track === HAND2.name, "Hand2 # heard through its marker");
+      await expect(key(detail)).toHaveAttribute("data-state", "listening");
+      await expect(footLine(page)).toHaveText("listening Vox 1");
+      // Followed to a strip by name and back.
+      await detail.getByTestId("detail-exit").click();
+      detail = await openDetail(page, REVERB.name);
+      await until(() => hubTarget(bearer), (t) => t?.track === REVERB.name, "A-Reverb # followed");
+      await detail.getByTestId("detail-exit").click();
+      detail = await openDetail(page, "#2");
+      await until(() => hubTarget(bearer), (t) => t?.track === HAND2.name, "back to Hand2 #");
+      await expect(footLine(page)).toHaveText("listening Vox 1");
+      await key(detail).click();
+      await expect(footLine(page)).toHaveCount(0);
+    } finally {
+      await hostLine("band", "tuner track 1 remove");
+      await harness("/hub/layout/reset");
+      await until(async () => (await hubStatus(bearer)).layout.markers.found, (n: number) => n === MBC_MARKERS, "the Tuner markers gone", 10_000);
+    }
+  });
 });
+
+/** The fixture with a MARKERS group (the strips of that tag group) in the FOH page's second row. */
+function withMarkers(): any {
+  const frame = fixtureLayout();
+  const foh = frame.pages.find((p: any) => p.id === "foh");
+  foh.rows[1].sections.push({ kind: "group", id: "markers", title: "MARKERS", tags: "MARKERS" });
+  return frame;
+}

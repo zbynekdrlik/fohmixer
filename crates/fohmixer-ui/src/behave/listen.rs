@@ -17,6 +17,10 @@ use serde_json::Value;
 
 /// The wait before a lost audio socket is opened again, ms.
 pub const RECONNECT_MS: u64 = 1000;
+/// Socket opens in a row that close before they open: then the hub's
+/// Listen is taken as not there (a hub with `[listen] port = 0` answers
+/// the handshake 503) and the page stops trying.
+pub const MAX_FAILED_OPENS: u32 = 3;
 /// The volume's place at a page's start (the mockup's 70 of 100).
 pub const VOLUME_DEFAULT: f64 = 0.7;
 /// The volume's dB at the slider's left end (above it; the end is silence).
@@ -103,6 +107,9 @@ pub enum Phase {
     Refused,
     /// This browser has no Opus decoder (WebCodecs, a secure page).
     NoDecoder,
+    /// The audio socket never opened [`MAX_FAILED_OPENS`] times in a row:
+    /// stopped.
+    Unavailable,
 }
 
 impl Phase {
@@ -117,6 +124,7 @@ impl Phase {
             Phase::Taken => "taken",
             Phase::Refused => "refused",
             Phase::NoDecoder => "no_decoder",
+            Phase::Unavailable => "unavailable",
         }
     }
 }
@@ -124,27 +132,47 @@ impl Phase {
 /// What the glue does.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Act {
+    /// Start the player: inside the tap itself, since a browser lets a
+    /// page's audio start only in a user's gesture (a track's name to read
+    /// comes later).
+    Play,
     /// Stop the player.
     Silence,
     /// Open the audio socket.
     Open,
-    /// Open it again after [`RECONNECT_MS`].
-    Reopen,
+    /// Open it again after [`RECONNECT_MS`], if [`Listen::reopen_due`]
+    /// still holds for this turn then.
+    Reopen(u64),
     /// Close the audio socket (the hub's lease goes with it).
     Close,
     /// Send this on the open socket.
     Send(AudioClientMsg),
 }
 
+/// What an ask is for: a tap's start, or following another channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Purpose {
+    Start,
+    Follow,
+}
+
 /// The page's listening: the track wanted, the phase, whether the audio
-/// socket is open, and the last track's label (the foot names a track
-/// taken or refused).
+/// socket is open, the last track's label (the foot names a track taken or
+/// refused), the ask waiting for its track's name, the socket's turn (a
+/// reopen of an older turn does nothing) and the opens in a row that never
+/// opened.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Listen {
     want: Option<Target>,
     phase: Phase,
     open: bool,
     last: Option<String>,
+    /// The newest ask; an answer to an older one is stale.
+    asked: u64,
+    /// What the newest ask is for, with the label it shows meanwhile.
+    pending: Option<(Purpose, String)>,
+    turn: u64,
+    fails: u32,
 }
 
 impl Default for Listen {
@@ -160,6 +188,10 @@ impl Listen {
             phase: Phase::Off,
             open: false,
             last: None,
+            asked: 0,
+            pending: None,
+            turn: 0,
+            fails: 0,
         }
     }
 
@@ -172,61 +204,118 @@ impl Listen {
         self.want.as_ref()
     }
 
-    /// Whether the key is lit: a track is wanted.
+    /// Whether the key is lit: a track is wanted, or a tap's start waits
+    /// for its track's name.
     pub fn lit(&self) -> bool {
-        self.want.is_some()
+        self.want.is_some() || matches!(self.pending, Some((Purpose::Start, _)))
     }
 
-    /// The label the foot names: the wanted track's, else the last one's.
+    /// The label the foot names: the track asked for, else the wanted
+    /// one's, else the last one's.
     pub fn label(&self) -> Option<&str> {
-        self.want
+        self.pending
             .as_ref()
-            .map(|t| t.label.as_str())
+            .map(|(_, label)| label.as_str())
+            .or(self.want.as_ref().map(|t| t.label.as_str()))
             .or(self.last.as_deref())
     }
 
-    /// The 🎧 key's tap on the detail of `target` (none: its name is not
-    /// known, nothing to listen to); `decoder`: the browser decodes Opus.
-    /// Lit, it stops; else it starts that track. (The glue starts the
-    /// player inside the tap itself: a browser lets a page's audio start
-    /// only in a user's gesture, and a name to read comes later.)
-    pub fn tap(&mut self, target: Option<Target>, decoder: bool) -> Vec<Act> {
-        if let Some(old) = self.want.take() {
-            self.last = Some(old.label);
+    /// A new ask: every older answer is stale from now on.
+    fn ask(&mut self, purpose: Purpose, label: String) -> u64 {
+        self.asked += 1;
+        self.pending = Some((purpose, label));
+        self.asked
+    }
+
+    /// The 🎧 key's tap on the detail of the channel shown as `label`;
+    /// `decoder`: the browser decodes Opus. Lit (or a start still waiting
+    /// for its name), it stops; else it starts the player and asks for the
+    /// channel's track (its number: answer it with [`Listen::answer`]).
+    pub fn tap(&mut self, label: String, decoder: bool) -> (Vec<Act>, Option<u64>) {
+        if self.lit() {
+            let was = self.want.take();
+            let pending = self.pending.take().map(|(_, label)| label);
+            self.asked += 1;
+            self.last = was.as_ref().map(|t| t.label.clone()).or(pending);
             self.phase = Phase::Off;
             self.open = false;
-            return vec![Act::Close, Act::Silence];
+            let acts = if was.is_some() {
+                vec![Act::Close, Act::Silence]
+            } else {
+                vec![Act::Silence]
+            };
+            return (acts, None);
         }
-        let Some(target) = target else {
-            return Vec::new();
-        };
-        self.last = Some(target.label.clone());
+        self.last = Some(label.clone());
         if !decoder {
             self.phase = Phase::NoDecoder;
-            return Vec::new();
+            return (Vec::new(), None);
         }
         self.phase = Phase::Opening;
-        let send = if self.open {
+        self.fails = 0;
+        let n = self.ask(Purpose::Start, label);
+        (vec![Act::Play], Some(n))
+    }
+
+    /// The detail shows the channel labelled `label` now: while listening
+    /// (or a start waits) its track is asked for, to be followed (the
+    /// mockup: picking another channel keeps listening); none: nothing to
+    /// follow.
+    pub fn follow(&mut self, label: String) -> Option<u64> {
+        if !self.lit() {
+            return None;
+        }
+        let purpose = match self.pending {
+            Some((Purpose::Start, _)) => Purpose::Start,
+            _ => Purpose::Follow,
+        };
+        Some(self.ask(purpose, label))
+    }
+
+    /// The answer to ask `n`: the channel's track (none: its name is not
+    /// known, nothing to listen to there). A stale answer does nothing.
+    pub fn answer(&mut self, n: u64, target: Option<Target>) -> Vec<Act> {
+        if n != self.asked {
+            return Vec::new();
+        }
+        let Some((purpose, label)) = self.pending.take() else {
+            return Vec::new();
+        };
+        match (purpose, target) {
+            (Purpose::Start, None) => {
+                self.last = Some(label);
+                self.phase = Phase::Off;
+                vec![Act::Silence]
+            }
+            (Purpose::Start, Some(target)) => {
+                self.phase = Phase::Opening;
+                let act = self.start_act(&target);
+                self.want = Some(target);
+                vec![act]
+            }
+            (Purpose::Follow, None) => Vec::new(),
+            (Purpose::Follow, Some(target)) => self.follow_track(target),
+        }
+    }
+
+    /// The start of `target`: sent when the socket is open, else the socket
+    /// opens (and asks once open).
+    fn start_act(&self, target: &Target) -> Act {
+        if self.open {
             Act::Send(target.start())
         } else {
             Act::Open
-        };
-        self.want = Some(target);
-        vec![send]
+        }
     }
 
-    /// The detail shows `target` now: while listening, another track is
-    /// followed (the mockup: picking another channel keeps listening).
-    pub fn follow(&mut self, target: Target) -> Vec<Act> {
-        let same = self
-            .want
-            .as_ref()
-            .is_none_or(|t| t.instance == target.instance && t.track == target.track);
-        if same {
-            // Not listening, or the same track: a new label only.
-            if let Some(want) = self.want.as_mut() {
-                want.label = target.label;
-            }
+    /// Another channel's track while listening: the same track keeps
+    /// listening with its new label, another is asked for.
+    fn follow_track(&mut self, target: Target) -> Vec<Act> {
+        let Some(want) = self.want.as_mut() else {
+            return Vec::new();
+        };
+        if want.instance == target.instance && want.track == target.track {
+            want.label = target.label;
             return Vec::new();
         }
         self.phase = Phase::Opening;
@@ -242,6 +331,7 @@ impl Listen {
     /// The audio socket opened: the wanted track is asked for; with none
     /// wanted any more it closes again.
     pub fn opened(&mut self) -> Vec<Act> {
+        self.fails = 0;
         self.open = true;
         match &self.want {
             Some(target) => vec![Act::Send(target.start())],
@@ -252,14 +342,29 @@ impl Listen {
         }
     }
 
-    /// The audio socket closed: while a track is wanted it opens again.
+    /// The audio socket closed: while a track is wanted it opens again,
+    /// unless [`MAX_FAILED_OPENS`] opens in a row closed before they opened
+    /// (a hub with Listen off answers the handshake 503).
     pub fn closed(&mut self) -> Vec<Act> {
-        self.open = false;
+        let was_open = std::mem::take(&mut self.open);
+        if !was_open {
+            self.fails += 1;
+        }
         if self.want.is_none() {
             return Vec::new();
         }
+        if self.fails >= MAX_FAILED_OPENS {
+            return self.end(Phase::Unavailable);
+        }
         self.phase = Phase::Lost;
-        vec![Act::Reopen]
+        self.turn += 1;
+        vec![Act::Reopen(self.turn)]
+    }
+
+    /// Whether a reopen of `turn` is still due: a track is wanted, no
+    /// socket opened since, and no newer turn.
+    pub fn reopen_due(&self, turn: u64) -> bool {
+        self.want.is_some() && !self.open && turn == self.turn
     }
 
     /// The hub's `audio_status`. A status of another track (one asked
@@ -284,9 +389,12 @@ impl Listen {
         Vec::new()
     }
 
-    /// Listening ends by the hub's word.
+    /// Listening ends by the hub's word (or the hub's Listen is not there):
+    /// an ask still waiting is void too.
     fn end(&mut self, phase: Phase) -> Vec<Act> {
         self.last = self.want.take().map(|t| t.label);
+        self.pending = None;
+        self.asked += 1;
         self.phase = phase;
         self.open = false;
         vec![Act::Close, Act::Silence]
@@ -305,6 +413,7 @@ pub fn foot_text(phase: Phase, label: Option<&str>) -> Option<String> {
         Phase::Taken => Some(format!("{label}: taken by another page")),
         Phase::Refused => Some(format!("{label}: refused")),
         Phase::NoDecoder => Some("no audio decoder in this browser".to_string()),
+        Phase::Unavailable => Some(format!("{label}: the hub's Listen does not answer")),
     }
 }
 
@@ -318,6 +427,12 @@ pub fn gain_db(pos: f64) -> Option<f64> {
 /// The player's linear gain at `pos`.
 pub fn gain(pos: f64) -> f64 {
     gain_db(pos).map_or(0.0, |db| 10f64.powf(db / 20.0))
+}
+
+/// Whether the key's lift is a tap: the lift of the finger that went down
+/// on it (a finger slid onto the key from elsewhere is none).
+pub fn lift_taps(down: Option<i32>, up: i32) -> bool {
+    down == Some(up)
 }
 
 /// The volume's place under a finger at `x` on a slider from `left`,
