@@ -759,6 +759,7 @@ class MbcConfig(unittest.TestCase):
             '[[instances]]\nname = "mbc"\nport = 39103\n'
             "[lufs]\nport = 39111\n"
             "[listen]\nport = 0\n"
+            "[claps]\nport = 0\ndevice_port = 0\n"
             '[link]\nlisten = "127.0.0.1:39196"\ninstance = "mbc"\n',
         )
 

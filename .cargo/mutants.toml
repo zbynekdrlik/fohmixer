@@ -465,6 +465,13 @@ exclude_re = [
   "fohmixer-ui/src/pages/sectors\\.rs.*(replace|in) (change_mode|sector_spots|Carrier::(new|show|lift|hold|settle|leave))( |$)",
   "fohmixer-ui/src/pages/sectors/column\\.rs.*(replace|in) (flash_note|blur_field)( |$)",
   "fohmixer-ui/src/store/live/sectors\\.rs.*(replace|in) LiveStore::(sector_request|sector_tick|sector_edit)( |$)",
+  # store/live/claps.rs (#220): clap_tap, clap_beat and clap_stop, one
+  # socket send each; components/claps.rs ClapsColumn and ClapsParts, the
+  # Claps strip's column over the hub's state, its frame loop over the
+  # tested behave::claps::ring and hit; claps.spec.ts taps, sets a dot,
+  # reads the state line, the dots and the ring, and holds TAP to stop.
+  "fohmixer-ui/src/store/live/claps\\.rs.*(replace|in) LiveStore::(clap_tap|clap_beat|clap_stop)( |$)",
+  "fohmixer-ui/src/components/claps\\.rs.*(replace|in) (ClapsColumn|ClapsParts)( |$)",
   # store/live/colors.rs (#164): set_color, the strips' colours' request
   # through sector_request (the socket); strip-color.spec.ts picks a colour
   # in the detail and reads it on the strip and a second page.

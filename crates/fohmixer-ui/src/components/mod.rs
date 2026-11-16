@@ -8,6 +8,7 @@
 mod autotune_panel;
 pub mod buttons;
 mod channel_select;
+mod claps;
 pub mod detail;
 mod detail_alarm;
 mod detail_color;

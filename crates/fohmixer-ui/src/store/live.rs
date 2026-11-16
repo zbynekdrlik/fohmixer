@@ -45,6 +45,7 @@ use crate::diag::{self, trace};
 use crate::dom;
 use crate::net::{self, Decision, LayoutFetch};
 
+mod claps;
 mod colors;
 mod deck;
 mod eq;

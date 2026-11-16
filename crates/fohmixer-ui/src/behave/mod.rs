@@ -15,12 +15,13 @@
 //! (#104, D19, `autotune`), the strip's marks line (#151, `marks`) and
 //! its loudness reading (#151, `lufs`), the sectors page's reorder
 //! mode, ARRANGE (#148, `arrange_drag`), and the recording watch's looks
-//! (#172, `rec`).
+//! (#172, `rec`), and the Claps strip's column (#220, `claps`).
 
 pub mod ableset;
 pub mod arrange_drag;
 pub mod arrange_edit;
 pub mod autotune;
+pub mod claps;
 pub mod colour;
 pub mod column;
 pub mod db_text;
