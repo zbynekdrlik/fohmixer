@@ -3135,6 +3135,7 @@ mod tests {
                 ServerMsg::MuteGuards {
                     doc: fohmixer_proto::mute_guards::MuteGuardsDoc::empty(),
                 },
+                ServerMsg::Claps(fohmixer_proto::claps::ClapsState::default()),
                 ServerMsg::Hub {
                     key: HUB_STAGE_AUT.into(),
                     value: json!(false)
@@ -3142,7 +3143,8 @@ mod tests {
             ],
             "no layout yet: no revision (REVERB's state, #130, AUTOTUNE's, #104, \
              the sectors' document, #148, the colours', #164, the mute \
-             alarm's, #188, and the mute guard's, #203, are replies)"
+             alarm's, #188, the mute guard's, #203, and the claps', #220, \
+             are replies)"
         );
         router.handle(RouterMsg::Layout {
             rev: 1,
