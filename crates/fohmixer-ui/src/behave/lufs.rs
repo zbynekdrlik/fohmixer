@@ -264,6 +264,7 @@ mod tests {
             fader_link: None,
             fader_follows: Vec::new(),
             lufs,
+            home_db: None,
         }
     }
 

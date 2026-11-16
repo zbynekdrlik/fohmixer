@@ -303,6 +303,11 @@ pub struct Strip {
     /// `+LUFS:<target>`, or a frame strip's `"lufs"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lufs: Option<LufsSpec>,
+    /// The strip's home level in dB (#225): its Tuner marker's
+    /// `+HOME:<dB>`. Its unity mark sits there and a double tap glides
+    /// there; none is 0 dB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_db: Option<f64>,
 }
 
 /// A fader link's leader: its Live set and its `+ID` (#130, D18).
