@@ -102,6 +102,11 @@ fn a_dot_flashes_at_the_start_of_a_beat_live_claps() {
     assert!(hit(&s, 0.0, 500.0), "beat 2 begins");
     assert!(hit(&s, 0.0, 500.0 + 0.23 * 500.0));
     assert!(!hit(&s, 0.0, 500.0 + 0.25 * 500.0), "past the flash");
+    let at_end = told(ClapsPhase::On, [true; 4], Some(HIT_BEATS), Some(120.0));
+    assert!(
+        !hit(&at_end, 0.0, 0.0),
+        "a beat exactly HIT_BEATS old no longer flashes"
+    );
     let clip = told(ClapsPhase::Clip, [true; 4], Some(4.0), Some(120.0));
     assert!(!hit(&clip, 0.0, 0.0), "the clip claps, not the device");
     let tapping = told(ClapsPhase::Tapping, [true; 4], Some(4.0), Some(120.0));

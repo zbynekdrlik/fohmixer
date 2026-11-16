@@ -60,6 +60,11 @@ fn a_word_out_of_range_or_shape_is_refused() {
         parse(&vec![b'/'; MAX_DATAGRAM + 1]),
         Err(WireError::TooLong)
     );
+    assert_ne!(
+        parse(&vec![b'/'; MAX_DATAGRAM]),
+        Err(WireError::TooLong),
+        "a datagram of exactly MAX_DATAGRAM bytes is not too long"
+    );
 }
 
 #[test]
@@ -120,6 +125,11 @@ fn a_hello_of_another_shape_is_refused() {
     assert_eq!(
         parse_hello(&vec![b'/'; MAX_DATAGRAM + 1]),
         Err(WireError::TooLong)
+    );
+    assert_ne!(
+        parse_hello(&vec![b'/'; MAX_DATAGRAM]),
+        Err(WireError::TooLong),
+        "a datagram of exactly MAX_DATAGRAM bytes is not too long"
     );
 }
 
