@@ -53,10 +53,11 @@
 #   hub, its log says so), a stop without the stop task refused with the tray
 #   left running, and --exit (the stop task's command) ending it gracefully;
 #   --exit with no tray running exits at once;
-# - the Max for Live devices (#151): both built by build_amxd.py (python on
+# - the Max for Live devices (#151): all built by build_amxd.py (python on
 #   PATH, as in the CI jobs) into the bundle's live-device\, refused when
 #   missing or not a device, installed into each user's User Library at
-#   Presets\Audio Effects\Max Audio Effect equal to the bundle's, a second
+#   Presets\Audio Effects\Max Audio Effect equal to the bundle's (the Claps
+#   MIDI effect at Presets\MIDI Effects\Max MIDI Effect, #220), a second
 #   run writing nothing, a changed one written again;
 # - the MBC PC's install and the FOH install's link (#184 PR D): see
 #   Test-FohmixerMbc.ps1, dot-sourced here.
@@ -590,6 +591,19 @@ try {
     Assert ((Get-FohInstalledHandTable -Text $scenesByHand -Name 'scenes') -ceq $wantScenes) 'installed-scenes-table-written-by-hand-comes-back-as-written-by-the-install'
     Assert ((Get-FohInstalledHandTable -Text ($baseToml + $gotRemote + $wantScenes) -Name 'scenes') -ceq '') 'installed-scenes-after-tls-is-left-to-the-remote-tables'
     Assert ((Get-FohInstalledHandTable -Text ($baseToml + "`r`n[scenesx]`r`nx = 1`r`n") -Name 'scenes') -ceq '') 'installed-scenes-another-table-name-is-not-scenes'
+    # ---- claps from the surface (#220): an installed [claps] table is kept ----
+    $wantClaps = "`r`n[claps]`r`nnotes = [52, 57]`r`n"
+    $withClaps = New-FohHubToml -HttpPort 1 -BandPort 2 -MasterPort 3 -Companion $wantCompanion -Scenes $wantScenes -Claps $wantClaps -Remote $gotRemote
+    Assert ($withClaps -ceq ($baseToml + $wantCompanion + $wantScenes + $wantClaps + $gotRemote)) 'claps-table-after-scenes-before-tls'
+    Assert ((Get-FohInstalledHandTable -Text $withClaps -Name 'claps') -ceq $wantClaps) 'installed-claps-table-read-back-before-tls'
+    Assert ((Get-FohInstalledHandTable -Text $withClaps -Name 'scenes') -ceq $wantScenes) 'installed-scenes-table-unchanged-by-claps'
+    $clapsByHand = $baseToml + "[claps]`nnotes = [52, 57]  `n" + $gotRemote
+    Assert ((Get-FohInstalledHandTable -Text $clapsByHand -Name 'claps') -ceq $wantClaps) 'installed-claps-table-written-by-hand-comes-back-as-written-by-the-install'
+    $clapsToml = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Claps $wantClaps
+    Assert ((Test-FohHubToml -Exe $HubExe -Text $clapsToml -Dir $checkDir) -like '*: OK*') 'hub-toml-check-accepts-the-claps-table'
+    $badClaps = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Claps "`r`n[claps]`r`nnotes = []`r`n"
+    $badError = ErrorOf { Test-FohHubToml -Exe $HubExe -Text $badClaps -Dir $checkDir }
+    Assert (($badError -like '*refused by the hub (exit 2)*') -and $badError.Contains('[claps] notes')) 'hub-toml-check-refuses-claps-without-a-pitch'
     $scenesToml = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Companion $wantCompanion -Scenes $wantScenes
     Assert ((Test-FohHubToml -Exe $HubExe -Text $scenesToml -Dir $checkDir) -like '*: OK*') 'hub-toml-check-accepts-the-scenes-table'
     $lonelyScenes = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182 -Scenes $wantScenes
@@ -641,12 +655,12 @@ try {
     # ---- the bundle ----
     $out = Join-Path $base 'out'
     New-Item -ItemType Directory -Force -Path $out | Out-Null
-    # The Max for Live devices (#151; #210 Listen), built as the bundle job builds them.
+    # The Max for Live devices (#151; #210 Listen; #220 Claps), built as the bundle job builds them.
     $deviceDir = Join-Path $base 'devices'
     New-Item -ItemType Directory -Force -Path $deviceDir | Out-Null
     $buildAmxd = Join-Path $repo 'live-device\FohMixer-LUFS\build_amxd.py'
     foreach ($patch in @('live-device\FohMixer-LUFS\FohMixer LUFS.maxpat', 'live-device\FohMixer-Meter\FohMixer Meter.maxpat',
-            'live-device\FohMixer-Listen\FohMixer Listen.maxpat')) {
+            'live-device\FohMixer-Listen\FohMixer Listen.maxpat', 'live-device\FohMixer-Claps\FohMixer Claps.maxpat')) {
         $name = [IO.Path]::GetFileNameWithoutExtension($patch) + '.amxd'
         & python $buildAmxd --patch (Join-Path $repo $patch) --out (Join-Path $deviceDir $name)
         if ($LASTEXITCODE -ne 0) { throw "build_amxd.py failed for $patch ($LASTEXITCODE)" }
@@ -660,7 +674,14 @@ try {
     Assert ($e -like '*FohMixer Meter.amxd does not exist*') "bundle-refuses-a-missing-device ($e)"
     [IO.File]::WriteAllText((Join-Path $noDevices 'FohMixer Meter.amxd'), '{"patcher": {}}')
     $e = ErrorOf { New-FohBundle -RepoRoot $repo -HubExe $HubExe -TrayExe $TrayExe -DeviceDir $noDevices -OutDir $out -Sha $sha }
-    Assert ($e -like '*not a Max audio effect device*FohMixer Meter.amxd*') "bundle-refuses-a-file-that-is-no-device ($e)"
+    Assert ($e -like '*not a Max device of its kind*FohMixer Meter.amxd*') "bundle-refuses-a-file-that-is-no-device ($e)"
+    # (#220) The Claps device must be a MIDI effect: an audio effect's header under its name is refused.
+    $wrongKind = Join-Path $base 'wrong-kind'
+    New-Item -ItemType Directory -Force -Path $wrongKind | Out-Null
+    Copy-Item -LiteralPath (Join-Path $deviceDir 'FohMixer Listen.amxd') -Destination (Join-Path $wrongKind 'FohMixer Claps.amxd')
+    $e = ErrorOf { Test-FohAmxd -Path (Join-Path $wrongKind 'FohMixer Claps.amxd') }
+    Assert ($e -like '*not a Max device of its kind*FohMixer Claps.amxd*') "a-claps-device-with-an-audio-header-is-refused ($e)"
+    Test-FohAmxd -Path (Join-Path $deviceDir 'FohMixer Claps.amxd')
     $b1 = New-FohBundle -RepoRoot $repo -HubExe $HubExe -TrayExe $TrayExe -DeviceDir $deviceDir -OutDir $out -Sha $sha
     Assert ((Get-FohSha256 (Join-Path $b1.stage 'fohmixer-tray.exe')) -ceq (Get-FohSha256 $TrayExe)) 'bundle-holds-the-built-tray'
     $v1 = $b1.version
@@ -671,10 +692,11 @@ try {
     foreach ($n in @('VERSION', 'SHA256SUMS', 'fohmixer-hub.exe', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1', 'FohmixerLivePrefs.ps1', 'FohmixerFirewall.ps1', 'FohmixerRemote.ps1', 'Start-FohmixerHub.ps1',
             'Stop-FohmixerHub.ps1', 'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py', 'FohMixer/transport/server.py',
             'fohmixer-tray.exe', 'FohmixerTray.ps1', 'FohmixerHubProcess.ps1', 'FohmixerTasks.ps1', 'THIRD-PARTY-NOTICES.md',
-            'live-device/FohMixer LUFS.amxd', 'live-device/FohMixer Meter.amxd', 'live-device/FohMixer Listen.amxd')) {
+            'live-device/FohMixer LUFS.amxd', 'live-device/FohMixer Meter.amxd', 'live-device/FohMixer Listen.amxd',
+            'live-device/FohMixer Claps.amxd')) {
         Assert ($entries -ccontains $n) "bundle-holds-$n"
     }
-    foreach ($d in @('FohMixer LUFS.amxd', 'FohMixer Meter.amxd', 'FohMixer Listen.amxd')) {
+    foreach ($d in @('FohMixer LUFS.amxd', 'FohMixer Meter.amxd', 'FohMixer Listen.amxd', 'FohMixer Claps.amxd')) {
         Assert ((Get-FohSha256 (Join-Path $b1.stage "live-device\$d")) -ceq (Get-FohSha256 (Join-Path $deviceDir $d))) "bundle-holds-the-built-$d"
     }
     # The IJG credit jpeg-encoder's licence asks of the shipped hub's documentation (#71).
@@ -754,12 +776,22 @@ try {
         }
         Assert (@(Get-ChildItem -LiteralPath $lib -File).Count -eq 3) 'install-1-leaves-no-temp-file-beside-the-devices'
     }
-    Assert ($r1.out -like "*the band user's Max devices in Presets\Audio Effects\Max Audio Effect (written: FohMixer LUFS.amxd, FohMixer Meter.amxd, FohMixer Listen.amxd)*") 'install-1-says-which-devices-it-wrote'
+    # (#220) The Claps MIDI effect in each user's MIDI effects, alone there.
+    foreach ($lib in @($bandLib, $masterLib)) {
+        $midi = Join-Path $lib 'Presets\MIDI Effects\Max MIDI Effect'
+        $installed = Join-Path $midi 'FohMixer Claps.amxd'
+        Assert ((Test-Path -LiteralPath $installed -PathType Leaf) -and
+            (Get-FohSha256 $installed) -ceq (Get-FohSha256 (Join-Path $appV1 'live-device\FohMixer Claps.amxd'))) 'install-1-puts-the-claps-device-into-the-midi-effects'
+        Assert (@(Get-ChildItem -LiteralPath $midi -File).Count -eq 1) 'install-1-leaves-no-temp-file-beside-the-claps-device'
+    }
+    Assert ($r1.out -like "*the band user's Max devices in Presets\Audio Effects\Max Audio Effect and Presets\MIDI Effects\Max MIDI Effect (written: FohMixer LUFS.amxd, FohMixer Meter.amxd, FohMixer Listen.amxd, FohMixer Claps.amxd)*") 'install-1-says-which-devices-it-wrote'
     # In-process on a library of its own: a changed device is written again, an equal one never, a missing library refused.
     $devLib = Join-Path $base 'devices-lib'
     New-Item -ItemType Directory -Force -Path $devLib | Out-Null
     $w = @(Install-FohUserDevices -Source (Join-Path $appV1 'live-device') -UserLibrary $devLib)
-    Assert ($w.Count -eq 3) 'devices-first-run-writes-all-three'
+    Assert ($w.Count -eq 4) 'devices-first-run-writes-all-four'
+    Assert ((Get-FohDevicePresets -Name 'FohMixer Claps.amxd') -ceq 'Presets\MIDI Effects\Max MIDI Effect' -and
+        (Get-FohDevicePresets -Name 'FohMixer Listen.amxd') -ceq 'Presets\Audio Effects\Max Audio Effect') 'devices-a-midi-effect-goes-to-the-midi-effects'
     Assert (@(Install-FohUserDevices -Source (Join-Path $appV1 'live-device') -UserLibrary $devLib).Count -eq 0) 'devices-second-run-writes-nothing'
     [IO.File]::WriteAllText((Join-Path $devLib 'Presets\Audio Effects\Max Audio Effect\FohMixer Meter.amxd'), 'frozen by hand')
     $w = @(Install-FohUserDevices -Source (Join-Path $appV1 'live-device') -UserLibrary $devLib)

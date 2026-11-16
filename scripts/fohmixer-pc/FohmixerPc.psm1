@@ -27,13 +27,17 @@ $script:BundleFiles = @('VERSION', 'fohmixer-hub.exe', 'fohmixer-tray.exe', 'THI
     'FohmixerLivePrefs.ps1', 'FohmixerFirewall.ps1', 'FohmixerRemote.ps1', 'FohmixerTray.ps1', 'FohmixerHubProcess.ps1',
     'FohmixerTasks.ps1', 'FohmixerTables.ps1', 'FohmixerMbc.ps1', 'Start-FohmixerHub.ps1', 'Stop-FohmixerHub.ps1', 'mbc-frame.json',
     'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py',
-    'live-device/FohMixer LUFS.amxd', 'live-device/FohMixer Meter.amxd', 'live-device/FohMixer Listen.amxd')
-# The Max for Live devices (#151; #210 added Listen): the bundle's live-device\ folder, built by
+    'live-device/FohMixer LUFS.amxd', 'live-device/FohMixer Meter.amxd', 'live-device/FohMixer Listen.amxd',
+    'live-device/FohMixer Claps.amxd')
+# The Max for Live devices (#151; #210 added Listen, #220 Claps): the bundle's live-device\ folder, built by
 # live-device/FohMixer-LUFS/build_amxd.py (never committed), installed into
-# each Live user's User Library at Presets\Audio Effects\Max Audio Effect.
+# each Live user's User Library at Presets\Audio Effects\Max Audio Effect, the
+# MIDI effects (#220: FohMixer Claps) at Presets\MIDI Effects\Max MIDI Effect.
 $script:DeviceDir = 'live-device'
-$script:Devices = @('FohMixer LUFS.amxd', 'FohMixer Meter.amxd', 'FohMixer Listen.amxd')
+$script:Devices = @('FohMixer LUFS.amxd', 'FohMixer Meter.amxd', 'FohMixer Listen.amxd', 'FohMixer Claps.amxd')
 $script:DevicePresets = 'Presets\Audio Effects\Max Audio Effect'
+$script:MidiDevices = @('FohMixer Claps.amxd')
+$script:MidiDevicePresets = 'Presets\MIDI Effects\Max MIDI Effect'
 # The MBC hub's frame (#184), in the bundle beside the scripts.
 $script:MbcFrame = 'mbc-frame.json'
 # A SemVer version that is also a safe folder name (no trailing dot, no "..").
@@ -152,18 +156,29 @@ function Get-FohWorkspaceVersion {
 
 # ---- the bundle (design note section 2) ----
 
+function Get-FohDevicePresets {
+    # The User Library folder a device goes to (#220): a MIDI effect's
+    # (FohMixer Claps) is Presets\MIDI Effects\Max MIDI Effect, every other's
+    # Presets\Audio Effects\Max Audio Effect.
+    param([Parameter(Mandatory)][string]$Name)
+    if ($script:MidiDevices -ccontains $Name) { return $script:MidiDevicePresets }
+    return $script:DevicePresets
+}
+
 function Test-FohAmxd {
-    # An unfrozen Max audio effect device as build_amxd.py writes it: the
-    # 'ampf' header with the audio effect kind 'aaaa', then 'meta', then
-    # 'ptch' and the patcher's length, which is the rest of the file. Throws
-    # naming the file otherwise.
+    # An unfrozen Max device as build_amxd.py writes it: the 'ampf' header
+    # with the device's kind ('aaaa' an audio effect; 'mmmm' a MIDI effect,
+    # the Claps device's, #220), then 'meta', then 'ptch' and the patcher's
+    # length, which is the rest of the file. Throws naming the file otherwise.
     param([Parameter(Mandatory)][string]$Path)
+    $kind = 'aaaa'
+    if ($script:MidiDevices -ccontains [IO.Path]::GetFileName($Path)) { $kind = 'mmmm' }
     $bytes = [IO.File]::ReadAllBytes($Path)
     $ascii = [Text.Encoding]::ASCII
-    $ok = $bytes.Length -ge 32 -and $ascii.GetString($bytes, 0, 4) -ceq 'ampf' -and $ascii.GetString($bytes, 8, 4) -ceq 'aaaa' -and
+    $ok = $bytes.Length -ge 32 -and $ascii.GetString($bytes, 0, 4) -ceq 'ampf' -and $ascii.GetString($bytes, 8, 4) -ceq $kind -and
         $ascii.GetString($bytes, 12, 4) -ceq 'meta' -and $ascii.GetString($bytes, 24, 4) -ceq 'ptch'
     if ($ok) { $ok = ([BitConverter]::ToUInt32($bytes, 28) -eq ($bytes.Length - 32)) }
-    if (-not $ok) { throw "not a Max audio effect device (build_amxd.py's .amxd): $Path" }
+    if (-not $ok) { throw "not a Max device of its kind (build_amxd.py's .amxd): $Path" }
 }
 
 function New-FohBundleZip {
@@ -286,7 +301,7 @@ function Test-FohBundle {
     if ($scriptVersion -cne $version) { throw "bundle refused: FohMixer\version.py says $scriptVersion, VERSION $version" }
     foreach ($d in $script:Devices) {
         $device = Join-Path (Join-Path $Root $script:DeviceDir) $d
-        try { Test-FohAmxd -Path $device } catch { throw "bundle refused: $($script:DeviceDir)/$d is not a Max audio effect device" }
+        try { Test-FohAmxd -Path $device } catch { throw "bundle refused: $($script:DeviceDir)/$d is not a Max device of its kind" }
     }
     return $version
 }
@@ -359,13 +374,14 @@ function New-FohHubToml {
     # $Presenter (Get-FohPresenterToml: Presenter's stage tab, #90), then
     # $Scenes (Resolve-FohScenes: the scene read from Companion, #207, kept
     # from the installed file, never written by the install itself), then
+    # $Claps (Resolve-FohClaps: claps from the surface, #220, kept likewise), then
     # $Remote (Get-FohRemoteToml: the remote-access tables, #17, always last:
     # Get-FohInstalledRemoteToml reads from [tls] to the end).
     # There is no data_dir key: the hub's data folder is FOHMIXER_DATA.
     param([Parameter(Mandatory)][int]$HttpPort, [Parameter(Mandatory)][int]$BandPort, [Parameter(Mandatory)][int]$MasterPort,
           [AllowEmptyString()][string]$Eq = '', [AllowEmptyString()][string]$Companion = '', [AllowEmptyString()][string]$Remote = '',
           [AllowEmptyString()][string]$Presenter = '', [AllowEmptyString()][string]$Linked = '',
-          [AllowEmptyString()][string]$Scenes = '')
+          [AllowEmptyString()][string]$Scenes = '', [AllowEmptyString()][string]$Claps = '')
     $lines = @(
         '# fohmixer-hub configuration, written by Install-Fohmixer.ps1: run the install again to change it.',
         ('http_port = {0}' -f $HttpPort),
@@ -378,7 +394,7 @@ function New-FohHubToml {
         '[[instances]]',
         'name = "master"',
         ('port = {0}' -f $MasterPort))
-    return (($lines -join "`r`n") + "`r`n" + $Linked + $Eq + $Companion + $Presenter + $Scenes + $Remote)
+    return (($lines -join "`r`n") + "`r`n" + $Linked + $Eq + $Companion + $Presenter + $Scenes + $Claps + $Remote)
 }
 
 function Test-FohHubToml {
@@ -545,7 +561,8 @@ function Install-FohScriptCopy {
 function Install-FohUserDevices {
     # The Max for Live devices (#151, spec section 10 step 5) for one Live
     # user: each of the bundle's live-device\*.amxd into <UserLibrary>\Presets\
-    # Audio Effects\Max Audio Effect, where Live's browser lists it (the
+    # Audio Effects\Max Audio Effect (a MIDI effect into Presets\MIDI
+    # Effects\Max MIDI Effect, #220), where Live's browser lists it (the
     # rollout loads it from there through the LOM). A file is written only when
     # its content differs (a second run writes nothing); nothing else in the
     # folder is touched. The User Library must exist. Writes the names written
@@ -558,9 +575,9 @@ function Install-FohUserDevices {
     param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$UserLibrary,
         [switch]$Hold, [System.Collections.Generic.List[string]]$Held)
     if (-not (Test-Path -LiteralPath $UserLibrary -PathType Container)) { throw "Live's User Library not found: $UserLibrary" }
-    $dest = Join-Path $UserLibrary $script:DevicePresets
     $written = @()
     foreach ($d in $script:Devices) {
+        $dest = Join-Path $UserLibrary (Get-FohDevicePresets -Name $d)
         $from = Join-Path $Source $d
         Test-FohAmxd -Path $from
         $to = Join-Path $dest $d
@@ -718,7 +735,8 @@ function Invoke-FohInstall {
     # $Companion is the [companion] table (#52, Resolve-FohCompanion); $Eq the
     # installed [eq] table kept (#71, Resolve-FohEq); $Presenter the
     # [presenter] table (#90, Resolve-FohPresenter); $Scenes the installed
-    # [scenes] table kept (#207, Resolve-FohScenes); $Linked the MBC Live's
+    # [scenes] table kept (#207, Resolve-FohScenes); $Claps the installed
+    # [claps] table kept (#220, Resolve-FohClaps); $Linked the MBC Live's
     # linked instance (#184, Resolve-FohMbcLink). -Site Mbc (#184) installs
     # the MBC PC instead: its hub runs as -MbcUser, its toml is
     # New-FohMbcHubToml's (the text from [tls] on kept as installed), its
@@ -751,6 +769,7 @@ function Invoke-FohInstall {
         [AllowEmptyString()][string]$Eq = '',
         [AllowEmptyString()][string]$Presenter = '',
         [AllowEmptyString()][string]$Scenes = '',
+        [AllowEmptyString()][string]$Claps = '',
         $Remote = $null
     )
     # ---- checks ----
@@ -803,7 +822,7 @@ function Invoke-FohInstall {
             if (Test-Path -LiteralPath $installedToml -PathType Leaf) { $kept = Get-FohInstalledRemoteToml -Text ([IO.File]::ReadAllText($installedToml)) }
             $tomlText = New-FohMbcHubToml -HttpPort $HttpPort -MbcPort $MbcPort -LinkListen $LinkListen -Remote $kept
         } else {
-            $tomlText = New-FohHubToml -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Linked $Linked -Eq $Eq -Companion $Companion -Presenter $Presenter -Scenes $Scenes -Remote $remoteToml
+            $tomlText = New-FohHubToml -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Linked $Linked -Eq $Eq -Companion $Companion -Presenter $Presenter -Scenes $Scenes -Claps $Claps -Remote $remoteToml
         }
         $accepted = Test-FohHubToml -Exe (Join-Path $unpacked.dir $script:HubExe) -Text $tomlText -Dir (Split-Path -Parent $unpacked.dir)
         Write-Host "fohmixer install: the new hub accepts the config ($accepted)"
@@ -836,6 +855,7 @@ function Invoke-FohInstall {
         Write-Host "fohmixer install: fohmixer-hub.toml (changed: $toml)"
         if ($Eq) { Write-Host 'fohmixer install: the [eq] table kept as installed (the Pro-Q 4 screen)' }
         if ($Scenes) { Write-Host 'fohmixer install: the [scenes] table kept as installed (the scene read from Companion)' }
+        if ($Claps) { Write-Host 'fohmixer install: the [claps] table kept as installed (claps from the surface)' }
         # 4. the layout
         $layoutChanged = $false
         if ($frameFirst) { $Layout = Join-Path $app.dir $script:MbcFrame }
@@ -866,7 +886,7 @@ function Invoke-FohInstall {
             $devices = Install-FohUserDevices -Source (Join-Path $app.dir $script:DeviceDir) -UserLibrary $u.library -Hold:$liveRunning -Held $held
             $wrote = 'nothing'
             if (@($devices).Count -gt 0) { $wrote = (@($devices) -join ', ') }
-            Write-Host ("fohmixer install: the {0} user's Max devices in {1} (written: {2})" -f $u.instance, $script:DevicePresets, $wrote)
+            Write-Host ("fohmixer install: the {0} user's Max devices in {1} and {2} (written: {3})" -f $u.instance, $script:DevicePresets, $script:MidiDevicePresets, $wrote)
             if ($held.Count -gt 0) {
                 Write-Host ("fohmixer install: the {0} user's Max devices held while a Live runs: {1} (close both Lives and run this install again to update them)" -f $u.instance, ($held -join ', '))
             }
@@ -938,6 +958,6 @@ function Invoke-FohInstall {
     return [pscustomobject]@{
         version = $unpacked.version; app = $app.dir; app_changed = $app.changed; config_changed = $toml
         layout_changed = $layoutChanged; copies = $copies; hub = $answer; tray = $trayPid; remote = $remoteResult; companion = [bool]$Companion; presenter = [bool]$Presenter
-        eq = [bool]$Eq; scenes = [bool]$Scenes; site = $Site; linked = [bool]$Linked
+        eq = [bool]$Eq; scenes = [bool]$Scenes; claps = [bool]$Claps; site = $Site; linked = [bool]$Linked
     }
 }
