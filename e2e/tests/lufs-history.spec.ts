@@ -197,7 +197,8 @@ test.describe("A fader's LUFS history in its channel detail", () => {
     await expect(again.getByTestId("detail-middle")).toHaveAttribute("data-tab", "lufs");
     await expect(again.getByTestId("lufs-window").nth(1)).toHaveAttribute("aria-pressed", "true");
     const series = await (await answer).json();
-    expect(series.step_ms).toBe(4000);
+    // An hour asked from a time within a second: 3600 or 3601 s, so 4 or 5 s a value.
+    expect([4000, 5000]).toContain(series.step_ms);
     expect(series.values.some((v: number | null) => v === -300), "the hub's history holds −30.0").toBe(true);
     await expect.poll(() => runsOf(again.getByTestId("lufs-graph")), { timeout: 10_000 }).toBeGreaterThan(0);
 
