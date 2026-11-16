@@ -13,6 +13,7 @@ mod detail_alarm;
 mod detail_color;
 mod detail_guard;
 mod detail_layouts;
+pub mod detail_lufs;
 mod detail_scenes;
 pub mod eq;
 pub mod fader;

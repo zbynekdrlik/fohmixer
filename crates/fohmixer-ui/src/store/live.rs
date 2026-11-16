@@ -50,6 +50,7 @@ mod eq;
 mod idle;
 mod link;
 mod live_down;
+mod lufs_history;
 mod mute_alarms;
 mod mute_guards;
 mod presenter;

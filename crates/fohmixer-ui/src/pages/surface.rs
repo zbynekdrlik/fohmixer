@@ -43,6 +43,7 @@ use crate::binding::{
     selected_path, solo_sub, stored_pages, view_tap, wanted_subs,
 };
 use crate::components::detail::{DetailStrip, DetailView};
+use crate::components::detail_lufs::DetailMiddle;
 use crate::components::eq::{EqNav, EqScreen, EqTarget};
 use crate::components::rec::RecKey;
 use crate::components::stream_lufs::page_readouts;
@@ -370,6 +371,9 @@ pub fn Surface(token: String, session: RwSignal<Option<String>>) -> impl IntoVie
         strip: nav.detail,
         opened_at: nav.detail_opened,
     });
+    // The detail's middle tab and the LUFS history's window (#219): kept
+    // for the page, so the next detail opens on them.
+    provide_context(DetailMiddle::new());
     // A Pro-Q 4 screen (#71 PR E): opened from the detail's cards; closed
     // with the detail.
     let eq = EqNav {
