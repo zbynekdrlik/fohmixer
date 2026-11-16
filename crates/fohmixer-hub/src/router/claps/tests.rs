@@ -333,9 +333,10 @@ async fn a_moved_claps_track_keeps_what_claps_and_follows_its_clips_anew() {
         "still clapping"
     );
     assert!(router.claps.words().on);
-    assert!(
-        router.claps.clips.is_empty(),
-        "the old place's clips are gone"
+    assert_eq!(
+        router.claps.clips.len(),
+        1,
+        "the same track's clips stay until the new read answers"
     );
     assert_eq!(router.claps.reading, None, "the old place's read is void");
     assert_eq!(router.subs.subscriptions("band"), before);
