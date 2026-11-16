@@ -1,0 +1,306 @@
+<!doctype html>
+<!-- fohmixer #220 mockup v1: clapping from the surface (the Claps strip's detail).
+     The detail as in the approved #219 v2 (tabs in the middle box): the Claps
+     strip gets a CLAPS tab. The engineer taps along; each tap is snapped to the
+     nearest whole beat of Live's bar (Live's tempo and song position, never the
+     finger's timing). The tapped beats form a one-bar pattern that Live plays
+     from the next bar on its own grid. Invented values, no site data. Plain JS. -->
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Claps v1</title>
+<style>
+@font-face { font-family: "Barlow Condensed"; font-weight: 700; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-condensed-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 600; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 700; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/barlow-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-weight: 500; font-display: block;
+    src: url("../../crates/fohmixer-ui/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2"); }
+
+:root {
+    color-scheme: dark;
+    --bg: #07070c;
+    --page: #0b0b12;
+    --bar: #11111b;
+    --section: #151522;
+    --panel: #1a1a28;
+    --panel-hi: #20203a;
+    --track: #0a0a14;
+    --line: #2a2a44;
+    --accent: #4ecdc4;
+    --accent-dim: rgba(78, 205, 196, 0.28);
+    --text: #eaeaf0;
+    --muted: #9a9ab4;
+    --faint: #5c5c78;
+    --mute: #e63946;
+    --lufs-text: #e2e2ec;
+    --lufs-in: #2fc79a;
+    --eq: #ff8fd0;
+    --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+    --ui: "Barlow", -apple-system, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--ui); }
+body { padding: 16px; }
+
+.doc { max-width: 1194px; margin: 0 auto 14px; line-height: 1.5; font-size: 15px; }
+.doc h1 { font-family: var(--display); font-size: 26px; margin: 0 0 6px; letter-spacing: 0.04em; }
+.doc p, .doc li { color: var(--muted); }
+.doc b { color: var(--text); }
+.frame-title { max-width: 1194px; margin: 22px auto 8px; font-family: var(--display);
+    font-size: 18px; letter-spacing: 0.06em; color: var(--muted); }
+.fit { max-width: 1194px; margin: 0 auto; overflow: hidden; }
+.ipad { width: 1194px; height: 834px; background: var(--page); border: 1px solid var(--line);
+    border-radius: 14px; transform-origin: top left; position: relative; user-select: none;
+    -webkit-user-select: none; overflow: hidden; display: flex; flex-direction: column; }
+
+/* ---------- the detail, as detail.css draws it ---------- */
+.bar { height: 52px; flex: none; display: flex; align-items: center; gap: 10px; padding: 6px 8px;
+    border-bottom: 1px solid var(--line); background: var(--bar); }
+.exit { height: 100%; padding: 0 14px; display: flex; align-items: center; border: 1px solid rgba(78, 205, 196, 0.55);
+    border-radius: 10px; background: var(--panel); color: var(--accent); font: 700 15px/1.2 var(--display);
+    letter-spacing: 0.06em; }
+.name { flex: 1; display: flex; align-items: center; justify-content: center; gap: 10px; }
+.chip { padding: 3px 12px; border-radius: 6px; color: #10101a; font: 700 18px/1.3 var(--display);
+    letter-spacing: 0.03em; text-transform: uppercase; }
+.sub { color: var(--muted); font: 600 12px/1.4 var(--mono); }
+.body { flex: 1; min-height: 0; display: grid; grid-template-columns: 230px minmax(0, 1fr) 300px; gap: 10px; padding: 10px; }
+.box { display: flex; flex-direction: column; gap: 10px; min-height: 0; padding: 10px; border-radius: 12px; background: var(--panel); }
+.middle { overflow: hidden; }
+/* NEW v2: the middle box's tabs; each pane fills the box */
+.mtabs { flex: none; display: flex; gap: 6px; }
+.mtab { min-width: 120px; height: 44px; padding: 0 18px; display: flex; align-items: center; justify-content: center;
+    border: 1px solid var(--line); border-radius: 9px; color: var(--muted); font: 700 16px/1 var(--display);
+    letter-spacing: 0.08em; cursor: pointer; }
+.mtab.on { color: var(--text); background: var(--panel-hi); border-bottom: 2px solid var(--accent); }
+.pane { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.pane[hidden] { display: none; }
+
+/* left: MUTE, the readout, the fader zone (drawn, not working) */
+.mute { height: 52px; flex: none; border-radius: 9px; background: #181826; box-shadow: inset 0 0 0 1px var(--line);
+    display: flex; align-items: center; justify-content: center; font: 700 20px/1 var(--display); letter-spacing: 0.08em; }
+.readout { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.readout .st { width: 8px; height: 8px; border-radius: 4px; background: #36d67a; opacity: 0.8; }
+.readout .db { font: 500 26px/36px var(--mono); }
+.fz { flex: 1; position: relative; padding: 18px 0 20px; display: grid; grid-template-columns: 26px 10px 1fr; gap: 6px; }
+.scale { position: relative; }
+.scale span { position: absolute; right: 0; font: 500 11px/14px var(--mono); color: var(--faint); transform: translateY(-50%); }
+.meter { background: var(--track); border-radius: 3px; position: relative; overflow: hidden; }
+.meter i { position: absolute; left: 0; right: 0; bottom: 0; height: 62%; background: linear-gradient(#36d67a, #36d67a); opacity: 0.85; }
+.groove { position: absolute; left: calc(50% + 24px); top: 18px; bottom: 20px; width: 8px; margin-left: -4px; border-radius: 4px; background: var(--track); }
+.cap { position: absolute; left: calc(50% + 24px); top: 38%; width: 60px; height: 34px; margin: -17px 0 0 -30px;
+    border-radius: 8px; background: #2c2c40; box-shadow: inset 0 0 0 1px #4a4a66; }
+.cap::before { content: ""; position: absolute; left: 12px; right: 12px; top: 16px; height: 2px; background: #eaeaf0; }
+
+/* right: the existing sections, short */
+.title { margin: 0; color: var(--faint); font: 700 12px/1.3 var(--display); letter-spacing: 0.12em; }
+.pan { height: 64px; flex: none; border: 1px solid var(--line); border-radius: 10px; background: var(--track); position: relative; }
+.pan::after { content: ""; position: absolute; top: 8px; bottom: 8px; left: 50%; width: 48px; margin-left: -24px;
+    border-radius: 8px; background: #2c2c40; box-shadow: inset 0 0 0 1px #4a4a66; }
+.panrow { display: flex; justify-content: space-between; color: var(--faint); font: 600 12px/1.4 var(--mono); }
+.panrow b { color: var(--muted); font-weight: 600; }
+.centre { height: 44px; flex: none; border: 1px solid var(--line); border-radius: 9px; display: flex; align-items: center;
+    justify-content: center; color: var(--muted); font: 700 15px/1 var(--display); letter-spacing: 0.08em; }
+.rrow { display: flex; align-items: center; justify-content: space-between; padding: 10px 2px; border-top: 1px solid var(--line);
+    font: 700 12px/1.3 var(--display); letter-spacing: 0.12em; color: var(--faint); }
+.rrow span { color: var(--muted); letter-spacing: 0.06em; font-size: 13px; }
+
+/* middle: the Pro-Q 4 card (eq.css), unchanged */
+.eq-card { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: #12121c; }
+.eq-pic { width: 100%; aspect-ratio: 1349 / 809; border-radius: 6px; background: #000; display: flex; align-items: center;
+    justify-content: center; color: var(--faint); font: 700 14px/1 var(--display); letter-spacing: 0.1em; }
+.eq-where { color: var(--muted); font: 600 12px/1.4 var(--mono); }
+.eq-open { min-height: 48px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--eq); border-radius: 8px;
+    background: #2a1626; color: var(--eq); font: 700 16px/1.2 var(--display); letter-spacing: 0.06em; }
+
+
+.mtabs { flex: none; display: flex; gap: 6px; }
+.mtab { min-width: 120px; height: 44px; padding: 0 18px; display: flex; align-items: center; justify-content: center;
+    border: 1px solid var(--line); border-radius: 9px; color: var(--muted); font: 700 16px/1 var(--display);
+    letter-spacing: 0.08em; cursor: pointer; }
+.mtab.on { color: var(--text); background: var(--panel-hi); border-bottom: 2px solid var(--accent); }
+.pane { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 14px; padding: 14px;
+    border: 1px solid var(--line); border-radius: 10px; background: #12121c; }
+.pane[hidden] { display: none; }
+
+/* ---------- NEW: the CLAPS pane ---------- */
+.cl-head { display: flex; align-items: baseline; gap: 14px; }
+.cl-state { font: 700 22px/1 var(--display); letter-spacing: 0.06em; color: var(--faint); }
+.cl-state.run { color: var(--text); }
+.cl-info { color: var(--faint); font: 500 12px/1 var(--mono); }
+.cl-tempo { margin-left: auto; color: var(--muted); font: 500 13px/1 var(--mono); }
+.cl-cap { color: var(--faint); font: 700 12px/1.3 var(--display); letter-spacing: 0.12em; }
+.cl-beats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.cl-beat { height: 92px; border: 1px solid var(--line); border-radius: 10px; background: var(--track); position: relative;
+    display: flex; align-items: center; justify-content: center; color: var(--faint); font: 700 34px/1 var(--display); cursor: pointer; }
+.cl-beat.set { color: var(--text); background: var(--panel-hi); box-shadow: inset 0 0 0 1px #4a4a66; }
+.cl-beat.set::after { content: ""; position: absolute; bottom: 10px; width: 22px; height: 4px; border-radius: 2px; background: var(--muted); }
+.cl-beat.now { border-color: rgba(78, 205, 196, 0.6); }
+.cl-beat.hit.set::after { background: var(--accent); }
+.cl-row { display: grid; grid-template-columns: 1fr 160px; gap: 10px; flex: 1; min-height: 0; }
+.cl-tap { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 8px; color: var(--muted); font: 700 30px/1 var(--display);
+    letter-spacing: 0.14em; cursor: pointer; touch-action: none; }
+.cl-tap small { color: var(--faint); font: 600 12px/1.3 var(--ui); letter-spacing: 0.02em; text-align: center; padding: 0 20px; }
+.cl-tap.armed { color: var(--text); border-color: rgba(78, 205, 196, 0.45); }
+.cl-stop { border: 1px solid var(--line); border-radius: 12px; display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font: 700 20px/1 var(--display); letter-spacing: 0.1em; cursor: pointer; }
+.cl-stop[aria-disabled="true"] { opacity: 0.35; }
+.cl-note { color: var(--faint); font: 500 12px/1.4 var(--mono); }
+
+.doc { max-width: 1194px; margin: 0 auto 14px; line-height: 1.5; font-size: 15px; }
+.sim { max-width: 1194px; margin: 8px auto 0; display: flex; gap: 6px; flex-wrap: wrap; }
+.sim button { font-family: var(--display); font-size: 14px; letter-spacing: 0.06em; background: var(--panel);
+    color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+</style>
+</head>
+<body>
+<div class="doc">
+    <h1>Tlieskanie z iPadu — návrh v1 (#220)</h1>
+    <p>Podrž <b>SEL</b> na stripe <b>CLAPS</b>. V strede detailu je záložka <b>CLAPS</b> (rovnaké záložky ako pri LUFS histórii). Fader, MUTE a pravý stĺpec sa nemenia.</p>
+    <ul>
+        <li><b>TAP</b>: ťukaj s ľuďmi, kde tlieskajú. Každé ťuknutie sa prichytí k najbližšej <b>dobe</b> taktu z Abletonu. Prst určí len <b>na ktoré doby</b>, presnosť dáva tempo Abletonu.</li>
+        <li>Ťukanie skončí sám po takte bez ťuknutia. Od ďalšieho taktu Ableton tlieska na tie doby, kým nedáš <b>STOP</b>.</li>
+        <li><b>1 2 3 4</b> hore ukazujú vzor; ťuknutím na dobu ju pridáš alebo uberieš (oprava bez nového ťukania). Rámik ukazuje, kde je Ableton práve teraz.</li>
+        <li>Keď v pasáži hrá klip na stope Claps, tlieskanie z iPadu sa na ten čas stíši (nikdy nie dvakrát) — hore je napísané <b>CLIP PLAYS</b>.</li>
+        <li>Keď Ableton stojí, netlieska nič.</li>
+    </ul>
+    <p>Hodnoty sú vymyslené. Vyskúšaj: ťukaj na TAP do rytmu (tempo 124), oprav dobu ťuknutím na číslo, STOP. Dole prepínače situácií.</p>
+</div>
+<div class="fit"><div class="ipad" id="f1">
+    <div class="bar">
+        <div class="exit">← BACK TO MIX</div>
+        <div class="name"><div class="chip" style="background:#9a9ab4">CLAPS</div><span class="sub">EFFECTS · band</span></div>
+    </div>
+    <div class="body">
+        <section class="box">
+            <div class="mute">MUTE</div>
+            <div class="readout"><span class="st"></span><span class="db">-6.0</span></div>
+            <div class="fz">
+                <div class="scale"><span style="top:4%">+6</span><span style="top:22%">0</span><span style="top:40%">−10</span><span style="top:58%">−20</span><span style="top:76%">−40</span><span style="top:96%">−∞</span></div>
+                <div class="meter"><i></i></div>
+                <div></div>
+                <div class="groove"></div>
+                <div class="cap"></div>
+            </div>
+        </section>
+        <section class="box middle">
+            <div class="mtabs"><div class="mtab" data-tab="eq">EQ</div><div class="mtab on" data-tab="claps">CLAPS</div></div>
+            <div class="pane" data-pane="claps">
+                <div class="cl-head">
+                    <div class="cl-state" id="state">OFF</div>
+                    <div class="cl-info" id="info"></div>
+                    <div class="cl-tempo" id="tempo"></div>
+                </div>
+                <div class="cl-cap">BEATS</div>
+                <div class="cl-beats" id="beats"></div>
+                <div class="cl-row">
+                    <div class="cl-tap" id="tap">TAP<small id="taphint">ťukaj s ľuďmi; od ďalšieho taktu tlieska Ableton</small></div>
+                    <div class="cl-stop" id="stop">STOP</div>
+                </div>
+                <div class="cl-note" id="note"></div>
+            </div>
+            <div class="pane" data-pane="eq" hidden>
+                <div class="eq-card"><div class="eq-pic">PRO-Q 4</div><div class="eq-where">Pro-Q 4 · Claps</div><div class="eq-open">OPEN EQ FULL SCREEN</div></div>
+            </div>
+        </section>
+        <section class="box">
+            <h2 class="title">PAN</h2>
+            <div class="pan"></div>
+            <div class="panrow"><span>L 50</span><b>C</b><span>R 50</span></div>
+            <div class="centre">CENTER</div>
+            <div class="rrow">LAYOUTS <span>BAND</span></div>
+            <div class="rrow">SCENES <span>2</span></div>
+            <div class="rrow">MUTE ALARM <span>OFF</span></div>
+            <div class="rrow">MUTE GUARD <span>OFF</span></div>
+            <div class="rrow">COLOR <span>ORANGE</span></div>
+        </section>
+    </div>
+</div></div>
+<div class="sim">
+    <button id="simplay">Ableton: STOP</button>
+    <button id="simclip">Pasáž s klipom: OFF</button>
+</div>
+<script>
+"use strict";
+const BPM = 124, BEAT = 60000 / BPM;
+const st = { pattern: [false, false, false, false], running: false, tapping: false, taps: new Set(), lastTap: 0, pendingFrom: null, playing: true, clip: false };
+const t0 = performance.now();
+const pos = () => (performance.now() - t0) / BEAT;              // Live's song position in beats
+const $ = (id) => document.getElementById(id);
+const beats = $("beats");
+for (let i = 0; i < 4; i++) {
+    const b = document.createElement("div"); b.className = "cl-beat"; b.textContent = i + 1;
+    b.onpointerdown = () => { st.pattern[i] = !st.pattern[i]; if (!st.pattern.some(Boolean)) st.running = false; render(); };
+    beats.append(b);
+}
+$("tap").onpointerdown = () => {
+    if (!st.playing) return;
+    const p = pos();
+    const beat = Math.round(p) % 4;                              // snapped to the nearest whole beat
+    if (!st.tapping) { st.tapping = true; st.taps = new Set(); }
+    st.taps.add(beat); st.lastTap = p;
+    st.pattern = [0, 1, 2, 3].map((i) => st.taps.has(i));
+    render();
+};
+$("stop").onpointerdown = () => { st.running = false; st.tapping = false; st.pendingFrom = null; render(); };
+$("simplay").onclick = (e) => { st.playing = !st.playing; e.target.textContent = st.playing ? "Ableton: STOP" : "Ableton: PLAY"; render(); };
+$("simclip").onclick = (e) => { st.clip = !st.clip; e.target.textContent = st.clip ? "Pasáž s klipom: ON" : "Pasáž s klipom: OFF"; render(); };
+for (const t of document.querySelectorAll("[data-tab]")) t.onclick = () => {
+    for (const x of document.querySelectorAll("[data-tab]")) x.classList.toggle("on", x === t);
+    for (const p of document.querySelectorAll("[data-pane]")) p.hidden = p.dataset.pane !== t.dataset.tab;
+};
+
+let hitUntil = 0, lastBeat = -1;
+function tick() {
+    const p = pos(), cur = Math.floor(p) % 4;
+    // the tapping ends after a whole bar without a tap; clapping starts at the next bar
+    if (st.tapping && p - st.lastTap > 4) {
+        st.tapping = false;
+        if (st.pattern.some(Boolean)) { st.pendingFrom = Math.ceil(p / 4) * 4; }
+    }
+    if (st.pendingFrom !== null && p >= st.pendingFrom) { st.running = true; st.pendingFrom = null; }
+    if (Math.floor(p) !== lastBeat) { lastBeat = Math.floor(p); if (st.running && st.playing && !st.clip && st.pattern[cur]) hitUntil = performance.now() + 120; }
+    render(cur);
+    requestAnimationFrame(tick);
+}
+function render(cur = Math.floor(pos()) % 4) {
+    [...beats.children].forEach((b, i) => {
+        b.classList.toggle("set", st.pattern[i]);
+        b.classList.toggle("now", st.playing && i === cur);
+        b.classList.toggle("hit", st.playing && i === cur && performance.now() < hitUntil);
+    });
+    const s = $("state");
+    let state = "OFF", info = "";
+    if (!st.playing) { state = st.running ? "CLAPS · WAITING" : "OFF"; info = "Ableton stojí"; }
+    else if (st.tapping) { state = "TAPPING"; info = "takt bez ťuknutia = hotovo"; }
+    else if (st.pendingFrom !== null) { state = "STARTS NEXT BAR"; }
+    else if (st.running && st.clip) { state = "CLIP PLAYS"; info = "iPad tlieskanie stíšené"; }
+    else if (st.running) { state = "CLAPS ON"; }
+    s.textContent = state; s.classList.toggle("run", state !== "OFF");
+    $("info").textContent = info;
+    $("tempo").textContent = st.playing ? `${BPM} BPM · 4/4 · BAR ${Math.floor(pos() / 4) + 1}` : `${BPM} BPM · 4/4`;
+    $("tap").classList.toggle("armed", st.tapping);
+    $("stop").setAttribute("aria-disabled", String(!st.running && !st.tapping && st.pendingFrom === null));
+    const on = st.pattern.map((v, i) => v ? i + 1 : null).filter(Boolean);
+    $("note").textContent = on.length ? `vzor: ${on.join(" + ")}` : "vzor: žiadny";
+}
+
+function fit() {
+    for (const pad of document.querySelectorAll(".ipad")) {
+        const k = Math.min(1, pad.parentElement.clientWidth / 1194);
+        pad.style.transform = `scale(${k})`;
+        pad.parentElement.style.height = `${834 * k}px`;
+    }
+}
+addEventListener("resize", fit);
+fit();
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
