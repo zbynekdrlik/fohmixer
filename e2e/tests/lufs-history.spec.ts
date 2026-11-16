@@ -149,43 +149,69 @@ test.describe("A fader's LUFS history in its channel detail", () => {
     await expect.poll(() => runsOf(graph), { timeout: 10_000 }).toBeGreaterThan(0);
 
     // A drag right goes back in time: NOW › shows; it returns to the live edge.
-    await dispatchPointer(graph, [
-      { type: "pointerdown" },
-      { type: "pointermove", dx: 20 },
-      { type: "pointermove", dx: 120 },
-      { type: "pointerup", dx: 120 },
-    ]);
-    await expect(history).toHaveAttribute("data-state", "back");
     const nowChip = history.getByTestId("lufs-now-chip");
+    const dragBack = () =>
+      dispatchPointer(graph, [
+        { type: "pointerdown" },
+        { type: "pointermove", dx: 20 },
+        { type: "pointermove", dx: 120 },
+        { type: "pointerup", dx: 120 },
+      ]);
+    await dragBack();
+    await expect(history).toHaveAttribute("data-state", "back");
     await expect(nowChip).toBeVisible();
     await tap(nowChip);
     await expect(history).toHaveAttribute("data-state", "live");
     await expect(nowChip).toBeHidden();
 
-    // A finger held still shows the cursor with its time and value.
+    // Back again, then today's chip: the live edge, the window still 1 H.
+    await dragBack();
+    await expect(history).toHaveAttribute("data-state", "back");
+    await tap(days.first());
+    await expect(history).toHaveAttribute("data-state", "live");
+    await expect(nowChip).toBeHidden();
+    await expect(windows.nth(1)).toHaveAttribute("aria-pressed", "true");
+
+    // A finger held still at the live edge shows the cursor: its time and
+    // the reading there (−30.0, the reading since the line went grey).
     const cursor = history.getByTestId("lufs-history-cursor");
-    await dispatchPointer(graph, [{ type: "pointerdown", dx: 200 }, { wait: 600 }], 22);
+    const edge = (await graph.boundingBox())!.width / 2 - 4;
+    await dispatchPointer(graph, [{ type: "pointerdown", dx: edge }, { wait: 600 }], 22);
     await expect(graph.getByTestId("lufs-cursor")).toBeAttached();
-    await expect(cursor).toHaveText(/^\d\d:\d\d:\d\d · (−\d+\.\d|−∞|no reading)$/);
-    await dispatchPointer(graph, [{ type: "pointerup", dx: 200 }], 22);
+    await expect(cursor).toHaveText(/^\d\d:\d\d:\d\d · −30\.0$/);
+    await dispatchPointer(graph, [{ type: "pointerup", dx: edge }], 22);
     await expect(graph.getByTestId("lufs-cursor")).toHaveCount(0);
     await expect(cursor).toHaveText("");
 
-    // Today's chip is the live edge; the window stays 1 H.
-    await tap(days.first());
-    await expect(history).toHaveAttribute("data-state", "live");
-    await expect(windows.nth(1)).toHaveAttribute("aria-pressed", "true");
-
-    // Back to the mix and in again: the LUFS tab and 1 H are kept.
+    // Back to the mix and in again: the LUFS tab and 1 H are kept, and the
+    // fresh card draws the hub's history (its answer holds readings).
     await tap(detail.getByTestId("detail-exit"));
     await expect(page.getByTestId("detail")).toHaveCount(0);
+    const answer = page.waitForResponse((r) => r.url().includes("/api/lufs/history") && r.status() === 200);
     const again = await openVox(page);
     await expect(again.getByTestId("detail-middle")).toHaveAttribute("data-tab", "lufs");
     await expect(again.getByTestId("lufs-window").nth(1)).toHaveAttribute("aria-pressed", "true");
-    // EQ again: its pane, the history gone.
-    await tap(again.getByTestId("detail-tab").nth(0));
-    await expect(again.getByTestId("detail-pane-eq")).toBeVisible();
-    await expect(again.getByTestId("lufs-history")).toHaveCount(0);
+    const series = await (await answer).json();
+    expect(series.step_ms).toBe(4000);
+    expect(series.values.some((v: number | null) => v === -300), "the hub's history holds −30.0").toBe(true);
+    await expect.poll(() => runsOf(again.getByTestId("lufs-graph")), { timeout: 10_000 }).toBeGreaterThan(0);
+
+    // A strip without +LUFS: no tabs, its EQ pane, though LUFS is kept.
+    await tap(again.getByTestId("detail-exit"));
+    await expect(page.getByTestId("detail")).toHaveCount(0);
+    const plain = await openDetail(page, "Vocal 1 repro#");
+    await expect(plain.getByTestId("detail-middle")).toHaveAttribute("data-tabs", "false");
+    await expect(plain.getByTestId("detail-tabs")).toHaveCount(0);
+    await expect(plain.getByTestId("detail-pane-eq")).toBeVisible();
+    await expect(plain.getByTestId("lufs-history")).toHaveCount(0);
+    await tap(plain.getByTestId("detail-exit"));
+
+    // In again: EQ chosen there is kept, its pane shown, the history gone.
+    const third = await openVox(page);
+    await expect(third.getByTestId("detail-middle")).toHaveAttribute("data-tab", "lufs");
+    await tap(third.getByTestId("detail-tab").nth(0));
+    await expect(third.getByTestId("detail-pane-eq")).toBeVisible();
+    await expect(third.getByTestId("lufs-history")).toHaveCount(0);
   });
 
   test("a strip without +LUFS keeps its middle box as before: no tabs, the EQ cards", async ({ page }) => {

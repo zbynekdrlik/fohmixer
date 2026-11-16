@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, VecDeque};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 pub use fohmixer_proto::lufs::HistorySeries as Series;
-use fohmixer_proto::lufs::SILENT_TENTHS;
+use fohmixer_proto::lufs::{SILENT_TENTHS, bucket_of};
 use serde::{Deserialize, Serialize};
 
 /// Seconds kept in RAM per point: the last hour.
@@ -303,24 +303,11 @@ pub fn step_for(n: usize) -> usize {
     n.div_ceil(MAX_VALUES).max(1)
 }
 
-/// One bucket's value ([`Series`]).
+/// One bucket's value ([`Series`]): its heard slots by the rule the page's
+/// graph shares (`fohmixer_proto::lufs::bucket_of`).
 pub fn bucket_value(slots: &[i16]) -> Option<i16> {
-    let heard_n = slots.iter().filter(|s| heard(**s)).count();
-    if heard_n == 0 {
-        return None;
-    }
-    let mut sounding: Vec<i16> = slots.iter().copied().filter(|s| sounds(*s)).collect();
-    if mostly_silent(heard_n - sounding.len(), heard_n) {
-        return Some(SILENT_TENTHS);
-    }
-    sounding.sort_unstable();
-    Some(sounding[sounding.len() / 2])
-}
-
-/// Whether a bucket of `heard` readings, `silent` of them silence, draws
-/// as silence: half or more.
-pub fn mostly_silent(silent: usize, heard: usize) -> bool {
-    silent * 2 >= heard
+    let heard: Vec<i16> = slots.iter().copied().filter(|s| heard(*s)).collect();
+    bucket_of(&heard)
 }
 
 /// The slots of a window starting at `from`, one a second, bucketed.

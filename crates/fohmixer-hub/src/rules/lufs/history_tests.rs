@@ -251,10 +251,6 @@ fn a_bucket_is_the_median_above_silence_silence_from_half_and_none_empty() {
     assert_eq!(bucket_value(&[-700, -200, -240, HOLE]), Some(-200));
     // Half silent: silence.
     assert_eq!(bucket_value(&[-700, -200, HOLE, HOLE]), Some(-700));
-    assert!(mostly_silent(1, 2));
-    assert!(!mostly_silent(1, 3));
-    assert!(mostly_silent(2, 3));
-    assert!(mostly_silent(0, 0));
 }
 
 #[test]

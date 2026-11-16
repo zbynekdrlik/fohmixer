@@ -1,4 +1,5 @@
 use super::*;
+use crate::behave::Down;
 
 const NOW: i64 = 10_000_000_000;
 
@@ -152,19 +153,34 @@ fn a_drag_right_goes_back_in_time_and_never_past_now() {
 
 #[test]
 fn a_dragged_day_becomes_a_window_of_its_span_at_most_three_hours() {
-    let long = View::live(600_000).pick_day(day(0, 14_400_000), false);
+    let long = View::live(600_000).pick_day(day(1_000_000, 15_400_000), false);
     let v = View::panned(long, 1.0, 300.0, NOW);
     assert_eq!(v.span, 10_800_000);
     assert_eq!(v.day, None);
     // 14 400 000 ms over 300 px: 48 000 ms a px.
-    assert_eq!(v.end, Some(14_352_000));
-    let short = View::live(600_000).pick_day(day(0, 7_200_000), false);
+    assert_eq!(v.end, Some(15_352_000));
+    let short = View::live(600_000).pick_day(day(1_000_000, 8_200_000), false);
     assert_eq!(View::panned(short, 0.0, 300.0, NOW).span, 7_200_000);
 }
 
 #[test]
+fn a_view_names_its_state() {
+    assert_eq!(View::live(600_000).state(), "live");
+    let back = View {
+        span: 600_000,
+        end: Some(1),
+        day: None,
+    };
+    assert_eq!(back.state(), "back");
+    assert_eq!(back.pick_day(day(1, 2), false).state(), "day");
+}
+
+#[test]
 fn a_press_is_a_drag_after_six_px_and_a_hold_after_350_ms() {
-    let mut p = Press::down(100.0, 0.0);
+    let finger = Down::touch(21, true);
+    let mut p = Press::down(100.0, 0.0, finger);
+    assert!(p.is(21));
+    assert!(!p.is(22));
     assert_eq!(p.x0(), 100.0);
     assert_eq!(p.moved(105.999), Gesture::Still);
     assert_eq!(p.moved(94.001), Gesture::Still);
@@ -176,10 +192,10 @@ fn a_press_is_a_drag_after_six_px_and_a_hold_after_350_ms() {
     assert!(!p.check(1000.0));
     assert!(!p.holding());
 
-    let mut left = Press::down(100.0, 0.0);
+    let mut left = Press::down(100.0, 0.0, finger);
     assert_eq!(left.moved(94.0), Gesture::Pan(-6.0));
 
-    let mut h = Press::down(100.0, 1000.0);
+    let mut h = Press::down(100.0, 1000.0, finger);
     assert!(!h.check(1349.999));
     assert!(h.check(1350.0));
     assert!(h.holding());
@@ -188,6 +204,28 @@ fn a_press_is_a_drag_after_six_px_and_a_hold_after_350_ms() {
     assert!(!h.dragged());
     assert_eq!(HOLD_MS, 350.0);
     assert_eq!(DRAG_PX, 6.0);
+}
+
+#[test]
+fn a_finger_whose_end_never_came_is_ended_by_the_next_primary_one() {
+    let held = Press::down(100.0, 0.0, Down::touch(21, true));
+    assert_eq!(on_down(None, Down::touch(21, true)), OnDown::Start);
+    // A second finger beside the held one: nothing.
+    assert_eq!(on_down(Some(&held), Down::touch(22, false)), OnDown::Ignore);
+    // A primary finger: the held one's end never came.
+    assert_eq!(on_down(Some(&held), Down::touch(22, true)), OnDown::Restart);
+    // The held pointer's own next down.
+    assert_eq!(
+        on_down(Some(&held), Down::touch(21, false)),
+        OnDown::Restart
+    );
+    // A mouse never ends a finger's press.
+    let mouse = Down {
+        id: 1,
+        kind: Some(Pointer::Mouse),
+        primary: true,
+    };
+    assert_eq!(on_down(Some(&held), mouse), OnDown::Ignore);
 }
 
 #[test]
@@ -209,15 +247,43 @@ fn the_series_gives_a_sample_per_bucket_and_the_tail_keeps_the_window() {
 }
 
 #[test]
-fn a_column_is_the_median_above_silence_or_silence_when_half_are_silent() {
+fn a_window_has_300_columns_or_one_a_second_when_shorter() {
     assert_eq!(COLUMNS, 300);
-    assert_eq!(column_value(&[]), None);
-    assert_eq!(column_value(&[-700]), Some(SILENT_TENTHS));
-    assert_eq!(column_value(&[-701, -200]), Some(SILENT_TENTHS));
-    assert_eq!(column_value(&[-700, -200, -210]), Some(-200));
-    assert_eq!(column_value(&[-250, -200, -210]), Some(-210));
-    assert_eq!(column_value(&[-699]), Some(-699));
-    assert_eq!(column_value(&[-200, -250]), Some(-200));
+    assert_eq!(columns_for(600_000), 300);
+    assert_eq!(columns_for(300_000), 300);
+    assert_eq!(columns_for(299_999), 299);
+    assert_eq!(columns_for(60_000), 60);
+    assert_eq!(columns_for(999), 1);
+    assert_eq!(columns_for(0), 1);
+}
+
+#[test]
+fn a_column_takes_the_hubs_bucket_rule() {
+    let cols = columns(
+        &[
+            (0, Some(-700)),
+            (1, Some(-200)),
+            (2, Some(-210)),
+            (2000, Some(-250)),
+        ],
+        0,
+        600_000,
+    );
+    assert_eq!(cols[0], Some(-200));
+    assert_eq!(cols[1], Some(-250));
+}
+
+#[test]
+fn a_short_past_day_draws_one_line() {
+    // A minute of readings a second apart: 60 columns, one line.
+    let samples: Vec<(i64, Option<i16>)> = (0..60).map(|i| (i * 1000, Some(-230))).collect();
+    let cols = columns(&samples, 0, 60_000);
+    assert_eq!(cols.len(), 60);
+    assert!(cols.iter().all(|c| *c == Some(-230)));
+    let r = runs(&cols, &scale(Some(-23), &[]), Some(-23));
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].points.split(' ').count(), 60);
+    assert!(r[0].points.starts_with("8.3,500.0 25.0,500.0"));
 }
 
 #[test]
@@ -239,8 +305,8 @@ fn samples_fall_in_their_columns_inside_the_window_only() {
     assert_eq!(cols[2], None);
     assert_eq!(cols[299], Some(-400));
     assert_eq!(cols.iter().flatten().count(), 3);
-    // An empty window keeps its columns.
-    assert_eq!(columns(&samples, 5, 5).len(), COLUMNS);
+    // An empty window has one column.
+    assert_eq!(columns(&samples, 5, 5).len(), 1);
 }
 
 #[test]
@@ -322,7 +388,8 @@ fn tick_labels_are_whole_lu_with_a_typographic_minus() {
 #[test]
 fn the_line_is_green_in_the_band_and_cut_at_silence_and_no_reading() {
     let s = scale(Some(-23), &[]);
-    let values = [
+    let mut values = vec![None; COLUMNS];
+    values[..8].copy_from_slice(&[
         Some(-230),
         Some(-231),
         None,
@@ -331,7 +398,7 @@ fn the_line_is_green_in_the_band_and_cut_at_silence_and_no_reading() {
         Some(-260),
         Some(-700),
         Some(-240),
-    ];
+    ]);
     assert_eq!(
         runs(&values, &s, Some(-23)),
         vec![
@@ -369,10 +436,111 @@ fn green_is_within_one_lu_of_an_input_points_target() {
 
 #[test]
 fn columns_sit_at_their_middles() {
-    assert!((column_x(0) - 1.6667).abs() < 0.001);
-    assert_eq!(column_x(1), 5.0);
-    assert!((column_x(299) - 998.333).abs() < 0.001);
+    assert!((column_x(0, 300) - 1.6667).abs() < 0.001);
+    assert_eq!(column_x(1, 300), 5.0);
+    assert!((column_x(299, 300) - 998.333).abs() < 0.001);
+    assert_eq!(column_x(0, 1), 500.0);
+    assert_eq!(column_x(0, 0), 500.0);
+    assert_eq!(column_x(3, 4), 875.0);
     assert_eq!(BOX, 1000.0);
+}
+
+#[test]
+fn places_read_as_css_percents_and_fingers_as_fractions() {
+    assert_eq!(pct(0.0), "0.000%");
+    assert_eq!(pct(500.0), "50.000%");
+    assert_eq!(pct(458.3333), "45.833%");
+    assert_eq!(x_frac(150.0, 100.0, 200.0), 0.25);
+    assert_eq!(x_frac(50.0, 100.0, 200.0), -0.25);
+    assert_eq!(x_frac(101.0, 100.0, 0.0), 1.0);
+}
+
+#[test]
+fn the_live_edge_records_a_reading_a_second() {
+    assert_eq!(second_of(12_345), 12_000);
+    assert_eq!(second_of(12_000), 12_000);
+    assert_eq!(second_of(-1), -1000);
+    assert_eq!(edge_reading(Some(-230), false), Some(-230));
+    assert_eq!(edge_reading(Some(-230), true), None);
+    assert_eq!(edge_reading(None, false), None);
+    let mut tail = vec![(1000, Some(-1))];
+    push_reading(&mut tail, 2000, Some(-2), 0);
+    push_reading(&mut tail, 2000, Some(-9), 0);
+    push_reading(&mut tail, 1000, Some(-9), 0);
+    assert_eq!(tail, vec![(1000, Some(-1)), (2000, Some(-2))]);
+    push_reading(&mut tail, 3000, None, 2000);
+    assert_eq!(tail, vec![(2000, Some(-2)), (3000, None)]);
+    let mut empty = Vec::new();
+    push_reading(&mut empty, 5000, Some(-5), 0);
+    assert_eq!(empty, vec![(5000, Some(-5))]);
+}
+
+#[test]
+fn the_hub_is_asked_again_each_minute_and_for_days_every_5_s_until_known() {
+    let r = |t, live, known| refresh(t, live, known);
+    assert_eq!(
+        r(60, true, true),
+        Refresh {
+            series: true,
+            days: true
+        }
+    );
+    assert_eq!(
+        r(60, false, true),
+        Refresh {
+            series: false,
+            days: true
+        }
+    );
+    assert_eq!(
+        r(59, true, true),
+        Refresh {
+            series: false,
+            days: false
+        }
+    );
+    assert_eq!(
+        r(61, true, true),
+        Refresh {
+            series: false,
+            days: false
+        }
+    );
+    assert_eq!(
+        r(120, true, true),
+        Refresh {
+            series: true,
+            days: true
+        }
+    );
+    assert_eq!(
+        r(5, true, false),
+        Refresh {
+            series: false,
+            days: true
+        }
+    );
+    assert_eq!(
+        r(5, true, true),
+        Refresh {
+            series: false,
+            days: false
+        }
+    );
+    assert_eq!(
+        r(4, true, false),
+        Refresh {
+            series: false,
+            days: false
+        }
+    );
+    assert_eq!(
+        r(6, false, false),
+        Refresh {
+            series: false,
+            days: false
+        }
+    );
 }
 
 #[test]
@@ -558,4 +726,33 @@ fn the_api_answers_read_as_the_series_or_why_not() {
         days_answer(403, " nope "),
         Err("HTTP 403: nope".to_string())
     );
+}
+
+#[test]
+fn a_window_that_starts_later_places_its_samples_the_same() {
+    let base = 1_000_000;
+    let samples = vec![
+        (base - 1, Some(-100)),
+        (base, Some(-200)),
+        (base + 1999, Some(-210)),
+        (base + 2000, Some(-300)),
+        (base + 599_999, Some(-400)),
+        (base + 600_000, Some(-500)),
+    ];
+    let cols = columns(&samples, base, base + 600_000);
+    assert_eq!(cols.len(), 300);
+    assert_eq!(cols[0], Some(-200));
+    assert_eq!(cols[1], Some(-300));
+    assert_eq!(cols[299], Some(-400));
+    assert_eq!(cols.iter().flatten().count(), 3);
+    // A short window from later on: one column a second.
+    let short = columns(&[(base + 59_000, Some(-1))], base, base + 60_000);
+    assert_eq!(short.len(), 60);
+    assert_eq!(short[59], Some(-1));
+    assert_eq!(column_at(base + 2000, base, base + 600_000), 1);
+    assert_eq!(column_at(base + 59_500, base, base + 60_000), 59);
+    assert_eq!(column_at(base + 30_000, base, base + 60_000), 30);
+    assert_eq!(cursor_time(0.5, base, base + 1000), base + 500);
+    assert_eq!(cursor_time(1.0, base, base + 1000), base + 1000);
+    assert_eq!(x_of(base + 250, base, base + 1000), 250.0);
 }

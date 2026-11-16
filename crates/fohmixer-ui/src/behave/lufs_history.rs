@@ -23,9 +23,13 @@
 //! (`preserveAspectRatio="none"`, the lines' width not scaled), so nothing
 //! here needs the page's pixels; the labels sit beside it in percent.
 
-use fohmixer_proto::lufs::{HistoryDay, HistoryDays, HistorySeries, SILENT_TENTHS, in_band, text};
+use fohmixer_proto::lufs::{
+    HistoryDay, HistoryDays, HistorySeries, SILENT_TENTHS, bucket_of, in_band, text,
+};
 
+use super::Down;
 use super::eq::encode_component;
+use crate::diag::perf::Pointer;
 use crate::net::api_message;
 
 /// A second, a minute, an hour and a day in ms.
@@ -207,6 +211,16 @@ impl View {
     pub fn day_on(&self, day: HistoryDay) -> bool {
         self.day == Some(day)
     }
+
+    /// Its word (`data-state`): `live`, `back` (a window dragged back) or
+    /// `day` (a past day whole).
+    pub fn state(&self) -> &'static str {
+        match (self.day, self.end) {
+            (Some(_), _) => "day",
+            (None, None) => "live",
+            (None, Some(_)) => "back",
+        }
+    }
 }
 
 /// A window's end: none (the live edge) within [`LIVE_EDGE_MS`] of now.
@@ -236,24 +250,57 @@ pub enum Gesture {
 }
 
 /// One finger on the graph: from its down at `x0` (px) and `at` (the page
-/// clock, ms).
+/// clock, ms), by its pointer.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Press {
     x0: f64,
     at: f64,
+    pointer: i32,
+    kind: Option<Pointer>,
     moved: bool,
     holding: bool,
 }
 
+/// What a pointer's down on the graph does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnDown {
+    /// A new press.
+    Start,
+    /// The held press's end never came (#124: iOS took the finger): it
+    /// ends first, then the new press starts.
+    Restart,
+    /// A second finger beside the held one: nothing.
+    Ignore,
+}
+
+/// A down on the graph while `held` (none: no press) is down: a primary
+/// pointer of the held one's type, or the held pointer again, ends it
+/// (`Down::ends`, as every control that holds a pointer since #124); a
+/// second finger is ignored.
+pub fn on_down(held: Option<&Press>, down: Down) -> OnDown {
+    match held {
+        None => OnDown::Start,
+        Some(p) if down.id == p.pointer || down.ends(p.kind) => OnDown::Restart,
+        Some(_) => OnDown::Ignore,
+    }
+}
+
 impl Press {
-    /// A down at `x` px, `at` ms.
-    pub fn down(x: f64, at: f64) -> Self {
+    /// A down at `x` px, `at` ms, by `down`'s pointer.
+    pub fn down(x: f64, at: f64, down: Down) -> Self {
         Press {
             x0: x,
             at,
+            pointer: down.id,
+            kind: down.kind,
             moved: false,
             holding: false,
         }
+    }
+
+    /// Whether an event of pointer `id` is this press's.
+    pub fn is(&self, id: i32) -> bool {
+        self.pointer == id
     }
 
     /// The finger moved to `x`.
@@ -295,8 +342,15 @@ impl Press {
     }
 }
 
-/// The graph's columns: values drawn across the plot.
+/// The graph's most columns: values drawn across the plot.
 pub const COLUMNS: usize = 300;
+
+/// The columns of a window `span` ms long: [`COLUMNS`], or one a second
+/// for a window shorter than that (a short past day), so readings a second
+/// apart draw a line, never lone points.
+pub fn columns_for(span: i64) -> usize {
+    (span / SECOND_MS).clamp(1, COLUMNS as i64) as usize
+}
 
 /// The series' samples: each value at its bucket's start.
 pub fn samples(series: &HistorySeries) -> Vec<(i64, Option<i16>)> {
@@ -319,43 +373,28 @@ pub fn series_end(series: &HistorySeries) -> i64 {
     series.from + series.values.len() as i64 * series.step_ms
 }
 
-/// The samples in [`COLUMNS`] columns over `t0..t1`: a column's median of
-/// its readings above silence; silence when half or more of its readings
-/// are silence; none without a reading.
+/// The samples in [`columns_for`] columns over `t0..t1`, each column's
+/// value by the hub's own bucket rule (`fohmixer_proto::lufs::bucket_of`:
+/// the median above silence, silence when half or more are silent, none
+/// without a reading).
 pub fn columns(samples: &[(i64, Option<i16>)], t0: i64, t1: i64) -> Vec<Option<i16>> {
-    let mut cols: Vec<Vec<i16>> = vec![Vec::new(); COLUMNS];
     let span = (t1 - t0).max(1);
+    let n = columns_for(span);
+    let mut cols: Vec<Vec<i16>> = vec![Vec::new(); n];
     for (t, v) in samples {
         let Some(v) = v else { continue };
         if *t < t0 || *t >= t1 {
             continue;
         }
-        let i = ((t - t0) as i128 * COLUMNS as i128 / span as i128) as usize;
+        let i = ((t - t0) as i128 * n as i128 / span as i128) as usize;
         cols[i].push(*v);
     }
-    cols.into_iter().map(|c| column_value(&c)).collect()
+    cols.into_iter().map(|c| bucket_of(&c)).collect()
 }
 
-/// One column's value ([`columns`]).
-pub fn column_value(readings: &[i16]) -> Option<i16> {
-    if readings.is_empty() {
-        return None;
-    }
-    let mut sounding: Vec<i16> = readings
-        .iter()
-        .copied()
-        .filter(|v| *v > SILENT_TENTHS)
-        .collect();
-    if (readings.len() - sounding.len()) * 2 >= readings.len() {
-        return Some(SILENT_TENTHS);
-    }
-    sounding.sort_unstable();
-    Some(sounding[sounding.len() / 2])
-}
-
-/// A column's x in the box: its middle.
-pub fn column_x(i: usize) -> f64 {
-    (i as f64 + 0.5) * BOX / COLUMNS as f64
+/// Column `i`'s x in the box (of `n` columns): its middle.
+pub fn column_x(i: usize, n: usize) -> f64 {
+    (i as f64 + 0.5) * BOX / n.max(1) as f64
 }
 
 /// The graph's scale in tenths: `lo` at the bottom, `hi` at the top, the
@@ -482,7 +521,11 @@ pub fn runs(values: &[Option<i16>], scale: &Scale, target: Option<i8>) -> Vec<Ru
             colour = None;
             continue;
         };
-        let xy = format!("{:.1},{:.1}", column_x(i), y_of(i32::from(v), scale));
+        let xy = format!(
+            "{:.1},{:.1}",
+            column_x(i, values.len()),
+            y_of(i32::from(v), scale)
+        );
         let c = green(v, target);
         if colour != Some(c) {
             if !run.is_empty() {
@@ -585,11 +628,69 @@ pub fn cursor_time(frac: f64, t0: i64, t1: i64) -> i64 {
     t0 + (frac.clamp(0.0, 1.0) * (t1 - t0) as f64).round() as i64
 }
 
-/// The column a time falls in, the last for the window's end.
+/// The column a time falls in ([`columns`]), the last for the window's
+/// end.
 pub fn column_at(t: i64, t0: i64, t1: i64) -> usize {
     let span = (t1 - t0).max(1);
-    let i = (t - t0).clamp(0, span) as i128 * COLUMNS as i128 / span as i128;
-    (i as usize).min(COLUMNS - 1)
+    let n = columns_for(span);
+    let i = (t - t0).clamp(0, span) as i128 * n as i128 / span as i128;
+    (i as usize).min(n - 1)
+}
+
+/// A finger at page `x` over a plot from `left`, `width` px wide: its
+/// fraction across (unclamped; [`cursor_time`] clamps).
+pub fn x_frac(x: f64, left: f64, width: f64) -> f64 {
+    (x - left) / width.max(1.0)
+}
+
+/// A place in the box as a CSS percent (`top:`/`left:`), three decimals.
+pub fn pct(v: f64) -> String {
+    format!("{:.3}%", v * 100.0 / BOX)
+}
+
+/// The whole second of `t` (ms).
+pub fn second_of(t: i64) -> i64 {
+    t - t.rem_euclid(SECOND_MS)
+}
+
+/// What the live edge records for a reading: the strip's number, none
+/// while the point has a problem (the strip then shows none, as the hub
+/// records a hole).
+pub fn edge_reading(tenths: Option<i16>, problem: bool) -> Option<i16> {
+    if problem { None } else { tenths }
+}
+
+/// The live edge's reading of `second` into `tail`, once a second (a tick
+/// that comes twice in one second records nothing more), the readings
+/// before `from` dropped.
+pub fn push_reading(
+    tail: &mut Vec<(i64, Option<i16>)>,
+    second: i64,
+    reading: Option<i16>,
+    from: i64,
+) {
+    if tail.last().is_none_or(|(t, _)| *t < second) {
+        tail.push((second, reading));
+    }
+    keep_tail(tail, from);
+}
+
+/// What the page asks the hub again at a tick (`tick` counts from 1, one a
+/// second): the series once a minute while live (`series`), the days once
+/// a minute and every 5 s while none is known (`days`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Refresh {
+    pub series: bool,
+    pub days: bool,
+}
+
+/// The refresh at tick `tick` ([`Refresh`]).
+pub fn refresh(tick: u32, live: bool, days_known: bool) -> Refresh {
+    let minute = tick.is_multiple_of(60);
+    Refresh {
+        series: live && minute,
+        days: minute || (!days_known && tick.is_multiple_of(5)),
+    }
 }
 
 /// The cursor's text in the head: its local time and the value there
