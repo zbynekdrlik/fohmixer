@@ -8,7 +8,8 @@
 //! on the first strip of its run, #127, and the strip's Live set, #211:
 //! no instance pill), the fader with the stereo meter in its track,
 //! the dB scale on its right, and SEL at the bottom left, whose hold opens
-//! the channel detail, with the ARM key above it on an armable track (#172).
+//! the channel detail, with the ARM key above it on an armable track (#172)
+//! and the Claps strip's TAP column there (#220).
 //! The pan left the strip for the channel detail (#71,
 //! D17: at the foot the iPad's home bar waits for a swipe, and pans are
 //! rarely used), so the strip neither draws nor subscribes it
@@ -20,6 +21,7 @@ use fohmixer_proto::layout::Strip;
 use leptos::prelude::*;
 
 use super::buttons::{Corner, MuteView, Partner, anchor_name};
+use super::claps::ClapsColumn;
 use super::detail::DetailStrip;
 use super::detail_alarm::strip_alarm;
 use super::detail_color::strip_colour;
@@ -362,6 +364,9 @@ pub fn StripView(
     let key_strip = strip.clone();
     // The ARM key above SEL (#172).
     let arm_strip = strip.clone();
+    // The Claps strip's TAP column above SEL (#220).
+    let claps_strip = strip.clone();
+    let claps_attr = strip.claps.then_some("true");
     let subs = strip_subs(&strip, settings.meter_source);
     // The fader link (#130, D18): a leader's partners and switch, a
     // partner's leaders, the corner's mark.
@@ -567,6 +572,7 @@ pub fn StripView(
             data-lufs-problem=lufs_problem
             data-live=live_attr
             data-mute-alarm=alarm_attr
+            data-claps=claps_attr
         >
             <div class="strip-head">
                 {mute_view}
@@ -588,6 +594,7 @@ pub fn StripView(
                 {fader}
                 <DetailKey strip=key_strip />
                 <ArmKey strip=arm_strip />
+                <ClapsColumn strip=claps_strip />
             </div>
         </div>
     }

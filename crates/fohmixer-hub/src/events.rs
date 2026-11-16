@@ -215,6 +215,7 @@ pub fn is_warn(record: &Value) -> bool {
                 | "script"
                 | "listen"
                 | "lufs_history"
+                | "claps"
         )
         || (ev == "trace" && holds_warn_event(record))
         || (ev == "songmap" && problems_changed(record))

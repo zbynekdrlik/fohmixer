@@ -94,6 +94,7 @@ mod tests {
             fader_leaders,
             autotune: Vec::new(),
             lufs: Vec::new(),
+            claps: None,
         }
     }
 

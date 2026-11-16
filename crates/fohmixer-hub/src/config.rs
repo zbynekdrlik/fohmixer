@@ -460,6 +460,71 @@ impl Default for ListenCfg {
     }
 }
 
+/// `[claps]` (#220): the port on 127.0.0.1 where the `FohMixer Claps`
+/// device's hello comes (`port`), the one the device takes the hub's words
+/// on (`device_port`; both fixed in the device's patch: another means the
+/// device rebuilt with `build_amxd.py --port`/`--device-port`; 0 turns
+/// either off), and the pitches a clap plays (`notes`, 1 to
+/// `fohmixer_proto::claps::MAX_NOTES` MIDI notes, each under 128; the
+/// Claps track's instrument chooses its sound by the note). Written by hand
+/// on the PC; the installer keeps the table as it is.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClapsCfg {
+    #[serde(default = "default_claps_port")]
+    pub port: u16,
+    #[serde(default = "default_claps_device_port")]
+    pub device_port: u16,
+    #[serde(default = "default_claps_notes")]
+    pub notes: Vec<u8>,
+}
+
+fn default_claps_port() -> u16 {
+    fohmixer_proto::claps::HUB_PORT
+}
+
+fn default_claps_device_port() -> u16 {
+    fohmixer_proto::claps::DEVICE_PORT
+}
+
+fn default_claps_notes() -> Vec<u8> {
+    vec![fohmixer_proto::claps::DEFAULT_NOTE]
+}
+
+impl Default for ClapsCfg {
+    fn default() -> Self {
+        Self {
+            port: default_claps_port(),
+            device_port: default_claps_device_port(),
+            notes: default_claps_notes(),
+        }
+    }
+}
+
+impl ClapsCfg {
+    /// The table's own rules: 1 to `MAX_NOTES` pitches, each under 128;
+    /// two ports that differ (unless off).
+    fn validate(&self) -> anyhow::Result<()> {
+        let most = fohmixer_proto::claps::MAX_NOTES;
+        if self.notes.is_empty() || self.notes.len() > most {
+            bail!(
+                "[claps] notes: 1 to {most} pitches, has {}",
+                self.notes.len()
+            );
+        }
+        if let Some(bad) = self.notes.iter().find(|n| **n > 127) {
+            bail!("[claps] notes: {bad} is no MIDI note (0 to 127)");
+        }
+        if self.port != 0 && self.port == self.device_port {
+            bail!(
+                "[claps] port and device_port must differ, both are {}",
+                self.port
+            );
+        }
+        Ok(())
+    }
+}
+
 /// The longest wait `[autotune] engage_delay_ms` takes (#190): 5 s.
 pub const MAX_ENGAGE_DELAY_MS: u64 = 5000;
 
@@ -685,6 +750,9 @@ pub struct Config {
     /// Listen (#210); the default ports without the table.
     #[serde(default)]
     pub listen: ListenCfg,
+    /// Claps from the surface (#220); the defaults without the table.
+    #[serde(default)]
+    pub claps: ClapsCfg,
     /// AUTOTUNE's wait at a play start (#190); none without the table.
     #[serde(default)]
     pub autotune: AutotuneCfg,
@@ -717,6 +785,7 @@ impl Config {
             eq: None,
             lufs: LufsCfg::default(),
             listen: ListenCfg::default(),
+            claps: ClapsCfg::default(),
             autotune: AutotuneCfg::default(),
             link: None,
             data_dir: data_dir.to_path_buf(),
@@ -797,6 +866,7 @@ impl Config {
         }
         self.validate_companion()?;
         scenes::validate(self.scenes.as_ref(), self.companion.as_ref())?;
+        self.claps.validate()?;
         if self.autotune.engage_delay_ms > MAX_ENGAGE_DELAY_MS {
             bail!(
                 "[autotune] engage_delay_ms {} is above {MAX_ENGAGE_DELAY_MS}",
@@ -1862,6 +1932,53 @@ mod tests {
             }
         );
         assert!(Config::parse("[listen]\nhost = \"0.0.0.0\"\n", &data()).is_err());
+    }
+
+    #[test]
+    fn claps_default_to_its_ports_and_one_pitch() {
+        let defaults = ClapsCfg {
+            port: 39113,
+            device_port: 39114,
+            notes: vec![50],
+        };
+        assert_eq!(Config::parse("", &data()).unwrap().claps, defaults);
+        assert_eq!(Config::parse("[claps]\n", &data()).unwrap().claps, defaults);
+        assert_eq!(Config::defaults(&data()).claps, defaults);
+        assert_eq!(
+            Config::parse(
+                "[claps]\nport = 0\ndevice_port = 40000\nnotes = [52, 57]\n",
+                &data()
+            )
+            .unwrap()
+            .claps,
+            ClapsCfg {
+                port: 0,
+                device_port: 40000,
+                notes: vec![52, 57],
+            }
+        );
+        assert!(Config::parse("[claps]\nport = 0\ndevice_port = 0\n", &data()).is_ok());
+    }
+
+    #[test]
+    fn claps_refuses_bad_pitches_equal_ports_and_unknown_keys() {
+        for (text, says) in [
+            ("[claps]\nnotes = []\n", "1 to 8 pitches, has 0"),
+            (
+                "[claps]\nnotes = [1, 2, 3, 4, 5, 6, 7, 8, 9]\n",
+                "1 to 8 pitches, has 9",
+            ),
+            ("[claps]\nnotes = [128]\n", "128 is no MIDI note"),
+            (
+                "[claps]\nport = 40000\ndevice_port = 40000\n",
+                "must differ, both are 40000",
+            ),
+        ] {
+            let error = format!("{:#}", Config::parse(text, &data()).unwrap_err());
+            assert!(error.contains(says), "{text}: {error}");
+        }
+        assert!(Config::parse("[claps]\nnotes = [300]\n", &data()).is_err());
+        assert!(Config::parse("[claps]\nhost = \"0.0.0.0\"\n", &data()).is_err());
     }
 
     #[test]

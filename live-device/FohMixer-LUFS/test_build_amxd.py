@@ -126,6 +126,39 @@ class AmxdTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ba.with_ports(patch.replace(b'"udpreceive 39112"', b'"udpreceive 1"'))
 
+    def test_builds_the_claps_patch_as_a_midi_effect(self) -> None:
+        patch = ba.CLAPS_MAXPAT.read_bytes()
+        self.assertTrue(ba.is_claps(patch))
+        self.assertFalse(ba.is_claps(ba.LISTEN_MAXPAT.read_bytes()))
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "c.amxd"
+            self.assertEqual(ba.main(["--patch", str(ba.CLAPS_MAXPAT), "--out", str(out)]), 0)
+            device = out.read_bytes()
+        self.assertEqual(device[8:12], b"mmmm")
+        self.assertEqual(ba.patch_of(device), patch)
+        self.assertIn(b"pack /fohmixer/claps ", device)
+
+    def test_the_claps_ports_rewrite_their_two_boxes(self) -> None:
+        patch = ba.CLAPS_MAXPAT.read_bytes()
+        built = ba.with_ports(patch, 40003, device_port=40004)
+        swaps = [
+            (b'"udpsend 127.0.0.1 39113"', b'"udpsend 127.0.0.1 40003"'),
+            (b'"udpreceive 39114"', b'"udpreceive 40004"'),
+        ]
+        back = built
+        for old, new in swaps:
+            self.assertEqual(built.count(new), 1)
+            back = back.replace(new, old)
+        self.assertEqual(back, patch)
+        self.assertEqual(ba.with_ports(patch), patch)
+        for port, device in ((0, None), (None, 65536)):
+            with self.assertRaises(ValueError):
+                ba.with_ports(patch, port, device_port=device)
+        with self.assertRaises(ValueError):
+            ba.with_ports(patch, select_port=39112)
+        with self.assertRaises(ValueError):
+            ba.with_ports(ba.LISTEN_MAXPAT.read_bytes(), device_port=39114)
+
     def test_text_that_is_no_patcher_is_refused(self) -> None:
         with self.assertRaises(ValueError):
             ba.amxd(b'{"box": {}}')
@@ -135,7 +168,9 @@ class AmxdTests(unittest.TestCase):
     def test_a_wrong_header_or_length_is_refused(self) -> None:
         device = ba.amxd(b'{"patcher": {}}')
         with self.assertRaises(ValueError):
-            ba.patch_of(b"ampf" + device[4:8] + b"mmmm" + device[12:])
+            ba.patch_of(b"ampf" + device[4:8] + b"xxxx" + device[12:])
+        with self.assertRaises(ValueError):
+            ba.patch_of(b"ampx" + device[4:])
         with self.assertRaises(ValueError):
             ba.patch_of(device + b" ")
 

@@ -48,6 +48,9 @@ WebSocket server is bound. Control lines on stdin (never over the WebSocket):
     song time <beats>           jump the playhead as a user would (#140; the
                                 ``current_song_time`` listener fires); prints
                                 ``SONG <time>``, or ``SONG -1`` for a bad line
+    song signature <n> <d>      set the time signature (#220; both listeners
+                                fire); prints ``SONG <n>``, ``SONG -1`` for a
+                                bad line
     param <path> value <v>      write the parameter at the LOM <path> as another
                                 writer would (a Max map, a click in Live: its
                                 ``value`` listener fires); prints ``PARAM
@@ -57,6 +60,7 @@ WebSocket server is bound. Control lines on stdin (never over the WebSocket):
                                 it (1); prints ``PARAM <0|1>``, or ``PARAM -1``
     clip add <track> <start> <end> <name...>
     clip rename <track> <clip> <name...>
+    clip mute <track> <clip> <0|1>
     clip remove <track> <clip>  an arrangement clip of the track at <track>
                                 (#140): added (kept in start order) or removed
                                 (the track's ``arrangement_clips`` listener
@@ -352,6 +356,8 @@ def clip_line(line):
         return None
     if action == "rename" and len(parts) == 2:
         return ("rename", track, (int(parts[0]), parts[1]))
+    if action == "mute" and len(parts) == 2 and parts[1] in ("0", "1"):
+        return ("mute", track, (int(parts[0]), parts[1] == "1"))
     if action == "remove" and len(parts) == 1:
         return ("remove", track, (int(parts[0]),))
     return None
@@ -375,6 +381,9 @@ def clip(song, action, track_index, rest):
         return -1
     if action == "rename":
         clips[rest[0]]._sim_set("name", rest[1])
+    elif action == "mute":
+        # Live's "deactivate" (#220): only the clip's own listener fires.
+        clips[rest[0]]._sim_set("muted", rest[1])
     else:
         clips.pop(rest[0])._sim_delete()
         track._fire("arrangement_clips")
@@ -431,11 +440,17 @@ def count_sets(song, prop, text):
 
 
 def song_line(line):
-    """A ``song`` line's time to jump to (beats), or None."""
+    """A ``song`` line's ``("time", beats)`` to jump to, or ``("signature",
+    (numerator, denominator))`` (#220), or None."""
     words = line.split()
-    if len(words) != 3 or words[1] != "time":
-        return None
-    return _beats(words[2])
+    if len(words) == 3 and words[1] == "time":
+        beats = _beats(words[2])
+        return None if beats is None else ("time", beats)
+    if len(words) == 4 and words[1] == "signature" and words[2].isdigit() and words[3].isdigit():
+        numerator, denominator = int(words[2]), int(words[3])
+        if 1 <= numerator <= 99 and denominator in (1, 2, 4, 8, 16):
+            return ("signature", (numerator, denominator))
+    return None
 
 
 def song_time(song, time_beats):
@@ -443,6 +458,13 @@ def song_time(song, time_beats):
     time then."""
     song.current_song_time = time_beats
     return song.current_song_time
+
+
+def song_signature(song, signature):
+    """Set the time signature as a user would (main thread; both listeners
+    fire); its numerator then."""
+    song.signature_numerator, song.signature_denominator = signature
+    return song.signature_numerator
 
 
 def param_line(line):
@@ -554,7 +576,9 @@ def control(main_thread, song, line, held, maxdevs=None, listens=None):
         parsed = song_line(line)
         if parsed is None:
             return "SONG -1"
-        return f"SONG {main_thread.call(lambda: song_time(song, parsed))}"
+        what, value = parsed
+        act = song_time if what == "time" else song_signature
+        return f"SONG {main_thread.call(lambda: act(song, value))}"
     if words and words[0] == "param":
         parsed = param_line(line)
         if parsed is None:

@@ -4,7 +4,8 @@
 # Get-FohCompanionToml, Get-FohInstalledCompanionToml, Resolve-FohCompanion:
 # the Stream Deck tab, #52; Get-FohPresenterToml, Get-FohInstalledPresenterToml,
 # Resolve-FohPresenter: Presenter's stage tab, #90; Resolve-FohScenes: the
-# scene read from Companion, #207, a table written by hand like [eq]), dot-sourced by
+# scene read from Companion, #207, a table written by hand like [eq];
+# Resolve-FohClaps: claps from the surface's pitches, #220, likewise), dot-sourced by
 # FohmixerPc.psm1 and shipped in the bundle next to it. Windows PowerShell
 # 5.1, ASCII only.
 
@@ -46,6 +47,17 @@ function Resolve-FohScenes {
     $toml = Join-Path (Resolve-FohPath $DataDir) 'fohmixer-hub.toml'
     if (-not (Test-Path -LiteralPath $toml -PathType Leaf)) { return '' }
     return (Get-FohInstalledHandTable -Text ([IO.File]::ReadAllText($toml)) -Name 'scenes')
+}
+
+function Resolve-FohClaps {
+    # The [claps] table of an install (#220, claps from the surface: the
+    # pitches a clap plays, `notes`, set by hand on the FOH PC): the installed
+    # toml's as it is (Get-FohInstalledHandTable), else '' (the hub's
+    # defaults). The new hub checks it with the rest of the config.
+    param([Parameter(Mandatory)][string]$DataDir)
+    $toml = Join-Path (Resolve-FohPath $DataDir) 'fohmixer-hub.toml'
+    if (-not (Test-Path -LiteralPath $toml -PathType Leaf)) { return '' }
+    return (Get-FohInstalledHandTable -Text ([IO.File]::ReadAllText($toml)) -Name 'claps')
 }
 
 function Resolve-FohEq {
