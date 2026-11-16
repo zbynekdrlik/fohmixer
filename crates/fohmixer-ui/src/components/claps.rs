@@ -24,10 +24,21 @@ use crate::store::LiveStore;
 /// told the page its claps.
 #[component]
 pub fn ClapsColumn(strip: Strip) -> impl IntoView {
+    // Every other strip builds nothing (#220 review).
+    if !strip.claps {
+        return None;
+    }
     let store = expect_context::<LiveStore>();
     let told = Memo::new(move |_| store.claps.try_get().flatten().map(|(state, _)| state));
-    let shown = move || strip.claps && told.try_with(Option::is_some).unwrap_or(false);
-    move || shown().then(|| view! { <ClapsParts told=told /> })
+    // Mounted once the hub told one, and only then: a memo of the bool, so
+    // a new state never builds the column again (a press on TAP goes on).
+    let shown = Memo::new(move |_| told.try_with(Option::is_some).unwrap_or(false));
+    Some(move || {
+        shown
+            .try_get()
+            .unwrap_or(false)
+            .then(|| view! { <ClapsParts told=told /> })
+    })
 }
 
 /// The column's parts over the hub's state `told`.
@@ -58,7 +69,9 @@ fn ClapsParts(told: Memo<Option<ClapsState>>) -> impl IntoView {
                     .flatten()
             })
             .collect();
-        let mut drawn: (Option<usize>, bool) = (None, false);
+        // Nothing drawn yet: the first frame writes every dot (a column
+        // built again over the same elements never keeps an old ring).
+        let mut drawn: Option<(Option<usize>, bool)> = None;
         Box::new(move |_now: f64, _step: f64| {
             let now = dom::epoch_now();
             let look = store
@@ -69,7 +82,7 @@ fn ClapsParts(told: Memo<Option<ClapsState>>) -> impl IntoView {
                 })
                 .flatten()
                 .unwrap_or((None, false));
-            if look == drawn {
+            if drawn == Some(look) {
                 return;
             }
             for (i, dot) in dots.iter().enumerate() {
@@ -79,7 +92,7 @@ fn ClapsParts(told: Memo<Option<ClapsState>>) -> impl IntoView {
                     dom::set_attr(dot, "data-hit", if on && look.1 { "true" } else { "false" });
                 }
             }
-            drawn = look;
+            drawn = Some(look);
         })
     });
     let dots = (0..BEATS)
