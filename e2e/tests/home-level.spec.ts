@@ -128,7 +128,7 @@ test.describe("A strip's home level (#225)", () => {
       await doubleTap(fader);
       const landed = await until(
         () => live.get("band", volume(HAND2), "value"),
-        (v) => Math.abs(value2db(v) + 6) < 0.05,
+        (v) => Math.abs(value2db(v) + 6) < 0.01,
         "-6 dB",
         6000,
       );
@@ -143,7 +143,7 @@ test.describe("A strip's home level (#225)", () => {
       const detailFader = detail.getByTestId("fader");
       await startAtHalf(live, detailFader);
       await doubleTap(detailFader);
-      await until(() => live.get("band", volume(HAND2), "value"), (v) => Math.abs(value2db(v) + 6) < 0.05, "-6 dB from the detail", 6000);
+      await until(() => live.get("band", volume(HAND2), "value"), (v) => Math.abs(value2db(v) + 6) < 0.01, "-6 dB from the detail", 6000);
       await expect(detail.getByTestId("db").first()).toHaveText("−6.0");
       await expect(detail.getByTestId("db").first()).toHaveClass(/\bunity\b/);
     } finally {
