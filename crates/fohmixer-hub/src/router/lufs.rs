@@ -42,6 +42,7 @@ use super::{Router, RouterMsg};
 use crate::eq::walk::{answered, get};
 use crate::live::client::LiveHandle;
 use crate::live::subs::{Cached, ClientId};
+use crate::lufs_history::LufsHistory;
 use crate::outbox::Outbox;
 use crate::rules::lufs::confirm::{self, Confirm, Step};
 use crate::rules::lufs::{Act, Answer, Fader, Key, Lufs, LufsStrip, meter_values};
@@ -220,6 +221,8 @@ pub(super) struct LufsIo {
     /// walks): a disconnect aborts them, so none asks the next connection
     /// (a set loaded meanwhile) anything (the song map's review M4).
     pub tasks: BTreeMap<String, Vec<tokio::task::AbortHandle>>,
+    /// The points' history (#219): sampled at the tick, once a second.
+    pub history: LufsHistory,
 }
 
 impl LufsIo {
@@ -386,11 +389,22 @@ impl Router {
         self.lufs_apply(acts);
     }
 
-    /// The rule's tick.
+    /// The rule's tick; then the history's sample of the points' readings
+    /// at the hub clock's whole second (#219: every tenth tick).
     pub(super) fn lufs_tick(&mut self) {
         let now = self.lufs_now();
         let acts = self.lufs.rule.tick(now);
         self.lufs_apply(acts);
+        let rule = &self.lufs.rule;
+        self.lufs
+            .history
+            .sample(crate::events::now_ms(), || rule.items());
+    }
+
+    /// The hub's LUFS history (#219): the router samples it.
+    pub fn with_lufs_history(mut self, history: LufsHistory) -> Self {
+        self.lufs.history = history;
+        self
     }
 
     /// A walk's answer.
@@ -510,6 +524,7 @@ impl Router {
             listener: Default::default(),
             devices: self.lufs.rule.device_status(self.lufs_now()),
             strips: self.lufs.rule.strip_status(),
+            history: self.lufs.history.status(),
         }
     }
 

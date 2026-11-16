@@ -28,6 +28,7 @@ mod listen;
 mod listen_wire;
 mod live_client;
 mod lufs;
+mod lufs_history;
 mod lufs_listener;
 mod markers;
 mod mute_alarms;

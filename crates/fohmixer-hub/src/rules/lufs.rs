@@ -60,6 +60,8 @@ use serde_json::{Value, json};
 pub mod bound;
 #[path = "lufs/confirm.rs"]
 pub mod confirm;
+#[path = "lufs/history.rs"]
+pub mod history;
 #[path = "lufs/peaks.rs"]
 pub mod peaks;
 

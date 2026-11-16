@@ -28,6 +28,30 @@ pub const BAND_TENTHS: i16 = 10;
 /// `−∞`.
 pub const SILENT_TENTHS: i16 = -700;
 
+/// `GET /api/lufs/history` (#219): a point's readings from `from` (UTC
+/// ms, a whole second), one value per `step_ms` (tenths, [`SILENT_TENTHS`]
+/// for silence, none for no reading), at most 900 of them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistorySeries {
+    pub from: i64,
+    pub step_ms: i64,
+    pub values: Vec<Option<i16>>,
+}
+
+/// One day a point's history holds (#219, `GET /api/lufs/days`): its first
+/// and last second with a reading, UTC ms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryDay {
+    pub first_ms: i64,
+    pub last_ms: i64,
+}
+
+/// `GET /api/lufs/days` (#219): newest first.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryDays {
+    pub days: Vec<HistoryDay>,
+}
+
 /// How a strip shows its reading (§6.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

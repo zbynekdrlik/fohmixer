@@ -525,3 +525,20 @@ async fn a_page_attached_gets_every_points_item() {
         }]
     );
 }
+
+#[tokio::test]
+async fn the_tick_samples_the_served_points_into_the_history_once_a_second() {
+    let dir = tempfile::tempdir().unwrap();
+    let (router, _rx, _records) = offline_router(dir.path());
+    let history = crate::lufs_history::LufsHistory::off();
+    let mut router = router.with_lufs_history(history.clone());
+    router.lufs_layout(vec![point(
+        "live_set tracks 1",
+        Anchor::TrackAt { index: 1 },
+        true,
+    )]);
+    assert_eq!(history.status().points, 0);
+    router.lufs_tick();
+    assert_eq!(history.status().points, 1, "the served point is sampled");
+    assert_eq!(router.lufs_status().history.points, 1);
+}

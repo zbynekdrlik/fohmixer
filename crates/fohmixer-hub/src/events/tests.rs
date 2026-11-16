@@ -113,6 +113,7 @@ fn warn_class_records_are_socket_link_cap_dropped_and_errors() {
         "scene_glide",
         "scene_source",
         "listen",
+        "lufs_history",
     ] {
         assert!(is_warn(&json!({"ev": ev})), "{ev}");
     }

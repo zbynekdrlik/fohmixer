@@ -43,6 +43,8 @@ pub const API_PATHS: &[&str] = &[
     "/api/markers/migration",
     "/api/eq/picture",
     "/api/songmap",
+    "/api/lufs/history",
+    "/api/lufs/days",
     "/api/scene",
     "/ws",
     "/ws/audio",
@@ -55,7 +57,10 @@ pub fn route_role(path: &str) -> Option<RouteAccess> {
         "/api/version" | "/api/client-error" | "/api/client-report" | "/api/auth" => {
             Some(RouteAccess::Open)
         }
-        "/api/layout" | "/api/status" | "/ws" | "/ws/audio" => Some(RouteAccess::AnyRole),
+        // The LUFS history (#219): the handler serves a role its own Live
+        // set's points.
+        "/api/layout" | "/api/status" | "/api/lufs/history" | "/api/lufs/days" | "/ws"
+        | "/ws/audio" => Some(RouteAccess::AnyRole),
         "/api/markers/migration" | "/api/eq/picture" | "/api/songmap" => {
             Some(RouteAccess::EngineerOnly)
         }

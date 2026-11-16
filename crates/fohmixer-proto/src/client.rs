@@ -1884,6 +1884,20 @@ pub struct LufsStatus {
     pub devices: Vec<LufsDeviceStatus>,
     #[serde(default)]
     pub strips: Vec<LufsStripStatus>,
+    /// The LUFS history (#219).
+    #[serde(default)]
+    pub history: LufsHistoryStatus,
+}
+
+/// `/api/status` `lufs.history` (#219): the points the last hour holds in
+/// RAM, the minute lines a full queue dropped and the lines its day cap
+/// left out.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LufsHistoryStatus {
+    #[serde(default)]
+    pub points: usize,
+    #[serde(default)]
+    pub dropped: u64,
 }
 
 /// The UDP listener: its address (none: off or not bound), its bind error,

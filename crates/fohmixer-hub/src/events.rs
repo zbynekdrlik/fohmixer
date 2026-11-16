@@ -172,7 +172,8 @@ pub fn date_of_file(name: &str) -> Option<NaiveDate> {
 /// changed since the set's last read (`problems_changed`; the first read
 /// after a connect: when it has any) or it failed (its `error`): a read at
 /// every transport change whose problems are known and unchanged is bulk
-/// (review M8).
+/// (review M8). The LUFS history's day cap (`lufs_history`, #219): at most
+/// one a day.
 pub fn is_warn(record: &Value) -> bool {
     let ev = record.get("ev").and_then(Value::as_str).unwrap_or("");
     let failed = record.get("error").is_some_and(|e| !e.is_null())
@@ -213,6 +214,7 @@ pub fn is_warn(record: &Value) -> bool {
                 | "scene_source"
                 | "script"
                 | "listen"
+                | "lufs_history"
         )
         || (ev == "trace" && holds_warn_event(record))
         || (ev == "songmap" && problems_changed(record))

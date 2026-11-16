@@ -903,6 +903,10 @@ fn api_bodies_round_trip() {
                 tenths: Some(-253),
                 problem: None,
             }],
+            history: LufsHistoryStatus {
+                points: 3,
+                dropped: 1,
+            },
         },
         sectors: SectorsStatus {
             rev: 3,
@@ -2503,4 +2507,10 @@ fn the_scenes_and_scene_messages_carry_the_document_and_the_scene() {
         serde_json::from_value::<ServerMsg>(older).unwrap(),
         ServerMsg::Scene { live: false, .. }
     ));
+}
+
+#[test]
+fn an_older_hubs_lufs_status_reads_with_no_history() {
+    let status: LufsStatus = serde_json::from_value(json!({"strips": []})).unwrap();
+    assert_eq!(status.history, LufsHistoryStatus::default());
 }

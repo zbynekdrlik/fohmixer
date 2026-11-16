@@ -86,6 +86,7 @@ pub mod link;
 pub mod listen;
 pub mod live;
 pub mod login_guard;
+pub mod lufs_history;
 pub mod lufs_udp;
 pub mod mute_alarms;
 pub mod mute_guards;
@@ -225,6 +226,9 @@ pub struct HubInner {
     pub eq: bool,
     /// The LUFS devices' listener's counts and state (#151).
     pub lufs: Arc<lufs_udp::Counters>,
+    /// The LUFS history (#219, `<data>/lufs/`): the API reads it, the
+    /// router samples it.
+    pub lufs_history: lufs_history::LufsHistory,
     /// The instance link this hub serves (#184, `[link]`).
     pub link: Option<Arc<link::server::LinkState>>,
     /// Listen (#210, `[listen]`); none with `port = 0`.
@@ -482,6 +486,7 @@ impl HubInner {
                 listener: self.lufs.status(),
                 devices: router.lufs.devices,
                 strips: router.lufs.strips,
+                history: router.lufs.history,
             },
             clients: router.clients,
             client_reports: self.reports.list(),
@@ -515,6 +520,8 @@ impl Hub {
         let auth = Arc::new(Auth::load(&config.data_dir).context("loading the secrets")?);
         let events =
             EventLog::start(config.data_dir.join("logs")).context("starting the event log")?;
+        let lufs_history = lufs_history::LufsHistory::start(&config.data_dir, events.clone())
+            .context("starting the LUFS history")?;
         let (router_tx, router_rx) = mpsc::unbounded_channel();
         let mut tasks = Vec::new();
         let remote = Arc::new(RemoteState::default());
@@ -667,6 +674,7 @@ impl Hub {
         // The Tuner markers (#68) go to the layout store.
         router = router
             .with_layout(Arc::clone(&layout))
+            .with_lufs_history(lufs_history.clone())
             .with_beat(beat)
             .with_engage_delay(config.autotune.engage_delay_ms)
             .with_scenes(automation.is_some() || scene_source.is_some());
@@ -773,6 +781,7 @@ impl Hub {
             https: std::sync::OnceLock::new(),
             reports: client_report::Reports::default(),
             events,
+            lufs_history,
             companion,
             companion_task: Mutex::new(companion_task),
             pictures,

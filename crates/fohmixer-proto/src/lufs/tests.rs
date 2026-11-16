@@ -138,3 +138,30 @@ fn the_problems_words_and_wire_names() {
         );
     }
 }
+
+#[test]
+fn the_history_answers_read_as_the_hub_writes_them() {
+    let series = HistorySeries {
+        from: 1_794_736_800_000,
+        step_ms: 2000,
+        values: vec![Some(-230), None, Some(-700)],
+    };
+    let text = serde_json::to_string(&series).unwrap();
+    assert_eq!(
+        text,
+        r#"{"from":1794736800000,"step_ms":2000,"values":[-230,null,-700]}"#
+    );
+    assert_eq!(
+        serde_json::from_str::<HistorySeries>(&text).unwrap(),
+        series
+    );
+    let days = HistoryDays {
+        days: vec![HistoryDay {
+            first_ms: 10,
+            last_ms: 20,
+        }],
+    };
+    let text = serde_json::to_string(&days).unwrap();
+    assert_eq!(text, r#"{"days":[{"first_ms":10,"last_ms":20}]}"#);
+    assert_eq!(serde_json::from_str::<HistoryDays>(&text).unwrap(), days);
+}
