@@ -78,6 +78,25 @@ class ClapsDeviceTests(unittest.TestCase):
         self.assertTrue(any("obj-watchdog:0 -> obj-stop:0 is missing" in e for e in found), found)
         self.assertTrue(any("obj-watchdog:0 -> obj-forget:0 is missing" in e for e in found), found)
 
+    def test_the_hello_leaves_the_audio_thread_through_a_deferlow(self) -> None:
+        # #240: the hello's metro runs in Live's audio thread.
+        def direct(p: dict) -> None:
+            p["lines"] = [
+                ln for ln in p["lines"] if ln["patchline"]["destination"] != ["obj-udpsend", 0]
+            ]
+            add_line(p, ["obj-hello", 0], ["obj-udpsend", 0])
+
+        found = errors(edited(direct))
+        self.assertIn(
+            "p: obj-hello-metro ('metro 1000') reaches the udpsend obj-udpsend on the audio "
+            "thread (a deferlow or a qmetro goes between)",
+            found,
+        )
+        self.assertIn(
+            "p: obj-udpsend:0 takes [['obj-send-defer', 0]] alone, has [['obj-hello', 0]]",
+            found,
+        )
+
     def test_a_missing_line_is_named(self) -> None:
         def unwire(p: dict) -> None:
             p["lines"] = [ln for ln in p["lines"] if ln["patchline"]["source"] != ["obj-bar", 0]]

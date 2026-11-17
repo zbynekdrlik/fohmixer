@@ -155,6 +155,107 @@ class TreeTests(unittest.TestCase):
             )
             self.restore(device)
 
+    def test_the_send_leaves_the_audio_thread_through_a_deferlow(self) -> None:
+        # #240: the audio side's clock (peakamp~, snapshot~) runs in Live's
+        # audio thread; the socket write goes through obj-send-defer.
+        for device in cl.DEVICES:
+            patch = self.patcher(device)
+            patch["patcher"]["lines"] = [
+                ln
+                for ln in patch["patcher"]["lines"]
+                if ln["patchline"]["destination"] != ["obj-udpsend", 0]
+            ]
+            patch["patcher"]["lines"].append(
+                {"patchline": {"source": ["obj-pack", 0], "destination": ["obj-udpsend", 0]}}
+            )
+            self.save(patch, device)
+            errors = self.errors()
+            where = device.maxpat.as_posix()
+            self.assertIn(
+                f"{where}: the udpsend must be fed by obj-send-defer alone, has [['obj-pack', 0]]",
+                errors,
+            )
+            self.assertTrue(
+                any(
+                    f"('{device.clock} {device.send_ms}') reaches the udpsend obj-udpsend "
+                    "on the audio thread" in e
+                    for e in errors
+                ),
+                errors,
+            )
+            self.restore(device)
+        self.assertEqual(self.errors(), [])
+
+    def test_the_deferlow_is_fed_by_the_pack_alone(self) -> None:
+        for device in cl.DEVICES:
+            patch = self.patcher(device)
+            self.box(patch, "deferlow")
+            for b in cl.boxes(patch["patcher"]):
+                if b.get("id") == cl.SEND_DEFER:
+                    b["text"] = "defer"
+            patch["patcher"]["lines"].append(
+                {
+                    "patchline": {
+                        "source": ["obj-send-trigger", 0],
+                        "destination": ["obj-send-defer", 0],
+                    }
+                }
+            )
+            self.save(patch, device)
+            errors = self.errors()
+            where = device.maxpat.as_posix()
+            self.assertIn(f"{where}: obj-send-defer must be 'deferlow', has [['defer']]", errors)
+            self.assertTrue(
+                any("obj-send-defer must be fed by the pack alone" in e for e in errors), errors
+            )
+            self.restore(device)
+
+    def test_a_timed_box_reaching_a_network_hot_inlet_is_named(self) -> None:
+        def box_(i: str, text: str, inlets: int = 1, message: bool = False) -> dict:
+            maxclass = "message" if message else "newobj"
+            return {"id": i, "maxclass": maxclass, "text": text, "numinlets": inlets}
+
+        def line(src: str, out: int, dst: str, inlet: int) -> dict:
+            return {"patchline": {"source": [src, out], "destination": [dst, inlet]}}
+
+        def run(boxes: list[dict], lines: list[dict]) -> list[str]:
+            patcher = {"boxes": [{"box": b} for b in boxes], "lines": lines}
+            return cl.thread_errors("p", patcher, cl.boxes(patcher))
+
+        net = box_("n", "udpsend 127.0.0.1 1")
+        clock = box_("m", "metro 100", 2)
+        pack = box_("k", "pack a 0", 2)
+        self.assertEqual(
+            run([net, clock, pack], [line("m", 0, "k", 0), line("k", 0, "n", 0)]),
+            [
+                "p: m ('metro 100') reaches the udpsend n on the audio thread "
+                "(a deferlow or a qmetro goes between)"
+            ],
+        )
+        # A cold inlet only stores; a deferlow or a qmetro hands it over.
+        self.assertEqual(run([net, clock, pack], [line("m", 0, "k", 1), line("k", 0, "n", 0)]), [])
+        for low in ("deferlow", "defer", "qmetro 100"):
+            hop = box_("d", low)
+            self.assertEqual(
+                run(
+                    [net, clock, pack, hop],
+                    [line("m", 0, "d", 0), line("d", 0, "k", 0), line("k", 0, "n", 0)],
+                ),
+                [],
+            )
+        # A message box named like a clock is no clock; a gate passes its
+        # right inlet; jit.net.send sends from both inlets.
+        self.assertEqual(run([net, box_("m", "metro", message=True)], [line("m", 0, "n", 0)]), [])
+        gate = box_("g", "gate", 2)
+        self.assertEqual(
+            len(run([net, clock, gate], [line("m", 0, "g", 1), line("g", 0, "n", 0)])), 1
+        )
+        self.assertEqual(run([net, clock, gate], [line("m", 0, "g", 0), line("g", 0, "n", 0)]), [])
+        jit = box_("j", "jit.net.send @port 1", 2)
+        self.assertEqual(len(run([jit, clock], [line("m", 0, "j", 1)])), 1)
+        for timed in ("delay 5", "snapshot~ 200", "peakamp~ 33", "transport"):
+            self.assertEqual(len(run([net, box_("m", timed, 2)], [line("m", 0, "n", 0)])), 1, timed)
+
     def test_the_trigger_is_fed_by_the_last_value_alone(self) -> None:
         for device in cl.DEVICES:
             patch = self.patcher(device)

@@ -12,7 +12,12 @@ for each patch:
   in a rack's parallel chain, never in series, so a failing device can never
   cut the sound and the signal is never doubled);
 - one `udpsend 127.0.0.1 <port>`, the port equal to the hub's default
-  (`DEFAULT_PORT` in `crates/fohmixer-proto/src/lufs/wire.rs`);
+  (`DEFAULT_PORT` in `crates/fohmixer-proto/src/lufs/wire.rs`), fed by
+  `obj-send-defer` (`deferlow`) alone, which the pack alone feeds (#240:
+  the audio side's clock runs in Live's audio thread, the socket write
+  leaves it);
+- the threads (`thread_errors`, #240): no timed box reaches a network
+  object's hot inlet without a `deferlow` or `qmetro` between;
 - the send follows the audio (the review of PR 2: a `metro` kept sending a
   frozen value with the device's DSP off, so its key never went stale):
   the pack's bang comes only from `obj-send-trigger` (`t b f`), fed only by
@@ -57,6 +62,9 @@ PACK_VERSION = 3
 # side's clock) and hands the last value on first.
 SEND_TRIGGER = "obj-send-trigger"
 SEND_TRIGGER_WORDS = ["t", "b", "f"]
+# The deferlow between the pack and the udpsend (#240).
+SEND_DEFER = "obj-send-defer"
+SEND_DEFER_WORDS = ["deferlow"]
 
 
 @dataclass(frozen=True)
@@ -261,6 +269,30 @@ def send_errors(
         errors.append(
             f"{where}: {SEND_TRIGGER} must be fed by {send_from} alone, "
             f"has {feeds(patcher, SEND_TRIGGER, 0)}"
+        )
+    errors += defer_errors(where, patcher, every)
+    errors += thread_errors(where, patcher, every)
+    return errors
+
+
+def defer_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
+    """The pack -> `deferlow` -> udpsend chain (#240): the send leaves the
+    audio thread before the socket write."""
+    errors = []
+    defers = [words(b) for b in every if b.get("id") == SEND_DEFER]
+    if defers != [SEND_DEFER_WORDS]:
+        errors.append(f"{where}: {SEND_DEFER} must be 'deferlow', has {defers}")
+    packs = [b.get("id") for b in every if words(b)[:1] == ["pack"]]
+    if len(packs) == 1 and feeds(patcher, SEND_DEFER, 0) != [[packs[0], 0]]:
+        errors.append(
+            f"{where}: {SEND_DEFER} must be fed by the pack alone, "
+            f"has {feeds(patcher, SEND_DEFER, 0)}"
+        )
+    sends = [b.get("id") for b in every if words(b)[:1] == ["udpsend"]]
+    if len(sends) == 1 and feeds(patcher, sends[0], 0) != [[SEND_DEFER, 0]]:
+        errors.append(
+            f"{where}: the udpsend must be fed by {SEND_DEFER} alone, "
+            f"has {feeds(patcher, sends[0], 0)}"
         )
     return errors
 
