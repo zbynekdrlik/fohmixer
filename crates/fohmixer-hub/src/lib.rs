@@ -317,6 +317,12 @@ impl HubInner {
         let _ = self.router.send(msg);
     }
 
+    /// Sends a message to the router; false once the router has stopped
+    /// (#246: a page's session then closes the page itself).
+    pub fn try_route(&self, msg: RouterMsg) -> bool {
+        self.router.send(msg).is_ok()
+    }
+
     /// A new client connection id (1, 2, …; 0 is the router's own).
     pub fn next_client(&self) -> u64 {
         self.next_client.fetch_add(1, Ordering::Relaxed)
