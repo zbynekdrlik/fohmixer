@@ -11,8 +11,16 @@
 //! is older than the result's read, so it goes (the table also drops, at
 //! any arrival, those of a key whose older listener a `remove_listener` was
 //! still ending). At most `KEPT_MAX` are kept; the oldest goes first.
+//!
+//! A push for a Live key the table already knows is applied to its entries at
+//! once, but a NEW hub key joining that Live key in the batch (#244: a
+//! `…|true` beside a `…|false`) is not linked yet and misses it. So for each
+//! known key the last push of the frames numbered here is heard too (its
+//! value and display, one per key), and at the result the joining key takes
+//! it instead of the result's value when it arrived after the batch was sent
+//! (`newer_push`): one Live key, one value across its hub keys.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use super::super::LiveValue;
 
@@ -48,6 +56,27 @@ pub struct Kept {
     /// Frames kept so far (never reset: a batch's mark stays comparable).
     frames: u64,
     dropped: u64,
+    /// The last push of each Live key the table knew, with its frame's
+    /// arrival number (#244).
+    heard: HashMap<String, (u64, LiveValue)>,
+}
+
+/// What a new hub key joining a Live key another entry already holds takes
+/// at its batch's result (#244): the last push heard for that Live key when
+/// it arrived after the batch was sent (`mark`) and carries what the key
+/// shows; else none, and the key takes the result's value. A push from
+/// before the send may be older than the result's read. So is one without a
+/// display for a key that wants it: the script reads the display from the
+/// first `add_listener` that asks for it on (`Subscriptions.add`), so such a
+/// push was read before this batch's registration.
+pub fn newer_push(
+    heard: Option<&(u64, LiveValue)>,
+    mark: u64,
+    wants_display: bool,
+) -> Option<&LiveValue> {
+    heard
+        .filter(|(frame, item)| *frame > mark && (item.display.is_some() || !wants_display))
+        .map(|(_, item)| item)
 }
 
 impl Kept {
@@ -76,6 +105,32 @@ impl Kept {
         })
     }
 
+    /// Numbers one push frame while a batch is in flight: its items for Live
+    /// keys the table does not know (`known` false) are kept (`keep`), and
+    /// for each key it knows the frame's last item without an error is heard
+    /// (#244). What it dropped beyond `KEPT_MAX`, if anything.
+    pub fn frame(&mut self, items: &[LiveValue], known: impl Fn(&str) -> bool) -> Option<Overflow> {
+        let unknown = items.iter().filter(|i| !known(&i.key)).cloned().collect();
+        let overflow = self.keep(unknown);
+        for item in items.iter().filter(|i| i.error.is_none() && known(&i.key)) {
+            self.heard
+                .insert(item.key.clone(), (self.frames, item.clone()));
+        }
+        overflow
+    }
+
+    /// The push a key joining the Live key `live` takes at the result of a
+    /// batch sent at `mark` (`newer_push`), if any.
+    pub fn heard_after(&self, live: &str, mark: u64, wants_display: bool) -> Option<&LiveValue> {
+        newer_push(self.heard.get(live), mark, wants_display)
+    }
+
+    /// Forgets what was heard for `live`: no entry holds it any more, or its
+    /// listener ended (an error pushed).
+    pub fn forget(&mut self, live: &str) {
+        self.heard.remove(live);
+    }
+
     /// Takes the pushes for the Live keys `made_known` names: those that
     /// arrived after `mark`, grouped by their frames in arrival order; the
     /// older ones are dropped. The rest stay.
@@ -96,9 +151,11 @@ impl Kept {
         frames.into_iter().map(|(_, items)| items).collect()
     }
 
-    /// Forgets every kept push (no batch in flight any more, a disconnect).
+    /// Forgets every kept and heard push (no batch in flight any more, a
+    /// disconnect).
     pub fn clear(&mut self) {
         self.pushes.clear();
+        self.heard.clear();
     }
 
     /// Pushes kept now.

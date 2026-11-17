@@ -49,6 +49,12 @@
 //!   drain, or one still in flight, was ending (an older or released
 //!   listener's push is older than the read). The rest go once no batch is
 //!   in flight, and a disconnect forgets them.
+//! - A NEW hub key on a Live key another entry already holds (#244: a
+//!   `…|true` beside a `…|false`) is not linked until its result, so the
+//!   pushes between are the other entry's alone: while a batch is in flight
+//!   the last push of each known Live key is heard (`kept`), and at the
+//!   result the new key takes it instead of the value read at registration
+//!   when it arrived after the batch was sent (`kept::newer_push`).
 
 mod kept;
 
@@ -395,17 +401,11 @@ impl Subs {
         }
         let mut dropped = None;
         if self.resolving(instance) {
-            let unknown: Vec<LiveValue> = items
-                .iter()
-                .filter(|i| {
-                    !self
-                        .by_live
-                        .contains_key(&(instance.to_string(), i.key.clone()))
-                })
-                .cloned()
-                .collect();
+            let by_live = &self.by_live;
+            let known =
+                |live: &str| by_live.contains_key(&(instance.to_string(), live.to_string()));
             if let Some(inst) = self.instances.get_mut(instance)
-                && let Some(overflow) = inst.kept.keep(unknown)
+                && let Some(overflow) = inst.kept.frame(items, known)
             {
                 warn_overflow(instance, &overflow);
                 dropped = Some(overflow);
@@ -437,6 +437,7 @@ impl Subs {
             if item.error.is_some() {
                 // The script dropped the listener itself: nothing to remove.
                 self.by_live.remove(&id);
+                self.forget_heard(instance, &item.key);
             }
             for key in keys {
                 let Some(entry) = self.entries.get_mut(&key) else {
@@ -481,7 +482,7 @@ impl Subs {
         for (i, tag) in batch.tags.iter().enumerate() {
             let slot = slots.get(i).unwrap_or(&missing);
             if let Tag::Resolve { key, seq } = tag
-                && let Some(live) = self.resolved(instance, key, *seq, slot)
+                && let Some(live) = self.resolved(instance, key, *seq, batch.mark, slot)
             {
                 made_known.insert(live);
             }
@@ -868,7 +869,15 @@ impl Subs {
         keys.remove(key);
         if keys.is_empty() {
             self.by_live.remove(&id);
+            self.forget_heard(instance, live);
             self.schedule_release(instance, live);
+        }
+    }
+
+    /// Forgets the push heard for `live` (#244): no entry holds it any more.
+    fn forget_heard(&mut self, instance: &str, live: &str) {
+        if let Some(inst) = self.instances.get_mut(instance) {
+            inst.kept.forget(live);
         }
     }
 
@@ -916,9 +925,17 @@ impl Subs {
         }
     }
 
-    /// The answer to the `add_listener` number `seq` of `key`; the Live key
-    /// it linked the entry to, if any.
-    fn resolved(&mut self, instance: &str, key: &str, seq: u64, slot: &Value) -> Option<String> {
+    /// The answer to the `add_listener` number `seq` of `key`, in a batch
+    /// sent at the kept-push `mark`; the Live key it linked the entry to, if
+    /// any.
+    fn resolved(
+        &mut self,
+        instance: &str,
+        key: &str,
+        seq: u64,
+        mark: u64,
+        slot: &Value,
+    ) -> Option<String> {
         let outcome = parse_slot(slot);
         let current = self.entries.get(key).filter(|e| e.seq == seq);
         let Some(entry) = current else {
@@ -938,6 +955,27 @@ impl Subs {
         let old = entry.live.clone();
         match outcome {
             Ok((live, cached)) => {
+                // Joining a Live key another entry holds (#244): its push
+                // after the send is newer than the result's read.
+                let joins = self
+                    .by_live
+                    .get(&(instance.to_string(), live.clone()))
+                    .is_some_and(|keys| keys.iter().any(|k| k != key));
+                let newer = self
+                    .instances
+                    .get(instance)
+                    .and_then(|inst| inst.kept.heard_after(&live, mark, wants_display))
+                    .filter(|_| joins)
+                    .map(|push| Cached::Value {
+                        value: push.value.clone(),
+                        display: push.display.clone(),
+                    });
+                let cached = if let Some(newer) = newer {
+                    tracing::debug!(instance, key, live = %live, "a new subscription takes its Live key's push that came after its batch was sent");
+                    newer
+                } else {
+                    cached
+                };
                 if old.as_deref() != Some(live.as_str()) {
                     if let Some(old) = &old {
                         self.unlink(instance, old, key);

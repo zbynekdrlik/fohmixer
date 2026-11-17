@@ -158,3 +158,112 @@ fn an_overflows_record_names_its_instance_counts_and_bound() {
         json!({"instance": "band", "dropped": 2, "total": 7, "max": 1024})
     );
 }
+
+fn shown(key: &str, value: Value, display: &str) -> LiveValue {
+    LiveValue {
+        key: key.to_string(),
+        value,
+        display: Some(display.to_string()),
+        error: None,
+    }
+}
+
+fn gone(key: &str) -> LiveValue {
+    LiveValue {
+        key: key.to_string(),
+        value: Value::Null,
+        display: None,
+        error: Some("gone".to_string()),
+    }
+}
+
+/// The value `newer_push` gives, if any.
+fn chosen(heard: Option<&(u64, LiveValue)>, mark: u64, wants_display: bool) -> Option<Value> {
+    newer_push(heard, mark, wants_display).map(|i| i.value.clone())
+}
+
+#[test]
+fn a_joining_key_takes_a_push_only_from_after_its_batch_was_sent() {
+    let heard = (3, push("live_1.value", json!(0.6)));
+    assert_eq!(chosen(None, 0, false), None, "nothing heard: the result's");
+    assert_eq!(chosen(Some(&heard), 2, false), Some(json!(0.6)));
+    // A push of the frame the batch was sent after is older than its read.
+    assert_eq!(chosen(Some(&heard), 3, false), None);
+    assert_eq!(chosen(Some(&heard), 4, false), None);
+}
+
+#[test]
+fn a_push_without_the_display_a_joining_key_wants_is_older_than_its_read() {
+    let bare = (3, push("live_1.value", json!(0.6)));
+    let with = (3, shown("live_1.value", json!(0.6), "-3.00 dB"));
+    assert_eq!(chosen(Some(&bare), 2, true), None);
+    assert_eq!(chosen(Some(&bare), 2, false), Some(json!(0.6)));
+    assert_eq!(
+        newer_push(Some(&with), 2, true),
+        Some(&shown("live_1.value", json!(0.6), "-3.00 dB"))
+    );
+    assert_eq!(chosen(Some(&with), 2, false), Some(json!(0.6)));
+}
+
+#[test]
+fn a_frame_keeps_the_unknown_keys_and_hears_the_last_push_of_each_known_one() {
+    let mut kept = Kept::default();
+    let known = |key: &str| key == "live_1.value";
+    let mark = kept.mark();
+    let first = [
+        push("live_1.value", json!(1)),
+        push("live_2.value", json!(2)),
+        push("live_1.value", json!(3)),
+    ];
+    assert_eq!(kept.frame(&first, known), None);
+    assert_eq!(kept.mark(), 1, "one frame numbered");
+    assert_eq!(kept.len(), 1, "the unknown key's push is kept");
+    assert_eq!(
+        kept.heard_after("live_1.value", mark, false),
+        Some(&push("live_1.value", json!(3))),
+        "the frame's last item of the known key"
+    );
+    assert_eq!(kept.heard_after("live_2.value", mark, false), None);
+    // A later frame with an error is not heard: the earlier push stays,
+    // with the number of the frame it came in.
+    kept.frame(&[gone("live_1.value")], known);
+    assert_eq!(kept.mark(), 2);
+    assert_eq!(
+        kept.heard_after("live_1.value", mark, false),
+        Some(&push("live_1.value", json!(3)))
+    );
+    assert_eq!(kept.heard_after("live_1.value", 1, false), None);
+}
+
+#[test]
+fn a_heard_push_goes_when_forgotten_or_cleared() {
+    let mut kept = Kept::default();
+    let both = [
+        push("live_1.value", json!(1)),
+        push("live_2.value", json!(2)),
+    ];
+    kept.frame(&both, |key| key.starts_with("live_"));
+    kept.forget("live_1.value");
+    assert_eq!(kept.heard_after("live_1.value", 0, false), None);
+    assert_eq!(
+        kept.heard_after("live_2.value", 0, false),
+        Some(&push("live_2.value", json!(2)))
+    );
+    kept.clear();
+    assert_eq!(kept.heard_after("live_2.value", 0, false), None);
+}
+
+#[test]
+fn a_frames_overflow_is_that_of_its_kept_pushes() {
+    let mut kept = Kept::default();
+    let full: Vec<LiveValue> = (0..=KEPT_MAX)
+        .map(|i| push("live_2.value", json!(i)))
+        .collect();
+    assert_eq!(
+        kept.frame(&full, |key| key == "live_1.value"),
+        Some(Overflow {
+            dropped: 1,
+            total: 1
+        })
+    );
+}
