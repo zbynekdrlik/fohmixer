@@ -94,3 +94,63 @@ async fn a_disconnect_drops_the_walks_still_to_come() {
     router.autotune_connected("band");
     assert_eq!(commands(&calls_now(&mut script).await), vec![devices_of(6)]);
 }
+
+/// The band's disconnect, then its connect: online, its targets walked.
+fn reconnect(router: &mut Router) {
+    router.handle(RouterMsg::Live {
+        instance: "band".into(),
+        event: LiveEvent::Disconnected,
+    });
+    online(router);
+    router.autotune_connected("band");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reconnect_walks_at_once_whatever_the_old_connections_walk_does() {
+    // Review of #235: the connect never waits for a walk of the connection
+    // before (up to its 3 s answer timeout).
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, _rx, mut script) = scripted_router(dir.path());
+    online(&mut router);
+    router.handle(layout(1, vec![repro(), stream()]));
+    let old = calls_now(&mut script).await;
+    assert_eq!(commands(&old), vec![devices_of(6)]);
+    reconnect(&mut router);
+    let new = calls_now(&mut script).await;
+    assert_eq!(commands(&new), vec![devices_of(6)], "at once");
+    // The old walk's answer is void and frees nothing: no second walk.
+    let old = old.into_iter().next().unwrap();
+    no_rack(&mut router, &mut own, old).await;
+    pump(&mut router, &mut own, 1000).await;
+    assert!(calls_now(&mut script).await.is_empty(), "one at a time");
+    assert!(router.autotune.targets[REPRO].problem.is_none(), "void");
+    let new = new.into_iter().next().unwrap();
+    no_rack(&mut router, &mut own, new).await;
+    pump(&mut router, &mut own, 101).await;
+    assert_eq!(commands(&calls_now(&mut script).await), vec![devices_of(7)]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_gap_of_the_connection_before_starts_no_walk() {
+    // Review of #235: each gap has its own generation, so the gap of a
+    // walk before a reconnect never ends a newer gap early.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, _rx, mut script) = scripted_router(dir.path());
+    online(&mut router);
+    router.handle(layout(1, vec![repro(), stream()]));
+    let first = calls_now(&mut script).await.into_iter().next().unwrap();
+    no_rack(&mut router, &mut own, first).await;
+    // Its gap runs until t0 + 100; the reconnect at t0 + 10.
+    pump(&mut router, &mut own, 10).await;
+    reconnect(&mut router);
+    let again = calls_now(&mut script).await;
+    assert_eq!(commands(&again), vec![devices_of(6)]);
+    pump(&mut router, &mut own, 10).await;
+    let again = again.into_iter().next().unwrap();
+    no_rack(&mut router, &mut own, again).await;
+    // The old gap ends at t0 + 100, the new one at t0 + 120.
+    pump(&mut router, &mut own, 90).await;
+    assert!(calls_now(&mut script).await.is_empty(), "the old gap");
+    pump(&mut router, &mut own, 11).await;
+    assert_eq!(commands(&calls_now(&mut script).await), vec![devices_of(7)]);
+}

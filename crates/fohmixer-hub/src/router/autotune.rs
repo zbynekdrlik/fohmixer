@@ -891,7 +891,8 @@ impl Router {
 
     /// Walks a target (a new walk number: an answer of an older walk is
     /// void), while its Live set is online; its connect walks it else. The
-    /// walk waits its turn in its set's queue (#235, `autotune/pace.rs`).
+    /// walk waits its turn in its set's queue (#235, `autotune/pace.rs`),
+    /// whose start passes over a target of a set offline.
     fn autotune_walk_now(&mut self, key: &str) {
         let Some(target) = self.autotune.targets.get_mut(key) else {
             return;
@@ -899,10 +900,7 @@ impl Router {
         self.autotune.walks += 1;
         target.walk = self.autotune.walks;
         let instance = target.instance.clone();
-        let online = self.states.get(&instance).is_some_and(|s| s.online);
-        if online && self.live.contains_key(&instance) {
-            self.autotune_pace_ask(&instance, key);
-        }
+        self.autotune_pace_ask(&instance, key);
     }
 
     /// Starts a target's newest walk now, while its Live set is online: its

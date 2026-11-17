@@ -122,6 +122,7 @@ impl Router {
         let generation = self.autotune.pace_gaps;
         if let Some(pace) = self.autotune.paces.get_mut(&set) {
             pace.gap = Some(generation);
+            tracing::debug!(instance = %set, key = %key, walk, generation, queued = pace.queue.len(), "AUTOTUNE walk ended, the gap runs");
         }
         // Counted from now, not from the task's first poll.
         let at = tokio::time::Instant::now() + std::time::Duration::from_millis(WALK_GAP_MS);
@@ -145,6 +146,8 @@ impl Router {
             .is_some_and(|p| p.gap_over(generation));
         if over {
             self.autotune_pace_next(set);
+        } else {
+            tracing::debug!(instance = %set, generation, "AUTOTUNE passes over a stale walk gap");
         }
     }
 
