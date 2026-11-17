@@ -19,8 +19,9 @@ use crate::support::{TestHub, http, runtime, serial};
 
 const SECS_3: Duration = Duration::from_secs(3);
 
-/// Reads `ws` until it ends; panics when nothing ends it within 3 s
-/// (`who` names the page). A text message on the way is passed over.
+/// Reads `ws` until the hub's close or the end; panics when neither comes
+/// within 3 s (`who` names the page), or on anything but a text message
+/// before it.
 async fn closed_within_3_s<S>(ws: &mut WebSocketStream<S>, who: &str)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -28,7 +29,8 @@ where
     loop {
         match tokio::time::timeout(SECS_3, ws.next()).await {
             Ok(Some(Ok(Message::Text(_)))) => {}
-            Ok(_) => return,
+            Ok(Some(Ok(Message::Close(_))) | None) => return,
+            Ok(other) => panic!("{who} got {other:?} instead of the hub's close"),
             Err(_) => panic!("{who} saw no close within 3 s of the hub's stop"),
         }
     }
@@ -77,8 +79,13 @@ fn a_page_whose_upgrade_ends_after_the_stop_is_closed() {
         let mut attached = attached.into_socket();
         // The late page's upgrade, all but its last line. The listener
         // accepts in order, so the answer on a connection opened after it
-        // proves the hub took this one: it is a request in progress, which
-        // the stop's drain waits for.
+        // proves the hub accepted this one; in practice its task has also
+        // read the head into HTTP/1 by then, a request in progress the
+        // stop's drain waits for. A task first polled only after the stop's
+        // notice would be cancelled in hyper-util's version read (the
+        // connection ends with no answer, `response_head` says so): that
+        // takes a worker preempted across a whole round trip, 0 of 1008
+        // loaded runs.
         let mut late = TcpStream::connect(addr).await.unwrap();
         late.write_all(upgrade_head(addr, &path).as_bytes())
             .await
