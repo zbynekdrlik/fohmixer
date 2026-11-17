@@ -150,7 +150,10 @@ fn a_live_key_every_entry_left_forgets_its_push_so_its_new_keys_agree() {
     assert!(subs.unsubscribe(1, BY_INDEX_KEY));
     answer(&mut subs, &out);
     // The first key linked has no sibling: the result's value; the second
-    // joins it with nothing heard: the same.
+    // joins it with nothing heard: the same. The two keys agree; that the
+    // value is the older read is the design's scope (a key with no sibling
+    // at the result takes the result's), noted under "Not covered" in
+    // hub-rust.md.
     assert_eq!(cached(&subs, BARE_KEY), value(json!(0.85), None));
     assert_eq!(
         cached(&subs, VOLUME_KEY),
