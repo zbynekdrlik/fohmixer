@@ -744,7 +744,20 @@ impl Hub {
             let sets_of = live.clone();
             let sets: listen::SetNames =
                 Arc::new(move |instance: &str| set_name_of(&sets_of, instance));
-            let (listen, listen_tasks) = listen::spawn(config.listen.port, events.clone(), sets);
+            // The rack switches (#238) go through each Live's own handle,
+            // as the hub's other LOM writes.
+            let lom_of = live.clone();
+            let lom: listen::rack::Lom = Arc::new(move |instance: &str, commands| {
+                let call = lom_of.get(instance).map(|live| live.call(commands));
+                Box::pin(async move {
+                    match call {
+                        Some(call) => call.await.map_err(|e| e.to_string()),
+                        None => Err(listen::rack::UNKNOWN_INSTANCE.to_string()),
+                    }
+                })
+            });
+            let (listen, listen_tasks) =
+                listen::spawn(config.listen.port, events.clone(), sets, lom);
             tasks.extend(listen_tasks);
             listen
         });

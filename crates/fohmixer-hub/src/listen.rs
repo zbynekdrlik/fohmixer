@@ -20,10 +20,17 @@
 //! decision ([`SetNames`]), so a set loaded while a page listens follows;
 //! a track renamed meanwhile is no longer found (accepted on the review).
 //!
+//! The lease also switches the track's `Listen` rack (#238, `listen/rack.rs`):
+//! on at a new target (a take's new rack first), off when the last page of
+//! the track leaves or a take moves the hub's one track away, so an idle
+//! device costs Live's audio thread nothing.
+//!
 //! This file is the shared state; its decisions are small pure functions
-//! ([`choose`], [`start_of`]) with their own tests.
+//! ([`choose`], [`start_of`], [`rack::start_switches`],
+//! [`rack::leave_switch`]) with their own tests.
 
 pub mod encoder;
+pub mod rack;
 pub mod session;
 pub mod stream;
 pub mod udp;
@@ -37,7 +44,7 @@ use bytes::Bytes;
 use fohmixer_proto::listen::wire::{Announce, FORGET_MS};
 use fohmixer_proto::listen::{ListenDeviceStatus, ListenStatus, ListenTargetStatus};
 use serde_json::{Value, json};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{broadcast, oneshot, watch};
 
 use crate::events::EventLog;
 
@@ -209,6 +216,9 @@ pub struct Listen {
     turns: watch::Sender<i32>,
     pub events: EventLog,
     sets: SetNames,
+    /// The rack switches' queue (#238); none: nothing is switched (a hub
+    /// whose Listen port could not be bound, the unit tests).
+    racks: Option<rack::Racks>,
 }
 
 /// One socket's hold on the target of its turn: dropped, it leaves (a
@@ -216,12 +226,21 @@ pub struct Listen {
 pub struct Lease {
     listen: Arc<Listen>,
     turn: i32,
+    /// The outcome of the rack's switch-on this start made, while unread.
+    rack: Option<oneshot::Receiver<rack::Outcome>>,
 }
 
 impl Lease {
     /// The turn it holds.
     pub fn turn(&self) -> i32 {
         self.turn
+    }
+
+    /// The outcome of the track's rack switched on by this start, to await;
+    /// none when the start switched nothing (one more listener) or nothing
+    /// is switched on this hub.
+    pub fn take_rack(&mut self) -> Option<oneshot::Receiver<rack::Outcome>> {
+        self.rack.take()
     }
 }
 
@@ -233,6 +252,11 @@ impl Drop for Lease {
 
 impl Listen {
     pub fn new(events: EventLog, sets: SetNames) -> Arc<Self> {
+        Self::with_racks(events, sets, None)
+    }
+
+    /// Listen whose leases switch the tracks' racks through `racks`.
+    pub fn with_racks(events: EventLog, sets: SetNames, racks: Option<rack::Racks>) -> Arc<Self> {
         let (packets, _) = broadcast::channel(PACKETS);
         Arc::new(Self {
             state: Mutex::new(State::default()),
@@ -241,7 +265,30 @@ impl Listen {
             turns: watch::Sender::new(0),
             events,
             sets,
+            racks,
         })
+    }
+
+    /// Queues `switches` in their order (under the state's lock, so the
+    /// queue holds them in the leases' order); with `wait`, the first one's
+    /// outcome comes to the receiver.
+    fn switch(
+        &self,
+        switches: Vec<rack::Switch>,
+        wait: bool,
+    ) -> Option<oneshot::Receiver<rack::Outcome>> {
+        let racks = self.racks.as_ref()?;
+        let mut first = None;
+        for (i, switch) in switches.into_iter().enumerate() {
+            let done = (wait && i == 0).then(|| {
+                let (done, outcome) = oneshot::channel();
+                first = Some(outcome);
+                done
+            });
+            // The queue's task ends only with the hub.
+            let _ = racks.send(rack::Job { switch, done });
+        }
+        first
     }
 
     /// The state, the target's set name read again ([`SetNames`]; kept
@@ -274,7 +321,10 @@ impl Listen {
             track: track.to_string(),
             listeners: 1,
         };
-        match start_of(state.target.as_ref(), instance, set, track) {
+        let start = start_of(state.target.as_ref(), instance, set, track);
+        let switches = rack::start_switches(start, state.target.as_ref(), &to);
+        let rack = self.switch(switches, true);
+        match start {
             Start::Join => {
                 if let Some(t) = state.target.as_mut() {
                     t.listeners += 1;
@@ -297,6 +347,7 @@ impl Listen {
         Lease {
             listen: Arc::clone(self),
             turn: state.turn,
+            rack,
         }
     }
 
@@ -314,6 +365,9 @@ impl Listen {
             return;
         };
         target.listeners = target.listeners.saturating_sub(1);
+        if let Some(off) = rack::leave_switch(target) {
+            self.switch(vec![off], false);
+        }
         if target.listeners == 0
             && let Some(target) = state.target.take()
         {
@@ -428,26 +482,31 @@ pub fn bind(port: u16) -> std::io::Result<(std::net::TcpListener, std::net::UdpS
     Ok((tcp, udp))
 }
 
-/// Starts Listen (inside a tokio runtime): its state and tasks. A port that
-/// cannot be bound is one `listen` record with its error and an error line,
-/// shown in `/api/status`; the hub runs on, every page told `no_source`.
+/// Starts Listen (inside a tokio runtime): its state and tasks, the rack
+/// switches' among them (through `lom`, #238). A port that cannot be bound
+/// is one `listen` record with its error and an error line, shown in
+/// `/api/status`; the hub runs on, every page told `no_source`, and no rack
+/// is switched.
 pub fn spawn(
     port: u16,
     events: EventLog,
     sets: SetNames,
+    lom: rack::Lom,
 ) -> (Arc<Listen>, Vec<tokio::task::JoinHandle<()>>) {
-    let listen = Listen::new(events.clone(), sets);
     let wanted = udp::bind_addr(port).to_string();
     let started = bind(port).and_then(|(tcp, socket)| {
         let addr = tcp.local_addr()?.to_string();
+        let (racks, jobs) = tokio::sync::mpsc::unbounded_channel();
+        let listen = Listen::with_racks(events.clone(), Arc::clone(&sets), Some(racks));
         let tasks = vec![
             stream::spawn(tcp, Arc::clone(&listen))?,
             udp::spawn(socket, Arc::clone(&listen))?,
+            tokio::spawn(rack::run(jobs, lom, events.clone())),
         ];
-        Ok((addr, tasks))
+        Ok((listen, addr, tasks))
     });
     match started {
-        Ok((addr, tasks)) => {
+        Ok((listen, addr, tasks)) => {
             tracing::info!(addr = %addr, "listen: listening for the Listen devices");
             events.record("listen", udp::listen_fields(&addr, None));
             listen.counters.set_bound(Some(addr), None);
@@ -457,6 +516,7 @@ pub fn spawn(
             let error = e.to_string();
             tracing::error!(addr = %wanted, error = %error, "listen: cannot listen for the Listen devices; the hub runs on without Listen");
             events.record("listen", udp::listen_fields(&wanted, Some(&error)));
+            let listen = Listen::new(events, sets);
             listen.counters.set_bound(None, Some(error));
             (listen, Vec::new())
         }
