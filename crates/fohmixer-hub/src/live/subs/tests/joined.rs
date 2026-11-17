@@ -139,6 +139,30 @@ fn a_push_heard_before_the_batch_was_sent_leaves_the_results_value() {
 }
 
 #[test]
+fn a_binding_resolved_again_on_its_own_live_key_keeps_its_push_after_the_send() {
+    let mut subs = online();
+    sub_volume(&mut subs, 1);
+    let out = subs.drain_outgoing();
+    answer(&mut subs, &out);
+    subs.take_deliveries();
+    // A second subscriber of the name binding resolves it again (#245): the
+    // entry stays linked, alone on its Live key.
+    sub_volume(&mut subs, 2);
+    let out = subs.drain_outgoing();
+    subs.on_values("band", &[shown("live_10.value", json!(0.6), "-3.00 dB")]);
+    answer(&mut subs, &out);
+    assert_eq!(
+        cached(&subs, VOLUME_KEY),
+        value(json!(0.6), Some("-3.00 dB"))
+    );
+    // Each client got the push, and nothing moved it back to the read.
+    assert_eq!(
+        deliveries_of(&mut subs, VOLUME_KEY),
+        vec![(Some(json!(0.6)), Some("-3.00 dB".to_string())); 2]
+    );
+}
+
+#[test]
 fn a_live_key_every_entry_left_keeps_its_push_for_its_new_keys() {
     let mut subs = followed();
     // Two new keys of the Live key in one batch.
