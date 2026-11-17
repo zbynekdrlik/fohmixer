@@ -563,24 +563,43 @@ class TreeTests(unittest.TestCase):
             self.restore(device)
         self.assertEqual(self.errors(), [])
 
-    def test_the_ids_come_from_the_followed_path(self) -> None:
+    def test_each_parent_takes_its_id_from_both_live_path_outlets(self) -> None:
+        # #240: the follow (the middle outlet) missed a move into a chain on
+        # the PC; the left outlet answers every `path` message (the load's,
+        # the 10 s re-read's), as the devices before #240 read it for months.
         for device in cl.DEVICES:
             where = device.maxpat.as_posix()
+            for level in range(1, cl.PARENTS + 1):
+                path = f"obj-parent{level}-live-path"
+                both = f"[['{path}', 0], ['{path}', 1]]"
+                for outlet in (0, 1):
+                    patch = self.patcher(device)
+                    patch["patcher"]["lines"] = [
+                        ln
+                        for ln in patch["patcher"]["lines"]
+                        if ln["patchline"]["source"] != [path, outlet]
+                    ]
+                    self.save(patch, device)
+                    errors = self.errors()
+                    self.assertIn(
+                        f"{where}: obj-parent{level}-route-id:0 takes {both} alone, "
+                        f"has [['{path}', {1 - outlet}]]",
+                        errors,
+                    )
+                    self.assertIn(
+                        f"{where}: {path}'s outlet {outlet} goes into its route id alone, has []",
+                        errors,
+                    )
             patch = self.patcher(device)
-            self.line(patch, ["obj-parent3-live-path", 0], ["obj-parent3-route-id", 0])
+            self.line(patch, ["obj-parent2-live-path", 0], ["obj-parent2-object", 1])
             self.save(patch, device)
-            errors = self.errors()
             self.assertIn(
-                f"{where}: obj-parent3-live-path's left outlet (it follows the object) "
-                "goes nowhere, has [['obj-parent3-route-id', 0]]",
-                errors,
-            )
-            self.assertIn(
-                f"{where}: obj-parent3-route-id:0 takes [['obj-parent3-live-path', 1]] alone, "
-                "has [['obj-parent3-live-path', 0], ['obj-parent3-live-path', 1]]",
-                errors,
+                f"{where}: obj-parent2-live-path's outlet 0 goes into its route id alone, "
+                "has [['obj-parent2-object', 1], ['obj-parent2-route-id', 0]]",
+                self.errors(),
             )
             self.restore(device)
+        self.assertEqual(self.errors(), [])
 
     def test_an_observers_output_never_reaches_a_name_slot(self) -> None:
         # The FINDING of 2026-11-17 (the PC rollout of #240): through
@@ -662,7 +681,8 @@ class TreeTests(unittest.TestCase):
         # The review of the regression fix: the set's `-` on the PC may as
         # well be a middle outlet that never gave an id for the set's path;
         # the left outlet gives it at the load's `path` message, as the
-        # devices before #240 read it. Parents 1 to 3 follow the path only.
+        # devices before #240 read it (since the PC proof's attempt 2 every
+        # parent does).
         for device in cl.DEVICES:
             where = device.maxpat.as_posix()
             patch = self.patcher(device)

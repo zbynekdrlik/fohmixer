@@ -33,8 +33,10 @@ for each patch:
 - the identity: the `live.path` messages for the device and its first four
   canonical parents, read at load, on a change and every 10 s
   (`identity_errors`, #240: `live.path`'s path-following outlet and a
-  `live.observer` on the `name` of parents 1 to 3 each trigger a read, the
-  set is read at load and on its follow; the PC proof's attempt 2 showed
+  `live.observer` on the `name` of parents 1 to 3 each trigger a read, each
+  parent's `route id` takes both `live.path` outlets, the left at every
+  `path` message as before #240, the middle on a follow; the set is read at
+  load, on its follow and by the clock; the PC proof's attempt 2 showed
   the follow misses a move into a chain, so the identity's own clock sends
   the four parents' `path` messages again every 10 s: `random 10000` drawn
   at load -> `delay` -> `deferlow` -> `1` -> `qmetro 10000` -> `t b b b b`,
@@ -502,8 +504,11 @@ def thread_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
 # FINDING of 2026-11-17). The set (parent 4) read `-` there too, and the
 # pack's own default is `-`, so either its observer reported nothing or
 # its `live.path`'s middle outlet never gave an id: the set has no
-# observer and takes its id from both outlets, the left (at the load's
-# `path` message, as before #240) and the middle (a follow).
+# observer. Every parent takes its id from both of its `live.path`'s
+# outlets into its `route id`: the left answers every `path` message (the
+# load's and the 10 s re-read's), as the devices before #240 read it every
+# second for months on the PC; the middle answers the follow. Nothing else
+# takes either outlet.
 #
 # The follow misses a move into another chain (the PC proof's attempt 2 on
 # #240: a moved device kept its old parents for over 30 s), so the identity
@@ -513,8 +518,8 @@ def thread_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
 # offset as its time) -> `deferlow` -> `1` -> `qmetro 10000` (the
 # low-priority queue) -> `t b b b b`, which sends the four parents' `path`
 # messages again in the load's order: each `live.path` resolves its path
-# anew and the same read follows. It is the only clock allowed upstream of
-# a LOM object, at exactly 10 s.
+# anew, its left outlet gives the id, and the same read follows. It is the
+# only clock allowed upstream of a LOM object, at exactly 10 s.
 ID_LOAD = "obj-id-load"
 ID_DEFER = "obj-id-defer"
 ID_PROPERTY = "obj-id-property"
@@ -610,8 +615,10 @@ def identity_wiring(sink: str) -> dict[tuple[str, int], list[tuple[str, int]]]:
         found |= {
             (f"{name}-path", 0): [(ID_LOAD, PARENTS - level), (ID_TICK, PARENTS - level)],
             (f"{name}-live-path", 0): [(f"{name}-path", 0)],
-            (f"{name}-route-id", 0): [(f"{name}-live-path", FOLLOWS_PATH)]
-            + ([] if observed else [(f"{name}-live-path", FOLLOWS_OBJECT)]),
+            (f"{name}-route-id", 0): [
+                (f"{name}-live-path", FOLLOWS_OBJECT),
+                (f"{name}-live-path", FOLLOWS_PATH),
+            ],
             (f"{name}-t", 0): [(f"{name}-route-id", 0)],
             (f"{name}-prepend", 0): [(f"{name}-t", 2 if observed else 1)],
             (f"{name}-object", 1): [(f"{name}-prepend", 0)],
@@ -651,17 +658,18 @@ def identity_errors(where: str, patcher: dict, every: list[dict], sink: str) -> 
         want = sorted([list(s) for s in sources])
         if fed != want:
             errors.append(f"{where}: {box}:{inlet} takes {want} alone, has {fed}")
-    for level in OBSERVED:
+    for level in range(1, PARENTS + 1):
         box = f"obj-parent{level}-live-path"
-        out = sorted(
-            item["patchline"]["destination"]
-            for item in patcher.get("lines", [])
-            if item.get("patchline", {}).get("source") == [box, FOLLOWS_OBJECT]
-        )
-        if out:
-            errors.append(
-                f"{where}: {box}'s left outlet (it follows the object) goes nowhere, has {out}"
+        for outlet in (FOLLOWS_OBJECT, FOLLOWS_PATH):
+            out = sorted(
+                item["patchline"]["destination"]
+                for item in patcher.get("lines", [])
+                if item.get("patchline", {}).get("source") == [box, outlet]
             )
+            if out != [[f"obj-parent{level}-route-id", 0]]:
+                errors.append(
+                    f"{where}: {box}'s outlet {outlet} goes into its route id alone, has {out}"
+                )
     errors += [
         f"{where}: the set (parent {PARENTS}) has no observer (it reads at load and follow), "
         f"has {b.get('id')}"
