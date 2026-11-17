@@ -1034,6 +1034,16 @@ pub fn placed(on_top: bool, waited_ms: f64) -> Option<Result<(), &'static str>> 
     }
 }
 
+/// The warn line of an open whose window never came on top (#230): how long
+/// the take waited and whether the window was still alive then, so a next
+/// `NOT_ON_TOP` on the PC says whether Live's thread was slow or the window
+/// went away.
+pub fn not_on_top_line(waited_ms: f64, alive: bool) -> String {
+    format!(
+        "a Pro-Q 4 editor's window did not come on top within {waited_ms:.0} ms of its take (window still there: {alive}): it is handed back"
+    )
+}
+
 /// A picture as a JPEG.
 pub fn encode(pixels: &Pixels, quality: u8) -> Result<Vec<u8>, String> {
     let width = u16::try_from(pixels.width).map_err(|_| "a picture over 65535 px wide")?;
@@ -1673,6 +1683,12 @@ impl Worker {
                 self.finding.push(finding);
             }
             Some(Err(why)) => {
+                let alive = self.backend.alive(&taken);
+                tracing::warn!(
+                    session = finding.session,
+                    "{}",
+                    not_on_top_line(now - at, alive)
+                );
                 self.backend.release(&taken);
                 let _ = finding.reply.send(Err(why.to_string()));
             }
