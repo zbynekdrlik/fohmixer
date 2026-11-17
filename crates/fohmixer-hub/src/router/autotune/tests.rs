@@ -1888,3 +1888,6 @@ async fn a_walk_answer_read_by_an_index_the_hubs_list_no_longer_names_is_never_r
         "held: the release registers"
     );
 }
+
+#[path = "pace_tests.rs"]
+mod pace_tests;
