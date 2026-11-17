@@ -9,7 +9,7 @@ use std::net::{TcpStream, UdpSocket};
 use std::path::Path;
 use std::time::Duration;
 
-use crate::support::{TestHub, runtime, serial};
+use crate::support::{TestHub, http, runtime, serial};
 use fohmixer_hub::config::Config;
 use fohmixer_proto::client::HubStatus;
 use fohmixer_proto::listen::jitnet::{Order, encode_matrix, encode_message};
@@ -165,6 +165,37 @@ fn the_audio_socket_needs_a_token_and_listen_on() {
         let url = format!("ws://{}/ws/audio?token={}", off.addr, off.token);
         let refused = tokio_tungstenite::connect_async(url).await.unwrap_err();
         assert!(refused.to_string().contains("503"), "{refused}");
+        off.stop().await;
+    });
+}
+
+#[test]
+fn the_select_route_wants_a_device_id_and_listen_on() {
+    // #210: a device asks `GET /api/listen/select?device=<id>` with no
+    // token; the route answers it off with no page listening.
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let on = hub(dir.path(), free_port()).await;
+        let (code, body) = http(on.addr, "GET", "/api/listen/select?device=5", None, None).await;
+        assert_eq!((code, body), (200, serde_json::json!({"on": false})));
+        for path in ["/api/listen/select", "/api/listen/select?device=x"] {
+            let (code, body) = http(on.addr, "GET", path, None, None).await;
+            assert_eq!(
+                (code, &body["code"]),
+                (400, &serde_json::json!("BAD_DEVICE"))
+            );
+        }
+        let status = on.status().await;
+        assert_eq!(status.listen.selects, 1, "only a question answered counts");
+        on.stop().await;
+        let dir = tempfile::tempdir().unwrap();
+        let off = hub(dir.path(), 0).await;
+        let (code, body) = http(off.addr, "GET", "/api/listen/select?device=5", None, None).await;
+        assert_eq!(
+            (code, &body["code"]),
+            (503, &serde_json::json!("LISTEN_OFF"))
+        );
         off.stop().await;
     });
 }

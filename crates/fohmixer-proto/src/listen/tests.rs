@@ -3,7 +3,6 @@ use super::*;
 #[test]
 fn the_constants_hold() {
     assert_eq!(DEFAULT_PORT, 39111);
-    assert_eq!(SELECT_PORT, 39112);
     assert_eq!(SAMPLE_RATE, 48_000);
     assert_eq!(FRAME, 960);
     assert_eq!(CHANNELS, 2);

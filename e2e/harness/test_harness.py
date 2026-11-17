@@ -352,13 +352,13 @@ class HarnessTest(unittest.TestCase):
             harness.hub_config(8480, 1, 2, lufs_port=39111),
             harness.hub_config(8480, 1, 2) + "[lufs]\nport = 39111\n",
         )
-        # #210: Listen's port and select port, the band host's devices', only
-        # when both are given (CI gives them).
+        # #210: Listen's port, the band host's devices', only when given (CI
+        # gives it); no select port (the devices ask the hub over HTTP).
         self.assertIsNone(self.harness.listen)
         self.assertNotIn("[listen]", text)
         self.assertEqual(
-            harness.hub_config(8480, 1, 2, listen=(39197, 39198)),
-            harness.hub_config(8480, 1, 2) + "[listen]\nport = 39197\nselect_port = 39198\n",
+            harness.hub_config(8480, 1, 2, listen=39197),
+            harness.hub_config(8480, 1, 2) + "[listen]\nport = 39197\n",
         )
 
     def test_the_remote_tables_of_the_hub_config(self):
@@ -719,14 +719,12 @@ class EphemeralPorts(unittest.TestCase):
             [8443, 8480, 8481, 39101, 39102, 39190, 39192, 39193, 39194, 39195],
         )
 
-    def test_listens_ports_are_fixed_only_when_both_are_given(self):
-        # #210: the hub's [listen] port and the band devices' select port.
+    def test_listens_port_is_fixed_only_when_given(self):
+        # #210: the hub's [listen] port; no select port any more.
         args = harness.parse_args([*("--data", "d", "--layout", "l"), *("--listen-port", "39197")])
-        args.listen_select_port = 39198
-        ports = harness.fixed_ports(args)
-        self.assertIn(39197, ports)
-        self.assertIn(39198, ports)
-        self.assertEqual(harness.ports_at_risk([39197, 39198], "32768 60999", "39100-39199"), [])
+        self.assertIn(39197, harness.fixed_ports(args))
+        self.assertFalse(hasattr(args, "listen_select_port"))
+        self.assertEqual(harness.ports_at_risk([39197], "32768 60999", "39100-39199"), [])
 
     def test_the_mbc_hubs_ports_are_fixed_only_when_it_is_on(self):
         # #184: the MBC hub, its host, its link and its LUFS listener; all in

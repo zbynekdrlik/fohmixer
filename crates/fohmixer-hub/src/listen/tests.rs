@@ -92,22 +92,12 @@ fn a_start_is_new_a_join_or_a_take() {
 }
 
 #[test]
-fn the_select_names_the_device_stops_or_says_nothing() {
-    assert_eq!(select_now(Some(Choice::Device(4)), None), Some(4));
-    assert_eq!(select_now(Some(Choice::NoDevice), Some(4)), Some(0));
-    assert_eq!(select_now(Some(Choice::TwoDevices), None), Some(0));
-    assert_eq!(select_now(None, Some(4)), Some(0), "once after the end");
-    assert_eq!(select_now(None, Some(0)), None);
-    assert_eq!(select_now(None, None), None);
-}
-
-#[test]
 fn listeners_share_a_track_and_the_last_one_ends_it() {
     let (listen, records) = listen();
     let t0 = Instant::now();
     listen.heard(announce(5, "Vox 1", "FOH Band"), t0);
     assert!(!listen.accepts(5, t0), "nobody listens");
-    assert_eq!(listen.next_select(t0), None);
+    assert!(!listen.select(5, t0));
     let a = listen.start("band", "FOH Band", "Vox 1", 1, "10.0.0.5");
     let b = listen.start("band", "FOH Band", "Vox 1", 2, "10.0.0.6");
     assert_eq!((a.turn(), b.turn()), (1, 1), "a join keeps the turn");
@@ -116,15 +106,15 @@ fn listeners_share_a_track_and_the_last_one_ends_it() {
     let status = listen.status(t0);
     let target = status.target.unwrap();
     assert_eq!((target.listeners, target.device), (2, Some(5)));
-    assert_eq!(listen.next_select(t0), Some(Select { device: 5, turn: 1 }));
+    assert!(listen.select(5, t0));
+    assert!(!listen.select(6, t0), "each device is told on its own");
     drop(a);
     assert!(listen.accepts(5, t0), "one listener left");
     drop(b);
     assert!(!listen.accepts(5, t0));
     assert_eq!(listen.status(t0).target, None);
-    assert_eq!(listen.next_select(t0), Some(Select { device: 0, turn: 1 }));
-    assert_eq!(listen.next_select(t0), None, "the stop goes once");
-    assert_eq!(listen.status(t0).selects, 2);
+    assert!(!listen.select(5, t0), "the end stops it");
+    assert_eq!(listen.status(t0).selects, 4, "every question counted");
     let start = records.try_recv().unwrap();
     assert_eq!(start["what"], "start");
     assert_eq!(start["track"], "Vox 1");
@@ -132,12 +122,9 @@ fn listeners_share_a_track_and_the_last_one_ends_it() {
     assert_eq!(records.try_recv().unwrap()["what"], "stop");
     assert!(records.try_recv().is_err(), "a join records nothing");
     // The next track is the next turn.
-    let _c = listen.start("band", "FOH Band", "Vox 2", 3, "10.0.0.7");
-    assert_eq!(
-        listen.next_select(t0),
-        Some(Select { device: 0, turn: 2 }),
-        "no device on Vox 2"
-    );
+    let c = listen.start("band", "FOH Band", "Vox 2", 3, "10.0.0.7");
+    assert_eq!(c.turn(), 2);
+    assert!(!listen.select(5, t0), "no device on Vox 2");
     assert_eq!(
         listen.status(t0).target.unwrap().problem.as_deref(),
         Some("no device")
@@ -184,7 +171,7 @@ async fn a_port_taken_is_recorded_and_shown() {
     let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = taken.local_addr().unwrap().port();
     let (events, records) = EventLog::channel(16);
-    let (listen, tasks) = spawn(port, 1, events, no_sets());
+    let (listen, tasks) = spawn(port, events, no_sets());
     assert!(tasks.is_empty());
     let status = listen.status(Instant::now());
     assert_eq!(status.addr, None);
@@ -193,7 +180,7 @@ async fn a_port_taken_is_recorded_and_shown() {
     assert_eq!(record["what"], "listening");
     assert!(record["error"].is_string());
     let (events, records) = EventLog::channel(16);
-    let (listen, tasks) = spawn(0, 1, events, no_sets());
+    let (listen, tasks) = spawn(0, events, no_sets());
     assert_eq!(tasks.len(), 2);
     let addr = listen.status(Instant::now()).addr.unwrap();
     assert!(addr.starts_with("127.0.0.1:"), "{addr}");
@@ -219,24 +206,6 @@ fn at_most_256_devices_are_kept() {
     assert_eq!(status.refused.get("devices"), Some(&1));
     listen.heard(announce(5, "Vox 2", "FOH Band"), t0);
     assert_eq!(listen.status(t0).refused.get("devices"), Some(&1));
-}
-
-#[test]
-fn the_select_loop_runs_only_while_a_select_is_owed() {
-    assert!(selecting(true, None));
-    assert!(selecting(true, Some(0)));
-    assert!(selecting(false, Some(4)), "the stop is owed");
-    assert!(!selecting(false, Some(0)));
-    assert!(!selecting(false, None));
-    let (listen, _records) = listen();
-    assert!(!listen.selecting(), "an idle hub keeps no timer");
-    let lease = listen.start("band", "FOH Band", "Vox 1", 1, "10.0.0.5");
-    assert!(listen.selecting());
-    drop(lease);
-    assert!(
-        !listen.selecting(),
-        "no device was ever named: no stop owed"
-    );
 }
 
 #[tokio::test]
@@ -305,10 +274,10 @@ fn a_set_loaded_while_listening_is_followed() {
     listen.heard(announce(9, "Vox 1", "Other Set"), t0);
     let _lease = listen.start("band", "FOH Band", "Vox 1", 1, "10.0.0.5");
     assert!(listen.accepts(5, t0));
-    assert_eq!(listen.next_select(t0).map(|s| s.device), Some(5));
+    assert!(listen.select(5, t0));
     *set.lock().unwrap() = Some("Other Set".to_string());
     assert!(listen.accepts(9, t0) && !listen.accepts(5, t0));
-    assert_eq!(listen.next_select(t0).map(|s| s.device), Some(9));
+    assert!(listen.select(9, t0) && !listen.select(5, t0));
     assert_eq!(listen.status(t0).target.unwrap().set, "Other Set");
     // An instance whose set is unknown for a moment keeps the last one.
     *set.lock().unwrap() = None;

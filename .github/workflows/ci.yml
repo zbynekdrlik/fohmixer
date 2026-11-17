@@ -597,7 +597,7 @@ jobs:
             --iem-ancestors https://foh.e2e.test:8443 \
             --fake-presenter-port 39195 \
             --mbc-hub-port 8490 --mbc-port 39103 --mbc-link-port 39196 --mbc-lufs-port 39111 \
-            --listen-port 39197 --listen-select-port 39198 \
+            --listen-port 39197 \
             --log-dir "$RUNNER_TEMP/e2e-logs" > "$RUNNER_TEMP/e2e-logs/harness.log" 2>&1 &
           for i in $(seq 1 60); do
             if curl -sf http://127.0.0.1:39190/health > /dev/null \

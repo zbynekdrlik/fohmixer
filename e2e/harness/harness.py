@@ -11,7 +11,7 @@
         [--fake-iem-port N --iem-url URL --iem-cert FILE --iem-key FILE
          [--iem-ancestors ORIGIN]] [--fake-presenter-port N]
         [--mbc-hub-port N [--mbc-port 39103] [--mbc-link-port 39196]
-         [--mbc-lufs-port 39111]] [--listen-port N --listen-select-port N]
+         [--mbc-lufs-port 39111]] [--listen-port N]
 
 It starts ``sim/host.py`` for ``band`` and ``master`` (the real FohMixer script on
 SimLive), writes the hub's config and layout into the data folder, starts the hub
@@ -294,8 +294,9 @@ def hub_config(
     ``[iem]`` of ``iem``, its page's address, when given (#166), and
     ``[presenter]`` of ``presenter``, its server's address (#90), and the
     linked instance ``mbc`` at ``mbc_link`` (``ws://host:port``) when given
-    (#184), and ``[listen]`` on ``listen`` (its port, the devices' select
-    port) when given (#210: the band host's SimLive Listen devices)."""
+    (#184), and ``[listen]`` on ``listen`` (its port) when given (#210: the
+    band host's SimLive Listen devices; they ask this hub's ``http_port``
+    whether they are selected)."""
     text = (
         f"http_port = {http_port}\n"
         'layout = "layout.json"\n'
@@ -313,8 +314,7 @@ def hub_config(
     if lufs_port is not None:
         text += f"[lufs]\nport = {lufs_port}\n"
     if listen:
-        port, select_port = listen
-        text += f"[listen]\nport = {port}\nselect_port = {select_port}\n"
+        text += f"[listen]\nport = {listen}\n"
     if companion:
         host, port = companion
         text += f'[companion]\nhost = "{host}"\nport = {port}\n'
@@ -675,7 +675,8 @@ class Host:
         self.port = port
         self.meters_hz = meters_hz
         self.lufs_port = lufs_port
-        # #210: the hub's Listen port and the devices' select port.
+        # #210: the hub's Listen port and its HTTP port, where the devices
+        # ask whether they are selected.
         self.listen = listen
         self.log_dir = os.path.join(log_dir, f"host-{name}")
         os.makedirs(self.log_dir, exist_ok=True)
@@ -703,7 +704,7 @@ class Host:
                 self.log_dir,
                 *(["--lufs-port", str(self.lufs_port)] if self.lufs_port else []),
                 *(
-                    ["--listen-port", str(self.listen[0]), "--select-port", str(self.listen[1])]
+                    ["--listen-port", str(self.listen[0]), "--hub-port", str(self.listen[1])]
                     if self.listen
                     else []
                 ),
@@ -841,15 +842,16 @@ class Harness:
         os.makedirs(log_dir, exist_ok=True)
         self.hosts = {}
         self.lufs_port = args.lufs_port
-        # #210: Listen's ports, the band host's devices only (one process
-        # binds the select port); none when not both given.
-        self.listen = (
-            (args.listen_port, args.listen_select_port)
-            if args.listen_port and args.listen_select_port
-            else None
-        )
+        # #210: Listen's port, the band host's devices only (they ask the FOH
+        # hub's HTTP port whether they are selected); none when not given.
+        self.listen = args.listen_port or None
         self.hosts["band"] = Host(
-            "band", args.band_port, args.meters_hz, log_dir, args.lufs_port, listen=self.listen
+            "band",
+            args.band_port,
+            args.meters_hz,
+            log_dir,
+            args.lufs_port,
+            listen=(self.listen, args.http_port) if self.listen else None,
         )
         self.hosts["master"] = Host(
             "master", args.master_port, args.meters_hz, log_dir, args.lufs_port
@@ -1331,7 +1333,6 @@ def fixed_ports(args):
         args.fake_iem_port,
         args.fake_presenter_port,
         args.listen_port,
-        args.listen_select_port,
         *(
             [args.mbc_hub_port, args.mbc_port, args.mbc_link_port, args.mbc_lufs_port]
             if args.mbc_hub_port is not None
@@ -1371,10 +1372,10 @@ def parse_args(argv):
     parser.add_argument("--meters-hz", type=float, default=30.0)
     # #151: the hub's [lufs] port and the hosts' SimLive devices' target.
     parser.add_argument("--lufs-port", type=int, default=39110)
-    # #210: the hub's [listen] port (TCP and UDP) and the devices' select port.
-    # Both given turn it on (CI: 39197, 39198; in the reserved range).
+    # #210: the hub's [listen] port (TCP and UDP); given, it turns Listen on
+    # (CI: 39197, in the reserved range). The devices ask the hub's
+    # --http-port whether they are selected.
     parser.add_argument("--listen-port", type=int, default=None)
-    parser.add_argument("--listen-select-port", type=int, default=None)
     parser.add_argument("--log-dir", default=None)
     # The impair proxy's port (#43); 0 takes any free one (the harness's own tests).
     parser.add_argument("--link-port", type=int, default=0)

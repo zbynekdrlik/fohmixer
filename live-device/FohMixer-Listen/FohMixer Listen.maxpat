@@ -142,55 +142,17 @@
 			},
 			{
 				"box": {
-					"id": "obj-udpreceive",
+					"id": "obj-poll-metro",
 					"maxclass": "newobj",
-					"text": "udpreceive 39112",
-					"numinlets": 1,
+					"text": "metro 250",
+					"numinlets": 2,
 					"numoutlets": 1,
 					"outlettype": [
-						""
+						"bang"
 					],
 					"patching_rect": [
 						460.0,
 						30.0,
-						110.0,
-						22.0
-					]
-				}
-			},
-			{
-				"box": {
-					"id": "obj-select-route",
-					"maxclass": "newobj",
-					"text": "route /fohmixer/listen/select",
-					"numinlets": 2,
-					"numoutlets": 2,
-					"outlettype": [
-						"",
-						""
-					],
-					"patching_rect": [
-						460.0,
-						60.0,
-						170.0,
-						22.0
-					]
-				}
-			},
-			{
-				"box": {
-					"id": "obj-select-unpack",
-					"maxclass": "newobj",
-					"text": "unpack 0 0",
-					"numinlets": 1,
-					"numoutlets": 2,
-					"outlettype": [
-						"int",
-						"int"
-					],
-					"patching_rect": [
-						460.0,
-						90.0,
 						70.0,
 						22.0
 					]
@@ -198,17 +160,186 @@
 			},
 			{
 				"box": {
-					"id": "obj-select-mine",
+					"id": "obj-poll-request",
 					"maxclass": "newobj",
-					"text": "== -1",
+					"text": "dict.pack url: http_method: parse_type:",
+					"numinlets": 3,
+					"numoutlets": 1,
+					"outlettype": [
+						"dictionary"
+					],
+					"patching_rect": [
+						460.0,
+						60.0,
+						230.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-poll-method",
+					"maxclass": "message",
+					"text": "get",
 					"numinlets": 2,
 					"numoutlets": 1,
 					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						560.0,
+						30.0,
+						34.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-poll-parse",
+					"maxclass": "message",
+					"text": "json",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						600.0,
+						30.0,
+						38.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-poll-change",
+					"maxclass": "newobj",
+					"text": "change",
+					"numinlets": 2,
+					"numoutlets": 3,
+					"outlettype": [
+						"",
+						"int",
 						"int"
+					],
+					"patching_rect": [
+						700.0,
+						600.0,
+						60.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-poll-t",
+					"maxclass": "newobj",
+					"text": "t b l",
+					"numinlets": 1,
+					"numoutlets": 2,
+					"outlettype": [
+						"bang",
+						""
+					],
+					"patching_rect": [
+						780.0,
+						640.0,
+						50.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-poll-url",
+					"maxclass": "newobj",
+					"text": "sprintf http://127.0.0.1:8480/api/listen/select?device=%ld",
+					"numinlets": 1,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						780.0,
+						680.0,
+						380.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-poll-maxurl",
+					"maxclass": "newobj",
+					"text": "maxurl",
+					"numinlets": 1,
+					"numoutlets": 2,
+					"outlettype": [
+						"dictionary",
+						""
+					],
+					"patching_rect": [
+						460.0,
+						90.0,
+						60.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-poll-body",
+					"maxclass": "newobj",
+					"text": "dict.unpack body:",
+					"numinlets": 1,
+					"numoutlets": 2,
+					"outlettype": [
+						"",
+						""
 					],
 					"patching_rect": [
 						460.0,
 						120.0,
+						110.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-poll-on",
+					"maxclass": "newobj",
+					"text": "dict.unpack on:",
+					"numinlets": 1,
+					"numoutlets": 2,
+					"outlettype": [
+						"",
+						""
+					],
+					"patching_rect": [
+						460.0,
+						150.0,
+						100.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-poll-sel",
+					"maxclass": "newobj",
+					"text": "sel 1",
+					"numinlets": 2,
+					"numoutlets": 2,
+					"outlettype": [
+						"bang",
+						""
+					],
+					"patching_rect": [
+						460.0,
+						165.0,
 						50.0,
 						22.0
 					]
@@ -246,25 +377,6 @@
 						700.0,
 						640.0,
 						220.0,
-						22.0
-					]
-				}
-			},
-			{
-				"box": {
-					"id": "obj-select-sel",
-					"maxclass": "newobj",
-					"text": "sel 1",
-					"numinlets": 2,
-					"numoutlets": 2,
-					"outlettype": [
-						"bang",
-						""
-					],
-					"patching_rect": [
-						460.0,
-						150.0,
-						50.0,
 						22.0
 					]
 				}
@@ -328,7 +440,7 @@
 				"box": {
 					"id": "obj-select-hold",
 					"maxclass": "newobj",
-					"text": "delay 1500",
+					"text": "delay 1000",
 					"numinlets": 2,
 					"numoutlets": 1,
 					"outlettype": [
@@ -441,7 +553,7 @@
 				"box": {
 					"id": "obj-hello",
 					"maxclass": "newobj",
-					"text": "pack fohmixer_listen 1 0 v1.53.0 0",
+					"text": "pack fohmixer_listen 1 0 v1.53.1 0",
 					"numinlets": 5,
 					"numoutlets": 1,
 					"outlettype": [
@@ -477,7 +589,7 @@
 				"box": {
 					"id": "obj-announce",
 					"maxclass": "newobj",
-					"text": "pack /fohmixer/listen 1 0 v1.53.0 - - - - 0 0",
+					"text": "pack /fohmixer/listen 1 0 v1.53.1 - - - - 0 0",
 					"numinlets": 10,
 					"numoutlets": 1,
 					"outlettype": [
@@ -569,7 +681,7 @@
 						60.0,
 						18.0
 					],
-					"text": "v1.53.0",
+					"text": "v1.53.1",
 					"varname": "version"
 				}
 			},
@@ -1687,11 +1799,11 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-udpreceive",
+						"obj-thisdevice",
 						0
 					],
 					"destination": [
-						"obj-select-route",
+						"obj-poll-method",
 						0
 					]
 				}
@@ -1699,11 +1811,11 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-select-route",
+						"obj-thisdevice",
 						0
 					],
 					"destination": [
-						"obj-select-unpack",
+						"obj-poll-parse",
 						0
 					]
 				}
@@ -1711,11 +1823,23 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-select-unpack",
+						"obj-poll-method",
 						0
 					],
 					"destination": [
-						"obj-select-mine",
+						"obj-poll-request",
+						1
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-session-id",
+						0
+					],
+					"destination": [
+						"obj-poll-change",
 						0
 					]
 				}
@@ -1723,11 +1847,11 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-select-mine",
+						"obj-poll-change",
 						0
 					],
 					"destination": [
-						"obj-select-sel",
+						"obj-poll-t",
 						0
 					]
 				}
@@ -1735,7 +1859,115 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-select-sel",
+						"obj-poll-t",
+						1
+					],
+					"destination": [
+						"obj-poll-url",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-poll-t",
+						0
+					],
+					"destination": [
+						"obj-poll-metro",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-poll-parse",
+						0
+					],
+					"destination": [
+						"obj-poll-request",
+						2
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-poll-url",
+						0
+					],
+					"destination": [
+						"obj-poll-request",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-poll-metro",
+						0
+					],
+					"destination": [
+						"obj-poll-request",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-poll-request",
+						0
+					],
+					"destination": [
+						"obj-poll-maxurl",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-poll-maxurl",
+						0
+					],
+					"destination": [
+						"obj-poll-body",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-poll-body",
+						0
+					],
+					"destination": [
+						"obj-poll-on",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-poll-on",
+						0
+					],
+					"destination": [
+						"obj-poll-sel",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-poll-sel",
 						0
 					],
 					"destination": [
@@ -1747,7 +1979,7 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-select-sel",
+						"obj-poll-sel",
 						1
 					],
 					"destination": [
@@ -1993,18 +2225,6 @@
 					"destination": [
 						"obj-hello",
 						2
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-session-id",
-						0
-					],
-					"destination": [
-						"obj-select-mine",
-						1
 					]
 				}
 			},

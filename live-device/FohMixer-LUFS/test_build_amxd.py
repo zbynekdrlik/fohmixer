@@ -95,10 +95,12 @@ class AmxdTests(unittest.TestCase):
         self.assertIn(b"pack /fohmixer/listen ", device)
 
     def test_the_listen_ports_rewrite_their_three_boxes(self) -> None:
+        # The audio port in `udpsend` and `jit.net.send`, the hub's HTTP
+        # port in the select poll's URL (#210).
         patch = ba.LISTEN_MAXPAT.read_bytes()
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "l.amxd"
-            args = ["--patch", str(ba.LISTEN_MAXPAT), "--port", "40001", "--select-port", "40002"]
+            args = ["--patch", str(ba.LISTEN_MAXPAT), "--port", "40001", "--hub-port", "40002"]
             self.assertEqual(ba.main([*args, "--out", str(out)]), 0)
             built = ba.patch_of(out.read_bytes())
         swaps = [
@@ -107,7 +109,7 @@ class AmxdTests(unittest.TestCase):
                 b'"jit.net.send @ip 127.0.0.1 @port 39111"',
                 b'"jit.net.send @ip 127.0.0.1 @port 40001"',
             ),
-            (b'"udpreceive 39112"', b'"udpreceive 40002"'),
+            (b"//127.0.0.1:8480/", b"//127.0.0.1:40002/"),
         ]
         back = built
         for old, new in swaps:
@@ -116,15 +118,16 @@ class AmxdTests(unittest.TestCase):
         self.assertEqual(back, patch)
         self.assertEqual(ba.with_ports(patch), patch)
         only_port = ba.with_ports(patch, 40001)
-        self.assertIn(b'"udpreceive 39112"', only_port)
+        self.assertIn(b"//127.0.0.1:8480/", only_port)
+        self.assertNotIn(b"udpreceive", patch)
         self.assertIn(b"@port 40001", only_port)
-        for port, select in ((0, None), (None, 65536), (70000, 1)):
+        for port, hub in ((0, None), (None, 65536), (70000, 1), (None, 0)):
             with self.assertRaises(ValueError):
-                ba.with_ports(patch, port, select)
+                ba.with_ports(patch, port, hub)
         with self.assertRaises(ValueError):
-            ba.with_ports(ba.MAXPAT.read_bytes(), 39110, 39112)
+            ba.with_ports(ba.MAXPAT.read_bytes(), 39110, 8480)
         with self.assertRaises(ValueError):
-            ba.with_ports(patch.replace(b'"udpreceive 39112"', b'"udpreceive 1"'))
+            ba.with_ports(patch.replace(b"//127.0.0.1:8480/", b"//127.0.0.1:1/"))
 
     def test_builds_the_claps_patch_as_a_midi_effect(self) -> None:
         patch = ba.CLAPS_MAXPAT.read_bytes()
@@ -155,7 +158,7 @@ class AmxdTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ba.with_ports(patch, port, device_port=device)
         with self.assertRaises(ValueError):
-            ba.with_ports(patch, select_port=39112)
+            ba.with_ports(patch, hub_port=8480)
         with self.assertRaises(ValueError):
             ba.with_ports(ba.LISTEN_MAXPAT.read_bytes(), device_port=39114)
 

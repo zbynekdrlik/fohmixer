@@ -239,6 +239,8 @@ pub struct HubInner {
     pub automation: Option<automation::AutomationToken>,
     /// The ration of the scene requests' refusal lines and records.
     pub scene_refusals: Mutex<ration::Ration>,
+    /// The ration of the Listen select route's refusal lines (#210).
+    pub select_refusals: Mutex<ration::Ration>,
     /// The scene read from Companion (#207, `[scenes]`); none: no poll. The
     /// served hub runs its poll (`start_scene_source`).
     pub scene_source: Option<Arc<scene_source::SceneSource>>,
@@ -742,12 +744,7 @@ impl Hub {
             let sets_of = live.clone();
             let sets: listen::SetNames =
                 Arc::new(move |instance: &str| set_name_of(&sets_of, instance));
-            let (listen, listen_tasks) = listen::spawn(
-                config.listen.port,
-                config.listen.select_port,
-                events.clone(),
-                sets,
-            );
+            let (listen, listen_tasks) = listen::spawn(config.listen.port, events.clone(), sets);
             tasks.extend(listen_tasks);
             listen
         });
@@ -811,6 +808,7 @@ impl Hub {
             router: router_tx,
             automation,
             scene_refusals: Mutex::new(ration::Ration::default()),
+            select_refusals: Mutex::new(ration::Ration::default()),
             scene_source,
             next_client: AtomicU64::new(1),
             tasks: Mutex::new(tasks),
