@@ -6,14 +6,17 @@
 //! (`ArrangeCover`). Every decision is the tested `Arrange`, `Drag`,
 //! `drop_spot` and `landing`.
 
-use fohmixer_proto::sectors::{SectorId, StripRef};
+use std::sync::Arc;
+
+use fohmixer_proto::layout::Layout;
+use fohmixer_proto::sectors::{SectorId, StripRef, pool};
 use leptos::prelude::*;
 
 use crate::behave::arrange_drag::{Arrange, Drag, Held, Spot, drop_spot};
 use crate::binding::sectors::picked;
 use crate::components::{down_of, owns_touches};
 use crate::dom;
-use crate::pages::surface::Nav;
+use crate::pages::surface::{Head, Nav};
 
 /// ARRANGE's mode changed by `change` (written only when it changed:
 /// every cell reads it); what `change` returned.
@@ -227,7 +230,9 @@ fn carried_over(
 /// empty one or a strip (`Arrange::dropped_in` over the cells read at the
 /// down: `drop_spot`, `landing`). A cancel or a lost capture puts it back
 /// with nothing moved; a carry whose end never came ends at the next
-/// primary down of its type on a cover (#124).
+/// primary down of its type on a cover (#124). A drop is judged with the
+/// served layout's pool (#236: a layout it would grow past FULL takes no
+/// drop, as the hub's save would refuse it).
 #[component]
 pub(super) fn ArrangeCover(
     sector: SectorId,
@@ -236,6 +241,7 @@ pub(super) fn ArrangeCover(
     carrier: Carrier,
 ) -> impl IntoView {
     let nav = expect_context::<Nav>();
+    let layout: StoredValue<Arc<Layout>> = StoredValue::new(expect_context::<Head>().layout);
     let mode = nav.arrange;
     let strip = StoredValue::new(strip);
     let on_down = move |ev: web_sys::PointerEvent| {
@@ -287,8 +293,12 @@ pub(super) fn ArrangeCover(
         }
         let cell = spot.and_then(|spot| {
             let (from, into) = shown_layouts(nav, own, spot.sector)?;
-            let takes = mode
-                .try_with_untracked(|m| m.aim(&from, at, &into, spot.slot, &held))
+            let takes = layout
+                .try_with_value(|layout| {
+                    let pool = pool(layout);
+                    mode.try_with_untracked(|m| m.aim(&from, at, &into, spot.slot, &held, &pool))
+                })
+                .flatten()
                 .flatten()?;
             let slot_el = carrier.slot.try_with_value(Clone::clone).flatten()?;
             Some((spot_cell(&slot_el, spot)?, takes))
@@ -311,8 +321,11 @@ pub(super) fn ArrangeCover(
         let Some((from, into)) = shown_layouts(nav, carry.sector, spot.sector) else {
             return;
         };
-        let _ = change_mode(mode, |m| {
-            m.dropped_in(&from, carry.slot, &into, spot.slot, &carry.strip)
+        let _ = layout.try_with_value(|layout| {
+            let pool = pool(layout);
+            change_mode(mode, |m| {
+                m.dropped_in(&from, carry.slot, &into, spot.slot, &carry.strip, &pool)
+            })
         });
     };
     let on_cancel = move |ev: web_sys::PointerEvent| {

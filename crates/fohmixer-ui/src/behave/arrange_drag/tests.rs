@@ -1,6 +1,41 @@
+use std::sync::LazyLock;
+
 use super::*;
 use crate::behave::arrange_edit::TabTap;
+use fohmixer_proto::layout::Layout;
 use fohmixer_proto::sectors::SectorLayout;
+use serde_json::{Value, json};
+
+fn strip(name: &str) -> Value {
+    json!({"kind": "strip", "binding": {"instance": "band", "anchor": {"kind": "track", "name": name}},
+           "strip_kind": "standard"})
+}
+
+/// One page of the band strips the tests name (one unit each), then the
+/// wide `PA Out` (1.1 units, #236).
+static LAYOUT: LazyLock<Layout> = LazyLock::new(|| {
+    let mut controls: Vec<Value> = [
+        "Vox 1", "Vox 2", "Vox 3", "Vox 4", "Vox 5", "Vox 6", "Bass", "Keys 1", "Klavir", "PA",
+    ]
+    .into_iter()
+    .map(strip)
+    .collect();
+    let mut wide = strip("PA Out");
+    wide["wide"] = json!(true);
+    controls.push(wide);
+    serde_json::from_value(json!({
+        "schema": 2,
+        "default_page": "foh",
+        "pages": [{"id": "foh", "title": "FOH",
+                   "rows": [{"sections": [{"kind": "group", "id": "g", "controls": controls}]}]}]
+    }))
+    .expect("the layout parses")
+});
+
+/// The served layout's pool, the units a drop is judged by (#236).
+fn pool() -> Vec<Pooled<'static>> {
+    fohmixer_proto::sectors::pool(&LAYOUT)
+}
 
 fn r(label: &str) -> StripRef {
     StripRef {
@@ -488,20 +523,20 @@ fn a_drop_puts_the_strip_at_the_right_edge_with_gaps_before_it() {
         sectors: [(SectorId::Ru, vec![layout.clone()])].into_iter().collect(),
     };
     let mut off = Arrange::Off;
-    assert!(!off.dropped_in("ru-1", 3, "ru-1", 5, &r("PA")));
+    assert!(!off.dropped_in("ru-1", 3, "ru-1", 5, &r("PA"), &pool()));
     assert_eq!(off, Arrange::Off);
     let mut mode = Arrange::Off;
     let _ = mode.tap(&doc);
-    assert!(mode.dropped_in("ru-1", 3, "ru-1", 5, &r("PA")));
+    assert!(mode.dropped_in("ru-1", 3, "ru-1", 5, &r("PA"), &pool()));
     let first = refs(&["Klavir", "Bass", "Keys 1", "", "", "PA"]);
     assert_eq!(mode.applied(&doc).sectors[&SectorId::Ru][0].strips, first);
-    assert!(mode.dropped_in("ru-1", 0, "ru-1", 3, &r("Klavir")));
+    assert!(mode.dropped_in("ru-1", 0, "ru-1", 3, &r("Klavir"), &pool()));
     let second = refs(&["", "Bass", "Keys 1", "Klavir", "", "PA"]);
     assert_eq!(mode.applied(&doc).sectors[&SectorId::Ru][0].strips, second);
     // A layout the edit does not hold takes nothing.
     let before = mode.clone();
-    assert!(!mode.dropped_in("gone", 3, "gone", 0, &r("Klavir")));
-    assert!(!mode.dropped_in("ru-1", 3, "gone", 0, &r("Klavir")));
+    assert!(!mode.dropped_in("gone", 3, "gone", 0, &r("Klavir"), &pool()));
+    assert!(!mode.dropped_in("ru-1", 3, "gone", 0, &r("Klavir"), &pool()));
     assert_eq!(mode, before);
     // The save carries the empty slots.
     let mut sent = doc.sectors.clone();
@@ -511,7 +546,7 @@ fn a_drop_puts_the_strip_at_the_right_edge_with_gaps_before_it() {
         rev: 3,
         sectors: doc.sectors.clone(),
     };
-    assert!(!saving.dropped_in("ru-1", 3, "ru-1", 5, &r("PA")));
+    assert!(!saving.dropped_in("ru-1", 3, "ru-1", 5, &r("PA"), &pool()));
     assert_eq!(saving.applied(&doc), doc);
 }
 
@@ -573,17 +608,21 @@ fn a_drop_on_another_sectors_cell_moves_the_strip_there() {
     // In the mode: both layouts change in the one edit, saved as one.
     let doc = doc();
     let mut mode = Arrange::Off;
-    assert_eq!(mode.lands("lu-1", 1, "ru-1", 0, &r("Vox 2")), None, "off");
+    assert_eq!(
+        mode.lands("lu-1", 1, "ru-1", 0, &r("Vox 2"), &pool()),
+        None,
+        "off"
+    );
     let _ = mode.tap(&doc);
     assert_eq!(
-        mode.lands("lu-1", 1, "ru-1", 2, &r("Vox 2")),
+        mode.lands("lu-1", 1, "ru-1", 2, &r("Vox 2"), &pool()),
         Some(Landing::Across {
             from: refs(&["Vox 1", "", "Bass"]),
             to: refs(&["Keys 1", "Klavir", "Vox 2"]),
         })
     );
     assert_eq!(mode.edit_now(), on().edit_now(), "lands changes nothing");
-    assert!(mode.dropped_in("lu-1", 1, "ru-1", 2, &r("Vox 2")));
+    assert!(mode.dropped_in("lu-1", 1, "ru-1", 2, &r("Vox 2"), &pool()));
     let shown = mode.applied(&doc);
     assert_eq!(
         shown.sectors[&SectorId::Lu][0].strips,
@@ -594,8 +633,8 @@ fn a_drop_on_another_sectors_cell_moves_the_strip_there() {
         refs(&["Keys 1", "Klavir", "Vox 2"])
     );
     // RU holds Vox 2 now: a second drop of it there takes nothing.
-    assert!(!mode.dropped_in("ru-1", 2, "ru-1", 2, &r("Vox 2")));
-    assert_eq!(mode.lands("lu-1", 0, "ru-1", 2, &r("Vox 2")), None);
+    assert!(!mode.dropped_in("ru-1", 2, "ru-1", 2, &r("Vox 2"), &pool()));
+    assert_eq!(mode.lands("lu-1", 0, "ru-1", 2, &r("Vox 2"), &pool()), None);
     let mut sent = doc.sectors.clone();
     sent.get_mut(&SectorId::Lu).unwrap()[0].strips = refs(&["Vox 1", "", "Bass"]);
     sent.get_mut(&SectorId::Ru).unwrap()[0].strips = refs(&["Keys 1", "Klavir", "Vox 2"]);
@@ -743,25 +782,174 @@ fn the_cell_under_a_carried_strip_is_marked_only_off_its_own_slot() {
     let doc = doc();
     let mut mode = Arrange::Off;
     assert_eq!(
-        mode.aim("lu-1", 1, "ru-1", 1, &r("Vox 2")),
+        mode.aim("lu-1", 1, "ru-1", 1, &r("Vox 2"), &pool()),
         Some(false),
         "off"
     );
     let _ = mode.tap(&doc);
     // Over its own slot: no mark (it only goes back there).
-    assert_eq!(mode.aim("lu-1", 1, "lu-1", 1, &r("Vox 2")), None);
+    assert_eq!(mode.aim("lu-1", 1, "lu-1", 1, &r("Vox 2"), &pool()), None);
     // Another slot of its own layout, a cell of another layout (the same
     // slot number there included): it lands.
-    assert_eq!(mode.aim("lu-1", 1, "lu-1", 0, &r("Vox 2")), Some(true));
-    assert_eq!(mode.aim("lu-1", 1, "ru-1", 1, &r("Vox 2")), Some(true));
-    assert_eq!(mode.aim("lu-1", 1, "ru-1", 4, &r("Vox 2")), Some(true));
+    assert_eq!(
+        mode.aim("lu-1", 1, "lu-1", 0, &r("Vox 2"), &pool()),
+        Some(true)
+    );
+    assert_eq!(
+        mode.aim("lu-1", 1, "ru-1", 1, &r("Vox 2"), &pool()),
+        Some(true)
+    );
+    assert_eq!(
+        mode.aim("lu-1", 1, "ru-1", 4, &r("Vox 2"), &pool()),
+        Some(true)
+    );
     // Klavir in both layouts (LAYOUTS > ADD put it in lu-1 too): ru-1
     // takes no drop of it, and no swap that would bring it into lu-1 again.
     moved(&mut mode, "lu-1", refs(&["Vox 1", "Klavir", "Bass"]));
-    assert_eq!(mode.aim("lu-1", 1, "ru-1", 0, &r("Klavir")), Some(false));
-    assert_eq!(mode.aim("lu-1", 1, "ru-1", 2, &r("Klavir")), Some(false));
-    assert_eq!(mode.aim("lu-1", 0, "ru-1", 1, &r("Vox 1")), Some(false));
-    assert_eq!(mode.aim("lu-1", 0, "ru-1", 0, &r("Vox 1")), Some(true));
+    assert_eq!(
+        mode.aim("lu-1", 1, "ru-1", 0, &r("Klavir"), &pool()),
+        Some(false)
+    );
+    assert_eq!(
+        mode.aim("lu-1", 1, "ru-1", 2, &r("Klavir"), &pool()),
+        Some(false)
+    );
+    assert_eq!(
+        mode.aim("lu-1", 0, "ru-1", 1, &r("Vox 1"), &pool()),
+        Some(false)
+    );
+    assert_eq!(
+        mode.aim("lu-1", 0, "ru-1", 0, &r("Vox 1"), &pool()),
+        Some(true)
+    );
     // A slot that no longer holds the strip: no drop.
-    assert_eq!(mode.aim("lu-1", 2, "ru-1", 0, &r("Vox 1")), Some(false));
+    assert_eq!(
+        mode.aim("lu-1", 2, "ru-1", 0, &r("Vox 1"), &pool()),
+        Some(false)
+    );
+}
+
+/// lu-1 and ru-1 with these slots, the mode on since then.
+fn on_with(lu: &[&str], ru: &[&str]) -> (SectorsDoc, Arrange) {
+    let doc = SectorsDoc {
+        rev: 3,
+        sectors: [
+            (SectorId::Lu, vec![sl("lu-1", lu)]),
+            (SectorId::Ru, vec![sl("ru-1", ru)]),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    let mode = Arrange::On {
+        rev: 3,
+        edit: Edit::of(&doc),
+    };
+    (doc, mode)
+}
+
+#[test]
+fn a_move_into_a_full_layout_takes_no_drop() {
+    // #236: ru-1 holds 6 units; Vox 1 dropped on its empty cell past its
+    // end would make it 7, which the hub refuses FULL (and the refused
+    // save would end ARRANGE, losing the session's other changes).
+    let six = ["Vox 2", "Vox 3", "Vox 4", "Vox 5", "Vox 6", "Bass"];
+    let (_, mut mode) = on_with(&["Vox 1", "Keys 1"], &six);
+    let before = mode.clone();
+    assert_eq!(mode.lands("lu-1", 0, "ru-1", 6, &r("Vox 1"), &pool()), None);
+    assert_eq!(
+        mode.aim("lu-1", 0, "ru-1", 6, &r("Vox 1"), &pool()),
+        Some(false)
+    );
+    assert!(!mode.dropped_in("lu-1", 0, "ru-1", 6, &r("Vox 1"), &pool()));
+    assert_eq!(mode, before, "nothing moved");
+    // A swap with one of its strips keeps it at 6 units: it lands.
+    assert_eq!(
+        mode.aim("lu-1", 0, "ru-1", 0, &r("Vox 1"), &pool()),
+        Some(true)
+    );
+    // Five strips and a gap are 6 units too: the gap takes the strip and
+    // the layout stays at 6.
+    let gap = ["Vox 2", "Vox 3", "", "Vox 5", "Vox 6", "Bass"];
+    let (_, gapped) = on_with(&["Vox 1", "Keys 1"], &gap);
+    assert_eq!(
+        gapped.lands("lu-1", 0, "ru-1", 2, &r("Vox 1"), &pool()),
+        Some(Landing::Across {
+            from: refs(&["", "Keys 1"]),
+            to: refs(&["Vox 2", "Vox 3", "Vox 1", "Vox 5", "Vox 6", "Bass"]),
+        })
+    );
+}
+
+#[test]
+fn a_swap_that_overfills_the_source_with_a_wider_strip_takes_no_drop() {
+    // lu-1 holds 6 units; Vox 1 swapped with ru-1's wide PA Out brings
+    // 1.1 units into lu-1 (6.1: FULL), while ru-1 only shrinks.
+    let six = ["Vox 1", "Vox 2", "Vox 3", "Vox 4", "Vox 5", "Vox 6"];
+    let (_, mut mode) = on_with(&six, &["PA Out", "Bass"]);
+    let before = mode.clone();
+    assert_eq!(mode.lands("lu-1", 0, "ru-1", 0, &r("Vox 1"), &pool()), None);
+    assert_eq!(
+        mode.aim("lu-1", 0, "ru-1", 0, &r("Vox 1"), &pool()),
+        Some(false)
+    );
+    assert!(!mode.dropped_in("lu-1", 0, "ru-1", 0, &r("Vox 1"), &pool()));
+    assert_eq!(mode, before, "nothing moved");
+    // The other way, PA Out onto Vox 1, grows lu-1 the same: no drop.
+    assert_eq!(
+        mode.aim("ru-1", 0, "lu-1", 0, &r("PA Out"), &pool()),
+        Some(false)
+    );
+    // Swapped with a strip of one unit, lu-1 stays at 6: it lands.
+    assert_eq!(
+        mode.aim("lu-1", 0, "ru-1", 1, &r("Vox 1"), &pool()),
+        Some(true)
+    );
+}
+
+#[test]
+fn a_move_that_fits_lands_and_a_drop_past_the_end_counts_its_gaps() {
+    // ru-1 at 5 units takes one more strip of one unit.
+    let five = ["Vox 2", "Vox 3", "Vox 4", "Vox 5", "Vox 6"];
+    let (doc, mut mode) = on_with(&["Vox 1", "Keys 1"], &five);
+    assert!(mode.dropped_in("lu-1", 0, "ru-1", 5, &r("Vox 1"), &pool()));
+    let shown = mode.applied(&doc);
+    assert_eq!(
+        shown.sectors[&SectorId::Ru][0].strips,
+        refs(&["Vox 2", "Vox 3", "Vox 4", "Vox 5", "Vox 6", "Vox 1"])
+    );
+    assert_eq!(
+        shown.sectors[&SectorId::Lu][0].strips,
+        refs(&["", "Keys 1"])
+    );
+    // A wide strip past 6 never fits: 5 + 1.1 units.
+    let (_, wide) = on_with(&["PA Out"], &five);
+    assert_eq!(
+        wide.aim("lu-1", 0, "ru-1", 5, &r("PA Out"), &pool()),
+        Some(false)
+    );
+    // Within a layout: a drop past its end leaves gaps before the strip,
+    // and each gap is a unit. lu-1 at 5 takes a drop on its sixth cell,
+    // never on its seventh (a gap and the strip's old slot: 7 units).
+    let (_, within) = on_with(&five, &["Bass"]);
+    assert_eq!(
+        within.aim("lu-1", 0, "lu-1", 5, &r("Vox 2"), &pool()),
+        Some(true)
+    );
+    assert_eq!(
+        within.aim("lu-1", 0, "lu-1", 6, &r("Vox 2"), &pool()),
+        Some(false)
+    );
+    // A layout already past 6 by a hand edit still reorders (the hub
+    // refuses only a layout that grows) and takes a swap that keeps its
+    // units.
+    let seven = ["Vox 1", "Vox 2", "Vox 3", "Vox 4", "Vox 5", "Vox 6", "Bass"];
+    let (_, over) = on_with(&seven, &["Keys 1"]);
+    assert_eq!(
+        over.aim("lu-1", 0, "lu-1", 6, &r("Vox 1"), &pool()),
+        Some(true)
+    );
+    assert_eq!(
+        over.aim("lu-1", 0, "ru-1", 0, &r("Vox 1"), &pool()),
+        Some(true)
+    );
 }

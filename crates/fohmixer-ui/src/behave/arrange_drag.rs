@@ -21,7 +21,9 @@
 //! never came ends at the next primary down of its type (#124). All of it
 //! is pure; `pages::sectors` carries it out.
 
-use fohmixer_proto::sectors::{Refusal, SectorId, Sectors, SectorsDoc, Slot, StripRef, trim};
+use fohmixer_proto::sectors::{
+    Pooled, Refusal, SectorId, Sectors, SectorsDoc, Slot, StripRef, trim,
+};
 
 use super::Down;
 use super::arrange_edit::Edit;
@@ -212,6 +214,7 @@ impl Arrange {
         into: &str,
         to: usize,
         held: &StripRef,
+        _pool: &[Pooled],
     ) -> Option<Landing> {
         let edit = self.edit_now()?;
         let order = edit.slots_of(from)?;
@@ -235,11 +238,12 @@ impl Arrange {
         into: &str,
         to: usize,
         held: &StripRef,
+        pool: &[Pooled],
     ) -> Option<bool> {
         if into == from && to == at {
             return None;
         }
-        Some(self.lands(from, at, into, to, held).is_some())
+        Some(self.lands(from, at, into, to, held, pool).is_some())
     }
 
     /// The strip `held` of layout `from`, carried from its slot `at`, is
@@ -255,8 +259,9 @@ impl Arrange {
         into: &str,
         to: usize,
         held: &StripRef,
+        pool: &[Pooled],
     ) -> bool {
-        let landed = self.lands(from, at, into, to, held);
+        let landed = self.lands(from, at, into, to, held, pool);
         let (Some(landed), Some(edit)) = (landed, self.edit()) else {
             return false;
         };
