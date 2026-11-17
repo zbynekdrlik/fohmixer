@@ -26,7 +26,9 @@ untouched (`midiin` straight into `midiout`). No parameters.
   forgets its switch, so the hub's next `on 1` arms it again.
 - **Its hello**, UDP to the hub's `127.0.0.1:39113` each second:
   `/fohmixer/claps 1 v<version> <1 while it claps>` (`/api/status`
-  `claps.device`).
+  `claps.device`), through a `deferlow` into `udpsend` (#240: the hello's
+  `metro` runs inside Live's audio thread, the socket write leaves it; the
+  beats stay timed).
 
 Every decision (the taps, the beats, the clip silence, 4/4 only) is the
 hub's (`crates/fohmixer-hub/src/rules/claps.rs`); the patch only plays.

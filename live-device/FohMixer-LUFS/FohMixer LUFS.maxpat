@@ -380,7 +380,7 @@
 					"numoutlets": 0,
 					"patching_rect": [
 						30.0,
-						500.0,
+						540.0,
 						204.0,
 						22.0
 					]
@@ -1672,6 +1672,24 @@
 						22.0
 					]
 				}
+			},
+			{
+				"box": {
+					"id": "obj-send-defer",
+					"maxclass": "newobj",
+					"text": "deferlow",
+					"numinlets": 1,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						30.0,
+						500.0,
+						58.0,
+						22.0
+					]
+				}
 			}
 		],
 		"lines": [
@@ -1743,18 +1761,6 @@
 					],
 					"destination": [
 						"obj-snap-v",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-pack",
-						0
-					],
-					"destination": [
-						"obj-udpsend",
 						0
 					]
 				}
@@ -2727,6 +2733,30 @@
 					],
 					"destination": [
 						"obj-pack",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-pack",
+						0
+					],
+					"destination": [
+						"obj-send-defer",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-send-defer",
+						0
+					],
+					"destination": [
+						"obj-udpsend",
 						0
 					]
 				}

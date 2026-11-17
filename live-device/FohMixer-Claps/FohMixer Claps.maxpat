@@ -634,7 +634,7 @@
 					"numoutlets": 0,
 					"patching_rect": [
 						760.0,
-						450.0,
+						490.0,
 						160.0,
 						22.0
 					]
@@ -732,6 +732,24 @@
 					],
 					"ignoreclick": 1,
 					"parameter_enable": 0
+				}
+			},
+			{
+				"box": {
+					"id": "obj-send-defer",
+					"maxclass": "newobj",
+					"text": "deferlow",
+					"numinlets": 1,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						760.0,
+						450.0,
+						58.0,
+						22.0
+					]
 				}
 			}
 		],
@@ -1255,18 +1273,6 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-hello",
-						0
-					],
-					"destination": [
-						"obj-udpsend",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
 						"obj-run",
 						0
 					],
@@ -1284,6 +1290,30 @@
 					],
 					"destination": [
 						"obj-clapping",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-hello",
+						0
+					],
+					"destination": [
+						"obj-send-defer",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-send-defer",
+						0
+					],
+					"destination": [
+						"obj-udpsend",
 						0
 					]
 				}
