@@ -1921,6 +1921,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_started_hub_serves_its_layout_file_before_any_task_ran() {
+        // The layout file is read in `Hub::start`, never only at the poll
+        // task's first tick: `serve_bounded` reports ready and answers
+        // requests right after the start, and a request before that tick
+        // was a 503 `NO_LAYOUT` (two `markers::` host tests failed so on a
+        // loaded box, their first `/api/layout` read). This test's runtime
+        // has one thread and nothing here yields, so no spawned task has
+        // run when the store is read.
+        let dir = tempfile::tempdir().unwrap();
+        let frame = serde_json::json!({
+            "schema": 2,
+            "default_page": "p",
+            "pages": [{"id": "p", "title": "P", "rows": [{"sections": [
+                {"kind": "group", "id": "vocals", "title": "VOCALS", "tags": "VOCALS"}
+            ]}]}]
+        });
+        std::fs::write(dir.path().join("layout.json"), frame.to_string()).unwrap();
+        let mut config = Config::defaults(dir.path());
+        config.instances.clear();
+        let hub = Hub::start(config).unwrap();
+        let (rev, served) = hub.layout.current();
+        assert_eq!(rev, 1);
+        assert!(served.is_some(), "{:?}", hub.layout.error());
+        hub.stop();
+    }
+
+    #[tokio::test]
     async fn the_stop_waits_for_the_window_worker_to_end() {
         let dir = tempfile::tempdir().unwrap();
         let mut config = Config::defaults(dir.path());
