@@ -480,6 +480,37 @@ class TreeTests(unittest.TestCase):
             self.restore(device)
         self.assertEqual(self.errors(), [])
 
+    def test_the_identity_clock_drives_the_parents_paths_alone(self) -> None:
+        # The review of the 10 s re-read: the clock is exempt from
+        # lom_clock_errors, so a LOM read fed from it passed every check.
+        tick = sorted(
+            [cl.PARENTS - level, f"obj-parent{level}-path", 0] for level in range(1, cl.PARENTS + 1)
+        )
+        for device in cl.DEVICES:
+            where = device.maxpat.as_posix()
+            for src in (["obj-id-clock", 0], ["obj-id-tick", 0], ["obj-id-offset-delay", 0]):
+                patch = self.patcher(device)
+                self.node(patch, "obj-x-get", "get value")
+                patch["patcher"]["boxes"][-1]["box"]["maxclass"] = "message"
+                self.node(patch, "obj-x-object", "live.object")
+                self.line(patch, src, ["obj-x-get", 0])
+                self.line(patch, ["obj-x-get", 0], ["obj-x-object", 0])
+                self.save(patch, device)
+                errors = self.errors()
+                want = {
+                    "obj-id-clock": [[0, "obj-id-tick", 0]],
+                    "obj-id-tick": tick,
+                    "obj-id-offset-delay": [[0, "obj-id-clock-defer", 0]],
+                }[src[0]]
+                has = sorted(want + [[0, "obj-x-get", 0]])
+                self.assertIn(f"{where}: {src[0]} outputs into {want} alone, has {has}", errors)
+            patch = self.patcher(device)
+            self.node(patch, "obj-id-clock", "qmetro 10000")
+            self.save(patch, device)
+            self.assertIn(f"{where}: obj-id-clock must be one box, has 2", self.errors())
+            self.restore(device)
+        self.assertEqual(self.errors(), [])
+
     def test_the_identity_clock_is_deferred_staggered_and_alone(self) -> None:
         cases = (
             # The offset's bang straight into the start: no deferlow.
