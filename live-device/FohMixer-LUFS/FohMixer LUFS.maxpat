@@ -2067,6 +2067,117 @@
 						22.0
 					]
 				}
+			},
+			{
+				"box": {
+					"id": "obj-id-offset",
+					"maxclass": "newobj",
+					"text": "random 10000",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						"int"
+					],
+					"patching_rect": [
+						1200.0,
+						60.0,
+						90.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-id-offset-delay",
+					"maxclass": "newobj",
+					"text": "delay",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						"bang"
+					],
+					"patching_rect": [
+						1200.0,
+						100.0,
+						50.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-id-clock-defer",
+					"maxclass": "newobj",
+					"text": "deferlow",
+					"numinlets": 1,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						1200.0,
+						140.0,
+						58.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-id-clock-start",
+					"maxclass": "message",
+					"text": "1",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						1200.0,
+						180.0,
+						30.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-id-clock",
+					"maxclass": "newobj",
+					"text": "qmetro 10000",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						"bang"
+					],
+					"patching_rect": [
+						1200.0,
+						220.0,
+						90.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-id-tick",
+					"maxclass": "newobj",
+					"text": "t b b b b",
+					"numinlets": 1,
+					"numoutlets": 4,
+					"outlettype": [
+						"bang",
+						"bang",
+						"bang",
+						"bang"
+					],
+					"patching_rect": [
+						1200.0,
+						260.0,
+						100.0,
+						22.0
+					]
+				}
 			}
 		],
 		"lines": [
@@ -3543,6 +3654,162 @@
 					"destination": [
 						"obj-pack",
 						7
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-thisdevice",
+						0
+					],
+					"destination": [
+						"obj-id-offset",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-id-offset",
+						0
+					],
+					"destination": [
+						"obj-id-offset-delay",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-id-offset-delay",
+						0
+					],
+					"destination": [
+						"obj-id-clock-defer",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-id-clock-defer",
+						0
+					],
+					"destination": [
+						"obj-id-clock-start",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-id-clock-start",
+						0
+					],
+					"destination": [
+						"obj-id-clock",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-id-clock",
+						0
+					],
+					"destination": [
+						"obj-id-tick",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-id-tick",
+						3
+					],
+					"destination": [
+						"obj-parent1-path",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-id-tick",
+						2
+					],
+					"destination": [
+						"obj-parent2-path",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-id-tick",
+						1
+					],
+					"destination": [
+						"obj-parent3-path",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-id-tick",
+						0
+					],
+					"destination": [
+						"obj-parent4-path",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-live-path",
+						0
+					],
+					"destination": [
+						"obj-parent1-route-id",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-live-path",
+						0
+					],
+					"destination": [
+						"obj-parent2-route-id",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-live-path",
+						0
+					],
+					"destination": [
+						"obj-parent3-route-id",
+						0
 					]
 				}
 			}

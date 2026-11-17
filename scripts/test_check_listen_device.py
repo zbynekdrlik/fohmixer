@@ -39,6 +39,12 @@ def box(patcher: dict, box_id: str) -> dict:
     return next(b["box"] for b in patcher["boxes"] if b["box"]["id"] == box_id)
 
 
+def lufs_words(patcher: dict, box_id: str) -> list[str]:
+    """A box's words, or none when the patch lacks the box."""
+    found = [b["box"] for b in patcher["boxes"] if b["box"]["id"] == box_id]
+    return cl.lufs.words(found[0]) if found else []
+
+
 class ListenDeviceTests(unittest.TestCase):
     def test_the_real_patch_passes(self) -> None:
         self.assertEqual(cl.check(ROOT), [])
@@ -143,7 +149,7 @@ class ListenDeviceTests(unittest.TestCase):
             )
 
         found = errors(edited(twice))
-        self.assertIn("p: 3 qmetro boxes (the stream's and the poll's)", found)
+        self.assertIn("p: 4 qmetro boxes (the stream's, the poll's and the identity's)", found)
 
     def test_a_path_or_junk_is_refused(self) -> None:
         self.assertTrue(any("absolute file path" in e for e in errors(TEXT + " C:\\\\x")))
@@ -271,7 +277,7 @@ class ListenDeviceTests(unittest.TestCase):
         found = errors(edited(lom_tick))
         self.assertIn(
             "p: obj-announce-metro ('metro 1000') drives the live.path obj-parent1-live-path "
-            "(the identity is read at load and on a change only)",
+            "(the identity is read at load, on a change and by its own 10 s clock only)",
             found,
         )
 
@@ -292,6 +298,45 @@ class ListenDeviceTests(unittest.TestCase):
             found,
         )
         self.assertTrue(any("reaches the udpsend" in e for e in found), found)
+
+    def test_the_identity_is_read_again_every_10_s_by_its_own_clock(self) -> None:
+        # #240, the PC proof's attempt 2: the follow missed a move into a
+        # chain, so a staggered qmetro 10000 sends the parents' paths again.
+        p = json.loads(TEXT)["patcher"]
+        self.assertEqual(lufs_words(p, "obj-id-clock"), ["qmetro", "10000"])
+        self.assertEqual(lufs_words(p, "obj-id-offset"), ["random", "10000"])
+        for level in range(1, 5):
+            self.assertIn(
+                ["obj-id-tick", 4 - level],
+                cl.lufs.feeds(p, f"obj-parent{level}-path", 0),
+            )
+
+        def faster(p: dict) -> None:
+            box(p, "obj-id-clock")["text"] = "qmetro 1000"
+
+        found = errors(edited(faster))
+        self.assertIn("p: obj-id-clock must be 'qmetro 10000', has ['qmetro', '1000']", found)
+        self.assertIn(
+            "p: obj-id-clock ('qmetro 1000') drives the live.path obj-parent1-live-path "
+            "(the identity is read at load, on a change and by its own 10 s clock only)",
+            found,
+        )
+
+        def undeferred(p: dict) -> None:
+            for ln in p["lines"]:
+                if ln["patchline"]["source"] == ["obj-id-offset-delay", 0]:
+                    ln["patchline"]["destination"] = ["obj-id-clock-start", 0]
+
+        found = errors(edited(undeferred))
+        self.assertIn(
+            "p: obj-id-clock-defer:0 takes [['obj-id-offset-delay', 0]] alone, has []",
+            found,
+        )
+        self.assertIn(
+            "p: obj-id-clock-start:0 takes [['obj-id-clock-defer', 0]] alone, "
+            "has [['obj-id-clock-defer', 0], ['obj-id-offset-delay', 0]]",
+            found,
+        )
 
     def test_the_names_go_into_the_announce(self) -> None:
         def elsewhere(p: dict) -> None:

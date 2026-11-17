@@ -30,9 +30,10 @@ own:
   `pack /fohmixer/listen 1 0 v<version> - - - - 0 0`, banged each second by
   `metro 1000` -> `deferlow` -> `t b b` (the sample rate first, `TICK_ONLY`),
   which reads nothing from Live: the identity is the LUFS devices'
-  (`check_lufs_device.identity_errors`, #240), read at load and on a change
-  into the announce's cold inlets, each name from `live.object` (an
-  observer only triggers the read, `check_lufs_device.value_errors`);
+  (`check_lufs_device.identity_errors`, #240), read at load, on a change
+  and every 10 s by its own staggered `qmetro 10000` into the announce's
+  cold inlets, each name from `live.object` (an observer only triggers the
+  read, `check_lufs_device.value_errors`);
 - the hello: one `pack fohmixer_listen 1 0 v<version> 0` into the
   `jit.net.send`'s right inlet;
 - the select logic, box by box (`BOXES`, `WIRING`): an `on` answer
@@ -275,8 +276,10 @@ def patch_errors(where: str, text: str, version: str, numbers: dict) -> list[str
         if count > 1:
             errors.append(f"{where}: {count} {kind} boxes")
     count = len(by_kind(every, "qmetro"))
-    if count > 2:
-        errors.append(f"{where}: {count} qmetro boxes (the stream's and the poll's)")
+    if count > 3:
+        errors.append(
+            f"{where}: {count} qmetro boxes (the stream's, the poll's and the identity's)"
+        )
     plugin = by_kind(every, "plugin~")
     if catch and plugin:
         fed = lufs.feeds(patcher, catch, 0) + lufs.feeds(patcher, catch, 1)
