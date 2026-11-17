@@ -627,5 +627,5 @@ impl Router {
 }
 
 #[cfg(test)]
-#[path = "switch_tests.rs"]
+#[path = "switch_tests/mod.rs"]
 mod tests;

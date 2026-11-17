@@ -53,7 +53,8 @@ use serde_json::{Value, json};
 
 use super::super::retries::{Due, RETRY_MS, transient};
 use super::super::{Router, RouterMsg};
-use super::{AfterWalk, AutotuneIo, PARAMETER_CLASS, after_walk, gave_up_problem, may_write};
+use super::walk::{AfterWalk, after_walk, gave_up_problem};
+use super::{AutotuneIo, PARAMETER_CLASS, may_write};
 use crate::eq::close::{STALE_REF, UNKNOWN_REF};
 use crate::eq::walk::refused;
 use crate::rules::autotune::{Cause, Step};

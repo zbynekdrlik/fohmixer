@@ -9,7 +9,7 @@ use fohmixer_proto::client::{SafeState, SafeStatus};
 use super::super::super::retries::{CONNECT_RETRIES, RETRY_MS};
 use super::super::super::tests::{next_of, records, status};
 use super::super::super::{Router, RouterIo, RouterMsg};
-use super::super::AfterWalk;
+use super::super::walk::AfterWalk;
 use super::{
     REF_GONE, SAFE_WRITES, Safe, does_not_resolve, failed_problem, gone_refs, kept_after,
     probe_commands, safe_commands, safe_news, safe_problem,
