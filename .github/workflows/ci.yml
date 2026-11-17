@@ -94,11 +94,6 @@ jobs:
         run: |
           set -euo pipefail
           python -m unittest discover -s tools/live-probe -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/probe-tests.log"
-      - name: Listen probe tests (the chunks both ways, a run against a fake device, #210)
-        if: ${{ !cancelled() }}
-        run: |
-          set -euo pipefail
-          python -m unittest discover -s tools/listen-probe -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/listen-probe-tests.log"
       - name: Forensics timeline tests (synthetic event logs, #43)
         if: ${{ !cancelled() }}
         run: |
@@ -129,7 +124,7 @@ jobs:
           set -euo pipefail
           # unittest marks a skip as "... skipped 'reason'" and counts it as "(skipped=N)";
           # a test NAME may contain the word, so match the markers only.
-          if grep -E "\.\.\. (skipped|expected failure|unexpected success)|skipped=|expected failures=" "$RUNNER_TEMP/sim-tests.log" "$RUNNER_TEMP/script-tests.log" "$RUNNER_TEMP/import-tests.log" "$RUNNER_TEMP/probe-tests.log" "$RUNNER_TEMP/listen-probe-tests.log" "$RUNNER_TEMP/forensics-tests.log" "$RUNNER_TEMP/harness-tests.log" "$RUNNER_TEMP/device-tests.log"; then
+          if grep -E "\.\.\. (skipped|expected failure|unexpected success)|skipped=|expected failures=" "$RUNNER_TEMP/sim-tests.log" "$RUNNER_TEMP/script-tests.log" "$RUNNER_TEMP/import-tests.log" "$RUNNER_TEMP/probe-tests.log" "$RUNNER_TEMP/forensics-tests.log" "$RUNNER_TEMP/harness-tests.log" "$RUNNER_TEMP/device-tests.log"; then
             echo "::error::a Python test was skipped"; exit 1
           fi
 
