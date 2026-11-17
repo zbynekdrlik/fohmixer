@@ -14,7 +14,8 @@ devices (`../FohMixer-LUFS/README.md`).
   The names are read at load and again only on a change (#240, the LUFS
   devices' identity: `live.object` `get name` for each parent, read when its
   path's follow output gives an id and when a `live.observer` on its `name`
-  reports, the observer's output only a trigger; the format is proved only
+  reports, the observer's output only a trigger; the set has no observer
+  and takes its id from both `live.path` outlets; the format is proved only
   on the PC, `../FohMixer-LUFS/README.md`); the
   announce resends the stored ones each second (the hub forgets a device
   after 3 s) and asks Live nothing.

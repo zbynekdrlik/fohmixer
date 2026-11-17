@@ -60,18 +60,35 @@ the name at once and at each rename, and its output only bangs that read
 (`t b`), never a value: through `live.observer` → `tosymbol` a name with a
 space kept literal double quotes and the set's level read `-`, so on the PC
 no device matched (the FINDING of 2026-11-17 on #240). The set (parent 4)
-has no `name` an observer reports: it is read at load and on its follow only.
+read `-` there too, and the cause is not determined: the `pack`'s own
+default is `-`, so either its observer reported nothing or the middle
+outlet never gave an id for the set's path. So the set has no observer and
+takes its id from both of its `live.path`'s outlets: the left one at the
+load's `path` message (as the devices before #240 read it) and the middle
+one on a follow.
 
 **The identity's format is proved only on the PC** (CI checks which boxes
 are wired to which, never what Max outputs; `scripts/check_lufs_device.py`
 `value_errors` holds the value path). Before a changed device reaches a
-set: copy its `.amxd` under a test name into the band user's
-`Presets\Audio Effects\Max Audio Effect`, load it on one track through the
-LOM (the hub's `cmd`), read its announce from the hub (`/api/status`
-`lufs.devices`, or `listen.devices` for Listen: `parents` must equal what
-the old device on that track sends, no quotes, the set's name last, and
-the device `matched`), then delete the device from the track and leave the
-set unsaved. The whole
+set:
+
+1. Copy its `.amxd` under a test name into the band user's
+   `Presets\Audio Effects\Max Audio Effect`.
+2. Pick a track whose existing device sits in a chain whose chain or rack
+   name holds a space, so the quote fault is exercised.
+3. Load the copy through the LOM (the hub's `cmd`: `load_item` appends it
+   to the selected track) and `move_device` it into that same chain, as the
+   rollout places a device (`.claude/rules/deploy-pc.md`): only there are
+   its parents the old device's.
+4. Read its announce from the hub (`/api/status` `lufs.devices`, or
+   `listen.devices` for Listen): `parents` equal the old device's, no
+   quotes, and **the set's name last** (the decisive check: the set read
+   `-` in the failed rollout). For that moment two devices announce the
+   same parents.
+5. Delete the copy from the chain, leave the set unsaved (the set file's
+   time unchanged) and delete the test `.amxd` from the Presets folder.
+
+The whole
 message is one `pack` (its slots cold, the identity cached in them), banged
 by `obj-send-trigger` (`t b f`) each time the last value comes out of its
 audio object's own clock (`snapshot~ 200` for the LUFS device, `peakamp~ 33`
