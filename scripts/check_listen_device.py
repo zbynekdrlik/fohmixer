@@ -27,7 +27,11 @@ own:
   `udpsend` without a `deferlow` or a `qmetro` between (Max for Live runs
   the scheduler in Live's audio thread);
 - the announce: one `udpsend 127.0.0.1 <DEFAULT_PORT>` fed by one
-  `pack /fohmixer/listen 1 0 v<version> - - - - 0 0`;
+  `pack /fohmixer/listen 1 0 v<version> - - - - 0 0`, banged each second by
+  `metro 1000` -> `deferlow` -> `t b b` (the sample rate first, `TICK_ONLY`),
+  which reads nothing from Live: the identity is the LUFS devices'
+  (`check_lufs_device.identity_errors`, #240), read at load and on a change
+  into the announce's cold inlets;
 - the hello: one `pack fohmixer_listen 1 0 v<version> 0` into the
   `jit.net.send`'s right inlet;
 - the select logic, box by box (`BOXES`, `WIRING`): an `on` answer
@@ -76,6 +80,9 @@ BOXES = {
     "obj-poll-on": ["dict.unpack", "on:"],
     "obj-poll-sel": ["sel", "1"],
     "obj-select-t": ["t", "b", "b"],
+    "obj-announce-metro": ["metro", "1000"],
+    "obj-announce-defer": ["deferlow"],
+    "obj-announce-t": ["t", "b", "b"],
     "obj-select-defer": ["deferlow"],
     "obj-select-on": ["1"],
     "obj-select-off": ["0"],
@@ -122,9 +129,23 @@ WIRING = (
     (("obj-session-id", 0), ("obj-announce", 2)),
     (("obj-session-id", 0), ("obj-hello", 2)),
     (("obj-session-id", 0), ("obj-poll-change", 0)),
+    (("obj-thisdevice", 0), ("obj-announce-metro", 0)),
+    (("obj-announce-metro", 0), ("obj-announce-defer", 0)),
+    (("obj-announce-defer", 0), ("obj-announce-t", 0)),
+    (("obj-announce-t", 1), ("obj-dsp", 0)),
+    (("obj-announce-t", 0), ("obj-announce", 0)),
+    (("obj-announce-t", 0), ("obj-hello-gate", 1)),
 )
 # Inlets only the listen id may feed.
 SESSION_ONLY = (("obj-announce", 2), ("obj-hello", 2), ("obj-poll-change", 0))
+# The announce each second (#240): the stored identity and sample rate, sent
+# from the low-priority queue; it reads nothing from Live.
+TICK_ONLY = {
+    ("obj-announce-defer", 0): [["obj-announce-metro", 0]],
+    ("obj-announce", 0): [["obj-announce-t", 0]],
+    ("obj-hello-gate", 1): [["obj-announce-t", 0]],
+    ("obj-dsp", 0): [["obj-announce-t", 1]],
+}
 
 
 def wiring_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
@@ -149,6 +170,11 @@ def wiring_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
         fed = lufs.feeds(patcher, box, inlet)
         if fed != [["obj-session-id", 0]]:
             errors.append(f"{where}: {box}:{inlet} takes the listen id alone, has {fed}")
+    for (box, inlet), sources in TICK_ONLY.items():
+        fed = lufs.feeds(patcher, box, inlet)
+        if fed != sources:
+            errors.append(f"{where}: {box}:{inlet} takes {sources} alone, has {fed}")
+    errors += lufs.identity_errors(where, patcher, every, "obj-announce")
     return errors
 
 

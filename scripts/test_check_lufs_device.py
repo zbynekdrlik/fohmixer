@@ -394,6 +394,109 @@ class TreeTests(unittest.TestCase):
         )
         self.assertEqual(len(cl.IDENTITY), 5)
 
+    def line(self, patch: dict, src: list, dst: list) -> None:
+        patch["patcher"]["lines"].append({"patchline": {"source": src, "destination": dst}})
+
+    def node(self, patch: dict, box_id: str, text: str, inlets: int = 2) -> None:
+        patch["patcher"]["boxes"].append(
+            {
+                "box": {
+                    "id": box_id,
+                    "maxclass": "newobj",
+                    "text": text,
+                    "numinlets": inlets,
+                    "numoutlets": 1,
+                }
+            }
+        )
+
+    def test_the_identity_is_read_at_load_never_on_a_clock(self) -> None:
+        # #240: a `metro 1000` re-read every name each second (9 LOM calls
+        # per device) on Live's main thread.
+        for device in cl.DEVICES:
+            patch = self.patcher(device)
+            self.node(patch, "obj-id-metro", "metro 1000")
+            self.line(patch, ["obj-thisdevice", 0], ["obj-id-metro", 0])
+            self.line(patch, ["obj-id-metro", 0], ["obj-id-defer", 0])
+            self.save(patch, device)
+            errors = self.errors()
+            where = device.maxpat.as_posix()
+            self.assertIn(
+                f"{where}: obj-id-metro ('metro 1000') drives the live.observer "
+                "obj-parent1-observer (the identity is read at load and on a change only)",
+                errors,
+            )
+            self.assertIn(
+                f"{where}: obj-id-defer:0 takes [['obj-thisdevice', 0]] alone, "
+                "has [['obj-id-metro', 0], ['obj-thisdevice', 0]]",
+                errors,
+            )
+            self.assertIn(
+                f"{where}: obj-id-metro ('metro 1000') runs on a clock (the device has none)",
+                errors,
+            )
+            self.restore(device)
+        self.assertEqual(self.errors(), [])
+
+    def test_the_names_come_from_observers_on_the_followed_path(self) -> None:
+        for device in cl.DEVICES:
+            where = device.maxpat.as_posix()
+            patch = self.patcher(device)
+            for b in cl.boxes(patch["patcher"]):
+                if b.get("id") == "obj-parent2-observer":
+                    b["text"] = "live.object"
+            self.line(patch, ["obj-parent3-live-path", 0], ["obj-parent3-route-id", 0])
+            self.save(patch, device)
+            errors = self.errors()
+            self.assertIn(
+                f"{where}: obj-parent2-observer must be 'live.observer', has ['live.object']",
+                errors,
+            )
+            self.assertIn(
+                f"{where}: obj-parent2-observer is a live.object "
+                "(the names come from live.observer)",
+                errors,
+            )
+            self.assertIn(
+                f"{where}: obj-parent3-live-path's left outlet (it follows the object) "
+                "goes nowhere, has [['obj-parent3-route-id', 0]]",
+                errors,
+            )
+            self.assertIn(
+                f"{where}: obj-parent3-route-id:0 takes [['obj-parent3-live-path', 1]] alone, "
+                "has [['obj-parent3-live-path', 0], ['obj-parent3-live-path', 1]]",
+                errors,
+            )
+            self.restore(device)
+
+    def test_every_identity_line_is_held(self) -> None:
+        for (box, inlet), sources in cl.identity_wiring("obj-pack").items():
+            for src in sources:
+                patch = self.patcher(METER)
+                patch["patcher"]["lines"] = [
+                    ln
+                    for ln in patch["patcher"]["lines"]
+                    if (ln["patchline"]["source"], ln["patchline"]["destination"])
+                    != ([src[0], src[1]], [box, inlet])
+                ]
+                self.save(patch, METER)
+                self.assertTrue(
+                    any(f"{box}:{inlet} takes" in e for e in self.errors()), (box, inlet, src)
+                )
+        self.restore(METER)
+        self.assertEqual(self.errors(), [])
+
+    def test_a_gone_parent_reads_a_dash(self) -> None:
+        patch = self.patcher()
+        for b in cl.boxes(patch["patcher"]):
+            if b.get("id") == "obj-parent4-none":
+                b["text"] = "none"
+        self.save(patch)
+        self.assertIn(
+            f"{LUFS.maxpat.as_posix()}: obj-parent4-none must be '-', has ['none']",
+            self.errors(),
+        )
+
     def test_the_meter_patch_needs_no_gen(self) -> None:
         patch = self.patcher(METER)
         self.assertEqual([b for b in cl.boxes(patch["patcher"]) if cl.words(b)[:1] == ["gen~"]], [])

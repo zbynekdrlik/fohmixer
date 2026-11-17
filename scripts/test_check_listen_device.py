@@ -255,6 +255,53 @@ class ListenDeviceTests(unittest.TestCase):
 
         self.assertTrue(any("audio thread" in e for e in errors(edited(gate))))
 
+    def test_the_announce_sends_the_stored_identity_each_second(self) -> None:
+        # #240: the tick reads nothing from Live, the names come at load and
+        # on a change.
+        def lom_tick(p: dict) -> None:
+            p["lines"].append(
+                {
+                    "patchline": {
+                        "source": ["obj-announce-t", 0],
+                        "destination": ["obj-parent1-path", 0],
+                    }
+                }
+            )
+
+        found = errors(edited(lom_tick))
+        self.assertIn(
+            "p: obj-announce-metro ('metro 1000') drives the live.path obj-parent1-live-path "
+            "(the identity is read at load and on a change only)",
+            found,
+        )
+
+        def raw_tick(p: dict) -> None:
+            p["lines"].append(
+                {
+                    "patchline": {
+                        "source": ["obj-announce-metro", 0],
+                        "destination": ["obj-announce", 0],
+                    }
+                }
+            )
+
+        found = errors(edited(raw_tick))
+        self.assertIn(
+            "p: obj-announce:0 takes [['obj-announce-t', 0]] alone, "
+            "has [['obj-announce-metro', 0], ['obj-announce-t', 0]]",
+            found,
+        )
+        self.assertTrue(any("reaches the udpsend" in e for e in found), found)
+
+    def test_the_names_go_into_the_announce(self) -> None:
+        def elsewhere(p: dict) -> None:
+            p["lines"] = [
+                ln for ln in p["lines"] if ln["patchline"]["destination"] != ["obj-announce", 5]
+            ]
+
+        found = errors(edited(elsewhere))
+        self.assertIn("p: obj-announce:5 takes [['obj-parent2-symbol', 0]] alone, has []", found)
+
     def test_only_the_listen_id_names_the_device(self) -> None:
         def max_id(p: dict) -> None:
             p["lines"].append(

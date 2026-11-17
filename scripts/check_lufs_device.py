@@ -29,7 +29,12 @@ for each patch:
 - one `pack` whose first argument is the device's OSC address and whose
   version argument is `v<version.txt>`, which the face shows too;
 - the identity: the `live.path` messages for the device and its first four
-  canonical parents;
+  canonical parents, read once at load and again only on a change
+  (`identity_errors`, #240: a `live.observer` on each parent's `name`, fed
+  by `live.path`'s path-following outlet; no timed box upstream of any LOM
+  object, no `live.object`), the names into the pack's cold inlets;
+- no `metro` or `qmetro` at all (the send follows the audio, the identity
+  its changes);
 - every patch line joins two boxes of the patch within their outlets and
   inlets;
 - the LUFS device only: one `gen~` with one codebox whose code equals
@@ -231,6 +236,14 @@ def patch_errors(
             )
     messages = {str(b.get("text", "")) for b in every if b.get("maxclass") == "message"}
     errors += [f"{where}: no '{path}' message" for path in IDENTITY if path not in messages]
+    if len(packs) == 1:
+        sink = next(b.get("id") for b in every if words(b)[:1] == ["pack"])
+        errors += identity_errors(where, patcher, every, sink)
+    errors += [
+        f"{where}: {b.get('id')} ('{b.get('text')}') runs on a clock (the device has none)"
+        for b in every
+        if kind(b) in ("metro", "qmetro")
+    ]
     shown = [b.get("text") for b in every if b.get("varname") == "version"]
     if shown != [f"v{version}"]:
         errors.append(f"{where}: its face shows {shown}, expected ['v{version}'] (version.txt)")
@@ -356,6 +369,142 @@ def thread_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
                     )
                     continue
                 todo += [(src, hot) for hot in HOT.get(kind(source), (0,))]
+    return errors
+
+
+# The identity (#240): read once at load and again only on a change. The
+# load: `live.thisdevice` -> `deferlow` -> `obj-id-load` (`t b b b b b b`:
+# the observers' property first, then the device's path, then the four
+# parents' paths). Each parent: its path into a `live.path` whose middle
+# outlet (it follows the path: a new id when another object comes there)
+# goes through `route id` into `t i i`: the id first into the
+# `live.observer`'s right inlet (`prepend id`; `id 0` stops observing),
+# then `sel 0`, whose match sends `-`. The observer's value (the name, now
+# and at each change) and the `-` go through `tosymbol` into the sink's
+# cold inlet (4 + the parent's level - 1), which keeps it for every send.
+ID_LOAD = "obj-id-load"
+ID_DEFER = "obj-id-defer"
+ID_PROPERTY = "obj-id-property"
+FOLLOWS_PATH = 1
+LOM = ("live.path", "live.object", "live.observer")
+
+
+def identity_boxes() -> dict[str, list[str]]:
+    """The identity's boxes (id: words)."""
+    found = {
+        ID_DEFER: ["deferlow"],
+        ID_LOAD: ["t", *["b"] * (PARENTS + 2)],
+        ID_PROPERTY: ["property", "name"],
+        "obj-id-path": IDENTITY[0].split(),
+        "obj-id-live-path": ["live.path"],
+        "obj-id-route": ["route", "id"],
+    }
+    for level in range(1, PARENTS + 1):
+        name = f"obj-parent{level}"
+        found |= {
+            f"{name}-path": IDENTITY[level].split(),
+            f"{name}-live-path": ["live.path"],
+            f"{name}-route-id": ["route", "id"],
+            f"{name}-t": ["t", "i", "i"],
+            f"{name}-prepend": ["prepend", "id"],
+            f"{name}-observer": ["live.observer"],
+            f"{name}-sel": ["sel", "0"],
+            f"{name}-none": ["-"],
+            f"{name}-symbol": ["tosymbol"],
+        }
+    return found
+
+
+def identity_wiring(sink: str) -> dict[tuple[str, int], list[tuple[str, int]]]:
+    """Each guarded inlet of the identity and the only sources it takes."""
+    found: dict[tuple[str, int], list[tuple[str, int]]] = {
+        (ID_DEFER, 0): [("obj-thisdevice", 0)],
+        (ID_LOAD, 0): [(ID_DEFER, 0)],
+        (ID_PROPERTY, 0): [(ID_LOAD, PARENTS + 1)],
+        ("obj-id-path", 0): [(ID_LOAD, PARENTS)],
+        ("obj-id-live-path", 0): [("obj-id-path", 0)],
+        ("obj-id-route", 0): [("obj-id-live-path", 0)],
+    }
+    for level in range(1, PARENTS + 1):
+        name = f"obj-parent{level}"
+        found |= {
+            (f"{name}-path", 0): [(ID_LOAD, PARENTS - level)],
+            (f"{name}-live-path", 0): [(f"{name}-path", 0)],
+            (f"{name}-route-id", 0): [(f"{name}-live-path", FOLLOWS_PATH)],
+            (f"{name}-t", 0): [(f"{name}-route-id", 0)],
+            (f"{name}-prepend", 0): [(f"{name}-t", 1)],
+            (f"{name}-observer", 0): [(ID_PROPERTY, 0)],
+            (f"{name}-observer", 1): [(f"{name}-prepend", 0)],
+            (f"{name}-sel", 0): [(f"{name}-t", 0)],
+            (f"{name}-none", 0): [(f"{name}-sel", 0)],
+            (f"{name}-symbol", 0): [(f"{name}-observer", 0), (f"{name}-none", 0)],
+            (sink, 3 + level): [(f"{name}-symbol", 0)],
+        }
+    return found
+
+
+def identity_errors(where: str, patcher: dict, every: list[dict], sink: str) -> list[str]:
+    """The identity read at load and on a change, never on a clock."""
+    ids = {b.get("id"): b for b in every}
+    errors = [
+        f"{where}: {box} must be '{' '.join(want)}', has {words(ids.get(box, {}))}"
+        for box, want in identity_boxes().items()
+        if words(ids.get(box, {})) != want
+    ]
+    for (box, inlet), sources in identity_wiring(sink).items():
+        fed = feeds(patcher, box, inlet)
+        want = sorted([list(s) for s in sources])
+        if fed != want:
+            errors.append(f"{where}: {box}:{inlet} takes {want} alone, has {fed}")
+    for level in range(1, PARENTS + 1):
+        box = f"obj-parent{level}-live-path"
+        out = sorted(
+            item["patchline"]["destination"]
+            for item in patcher.get("lines", [])
+            if item.get("patchline", {}).get("source") == [box, 0]
+        )
+        if out:
+            errors.append(
+                f"{where}: {box}'s left outlet (it follows the object) goes nowhere, has {out}"
+            )
+    errors += [
+        f"{where}: {b.get('id')} is a live.object (the names come from live.observer)"
+        for b in every
+        if kind(b) == "live.object"
+    ]
+    errors += lom_clock_errors(where, patcher, every)
+    return errors
+
+
+def lom_clock_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
+    """A timed box anywhere upstream of a LOM object (any inlet; a
+    `deferlow` changes the thread, not the rate): each would call Live
+    again and again."""
+    ids = {b.get("id"): b for b in every}
+    errors = []
+    for lom in every:
+        if kind(lom) not in LOM:
+            continue
+        seen: set[str] = set()
+        todo = [lom.get("id")]
+        while todo:
+            box = todo.pop()
+            for item in patcher.get("lines", []):
+                line = item.get("patchline", {})
+                if line.get("destination", [None])[0] != box:
+                    continue
+                src = line["source"][0]
+                if src in seen:
+                    continue
+                seen.add(src)
+                if kind(ids.get(src, {})) in (*TIMED, "qmetro"):
+                    errors.append(
+                        f"{where}: {src} ('{ids[src].get('text')}') drives the "
+                        f"{kind(lom)} {lom.get('id')} (the identity is read at "
+                        "load and on a change only)"
+                    )
+                    continue
+                todo.append(src)
     return errors
 
 
