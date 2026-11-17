@@ -888,6 +888,228 @@ fn an_edit_renames_adds_and_removes_layouts_as_one_change() {
 }
 
 #[test]
+fn an_edit_moves_a_fader_between_two_layouts_of_two_sectors() {
+    // #233: ARRANGE's drag carries Vox 3 from LU's layout onto RU's: the
+    // kept layouts, taken together, hold the same faders.
+    let before = ordered();
+    let layout = ordered_pool_layout();
+    let pooled = pool(&layout);
+    let sectors = reordered(
+        &before,
+        &[
+            ("lu-1", vec!["Vox 1", "Vox 2"]),
+            ("ru-1", vec!["Klavir", "Vox 3", "Bass"]),
+        ],
+    );
+    let after = edit(&before, &sectors, 7, &pooled).unwrap();
+    assert_eq!(after.rev, 8);
+    assert_eq!(
+        after.layouts(SectorId::Lu),
+        &[sl("lu-1", "VOX", vec![band("Vox 1"), band("Vox 2")])]
+    );
+    assert_eq!(
+        after.layouts(SectorId::Ru),
+        &[sl(
+            "ru-1",
+            "BAND",
+            vec![band("Klavir"), band("Vox 3"), band("Bass")]
+        )]
+    );
+    let counts = serde_json::to_value(edit_counts(&before, &after)).unwrap();
+    assert_eq!(counts["moved"], json!(1), "{counts}");
+    assert_eq!(counts["reordered"], json!(2), "{counts}");
+    // A swap across the layouts (Vox 1 into ru-1's first slot, Klavir into
+    // lu-1's) moves two, leaving their slots where they were.
+    let swapped = edit(
+        &before,
+        &reordered(
+            &before,
+            &[
+                ("lu-1", vec!["Klavir", "Vox 2", "Vox 3"]),
+                ("ru-1", vec!["Vox 1", "Bass"]),
+            ],
+        ),
+        7,
+        &pooled,
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(edit_counts(&before, &swapped)).unwrap()["moved"],
+        json!(2)
+    );
+    // Into another sector's empty gap: the old slot left empty, the
+    // gap filled (no unit more there).
+    let mut gapped = before.clone();
+    gapped.sectors.insert(
+        SectorId::Ru,
+        vec![slotted(
+            "ru-1",
+            "BAND",
+            vec![
+                Some(band("Klavir")),
+                None,
+                None,
+                None,
+                None,
+                Some(band("Bass")),
+            ],
+        )],
+    );
+    let into_gap = edit(
+        &gapped,
+        &reordered(
+            &gapped,
+            &[
+                ("lu-1", vec!["Vox 1", "", "Vox 3"]),
+                ("ru-1", vec!["Klavir", "", "Vox 2", "", "", "Bass"]),
+            ],
+        ),
+        7,
+        &pooled,
+    )
+    .unwrap();
+    assert_eq!(
+        into_gap.layouts(SectorId::Lu)[0].strips,
+        vec![Some(band("Vox 1")), None, Some(band("Vox 3"))]
+    );
+    // A plain reorder moves nothing.
+    let reorder = edit(
+        &before,
+        &reordered(&before, &[("ru-1", vec!["Bass", "Klavir"])]),
+        7,
+        &pooled,
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(edit_counts(&before, &reorder)).unwrap()["moved"],
+        json!(0)
+    );
+}
+
+#[test]
+fn a_move_into_a_full_layout_is_full_and_changes_nothing() {
+    let layout = ordered_pool_layout();
+    let pooled = pool(&layout);
+    let mut before = ordered();
+    // ru-1 holds 6 units: Klavir, four gaps, Bass.
+    before.sectors.insert(
+        SectorId::Ru,
+        vec![slotted(
+            "ru-1",
+            "BAND",
+            vec![
+                Some(band("Klavir")),
+                None,
+                None,
+                None,
+                None,
+                Some(band("Bass")),
+            ],
+        )],
+    );
+    let full_move = reordered(
+        &before,
+        &[
+            ("lu-1", vec!["Vox 1", "Vox 2"]),
+            ("ru-1", vec!["Klavir", "", "", "", "", "Bass", "Vox 3"]),
+        ],
+    );
+    assert_eq!(edit(&before, &full_move, 7, &pooled), Err(Refusal::Full));
+    // A layout a hand edit put past 6 units gives a fader away: it only
+    // shrinks, so it is never FULL for that; the layout taking it grows
+    // within its room.
+    let mut over = ordered();
+    over.sectors.insert(
+        SectorId::Lu,
+        vec![slotted(
+            "lu-1",
+            "VOX",
+            vec![
+                Some(band("Vox 1")),
+                Some(band("Vox 2")),
+                None,
+                None,
+                None,
+                None,
+                Some(band("Vox 3")),
+            ],
+        )],
+    );
+    let out = edit(
+        &over,
+        &reordered(
+            &over,
+            &[
+                ("lu-1", vec!["Vox 1", "", "", "", "", "", "Vox 3"]),
+                ("ru-1", vec!["Klavir", "Bass", "Vox 2"]),
+            ],
+        ),
+        7,
+        &pooled,
+    )
+    .unwrap();
+    assert_eq!(
+        out.layouts(SectorId::Ru)[0].strips,
+        full(vec![band("Klavir"), band("Bass"), band("Vox 2")])
+    );
+}
+
+#[test]
+fn a_fader_from_nowhere_or_twice_in_a_layout_is_stale() {
+    let before = ordered();
+    let layout = ordered_pool_layout();
+    let pooled = pool(&layout);
+    // Vox 3 shows up in ru-1 and stays in lu-1 too: from nowhere.
+    assert_eq!(
+        edit(
+            &before,
+            &reordered(&before, &[("ru-1", vec!["Klavir", "Bass", "Vox 3"])]),
+            7,
+            &pooled
+        ),
+        Err(Refusal::Stale)
+    );
+    // A fader only one sector's layout knew of before, now in a new
+    // layout: a new layout starts empty.
+    let mut sectors = reordered(&before, &[("lu-1", vec!["Vox 1", "Vox 2"])]);
+    sectors
+        .get_mut(&SectorId::Ru)
+        .unwrap()
+        .push(sl("ru-2", "NEW", vec![band("Vox 3")]));
+    assert_eq!(edit(&before, &sectors, 7, &pooled), Err(Refusal::Stale));
+    // ru-1 already holds Klavir (a fader can sit in several layouts):
+    // the copy in lu-1 moved there would be there twice.
+    let mut twice = before.clone();
+    twice.sectors.insert(
+        SectorId::Lu,
+        vec![sl(
+            "lu-1",
+            "VOX",
+            vec![band("Vox 1"), band("Klavir"), band("Vox 3")],
+        )],
+    );
+    assert_eq!(
+        edit(
+            &twice,
+            &reordered(
+                &twice,
+                &[
+                    ("lu-1", vec!["Vox 1", "", "Vox 3"]),
+                    ("ru-1", vec!["Klavir", "Bass", "Klavir"]),
+                ],
+            ),
+            7,
+            &pooled
+        ),
+        Err(Refusal::Stale)
+    );
+    // A removed layout's faders leave with it; they never go elsewhere.
+    let mut gone = reordered(&before, &[("ru-1", vec!["Klavir", "Bass", "Vox 1"])]);
+    gone.insert(SectorId::Lu, vec![sl("lu-2", "NEW", Vec::new())]);
+    assert_eq!(edit(&before, &gone, 7, &pooled), Err(Refusal::Stale));
+}
+
+#[test]
 fn a_new_or_changed_title_is_1_to_8_upper_case_characters() {
     assert!(title_ok("MONITORS"));
     assert!(title_ok("NEW 2"));
