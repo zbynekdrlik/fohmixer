@@ -464,3 +464,82 @@ fn the_newest_start_takes_the_track_from_the_pages_listening() {
         host.stop();
     });
 }
+
+/// `GET /api/listen/select?device=<device>` with no token, as a device's
+/// `maxurl` asks it, plus `header` (a proxy's): the status code and the body.
+async fn select_of(hub: &TestHub, device: i32, header: Option<&str>) -> (u16, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(hub.addr).await.unwrap();
+    let extra = header.map(|h| format!("{h}\r\n")).unwrap_or_default();
+    let request = format!(
+        "GET /api/listen/select?device={device} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n{extra}\r\n",
+        hub.addr
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut bytes = Vec::new();
+    tokio::time::timeout(SECS_10, stream.read_to_end(&mut bytes))
+        .await
+        .expect("an answer within 10 s")
+        .unwrap();
+    let text = String::from_utf8_lossy(&bytes).to_string();
+    let code = text
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .unwrap_or_else(|| panic!("not an HTTP answer: {text}"));
+    let body = text.split_once("\r\n\r\n").map(|(_, b)| b.to_string());
+    (code, body.unwrap_or_default())
+}
+
+#[test]
+fn each_device_asks_the_hub_whether_it_is_selected() {
+    // #210's PC finding: every device of a Live shared one UDP select port
+    // and only one of them heard the hub. Each device now asks the hub
+    // itself (`maxurl`, every 250 ms), loopback only, with no token.
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let (port, select_port) = (free_port(), free_port());
+        let mut host = Host::start_listen("band", &site(), port, select_port);
+        assert_eq!(host.listendev("listendev track 1 add rack"), 1);
+        assert_eq!(host.listendev("listendev track 2 add"), 1);
+        let hub = hub(dir.path(), &host, port, select_port).await;
+        let status = hub
+            .status_until(SECS_10, |s| s.listen.devices.len() == 2)
+            .await;
+        let id_of = |track: &str| {
+            status
+                .listen
+                .devices
+                .iter()
+                .find(|d| d.track == track)
+                .unwrap()
+                .device
+        };
+        let (vox, other) = (id_of(VOX), id_of(OTHER));
+        let off = (200, r#"{"on":false}"#.to_string());
+        let on = (200, r#"{"on":true}"#.to_string());
+        assert_eq!(select_of(&hub, vox, None).await, off, "nothing listened to");
+
+        let mut a = audio(&hub).await;
+        send(&mut a, start(VOX)).await;
+        assert_eq!(told(&mut a).await["status"], "listening");
+        assert_eq!(select_of(&hub, vox, None).await, on);
+        assert_eq!(select_of(&hub, other, None).await, off);
+        // Through a proxy (the tunnel connects from 127.0.0.1): refused.
+        let (code, _) = select_of(&hub, vox, Some("X-Forwarded-For: 10.0.0.5")).await;
+        assert_eq!(code, 403);
+
+        // Another track: each device is told on its own.
+        send(&mut a, start(OTHER)).await;
+        assert_eq!(told(&mut a).await["status"], "listening");
+        assert_eq!(select_of(&hub, vox, None).await, off);
+        assert_eq!(select_of(&hub, other, None).await, on);
+        drop(a);
+        hub.status_until(SECS_10, |s| s.listen.target.is_none())
+            .await;
+        assert_eq!(select_of(&hub, other, None).await, off);
+        hub.stop().await;
+        host.stop();
+    });
+}
