@@ -180,6 +180,50 @@ class StreamTest(unittest.TestCase):
         self.assertEqual(device.streamed, before)
         conn.close()
 
+    def test_a_device_in_a_rack_that_is_off_neither_announces_nor_streams(self):
+        # #238: the PC's sets are saved with every Listen rack off, and the
+        # hub switches a track's rack on only while a page listens to it.
+        track = self.song.tracks[1]
+        device = self.devs.add(track, rack=True, on=False)
+        self.assertEqual(device.rack.parameters[0].name, "Device On")
+        self.assertEqual(device.rack.parameters[0].value, 0.0)
+        self.assertFalse(device.active())
+        self.hub_udp.settimeout(0.3)
+        self.devs.tick()
+        with self.assertRaises(socket.timeout):
+            self.hub_udp.recv(512)
+        self.select(device.id)
+        for _ in range(20):
+            self.clock.now += 0.01
+            self.devs.tick()
+        self.assertIsNone(device.conn, "no stream while the rack is off")
+        self.assertEqual(device.streamed, 0)
+        # The hub switches the rack on: it announces and streams.
+        device.rack.parameters[0].value = 1.0
+        self.assertTrue(device.active())
+        self.clock.now += listendev.ANNOUNCE_S
+        self.select(device.id)
+        self.devs.tick()
+        self.hub_udp.settimeout(5.0)
+        self.assertIn(track.name.encode(), self.hub_udp.recv(512))
+        self.tick_until(lambda: device.conn is not None)
+        conn, _ = self.hub_tcp.accept()
+        self.clock.now += 0.1
+        self.devs.tick()
+        self.assertGreater(device.streamed, 0)
+        # Off again: the stream stops at once, though still selected.
+        device.rack.parameters[0].value = 0.0
+        before = device.streamed
+        self.select(device.id)
+        self.clock.now += 0.1
+        self.devs.tick()
+        self.assertEqual(device.streamed, before)
+        conn.close()
+
+    def test_a_device_with_no_rack_or_a_rack_on_runs(self):
+        self.assertTrue(self.devs.add(self.song.tracks[0], rack=False).active())
+        self.assertTrue(self.devs.add(self.song.tracks[1], rack=True).active())
+
     def test_a_device_stops_after_the_hold_with_no_answer(self):
         device = self.devs.add(self.song.tracks[0], rack=False)
         self.select(device.id)
@@ -279,6 +323,18 @@ class LineTest(unittest.TestCase):
         names = [d.name for d in self.song.tracks[1].devices]
         self.assertIn(listendev.RACK_NAME, names)
 
+    def test_a_rack_added_off_and_its_device_on(self):
+        self.assertEqual(self.line("listendev track 1 add rack off"), "LISTENDEV 1")
+        self.assertEqual(self.line("listenrack track 1"), "LISTENRACK 0")
+        self.assertEqual(self.line("listendev track 2 add rack off 96000"), "LISTENDEV 1")
+        off = self.devs.on(self.song.tracks[2])[-1]
+        self.assertEqual((off.rate, off.active()), (96000, False))
+        self.assertEqual(self.line("listendev track 3 add rack"), "LISTENDEV 1")
+        self.assertEqual(self.line("listenrack track 3"), "LISTENRACK 1")
+        self.assertEqual(self.line("listendev track 4 add"), "LISTENDEV 1")
+        self.assertEqual(self.line("listenrack track 4"), "LISTENRACK -1")
+        self.assertEqual(self.line("listenrack track 5"), "LISTENRACK -1")
+
     def test_a_device_at_96_khz(self):
         self.assertEqual(self.line("listendev track 1 add rack 96000"), "LISTENDEV 1")
         self.assertEqual(self.line("listendev track 2 add 96000"), "LISTENDEV 1")
@@ -296,6 +352,11 @@ class LineTest(unittest.TestCase):
             ("listendev track 1 add 96000 rack", "LISTENDEV"),
             ("listendev track 1 add rack 96000 x", "LISTENDEV"),
             ("listendev track 1 remove 96000", "LISTENDEV"),
+            ("listendev track 1 add off", "LISTENDEV"),
+            ("listendev track 1 add rack off x", "LISTENDEV"),
+            ("listendev track 1 add rack 96000 off", "LISTENDEV"),
+            ("listenrack track x", "LISTENRACK"),
+            ("listenrack track 1 1", "LISTENRACK"),
             ("listendev track 99 add", "LISTENDEV"),
             ("listendev track 1 remove", "LISTENDEV"),
             ("listendev track 1 remove rack", "LISTENDEV"),
