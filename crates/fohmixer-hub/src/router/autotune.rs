@@ -74,8 +74,8 @@ use fohmixer_proto::layout::AutotuneTarget;
 use fohmixer_proto::songmap::Counts;
 use serde_json::{Value, json};
 
+use super::Router;
 use super::retries::transient;
-use super::{Router, transport_heard};
 use crate::eq::close::{STALE_REF, UNKNOWN_REF};
 use crate::eq::walk::refused;
 use crate::live::subs::ClientId;
@@ -83,7 +83,7 @@ use crate::outbox::Outbox;
 use crate::rules::autotune::find::{Found, KeyFound};
 use crate::rules::autotune::keys::KeyTarget;
 use crate::rules::autotune::switch::{
-    Decision, Flying, Refusal, SelectorGuard, answered_flying, needs_write, still_flying,
+    Decision, Flying, Refusal, SelectorGuard, answered_flying, needs_write,
 };
 use crate::rules::autotune::{
     AutotuneAut, Cause, REFUSED_WHY, Step, shows, step_line, step_warn, target_state,
@@ -92,6 +92,8 @@ use crate::rules::autotune::{
 #[path = "autotune/keys.rs"]
 mod keys;
 use keys::{Position, key_status};
+#[path = "autotune/delivery.rs"]
+mod delivery;
 #[path = "autotune/engage.rs"]
 mod engage;
 #[path = "autotune/key_writes.rs"]
@@ -864,56 +866,6 @@ impl Router {
             self.autotune_safe(instance);
         }
         self.autotune_decide(instance, Cause::Written);
-    }
-
-    /// A delivery of one of AUTOTUNE's subscriptions (its hub key `sub`): a
-    /// target's macro, its key device's Key or Scale, or a set's playhead or
-    /// tempo (#140 PR 2), each to its own; anything else does nothing.
-    pub(super) fn autotune_delivery(
-        &mut self,
-        sub: &str,
-        value: Option<Value>,
-        error: Option<String>,
-    ) {
-        match self.autotune.route(sub) {
-            Some(keys::Route::Macro(key)) => self.autotune_macro_value(&key, value, error),
-            Some(keys::Route::Key(key, part)) => self.autotune_key_value(&key, part, value, error),
-            Some(keys::Route::Position(instance, part)) => {
-                self.autotune_position_value(&instance, part, value, error);
-            }
-            None => return,
-        }
-        self.autotune_tell();
-    }
-
-    /// A delivery of a target's macro value: a value (the echo of the
-    /// hub's own write on its way, or judged for another writer: #140 PR
-    /// 3b), or an error (the macro's path no longer resolves: its value
-    /// dropped and the target walked again).
-    fn autotune_macro_value(&mut self, key: &str, value: Option<Value>, error: Option<String>) {
-        match transport_heard(value, error) {
-            Some(Ok(value)) => {
-                let Some(target) = self.autotune.targets.get_mut(key) else {
-                    return;
-                };
-                let was = target.value;
-                target.value = value.as_f64();
-                // The writes on their way before it, then those it did not
-                // land (PR #147 review I1).
-                let flying: Vec<bool> = target.writing.iter().map(|f| f.on).collect();
-                target.writing = still_flying(&target.writing, target.shows());
-                self.autotune_heard(key, was, &flying);
-            }
-            Some(Err(error)) => {
-                tracing::warn!(key = %key, error = ?error, "AUTOTUNE lost a rack's macro: it looks again");
-                if let Some(target) = self.autotune.targets.get_mut(key) {
-                    target.value = None;
-                    target.writing.clear();
-                }
-                self.autotune_walk(key);
-            }
-            None => {}
-        }
     }
 
     /// A page's `set_hub` of an AUTOTUNE key: whether it was one (another,
