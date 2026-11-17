@@ -265,6 +265,68 @@ def send_errors(
     return errors
 
 
+# The threads (#240). Max for Live runs Max's scheduler inside Live's audio
+# thread, so a timed object's output (and everything it triggers) runs
+# there; `deferlow` and `qmetro` hand it to the low-priority queue (Live's
+# main thread). A network object is reached from a timed one only through
+# one of them. Hot inlets: the ones whose message makes the box output
+# (`gate` passes its right inlet's message; `jit.net.send` sends both).
+NETWORK = {"udpsend": (0,), "maxurl": (0,), "jit.net.send": (0, 1)}
+LOW_PRIORITY = ("deferlow", "defer", "qmetro")
+TIMED = (
+    "metro",
+    "delay",
+    "pipe",
+    "snapshot~",
+    "peakamp~",
+    "transport",
+    "clocker",
+    "tempo",
+    "line",
+    "speedlim",
+)
+HOT = {"gate": (1,)}
+
+
+def kind(box: dict) -> str:
+    """An object box's class (its first word); a message box has none."""
+    if box.get("maxclass") == "message":
+        return ""
+    found = words(box)
+    return found[0] if found else ""
+
+
+def thread_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
+    """Every timed box whose output reaches a network object through hot
+    inlets with no `deferlow` or `qmetro` between (a cold inlet only
+    stores: what a timed box stores there is sent by another thread)."""
+    ids = {b.get("id"): b for b in every}
+    errors = []
+    for net in every:
+        if kind(net) not in NETWORK:
+            continue
+        seen: set[str] = set()
+        todo = [(net.get("id"), inlet) for inlet in NETWORK[kind(net)]]
+        while todo:
+            box, inlet = todo.pop()
+            for src, _ in feeds(patcher, box, inlet):
+                if src in seen:
+                    continue
+                seen.add(src)
+                source = ids.get(src, {})
+                if kind(source) in LOW_PRIORITY:
+                    continue
+                if kind(source) in TIMED:
+                    errors.append(
+                        f"{where}: {src} ('{source.get('text')}') reaches the "
+                        f"{kind(net)} {net.get('id')} on the audio thread "
+                        "(a deferlow or a qmetro goes between)"
+                    )
+                    continue
+                todo += [(src, hot) for hot in HOT.get(kind(source), (0,))]
+    return errors
+
+
 def device_errors(root: Path, device: Device, port: int) -> list[str]:
     code = None
     if device.genexpr is not None:

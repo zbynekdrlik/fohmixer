@@ -143,7 +143,7 @@ class ListenDeviceTests(unittest.TestCase):
             )
 
         found = errors(edited(twice))
-        self.assertIn("p: 2 qmetro boxes", found)
+        self.assertIn("p: 3 qmetro boxes (the stream's and the poll's)", found)
 
     def test_a_path_or_junk_is_refused(self) -> None:
         self.assertTrue(any("absolute file path" in e for e in errors(TEXT + " C:\\\\x")))
@@ -191,12 +191,69 @@ class ListenDeviceTests(unittest.TestCase):
 
     def test_the_poll_boxes_are_the_ones_wired(self) -> None:
         def swapped(p: dict) -> None:
-            box(p, "obj-poll-metro")["text"] = "delay 1000"
-            box(p, "obj-select-hold")["text"] = "metro 250"
+            box(p, "obj-poll-qmetro")["text"] = "delay 1000"
+            box(p, "obj-select-hold")["text"] = "qmetro 250"
 
         found = errors(edited(swapped))
-        self.assertIn("p: obj-poll-metro must be 'metro 250'", found)
+        self.assertIn("p: obj-poll-qmetro must be 'qmetro 250'", found)
         self.assertIn("p: obj-select-hold must be 'delay 1000'", found)
+
+    def test_the_poll_and_the_hold_stay_off_the_audio_thread(self) -> None:
+        # #240: a `metro` runs on Max for Live's scheduler, inside Live's
+        # audio thread; the poll's request and the hold's end leave it.
+        def metro(p: dict) -> None:
+            box(p, "obj-poll-qmetro")["text"] = "metro 250"
+
+        found = errors(edited(metro))
+        self.assertIn(
+            "p: obj-poll-qmetro ('metro 250') reaches the maxurl obj-poll-maxurl on the "
+            "audio thread (a deferlow or a qmetro goes between)",
+            found,
+        )
+
+        def undeferred(p: dict) -> None:
+            p["lines"].append(
+                {
+                    "patchline": {
+                        "source": ["obj-select-hold", 0],
+                        "destination": ["obj-select-off", 0],
+                    }
+                }
+            )
+
+        found = errors(edited(undeferred))
+        self.assertIn(
+            "p: obj-select-hold ('delay 1000') reaches the jit.net.send obj-net on the "
+            "audio thread (a deferlow or a qmetro goes between)",
+            found,
+        )
+
+    def test_a_timed_value_in_a_cold_inlet_is_no_send(self) -> None:
+        # The hold's state into the announce's last (cold) inlet is sent by
+        # the deferred announce, never by the delay.
+        def cold(p: dict) -> None:
+            p["lines"].append(
+                {
+                    "patchline": {
+                        "source": ["obj-select-hold", 0],
+                        "destination": ["obj-announce", 9],
+                    }
+                }
+            )
+
+        self.assertFalse(any("audio thread" in e for e in errors(edited(cold))))
+
+        def gate(p: dict) -> None:
+            p["lines"].append(
+                {
+                    "patchline": {
+                        "source": ["obj-select-hold", 0],
+                        "destination": ["obj-hello-gate", 1],
+                    }
+                }
+            )
+
+        self.assertTrue(any("audio thread" in e for e in errors(edited(gate))))
 
     def test_only_the_listen_id_names_the_device(self) -> None:
         def max_id(p: dict) -> None:
