@@ -1,8 +1,13 @@
-//! A stop's DRY writes spread out (#140, the DECIDED comment of
-//! 2026-11-09): dasio measured band Live's audio callback at 5.8-11.5 ms at
+//! A transport decision's writes spread out. A stop's DRY (#140, the
+//! DECIDED comment of 2026-11-09): dasio measured band Live's audio callback at 5.8-11.5 ms at
 //! every stop while the hub wrote every selector in one batch (each write
 //! swaps a rack's chain, all in one Live tick, one audio block; 11.45 ms
-//! dropped a block, a click), about 3 ms without them.
+//! dropped a block, a click), about 3 ms without them. Since #190 (the
+//! design of 2026-11-17) a play start's switch-on is spread the same way,
+//! after the engage delay's end (at the start itself with no delay): its
+//! one batch still stalled band Live's callback (5-8.5 ms, once 26 ms).
+//! Every transport decision spreads; a hold, a key change and every other
+//! cause stay one batch.
 //!
 //! - **One selector per batch,** [`STOP_SPREAD_MS`] apart, in Live's order:
 //!   the first at once, each next one when its turn's timer fires
@@ -11,9 +16,10 @@
 //! - **A write still to come is on its way already** (`Target.writing`,
 //!   numbered when the spread starts), so every decision meanwhile (a write's
 //!   answer, an echo) judges that selector written and writes it nothing.
-//! - **A start drops the rest** (`start`) before it decides: its selectors
-//!   were never written, Live still shows their chain, and the start decides
-//!   them afresh (one batch, nothing written twice).
+//! - **Every transport change drops the rest** before it decides: a start a
+//!   stop's DRY (`start`: its selectors were never written, Live still shows
+//!   their chain, and the start decides them afresh, nothing written twice),
+//!   a stop a switch-on's (`stop`: no switch-on goes after the stop's DRY).
 //! - **A hold and a target let go write DRY at once** (`hold`, `retire`):
 //!   the rest is dropped first, so their own DRY batch takes those
 //!   selectors through their last refs. A disconnect drops it (`offline`).
@@ -62,8 +68,8 @@ fn owed(found: Option<&str>, writing: &[Flying], pending: &Pending) -> bool {
 }
 
 impl Router {
-    /// A stop's DRY writes of `set` (`going`, Live's order; its decision
-    /// never hands over none): the first now, the rest one per
+    /// A transport decision's writes of `set` (`going`, Live's order; its
+    /// decision never hands over none): the first now, the rest one per
     /// [`STOP_SPREAD_MS`]; while a spread runs, all wait behind it (a lost
     /// transport within a stop's spread: never two writes in one turn).
     pub(super) fn autotune_spread(&mut self, set: &str, cause: Cause, mut going: Vec<Going>) {
@@ -86,7 +92,7 @@ impl Router {
                 Pending { going: g, write }
             })
             .collect();
-        tracing::debug!(instance = %set, queued = queue.len(), running, "AUTOTUNE queues a stop's DRY writes");
+        tracing::debug!(instance = %set, queued = queue.len(), running, "AUTOTUNE queues a transport decision's writes");
         self.autotune_step(
             Step::Spread {
                 instance: set.to_string(),
