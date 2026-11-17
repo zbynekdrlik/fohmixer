@@ -131,7 +131,14 @@ struct Batch {
     mark: u64,
     /// Live keys whose listener a `remove_listener` of this drain or one
     /// still in flight ends (#243): a push kept for one of them may come
-    /// from that older listener even after the mark, so it is never applied.
+    /// from that older listener even after the mark, and the removal drops
+    /// the script's dirty mark, so no later push would correct it: it is
+    /// never applied (a fresh push of the new listener then goes too, as
+    /// before #243). A removal still queued (`Instance.release`) is not
+    /// here: it waits while this batch is in flight, and this batch's result
+    /// cancels it (`link`), so the script's one listener per key lives on
+    /// and a change after its push pushes again (the script reads the value
+    /// at each flush): replaying in arrival order then ends at Live's value.
     released: BTreeSet<String>,
 }
 
