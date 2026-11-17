@@ -368,6 +368,14 @@ async fn aut_off_within_the_switch_ons_spread_sends_no_switch_on_after_its_dry()
     );
     next_turn(&mut router);
     live.quiet();
+    // The dropped switch-on is no longer on its way (never sent): only AUT
+    // off's DRY is, so another writer's move to the chain is no echo.
+    let writing: Vec<bool> = router.autotune.targets[STREAM]
+        .writing
+        .iter()
+        .map(|f| f.on)
+        .collect();
+    assert_eq!(writing, [false]);
     live.answer(&mut router, dry);
     pass(&mut router, &mut live, SPREAD * 5).await;
     assert_eq!(
