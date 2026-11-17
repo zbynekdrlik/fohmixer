@@ -410,7 +410,7 @@ class TreeTests(unittest.TestCase):
             }
         )
 
-    def test_the_identity_is_read_at_load_never_on_a_clock(self) -> None:
+    def test_the_identity_is_never_read_by_another_clock(self) -> None:
         # #240: a `metro 1000` re-read every name each second (9 LOM calls
         # per device) on Live's main thread.
         for device in cl.DEVICES:
@@ -423,7 +423,8 @@ class TreeTests(unittest.TestCase):
             where = device.maxpat.as_posix()
             self.assertIn(
                 f"{where}: obj-id-metro ('metro 1000') drives the live.observer "
-                "obj-parent1-observer (the identity is read at load and on a change only)",
+                "obj-parent1-observer (the identity is read at load, on a change and by its "
+                "own 10 s clock only)",
                 errors,
             )
             self.assertIn(
@@ -432,7 +433,100 @@ class TreeTests(unittest.TestCase):
                 errors,
             )
             self.assertIn(
-                f"{where}: obj-id-metro ('metro 1000') runs on a clock (the device has none)",
+                f"{where}: obj-id-metro ('metro 1000') runs on a clock (the device has none "
+                "but the identity's)",
+                errors,
+            )
+            self.restore(device)
+        self.assertEqual(self.errors(), [])
+
+    def test_the_identity_is_read_again_every_10_s_by_its_own_staggered_clock(self) -> None:
+        # #240, the PC proof's attempt 2: `live.path`'s follow missed a move
+        # into a chain for over 30 s. The DECIDED: the four parents' paths
+        # again every 10 s, from a qmetro (the low-priority queue) started
+        # after a random offset drawn at load.
+        for device in cl.DEVICES:
+            where = device.maxpat.as_posix()
+            patch = self.patcher(device)
+            ids = {b.get("id"): cl.words(b) for b in cl.boxes(patch["patcher"])}
+            self.assertEqual(ids.get(cl.ID_CLOCK), ["qmetro", "10000"])
+            self.assertEqual(ids.get(cl.ID_OFFSET), ["random", "10000"])
+            for level in range(1, cl.PARENTS + 1):
+                self.assertEqual(
+                    cl.feeds(patch["patcher"], f"obj-parent{level}-path", 0),
+                    sorted([[cl.ID_LOAD, cl.PARENTS - level], [cl.ID_TICK, cl.PARENTS - level]]),
+                )
+            for text in ("qmetro 1000", "qmetro 9999", "metro 10000", "qmetro 10000 @interval 10"):
+                patch = self.patcher(device)
+                for b in cl.boxes(patch["patcher"]):
+                    if b.get("id") == cl.ID_CLOCK:
+                        b["text"] = text
+                self.save(patch, device)
+                errors = self.errors()
+                self.assertIn(
+                    f"{where}: obj-id-clock must be 'qmetro 10000', has {text.split()}", errors
+                )
+                self.assertIn(
+                    f"{where}: obj-id-clock ('{text}') drives the live.path "
+                    "obj-parent1-live-path (the identity is read at load, on a change and by "
+                    "its own 10 s clock only)",
+                    errors,
+                )
+                self.assertIn(
+                    f"{where}: obj-id-clock ('{text}') runs on a clock (the device has none "
+                    "but the identity's)",
+                    errors,
+                )
+            self.restore(device)
+        self.assertEqual(self.errors(), [])
+
+    def test_the_identity_clock_is_deferred_staggered_and_alone(self) -> None:
+        cases = (
+            # The offset's bang straight into the start: no deferlow.
+            (
+                [["obj-id-offset-delay", 0], ["obj-id-clock-start", 0]],
+                "obj-id-clock-start:0 takes [['obj-id-clock-defer', 0]] alone, "
+                "has [['obj-id-clock-defer', 0], ['obj-id-offset-delay', 0]]",
+            ),
+            # The load straight into the start: no offset.
+            (
+                [["obj-thisdevice", 0], ["obj-id-clock-defer", 0]],
+                "obj-id-clock-defer:0 takes [['obj-id-offset-delay', 0]] alone, "
+                "has [['obj-id-offset-delay', 0], ['obj-thisdevice', 0]]",
+            ),
+            # The interval set from elsewhere.
+            (
+                [["obj-thisdevice", 1], ["obj-id-clock", 1]],
+                "obj-id-clock:1 takes [] alone, has [['obj-thisdevice', 1]]",
+            ),
+            # The delay's time set from elsewhere.
+            (
+                [["obj-thisdevice", 1], ["obj-id-offset-delay", 1]],
+                "obj-id-offset-delay:1 takes [] alone, has [['obj-thisdevice', 1]]",
+            ),
+            # The tick banged by something else too.
+            (
+                [["obj-id-load", 0], ["obj-id-tick", 0]],
+                "obj-id-tick:0 takes [['obj-id-clock', 0]] alone, "
+                "has [['obj-id-clock', 0], ['obj-id-load', 0]]",
+            ),
+        )
+        for device in cl.DEVICES:
+            where = device.maxpat.as_posix()
+            for (src, dst), want in cases:
+                patch = self.patcher(device)
+                self.line(patch, src, dst)
+                self.save(patch, device)
+                self.assertIn(f"{where}: {want}", self.errors())
+            # A second clock beside the identity's, into a parent's path.
+            patch = self.patcher(device)
+            self.node(patch, "obj-x", "qmetro 10000")
+            self.line(patch, ["obj-x", 0], ["obj-parent2-path", 0])
+            self.save(patch, device)
+            errors = self.errors()
+            self.assertIn(
+                f"{where}: obj-x ('qmetro 10000') drives the live.path obj-parent2-live-path "
+                "(the identity is read at load, on a change and by its own 10 s clock only)",
                 errors,
             )
             self.restore(device)

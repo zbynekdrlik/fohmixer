@@ -31,17 +31,21 @@ for each patch:
   its slots from its one source (`slot_errors`: the device's id, the two
   values);
 - the identity: the `live.path` messages for the device and its first four
-  canonical parents, read once at load and again only on a change
+  canonical parents, read at load, on a change and every 10 s
   (`identity_errors`, #240: `live.path`'s path-following outlet and a
   `live.observer` on the `name` of parents 1 to 3 each trigger a read, the
-  set is read at load and on its follow only; no timed box upstream of any
-  LOM object), each name from `live.object` `get name` -> `route name` ->
+  set is read at load and on its follow; the PC proof's attempt 2 showed
+  the follow misses a move into a chain, so the identity's own clock sends
+  the four parents' `path` messages again every 10 s: `random 10000` drawn
+  at load -> `delay` -> `deferlow` -> `1` -> `qmetro 10000` -> `t b b b b`,
+  each device at its own offset, on the low-priority queue; no other timed
+  box upstream of any LOM object, a faster clock included), each name from `live.object` `get name` -> `route name` ->
   `zl reg` -> `tosymbol` into the pack's cold inlets, never from an
   observer's output (`value_errors`: the FINDING of 2026-11-17, an
   observer's output kept a name with a space in quotes and read the set as
   `-`, so no device matched);
-- no `metro` or `qmetro` at all (the send follows the audio, the identity
-  its changes);
+- no `metro` or `qmetro` but the identity's `qmetro 10000` (the send
+  follows the audio);
 - every patch line joins two boxes of the patch within their outlets and
   inlets;
 - the LUFS device only: one `gen~` with one codebox whose code equals
@@ -248,9 +252,10 @@ def patch_errors(
         errors += identity_errors(where, patcher, every, sink)
         errors += slot_errors(where, patcher, every, sink, send_from)
     errors += [
-        f"{where}: {b.get('id')} ('{b.get('text')}') runs on a clock (the device has none)"
+        f"{where}: {b.get('id')} ('{b.get('text')}') runs on a clock (the device has none "
+        "but the identity's)"
         for b in every
-        if kind(b) in ("metro", "qmetro")
+        if kind(b) in ("metro", "qmetro") and not is_identity_clock(b)
     ]
     shown = [b.get("text") for b in every if b.get("varname") == "version"]
     if shown != [f"v{version}"]:
@@ -497,6 +502,17 @@ def thread_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
 # its `live.path`'s middle outlet never gave an id: the set has no
 # observer and takes its id from both outlets, the left (at the load's
 # `path` message, as before #240) and the middle (a follow).
+#
+# The follow misses a move into another chain (the PC proof's attempt 2 on
+# #240: a moved device kept its old parents for over 30 s), so the identity
+# has one clock of its own (the DECIDED of 2026-11-17): `live.thisdevice`
+# -> `random 10000` (an offset drawn once at load, so devices loaded
+# together read at different instants) -> `delay` (its left inlet takes the
+# offset as its time) -> `deferlow` -> `1` -> `qmetro 10000` (the
+# low-priority queue) -> `t b b b b`, which sends the four parents' `path`
+# messages again in the load's order: each `live.path` resolves its path
+# anew and the same read follows. It is the only clock allowed upstream of
+# a LOM object, at exactly 10 s.
 ID_LOAD = "obj-id-load"
 ID_DEFER = "obj-id-defer"
 ID_PROPERTY = "obj-id-property"
@@ -505,6 +521,20 @@ FOLLOWS_OBJECT = 0
 LOM = ("live.path", "live.object", "live.observer")
 # The parents whose `name` a `live.observer` reports; the set is the last.
 OBSERVED = range(1, PARENTS)
+# The identity's clock (#240): the re-read's period, the offset's range.
+REREAD_MS = 10000
+ID_OFFSET = "obj-id-offset"
+ID_OFFSET_DELAY = "obj-id-offset-delay"
+ID_CLOCK_DEFER = "obj-id-clock-defer"
+ID_CLOCK_START = "obj-id-clock-start"
+ID_CLOCK = "obj-id-clock"
+ID_CLOCK_WORDS = ["qmetro", str(REREAD_MS)]
+ID_TICK = "obj-id-tick"
+
+
+def is_identity_clock(box: dict) -> bool:
+    """The identity's own clock: `obj-id-clock`, exactly `qmetro 10000`."""
+    return box.get("id") == ID_CLOCK and words(box) == ID_CLOCK_WORDS
 
 
 def identity_boxes() -> dict[str, list[str]]:
@@ -516,6 +546,12 @@ def identity_boxes() -> dict[str, list[str]]:
         "obj-id-path": IDENTITY[0].split(),
         "obj-id-live-path": ["live.path"],
         "obj-id-route": ["route", "id"],
+        ID_OFFSET: ["random", str(REREAD_MS)],
+        ID_OFFSET_DELAY: ["delay"],
+        ID_CLOCK_DEFER: ["deferlow"],
+        ID_CLOCK_START: ["1"],
+        ID_CLOCK: ID_CLOCK_WORDS,
+        ID_TICK: ["t", *["b"] * PARENTS],
     }
     for level in range(1, PARENTS + 1):
         name = f"obj-parent{level}"
@@ -554,13 +590,23 @@ def identity_wiring(sink: str) -> dict[tuple[str, int], list[tuple[str, int]]]:
         ("obj-id-path", 0): [(ID_LOAD, PARENTS)],
         ("obj-id-live-path", 0): [("obj-id-path", 0)],
         ("obj-id-route", 0): [("obj-id-live-path", 0)],
+        (ID_OFFSET, 0): [("obj-thisdevice", 0)],
+        (ID_OFFSET, 1): [],
+        (ID_OFFSET_DELAY, 0): [(ID_OFFSET, 0)],
+        (ID_OFFSET_DELAY, 1): [],
+        (ID_CLOCK_DEFER, 0): [(ID_OFFSET_DELAY, 0)],
+        (ID_CLOCK_START, 0): [(ID_CLOCK_DEFER, 0)],
+        (ID_CLOCK_START, 1): [],
+        (ID_CLOCK, 0): [(ID_CLOCK_START, 0)],
+        (ID_CLOCK, 1): [],
+        (ID_TICK, 0): [(ID_CLOCK, 0)],
     }
     for level in range(1, PARENTS + 1):
         name = f"obj-parent{level}"
         observed = level in OBSERVED
         reads = [(f"{name}-sel", 1)] + ([(f"{name}-changed", 0)] if observed else [])
         found |= {
-            (f"{name}-path", 0): [(ID_LOAD, PARENTS - level)],
+            (f"{name}-path", 0): [(ID_LOAD, PARENTS - level), (ID_TICK, PARENTS - level)],
             (f"{name}-live-path", 0): [(f"{name}-path", 0)],
             (f"{name}-route-id", 0): [(f"{name}-live-path", FOLLOWS_PATH)]
             + ([] if observed else [(f"{name}-live-path", FOLLOWS_OBJECT)]),
@@ -590,8 +636,8 @@ def identity_wiring(sink: str) -> dict[tuple[str, int], list[tuple[str, int]]]:
 
 
 def identity_errors(where: str, patcher: dict, every: list[dict], sink: str) -> list[str]:
-    """The identity read at load and on a change, never on a clock, its
-    values from `live.object`."""
+    """The identity read at load, on a change and by its own 10 s clock,
+    never by another clock, its values from `live.object`."""
     ids = {b.get("id"): b for b in every}
     errors = [
         f"{where}: {box} must be '{' '.join(want)}', has {words(ids.get(box, {}))}"
@@ -685,7 +731,9 @@ def value_errors(where: str, patcher: dict, every: list[dict], sink: str) -> lis
 def lom_clock_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
     """A timed box anywhere upstream of a LOM object (any inlet; a
     `deferlow` changes the thread, not the rate): each would call Live
-    again and again."""
+    again and again. The identity's own clock (`is_identity_clock`, its
+    boxes and lines pinned by `identity_wiring`) is the one exception; any
+    other, a faster one included, is named."""
     ids = {b.get("id"): b for b in every}
     clocks = (*TIMED, "qmetro")
     errors = []
@@ -693,10 +741,12 @@ def lom_clock_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
         if kind(lom) not in LOM:
             continue
         for src in upstream(patcher, ids, [(lom.get("id"), None)], lambda _: None, clocks, ends=()):
+            if is_identity_clock(ids[src]):
+                continue
             errors.append(
                 f"{where}: {src} ('{ids[src].get('text')}') drives the "
                 f"{kind(lom)} {lom.get('id')} (the identity is read at "
-                "load and on a change only)"
+                "load, on a change and by its own 10 s clock only)"
             )
     return errors
 
