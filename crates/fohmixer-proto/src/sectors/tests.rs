@@ -850,11 +850,12 @@ fn an_edit_renames_adds_and_removes_layouts_as_one_change() {
             removed: 0,
             renamed: 1,
             reordered: 1,
+            moved: 0,
         }
     );
     assert_eq!(
         serde_json::to_value(edit_counts(&before, &after)).unwrap(),
-        json!({"added": 1, "removed": 0, "renamed": 1, "reordered": 1})
+        json!({"added": 1, "removed": 0, "renamed": 1, "reordered": 1, "moved": 0})
     );
     // lu-1 removed (its strips simply leave it): lu-2 stays, alone.
     let mut gone = after.sectors.clone();
@@ -873,6 +874,7 @@ fn an_edit_renames_adds_and_removes_layouts_as_one_change() {
             removed: 1,
             renamed: 0,
             reordered: 0,
+            moved: 0,
         }
     );
     // A new layout's gaps are trimmed away.

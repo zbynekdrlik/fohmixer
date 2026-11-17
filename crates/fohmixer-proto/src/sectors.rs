@@ -449,15 +449,27 @@ pub fn tick(
     Ok(Some(next))
 }
 
-/// Whether `a` and `b` hold the same refs, each as often (the empty slots
-/// not counted).
-fn same_set(a: &[Slot], b: &[Slot]) -> bool {
-    sorted_refs(a) == sorted_refs(b)
-}
-
 /// The refs of `slots`, sorted (the empty slots left out).
 fn sorted_refs(slots: &[Slot]) -> Vec<&StripRef> {
     let mut refs: Vec<&StripRef> = slots.iter().flatten().collect();
+    refs.sort();
+    refs
+}
+
+/// Whether `slots` hold a fader twice (the empty slots aside).
+fn holds_twice(slots: &[Slot]) -> bool {
+    sorted_refs(slots).windows(2).any(|pair| pair[0] == pair[1])
+}
+
+/// The refs, sorted, that the layouts of `sectors` whose ids `keep` names
+/// hold, taken together (each as often as it is held).
+fn kept_refs<'a>(sectors: &'a Sectors, keep: &BTreeSet<&str>) -> Vec<&'a StripRef> {
+    let mut refs: Vec<&StripRef> = sectors
+        .values()
+        .flatten()
+        .filter(|layout| keep.contains(layout.id.as_str()))
+        .flat_map(SectorLayout::refs)
+        .collect();
     refs.sort();
     refs
 }
@@ -466,8 +478,10 @@ fn sorted_refs(slots: &[Slot]) -> Vec<&StripRef> {
 /// the whole edited `sectors` replace the document's as one change at
 /// `rev + 1`, each layout's trailing empty slots dropped.
 /// It is `Stale` unless `rev` is the document's, it names the document's
-/// sectors, a layout the document holds keeps its sector and its refs (its
-/// gaps aside) and a new layout starts empty; `Full` for a layout past
+/// sectors, a layout the document holds keeps its sector, the layouts it
+/// keeps hold the same refs taken together (#233: a fader moves between
+/// layouts, also of two sectors; the gaps aside), no layout holds a ref
+/// twice and a new layout starts empty; `Full` for a layout past
 /// [`SECTOR_UNITS`] that holds more units than it did (a layout already
 /// past it by a hand edit can still be reordered); `Invalid` for a sector
 /// with no layout or more than [`MAX_LAYOUTS`] (unless it had as many), a
@@ -498,6 +512,16 @@ pub fn edit(
         }
         next.sectors.insert(*sector, kept);
     }
+    let survivors: BTreeSet<&str> = next
+        .sectors
+        .values()
+        .flatten()
+        .filter(|layout| doc.find(&layout.id).is_some())
+        .map(|layout| layout.id.as_str())
+        .collect();
+    if kept_refs(&next.sectors, &survivors) != kept_refs(&doc.sectors, &survivors) {
+        return Err(Refusal::Stale);
+    }
     if !next.validate().is_empty() {
         return Err(Refusal::Invalid);
     }
@@ -518,7 +542,7 @@ fn edited(
     let slots = trim(layout.strips.clone());
     match before.iter().find(|old| old.id == layout.id) {
         Some(old) => {
-            if !same_set(&old.strips, &slots) {
+            if holds_twice(&slots) {
                 return Err(Refusal::Stale);
             }
             if grows_past_full(units(&old.strips, pool), units(&slots, pool)) {
@@ -562,13 +586,15 @@ pub fn title_ok(title: &str) -> bool {
 }
 
 /// What an edit changed, for its record: the layouts added, removed,
-/// renamed and with new slots.
+/// renamed and with new slots, and the faders moved into another layout
+/// (#233: each fader a kept layout holds that it did not hold before).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct EditCounts {
     pub added: usize,
     pub removed: usize,
     pub renamed: usize,
     pub reordered: usize,
+    pub moved: usize,
 }
 
 /// What `after` changed from `before` ([`EditCounts`]; a layout is known by
@@ -581,6 +607,7 @@ pub fn edit_counts(before: &SectorsDoc, after: &SectorsDoc) -> EditCounts {
             Some((_, was)) => {
                 counts.renamed += usize::from(was.title != layout.title);
                 counts.reordered += usize::from(was.strips != layout.strips);
+                counts.moved += layout.refs().filter(|r| !was.holds(r)).count();
             }
         }
     }
