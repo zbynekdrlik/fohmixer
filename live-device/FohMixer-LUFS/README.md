@@ -75,12 +75,17 @@ track into a rack's chain kept announcing its track and set for over 30 s
 → `deferlow` → `1` → `qmetro 10000` → `t b b b b` → the paths, parent 1
 first and the set last, as at the load. Each `live.path` resolves its path
 anew and the same `live.object` read follows, so a move is followed within
-10 s, on the low-priority queue, at a tenth of the old reads, and the
-devices loaded together with a set read at their own instants. It is the
-only clock of the identity (`check_lufs_device.py` pins it and names any
-other, a faster one included). A path sent again sets the same id into the
-observer, which may report the name once more: a second read of the same
-name, harmless.
+10 s, on the low-priority queue, and the devices loaded together with a set
+read at their own instants. It is the only clock of the identity
+(`check_lufs_device.py` pins its boxes and every line into and out of
+them, and names any other clock, a faster one included). Per tick and
+device: 4 `live.path` resolves, 4 ids set into the `live.object`s, the 3
+observers set again (each may report once more, a second read of the same
+name) and up to 8 `get name` (the set's two outlets read it twice too):
+about 20 LOM calls every 10 s against the old 90 (5 paths and 4 names each
+second), about a fifth. A `Listen` device in a rack that is off may keep
+this clock too (Max's scheduler may run on), so the PC's A/B includes the
+idle racks.
 
 **The identity's format is proved only on the PC** (CI checks which boxes
 are wired to which, never what Max outputs; `scripts/check_lufs_device.py`
@@ -101,9 +106,14 @@ set:
    #240 read the old parents for over 30 s): `parents` equal the old
    device's, no quotes, and **the set's name last** (the decisive check:
    the set read `-` in the failed rollout). For that moment two devices
-   announce the same parents. Move it once more (another chain, or back to
-   the track's end) and read the new parents within 10 s again; rename its
-   chain and read the new name within a second (the observer).
+   announce the same parents. Its device id stays the one it announced
+   before the move. Move it once more (another chain, or back to the
+   track's end) and read the new parents within 10 s again; rename its
+   chain and read the new name within a second (the observer). A pass
+   proves that a `path` sent again makes `live.path`'s middle outlet give
+   the id again (parents 1 to 3 take only that outlet); old parents after
+   10 s mean it does not: record a FINDING on #240, roll nothing out and
+   save no set.
 5. Delete the copy from the chain, leave the set unsaved (the set file's
    time unchanged) and delete the test `.amxd` from the Presets folder.
 
