@@ -2541,6 +2541,18 @@
 			{
 				"patchline": {
 					"source": [
+						"obj-parent4-live-path",
+						0
+					],
+					"destination": [
+						"obj-parent4-route-id",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
 						"obj-parent1-route-id",
 						0
 					],
