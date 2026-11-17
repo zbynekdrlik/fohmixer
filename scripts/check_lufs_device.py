@@ -488,9 +488,10 @@ def thread_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
 # The identity (#240): read at load, on a change and every 10 s. The
 # load: `live.thisdevice` -> `deferlow` -> `obj-id-load` (`t b b b b b b`:
 # the observers' property first, then the device's path, then the four
-# parents' paths). Each parent: its path into a `live.path` whose middle
-# outlet (it follows the path: a new id when another object comes there)
-# goes through `route id` into a `t`: the id first into the `live.object`'s
+# parents' paths). Each parent: its path into a `live.path` whose left
+# outlet (the id at every `path` message) and middle outlet (it follows the
+# path: a new id when another object comes there) go through `route id`
+# into a `t`: the id first into the `live.object`'s
 # right inlet (`prepend id`), then (parents 1 to 3) into the
 # `live.observer`'s (`id 0` stops observing), then into `sel 0`. An id
 # reads the name (`t b b b`: `-` into the `zl reg`, `get name` into the

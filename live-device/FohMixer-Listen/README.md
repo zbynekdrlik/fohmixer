@@ -13,9 +13,10 @@ devices (`../FohMixer-LUFS/README.md`).
   its four canonical parents' names, Live's sample rate, whether it streams).
   The names are read at load, on a change and every 10 s (#240, the LUFS
   devices' identity: `live.object` `get name` for each parent, read when its
-  path's follow output gives an id and when a `live.observer` on its `name`
-  reports, the observer's output only a trigger; the set has no observer
-  and takes its id from both `live.path` outlets; a `qmetro 10000` started
+  path gives an id (both `live.path` outlets: the left at every `path`
+  message, the middle on a follow) and when a `live.observer` on its `name`
+  reports, the observer's output only a trigger; the set has no observer;
+  a `qmetro 10000` started
   after a random offset drawn at load sends the parents' paths again, so a
   move the follow misses is followed within 10 s; the format is proved only
   on the PC, `../FohMixer-LUFS/README.md`); the
