@@ -590,6 +590,7 @@ class TreeTests(unittest.TestCase):
                         f"{where}: {path}'s outlet {outlet} goes into its route id alone, has []",
                         errors,
                     )
+                    self.restore(device)
             patch = self.patcher(device)
             self.line(patch, ["obj-parent2-live-path", 0], ["obj-parent2-object", 1])
             self.save(patch, device)
