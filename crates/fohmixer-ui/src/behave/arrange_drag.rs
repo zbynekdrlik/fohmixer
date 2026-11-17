@@ -212,7 +212,11 @@ impl Arrange {
     /// while the mode is not on, see [`landing`]). None too when a layout
     /// it changes would grow past FULL by the served layout's `pool`
     /// (#236, [`fits`]): the hub's save would refuse it, and a refused save
-    /// ends the mode with every other change of the session.
+    /// ends the mode with every other change of the session. Each drop is
+    /// judged against the edit's slots as they are now, never the
+    /// document's, so the page is never looser than the save; it is
+    /// stricter only for a layout a hand edit put past FULL that a drop
+    /// shrank first (it cannot grow back to where it was in this session).
     pub fn lands(
         &self,
         from: &str,
@@ -230,13 +234,12 @@ impl Arrange {
             Some(edit.slots_of(into)?)
         };
         let landed = landing(order, target, at, to, held)?;
-        // An `Across` landing always has its target.
         let fit = match &landed {
             Landing::Within(after) => fits(order, after, pool),
             Landing::Across {
                 from: back,
                 to: there,
-            } => fits(order, back, pool) && fits(target.unwrap_or_default(), there, pool),
+            } => fits(order, back, pool) && target.is_some_and(|t| fits(t, there, pool)),
         };
         fit.then_some(landed)
     }
