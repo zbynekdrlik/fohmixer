@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 
-use chrono::NaiveDate;
+use crate::day_files::UtcDate;
 use serde_json::{Map, Value, json};
 
 use crate::day_files::{self, DayFiles, Sink};
@@ -130,12 +130,12 @@ pub fn ts_of(record: &Value) -> i64 {
 }
 
 /// The day file of `date`.
-pub fn file_name(date: NaiveDate) -> String {
+pub fn file_name(date: UtcDate) -> String {
     day_files::file_name(STEM, date)
 }
 
 /// The date of a day file's name; `None` for any other file.
-pub fn date_of_file(name: &str) -> Option<NaiveDate> {
+pub fn date_of_file(name: &str) -> Option<UtcDate> {
     day_files::date_of_file(STEM, name)
 }
 
@@ -299,7 +299,7 @@ impl Writer {
 
     /// Deletes the day files past retention on `today`; how many it
     /// deleted.
-    pub fn sweep(&mut self, today: NaiveDate) -> usize {
+    pub fn sweep(&mut self, today: UtcDate) -> usize {
         self.files.sweep(today)
     }
 }
@@ -314,7 +314,7 @@ impl Sink<Value> for Writer {
         Writer::flush(self);
     }
 
-    fn sweep(&mut self, today: NaiveDate) {
+    fn sweep(&mut self, today: UtcDate) {
         Writer::sweep(self, today);
     }
 }

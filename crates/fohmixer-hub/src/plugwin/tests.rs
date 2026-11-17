@@ -247,6 +247,15 @@ fn a_taken_window_answers_once_on_top_or_fails_once_its_wait_is_over() {
     assert_eq!(placed(false, 0.0), None);
     assert_eq!(placed(false, 3000.0_f64.next_down()), None);
     assert_eq!(placed(false, 3000.0), Some(Err(NOT_ON_TOP)));
+}
+
+#[test]
+fn the_not_on_top_line_says_the_wait_and_whether_the_window_was_there() {
+    assert_eq!(
+        not_on_top_line(3012.4, true),
+        "a Pro-Q 4 editor's window did not come on top within 3012 ms of its take (window still there: true): it is handed back"
+    );
+    assert!(not_on_top_line(3000.0, false).contains("(window still there: false)"));
     assert_eq!(NOT_ON_TOP, reason::NOT_ON_TOP);
 }
 

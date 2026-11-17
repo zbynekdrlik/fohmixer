@@ -66,9 +66,18 @@ fn full_version_at(build_time: &str) -> String {
     if timestamp == 0 {
         format!("{VERSION} (local)")
     } else {
-        let datetime = chrono::DateTime::from_timestamp(timestamp, 0)
-            .map(|dt| dt.format("%d.%m.%Y %H:%M").to_string())
-            .unwrap_or_else(|| "unknown".to_string());
+        let datetime = time::OffsetDateTime::from_unix_timestamp(timestamp)
+            .map(|dt| {
+                format!(
+                    "{:02}.{:02}.{:04} {:02}:{:02}",
+                    dt.day(),
+                    u8::from(dt.month()),
+                    dt.year(),
+                    dt.hour(),
+                    dt.minute()
+                )
+            })
+            .unwrap_or_else(|_| "unknown".to_string());
         format!("{VERSION} ({datetime})")
     }
 }
@@ -161,6 +170,22 @@ mod tests {
     fn full_version_starts_with_the_cargo_version() {
         assert!(full_version().starts_with(&format!("{VERSION} (")));
         assert_eq!(full_version(), full_version_at(build_time()));
+    }
+
+    #[test]
+    fn full_version_names_its_build_time_in_utc() {
+        assert_eq!(
+            full_version_at("1794890136"),
+            format!("{VERSION} (17.11.2026 04:35)")
+        );
+        assert_eq!(
+            full_version_at("-1"),
+            format!("{VERSION} (31.12.1969 23:59)")
+        );
+        assert_eq!(
+            full_version_at(&i64::MAX.to_string()),
+            format!("{VERSION} (unknown)")
+        );
     }
 
     #[test]
