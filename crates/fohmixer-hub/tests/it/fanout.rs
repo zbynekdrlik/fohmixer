@@ -413,6 +413,79 @@ fn a_change_pushed_before_its_batchs_result_is_the_value_the_hub_keeps() {
     });
 }
 
+/// #244: a NEW hub key on a Live key the hub already follows (a page's
+/// `…|true` beside another page's `…|false`; here by name beside by index:
+/// one object, one Live listener) starts from the value its batch read at
+/// registration. A change pushed between that read and the batch's result
+/// reaches the key already linked only, so the new key must take that newer
+/// value at its result.
+#[test]
+fn a_new_key_on_a_followed_live_key_takes_the_change_pushed_before_its_result() {
+    const BY_INDEX: &str = "live_set tracks 1 mixer_device volume";
+    const BY_NAME: &str = "live_set tracks[name=Hand2 #] mixer_device volume";
+    let _serial = serial();
+    runtime().block_on(async {
+        let mut host = Host::start("band");
+        let dir = tempfile::tempdir().unwrap();
+        let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        let mut a = hub.client().await;
+        let mut b = hub.client().await;
+        a.instance_state("band", true, Some(false), SECS_3).await;
+        b.instance_state("band", true, Some(false), SECS_3).await;
+        // Page A follows the volume: the hub knows its Live key.
+        let followed = a.sub_key("band", BY_INDEX, "value", false).await;
+        let before = a.value_of(&followed, SECS_3).await.value;
+        assert_ne!(before, Some(json!(0.5)), "the change must be a change");
+        // The drain held: page B's batch (its value with the display, then
+        // the name guard) waits in the script's inbox.
+        assert_eq!(host.drain("hold"), "held");
+        let key = b.sub_key("band", BY_NAME, "value", true).await;
+        let deadline = Instant::now() + SECS_3;
+        loop {
+            let stepped = host.drain("step");
+            if stepped == "add_listener value" {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the batch never came");
+            if stepped == "-" {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+        // Live changes the value after B's read; the next tick pushes it on
+        // the one listener, which the hub knows by A's key, ahead of B's
+        // result.
+        assert_eq!(host.param(BY_INDEX, "value", 0.5), 0.5);
+        assert_eq!(host.drain("ticks 2"), "2");
+        a.value_until(&followed, SECS_3, |i| i.value == Some(json!(0.5)))
+            .await;
+        assert_eq!(host.drain("resume"), "resumed");
+        // B's values as they come (the result's, then any later push).
+        let first = b.value_of(&key, SECS_3).await;
+        let mut seen = vec![(first.value, first.display)];
+        while seen.last().map(|(v, _)| v) != Some(&Some(json!(0.5))) {
+            let next = b
+                .gets(Duration::from_secs(1), |m| match m {
+                    ServerMsg::Values { items } => items
+                        .iter()
+                        .find(|i| i.sub == key)
+                        .map(|i| (i.value.clone(), i.display.clone())),
+                    _ => None,
+                })
+                .await;
+            let Some(item) = next else { break };
+            seen.push(item);
+        }
+        let last = seen.last().expect("B got its value");
+        assert_eq!(last.0, Some(json!(0.5)), "the values page B got: {seen:?}");
+        assert!(
+            last.1.as_deref().is_some_and(|d| !d.is_empty()),
+            "B asked for the display string: {seen:?}"
+        );
+        hub.stop().await;
+        host.stop();
+    });
+}
+
 #[test]
 fn a_stall_shows_the_instance_busy_then_free() {
     let _serial = serial();

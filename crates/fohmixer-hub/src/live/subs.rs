@@ -49,8 +49,15 @@
 //!   drain, or one still in flight, was ending (an older or released
 //!   listener's push is older than the read). The rest go once no batch is
 //!   in flight, and a disconnect forgets them.
+//! - A NEW hub key on a Live key another entry already holds (#244: a
+//!   `…|true` beside a `…|false`) is not linked until its result, so the
+//!   pushes between are the other entry's alone: while a batch is in flight
+//!   the last push of each known Live key is heard (`kept`), and at the
+//!   result the new key takes it instead of the value read at registration
+//!   when it arrived after the batch was sent (`kept::newer_push`).
 
 mod kept;
+mod replay;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -59,8 +66,9 @@ use fohmixer_proto::path::LomPath;
 use serde_json::{Value, json};
 
 use super::LiveValue;
+use kept::Kept;
 pub use kept::Overflow;
-use kept::{KEPT_MAX, Kept};
+use replay::warn_overflow;
 
 /// A client connection (an internal subscriber too).
 pub type ClientId = u64;
@@ -395,17 +403,11 @@ impl Subs {
         }
         let mut dropped = None;
         if self.resolving(instance) {
-            let unknown: Vec<LiveValue> = items
-                .iter()
-                .filter(|i| {
-                    !self
-                        .by_live
-                        .contains_key(&(instance.to_string(), i.key.clone()))
-                })
-                .cloned()
-                .collect();
+            let by_live = &self.by_live;
+            let known =
+                |live: &str| by_live.contains_key(&(instance.to_string(), live.to_string()));
             if let Some(inst) = self.instances.get_mut(instance)
-                && let Some(overflow) = inst.kept.keep(unknown)
+                && let Some(overflow) = inst.kept.frame(items, known)
             {
                 warn_overflow(instance, &overflow);
                 dropped = Some(overflow);
@@ -437,6 +439,7 @@ impl Subs {
             if item.error.is_some() {
                 // The script dropped the listener itself: nothing to remove.
                 self.by_live.remove(&id);
+                self.forget_heard(instance, &item.key);
             }
             for key in keys {
                 let Some(entry) = self.entries.get_mut(&key) else {
@@ -481,62 +484,13 @@ impl Subs {
         for (i, tag) in batch.tags.iter().enumerate() {
             let slot = slots.get(i).unwrap_or(&missing);
             if let Tag::Resolve { key, seq } = tag
-                && let Some(live) = self.resolved(instance, key, *seq, slot)
+                && let Some(live) = self.resolved(instance, key, *seq, batch.mark, slot)
             {
                 made_known.insert(live);
             }
         }
         self.replay_kept(instance, &batch, &made_known);
         true
-    }
-
-    /// The pushes kept for `instance` now (#243).
-    #[cfg(test)]
-    fn kept(&self, instance: &str) -> usize {
-        self.instances.get(instance).map_or(0, |i| i.kept.len())
-    }
-
-    /// The Live keys a `remove_listener` of `instance` still in flight ends.
-    fn releasing(&self, instance: &str) -> BTreeSet<String> {
-        self.inflight
-            .values()
-            .filter(|b| b.instance == instance)
-            .flat_map(|b| &b.tags)
-            .filter_map(|t| match t {
-                Tag::Release { live } => Some(live.clone()),
-                Tag::Resolve { .. } => None,
-            })
-            .collect()
-    }
-
-    /// Whether an `add_listener` batch of `instance` is in flight.
-    fn resolving(&self, instance: &str) -> bool {
-        self.inflight.values().any(|b| {
-            b.instance == instance && b.tags.iter().any(|t| matches!(t, Tag::Resolve { .. }))
-        })
-    }
-
-    /// After a result (#243): the kept pushes for the Live keys it made known
-    /// are applied again, in arrival order (those from before the batch was
-    /// sent go, and so do those of a key whose older listener was being
-    /// removed meanwhile); once no batch is in flight, the rest go.
-    fn replay_kept(&mut self, instance: &str, batch: &Batch, made_known: &BTreeSet<String>) {
-        let Some(inst) = self.instances.get_mut(instance) else {
-            return;
-        };
-        // A released key's pushes are dropped whatever their arrival.
-        inst.kept.take(u64::MAX, |key| {
-            batch.released.contains(key) && made_known.contains(key)
-        });
-        let frames = inst.kept.take(batch.mark, |key| made_known.contains(key));
-        for frame in frames {
-            self.apply_values(instance, &frame);
-        }
-        if !self.resolving(instance)
-            && let Some(inst) = self.instances.get_mut(instance)
-        {
-            inst.kept.clear();
-        }
     }
 
     /// The requests to send now, in order, per instance: first the removals
@@ -868,6 +822,7 @@ impl Subs {
         keys.remove(key);
         if keys.is_empty() {
             self.by_live.remove(&id);
+            self.forget_heard(instance, live);
             self.schedule_release(instance, live);
         }
     }
@@ -916,9 +871,17 @@ impl Subs {
         }
     }
 
-    /// The answer to the `add_listener` number `seq` of `key`; the Live key
-    /// it linked the entry to, if any.
-    fn resolved(&mut self, instance: &str, key: &str, seq: u64, slot: &Value) -> Option<String> {
+    /// The answer to the `add_listener` number `seq` of `key`, in a batch
+    /// sent at the kept-push `mark`; the Live key it linked the entry to, if
+    /// any.
+    fn resolved(
+        &mut self,
+        instance: &str,
+        key: &str,
+        seq: u64,
+        mark: u64,
+        slot: &Value,
+    ) -> Option<String> {
         let outcome = parse_slot(slot);
         let current = self.entries.get(key).filter(|e| e.seq == seq);
         let Some(entry) = current else {
@@ -938,6 +901,11 @@ impl Subs {
         let old = entry.live.clone();
         match outcome {
             Ok((live, cached)) => {
+                // Joining a Live key another entry holds (#244): its push
+                // after the send is newer than the result's read.
+                let cached = self
+                    .joined_push(instance, key, &live, mark, wants_display)
+                    .unwrap_or(cached);
                 if old.as_deref() != Some(live.as_str()) {
                     if let Some(old) = &old {
                         self.unlink(instance, old, key);
@@ -973,17 +941,6 @@ impl Subs {
             }
         }
     }
-}
-
-/// The warn line of pushes dropped beyond `KEPT_MAX` (#243).
-fn warn_overflow(instance: &str, overflow: &Overflow) {
-    tracing::warn!(
-        instance,
-        dropped = overflow.dropped,
-        total = overflow.total,
-        max = KEPT_MAX,
-        "a subscription batch is still in flight and more Live pushes came than the hub keeps for it: the oldest are dropped"
-    );
 }
 
 #[cfg(test)]
