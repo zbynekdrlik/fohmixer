@@ -27,8 +27,11 @@ the face's version, no absolute path. Its own, box by box (`BOXES`,
   stops and its `change` forgets the switch (`set 0`), so the hub's next
   `on 1` arms it again;
 - the hello: one `udpsend 127.0.0.1 <HUB_PORT>` fed by one
-  `pack /fohmixer/claps 1 v<version> 0` each second, its last inlet the
-  running state.
+  `pack /fohmixer/claps 1 v<version> 0` each second through a `deferlow`
+  (#240: the beats stay timed, the socket write leaves Live's audio
+  thread), its last inlet the running state;
+- the threads (`check_lufs_device.thread_errors`, #240): no timed box
+  reaches the `udpsend` without a `deferlow` or `qmetro` between.
 
 The ports and the watchdog's time are read from
 `crates/fohmixer-proto/src/claps.rs`. Exit 0 when
@@ -82,6 +85,7 @@ BOXES = {
     "obj-forget": ["set", "0"],
     "obj-noteout": ["noteout"],
     "obj-hello-metro": ["metro", "1000"],
+    "obj-send-defer": ["deferlow"],
 }
 WIRING = (
     (("obj-midiin", 0), ("obj-midiout", 0)),
@@ -122,7 +126,8 @@ WIRING = (
     (("obj-makenote", 0), ("obj-noteout", 0)),
     (("obj-makenote", 1), ("obj-noteout", 1)),
     (("obj-hello-metro", 0), ("obj-hello", 0)),
-    (("obj-hello", 0), ("obj-udpsend", 0)),
+    (("obj-hello", 0), ("obj-send-defer", 0)),
+    (("obj-send-defer", 0), ("obj-udpsend", 0)),
     (("obj-udpreceive", 0), ("obj-heard", 0)),
     (("obj-heard", 0), ("obj-watchdog", 0)),
     (("obj-watchdog", 0), ("obj-stop", 0)),
@@ -137,7 +142,8 @@ ONLY = {
     ("obj-hit", 1): [["obj-run", 0], ["obj-stop", 0]],
     ("obj-armed", 0): [["obj-bar", 0]],
     ("obj-beats", 0): [["obj-start", 0]],
-    ("obj-udpsend", 0): [["obj-hello", 0]],
+    ("obj-udpsend", 0): [["obj-send-defer", 0]],
+    ("obj-send-defer", 0): [["obj-hello", 0]],
 }
 # Kinds the patch holds exactly once.
 SINGLE = ("midiin", "midiout", "udpreceive", "udpsend", "transport", "noteout", "makenote")
@@ -219,6 +225,7 @@ def patch_errors(where: str, text: str, version: str, numbers: dict[str, int]) -
         count = sum(1 for b in every if lufs.words(b)[:1] == [kind])
         if count != 1:
             errors.append(f"{where}: needs exactly one {kind}, has {count}")
+    errors += lufs.thread_errors(where, patcher, every)
     shown = [b.get("text") for b in every if b.get("varname") == "version"]
     if shown != [f"v{version}"]:
         errors.append(f"{where}: its face shows {shown}, expected ['v{version}'] (version.txt)")

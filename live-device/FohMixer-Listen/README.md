@@ -11,6 +11,10 @@ devices (`../FohMixer-LUFS/README.md`).
   id mixed with a random number drawn at load so the PC's two Lives never
   share one, `v<version>`,
   its four canonical parents' names, Live's sample rate, whether it streams).
+  The names are read at load and again only on a change (#240: a
+  `live.observer` on each parent's `name`, the LUFS devices' identity); the
+  announce resends the stored ones each second (the hub forgets a device
+  after 3 s) and asks Live nothing.
   `jit.catch~` keeps copying the signal into its own buffer; nothing is
   banged out of it.
 - **Asking** (always): every 250 ms a `maxurl` request
@@ -18,7 +22,10 @@ devices (`../FohMixer-LUFS/README.md`).
   port, `parse_type json`); an answer whose `on` is true selects it, any
   other answer stops it, and with no answer it stops 1 s after the last
   `on`. Each device asks for itself: one UDP select port shared by every
-  device reached only one of them on the PC (#210).
+  device reached only one of them on the PC (#210). The poll is a
+  `qmetro 250` and the hold's end goes through a `deferlow` (#240): Max for
+  Live runs its scheduler inside Live's audio thread, so no request, and no
+  hello it leads to, starts there.
 - **Selected**: it sends its hello
   (`fohmixer_listen 1 <id> v<version> <sample rate>`) through `jit.net.send`'s
   right inlet, then a `qmetro 10` bangs `jit.catch~ 2 @mode 1 @framesize 960`,
