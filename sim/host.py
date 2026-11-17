@@ -135,6 +135,16 @@ WebSocket server is bound. Control lines on stdin (never over the WebSocket):
                                 prints ``LISTENRACK <0|1>``, the Device On of
                                 the newest Listen device's rack there (#238),
                                 or ``LISTENRACK -1`` (no device, no rack)
+    drain hold|resume           stop the script's command drain between ticks
+                                (requests wait in its inbox) or let it run
+                                again (#243); prints ``DRAIN held`` /
+                                ``DRAIN resumed``
+    drain step                  run exactly one queued command; prints
+                                ``DRAIN <name> <prop>`` of the command, or
+                                ``DRAIN -`` when none waited
+    drain ticks <n>             wait until <n> more timer ticks ended in their
+                                socket writes; prints ``DRAIN <n>``, or
+                                ``DRAIN -1`` after 5 s
 
 While Live plays, the song clock moves ``current_song_time`` at the tempo
 (``SongClock``, 30 Hz, as Live's playhead does between the script's ticks).
@@ -158,6 +168,7 @@ import listendev
 import maxdev
 import site_builder
 from c_instance import CInstance
+from drain_gate import DrainGate, step_words
 from main_thread import MainThread
 
 SIM_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -167,6 +178,8 @@ READY_WAIT_S = 3600.0
 # The song clock's rate: Live's playhead as the script sees it, ~30 times a
 # second (#140).
 SONG_CLOCK_HZ = 30.0
+# How long ``drain ticks`` waits for its ticks (#243).
+TICKS_WAIT_S = 5.0
 
 
 def parse_args(argv):
@@ -549,8 +562,34 @@ def listendev_answer(main_thread, song, line, listens):
     return f"{word} {main_thread.call(lambda: control_of(listens, song, parsed))}"
 
 
-def control(main_thread, song, line, held, maxdevs=None, listens=None):
+def drain_answer(main_thread, line, gate):
+    """A ``drain`` line's answer (#243), or None for another line."""
+    words = line.split()
+    if gate is None or not words or words[0] != "drain":
+        return None
+    if words[1:] == ["hold"]:
+        main_thread.call(gate.hold)
+        return "DRAIN held"
+    if words[1:] == ["resume"]:
+        main_thread.call(gate.resume)
+        return "DRAIN resumed"
+    if words[1:] == ["step"]:
+        return f"DRAIN {step_words(main_thread.call(gate.step))}"
+    if len(words) == 3 and words[1] == "ticks" and words[2].isdigit():
+        wanted = main_thread.call(lambda: gate.ticks) + int(words[2])
+        deadline = time.monotonic() + TICKS_WAIT_S
+        while time.monotonic() < deadline:
+            if gate.ticks >= wanted:
+                return f"DRAIN {words[2]}"
+            time.sleep(0.002)
+    return "DRAIN -1"
+
+
+def control(main_thread, song, line, held, maxdevs=None, listens=None, gate=None):
     """One control line: the answer to print, or None."""
+    answer = drain_answer(main_thread, line, gate)
+    if answer is not None:
+        return answer
     answer = maxdev_answer(main_thread, song, line, maxdevs)
     if answer is not None:
         return answer
@@ -618,9 +657,9 @@ def control(main_thread, song, line, held, maxdevs=None, listens=None):
     return None
 
 
-def read_controls(main_thread, song, held, maxdevs, listens=None):
+def read_controls(main_thread, song, held, maxdevs, listens=None, gate=None):
     for line in sys.stdin:
-        answer = control(main_thread, song, line, held, maxdevs, listens)
+        answer = control(main_thread, song, line, held, maxdevs, listens, gate)
         if answer is not None:
             print(answer, flush=True)
 
@@ -639,6 +678,7 @@ def main(argv=None):
     song = site_builder.build(args.site)
     main_thread = MainThread().install()
     surface = FohMixer.create_instance(CInstance(song))
+    gate = DrainGate(surface._drain, surface.server)
     held = {}
     animation = None
     if args.meters_hz > 0:
@@ -663,7 +703,9 @@ def main(argv=None):
     signal.signal(signal.SIGINT, lambda signum, frame: main_thread.request_stop())
     threading.Thread(target=announce_ready, args=(surface,), daemon=True).start()
     threading.Thread(
-        target=read_controls, args=(main_thread, song, held, maxdevs, listens), daemon=True
+        target=read_controls,
+        args=(main_thread, song, held, maxdevs, listens, gate),
+        daemon=True,
     ).start()
     main_thread.run_forever(on_stop=on_stop)
     main_thread.uninstall()

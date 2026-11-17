@@ -349,6 +349,70 @@ fn a_subscription_made_while_its_track_is_missing_heals_when_the_track_is_rename
     });
 }
 
+/// #243: the script runs a subscription batch over several ticks and answers
+/// it whole at its end, while each tick's flush already pushes the changes of
+/// the listeners it registered. A change pushed before the batch's result is
+/// the newest value; the result carries the value read at registration.
+#[test]
+fn a_change_pushed_before_its_batchs_result_is_the_value_the_hub_keeps() {
+    const HAND2: &str = "live_set tracks[name=Hand2 #] mixer_device volume";
+    let _serial = serial();
+    runtime().block_on(async {
+        let mut host = Host::start("band");
+        let dir = tempfile::tempdir().unwrap();
+        let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        let mut a = hub.client().await;
+        a.instance_state("band", true, Some(false), SECS_3).await;
+        // The drain held: the binding's batch (its value, then its name
+        // guard) waits in the script's inbox.
+        assert_eq!(host.drain("hold"), "held");
+        let key = a.sub_key("band", HAND2, "value", false).await;
+        // The value's listener registered, the guard still to run: the batch
+        // is unfinished.
+        let deadline = Instant::now() + SECS_3;
+        loop {
+            let stepped = host.drain("step");
+            if stepped == "add_listener value" {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the batch never came");
+            if stepped == "-" {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+        // Live changes the value; the next tick pushes it to the hub ahead
+        // of the batch's result.
+        assert_eq!(
+            host.param("live_set tracks 1 mixer_device volume", "value", 0.5),
+            0.5
+        );
+        assert_eq!(host.drain("ticks 2"), "2");
+        assert_eq!(host.drain("resume"), "resumed");
+        // The result's value (read before the change) may come first; the
+        // change must follow it.
+        let mut seen = vec![a.value_of(&key, SECS_3).await.value];
+        while seen.last() != Some(&Some(json!(0.5))) {
+            let next = a
+                .gets(Duration::from_secs(1), |m| match m {
+                    ServerMsg::Values { items } => {
+                        items.iter().find(|i| i.sub == key).map(|i| i.value.clone())
+                    }
+                    _ => None,
+                })
+                .await;
+            let Some(value) = next else { break };
+            seen.push(value);
+        }
+        assert_eq!(
+            seen.last(),
+            Some(&Some(json!(0.5))),
+            "the values the page got: {seen:?}"
+        );
+        hub.stop().await;
+        host.stop();
+    });
+}
+
 #[test]
 fn a_stall_shows_the_instance_busy_then_free() {
     let _serial = serial();
