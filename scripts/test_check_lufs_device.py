@@ -438,25 +438,13 @@ class TreeTests(unittest.TestCase):
             self.restore(device)
         self.assertEqual(self.errors(), [])
 
-    def test_the_names_come_from_observers_on_the_followed_path(self) -> None:
+    def test_the_ids_come_from_the_followed_path(self) -> None:
         for device in cl.DEVICES:
             where = device.maxpat.as_posix()
             patch = self.patcher(device)
-            for b in cl.boxes(patch["patcher"]):
-                if b.get("id") == "obj-parent2-observer":
-                    b["text"] = "live.object"
             self.line(patch, ["obj-parent3-live-path", 0], ["obj-parent3-route-id", 0])
             self.save(patch, device)
             errors = self.errors()
-            self.assertIn(
-                f"{where}: obj-parent2-observer must be 'live.observer', has ['live.object']",
-                errors,
-            )
-            self.assertIn(
-                f"{where}: obj-parent2-observer is a live.object "
-                "(the names come from live.observer)",
-                errors,
-            )
             self.assertIn(
                 f"{where}: obj-parent3-live-path's left outlet (it follows the object) "
                 "goes nowhere, has [['obj-parent3-route-id', 0]]",
@@ -468,6 +456,148 @@ class TreeTests(unittest.TestCase):
                 errors,
             )
             self.restore(device)
+
+    def test_an_observers_output_never_reaches_a_name_slot(self) -> None:
+        # The FINDING of 2026-11-17 (the PC rollout of #240): through
+        # `live.observer` -> `tosymbol` a name with a space kept literal
+        # quotes and the set's name read `-`, so no device matched. The
+        # observer only triggers the read; the value is `live.object`'s.
+        for device in cl.DEVICES:
+            where = device.maxpat.as_posix()
+            patch = self.patcher(device)
+            self.line(patch, ["obj-parent2-observer", 0], ["obj-parent2-symbol", 0])
+            self.save(patch, device)
+            errors = self.errors()
+            self.assertIn(
+                f"{where}: the observer obj-parent2-observer reaches obj-pack:5 by its "
+                "output (an observer only triggers the read)",
+                errors,
+            )
+            self.assertIn(
+                f"{where}: the observer obj-parent2-observer outputs into one 't b' alone "
+                "(a trigger of the read), has [['obj-parent2-changed', 0], "
+                "['obj-parent2-symbol', 0]]",
+                errors,
+            )
+            self.assertIn(
+                f"{where}: obj-parent2-symbol:0 takes [['obj-parent2-reg', 0]] alone, "
+                "has [['obj-parent2-observer', 0], ['obj-parent2-reg', 0]]",
+                errors,
+            )
+            self.restore(device)
+        self.assertEqual(self.errors(), [])
+
+    def test_the_value_path_is_live_object_route_name_zl_reg_tosymbol(self) -> None:
+        for device in cl.DEVICES:
+            where = device.maxpat.as_posix()
+            patch = self.patcher(device)
+            for b in cl.boxes(patch["patcher"]):
+                if b.get("id") == "obj-parent3-object":
+                    b["text"] = "live.observer"
+            self.save(patch, device)
+            errors = self.errors()
+            self.assertIn(
+                f"{where}: obj-pack:6 takes its value from live.object -> route name -> "
+                "zl reg -> tosymbol (obj-parent3-object -> obj-parent3-route-name -> "
+                "obj-parent3-reg -> obj-parent3-symbol), has "
+                "['live.observer', 'route', 'zl', 'tosymbol']",
+                errors,
+            )
+            self.assertIn(
+                f"{where}: the observer obj-parent3-object reaches obj-pack:6 by its "
+                "output (an observer only triggers the read)",
+                errors,
+            )
+            self.restore(device)
+
+    def test_the_set_is_read_without_an_observer(self) -> None:
+        # The set's level read `-` on the PC through an observer: it is read
+        # at load and on its path's follow only.
+        patch = self.patcher(METER)
+        self.node(patch, "obj-parent4-observer", "live.observer")
+        self.line(patch, ["obj-id-property", 0], ["obj-parent4-observer", 0])
+        self.line(patch, ["obj-parent4-observer", 0], ["obj-parent4-read", 0])
+        self.save(patch, METER)
+        where = METER.maxpat.as_posix()
+        errors = self.errors()
+        self.assertIn(
+            f"{where}: the set (parent 4) has no observer (it reads at load and follow), "
+            "has obj-parent4-observer",
+            errors,
+        )
+        self.assertIn(
+            f"{where}: obj-parent4-read:0 takes [['obj-parent4-sel', 1]] alone, "
+            "has [['obj-parent4-observer', 0], ['obj-parent4-sel', 1]]",
+            errors,
+        )
+        self.assertEqual(cl.identity_boxes()["obj-parent4-t"], ["t", "i", "i"])
+        self.assertEqual(cl.identity_boxes()["obj-parent1-t"], ["t", "i", "i", "i"])
+
+    def test_the_set_takes_its_id_from_both_live_path_outlets(self) -> None:
+        # The review of the regression fix: the set's `-` on the PC may as
+        # well be a middle outlet that never gave an id for the set's path;
+        # the left outlet gives it at the load's `path` message, as the
+        # devices before #240 read it. Parents 1 to 3 follow the path only.
+        for device in cl.DEVICES:
+            where = device.maxpat.as_posix()
+            patch = self.patcher(device)
+            patch["patcher"]["lines"] = [
+                ln
+                for ln in patch["patcher"]["lines"]
+                if ln["patchline"]["source"] != ["obj-parent4-live-path", 0]
+            ]
+            self.save(patch, device)
+            self.assertIn(
+                f"{where}: obj-parent4-route-id:0 takes [['obj-parent4-live-path', 0], "
+                "['obj-parent4-live-path', 1]] alone, has [['obj-parent4-live-path', 1]]",
+                self.errors(),
+            )
+            self.restore(device)
+        self.assertEqual(self.errors(), [])
+
+    def test_a_bang_only_box_ends_the_value_walk(self) -> None:
+        def run(middle: str, maxclass: str = "newobj") -> list[str]:
+            patcher = {
+                "boxes": [
+                    {"box": {"id": "o", "maxclass": "newobj", "text": "live.observer"}},
+                    {"box": {"id": "k", "maxclass": maxclass, "text": middle}},
+                    {"box": {"id": "s", "maxclass": "newobj", "text": "tosymbol"}},
+                ],
+                "lines": [
+                    {"patchline": {"source": ["o", 0], "destination": ["k", 0]}},
+                    {"patchline": {"source": ["k", 0], "destination": ["s", 0]}},
+                    {"patchline": {"source": ["s", 0], "destination": ["p", 4]}},
+                ],
+            }
+            return [
+                e for e in cl.value_errors("p", patcher, cl.boxes(patcher), "p") if "reaches" in e
+            ]
+
+        self.assertEqual(run("t b"), [])
+        self.assertEqual(run("-", "message"), [])
+        self.assertEqual(len(run("$1", "message")), 1)
+        self.assertEqual(len(run("set $1", "message")), 1)
+        self.assertEqual(len(run("t l")), 1)
+        self.assertEqual(len(run("t b s")), 1)
+        self.assertEqual(len(run("zl reg")), 1)
+        # A message's right inlet sets the text its next bang sends.
+        patcher = {
+            "boxes": [
+                {"box": {"id": "o", "maxclass": "newobj", "text": "live.observer"}},
+                {"box": {"id": "m", "maxclass": "message", "text": "-"}},
+                {"box": {"id": "s", "maxclass": "newobj", "text": "tosymbol"}},
+            ],
+            "lines": [
+                {"patchline": {"source": ["o", 0], "destination": ["m", 1]}},
+                {"patchline": {"source": ["m", 0], "destination": ["s", 0]}},
+                {"patchline": {"source": ["s", 0], "destination": ["p", 4]}},
+            ],
+        }
+        found = [e for e in cl.value_errors("p", patcher, cl.boxes(patcher), "p") if "reaches" in e]
+        self.assertEqual(
+            found,
+            ["p: the observer o reaches p:4 by its output (an observer only triggers the read)"],
+        )
 
     def test_every_identity_line_is_held(self) -> None:
         for (box, inlet), sources in cl.identity_wiring("obj-pack").items():

@@ -302,6 +302,34 @@ class ListenDeviceTests(unittest.TestCase):
         found = errors(edited(elsewhere))
         self.assertIn("p: obj-announce:5 takes [['obj-parent2-symbol', 0]] alone, has []", found)
 
+    def test_the_names_are_read_from_live_object_never_an_observer(self) -> None:
+        # The FINDING of 2026-11-17 (#240 on the PC): an observer's output
+        # kept a name with a space in quotes and read the set as `-`.
+        self.assertEqual(errors(TEXT), [])
+
+        def observed(p: dict) -> None:
+            p["lines"].append(
+                {
+                    "patchline": {
+                        "source": ["obj-parent1-observer", 0],
+                        "destination": ["obj-parent1-reg", 1],
+                    }
+                }
+            )
+
+        found = errors(edited(observed))
+        self.assertIn(
+            "p: the observer obj-parent1-observer reaches obj-announce:4 by its output "
+            "(an observer only triggers the read)",
+            found,
+        )
+        self.assertIn(
+            "p: obj-parent1-reg:1 takes [['obj-parent1-none', 0], "
+            "['obj-parent1-route-name', 0]] alone, has [['obj-parent1-none', 0], "
+            "['obj-parent1-observer', 0], ['obj-parent1-route-name', 0]]",
+            found,
+        )
+
     def test_only_the_listen_id_names_the_device(self) -> None:
         def max_id(p: dict) -> None:
             p["lines"].append(
