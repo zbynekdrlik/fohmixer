@@ -785,6 +785,10 @@ impl Hub {
             script_watch::live_running,
             script_watch::CHECK_EVERY,
         )));
+        // The layout file is read before the hub serves: a request right
+        // after the start finds it (a 503 `NO_LAYOUT` until the poll task's
+        // first tick ran, on a loaded box), and the router gets it first.
+        layout_check(&layout, &router_tx);
         tasks.push(tokio::spawn(poll_layout(
             Arc::clone(&layout),
             router_tx.clone(),
@@ -914,6 +918,18 @@ fn remote_http() -> anyhow::Result<http_client::HttpClient> {
     http_client::HttpClient::new()
 }
 
+/// Reads the layout file once: a new layout goes to the router. `false`
+/// when the router is gone.
+fn layout_check(layout: &LayoutStore, router: &mpsc::UnboundedSender<RouterMsg>) -> bool {
+    let Some(rev) = layout.poll() else {
+        return true;
+    };
+    let (served, stage_ctrl) = layout.served();
+    router
+        .send(router::layout_msg(rev, served.as_deref(), stage_ctrl))
+        .is_ok()
+}
+
 /// Checks the layout file every `period`; a new layout goes to the router,
 /// and the router reads `sectors.json` (#148), `colors.json` (#164) and
 /// `mute_alarms.json` (#188) and `mute_guards.json` (#203) again.
@@ -926,14 +942,8 @@ async fn poll_layout(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tick.tick().await;
-        if let Some(rev) = layout.poll() {
-            let (served, stage_ctrl) = layout.served();
-            if router
-                .send(router::layout_msg(rev, served.as_deref(), stage_ctrl))
-                .is_err()
-            {
-                return;
-            }
+        if !layout_check(&layout, &router) {
+            return;
         }
         // The fader sectors' file rides the same tick (#148).
         if router.send(RouterMsg::SectorsPoll).is_err() {
