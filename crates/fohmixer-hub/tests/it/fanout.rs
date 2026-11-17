@@ -486,6 +486,161 @@ fn a_new_key_on_a_followed_live_key_takes_the_change_pushed_before_its_result() 
     });
 }
 
+/// Steps the held drain until the script ran a value's `add_listener` (the
+/// batch's first command; its guards still to run, so the batch is
+/// unfinished).
+async fn step_to_the_value(host: &mut Host) {
+    let deadline = Instant::now() + SECS_3;
+    loop {
+        let stepped = host.drain("step");
+        if stepped == "add_listener value" {
+            return;
+        }
+        assert!(Instant::now() < deadline, "the batch never came");
+        if stepped == "-" {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+}
+
+/// The values (and display strings) of `key` the client gets until none
+/// comes for `quiet`.
+async fn values_until_quiet(
+    client: &mut Client,
+    key: &str,
+    quiet: Duration,
+) -> Vec<(Option<serde_json::Value>, Option<String>)> {
+    let mut seen = Vec::new();
+    while let Some(item) = client
+        .gets(quiet, |m| match m {
+            ServerMsg::Values { items } => items
+                .iter()
+                .find(|i| i.sub == key)
+                .map(|i| (i.value.clone(), i.display.clone())),
+            _ => None,
+        })
+        .await
+    {
+        seen.push(item);
+    }
+    seen
+}
+
+/// #245, case 1: a binding resolved again on its OWN Live key, with no
+/// other hub key on it. A track-list change resolves every name binding
+/// again, in one batch with its guards (the binding's value first). The
+/// entry stays linked, so it already shows a change pushed between that
+/// batch's send and its result; the result carries the value read before
+/// the change and must not move the entry back to it.
+#[test]
+fn a_binding_resolved_again_on_its_own_live_key_keeps_the_change_pushed_before_its_result() {
+    const BY_NAME: &str = "live_set tracks[name=Hand2 #] mixer_device volume";
+    let _serial = serial();
+    runtime().block_on(async {
+        let mut host = Host::start("band");
+        let dir = tempfile::tempdir().unwrap();
+        let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        let mut a = hub.client().await;
+        let mut b = hub.client().await;
+        a.instance_state("band", true, Some(false), SECS_3).await;
+        b.instance_state("band", true, Some(false), SECS_3).await;
+        let key = a.sub_key("band", BY_NAME, "value", false).await;
+        let before = a.value_of(&key, SECS_3).await.value;
+        assert_ne!(before, Some(json!(0.5)), "the change must be a change");
+        // The binding and both its guards resolved.
+        hub.status_until(SECS_3, |s| s.instances[0].listeners == 3)
+            .await;
+        // The drain held, Live deletes its last track: the list guard
+        // fires, and the binding's batch (its value, then its guards) waits
+        // in the script's inbox.
+        assert_eq!(host.drain("hold"), "held");
+        assert!(host.delete_track(7) > 0, "the last track deleted");
+        step_to_the_value(&mut host).await;
+        // Live changes the value after the binding's read; the next tick
+        // pushes it on the binding's own listener, ahead of the result.
+        assert_eq!(
+            host.param("live_set tracks 1 mixer_device volume", "value", 0.5),
+            0.5
+        );
+        assert_eq!(host.drain("ticks 2"), "2");
+        a.value_until(&key, SECS_3, |i| i.value == Some(json!(0.5)))
+            .await;
+        assert_eq!(host.drain("resume"), "resumed");
+        // The script runs requests in order: once B's new key has its value,
+        // the hub has handled the binding's result.
+        let other = b
+            .sub_key(
+                "band",
+                "live_set tracks 0 mixer_device volume",
+                "value",
+                false,
+            )
+            .await;
+        b.value_of(&other, SECS_3).await;
+        let later = values_until_quiet(&mut a, &key, Duration::from_millis(500)).await;
+        assert!(
+            later.iter().all(|(v, _)| *v == Some(json!(0.5))),
+            "A's values after the change: {later:?}"
+        );
+        hub.stop().await;
+        host.stop();
+    });
+}
+
+/// #245, case 2: a new hub key on a followed Live key whose only sibling
+/// unsubscribes between the change pushed on that listener and the new
+/// key's result. No sibling is left at the result, yet the change is still
+/// the Live key's newest value.
+#[test]
+fn a_new_key_whose_only_sibling_left_takes_the_change_pushed_before_its_result() {
+    const BY_INDEX: &str = "live_set tracks 1 mixer_device volume";
+    const BY_NAME: &str = "live_set tracks[name=Hand2 #] mixer_device volume";
+    let _serial = serial();
+    runtime().block_on(async {
+        let mut host = Host::start("band");
+        let dir = tempfile::tempdir().unwrap();
+        let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        let mut a = hub.client().await;
+        let mut b = hub.client().await;
+        a.instance_state("band", true, Some(false), SECS_3).await;
+        b.instance_state("band", true, Some(false), SECS_3).await;
+        // Page A follows the volume: the hub knows its Live key.
+        let followed = a.sub_key("band", BY_INDEX, "value", false).await;
+        let before = a.value_of(&followed, SECS_3).await.value;
+        assert_ne!(before, Some(json!(0.5)), "the change must be a change");
+        // The drain held: page B's batch (its value with the display, then
+        // the name guard) waits in the script's inbox.
+        assert_eq!(host.drain("hold"), "held");
+        let key = b.sub_key("band", BY_NAME, "value", true).await;
+        step_to_the_value(&mut host).await;
+        // Live changes the value after B's read; the next tick pushes it on
+        // the one listener, which the hub knows by A's key.
+        assert_eq!(host.param(BY_INDEX, "value", 0.5), 0.5);
+        assert_eq!(host.drain("ticks 2"), "2");
+        a.value_until(&followed, SECS_3, |i| i.value == Some(json!(0.5)))
+            .await;
+        // A leaves before B's result: B's key is the only one left.
+        a.send(&ClientMsg::Unsub {
+            sub: followed.clone(),
+        })
+        .await;
+        hub.status_until(SECS_3, |s| s.instances[0].subscriptions == 1)
+            .await;
+        assert_eq!(host.drain("resume"), "resumed");
+        let first = b.value_of(&key, SECS_3).await;
+        let mut seen = vec![(first.value, first.display)];
+        seen.extend(values_until_quiet(&mut b, &key, Duration::from_millis(500)).await);
+        let last = seen.last().expect("B got its value");
+        assert_eq!(last.0, Some(json!(0.5)), "the values page B got: {seen:?}");
+        assert!(
+            last.1.as_deref().is_some_and(|d| !d.is_empty()),
+            "B asked for the display string: {seen:?}"
+        );
+        hub.stop().await;
+        host.stop();
+    });
+}
+
 #[test]
 fn a_stall_shows_the_instance_busy_then_free() {
     let _serial = serial();
