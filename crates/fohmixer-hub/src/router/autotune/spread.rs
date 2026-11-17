@@ -1,8 +1,9 @@
 //! A transport decision's writes spread out. A stop's DRY (#140, the
-//! DECIDED comment of 2026-11-09): dasio measured band Live's audio callback at 5.8-11.5 ms at
-//! every stop while the hub wrote every selector in one batch (each write
-//! swaps a rack's chain, all in one Live tick, one audio block; 11.45 ms
-//! dropped a block, a click), about 3 ms without them. Since #190 (the
+//! DECIDED comment of 2026-11-09): dasio measured band Live's audio
+//! callback at 5.8-11.5 ms at every stop while the hub wrote every
+//! selector in one batch (each write swaps a rack's chain, all in one Live
+//! tick, one audio block; 11.45 ms dropped a block, a click), about 3 ms
+//! without them. Since #190 (the
 //! design of 2026-11-17) a play start's switch-on is spread the same way,
 //! after the engage delay's end (at the start itself with no delay): its
 //! one batch still stalled band Live's callback (5-8.5 ms, once 26 ms).
@@ -25,7 +26,10 @@
 //!   selectors through their last refs. A disconnect drops it (`offline`).
 //! - **A write no longer owed** when its turn comes (its target's writes
 //!   were dropped: a new macro, a walk's answer, a value at DRY heard, a
-//!   later write answered) is dropped (`owed`) and the next one goes.
+//!   later write answered; or its target's decision is no longer what it
+//!   writes: AUT or a singer off, a lost transport within a switch-on's
+//!   spread, #190's review) is dropped (`owed`, taken off its target's
+//!   writes on their way: never sent) and the next one goes.
 //! - The hub-loss fall back (the script's `safe_writes`) is the script's and
 //!   stays immediate.
 //!
@@ -58,10 +62,14 @@ pub(in crate::router) struct Spread {
 }
 
 /// Whether `pending` is still owed: its target still holds the macro it
-/// names (`found`: its `$ref`; none without a target or a macro), and its
-/// write is still on its way unanswered (`writing`: the target's).
-fn owed(found: Option<&str>, writing: &[Flying], pending: &Pending) -> bool {
+/// names (`found`: its `$ref`; none without a target or a macro), its
+/// write is still on its way unanswered (`writing`: the target's), and it
+/// is still the target's decision (`decided`: its `on`; #190's review: a
+/// switch-on queued when AUT went off or the transport was lost would go
+/// after their DRY).
+fn owed(found: Option<&str>, writing: &[Flying], decided: Option<bool>, pending: &Pending) -> bool {
     found == Some(pending.going.id.as_str())
+        && decided == Some(pending.going.on)
         && writing
             .iter()
             .any(|f| f.write == pending.write && !f.answered)
@@ -167,9 +175,15 @@ impl Router {
             let target = self.autotune.targets.get(&pending.going.key);
             let found = target.and_then(|t| t.found.as_ref()).map(|f| f.id.as_str());
             let writing = target.map_or(&[][..], |t| t.writing.as_slice());
-            if owed(found, writing, &pending) {
+            let decided = target.and_then(|t| t.decision).map(|d| d.on);
+            if owed(found, writing, decided, &pending) {
                 next = Some(pending);
                 break;
+            }
+            // Never sent: off its target's writes on their way, so no later
+            // answer counts it as written.
+            if let Some(target) = self.autotune.targets.get_mut(&pending.going.key) {
+                target.writing.retain(|f| f.write != pending.write);
             }
             dropped.push(pending.going.label);
         }
@@ -254,18 +268,43 @@ mod tests {
     }
 
     #[test]
-    fn a_spread_write_is_owed_only_while_on_its_way_to_the_macro_it_names() {
+    fn a_spread_write_is_owed_only_while_on_its_way_to_the_macro_it_names_as_decided() {
         let flying = |write, answered| Flying {
             write,
             on: false,
             answered,
         };
         let p = pending("p7", 3);
-        assert!(owed(Some("p7"), &[flying(2, true), flying(3, false)], &p));
-        assert!(!owed(None, &[flying(3, false)], &p), "no target or macro");
-        assert!(!owed(Some("p9"), &[flying(3, false)], &p), "another macro");
-        assert!(!owed(Some("p7"), &[], &p), "dropped");
-        assert!(!owed(Some("p7"), &[flying(3, true)], &p), "answered");
-        assert!(!owed(Some("p7"), &[flying(4, false)], &p), "another write");
+        let dry = Some(false);
+        assert!(owed(
+            Some("p7"),
+            &[flying(2, true), flying(3, false)],
+            dry,
+            &p
+        ));
+        assert!(
+            !owed(None, &[flying(3, false)], dry, &p),
+            "no target or macro"
+        );
+        assert!(
+            !owed(Some("p9"), &[flying(3, false)], dry, &p),
+            "another macro"
+        );
+        assert!(!owed(Some("p7"), &[], dry, &p), "dropped");
+        assert!(!owed(Some("p7"), &[flying(3, true)], dry, &p), "answered");
+        assert!(
+            !owed(Some("p7"), &[flying(4, false)], dry, &p),
+            "another write"
+        );
+        // #190's review: no longer the decision (a switch-on still to come
+        // when AUT went off is the same case the other way round).
+        assert!(
+            !owed(Some("p7"), &[flying(3, false)], Some(true), &p),
+            "now on"
+        );
+        assert!(
+            !owed(Some("p7"), &[flying(3, false)], None, &p),
+            "no decision"
+        );
     }
 }
