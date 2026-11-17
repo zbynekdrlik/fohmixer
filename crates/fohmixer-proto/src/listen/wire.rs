@@ -22,9 +22,11 @@
 //! holds JSON's `true` as 1, which its `sel 1` takes), to loopback peers
 //! only and with no token. One UDP select port for every device failed on the PC
 //! (#210, P1: the devices that bind one port share one socket, and only one
-//! of them hears a datagram), so each device asks for itself. `on` starts
-//! the stream; `off`, an error or an empty answer stops it at once; a device
-//! whose polls go unanswered stops [`SELECT_HOLD_MS`] after its last `on`.
+//! of them hears a datagram), so each device asks for itself. `on` true
+//! starts the stream, `on` false stops it at once; an answer without `on`
+//! (an error answer, a body that is no JSON) or a failed request is no
+//! answer, so a device whose polls go unanswered stops [`SELECT_HOLD_MS`]
+//! after its last `on` (a failed request is off within the hold).
 //!
 //! **Hello**, the first message chunk on the device's TCP connection:
 //! `fohmixer_listen <wire version> <device id> v<version> <sample rate>`.

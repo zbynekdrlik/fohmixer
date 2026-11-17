@@ -392,7 +392,10 @@ pub fn api_routes(hub: Hub) -> Router<Hub> {
             // 1 KiB, a literal for cargo-mutants (a name is 64 characters).
             post(scene::post_scene).layer(DefaultBodyLimit::max(1_024)),
         )
-        .route("/api/listen/select", get(listen::get_select))
+        .route(
+            fohmixer_proto::listen::wire::SELECT_PATH,
+            get(listen::get_select),
+        )
         .route("/ws", get(crate::ws::ws_handler))
         .route("/ws/audio", get(crate::listen::session::ws_audio))
         .route_layer(axum::middleware::from_fn_with_state(hub, role_gate))
@@ -915,7 +918,7 @@ mod tests {
         let hub = crate::test_hub(dir.path());
         for path in API_PATHS {
             let response = get_as(&hub, Role::Engineer, path).await;
-            if *path == "/api/listen/select" {
+            if *path == fohmixer_proto::listen::wire::SELECT_PATH {
                 // #210: its handler answers a device on this PC only; the
                 // tests' peer is a LAN one, so its own 403 proves the route.
                 assert_eq!(response.status(), StatusCode::FORBIDDEN);

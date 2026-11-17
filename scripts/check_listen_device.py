@@ -13,10 +13,12 @@ own:
 - the stream runs only while selected: one `qmetro 10`, switched by nothing
   but a `1` or `0` message box (no `loadbang`, no `live.thisdevice`);
 - the select, asked over HTTP (#210: one UDP select port reached only one
-  device of a Live): one `metro <POLL_MS>` started by `live.thisdevice`
-  banging one `dict.pack url: http_method: parse_type:` (`get`, `json`)
-  whose url is one `sprintf http://127.0.0.1:<the hub's HTTP port><SELECT_PATH>?device=%ld`
-  of the listen id, into one `maxurl`, its answer's `dict.unpack body:` then
+  device of a Live): one `metro <POLL_MS>` banging one `dict.pack url:
+  http_method: parse_type:` (`get`, `json` from `live.thisdevice`) whose url
+  is one `sprintf http://127.0.0.1:<the hub's HTTP port><SELECT_PATH>?device=%ld`
+  of the listen id; the listen id through `change` (once: the URL is set,
+  and the metro started, only when the id is known and new, so no request
+  goes without a URL and the id's refresh each second asks nothing more), into one `maxurl`, its answer's `dict.unpack body:` then
   `dict.unpack on:` into `sel 1`, one `delay <SELECT_HOLD_MS>`, and no
   `udpreceive` at all;
 - the announce: one `udpsend 127.0.0.1 <DEFAULT_PORT>` fed by one
@@ -59,6 +61,8 @@ SWITCHES = ("0", "1")
 # inlet)); the patch's ids are its own, fixed like the LUFS check's
 # `obj-send-trigger`.
 BOXES = {
+    "obj-poll-change": ["change"],
+    "obj-poll-t": ["t", "b", "l"],
     "obj-poll-method": ["get"],
     "obj-poll-parse": ["json"],
     "obj-poll-request": ["dict.pack", "url:", "http_method:", "parse_type:"],
@@ -80,9 +84,11 @@ BOXES = {
 WIRING = (
     (("obj-thisdevice", 0), ("obj-poll-method", 0)),
     (("obj-thisdevice", 0), ("obj-poll-parse", 0)),
-    (("obj-thisdevice", 0), ("obj-poll-metro", 0)),
     (("obj-poll-method", 0), ("obj-poll-request", 1)),
     (("obj-poll-parse", 0), ("obj-poll-request", 2)),
+    (("obj-poll-change", 0), ("obj-poll-t", 0)),
+    (("obj-poll-t", 1), ("obj-poll-url", 0)),
+    (("obj-poll-t", 0), ("obj-poll-metro", 0)),
     (("obj-poll-url", 0), ("obj-poll-request", 0)),
     (("obj-poll-metro", 0), ("obj-poll-request", 0)),
     (("obj-poll-request", 0), ("obj-poll-maxurl", 0)),
@@ -108,10 +114,10 @@ WIRING = (
     (("obj-id-route", 0), ("obj-session-id", 0)),
     (("obj-session-id", 0), ("obj-announce", 2)),
     (("obj-session-id", 0), ("obj-hello", 2)),
-    (("obj-session-id", 0), ("obj-poll-url", 0)),
+    (("obj-session-id", 0), ("obj-poll-change", 0)),
 )
 # Inlets only the listen id may feed.
-SESSION_ONLY = (("obj-announce", 2), ("obj-hello", 2), ("obj-poll-url", 0))
+SESSION_ONLY = (("obj-announce", 2), ("obj-hello", 2), ("obj-poll-change", 0))
 
 
 def wiring_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:

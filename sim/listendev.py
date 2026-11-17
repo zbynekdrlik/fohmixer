@@ -17,8 +17,9 @@ every ``POLL_S`` each device asks the hub's HTTP port whether it is selected
 (``GET /api/listen/select?device=<id>``, as the patch's ``maxurl`` does: one
 UDP select port for every device reached only one of them on the PC, #210),
 and an answer whose JSON ``on`` is true (the patch's ``dict.unpack on:`` into
-``sel 1``) selects it for ``SELECT_HOLD_S``, any other answer or a failed
-request stops it; while
+``sel 1``) selects it for ``SELECT_HOLD_S``, an ``on`` of any other value
+stops it at once, and an answer without ``on`` (an error answer, a body that
+is no JSON) or a failed request is no answer: the hold ends it; while
 selected it connects to the hub's TCP port, sends its hello as a Jitter
 message chunk, then every tick the whole 960-sample frames it owes as one
 float32 matrix of 2 planes and 960 x k cells, big-endian, as ``jit.catch~
@@ -38,6 +39,7 @@ import struct
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 
 import Live
@@ -106,13 +108,16 @@ def select_url(hub_port, device):
 
 
 def answers_on(body):
-    """Whether an answer's body selects the device: JSON whose ``on`` is
-    true, as the patch reads it (a body that is no JSON object: off)."""
+    """What an answer's body says, as the patch reads it: True for a JSON
+    object whose ``on`` is true, False for one whose ``on`` is anything else,
+    None (no answer) without ``on``."""
     try:
         answer = json.loads(body)
     except ValueError:
-        return False
-    return isinstance(answer, dict) and answer.get("on") is True
+        return None
+    if not isinstance(answer, dict) or "on" not in answer:
+        return None
+    return answer["on"] is True
 
 
 # No proxy from the environment: the hub is on loopback.
@@ -120,14 +125,16 @@ _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def ask(hub_port, device):
-    """One device's question: True when the hub answers it on, False for an
-    off answer, an error answer or a failed request; and the failure's
-    words, or None."""
+    """One device's question: ``answers_on`` of the answer (an error answer's
+    body too, as ``maxurl`` hands it on), None for a failed request; and the
+    failure's words, or None."""
     try:
         with _OPENER.open(select_url(hub_port, device), timeout=POLL_TIMEOUT_S) as response:
             return answers_on(response.read(256)), None
+    except urllib.error.HTTPError as error:
+        return answers_on(error.read(256)), str(error)
     except (OSError, ValueError) as error:
-        return False, str(error)
+        return None, str(error)
 
 
 def encode_message(atoms):
@@ -248,6 +255,9 @@ class ListenDevices:
 
     def stop(self):
         self._halt.set()
+        if self._poller is not None:
+            # Bounded: one question in flight ends within its timeout.
+            self._poller.join(POLL_TIMEOUT_S + POLL_S)
         if self._timer is not None:
             self._timer.stop()
         for device in self.devices:
@@ -276,6 +286,8 @@ class ListenDevices:
             elif error is None and self._failing:
                 _log("the hub's select route answers again")
             self._failing = error is not None
+            if on is None:
+                continue
             with self._lock:
                 self._answers[device_id] = on
 

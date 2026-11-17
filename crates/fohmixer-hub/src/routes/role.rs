@@ -12,6 +12,7 @@ use axum::{
     response::Response,
 };
 use fohmixer_proto::client::{HubStatus, LayoutStatus};
+use fohmixer_proto::listen::wire::SELECT_PATH;
 use fohmixer_proto::roles::{MBC_INSTANCE, Role};
 
 use crate::Hub;
@@ -49,7 +50,7 @@ pub const API_PATHS: &[&str] = &[
     "/api/lufs/history",
     "/api/lufs/days",
     "/api/scene",
-    "/api/listen/select",
+    SELECT_PATH,
     "/ws",
     "/ws/audio",
 ];
@@ -69,7 +70,7 @@ pub fn route_role(path: &str) -> Option<RouteAccess> {
             Some(RouteAccess::EngineerOnly)
         }
         "/api/scene" => Some(RouteAccess::Automation),
-        "/api/listen/select" => Some(RouteAccess::Device),
+        SELECT_PATH => Some(RouteAccess::Device),
         _ => None,
     }
 }

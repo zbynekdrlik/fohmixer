@@ -76,13 +76,15 @@ class EncodeTest(unittest.TestCase):
         self.assertEqual(data.hex(), listendev.GOLDEN_ANNOUNCE_HEX)
 
     def test_only_an_on_answer_selects_the_device(self):
-        self.assertTrue(listendev.answers_on(b'{"on":true}'))
-        self.assertTrue(listendev.answers_on(b'{"on": true}'))
-        self.assertFalse(listendev.answers_on(b'{"on":false}'))
-        self.assertFalse(listendev.answers_on(b""))
-        self.assertFalse(listendev.answers_on(b"<html>true</html>"))
-        self.assertFalse(listendev.answers_on(b"[true]"))
-        self.assertFalse(listendev.answers_on(b'{"code":"LOOPBACK_ONLY"}'))
+        self.assertIs(listendev.answers_on(b'{"on":true}'), True)
+        self.assertIs(listendev.answers_on(b'{"on": true}'), True)
+        self.assertIs(listendev.answers_on(b'{"on":false}'), False)
+        self.assertIs(listendev.answers_on(b'{"on":"yes"}'), False)
+        # No `on`: no answer (the patch's dict.unpack on: outputs nothing).
+        self.assertIsNone(listendev.answers_on(b""))
+        self.assertIsNone(listendev.answers_on(b"<html>true</html>"))
+        self.assertIsNone(listendev.answers_on(b"[true]"))
+        self.assertIsNone(listendev.answers_on(b'{"code":"LOOPBACK_ONLY"}'))
         self.assertEqual(
             listendev.select_url(8480, 7), "http://127.0.0.1:8480/api/listen/select?device=7"
         )
@@ -203,13 +205,16 @@ class StreamTest(unittest.TestCase):
         asked = {q.rsplit("=", 1)[1] for q in self.hub.asked}
         self.assertEqual(asked, {str(first.id), str(second.id)})
 
-    def test_a_failed_request_stops_the_device(self):
+    def test_a_failed_request_is_no_answer_and_the_hold_ends_it(self):
         device = self.devs.add(self.song.tracks[0], rack=False)
         self.select(device.id)
         self.devs.tick()
         self.assertTrue(device.sending(self.clock.now))
         self.hub.close()
         self.devs.poll_once()
+        self.devs.tick()
+        self.assertTrue(device.sending(self.clock.now), "within the hold")
+        self.clock.now += listendev.SELECT_HOLD_S
         self.devs.tick()
         self.assertFalse(device.sending(self.clock.now))
 

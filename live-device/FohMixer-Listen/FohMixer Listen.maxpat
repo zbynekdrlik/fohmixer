@@ -214,6 +214,45 @@
 			},
 			{
 				"box": {
+					"id": "obj-poll-change",
+					"maxclass": "newobj",
+					"text": "change",
+					"numinlets": 2,
+					"numoutlets": 3,
+					"outlettype": [
+						"",
+						"int",
+						"int"
+					],
+					"patching_rect": [
+						700.0,
+						600.0,
+						60.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-poll-t",
+					"maxclass": "newobj",
+					"text": "t b l",
+					"numinlets": 1,
+					"numoutlets": 2,
+					"outlettype": [
+						"bang",
+						""
+					],
+					"patching_rect": [
+						780.0,
+						640.0,
+						50.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
 					"id": "obj-poll-url",
 					"maxclass": "newobj",
 					"text": "sprintf http://127.0.0.1:8480/api/listen/select?device=%ld",
@@ -223,7 +262,7 @@
 						""
 					],
 					"patching_rect": [
-						700.0,
+						780.0,
 						680.0,
 						380.0,
 						22.0
@@ -1784,18 +1823,6 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-thisdevice",
-						0
-					],
-					"destination": [
-						"obj-poll-metro",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
 						"obj-poll-method",
 						0
 					],
@@ -1808,24 +1835,60 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-poll-parse",
+						"obj-session-id",
 						0
 					],
 					"destination": [
-						"obj-poll-request",
-						2
+						"obj-poll-change",
+						0
 					]
 				}
 			},
 			{
 				"patchline": {
 					"source": [
-						"obj-session-id",
+						"obj-poll-change",
 						0
+					],
+					"destination": [
+						"obj-poll-t",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-poll-t",
+						1
 					],
 					"destination": [
 						"obj-poll-url",
 						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-poll-t",
+						0
+					],
+					"destination": [
+						"obj-poll-metro",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-poll-parse",
+						0
+					],
+					"destination": [
+						"obj-poll-request",
+						2
 					]
 				}
 			},

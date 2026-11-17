@@ -52,6 +52,15 @@ pub fn answer(on: bool) -> Response {
         .into_response()
 }
 
+/// The most refusal lines per `ration::GAP` (a peer polling the route from
+/// off the PC never fills the hub log).
+pub const REFUSED_LINES: u32 = 8;
+
+/// The warn line of a refusal (`skipped`: the lines left out before it).
+pub fn refused_line(peer: &str, skipped: u64) -> String {
+    format!("listen: a select asked from off the PC refused peer={peer} skipped={skipped}")
+}
+
 pub async fn get_select(
     State(hub): State<Hub>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -59,7 +68,15 @@ pub async fn get_select(
     query: Result<Query<SelectQuery>, QueryRejection>,
 ) -> Response {
     if !from_device(peer, &headers) {
-        tracing::info!(peer = %peer.ip(), "listen: a select asked from off the PC refused");
+        let allowed = hub
+            .select_refusals
+            .lock()
+            .map(|mut r| r.take(Instant::now(), REFUSED_LINES))
+            .ok()
+            .flatten();
+        if let Some(skipped) = allowed {
+            tracing::warn!("{}", refused_line(&peer.ip().to_string(), skipped));
+        }
         return error_response(
             StatusCode::FORBIDDEN,
             "LOOPBACK_ONLY",
@@ -107,6 +124,15 @@ mod tests {
             !from_device(at(IpAddr::V4(Ipv4Addr::LOCALHOST)), &proxied),
             "the tunnel connects from 127.0.0.1"
         );
+    }
+
+    #[test]
+    fn a_refusal_line_names_the_peer_and_the_lines_left_out() {
+        assert_eq!(
+            refused_line("10.0.0.5", 3),
+            "listen: a select asked from off the PC refused peer=10.0.0.5 skipped=3"
+        );
+        assert_eq!(REFUSED_LINES, 8);
     }
 
     #[tokio::test]
