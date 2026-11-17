@@ -621,8 +621,10 @@ pub fn edit_counts(before: &SectorsDoc, after: &SectorsDoc) -> EditCounts {
 }
 
 /// Whether a layout of `before` units that becomes `after` units is
-/// refused FULL: past [`SECTOR_UNITS`] and larger than before.
-fn grows_past_full(before: f64, after: f64) -> bool {
+/// refused FULL: past [`SECTOR_UNITS`] and larger than before. ARRANGE's
+/// drop asks it too (#236), so the page never marks a drop the save
+/// refuses.
+pub fn grows_past_full(before: f64, after: f64) -> bool {
     is_full(after) && after > before
 }
 
