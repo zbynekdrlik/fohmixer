@@ -38,7 +38,9 @@ use leptos::prelude::*;
 
 use crate::arrange::sectors::{SectorArrangement, SectorCell, WindowKey, arrange_sectors};
 use crate::arrange::{Arrangement, LineKey, METRICS, Shift, Sides, narrow};
-use crate::behave::arrange_drag::{Arrange, ArrangeEnd, Drag, Held, arrange_note};
+use crate::behave::arrange_drag::{
+    Arrange, ArrangeEnd, Carry, Drag, Held, Spot, arrange_note, drop_spot,
+};
 use crate::binding::sectors::{Picks, picked, pool_controls, sector_instances, sector_side};
 use crate::components::stream_lufs::stream_readouts;
 use crate::components::{ControlView, down_of, owns_touches};
@@ -139,12 +141,14 @@ fn change_mode<R>(mode: RwSignal<Arrange>, change: impl FnOnce(&mut Arrange) -> 
     Some(out)
 }
 
-/// The page's one drag in ARRANGE (`behave::arrange_drag::Drag`) and the
-/// strip's slot it moves under the finger (an element, so kept locally).
+/// The page's one drag in ARRANGE (`behave::arrange_drag::Drag`), the
+/// strip's slot it moves under the finger and the cell it would land in
+/// now (elements, so kept locally).
 #[derive(Clone, Copy)]
 struct Carrier {
     drag: StoredValue<Drag>,
     slot: StoredValue<Option<web_sys::Element>, LocalStorage>,
+    target: StoredValue<Option<web_sys::Element>, LocalStorage>,
 }
 
 impl Carrier {
@@ -152,22 +156,45 @@ impl Carrier {
         Self {
             drag: StoredValue::new(Drag::default()),
             slot: StoredValue::new_local(None),
+            target: StoredValue::new_local(None),
         }
     }
 
-    /// The carried slot follows the finger by `dx` px (its own `style`:
-    /// the slot has no reactive one).
-    fn show(self, dx: f64) {
+    /// The carried slot follows the finger by `dx`, `dy` px (its own
+    /// `style`: the slot has no reactive one).
+    fn show(self, dx: f64, dy: f64) {
         let _ = self.slot.try_with_value(|slot| {
             if let Some(slot) = slot {
-                dom::set_attr(slot, "style", &format!("transform:translateX({dx:.1}px);"));
+                dom::set_attr(
+                    slot,
+                    "style",
+                    &format!("transform:translate({dx:.1}px,{dy:.1}px);"),
+                );
                 dom::set_attr(slot, "data-carried", "true");
             }
         });
     }
 
+    /// The cell the carried strip would land in now (`data-drop`: `yes`,
+    /// or `no` for one that takes no drop), the previous one cleared.
+    fn aim(self, cell: Option<(web_sys::Element, bool)>) {
+        self.unaim();
+        if let Some((cell, takes)) = cell {
+            dom::set_attr(&cell, "data-drop", if takes { "yes" } else { "no" });
+            let _ = self.target.try_set_value(Some(cell));
+        }
+    }
+
+    /// No cell is aimed at any more.
+    fn unaim(self) {
+        if let Some(Some(cell)) = self.target.try_update_value(Option::take) {
+            dom::remove_attr(&cell, "data-drop");
+        }
+    }
+
     /// The carried slot goes back to its place.
     fn lift(self) {
+        self.unaim();
         if let Some(Some(slot)) = self.slot.try_update_value(Option::take) {
             dom::remove_attr(&slot, "style");
             dom::remove_attr(&slot, "data-carried");
@@ -198,28 +225,80 @@ impl Carrier {
     }
 }
 
-/// The cells of `sector` on `slot`'s line (the line's children: one keyed
-/// list), each its layout slot (`data-slot`) and its centre (px, the
-/// viewport's x).
-fn sector_spots(slot: &web_sys::Element, sector: SectorId) -> Vec<(usize, f64)> {
-    let Some(line) = slot.parent_element() else {
+/// Every visible sector's cells on the page `slot` lies in (#233: the
+/// lines' children, each line one keyed list), each its sector
+/// (`data-sector`), its layout slot (`data-slot`), its centre's x and its
+/// box's top and bottom (px, the viewport's). A cell with no box (out of
+/// a side's window) is none; with `left_covered` (an extra tab over the
+/// left half) the left sectors' cells are none.
+fn page_spots(slot: &web_sys::Element, left_covered: bool) -> Vec<Spot> {
+    let Some(body) = slot.closest(".body").ok().flatten() else {
         return Vec::new();
     };
     let mut out = Vec::new();
-    let mut next = line.first_element_child();
-    while let Some(el) = next {
-        let index = el
-            .get_attribute("data-slot")
-            .and_then(|n| n.parse::<usize>().ok());
-        if let Some(index) = index
-            && el.get_attribute("data-sector").as_deref() == Some(sector.as_str())
-        {
-            let rect = el.get_bounding_client_rect();
-            out.push((index, rect.left() + rect.width() / 2.0));
+    let mut line = body.first_element_child();
+    while let Some(row) = line {
+        if row.matches(".line").unwrap_or(false) {
+            let mut next = row.first_element_child();
+            while let Some(el) = next {
+                if let Some(spot) = spot_of(&el)
+                    && !(left_covered && spot.sector.left())
+                {
+                    out.push(spot);
+                }
+                next = el.next_element_sibling();
+            }
         }
-        next = el.next_element_sibling();
+        line = row.next_element_sibling();
     }
     out
+}
+
+/// A cell's spot (see [`page_spots`]); none for an element that is no
+/// sector's cell or has no box.
+fn spot_of(el: &web_sys::Element) -> Option<Spot> {
+    let slot = el.get_attribute("data-slot")?.parse::<usize>().ok()?;
+    let id = el.get_attribute("data-sector")?;
+    let sector = SectorId::ALL.into_iter().find(|s| s.as_str() == id)?;
+    let rect = el.get_bounding_client_rect();
+    (rect.width() > 0.0).then(|| Spot {
+        sector,
+        slot,
+        x: rect.left() + rect.width() / 2.0,
+        top: rect.top(),
+        bottom: rect.bottom(),
+    })
+}
+
+/// The cell element of `spot` on the page `slot` lies in.
+fn spot_cell(slot: &web_sys::Element, spot: Spot) -> Option<web_sys::Element> {
+    let body = slot.closest(".body").ok().flatten()?;
+    let selector = format!(
+        ".line > [data-sector=\"{}\"][data-slot=\"{}\"]",
+        spot.sector.as_str(),
+        spot.slot
+    );
+    body.query_selector(&selector).ok().flatten()
+}
+
+/// Where the carry `carry`, dropped at (`x`, `y`), lands: the layout its
+/// sector shows (the edit's in ARRANGE, `picked` over this device's picks),
+/// the cell it lands in and that cell's sector's shown layout.
+fn drop_target(nav: Nav, carry: &Carry, x: f64, y: f64) -> Option<(String, Spot, String)> {
+    let spot = drop_spot(&carry.spots, x, y)?;
+    let picks = nav.picks.try_get_untracked().unwrap_or_default();
+    let mode = nav.arrange;
+    let shown = nav
+        .store
+        .sectors
+        .try_with_untracked(|told| {
+            told.shown()
+                .and_then(|doc| mode.try_with_untracked(|m| m.applied(doc)))
+        })
+        .flatten()?;
+    let from = picked(&shown, &picks, carry.sector)?.id.clone();
+    let into = picked(&shown, &picks, spot.sector)?.id.clone();
+    Some((from, spot, into))
 }
 
 /// The default page with sectors: its lines, the column (its head with the
@@ -572,11 +651,13 @@ fn SectorCellView(
 /// ARRANGE's cover over a strip (`sectors.css` shows it only in the mode):
 /// it owns its touches and captures the pointer, so no touch reaches the
 /// strip's controls. A finger moved past the slop carries the strip (its
-/// slot follows the finger); the lift drops it on the nearest cell of its
-/// sector, empty or a strip (`Arrange::dropped_in` over the cells read at
-/// the down). A cancel or a lost capture puts it back with nothing moved; a
-/// carry whose end never came ends at the next primary down of its type on
-/// a cover (#124).
+/// slot follows the finger); the cell it would land in now is marked
+/// (`data-drop`, `no` where it takes no drop); the lift drops it on the
+/// nearest cell of every visible sector (#233: another sector's too), an
+/// empty one or a strip (`Arrange::dropped_in` over the cells read at the
+/// down: `drop_spot`, `landing`). A cancel or a lost capture puts it back
+/// with nothing moved; a carry whose end never came ends at the next
+/// primary down of its type on a cover (#124).
 #[component]
 fn ArrangeCover(
     sector: SectorId,
@@ -585,7 +666,6 @@ fn ArrangeCover(
     carrier: Carrier,
 ) -> impl IntoView {
     let nav = expect_context::<Nav>();
-    let store = nav.store;
     let mode = nav.arrange;
     let strip = StoredValue::new(strip);
     let on_down = move |ev: web_sys::PointerEvent| {
@@ -606,13 +686,13 @@ fn ArrangeCover(
             sector,
             strip,
             slot: from,
-            spots: sector_spots(&slot_el, sector),
+            spots: page_spots(&slot_el, nav.left_covered_now()),
         };
-        let x = f64::from(ev.client_x());
+        let (x, y) = (f64::from(ev.client_x()), f64::from(ev.client_y()));
         let down = down_of(&ev);
         let took = carrier
             .drag
-            .try_update_value(|d| d.down(down, held, x))
+            .try_update_value(|d| d.down(down, held, x, y))
             .unwrap_or(false);
         if took {
             carrier.hold(slot_el);
@@ -620,43 +700,44 @@ fn ArrangeCover(
         }
     };
     let on_move = move |ev: web_sys::PointerEvent| {
-        let x = f64::from(ev.client_x());
+        let (x, y) = (f64::from(ev.client_x()), f64::from(ev.client_y()));
         let offset = carrier
             .drag
-            .try_update_value(|d| d.moved(ev.pointer_id(), x))
+            .try_update_value(|d| d.moved(ev.pointer_id(), x, y))
             .flatten();
-        if let Some(dx) = offset {
-            carrier.show(dx);
-        }
-    };
-    let on_up = move |ev: web_sys::PointerEvent| {
-        let x = f64::from(ev.client_x());
-        let drop = carrier
-            .drag
-            .try_update_value(|d| d.up(ev.pointer_id(), x))
-            .flatten();
-        carrier.settle();
-        let Some((carry, x)) = drop else {
+        let Some((dx, dy)) = offset else {
             return;
         };
-        // The layout its sector shows now: the edit's (a page in ARRANGE).
-        let picks = nav.picks.try_get_untracked().unwrap_or_default();
-        let shown = store
-            .sectors
-            .try_with_untracked(|told| {
-                told.shown()
-                    .and_then(|doc| mode.try_with_untracked(|m| m.applied(doc)))
-            })
+        carrier.show(dx, dy);
+        let carry = carrier.drag.try_with_value(|d| d.held().cloned()).flatten();
+        let aimed = carry.and_then(|carry| {
+            let (from, spot, into) = drop_target(nav, &carry, x, y)?;
+            let takes = mode
+                .try_with_untracked(|m| {
+                    m.lands(&from, carry.slot, &into, spot.slot, &carry.strip)
+                        .is_some()
+                })
+                .unwrap_or(false);
+            let slot_el = carrier.slot.try_with_value(Clone::clone).flatten()?;
+            Some((spot_cell(&slot_el, spot)?, takes))
+        });
+        carrier.aim(aimed);
+    };
+    let on_up = move |ev: web_sys::PointerEvent| {
+        let (x, y) = (f64::from(ev.client_x()), f64::from(ev.client_y()));
+        let drop = carrier
+            .drag
+            .try_update_value(|d| d.up(ev.pointer_id(), x, y))
             .flatten();
-        let Some(layout) = shown
-            .as_ref()
-            .and_then(|doc| picked(doc, &picks, carry.sector))
-            .map(|layout| layout.id.clone())
-        else {
+        carrier.settle();
+        let Some(carry) = drop else {
+            return;
+        };
+        let Some((from, spot, into)) = drop_target(nav, &carry, x, y) else {
             return;
         };
         let _ = change_mode(mode, |m| {
-            m.dropped_in(&layout, &carry.spots, carry.slot, &carry.strip, x);
+            m.dropped_in(&from, carry.slot, &into, spot.slot, &carry.strip)
         });
     };
     let on_cancel = move |ev: web_sys::PointerEvent| {

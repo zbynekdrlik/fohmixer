@@ -272,6 +272,28 @@
     box-shadow: 0 0 0 1.5px var(--solo);
 }
 
+/* The cell a carried strip would land in now (#233, any visible sector's):
+   a calm ring where it lands, a dashed red one where it takes no drop (a
+   layout that already holds the strip). Drawn over the cell (an empty
+   cell's outline too), no touch. */
+.body[data-arrange="true"] .slot[data-drop]::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 7;
+    border-radius: 9px;
+    pointer-events: none;
+}
+
+.body[data-arrange="true"] .slot[data-drop="yes"]::after {
+    box-shadow: inset 0 0 0 2px var(--solo);
+}
+
+.body[data-arrange="true"] .slot[data-drop="no"]::after {
+    outline: 2px dashed var(--danger);
+    outline-offset: -2px;
+}
+
 /* An empty slot of a layout (the slot model, 1.24.0): a blank one strip
    wide in its place, nothing drawn outside ARRANGE. In ARRANGE every
    position a sector can show is a cell: the empty ones a calm dashed

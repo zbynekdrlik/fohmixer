@@ -1,21 +1,25 @@
 //! ARRANGE, the sectors page's edit mode (#148; spec
 //! `docs/superpowers/specs/2026-10-28-sectors-design.md` §4, the owner's
 //! approved mockups `docs/mockups/sectors-v1.html` and `sectors-v2.html`):
-//! a tap on ARRANGE starts it, the strips are dragged within their sector's
-//! shown layout and the layouts renamed, added and removed
+//! a tap on ARRANGE starts it, the strips are dragged within and between
+//! the sectors' shown layouts and the layouts renamed, added and removed
 //! (`behave::arrange_edit::Edit`, the page shows the edit), and a second
 //! tap sends every sector as ONE `SectorEdit` (one change)
 //! and leaves once the hub's new document arrives (a refusal: at once);
 //! with nothing changed it just leaves. A hide of the page, or a
 //! new document from the hub during the mode, ends it unsaved. Nothing here
 //! touches Live. The drag itself (`Drag`): a strip is carried once the
-//! finger moved past `DRAG_SLOP`; it lands on the cell of its sector whose
-//! centre is nearest the finger (the centres of every cell, strips and
-//! empty ones, read once at the down): an empty cell takes it and its old
+//! finger moved past `DRAG_SLOP`; it lands on the cell nearest the finger
+//! among every visible sector's cells (`Spot`s, strips and empty ones, read
+//! once at the down; #233: another sector's too): the cells of the finger's
+//! line first, then the nearest centre. An empty cell takes it and its old
 //! slot is left empty, another strip swaps places with it (the slot model,
-//! 1.24.0: the owner could not put BAND at RU's right edge); a carry whose
-//! end never came ends at the next primary down of its type (#124). All of
-//! it is pure; `pages::sectors` carries it out.
+//! 1.24.0: the owner could not put BAND at RU's right edge), also between
+//! two layouts (a MOVE: the strip leaves the layout it came from); a layout
+//! that already holds the strip, or a swap that would put a strip twice in
+//! the strip's own layout, takes no drop (`landing`). A carry whose end
+//! never came ends at the next primary down of its type (#124). All of it
+//! is pure; `pages::sectors` carries it out.
 
 use fohmixer_proto::sectors::{Refusal, SectorId, Sectors, SectorsDoc, Slot, StripRef, trim};
 
@@ -198,25 +202,56 @@ impl Arrange {
         !matches!(self, Arrange::Off)
     }
 
-    /// The strip `held` of `layout`, carried from its slot `from` and
-    /// dropped at `x` among its sector's cells on screen (`spots`: each
-    /// cell's slot and centre): the layout's new slots kept in the edit
-    /// (only while the mode is on).
+    /// Where the strip `held` of layout `from`, carried from its slot
+    /// `at`, lands in slot `to` of layout `into` (the edit's layouts; none
+    /// while the mode is not on, see [`landing`]).
+    pub fn lands(
+        &self,
+        from: &str,
+        at: usize,
+        into: &str,
+        to: usize,
+        held: &StripRef,
+    ) -> Option<Landing> {
+        let edit = self.edit_now()?;
+        let order = edit.slots_of(from)?;
+        let target = if into == from {
+            None
+        } else {
+            Some(edit.slots_of(into)?)
+        };
+        landing(order, target, at, to, held)
+    }
+
+    /// The strip `held` of layout `from`, carried from its slot `at`, is
+    /// dropped in slot `to` of layout `into`: the layouts' new slots kept
+    /// in the edit (only while the mode is on and it [`lands`]). Whether
+    /// anything moved.
+    ///
+    /// [`lands`]: Arrange::lands
     pub fn dropped_in(
         &mut self,
-        layout: &str,
-        spots: &[(usize, f64)],
-        from: usize,
+        from: &str,
+        at: usize,
+        into: &str,
+        to: usize,
         held: &StripRef,
-        x: f64,
-    ) {
-        let Some(edit) = self.edit() else {
-            return;
+    ) -> bool {
+        let landed = self.lands(from, at, into, to, held);
+        let (Some(landed), Some(edit)) = (landed, self.edit()) else {
+            return false;
         };
-        let order = edit.slots_of(layout).map(<[Slot]>::to_vec);
-        if let Some(order) = order.and_then(|o| dropped(&o, spots, from, held, x)) {
-            edit.moved(layout, order);
+        match landed {
+            Landing::Within(order) => edit.moved(from, order),
+            Landing::Across {
+                from: back,
+                to: there,
+            } => {
+                edit.moved(from, back);
+                edit.moved(into, there);
+            }
         }
+        true
     }
 }
 
@@ -281,14 +316,87 @@ pub fn arrange_note(on: bool, refused: Option<&'static str>) -> &'static str {
     refused.unwrap_or(if on { ARRANGE_NOTE } else { "" })
 }
 
-/// The slot a strip dropped at `x` lands in: the cell (`spots`: each
-/// cell's slot and centre) whose centre is nearest, the first on a tie;
-/// none without a cell.
-pub fn drop_slot(spots: &[(usize, f64)], x: f64) -> Option<usize> {
+/// A cell on screen a carried strip can land in (#233): its sector, its
+/// layout slot, its centre's x and its box's top and bottom (px, the
+/// viewport's).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Spot {
+    pub sector: SectorId,
+    pub slot: usize,
+    pub x: f64,
+    pub top: f64,
+    pub bottom: f64,
+}
+
+impl Spot {
+    /// How far `y` lies above or below the cell's box (0 inside it).
+    pub fn off_line(&self, y: f64) -> f64 {
+        (self.top - y).max(y - self.bottom).max(0.0)
+    }
+}
+
+/// The cell a strip dropped at (`x`, `y`) lands in: among the cells whose
+/// box is nearest `y` (the finger's line: 0 inside it), the one whose
+/// centre is nearest `x`, the first on a tie; none without a cell.
+pub fn drop_spot(spots: &[Spot], x: f64, y: f64) -> Option<Spot> {
     spots
         .iter()
-        .min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs()))
-        .map(|spot| spot.0)
+        .min_by(|a, b| {
+            a.off_line(y)
+                .total_cmp(&b.off_line(y))
+                .then((a.x - x).abs().total_cmp(&(b.x - x).abs()))
+        })
+        .copied()
+}
+
+/// Where a dropped strip goes: within its own layout (its new slots), or
+/// into another layout (#233: the strip's layout's and the target's new
+/// slots, the strip moved out of its own).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Landing {
+    Within(Vec<Slot>),
+    Across { from: Vec<Slot>, to: Vec<Slot> },
+}
+
+/// Whether `slots` hold `strip`.
+fn holds(slots: &[Slot], strip: &StripRef) -> bool {
+    slots.iter().any(|s| s.as_ref() == Some(strip))
+}
+
+/// The strip `held`, carried from slot `from` of its layout (`order`), is
+/// dropped in slot `to`: of its own layout (`target` none: the two slots
+/// swap, see [`swapped`]) or of another layout (`target`'s slots: an empty
+/// slot takes it and its old slot is left empty, a strip there takes its
+/// old slot, a swap). None when `from` no longer holds `held` (the order
+/// changed meanwhile), when it lands where it was, when `target` already
+/// holds `held`, or when the strip it would swap with is already in its own
+/// layout (a layout never holds a strip twice; the hub refuses that too).
+pub fn landing(
+    order: &[Slot],
+    target: Option<&[Slot]>,
+    from: usize,
+    to: usize,
+    held: &StripRef,
+) -> Option<Landing> {
+    if order.get(from)?.as_ref() != Some(held) {
+        return None;
+    }
+    let Some(target) = target else {
+        return (to != from).then(|| Landing::Within(swapped(order, from, to)));
+    };
+    let comes = target.get(to).cloned().flatten();
+    if holds(target, held) || comes.as_ref().is_some_and(|c| holds(order, c)) {
+        return None;
+    }
+    let mut back = order.to_vec();
+    back[from] = comes;
+    let mut there = target.to_vec();
+    there.resize(there.len().max(to + 1), None);
+    there[to] = Some(held.clone());
+    Some(Landing::Across {
+        from: trim(back),
+        to: trim(there),
+    })
 }
 
 /// `order` with its slots `from` and `to` swapped (a slot past its end is
@@ -301,31 +409,15 @@ pub fn swapped(order: &[Slot], from: usize, to: usize) -> Vec<Slot> {
     trim(out)
 }
 
-/// Whether a finger `x` px from where it went down carries the strip.
+/// Whether a finger `x` px from where it went down carries the strip (one
+/// axis; [`Drag`] checks both).
 pub fn drags(start_x: f64, x: f64) -> bool {
     (x - start_x).abs() > DRAG_SLOP
 }
 
-/// The layout's slots after `held`, carried from slot `from`, is dropped
-/// at `x` among `spots`; none when `from` no longer holds `held` (the
-/// order changed meanwhile), there is no cell, or it lands where it was.
-pub fn dropped(
-    order: &[Slot],
-    spots: &[(usize, f64)],
-    from: usize,
-    held: &StripRef,
-    x: f64,
-) -> Option<Vec<Slot>> {
-    if order.get(from)?.as_ref() != Some(held) {
-        return None;
-    }
-    let to = drop_slot(spots, x)?;
-    (to != from).then(|| swapped(order, from, to))
-}
-
 /// A strip held under a pointer: the pointer and its type, the strip, its
-/// sector and its slot, where the finger went down, its sector's cells
-/// then (each cell's slot and centre), and whether it is carried yet.
+/// sector and its slot, where the finger went down, every visible sector's
+/// cells then, and whether it is carried yet.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Carry {
     pub pointer: i32,
@@ -334,18 +426,27 @@ pub struct Carry {
     pub strip: StripRef,
     pub slot: usize,
     pub start_x: f64,
-    pub spots: Vec<(usize, f64)>,
+    pub start_y: f64,
+    pub spots: Vec<Spot>,
     pub dragging: bool,
 }
 
+impl Carry {
+    /// Whether the finger at (`x`, `y`) carries the strip: past the slop
+    /// across or down.
+    fn past_slop(&self, x: f64, y: f64) -> bool {
+        drags(self.start_x, x) || drags(self.start_y, y)
+    }
+}
+
 /// What a down on a strip's cover holds: its sector, its strip and its
-/// slot, and its sector's cells (each cell's slot and centre).
+/// slot, and every visible sector's cells (#233).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Held {
     pub sector: SectorId,
     pub strip: StripRef,
     pub slot: usize,
-    pub spots: Vec<(usize, f64)>,
+    pub spots: Vec<Spot>,
 }
 
 /// The page's one drag at a time.
@@ -355,12 +456,12 @@ pub struct Drag {
 }
 
 impl Drag {
-    /// A pointer went down on a strip's cover at `x` (`held`: the strip,
-    /// its sector, its slot and its sector's cells). Taken unless another
+    /// A pointer went down on a strip's cover at (`x`, `y`) (`held`: the
+    /// strip, its sector, its slot and the cells). Taken unless another
     /// pointer holds a strip; a primary down of the held pointer's type (or
     /// that pointer again) ends a carry whose end never came (#124) and
     /// takes this one.
-    pub fn down(&mut self, down: Down, held: Held, x: f64) -> bool {
+    pub fn down(&mut self, down: Down, held: Held, x: f64, y: f64) -> bool {
         if let Some(held) = &self.held
             && held.pointer != down.id
             && !down.ends(held.kind)
@@ -374,25 +475,27 @@ impl Drag {
             strip: held.strip,
             slot: held.slot,
             start_x: x,
+            start_y: y,
             spots: held.spots,
             dragging: false,
         });
         true
     }
 
-    /// `pointer` moved to `x`: the carried strip's offset from its place,
-    /// once past the slop; none for another pointer or within it.
-    pub fn moved(&mut self, pointer: i32, x: f64) -> Option<f64> {
+    /// `pointer` moved to (`x`, `y`): the carried strip's offset from its
+    /// place, once past the slop; none for another pointer or within it.
+    pub fn moved(&mut self, pointer: i32, x: f64, y: f64) -> Option<(f64, f64)> {
         let held = self.held.as_mut().filter(|h| h.pointer == pointer)?;
-        held.dragging = held.dragging || drags(held.start_x, x);
-        held.dragging.then_some(x - held.start_x)
+        held.dragging = held.dragging || held.past_slop(x, y);
+        held.dragging
+            .then_some((x - held.start_x, y - held.start_y))
     }
 
-    /// `pointer` lifted at `x`: the carry ends, and comes back (with `x`)
-    /// when it moved the strip; a tap moves nothing.
-    pub fn up(&mut self, pointer: i32, x: f64) -> Option<(Carry, f64)> {
+    /// `pointer` lifted: the carry ends, and comes back when it moved the
+    /// strip (to be dropped where the finger lifted); a tap moves nothing.
+    pub fn up(&mut self, pointer: i32, x: f64, y: f64) -> Option<Carry> {
         let held = self.held.take_if(|h| h.pointer == pointer)?;
-        (held.dragging || drags(held.start_x, x)).then_some((held, x))
+        (held.dragging || held.past_slop(x, y)).then_some(held)
     }
 
     /// `pointer`'s touch was cancelled (or its capture lost): the carry
@@ -435,12 +538,24 @@ mod tests {
     }
 
     /// What a down on `label`'s cover in `sector`, slot `slot`, holds.
-    fn held(sector: SectorId, label: &str, slot: usize, spots: Vec<(usize, f64)>) -> Held {
+    fn held(sector: SectorId, label: &str, slot: usize, spots: Vec<Spot>) -> Held {
         Held {
             sector,
             strip: r(label),
             slot,
             spots,
+        }
+    }
+
+    /// A cell of `sector`, slot `slot`, centred at `x` on the line from
+    /// `top` to `top + 300`.
+    fn spot(sector: SectorId, slot: usize, x: f64, top: f64) -> Spot {
+        Spot {
+            sector,
+            slot,
+            x,
+            top,
+            bottom: top + 300.0,
         }
     }
 
@@ -810,16 +925,42 @@ mod tests {
     }
 
     #[test]
-    fn a_strip_lands_on_the_cell_whose_centre_is_nearest() {
-        let spots = [(0, 40.0), (1, 124.0), (2, 208.0), (5, 460.0)];
-        assert_eq!(drop_slot(&spots, 0.0), Some(0));
-        assert_eq!(drop_slot(&spots, 81.0), Some(0));
-        assert_eq!(drop_slot(&spots, 83.0), Some(1));
-        assert_eq!(drop_slot(&spots, 500.0), Some(5));
+    fn a_strip_lands_on_the_cell_of_its_line_whose_centre_is_nearest() {
+        use SectorId::{Ld, Lu, Ru};
+        // The up line from 0 to 300 (LU left, RU right), the down line
+        // from 310 to 610.
+        let spots = [
+            spot(Lu, 0, 40.0, 0.0),
+            spot(Lu, 1, 124.0, 0.0),
+            spot(Ru, 0, 460.0, 0.0),
+            spot(Ld, 0, 40.0, 310.0),
+            spot(Ld, 2, 208.0, 310.0),
+        ];
+        let at = |x: f64, y: f64| drop_spot(&spots, x, y).map(|s| (s.sector, s.slot));
+        assert_eq!(at(0.0, 100.0), Some((Lu, 0)));
+        assert_eq!(at(83.0, 100.0), Some((Lu, 1)));
+        assert_eq!(at(500.0, 100.0), Some((Ru, 0)), "another sector's cell");
         // Halfway: the first of the two.
-        assert_eq!(drop_slot(&spots, 82.0), Some(0));
-        assert_eq!(drop_slot(&spots, 82.0_f64.next_up()), Some(1));
-        assert_eq!(drop_slot(&[], 10.0), None);
+        assert_eq!(at(82.0, 100.0), Some((Lu, 0)));
+        assert_eq!(at(82.0_f64.next_up(), 100.0), Some((Lu, 1)));
+        // The down line: its own cells first, however near an up one's x.
+        assert_eq!(at(124.0, 400.0), Some((Ld, 0)));
+        assert_eq!(at(200.0, 310.0), Some((Ld, 2)), "its top edge");
+        assert_eq!(at(200.0, 300.0), Some((Lu, 1)), "the up line's foot");
+        // Between the lines: the nearer line's box.
+        assert_eq!(at(124.0, 304.0), Some((Lu, 1)));
+        assert_eq!(at(124.0, 306.0), Some((Ld, 0)));
+        // Above every line and below it: the nearest line.
+        assert_eq!(at(460.0, -50.0), Some((Ru, 0)));
+        assert_eq!(at(40.0, 900.0), Some((Ld, 0)));
+        assert_eq!(drop_spot(&[], 10.0, 10.0), None);
+        // How far off a cell's box a finger is.
+        let cell = spot(Lu, 0, 40.0, 100.0);
+        assert_eq!(cell.off_line(100.0), 0.0);
+        assert_eq!(cell.off_line(400.0), 0.0);
+        assert_eq!(cell.off_line(250.0), 0.0);
+        assert_eq!(cell.off_line(90.0), 10.0);
+        assert_eq!(cell.off_line(410.5), 10.5);
     }
 
     #[test]
@@ -841,28 +982,21 @@ mod tests {
         // BAND's case: RU shows Klavir, Bass, Keys 1, PA and two empty
         // cells after them in ARRANGE; PA goes to the sixth.
         let order = refs(&["Klavir", "Bass", "Keys 1", "PA"]);
-        let spots = [
-            (0, 40.0),
-            (1, 124.0),
-            (2, 208.0),
-            (3, 292.0),
-            (4, 376.0),
-            (5, 460.0),
-        ];
         assert_eq!(
-            dropped(&order, &spots, 3, &r("PA"), 455.0),
-            Some(refs(&["Klavir", "Bass", "Keys 1", "", "", "PA"]))
+            landing(&order, None, 3, 5, &r("PA")),
+            Some(Landing::Within(refs(&[
+                "Klavir", "Bass", "Keys 1", "", "", "PA"
+            ])))
         );
         // Onto Klavir: a swap.
         assert_eq!(
-            dropped(&order, &spots, 3, &r("PA"), 30.0),
-            Some(refs(&["PA", "Bass", "Keys 1", "Klavir"]))
+            landing(&order, None, 3, 0, &r("PA")),
+            Some(Landing::Within(refs(&["PA", "Bass", "Keys 1", "Klavir"])))
         );
-        // Where it was, a slot that no longer holds it, or no cell: nothing.
-        assert_eq!(dropped(&order, &spots, 3, &r("PA"), 300.0), None);
-        assert_eq!(dropped(&order, &spots, 2, &r("PA"), 30.0), None);
-        assert_eq!(dropped(&order, &spots, 9, &r("PA"), 30.0), None);
-        assert_eq!(dropped(&order, &[], 3, &r("PA"), 30.0), None);
+        // Where it was, a slot that no longer holds it: nothing.
+        assert_eq!(landing(&order, None, 3, 3, &r("PA")), None);
+        assert_eq!(landing(&order, None, 2, 0, &r("PA")), None);
+        assert_eq!(landing(&order, None, 9, 0, &r("PA")), None);
         // Into the mode: only while it is on, onto its own edit.
         let layout = SectorLayout {
             id: "ru-1".to_string(),
@@ -874,19 +1008,20 @@ mod tests {
             sectors: [(SectorId::Ru, vec![layout.clone()])].into_iter().collect(),
         };
         let mut off = Arrange::Off;
-        off.dropped_in("ru-1", &spots, 3, &r("PA"), 455.0);
+        assert!(!off.dropped_in("ru-1", 3, "ru-1", 5, &r("PA")));
         assert_eq!(off, Arrange::Off);
         let mut mode = Arrange::Off;
         let _ = mode.tap(&doc);
-        mode.dropped_in("ru-1", &spots, 3, &r("PA"), 455.0);
+        assert!(mode.dropped_in("ru-1", 3, "ru-1", 5, &r("PA")));
         let first = refs(&["Klavir", "Bass", "Keys 1", "", "", "PA"]);
         assert_eq!(mode.applied(&doc).sectors[&SectorId::Ru][0].strips, first);
-        mode.dropped_in("ru-1", &spots, 0, &r("Klavir"), 300.0);
+        assert!(mode.dropped_in("ru-1", 0, "ru-1", 3, &r("Klavir")));
         let second = refs(&["", "Bass", "Keys 1", "Klavir", "", "PA"]);
         assert_eq!(mode.applied(&doc).sectors[&SectorId::Ru][0].strips, second);
         // A layout the edit does not hold takes nothing.
         let before = mode.clone();
-        mode.dropped_in("gone", &spots, 0, &r("Klavir"), 300.0);
+        assert!(!mode.dropped_in("gone", 3, "gone", 0, &r("Klavir")));
+        assert!(!mode.dropped_in("ru-1", 3, "gone", 0, &r("Klavir")));
         assert_eq!(mode, before);
         // The save carries the empty slots.
         let mut sent = doc.sectors.clone();
@@ -896,8 +1031,95 @@ mod tests {
             rev: 3,
             sectors: doc.sectors.clone(),
         };
-        saving.dropped_in("ru-1", &spots, 3, &r("PA"), 455.0);
+        assert!(!saving.dropped_in("ru-1", 3, "ru-1", 5, &r("PA")));
         assert_eq!(saving.applied(&doc), doc);
+    }
+
+    #[test]
+    fn a_drop_on_another_sectors_cell_moves_the_strip_there() {
+        // #233: Vox 2 from LU's layout onto RU's.
+        let lu = refs(&["Vox 1", "Vox 2", "Bass"]);
+        let ru = refs(&["Keys 1", "", "Klavir"]);
+        // An empty cell takes it; its old slot is left empty.
+        assert_eq!(
+            landing(&lu, Some(&ru), 1, 1, &r("Vox 2")),
+            Some(Landing::Across {
+                from: refs(&["Vox 1", "", "Bass"]),
+                to: refs(&["Keys 1", "Vox 2", "Klavir"]),
+            })
+        );
+        // A strip there takes its old slot: a swap between the layouts.
+        assert_eq!(
+            landing(&lu, Some(&ru), 1, 0, &r("Vox 2")),
+            Some(Landing::Across {
+                from: refs(&["Vox 1", "Keys 1", "Bass"]),
+                to: refs(&["Vox 2", "", "Klavir"]),
+            })
+        );
+        // Past the other layout's end: empty slots before it; the last
+        // strip of its own layout leaves no trailing gap.
+        assert_eq!(
+            landing(&lu, Some(&ru), 2, 4, &r("Bass")),
+            Some(Landing::Across {
+                from: refs(&["Vox 1", "Vox 2"]),
+                to: refs(&["Keys 1", "", "Klavir", "", "Bass"]),
+            })
+        );
+        // Into an empty layout.
+        assert_eq!(
+            landing(&lu, Some(&[]), 0, 0, &r("Vox 1")),
+            Some(Landing::Across {
+                from: refs(&["", "Vox 2", "Bass"]),
+                to: refs(&["Vox 1"]),
+            })
+        );
+        // A layout that already holds it takes no drop, on any cell.
+        let holding = refs(&["Keys 1", "Vox 2"]);
+        assert_eq!(landing(&lu, Some(&holding), 1, 0, &r("Vox 2")), None);
+        assert_eq!(landing(&lu, Some(&holding), 1, 1, &r("Vox 2")), None);
+        assert_eq!(landing(&lu, Some(&holding), 1, 2, &r("Vox 2")), None);
+        // Nor does a swap with a strip its own layout already holds.
+        let has_bass = refs(&["Bass", "Keys 1"]);
+        assert_eq!(landing(&lu, Some(&has_bass), 1, 0, &r("Vox 2")), None);
+        assert_eq!(
+            landing(&lu, Some(&has_bass), 1, 1, &r("Vox 2")),
+            Some(Landing::Across {
+                from: refs(&["Vox 1", "Keys 1", "Bass"]),
+                to: refs(&["Bass", "Vox 2"]),
+            })
+        );
+        // A slot that no longer holds it: nothing.
+        assert_eq!(landing(&lu, Some(&ru), 0, 1, &r("Vox 2")), None);
+        // In the mode: both layouts change in the one edit, saved as one.
+        let doc = doc();
+        let mut mode = Arrange::Off;
+        assert_eq!(mode.lands("lu-1", 1, "ru-1", 0, &r("Vox 2")), None, "off");
+        let _ = mode.tap(&doc);
+        assert_eq!(
+            mode.lands("lu-1", 1, "ru-1", 2, &r("Vox 2")),
+            Some(Landing::Across {
+                from: refs(&["Vox 1", "", "Bass"]),
+                to: refs(&["Keys 1", "Klavir", "Vox 2"]),
+            })
+        );
+        assert_eq!(mode.edit_now(), on().edit_now(), "lands changes nothing");
+        assert!(mode.dropped_in("lu-1", 1, "ru-1", 2, &r("Vox 2")));
+        let shown = mode.applied(&doc);
+        assert_eq!(
+            shown.sectors[&SectorId::Lu][0].strips,
+            refs(&["Vox 1", "", "Bass"])
+        );
+        assert_eq!(
+            shown.sectors[&SectorId::Ru][0].strips,
+            refs(&["Keys 1", "Klavir", "Vox 2"])
+        );
+        // RU holds Vox 2 now: a second drop of it there takes nothing.
+        assert!(!mode.dropped_in("ru-1", 2, "ru-1", 2, &r("Vox 2")));
+        assert_eq!(mode.lands("lu-1", 0, "ru-1", 2, &r("Vox 2")), None);
+        let mut sent = doc.sectors.clone();
+        sent.get_mut(&SectorId::Lu).unwrap()[0].strips = refs(&["Vox 1", "", "Bass"]);
+        sent.get_mut(&SectorId::Ru).unwrap()[0].strips = refs(&["Keys 1", "Klavir", "Vox 2"]);
+        assert_eq!(mode.tap(&doc), Some(Tap::Send(sent, 3)));
     }
 
     fn touch(id: i32, primary: bool) -> Down {
@@ -907,45 +1129,72 @@ mod tests {
     #[test]
     fn a_drag_carries_one_strip_past_the_slop_and_drops_it_at_the_lift() {
         let mut drag = Drag::default();
+        let cells = vec![
+            spot(SectorId::Lu, 0, 40.0, 0.0),
+            spot(SectorId::Ru, 0, 460.0, 0.0),
+        ];
         assert!(drag.down(
             touch(1, true),
-            held(SectorId::Lu, "Vox 1", 0, vec![(0, 40.0), (1, 124.0)]),
-            100.0
+            held(SectorId::Lu, "Vox 1", 0, cells.clone()),
+            100.0,
+            50.0
         ));
         // Another finger while one holds a strip: refused.
         assert!(!drag.down(
             touch(2, false),
             held(SectorId::Lu, "Vox 2", 0, Vec::new()),
+            0.0,
             0.0
         ));
         assert_eq!(drag.held().map(|c| c.pointer), Some(1));
-        assert_eq!(drag.moved(2, 300.0), None);
-        assert_eq!(drag.moved(1, 106.0), None, "within the slop");
-        assert_eq!(drag.moved(1, 120.0), Some(20.0));
-        assert_eq!(drag.moved(1, 104.0), Some(4.0), "carried, it follows");
-        assert_eq!(drag.up(2, 0.0), None);
-        let (carry, x) = drag.up(1, 210.0).expect("a drop");
-        assert_eq!(x, 210.0);
+        assert_eq!(drag.moved(2, 300.0, 50.0), None);
+        assert_eq!(drag.moved(1, 106.0, 56.0), None, "within the slop");
+        assert_eq!(drag.moved(1, 120.0, 50.0), Some((20.0, 0.0)));
+        assert_eq!(
+            drag.moved(1, 104.0, 30.0),
+            Some((4.0, -20.0)),
+            "carried, it follows"
+        );
+        assert_eq!(drag.up(2, 0.0, 0.0), None);
+        let carry = drag.up(1, 210.0, 50.0).expect("a drop");
         assert_eq!(carry.strip, r("Vox 1"));
         assert_eq!(carry.sector, SectorId::Lu);
-        assert_eq!(carry.spots, vec![(0, 40.0), (1, 124.0)]);
+        assert_eq!(carry.spots, cells);
         assert_eq!(carry.slot, 0);
         assert!(carry.dragging);
         assert_eq!(drag, Drag::default());
-        // A tap moves nothing; a lift past the slop with no move does.
+        // A tap moves nothing; a lift past the slop with no move does,
+        // across or down.
         assert!(drag.down(
             touch(3, true),
             held(SectorId::Lu, "Vox 1", 0, Vec::new()),
-            100.0
+            100.0,
+            50.0
         ));
-        assert_eq!(drag.up(3, 106.0), None);
+        assert_eq!(drag.up(3, 106.0, 44.0), None);
         assert_eq!(drag.held(), None);
         assert!(drag.down(
             touch(4, true),
             held(SectorId::Lu, "Vox 1", 0, Vec::new()),
-            100.0
+            100.0,
+            50.0
         ));
-        assert!(drag.up(4, 93.0).is_some());
+        assert!(drag.up(4, 93.0, 50.0).is_some());
+        assert!(drag.down(
+            touch(5, true),
+            held(SectorId::Lu, "Vox 1", 0, Vec::new()),
+            100.0,
+            50.0
+        ));
+        assert!(drag.up(5, 100.0, 57.0).is_some(), "down to another line");
+        // Moved down only: carried.
+        assert!(drag.down(
+            touch(6, true),
+            held(SectorId::Lu, "Vox 1", 0, Vec::new()),
+            100.0,
+            50.0
+        ));
+        assert_eq!(drag.moved(6, 100.0, 43.0), Some((0.0, -7.0)));
     }
 
     #[test]
@@ -954,7 +1203,8 @@ mod tests {
         assert!(drag.down(
             touch(1, true),
             held(SectorId::Lu, "Vox 1", 0, Vec::new()),
-            100.0
+            100.0,
+            0.0
         ));
         // A mouse never ends a finger's carry.
         let mouse = Down {
@@ -962,12 +1212,13 @@ mod tests {
             kind: Some(Pointer::Mouse),
             primary: true,
         };
-        assert!(!drag.down(mouse, held(SectorId::Ru, "Keys 1", 0, Vec::new()), 0.0));
+        assert!(!drag.down(mouse, held(SectorId::Ru, "Keys 1", 0, Vec::new()), 0.0, 0.0));
         // The next primary finger takes over.
         assert!(drag.down(
             touch(5, true),
             held(SectorId::Ru, "Keys 1", 0, Vec::new()),
-            50.0
+            50.0,
+            0.0
         ));
         assert_eq!(
             drag.held().map(|c| (c.pointer, c.sector)),
@@ -978,9 +1229,13 @@ mod tests {
         assert!(drag.down(
             touch(5, false),
             held(SectorId::Lu, "Vox 1", 0, Vec::new()),
-            10.0
+            10.0,
+            20.0
         ));
-        assert_eq!(drag.held().map(|c| c.start_x), Some(10.0));
+        assert_eq!(
+            drag.held().map(|c| (c.start_x, c.start_y)),
+            Some((10.0, 20.0))
+        );
         // A cancel ends only its own pointer's; a leave ends any.
         assert!(!drag.cancel(1));
         assert!(drag.cancel(5));
@@ -988,7 +1243,8 @@ mod tests {
         assert!(drag.down(
             touch(6, true),
             held(SectorId::Lu, "Vox 1", 0, Vec::new()),
-            10.0
+            10.0,
+            0.0
         ));
         assert!(drag.leave());
         assert!(!drag.leave());
