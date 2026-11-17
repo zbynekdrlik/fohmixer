@@ -82,6 +82,76 @@ fn a_push_with_no_batch_in_flight_is_dropped_as_before() {
 }
 
 #[test]
+fn a_push_of_a_listener_being_removed_never_overwrites_the_result() {
+    let mut subs = online();
+    sub_volume(&mut subs, 1);
+    let out = subs.drain_outgoing();
+    answer_all(&mut subs, &out);
+    subs.take_deliveries();
+    // The volume's only subscriber leaves and another comes back before the
+    // removal went: one batch removes the old listener and adds a new one.
+    assert!(subs.unsubscribe(1, VOLUME_KEY));
+    sub_volume(&mut subs, 2);
+    let out = subs.drain_outgoing();
+    let names: Vec<String> = commands(&out).into_iter().map(|(_, n, _)| n).collect();
+    assert!(names.contains(&"remove_listener".to_string()), "{names:?}");
+    assert!(names.contains(&"add_listener".to_string()), "{names:?}");
+    // The old listener's push reaches the hub after the batch was sent; the
+    // new listener's read is newer.
+    subs.on_values("band", &[push("live_10.value", json!(0.6))]);
+    assert_eq!(subs.kept("band"), 1);
+    answer_all(&mut subs, &out);
+    assert_eq!(
+        deliveries_of(&mut subs, VOLUME_KEY),
+        vec![Some(json!(0.85))]
+    );
+    assert_eq!(subs.kept("band"), 0);
+}
+
+#[test]
+fn a_removal_still_in_flight_marks_its_key_for_a_later_batch() {
+    let mut subs = online();
+    sub_volume(&mut subs, 1);
+    let out = subs.drain_outgoing();
+    answer_all(&mut subs, &out);
+    subs.take_deliveries();
+    assert!(subs.unsubscribe(1, VOLUME_KEY));
+    let removal = subs.drain_outgoing();
+    // The removal is in flight when the volume is subscribed again.
+    sub_volume(&mut subs, 2);
+    let add = subs.drain_outgoing();
+    assert!(
+        commands(&add)
+            .iter()
+            .all(|(_, name, _)| name == "add_listener")
+    );
+    subs.on_values("band", &[push("live_10.value", json!(0.6))]);
+    answer_all(&mut subs, &add);
+    assert_eq!(
+        deliveries_of(&mut subs, VOLUME_KEY),
+        vec![Some(json!(0.85))]
+    );
+    answer_all(&mut subs, &removal);
+    // A key no removal touches is still applied after its result.
+    subs.subscribe(3, "band", "live_set", "tempo", false)
+        .unwrap();
+    let out = subs.drain_outgoing();
+    subs.on_values("band", &[push("live_1.tempo", json!(121.0))]);
+    for o in &out {
+        let slots: Vec<Value> = o
+            .commands
+            .iter()
+            .map(|_| ok("live_1.tempo", json!(120.0)))
+            .collect();
+        subs.on_result(&o.instance, &o.uuid, &slots);
+    }
+    assert_eq!(
+        deliveries_of(&mut subs, "band|live_set|tempo|false"),
+        vec![Some(json!(120.0)), Some(json!(121.0))]
+    );
+}
+
+#[test]
 fn a_push_kept_before_its_batch_was_sent_is_older_than_its_result_and_goes() {
     let mut subs = online();
     // A batch of another key is in flight.

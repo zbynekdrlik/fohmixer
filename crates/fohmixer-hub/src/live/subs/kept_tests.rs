@@ -146,3 +146,15 @@ fn a_clear_forgets_every_push_and_keeps_the_marks_going() {
     kept.keep(vec![push("live_1.value", json!(3))]);
     assert_eq!(kept.mark(), 3);
 }
+
+#[test]
+fn an_overflows_record_names_its_instance_counts_and_bound() {
+    let overflow = Overflow {
+        dropped: 2,
+        total: 7,
+    };
+    assert_eq!(
+        overflow.fields("band"),
+        json!({"instance": "band", "dropped": 2, "total": 7, "max": 1024})
+    );
+}

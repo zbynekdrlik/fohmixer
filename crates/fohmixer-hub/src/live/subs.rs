@@ -44,8 +44,11 @@
 //!   batch whole at its end, and the listeners it already registered push
 //!   their changes on the ticks between. After each result the pushes for the
 //!   keys it made known are applied again, in arrival order, over the value
-//!   read at registration; the rest go once no batch is in flight, and a
-//!   disconnect forgets them.
+//!   read at registration: only those that arrived after the batch was sent,
+//!   and none of a key whose older listener a `remove_listener` of the same
+//!   drain, or one still in flight, was ending (an older or released
+//!   listener's push is older than the read). The rest go once no batch is
+//!   in flight, and a disconnect forgets them.
 
 mod kept;
 
@@ -56,7 +59,8 @@ use fohmixer_proto::path::LomPath;
 use serde_json::{Value, json};
 
 use super::LiveValue;
-use kept::{KEPT_MAX, Kept, Overflow};
+pub use kept::Overflow;
+use kept::{KEPT_MAX, Kept};
 
 /// A client connection (an internal subscriber too).
 pub type ClientId = u64;
@@ -108,9 +112,12 @@ enum Tag {
         key: String,
         seq: u64,
     },
-    /// A `remove_listener` (its answer changes nothing: a failed removal
-    /// means the object is gone, and its listener with it).
-    Release,
+    /// A `remove_listener` of the Live key `live` (its answer changes
+    /// nothing: a failed removal means the object is gone, and its listener
+    /// with it).
+    Release {
+        live: String,
+    },
 }
 
 /// A request in flight. A disconnect forgets its instance's requests, so an
@@ -122,6 +129,10 @@ struct Batch {
     /// The instance's kept-push mark when it was sent (#243): a push kept
     /// before it comes from an older listener.
     mark: u64,
+    /// Live keys whose listener a `remove_listener` of this drain or one
+    /// still in flight ends (#243): a push kept for one of them may come
+    /// from that older listener even after the mark, so it is never applied.
+    released: BTreeSet<String>,
 }
 
 #[derive(Debug)]
@@ -368,11 +379,14 @@ impl Subs {
     }
 
     /// A `values` push of `instance`. While a batch of it is in flight, the
-    /// items for Live keys not known yet are kept for its result (#243).
-    pub fn on_values(&mut self, instance: &str, items: &[LiveValue]) {
+    /// items for Live keys not known yet are kept for its result (#243);
+    /// what that had to drop beyond `KEPT_MAX`, if anything (logged here,
+    /// recorded by the router).
+    pub fn on_values(&mut self, instance: &str, items: &[LiveValue]) -> Option<Overflow> {
         if !self.is_online(instance) {
-            return;
+            return None;
         }
+        let mut dropped = None;
         if self.resolving(instance) {
             let unknown: Vec<LiveValue> = items
                 .iter()
@@ -387,9 +401,11 @@ impl Subs {
                 && let Some(overflow) = inst.kept.keep(unknown)
             {
                 warn_overflow(instance, &overflow);
+                dropped = Some(overflow);
             }
         }
         self.apply_values(instance, items);
+        dropped
     }
 
     /// Applies a push frame to the entries of the Live keys it names (an
@@ -463,7 +479,7 @@ impl Subs {
                 made_known.insert(live);
             }
         }
-        self.replay_kept(instance, batch.mark, &made_known);
+        self.replay_kept(instance, &batch, &made_known);
         true
     }
 
@@ -471,6 +487,19 @@ impl Subs {
     #[cfg(test)]
     fn kept(&self, instance: &str) -> usize {
         self.instances.get(instance).map_or(0, |i| i.kept.len())
+    }
+
+    /// The Live keys a `remove_listener` of `instance` still in flight ends.
+    fn releasing(&self, instance: &str) -> BTreeSet<String> {
+        self.inflight
+            .values()
+            .filter(|b| b.instance == instance)
+            .flat_map(|b| &b.tags)
+            .filter_map(|t| match t {
+                Tag::Release { live } => Some(live.clone()),
+                Tag::Resolve { .. } => None,
+            })
+            .collect()
     }
 
     /// Whether an `add_listener` batch of `instance` is in flight.
@@ -482,12 +511,17 @@ impl Subs {
 
     /// After a result (#243): the kept pushes for the Live keys it made known
     /// are applied again, in arrival order (those from before the batch was
-    /// sent go); once no batch is in flight, the rest go.
-    fn replay_kept(&mut self, instance: &str, mark: u64, made_known: &BTreeSet<String>) {
+    /// sent go, and so do those of a key whose older listener was being
+    /// removed meanwhile); once no batch is in flight, the rest go.
+    fn replay_kept(&mut self, instance: &str, batch: &Batch, made_known: &BTreeSet<String>) {
         let Some(inst) = self.instances.get_mut(instance) else {
             return;
         };
-        let frames = inst.kept.take(mark, |key| made_known.contains(key));
+        // A released key's pushes are dropped whatever their arrival.
+        inst.kept.take(u64::MAX, |key| {
+            batch.released.contains(key) && made_known.contains(key)
+        });
+        let frames = inst.kept.take(batch.mark, |key| made_known.contains(key));
         for frame in frames {
             self.apply_values(instance, &frame);
         }
@@ -506,6 +540,7 @@ impl Subs {
         let names: Vec<String> = self.instances.keys().cloned().collect();
         for name in names {
             let resolving = self.resolving(&name);
+            let mut released = self.releasing(&name);
             let inst = self.instances.get_mut(&name).expect("listed above");
             if !inst.online {
                 continue;
@@ -517,8 +552,9 @@ impl Subs {
                     let (id, prop) = live.rsplit_once('.').unwrap_or((live.as_str(), ""));
                     commands.push((
                         json!({"target": {"$ref": id}, "name": "remove_listener", "args": {"prop": prop}}),
-                        Tag::Release,
+                        Tag::Release { live: live.clone() },
                     ));
+                    released.insert(live);
                 }
             }
             for key in std::mem::take(&mut inst.dirty) {
@@ -551,6 +587,7 @@ impl Subs {
                         instance: name.clone(),
                         tags,
                         mark,
+                        released: released.clone(),
                     },
                 );
                 out.push(Outgoing {

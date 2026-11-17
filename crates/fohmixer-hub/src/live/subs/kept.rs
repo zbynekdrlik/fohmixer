@@ -8,8 +8,9 @@
 //! frame's arrival number, and after each result the ones for the keys that
 //! result made known are applied again in arrival order: those that arrived
 //! after the batch was sent; one from before comes from an older listener and
-//! is older than the result's read, so it goes. At most `KEPT_MAX` are kept;
-//! the oldest goes first.
+//! is older than the result's read, so it goes (the table also drops, at
+//! any arrival, those of a key whose older listener a `remove_listener` was
+//! still ending). At most `KEPT_MAX` are kept; the oldest goes first.
 
 use std::collections::VecDeque;
 
@@ -25,6 +26,18 @@ pub struct Overflow {
     pub dropped: usize,
     /// Dropped since the table was made.
     pub total: u64,
+}
+
+impl Overflow {
+    /// Its record's fields (the router's `kept_pushes`, warn class).
+    pub fn fields(&self, instance: &str) -> serde_json::Value {
+        serde_json::json!({
+            "instance": instance,
+            "dropped": self.dropped,
+            "total": self.total,
+            "max": KEPT_MAX,
+        })
+    }
 }
 
 /// One instance's kept pushes.

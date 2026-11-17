@@ -100,6 +100,9 @@ mod sectors;
 
 #[path = "router/colors.rs"]
 mod colors;
+#[cfg(test)]
+#[path = "router/kept_tests.rs"]
+mod kept_tests;
 #[path = "router/marks.rs"]
 mod marks;
 #[path = "router/scenes.rs"]
@@ -816,6 +819,10 @@ pub struct Router {
     /// clients' writers ping only while it is fresh.
     beat: Beat,
 }
+
+/// The record of Live pushes the subscription table kept for a batch in
+/// flight and had to drop past its bound (#243; warn class).
+pub(crate) const KEPT_PUSHES: &str = "kept_pushes";
 
 /// The `link` record of a script's close with a reason (PR #146 review
 /// M5): its instance and the close's words (`1001 silent`).
@@ -1602,7 +1609,15 @@ impl Router {
                     self.names.on_result(instance, &uuid, &data);
                 }
             }
-            LiveEvent::Values(items) => self.subs.on_values(instance, &items),
+            LiveEvent::Values(items) => {
+                // Pushes kept for a batch in flight and dropped past the
+                // bound (#243): a warn-class record.
+                if let Some(overflow) = self.subs.on_values(instance, &items) {
+                    self.io
+                        .events
+                        .record(KEPT_PUSHES, overflow.fields(instance));
+                }
+            }
         }
     }
 
