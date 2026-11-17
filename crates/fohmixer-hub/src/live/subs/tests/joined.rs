@@ -1,5 +1,7 @@
-//! A new hub key joining a Live key another entry holds (#244): at its
-//! batch's result it takes that key's push from after the batch was sent.
+//! A hub key resolved onto a Live key (#244: a new key beside a sibling;
+//! #245: a key resolved again on its own Live key, or one whose sibling left
+//! before the result): at its batch's result it takes that Live key's push
+//! from after the batch was sent.
 
 use super::*;
 
