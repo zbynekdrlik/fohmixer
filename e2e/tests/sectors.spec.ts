@@ -93,21 +93,24 @@ const GAP_DOC: SectorsDoc = {
 };
 
 /**
- * #236: lu as `GAP_DOC`'s (6 units), ru 5.3 units in 5 slots (the three
- * wide strips, a gap, master Hand2 #): in ARRANGE ru shows one more empty
- * cell, and a strip of one unit there would make ru FULL.
+ * #236: ru holds 5 strips of one unit, so in ARRANGE it shows one more
+ * empty cell (its sixth unit); lu holds Vocal and the wide band Hand2 #
+ * (1.1 units), which would make ru 6.1 there: FULL. ld holds 6 strips, so
+ * every side's strips are as narrow as a 6-unit side's and ru's sixth cell
+ * fits (a fader may sit in two layouts, never twice in one).
  */
 const FULL_RU_DOC: SectorsDoc = {
   rev: 0,
   sectors: {
-    lu: GAP_DOC.sectors.lu,
+    lu: [{ id: "lu-1", title: "STAGE", strips: [VOCAL, band("Hand2 #")] }],
     ru: [
       {
         id: "ru-1",
         title: "MAIN",
-        strips: [band("Hand2 #"), band("B-Main repro #"), master("A-Echo"), null, master("Hand2 #")],
+        strips: [KEYS, master("A-Reverb #"), master("Hand1 #"), master("Hand4 #"), master("Hand2 #")],
       },
     ],
+    ld: GAP_DOC.sectors.lu!.map((layout) => ({ ...layout, id: "ld-1", title: "SIX" })),
   },
 };
 
@@ -804,36 +807,37 @@ test.describe("The fader sectors", () => {
     test("ARRANGE refuses a drop that would make a layout FULL, and loses nothing (#236)", async ({ page }) => {
       await setSectors(FULL_RU_DOC);
       await openSectors(page);
-      const lu = [name(VOCAL), name(KEYS), "band|A-Reverb #", "master|A-Reverb #", "master|Hand1 #", "master|Hand4 #"];
-      const ru = ["band|Hand2 #", "band|B-Main repro #", "master|A-Echo", "_", "master|Hand2 #"];
+      const lu = [name(VOCAL), "band|Hand2 #"];
+      const ru = [name(KEYS), "master|A-Reverb #", "master|Hand1 #", "master|Hand4 #", "master|Hand2 #"];
       const since = Date.now();
       const revBefore = (await hubStatus()).sectors.rev;
       await page.getByTestId("arrange").click();
       await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "true");
-      await expect.poll(() => cellsOf(page, "lu")).toEqual(lu);
+      // LU's further cells up to its 6 units (2.1 + three), RU's one.
+      await expect.poll(() => cellsOf(page, "lu")).toEqual([...lu, "_", "_", "_"]);
       await expect.poll(() => cellsOf(page, "ru")).toEqual([...ru, "_"]);
 
-      // A first, unsaved change of the session: Vocal and Keys swap in LU.
-      await carry(page, "lu", "Keys 1", 0);
-      const luSwapped = [name(KEYS), name(VOCAL), ...lu.slice(2)];
-      await expect.poll(() => cellsOf(page, "lu")).toEqual(luSwapped);
+      // A first, unsaved change of the session: Vocal and Hand2 # swap in LU.
+      await carry(page, "lu", "Hand2 #", 0);
+      const luSwapped = ["band|Hand2 #", name(VOCAL)];
+      await expect.poll(() => cellsOf(page, "lu")).toEqual([...luSwapped, "_", "_", "_"]);
 
-      // RU holds 5.3 units (three wide strips, a gap, a strip): Hand1 #
-      // on its last cell would make it 6.3, past the 6 a sector holds.
+      // RU holds 5 units: the wide Hand2 # on its sixth cell would make it
+      // 6.1, past the 6 a sector holds (the hub would refuse the save FULL).
       // Held there the cell reads `no`; its lift moves nothing.
-      const hand1 = await carry(page, "lu", "Hand1 #", 5, "ru", false);
+      const wide = await carry(page, "lu", "Hand2 #", 5, "ru", false);
       await expect.poll(() => dropMarks(page)).toEqual(["ru/5=no"]);
-      await dispatchPointer(hand1, [{ type: "pointercancel" }]);
+      await dispatchPointer(wide, [{ type: "pointercancel" }]);
       await expect.poll(() => dropMarks(page)).toEqual([]);
-      await carry(page, "lu", "Hand1 #", 5, "ru");
+      await carry(page, "lu", "Hand2 #", 5, "ru");
       await expect.poll(() => cellsOf(page, "ru")).toEqual([...ru, "_"]);
-      await expect.poll(() => cellsOf(page, "lu")).toEqual(luSwapped);
+      await expect.poll(() => cellsOf(page, "lu")).toEqual([...luSwapped, "_", "_", "_"]);
       await expect(page.getByTestId("arrange-note")).toHaveText(ARRANGE_NOTE);
 
-      // RU's gap keeps it at 5.3 units: held there the cell reads `yes`.
-      const again = await carry(page, "lu", "Hand1 #", 3, "ru", false);
-      await expect.poll(() => dropMarks(page)).toEqual(["ru/3=yes"]);
-      await dispatchPointer(again, [{ type: "pointercancel" }]);
+      // Vocal (one unit) fits there: held over the same cell it reads `yes`.
+      const vocal = await carry(page, "lu", VOCAL.label, 5, "ru", false);
+      await expect.poll(() => dropMarks(page)).toEqual(["ru/5=yes"]);
+      await dispatchPointer(vocal, [{ type: "pointercancel" }]);
       await expect.poll(() => dropMarks(page)).toEqual([]);
 
       // The save keeps the session's change: one edit, taken (no FULL).
