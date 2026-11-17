@@ -208,3 +208,117 @@ async fn a_sessions_first_value_of_playing_opens_no_wait() {
     assert_eq!(of(&steps(&rx), "engage"), Vec::<Value>::new());
     assert!(router.autotune.engage.waiting.is_empty());
 }
+
+/// The switch-on spread (#190, the design of 2026-11-17): a play start's
+/// switch-on goes one selector per [`SPREAD`] in Live's order, as a stop's
+/// DRY does (each selector swaps a rack's chain; all in one batch stalled
+/// band Live's audio callback at every switch-on of the 2026-11-15 service).
+#[tokio::test(start_paused = true)]
+async fn the_switch_on_at_the_waits_end_goes_one_selector_per_40_ms() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, rx) = waiting(dir.path()).await;
+    transport(&mut router, true);
+    live.settle(&mut router).await;
+    let _ = steps(&rx);
+    pass(&mut router, &mut live, DELAY).await;
+    assert_eq!(live.written(), vec![batch(&[("p6", 0.0)])], "the first");
+    let got = steps(&rx);
+    assert_eq!(of(&got, "engage"), vec![engage("ends")]);
+    assert_eq!(
+        of(&got, "write"),
+        vec![
+            json!({"step": "write", "instance": "band", "cause": "transport",
+                    "on": ["Vox 2"], "off": []})
+        ]
+    );
+    assert_eq!(
+        of(&got, "spread"),
+        vec![json!({"step": "spread", "instance": "band", "targets": ["#8"], "ms": 40})]
+    );
+    pass(&mut router, &mut live, SPREAD - Duration::from_millis(1)).await;
+    assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new(), "39 ms");
+    pass(&mut router, &mut live, Duration::from_millis(1)).await;
+    assert_eq!(live.written(), vec![batch(&[("p7", 127.0)])], "40 ms");
+    assert_eq!(
+        of(&steps(&rx), "write"),
+        vec![
+            json!({"step": "write", "instance": "band", "cause": "transport",
+                    "on": ["#8"], "off": []})
+        ]
+    );
+    pass(&mut router, &mut live, SPREAD * 5).await;
+    assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new());
+    assert!(router.autotune.spreads.is_empty());
+    assert_eq!(decisions(&mut router), [on(), on()]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn with_no_delay_the_switch_on_is_spread_from_the_start_itself() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, rx) = ready(dir.path(), HubState::default()).await;
+    aut_on(&mut router);
+    transport(&mut router, true);
+    live.settle(&mut router).await;
+    assert_eq!(live.written(), vec![batch(&[("p6", 0.0)])], "at the start");
+    let got = steps(&rx);
+    assert_eq!(of(&got, "engage"), Vec::<Value>::new());
+    assert_eq!(
+        of(&got, "spread"),
+        vec![json!({"step": "spread", "instance": "band", "targets": ["#8"], "ms": 40})]
+    );
+    pass(&mut router, &mut live, SPREAD - Duration::from_millis(1)).await;
+    assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new(), "39 ms");
+    pass(&mut router, &mut live, Duration::from_millis(1)).await;
+    assert_eq!(live.written(), vec![batch(&[("p7", 127.0)])], "40 ms");
+    assert_eq!(decisions(&mut router), [on(), on()]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stop_within_the_switch_ons_spread_drops_its_rest_before_the_stops_dry() {
+    // The stream selector's switch-on is still to come when Live stops: it
+    // is dropped (`stop`), never sent after the stop's DRY, and only the
+    // PA's selector, the one written on, goes back to DRY.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, rx) = waiting(dir.path()).await;
+    transport(&mut router, true);
+    live.settle(&mut router).await;
+    pass(&mut router, &mut live, DELAY).await;
+    assert_eq!(live.written(), vec![batch(&[("p6", 0.0)])]);
+    let _ = steps(&rx);
+    pass(&mut router, &mut live, SPREAD / 2).await;
+    transport(&mut router, false);
+    live.settle(&mut router).await;
+    assert_eq!(live.written(), vec![batch(&[("p6", 127.0)])], "DRY at once");
+    pass(&mut router, &mut live, SPREAD * 5).await;
+    assert_eq!(
+        live.written(),
+        Vec::<Vec<(String, f64)>>::new(),
+        "no switch-on after the stop"
+    );
+    assert_eq!(live.params["p6"], json!(127.0));
+    assert_eq!(live.params["p7"], json!(0.0));
+    assert_eq!(
+        decisions(&mut router),
+        [off(SwitchWhy::Stop), off(SwitchWhy::Stop)]
+    );
+    assert!(router.autotune.spreads.is_empty());
+    assert!(router.autotune.targets[STREAM].writing.is_empty());
+    let got = steps(&rx);
+    assert_eq!(
+        of(&got, "unspread"),
+        vec![
+            json!({"step": "unspread", "instance": "band", "targets": ["#8"],
+                    "why": "stop"})
+        ]
+    );
+    // The drop comes before the stop's DRY write.
+    let at = |step: &str| got.iter().position(|r| r["step"] == step).unwrap();
+    assert!(at("unspread") < at("write"), "{got:?}");
+    assert_eq!(
+        of(&got, "write"),
+        vec![
+            json!({"step": "write", "instance": "band", "cause": "transport",
+                    "on": [], "off": ["Vox 2"]})
+        ]
+    );
+}
