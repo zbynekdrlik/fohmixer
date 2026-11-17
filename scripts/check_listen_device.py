@@ -31,7 +31,8 @@ own:
   `metro 1000` -> `deferlow` -> `t b b` (the sample rate first, `TICK_ONLY`),
   which reads nothing from Live: the identity is the LUFS devices'
   (`check_lufs_device.identity_errors`, #240), read at load and on a change
-  into the announce's cold inlets;
+  into the announce's cold inlets, each name from `live.object` (an
+  observer only triggers the read, `check_lufs_device.value_errors`);
 - the hello: one `pack fohmixer_listen 1 0 v<version> 0` into the
   `jit.net.send`'s right inlet;
 - the select logic, box by box (`BOXES`, `WIRING`): an `on` answer

@@ -52,9 +52,26 @@ given), so the device reads its id and each parent's `name` instead, once at
 load on Max's low-priority thread (`deferlow`), and again only on a change
 (#240; the old read every second cost every device 9 LOM calls a second):
 each parent's `live.path` (its middle outlet follows the path, so a device
-moved elsewhere gets the new parent's id) binds a `live.observer` on that
-parent's `name`, which gives the name at once and at each rename; a path
-that holds nothing gives `-`. The whole
+moved elsewhere gets the new parent's id) sets that id into a `live.object`
+and reads `get name` → `route name` → `zl reg` → `tosymbol` into the
+parent's slot, the path the devices before #240 used; a path that holds
+nothing gives `-`. A `live.observer` on the `name` of parents 1 to 3 gives
+the name at once and at each rename, and its output only bangs that read
+(`t b`), never a value: through `live.observer` → `tosymbol` a name with a
+space kept literal double quotes and the set's level read `-`, so on the PC
+no device matched (the FINDING of 2026-11-17 on #240). The set (parent 4)
+has no `name` an observer reports: it is read at load and on its follow only.
+
+**The identity's format is proved only on the PC** (CI checks which boxes
+are wired to which, never what Max outputs; `scripts/check_lufs_device.py`
+`value_errors` holds the value path). Before a changed device reaches a
+set: copy its `.amxd` under a test name into the band user's
+`Presets\Audio Effects\Max Audio Effect`, load it on one track through the
+LOM (the hub's `cmd`), read its announce from the hub (`/api/status`
+`lufs.devices`, or `listen.devices` for Listen: `parents` must equal what
+the old device on that track sends, no quotes, the set's name last, and
+the device `matched`), then delete the device from the track and leave the
+set unsaved. The whole
 message is one `pack` (its slots cold, the identity cached in them), banged
 by `obj-send-trigger` (`t b f`) each time the last value comes out of its
 audio object's own clock (`snapshot~ 200` for the LUFS device, `peakamp~ 33`
@@ -84,7 +101,9 @@ cannot read the hub's config.
 object, on anything but silence into `plugout~`, on a `udpsend` other than
 one `udpsend 127.0.0.1 <DEFAULT_PORT>` (the hub's, read from
 `crates/fohmixer-proto/src/lufs/wire.rs`), on a `pack` with another address
-or version, on a missing identity message, on a line past a box's ports, on a
+or version, on a missing identity message, on an identity read on a clock
+or a name slot fed by anything but `live.object` → `route name` → `zl reg`
+→ `tosymbol` (an observer's output reaching it), on a line past a box's ports, on a
 face whose version is not `version.txt`, on an absolute file path, and for
 the LUFS patch when its embedded code differs from the `.genexpr`. A change to
 the DSP is made in the `.genexpr` and copied into the patcher's codebox (or
