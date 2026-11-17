@@ -337,3 +337,79 @@ async fn a_stop_within_the_switch_ons_spread_drops_its_rest_before_the_stops_dry
         ]
     );
 }
+
+/// [`ready`] with AUTOTUNE AUT on and no wait, Live just started: the PA's
+/// switch-on written and answered, the stream's still to come.
+async fn switching_on(dir: &std::path::Path) -> (Router, Live, std::sync::mpsc::Receiver<Value>) {
+    let (mut router, mut live, rx) = ready(dir, HubState::default()).await;
+    aut_on(&mut router);
+    transport(&mut router, true);
+    live.settle(&mut router).await;
+    assert_eq!(live.written(), vec![batch(&[("p6", 0.0)])]);
+    assert_eq!(router.autotune.spreads["band"].queue.len(), 1);
+    let _ = steps(&rx);
+    (router, live, rx)
+}
+
+#[tokio::test(start_paused = true)]
+async fn aut_off_within_the_switch_ons_spread_sends_no_switch_on_after_its_dry() {
+    // Review of the lane (Y2): AUT off writes DRY at once while the
+    // stream's switch-on is still to come; its turn comes before Live
+    // answered that DRY. The switch-on is no longer the decision, so it is
+    // dropped, never sent after the DRY (else its echo reads as another
+    // writer's move).
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, rx) = switching_on(dir.path()).await;
+    set_hub(&mut router, HUB_AUTOTUNE_AUT, json!(false));
+    let dry = live.next("AUT off's DRY", is_selector_write);
+    assert_eq!(
+        dry.commands,
+        selector_commands(&[("p6", 127.0), ("p7", 0.0)])
+    );
+    next_turn(&mut router);
+    live.quiet();
+    live.answer(&mut router, dry);
+    pass(&mut router, &mut live, SPREAD * 5).await;
+    assert_eq!(
+        live.written(),
+        vec![batch(&[("p6", 127.0), ("p7", 0.0)])],
+        "no switch-on after the DRY"
+    );
+    assert_eq!(live.params["p7"], json!(0.0));
+    assert!(router.autotune.spreads.is_empty());
+    assert!(router.autotune.targets[STREAM].writing.is_empty());
+    assert_eq!(of(&steps(&rx), "selector_writer"), Vec::<Value>::new());
+    assert!(!router.autotune.targets[STREAM].guard.another());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_lost_transport_within_the_switch_ons_spread_sends_no_switch_on() {
+    // Review of the lane (Y1): a lost transport is no play, its DRY queued
+    // behind the stream's switch-on still to come; the switch-on is no
+    // longer the decision at its turn, so it is dropped and the PA's DRY
+    // goes in that turn.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut live, rx) = switching_on(dir.path()).await;
+    router.transport_failed(TRANSPORT, "not observable");
+    live.settle(&mut router).await;
+    assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new(), "queued");
+    pass(&mut router, &mut live, SPREAD).await;
+    assert_eq!(live.written(), vec![batch(&[("p6", 127.0)])]);
+    pass(&mut router, &mut live, SPREAD * 5).await;
+    let rest = live.written();
+    assert!(
+        rest.iter().flatten().all(|(_, value)| *value != 127.0),
+        "no switch-on: {rest:?}"
+    );
+    assert_eq!(live.params["p6"], json!(127.0));
+    assert_eq!(live.params["p7"], json!(0.0));
+    assert!(router.autotune.spreads.is_empty());
+    let got = steps(&rx);
+    assert_eq!(
+        of(&got, "unspread"),
+        vec![
+            json!({"step": "unspread", "instance": "band", "targets": ["#8"],
+                    "why": "owed"})
+        ]
+    );
+}
