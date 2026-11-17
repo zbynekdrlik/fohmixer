@@ -54,7 +54,10 @@
 //!   pushes between are the other entry's alone: while a batch is in flight
 //!   the last push of each known Live key is heard (`kept`), and at the
 //!   result the new key takes it instead of the value read at registration
-//!   when it arrived after the batch was sent (`kept::newer_push`).
+//!   when it arrived after the batch was sent (`kept::newer_push`). The rule
+//!   keys on the Live key (#245): a key resolved again on its own Live key
+//!   (linked, it already shows the push) and a new key whose sibling left
+//!   before the result take it too; the heard push stays at `unlink`.
 
 mod kept;
 mod replay;
@@ -821,8 +824,12 @@ impl Subs {
         };
         keys.remove(key);
         if keys.is_empty() {
+            // The push heard for the Live key stays (#245): a key resolved
+            // onto it in a batch still in flight takes it at its result. A
+            // batch sent later never takes it (it arrived before that
+            // batch's mark), and it goes with the kept pushes once no batch
+            // is in flight.
             self.by_live.remove(&id);
-            self.forget_heard(instance, live);
             self.schedule_release(instance, live);
         }
     }
@@ -901,10 +908,10 @@ impl Subs {
         let old = entry.live.clone();
         match outcome {
             Ok((live, cached)) => {
-                // Joining a Live key another entry holds (#244): its push
-                // after the send is newer than the result's read.
+                // A push heard for the Live key after the send is newer than
+                // the result's read (#244, #245).
                 let cached = self
-                    .joined_push(instance, key, &live, mark, wants_display)
+                    .heard_push(instance, key, &live, mark, wants_display)
                     .unwrap_or(cached);
                 if old.as_deref() != Some(live.as_str()) {
                     if let Some(old) = &old {

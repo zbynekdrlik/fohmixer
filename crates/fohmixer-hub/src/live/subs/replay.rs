@@ -1,6 +1,6 @@
 //! The table's glue of the pushes around a batch in flight: those kept for
 //! a Live key it does not know yet (#243) and those heard for one it knows
-//! (#244), on `kept::Kept`'s pure decisions.
+//! (#244, #245), on `kept::Kept`'s pure decisions.
 
 use std::collections::BTreeSet;
 
@@ -62,18 +62,21 @@ impl Subs {
         }
     }
 
-    /// Forgets the push heard for `live` (#244): no entry holds it any more.
+    /// Forgets the push heard for `live` (#244): its listener ended (an
+    /// error pushed).
     pub(super) fn forget_heard(&mut self, instance: &str, live: &str) {
         if let Some(inst) = self.instances.get_mut(instance) {
             inst.kept.forget(live);
         }
     }
 
-    /// The state a key joining the Live key `live` takes at the result of a
-    /// batch sent at `mark` (#244), if not the result's: the push heard for
-    /// it after the send (`kept::newer_push`), only when another entry holds
-    /// that Live key (a sibling).
-    pub(super) fn joined_push(
+    /// The state a key resolved onto the Live key `live` takes at the result
+    /// of a batch sent at `mark`, if not the result's: the push heard for
+    /// that Live key after the send (`kept::newer_push`), newer than the
+    /// result's read. The rule keys on the Live key (#245): a new key beside
+    /// a sibling (#244), a key whose sibling left meanwhile, and a key
+    /// resolved again on its own Live key alike.
+    pub(super) fn heard_push(
         &self,
         instance: &str,
         key: &str,
@@ -81,21 +84,16 @@ impl Subs {
         mark: u64,
         wants_display: bool,
     ) -> Option<Cached> {
-        let joins = self
-            .by_live
-            .get(&(instance.to_string(), live.to_string()))
-            .is_some_and(|keys| keys.iter().any(|k| k != key));
         let push = self
             .instances
             .get(instance)?
             .kept
-            .heard_after(live, mark, wants_display)
-            .filter(|_| joins)?;
+            .heard_after(live, mark, wants_display)?;
         tracing::debug!(
             instance,
             key,
             live,
-            "a new subscription takes its Live key's push that came after its batch was sent"
+            "a subscription takes its Live key's push that came after its batch was sent"
         );
         Some(Cached::Value {
             value: push.value.clone(),

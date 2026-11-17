@@ -1,5 +1,7 @@
-//! A new hub key joining a Live key another entry holds (#244): at its
-//! batch's result it takes that key's push from after the batch was sent.
+//! A hub key resolved onto a Live key (#244: a new key beside a sibling;
+//! #245: a key resolved again on its own Live key, or one whose sibling left
+//! before the result): at its batch's result it takes that Live key's push
+//! from after the batch was sent.
 
 use super::*;
 
@@ -139,7 +141,34 @@ fn a_push_heard_before_the_batch_was_sent_leaves_the_results_value() {
 }
 
 #[test]
-fn a_live_key_every_entry_left_forgets_its_push_so_its_new_keys_agree() {
+fn a_binding_resolved_again_on_its_own_live_key_keeps_its_push_after_the_send() {
+    let mut subs = online();
+    sub_volume(&mut subs, 1);
+    let out = subs.drain_outgoing();
+    answer(&mut subs, &out);
+    subs.take_deliveries();
+    // The binding resolved again on its own Live key (#245), the table's form
+    // of a re-resolve that shares its batch with later commands (a guard's
+    // firing): here a second subscriber's, alone in its batch, which the
+    // script itself answers before any later push. The entry stays linked,
+    // alone on its Live key.
+    sub_volume(&mut subs, 2);
+    let out = subs.drain_outgoing();
+    subs.on_values("band", &[shown("live_10.value", json!(0.6), "-3.00 dB")]);
+    answer(&mut subs, &out);
+    assert_eq!(
+        cached(&subs, VOLUME_KEY),
+        value(json!(0.6), Some("-3.00 dB"))
+    );
+    // Each client got the push, and nothing moved it back to the read.
+    assert_eq!(
+        deliveries_of(&mut subs, VOLUME_KEY),
+        vec![(Some(json!(0.6)), Some("-3.00 dB".to_string())); 2]
+    );
+}
+
+#[test]
+fn a_live_key_every_entry_left_keeps_its_push_for_its_new_keys() {
     let mut subs = followed();
     // Two new keys of the Live key in one batch.
     sub_volume(&mut subs, 2);
@@ -149,15 +178,12 @@ fn a_live_key_every_entry_left_forgets_its_push_so_its_new_keys_agree() {
     // The only entry that held the Live key goes before the result.
     assert!(subs.unsubscribe(1, BY_INDEX_KEY));
     answer(&mut subs, &out);
-    // The first key linked has no sibling: the result's value; the second
-    // joins it with nothing heard: the same. The two keys agree; that the
-    // value is the older read is the design's scope (a key with no sibling
-    // at the result takes the result's), noted under "Not covered" in
-    // hub-rust.md.
-    assert_eq!(cached(&subs, BARE_KEY), value(json!(0.85), None));
+    // The push is the Live key's newest value whether or not a sibling is
+    // left at the result (#245): both new keys take it, and agree.
+    assert_eq!(cached(&subs, BARE_KEY), value(json!(0.6), None));
     assert_eq!(
         cached(&subs, VOLUME_KEY),
-        value(json!(0.85), Some("0.0 dB"))
+        value(json!(0.6), Some("-3.00 dB"))
     );
 }
 
