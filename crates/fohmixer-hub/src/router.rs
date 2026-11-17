@@ -112,6 +112,9 @@ mod songmap;
 #[cfg(test)]
 #[path = "router/stage_tests.rs"]
 mod stage_tests;
+#[cfg(test)]
+#[path = "router/stop_tests.rs"]
+mod stop_tests;
 mod unfold;
 
 pub use claps::{CLAPS_CLIENT, ClapsSetup};

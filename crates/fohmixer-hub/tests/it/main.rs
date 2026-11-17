@@ -49,6 +49,7 @@ mod serve_until;
 mod setter;
 mod songmap;
 mod stage_aut;
+mod stopping;
 mod token_cli;
 mod unfold;
 mod ws_log;
