@@ -430,6 +430,13 @@ pub enum RouterMsg {
         instance: String,
         generation: u64,
     },
+    /// The gap `generation` after `instance`'s last AUTOTUNE walk is over
+    /// (#235): its next walk starts; void once a disconnect dropped its
+    /// walks.
+    AutotuneWalkNext {
+        instance: String,
+        generation: u64,
+    },
     /// The wait `generation` of `instance`'s play start ran out (#190):
     /// the selectors it held off the chain go; void once a stop, a
     /// disconnect or a newer start ended it.
@@ -1369,6 +1376,10 @@ impl Router {
                 self.autotune_walk_failed(&key, walk, why);
             }
             RouterMsg::AutotuneWalkRetry { key, walk } => self.autotune_walk_retry(&key, walk),
+            RouterMsg::AutotuneWalkNext {
+                instance,
+                generation,
+            } => self.autotune_pace_gap(&instance, generation),
             RouterMsg::AutotuneWritten {
                 instance,
                 write,

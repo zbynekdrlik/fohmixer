@@ -98,6 +98,8 @@ use keys::{Position, key_status};
 mod engage;
 #[path = "autotune/key_writes.rs"]
 mod key_writes;
+#[path = "autotune/pace.rs"]
+mod pace;
 #[path = "autotune/safe.rs"]
 mod safe;
 use safe::Safe;
@@ -267,6 +269,10 @@ pub(super) struct AutotuneIo {
     pub spread_turns: u64,
     /// The play starts' waits of their selector-on writes (#190).
     pub engage: engage::Engage,
+    /// Each Live set's walks, one at a time (#235).
+    pub paces: BTreeMap<String, pace::Pace>,
+    /// The walks' gaps' own counter (a stale gap does nothing).
+    pub pace_gaps: u64,
 }
 
 impl AutotuneIo {
@@ -294,6 +300,8 @@ impl AutotuneIo {
             spreads: BTreeMap::new(),
             spread_turns: 0,
             engage: engage::Engage::default(),
+            paces: BTreeMap::new(),
+            pace_gaps: 0,
         };
         io.told = Some(io.state());
         io
@@ -883,19 +891,29 @@ impl Router {
 
     /// Walks a target (a new walk number: an answer of an older walk is
     /// void), while its Live set is online; its connect walks it else. The
-    /// walk checks the track at its index against the hub's track list as
-    /// it stands now (PR #146 review M2, [`track_check`]): a list change
-    /// handled later walks it again, so its answer is void then anyway.
+    /// walk waits its turn in its set's queue (#235, `autotune/pace.rs`).
     fn autotune_walk_now(&mut self, key: &str) {
         let Some(target) = self.autotune.targets.get_mut(key) else {
             return;
         };
         self.autotune.walks += 1;
         target.walk = self.autotune.walks;
+        let instance = target.instance.clone();
+        let online = self.states.get(&instance).is_some_and(|s| s.online);
+        if online && self.live.contains_key(&instance) {
+            self.autotune_pace_ask(&instance, key);
+        }
+    }
+
+    /// Starts a target's newest walk now, while its Live set is online: its
+    /// walk number, or none when nothing went. The walk checks the track at
+    /// its index against the hub's track list as it stands now (PR #146
+    /// review M2, [`track_check`]): a list change handled later walks it
+    /// again, so its answer is void then anyway.
+    fn autotune_walk_start(&self, key: &str) -> Option<u64> {
+        let target = self.autotune.targets.get(key)?;
         let online = self.states.get(&target.instance).is_some_and(|s| s.online);
-        let (true, Some(live)) = (online, self.live.get(&target.instance)) else {
-            return;
-        };
+        let live = self.live.get(&target.instance).filter(|_| online)?;
         let check = track_check(
             &self.reverb.lists,
             &target.instance,
@@ -911,6 +929,7 @@ impl Router {
             };
             let _ = tx.send(msg);
         });
+        Some(walk)
     }
 
     /// A walk's read failed (#140): void unless it is the target's newest
@@ -923,6 +942,8 @@ impl Router {
     /// trigger ([`after_walk`]); a definite refusal waits for the next
     /// trigger.
     pub(super) fn autotune_walk_failed(&mut self, key: &str, walk: u64, why: String) {
+        // Its last answer: the set's next walk follows the gap (#235).
+        self.autotune_pace_ended(key, walk);
         let Some(target) = self.autotune.targets.get(key).filter(|t| t.walk == walk) else {
             return;
         };
@@ -986,6 +1007,8 @@ impl Router {
     /// nothing; a found macro is followed and its set decided, a missing
     /// one says why.
     pub(super) fn autotune_found(&mut self, key: &str, walk: u64, outcome: Result<Found, String>) {
+        // Its last answer: the set's next walk follows the gap (#235).
+        self.autotune_pace_ended(key, walk);
         let Some(target) = self.autotune.targets.get_mut(key) else {
             return;
         };
@@ -1217,6 +1240,8 @@ impl Router {
         // A stop's DRY still to come: the script made it (#140).
         self.autotune_unspread(instance, None, "offline");
         self.autotune_engage_cancel(instance, EngageAct::Offline);
+        // The walks still to come: the connect walks them all again (#235).
+        self.autotune_pace_offline(instance);
         let keys = self.autotune.keys_of(Some(instance), false);
         for key in &keys {
             self.autotune.walks += 1;
