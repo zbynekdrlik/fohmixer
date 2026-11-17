@@ -524,13 +524,28 @@ async fn ready_with(
     (router, live, rx)
 }
 
-/// [`ready`], then AUTOTUNE AUT on and Live playing: both tracks tune.
+/// The band's spread turn now (its timer's message handed over at once;
+/// the timer then finds it stale): a test on tokio's real clock can still
+/// walk a spread.
+fn next_turn(router: &mut Router) {
+    let generation = router.autotune.spreads["band"].generation;
+    router.autotune_spread_turn("band", generation);
+}
+
+/// [`ready`], then AUTOTUNE AUT on and Live playing: both tracks tune, the
+/// switch-on spread one selector per [`SPREAD`] (#190, 2026-11-17), its
+/// second turn handed over at once ([`next_turn`]: not every caller
+/// pauses the clock).
 async fn tuning(dir: &std::path::Path) -> (Router, Live, std::sync::mpsc::Receiver<Value>) {
     let (mut router, mut live, rx) = ready(dir, HubState::default()).await;
     aut_on(&mut router);
     transport(&mut router, true);
     live.settle(&mut router).await;
-    assert_eq!(live.written(), vec![batch(&[("p6", 0.0), ("p7", 127.0)])]);
+    assert_eq!(live.written(), vec![batch(&[("p6", 0.0)])]);
+    next_turn(&mut router);
+    live.settle(&mut router).await;
+    assert!(router.autotune.spreads.is_empty());
+    assert_eq!(live.written(), vec![batch(&[("p7", 127.0)])]);
     assert_eq!(decisions(&mut router), [on(), on()]);
     let _ = steps(&rx);
     (router, live, rx)
@@ -958,7 +973,12 @@ async fn a_span_ends_and_starts_at_the_cues_own_value() {
     aut_on(&mut router);
     transport(&mut router, true);
     live.settle(&mut router).await;
-    assert_eq!(live.written(), vec![batch(&[("p6", 0.0), ("p7", 127.0)])]);
+    next_turn(&mut router);
+    live.settle(&mut router).await;
+    assert_eq!(
+        live.written(),
+        vec![batch(&[("p6", 0.0)]), batch(&[("p7", 127.0)])]
+    );
     // Live plays: the playhead is judged one tick ahead.
     let ahead = crate::rules::autotune::keys::lookahead_beats(Some(120.0));
     assert!(ahead > 0.0);
@@ -1524,7 +1544,11 @@ async fn no_write_when_live_already_shows_the_decision() {
     let got = steps(&rx);
     assert_eq!(of(&got, "write"), Vec::<Value>::new());
     assert_eq!(of(&got, "select"), Vec::<Value>::new());
-    assert_eq!(status(&mut router).autotune.writes, 1, "tuning's one batch");
+    assert_eq!(
+        status(&mut router).autotune.writes,
+        2,
+        "tuning's switch-on, one selector per batch"
+    );
 }
 
 /// AUTOTUNE AUT saved on, Live playing at 10 in song 1 (D), both racks
@@ -1717,7 +1741,12 @@ async fn the_pages_are_told_the_singers_and_the_key() {
     aut_on(&mut router);
     transport(&mut router, true);
     live.settle(&mut router).await;
-    assert_eq!(live.written(), vec![batch(&[("p6", 0.0), ("p7", 127.0)])]);
+    next_turn(&mut router);
+    live.settle(&mut router).await;
+    assert_eq!(
+        live.written(),
+        vec![batch(&[("p6", 0.0)]), batch(&[("p7", 127.0)])]
+    );
     let state = router.autotune.state();
     assert_eq!(
         (state.singers[0].stream, state.singers[0].pa),
@@ -1790,12 +1819,15 @@ async fn a_stop_before_the_switch_on_landed_writes_dry_at_once() {
     // it still shows DRY while the chain's write is on its way; DRY is
     // written at once, and Live takes both in one tick (both answers, then
     // one value per selector, the last). Since #140 the stop's DRY is
-    // spread: the PA's at once, the stream's 40 ms later.
+    // spread: the PA's at once, the stream's 40 ms later. Since #190 the
+    // switch-on is spread too: both its writes are sent before the stop.
     let dir = tempfile::tempdir().unwrap();
     let (mut router, mut live, rx) = ready(dir.path(), HubState::default()).await;
     aut_on(&mut router);
     transport(&mut router, true);
-    let switch_on = live.next("the switch-on", is_selector_write);
+    let pa_on = live.next("the PA's switch-on", is_selector_write);
+    next_turn(&mut router);
+    let stream_on = live.next("the stream's switch-on", is_selector_write);
     transport(&mut router, false);
     let dry = live.next("the stop's DRY", is_selector_write);
     assert_eq!(dry.commands, selector_commands(&[("p6", 127.0)]));
@@ -1803,19 +1835,22 @@ async fn a_stop_before_the_switch_on_landed_writes_dry_at_once() {
         decisions(&mut router),
         [off(SwitchWhy::Stop), off(SwitchWhy::Stop)]
     );
-    let first = live.answer_quiet(switch_on);
+    live.answer_quiet(pa_on);
+    let stream = live.answer_quiet(stream_on);
     let last = live.answer_quiet(dry);
     written_handled(&mut router, &mut live).await;
     written_handled(&mut router, &mut live).await;
+    written_handled(&mut router, &mut live).await;
     // The stream's chain lands (its DRY still to come), then the PA's DRY.
-    for (id, value) in first.iter().filter(|(id, _)| id == "p7").chain(&last) {
+    for (id, value) in stream.iter().chain(&last) {
         deliver_macro(&mut router, id, *value);
     }
     live.settle(&mut router).await;
     assert_eq!(
         live.written(),
         vec![
-            batch(&[("p6", 0.0), ("p7", 127.0)]),
+            batch(&[("p6", 0.0)]),
+            batch(&[("p7", 127.0)]),
             batch(&[("p6", 127.0)])
         ]
     );
@@ -2009,10 +2044,13 @@ async fn a_selector_write_live_refuses_gets_one_retry_then_the_hub_stops() {
     aut_on(&mut router);
     transport(&mut router, true);
     live.settle(&mut router).await;
+    next_turn(&mut router);
+    live.settle(&mut router).await;
     assert_eq!(
         live.written(),
         vec![
-            batch(&[("p6", 0.0), ("p7", 127.0)]),
+            batch(&[("p6", 0.0)]),
+            batch(&[("p7", 127.0)]),
             batch(&[("p7", 127.0)])
         ]
     );
@@ -2038,10 +2076,13 @@ async fn a_selector_write_live_refuses_gets_one_retry_then_the_hub_stops() {
     // The next start asks once more, and its retry, then stops again.
     transport(&mut router, true);
     live.settle(&mut router).await;
+    next_turn(&mut router);
+    live.settle(&mut router).await;
     assert_eq!(
         live.written(),
         vec![
-            batch(&[("p6", 0.0), ("p7", 127.0)]),
+            batch(&[("p6", 0.0)]),
+            batch(&[("p7", 127.0)]),
             batch(&[("p7", 127.0)])
         ]
     );
@@ -2329,14 +2370,19 @@ async fn a_target_let_go_while_the_markers_are_unsettled_is_held_dry_first() {
 #[tokio::test(start_paused = true)]
 async fn a_stop_after_a_switch_on_live_did_not_answer_writes_dry_at_once() {
     // PR #147 re-review R3: Live may still take the switch-on. Since #140
-    // the stop's DRY is spread: the PA's at once, the stream's 40 ms later.
+    // the stop's DRY is spread: the PA's at once, the stream's 40 ms later;
+    // since #190 the switch-on too, both its writes sent before the stop.
     let dir = tempfile::tempdir().unwrap();
     let (mut router, mut live, rx) = ready(dir.path(), HubState::default()).await;
     aut_on(&mut router);
     transport(&mut router, true);
-    let switch_on = live.next("the switch-on", is_selector_write);
+    let pa_on = live.next("the PA's switch-on", is_selector_write);
     let walk = router.autotune.targets[STREAM].walk;
-    drop(switch_on);
+    drop(pa_on);
+    written_handled(&mut router, &mut live).await;
+    next_turn(&mut router);
+    let stream_on = live.next("the stream's switch-on", is_selector_write);
+    drop(stream_on);
     written_handled(&mut router, &mut live).await;
     let target = &router.autotune.targets[STREAM];
     assert_eq!(target.writing_now(), Some(true), "still on its way");

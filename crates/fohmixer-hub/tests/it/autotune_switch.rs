@@ -334,8 +334,9 @@ fn a_held_stream_slot_keeps_that_track_dry_and_the_pa_tunes() {
         set_hub(&mut a, "autotune_aut", json!(true)).await;
         transport(&mut a, "start_playing").await;
         macros_until(&mut a, TUNING, SECS_10).await;
-        // The echoes of the one batch reach the hub one by one, in no fixed
-        // order: the state told once all three tune.
+        // The switch-on's echoes reach the hub one by one (since #190 one
+        // selector per batch, 40 ms apart): the state told once all three
+        // tune.
         let state = a
             .wait(SECS_10, |m| match m {
                 ServerMsg::Autotune(s)
@@ -397,13 +398,16 @@ fn a_play_starts_switch_on_waits_the_engage_delay_and_a_stop_within_it_writes_no
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(macros(&mut a).await, DRY, "still DRY within the wait");
         macros_until(&mut a, TUNING, SECS_10).await;
+        let switched_on = |r: &[Value]| -> Vec<Value> {
+            steps_of(&since(r, start), "write")
+                .into_iter()
+                .filter(|w| w["on"].as_array().is_some_and(|on| !on.is_empty()))
+                .collect()
+        };
         let records = hub
-            .events_until(SECS_10, |r| {
-                steps_of(&since(r, start), "write")
-                    .iter()
-                    .any(|w| w["on"].as_array().is_some_and(|on| !on.is_empty()))
-            })
+            .events_until(SECS_10, |r| switched_on(r).len() >= 3)
             .await;
+        let writes = switched_on(&records);
         let records = since(&records, start);
         let engage: Vec<Value> = steps_of(&records, "engage");
         assert_eq!(engage.len(), 2, "{engage:?}");
@@ -411,15 +415,37 @@ fn a_play_starts_switch_on_waits_the_engage_delay_and_a_stop_within_it_writes_no
             (&engage[0]["act"], &engage[0]["ms"], &engage[1]["act"]),
             (&json!("waits"), &json!(1000), &json!("ends"))
         );
-        let writes = steps_of(&records, "write");
-        assert_eq!(writes.len(), 1, "one batch: {writes:?}");
-        assert_eq!(writes[0]["cause"], "transport");
-        assert_eq!(writes[0]["on"].as_array().map(Vec::len), Some(3));
-        // On the hub's own clock (#186): the write at least 1 s after the
-        // wait began, which the play start's transport opened.
+        // Since the #190 design of 2026-11-17 the switch-on is spread as the
+        // stop's DRY is: one selector per batch, STOP_SPREAD_MS apart.
+        assert_eq!(steps_of(&records, "write").len(), 3, "{writes:?}");
+        assert!(
+            writes.iter().all(|w| w["cause"] == "transport"),
+            "{writes:?}"
+        );
+        let ons: Vec<usize> = writes
+            .iter()
+            .map(|w| w["on"].as_array().map_or(0, Vec::len))
+            .collect();
+        assert_eq!(ons, [1, 1, 1], "one selector per batch: {writes:?}");
+        let spread = steps_of(&records, "spread");
+        assert_eq!(spread.len(), 1, "{spread:?}");
+        assert_eq!(spread[0]["ms"], json!(STOP_SPREAD_MS));
+        assert_eq!(spread[0]["targets"].as_array().map(Vec::len), Some(2));
+        // On the hub's own clock (#186): the first write at least 1 s after
+        // the wait began, which the play start's transport opened, and each
+        // next one at least STOP_SPREAD_MS after the one before.
         let waited = writes[0]["ts"].as_i64().unwrap() - engage[0]["ts"].as_i64().unwrap();
         println!("the switch-on went {waited} ms after the play start's wait began");
         assert!(waited >= 1000, "{waited} ms");
+        let gaps: Vec<i64> = writes
+            .windows(2)
+            .map(|w| w[1]["ts"].as_i64().unwrap() - w[0]["ts"].as_i64().unwrap())
+            .collect();
+        println!("the switch-on's writes {gaps:?} ms apart");
+        assert!(
+            gaps.iter().all(|&gap| gap >= STOP_SPREAD_MS as i64),
+            "three selectors, {STOP_SPREAD_MS} ms apart: {gaps:?} ms"
+        );
         // A stop: DRY at once, as before.
         transport(&mut a, "stop_playing").await;
         macros_until(&mut a, DRY, Duration::from_secs(2)).await;

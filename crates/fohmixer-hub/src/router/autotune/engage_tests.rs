@@ -50,18 +50,24 @@ async fn a_play_starts_switch_on_waits_the_delay_then_goes_with_its_cause() {
     pass(&mut router, &mut live, DELAY - Duration::from_millis(1)).await;
     assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new(), "not yet");
     pass(&mut router, &mut live, Duration::from_millis(1)).await;
+    // Since the design of 2026-11-17 the switch-on is spread, one selector
+    // per batch (`the_switch_on_at_the_waits_end_goes_one_selector_per_40_ms`).
     assert_eq!(
         live.written(),
-        vec![batch(&[("p6", 0.0), ("p7", 127.0)])],
-        "one batch at the wait's end"
+        vec![batch(&[("p6", 0.0)])],
+        "the first at the wait's end"
     );
+    pass(&mut router, &mut live, SPREAD).await;
+    assert_eq!(live.written(), vec![batch(&[("p7", 127.0)])]);
     let got = steps(&rx);
     assert_eq!(of(&got, "engage"), vec![engage("ends")]);
     assert_eq!(
         of(&got, "write"),
         vec![
             json!({"step": "write", "instance": "band", "cause": "transport",
-                    "on": ["Vox 2", "#8"], "off": []})
+                    "on": ["Vox 2"], "off": []}),
+            json!({"step": "write", "instance": "band", "cause": "transport",
+                    "on": ["#8"], "off": []})
         ]
     );
     assert_eq!(of(&got, "select"), Vec::<Value>::new(), "no new switch");
@@ -78,7 +84,9 @@ async fn a_play_starts_switch_on_waits_the_delay_then_goes_with_its_cause() {
     live.settle(&mut router).await;
     assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new());
     pass(&mut router, &mut live, DELAY).await;
-    assert_eq!(live.written(), vec![batch(&[("p6", 0.0), ("p7", 127.0)])]);
+    assert_eq!(live.written(), vec![batch(&[("p6", 0.0)])]);
+    pass(&mut router, &mut live, SPREAD).await;
+    assert_eq!(live.written(), vec![batch(&[("p7", 127.0)])]);
 }
 
 #[tokio::test(start_paused = true)]
@@ -108,7 +116,9 @@ async fn a_stop_within_the_wait_writes_nothing_and_a_new_start_waits_afresh() {
     pass(&mut router, &mut live, Duration::from_millis(599)).await;
     assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new());
     pass(&mut router, &mut live, Duration::from_millis(1)).await;
-    assert_eq!(live.written(), vec![batch(&[("p6", 0.0), ("p7", 127.0)])]);
+    assert_eq!(live.written(), vec![batch(&[("p6", 0.0)])]);
+    pass(&mut router, &mut live, SPREAD).await;
+    assert_eq!(live.written(), vec![batch(&[("p7", 127.0)])]);
     let got = steps(&rx);
     assert_eq!(
         of(&got, "engage"),
@@ -119,7 +129,11 @@ async fn a_stop_within_the_wait_writes_nothing_and_a_new_start_waits_afresh() {
             engage("ends")
         ]
     );
-    assert_eq!(of(&got, "write").len(), 1, "only the second start's");
+    assert_eq!(
+        of(&got, "write").len(),
+        2,
+        "only the second start's, one selector each"
+    );
     // A stop and a stale end with no wait running record nothing more.
     router.autotune_engage_end("band", 1);
     transport(&mut router, false);
@@ -186,7 +200,8 @@ async fn no_delay_writes_a_play_starts_switch_on_at_once_with_no_wait() {
     aut_on(&mut router);
     transport(&mut router, true);
     live.settle(&mut router).await;
-    assert_eq!(live.written(), vec![batch(&[("p6", 0.0), ("p7", 127.0)])]);
+    // The first selector at once; the rest spread (#190, 2026-11-17).
+    assert_eq!(live.written(), vec![batch(&[("p6", 0.0)])]);
     assert_eq!(of(&steps(&rx), "engage"), Vec::<Value>::new());
     assert!(router.autotune.engage.waiting.is_empty());
 }
