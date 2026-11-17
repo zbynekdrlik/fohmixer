@@ -219,6 +219,10 @@ async fn session(mut socket: WebSocket, hub: Hub, listen: Arc<Listen>, role: Rol
                                 let state = told_of(racked.as_ref());
                                 // No rack: told now, the silence's word said.
                                 l.told_silent = state == AudioState::NoSource;
+                                // The silence counts from the switch-on's
+                                // end, not from before its wait: the device
+                                // only comes up then.
+                                l.last = Instant::now();
                                 listen.events.record("listen", json!({"what": "page", "on": true,
                                     "instance": instance, "track": track, "peer": who.peer}));
                                 listening = Some(l);

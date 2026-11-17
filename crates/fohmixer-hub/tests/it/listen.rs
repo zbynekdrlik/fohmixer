@@ -315,12 +315,34 @@ fn a_device_at_another_rate_is_refused() {
         let mut a = audio(&hub).await;
         send(&mut a, start(VOX)).await;
         assert_eq!(told(&mut a).await["status"], "listening");
+        // The silence counts from here: the rack's switch-on answered.
+        let told_at = Instant::now();
         let status = hub
             .status_until(SECS_10, |s| {
                 s.listen.refused.get("sample_rate").is_some_and(|n| *n > 0)
             })
             .await;
         assert_eq!(status.listen.frames, 0);
+        // Its rack was switched on, yet nothing comes: told once after two
+        // seconds of silence (#238's review: the 2 s silence end to end), at
+        // the first 1 s tick past them.
+        let silent = told(&mut a).await;
+        assert_eq!(
+            silent,
+            json!({"type": "audio_status", "status": "no_source", "instance": "band", "track": VOX})
+        );
+        let after = told_at.elapsed();
+        assert!(
+            after >= Duration::from_millis(1900) && after < Duration::from_millis(3600),
+            "2 to 3 s after the start: {after:?}"
+        );
+        assert!(
+            next_within(&mut a, Duration::from_millis(2500))
+                .await
+                .is_none(),
+            "told once, and no packet"
+        );
+        assert_eq!(host.listendev("listenrack track 1"), 1);
         drop(a);
         hub.stop().await;
         host.stop();
