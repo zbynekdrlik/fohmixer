@@ -491,13 +491,17 @@ def thread_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
 # never a value. The values take the path the PC proved before #240,
 # `live.object` -> `route name` -> `zl reg` -> `tosymbol` into the sink's
 # cold inlet (4 + the parent's level - 1), which keeps it for every send:
-# an observer's output kept a name with a space in literal quotes, and the
-# set (parent 4) has no `name` it reports (the FINDING of 2026-11-17), so
-# the set is read at load and on its follow only.
+# an observer's output kept a name with a space in literal quotes (the
+# FINDING of 2026-11-17). The set (parent 4) read `-` there too, and the
+# pack's own default is `-`, so either its observer reported nothing or
+# its `live.path`'s middle outlet never gave an id: the set has no
+# observer and takes its id from both outlets, the left (at the load's
+# `path` message, as before #240) and the middle (a follow).
 ID_LOAD = "obj-id-load"
 ID_DEFER = "obj-id-defer"
 ID_PROPERTY = "obj-id-property"
 FOLLOWS_PATH = 1
+FOLLOWS_OBJECT = 0
 LOM = ("live.path", "live.object", "live.observer")
 # The parents whose `name` a `live.observer` reports; the set is the last.
 OBSERVED = range(1, PARENTS)
@@ -558,7 +562,8 @@ def identity_wiring(sink: str) -> dict[tuple[str, int], list[tuple[str, int]]]:
         found |= {
             (f"{name}-path", 0): [(ID_LOAD, PARENTS - level)],
             (f"{name}-live-path", 0): [(f"{name}-path", 0)],
-            (f"{name}-route-id", 0): [(f"{name}-live-path", FOLLOWS_PATH)],
+            (f"{name}-route-id", 0): [(f"{name}-live-path", FOLLOWS_PATH)]
+            + ([] if observed else [(f"{name}-live-path", FOLLOWS_OBJECT)]),
             (f"{name}-t", 0): [(f"{name}-route-id", 0)],
             (f"{name}-prepend", 0): [(f"{name}-t", 2 if observed else 1)],
             (f"{name}-object", 1): [(f"{name}-prepend", 0)],
@@ -598,19 +603,19 @@ def identity_errors(where: str, patcher: dict, every: list[dict], sink: str) -> 
         want = sorted([list(s) for s in sources])
         if fed != want:
             errors.append(f"{where}: {box}:{inlet} takes {want} alone, has {fed}")
-    for level in range(1, PARENTS + 1):
+    for level in OBSERVED:
         box = f"obj-parent{level}-live-path"
         out = sorted(
             item["patchline"]["destination"]
             for item in patcher.get("lines", [])
-            if item.get("patchline", {}).get("source") == [box, 0]
+            if item.get("patchline", {}).get("source") == [box, FOLLOWS_OBJECT]
         )
         if out:
             errors.append(
                 f"{where}: {box}'s left outlet (it follows the object) goes nowhere, has {out}"
             )
     errors += [
-        f"{where}: the set (parent {PARENTS}) has no observer (no name it reports), "
+        f"{where}: the set (parent {PARENTS}) has no observer (it reads at load and follow), "
         f"has {b.get('id')}"
         for b in every
         if b.get("id") == f"obj-parent{PARENTS}-observer"
@@ -620,21 +625,25 @@ def identity_errors(where: str, patcher: dict, every: list[dict], sink: str) -> 
     return errors
 
 
-def bang_only(box: dict) -> bool:
-    """A box whose output carries none of its input: a message box (its
-    own text) or a `t` of bangs alone."""
+def value_inlets(box: dict) -> tuple[int, ...] | None:
+    """The inlets through which a box's input can reach its output as a
+    value: none for a `t` of bangs alone; a message box's right inlet (it
+    sets the text the next bang sends) and its left one only when its text
+    holds a `$` argument; every inlet of any other box."""
     found = words(box)
     if box.get("maxclass") == "message":
-        return True
-    return found[:1] in (["t"], ["trigger"]) and len(found) > 1 and set(found[1:]) == {"b"}
+        return (0, 1) if "$" in str(box.get("text", "")) else (1,)
+    if found[:1] in (["t"], ["trigger"]) and len(found) > 1 and set(found[1:]) == {"b"}:
+        return ()
+    return None
 
 
 def value_errors(where: str, patcher: dict, every: list[dict], sink: str) -> list[str]:
     """Each parent slot's value comes from `live.object` `get name` ->
     `route name` -> `zl reg` -> `tosymbol` (the path the PC proved), never
     from an observer's output: no `live.observer` reaches a slot through
-    any inlet unless a bang-only box (`t b`, a message) stands between,
-    and every observer outputs into its `t b` alone."""
+    a value inlet (`value_inlets`: a `t b` or a plain message's bang ends
+    the walk), and every observer outputs into its `t b` alone."""
     ids = {b.get("id"): b for b in every}
     errors = []
     for level in range(1, PARENTS + 1):
@@ -648,27 +657,14 @@ def value_errors(where: str, patcher: dict, every: list[dict], sink: str) -> lis
                 f"{where}: {sink}:{3 + level} takes its value from live.object -> route name "
                 f"-> zl reg -> tosymbol ({' -> '.join(chain)}), has {found}"
             )
-        seen: set[str] = set()
-        todo = [sink]
-        while todo:
-            box = todo.pop()
-            inlets = [3 + level] if box == sink else None
-            for item in patcher.get("lines", []):
-                line = item.get("patchline", {})
-                dst = line.get("destination", [None, None])
-                if dst[0] != box or (inlets is not None and dst[1] not in inlets):
-                    continue
-                src = line["source"][0]
-                if src in seen:
-                    continue
-                seen.add(src)
-                if kind(ids.get(src, {})) == "live.observer":
-                    errors.append(
-                        f"{where}: the observer {src} reaches {sink}:{3 + level} by its "
-                        "output (an observer only triggers the read)"
-                    )
-                elif not bang_only(ids.get(src, {})):
-                    todo.append(src)
+        observers = upstream(
+            patcher, ids, [(sink, 3 + level)], value_inlets, ("live.observer",), ends=()
+        )
+        errors += [
+            f"{where}: the observer {src} reaches {sink}:{3 + level} by its "
+            "output (an observer only triggers the read)"
+            for src in observers
+        ]
     for observer in every:
         if kind(observer) != "live.observer":
             continue
