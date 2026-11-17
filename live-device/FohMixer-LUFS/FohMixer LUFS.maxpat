@@ -3776,6 +3776,42 @@
 						0
 					]
 				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-live-path",
+						0
+					],
+					"destination": [
+						"obj-parent1-route-id",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-live-path",
+						0
+					],
+					"destination": [
+						"obj-parent2-route-id",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-live-path",
+						0
+					],
+					"destination": [
+						"obj-parent3-route-id",
+						0
+					]
+				}
 			}
 		],
 		"dependency_cache": [],
