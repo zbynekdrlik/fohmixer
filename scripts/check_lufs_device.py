@@ -12,7 +12,12 @@ for each patch:
   in a rack's parallel chain, never in series, so a failing device can never
   cut the sound and the signal is never doubled);
 - one `udpsend 127.0.0.1 <port>`, the port equal to the hub's default
-  (`DEFAULT_PORT` in `crates/fohmixer-proto/src/lufs/wire.rs`);
+  (`DEFAULT_PORT` in `crates/fohmixer-proto/src/lufs/wire.rs`), fed by
+  `obj-send-defer` (`deferlow`) alone, which the pack alone feeds (#240:
+  the audio side's clock runs in Live's audio thread, the socket write
+  leaves it);
+- the threads (`thread_errors`, #240): no timed box reaches a network
+  object's hot inlet without a `deferlow` or `qmetro` between;
 - the send follows the audio (the review of PR 2: a `metro` kept sending a
   frozen value with the device's DSP off, so its key never went stale):
   the pack's bang comes only from `obj-send-trigger` (`t b f`), fed only by
@@ -22,9 +27,16 @@ for each patch:
   window shown as integers) and every `peakamp~` of the meter
   `peakamp~ 33` (~30 a second); they output only while the DSP runs;
 - one `pack` whose first argument is the device's OSC address and whose
-  version argument is `v<version.txt>`, which the face shows too;
+  version argument is `v<version.txt>`, which the face shows too, each of
+  its slots from its one source (`slot_errors`: the device's id, the two
+  values);
 - the identity: the `live.path` messages for the device and its first four
-  canonical parents;
+  canonical parents, read once at load and again only on a change
+  (`identity_errors`, #240: a `live.observer` on each parent's `name`, fed
+  by `live.path`'s path-following outlet; no timed box upstream of any LOM
+  object, no `live.object`), the names into the pack's cold inlets;
+- no `metro` or `qmetro` at all (the send follows the audio, the identity
+  its changes);
 - every patch line joins two boxes of the patch within their outlets and
   inlets;
 - the LUFS device only: one `gen~` with one codebox whose code equals
@@ -57,6 +69,9 @@ PACK_VERSION = 3
 # side's clock) and hands the last value on first.
 SEND_TRIGGER = "obj-send-trigger"
 SEND_TRIGGER_WORDS = ["t", "b", "f"]
+# The deferlow between the pack and the udpsend (#240).
+SEND_DEFER = "obj-send-defer"
+SEND_DEFER_WORDS = ["deferlow"]
 
 
 @dataclass(frozen=True)
@@ -223,9 +238,38 @@ def patch_errors(
             )
     messages = {str(b.get("text", "")) for b in every if b.get("maxclass") == "message"}
     errors += [f"{where}: no '{path}' message" for path in IDENTITY if path not in messages]
+    if len(packs) == 1:
+        sink = next(b.get("id") for b in every if words(b)[:1] == ["pack"])
+        errors += identity_errors(where, patcher, every, sink)
+        errors += slot_errors(where, patcher, every, sink, send_from)
+    errors += [
+        f"{where}: {b.get('id')} ('{b.get('text')}') runs on a clock (the device has none)"
+        for b in every
+        if kind(b) in ("metro", "qmetro")
+    ]
     shown = [b.get("text") for b in every if b.get("varname") == "version"]
     if shown != [f"v{version}"]:
         errors.append(f"{where}: its face shows {shown}, expected ['v{version}'] (version.txt)")
+    return errors
+
+
+def slot_errors(
+    where: str, patcher: dict, every: list[dict], pack: str, send_from: str
+) -> list[str]:
+    """The pack's other slots, each from its one source: the device's id
+    (inlet 2) from `obj-id-route`, the first value (inlet 8) from its own
+    `clip` (never the last value's), the last value (inlet 9) from the
+    trigger, which bangs the pack after it."""
+    errors = []
+    for inlet, want in ((2, [["obj-id-route", 0]]), (9, [[SEND_TRIGGER, 1]])):
+        if feeds(patcher, pack, inlet) != want:
+            errors.append(
+                f"{where}: {pack}:{inlet} takes {want} alone, has {feeds(patcher, pack, inlet)}"
+            )
+    ids = {b.get("id"): b for b in every}
+    first = feeds(patcher, pack, 8)
+    if len(first) != 1 or first[0][0] == send_from or kind(ids.get(first[0][0], {})) != "clip":
+        errors.append(f"{where}: {pack}:8 takes the first value's clip alone, has {first}")
     return errors
 
 
@@ -262,6 +306,291 @@ def send_errors(
             f"{where}: {SEND_TRIGGER} must be fed by {send_from} alone, "
             f"has {feeds(patcher, SEND_TRIGGER, 0)}"
         )
+    errors += defer_errors(where, patcher, every)
+    errors += thread_errors(where, patcher, every)
+    return errors
+
+
+def defer_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
+    """The pack -> `deferlow` -> udpsend chain (#240): the send leaves the
+    audio thread before the socket write."""
+    errors = []
+    defers = [words(b) for b in every if b.get("id") == SEND_DEFER]
+    if defers != [SEND_DEFER_WORDS]:
+        errors.append(f"{where}: {SEND_DEFER} must be 'deferlow', has {defers}")
+    packs = [b.get("id") for b in every if words(b)[:1] == ["pack"]]
+    if len(packs) == 1 and feeds(patcher, SEND_DEFER, 0) != [[packs[0], 0]]:
+        errors.append(
+            f"{where}: {SEND_DEFER} must be fed by the pack alone, "
+            f"has {feeds(patcher, SEND_DEFER, 0)}"
+        )
+    sends = [b.get("id") for b in every if words(b)[:1] == ["udpsend"]]
+    if len(sends) == 1 and feeds(patcher, sends[0], 0) != [[SEND_DEFER, 0]]:
+        errors.append(
+            f"{where}: the udpsend must be fed by {SEND_DEFER} alone, "
+            f"has {feeds(patcher, sends[0], 0)}"
+        )
+    return errors
+
+
+# The threads (#240). Max for Live runs Max's scheduler inside Live's audio
+# thread, so a timed object's output (and everything it triggers) runs
+# there; `deferlow` and `qmetro` hand it to the low-priority queue (Live's
+# main thread). A network object is reached from a timed one only through
+# one of them.
+NETWORK = {"udpsend": (0,), "maxurl": (0,), "jit.net.send": (0, 1)}
+LOW_PRIORITY = ("deferlow", "defer", "qmetro")
+# Boxes that output from the scheduler: clocks, the audio side's readers,
+# the transport, and MIDI in (Max for Live hands it over in the audio
+# thread).
+TIMED = (
+    "metro",
+    "delay",
+    "del",
+    "pipe",
+    "snapshot~",
+    "peakamp~",
+    "edge~",
+    "plugsync~",
+    "transport",
+    "timepoint",
+    "clocker",
+    "tempo",
+    "line",
+    "speedlim",
+    "makenote",
+    "midiin",
+    "notein",
+    "ctlin",
+)
+# Hot inlets: the ones whose message makes the box output. The classes
+# below take their other inlets cold (they store); `gate` passes its right
+# inlet's message (its left is the control); `jit.net.send` sends both. A
+# class not named here is taken as hot on every inlet (the safe side).
+LEFT_HOT = (
+    "pack",
+    "zl",
+    "prepend",
+    "dict.pack",
+    "expr",
+    "sprintf",
+    "delay",
+    "del",
+    "pipe",
+    "sel",
+    "select",
+    "route",
+    "random",
+    "clip",
+    "*",
+    "+",
+    "-",
+    "/",
+    "%",
+    "round",
+    "metro",
+    "qmetro",
+    "change",
+    "live.object",
+    "makenote",
+    "maxurl",
+    "udpsend",
+)
+HOT = {"gate": (1,), "jit.net.send": (0, 1)}
+
+
+def kind(box: dict) -> str:
+    """An object box's class (its first word); a message box has none."""
+    if box.get("maxclass") == "message":
+        return ""
+    found = words(box)
+    return found[0] if found else ""
+
+
+def hot_inlets(box: dict) -> tuple[int, ...] | None:
+    """The inlets whose message makes `box` output; None for all of them."""
+    if box.get("maxclass") == "message" or kind(box) in LEFT_HOT:
+        return (0,)
+    return HOT.get(kind(box))
+
+
+def upstream(
+    patcher: dict,
+    ids: dict,
+    starts: list[tuple[str, int | None]],
+    inlets,
+    stop: tuple,
+    ends: tuple = LOW_PRIORITY,
+) -> list[str]:
+    """The boxes of a class in `stop` that reach `starts` ((box, inlet), an
+    inlet of None for every inlet), walking upstream through the inlets
+    `inlets(box)` names (None: every inlet). A `stop` box is reported and
+    not crossed; an `ends` box (by default the low-priority ones) ends its
+    path unreported."""
+    reached: list[str] = []
+    seen: set[str] = set()
+    todo = list(starts)
+    while todo:
+        box, inlet = todo.pop()
+        for item in patcher.get("lines", []):
+            line = item.get("patchline", {})
+            dst = line.get("destination", [None, None])
+            if dst[0] != box or (inlet is not None and dst[1] != inlet):
+                continue
+            src = line["source"][0]
+            if src in seen:
+                continue
+            seen.add(src)
+            source = ids.get(src, {})
+            if kind(source) in stop:
+                reached.append(src)
+                continue
+            if kind(source) in ends:
+                continue
+            hot = inlets(source)
+            todo += [(src, None)] if hot is None else [(src, i) for i in hot]
+    return sorted(reached)
+
+
+def thread_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
+    """Every timed box whose output reaches a network object through hot
+    inlets with no `deferlow` or `qmetro` between (a cold inlet only
+    stores: what a timed box stores there is sent by another thread)."""
+    ids = {b.get("id"): b for b in every}
+    errors = []
+    for net in every:
+        if kind(net) not in NETWORK:
+            continue
+        starts = [(net.get("id"), inlet) for inlet in NETWORK[kind(net)]]
+        for src in upstream(patcher, ids, starts, hot_inlets, TIMED):
+            errors.append(
+                f"{where}: {src} ('{ids[src].get('text')}') reaches the "
+                f"{kind(net)} {net.get('id')} on the audio thread "
+                "(a deferlow or a qmetro goes between)"
+            )
+    return errors
+
+
+# The identity (#240): read once at load and again only on a change. The
+# load: `live.thisdevice` -> `deferlow` -> `obj-id-load` (`t b b b b b b`:
+# the observers' property first, then the device's path, then the four
+# parents' paths). Each parent: its path into a `live.path` whose middle
+# outlet (it follows the path: a new id when another object comes there)
+# goes through `route id` into `t i i`: the id first into the
+# `live.observer`'s right inlet (`prepend id`; `id 0` stops observing),
+# then `sel 0`, whose match sends `-`. The observer's value (the name, now
+# and at each change) and the `-` go through `tosymbol` into the sink's
+# cold inlet (4 + the parent's level - 1), which keeps it for every send.
+ID_LOAD = "obj-id-load"
+ID_DEFER = "obj-id-defer"
+ID_PROPERTY = "obj-id-property"
+FOLLOWS_PATH = 1
+LOM = ("live.path", "live.object", "live.observer")
+
+
+def identity_boxes() -> dict[str, list[str]]:
+    """The identity's boxes (id: words)."""
+    found = {
+        ID_DEFER: ["deferlow"],
+        ID_LOAD: ["t", *["b"] * (PARENTS + 2)],
+        ID_PROPERTY: ["property", "name"],
+        "obj-id-path": IDENTITY[0].split(),
+        "obj-id-live-path": ["live.path"],
+        "obj-id-route": ["route", "id"],
+    }
+    for level in range(1, PARENTS + 1):
+        name = f"obj-parent{level}"
+        found |= {
+            f"{name}-path": IDENTITY[level].split(),
+            f"{name}-live-path": ["live.path"],
+            f"{name}-route-id": ["route", "id"],
+            f"{name}-t": ["t", "i", "i"],
+            f"{name}-prepend": ["prepend", "id"],
+            f"{name}-observer": ["live.observer"],
+            f"{name}-sel": ["sel", "0"],
+            f"{name}-none": ["-"],
+            f"{name}-symbol": ["tosymbol"],
+        }
+    return found
+
+
+def identity_wiring(sink: str) -> dict[tuple[str, int], list[tuple[str, int]]]:
+    """Each guarded inlet of the identity and the only sources it takes."""
+    found: dict[tuple[str, int], list[tuple[str, int]]] = {
+        (ID_DEFER, 0): [("obj-thisdevice", 0)],
+        (ID_LOAD, 0): [(ID_DEFER, 0)],
+        (ID_PROPERTY, 0): [(ID_LOAD, PARENTS + 1)],
+        ("obj-id-path", 0): [(ID_LOAD, PARENTS)],
+        ("obj-id-live-path", 0): [("obj-id-path", 0)],
+        ("obj-id-route", 0): [("obj-id-live-path", 0)],
+    }
+    for level in range(1, PARENTS + 1):
+        name = f"obj-parent{level}"
+        found |= {
+            (f"{name}-path", 0): [(ID_LOAD, PARENTS - level)],
+            (f"{name}-live-path", 0): [(f"{name}-path", 0)],
+            (f"{name}-route-id", 0): [(f"{name}-live-path", FOLLOWS_PATH)],
+            (f"{name}-t", 0): [(f"{name}-route-id", 0)],
+            (f"{name}-prepend", 0): [(f"{name}-t", 1)],
+            (f"{name}-observer", 0): [(ID_PROPERTY, 0)],
+            (f"{name}-observer", 1): [(f"{name}-prepend", 0)],
+            (f"{name}-sel", 0): [(f"{name}-t", 0)],
+            (f"{name}-none", 0): [(f"{name}-sel", 0)],
+            (f"{name}-symbol", 0): [(f"{name}-observer", 0), (f"{name}-none", 0)],
+            (sink, 3 + level): [(f"{name}-symbol", 0)],
+        }
+    return found
+
+
+def identity_errors(where: str, patcher: dict, every: list[dict], sink: str) -> list[str]:
+    """The identity read at load and on a change, never on a clock."""
+    ids = {b.get("id"): b for b in every}
+    errors = [
+        f"{where}: {box} must be '{' '.join(want)}', has {words(ids.get(box, {}))}"
+        for box, want in identity_boxes().items()
+        if words(ids.get(box, {})) != want
+    ]
+    for (box, inlet), sources in identity_wiring(sink).items():
+        fed = feeds(patcher, box, inlet)
+        want = sorted([list(s) for s in sources])
+        if fed != want:
+            errors.append(f"{where}: {box}:{inlet} takes {want} alone, has {fed}")
+    for level in range(1, PARENTS + 1):
+        box = f"obj-parent{level}-live-path"
+        out = sorted(
+            item["patchline"]["destination"]
+            for item in patcher.get("lines", [])
+            if item.get("patchline", {}).get("source") == [box, 0]
+        )
+        if out:
+            errors.append(
+                f"{where}: {box}'s left outlet (it follows the object) goes nowhere, has {out}"
+            )
+    errors += [
+        f"{where}: {b.get('id')} is a live.object (the names come from live.observer)"
+        for b in every
+        if kind(b) == "live.object"
+    ]
+    errors += lom_clock_errors(where, patcher, every)
+    return errors
+
+
+def lom_clock_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
+    """A timed box anywhere upstream of a LOM object (any inlet; a
+    `deferlow` changes the thread, not the rate): each would call Live
+    again and again."""
+    ids = {b.get("id"): b for b in every}
+    clocks = (*TIMED, "qmetro")
+    errors = []
+    for lom in every:
+        if kind(lom) not in LOM:
+            continue
+        for src in upstream(patcher, ids, [(lom.get("id"), None)], lambda _: None, clocks, ends=()):
+            errors.append(
+                f"{where}: {src} ('{ids[src].get('text')}') drives the "
+                f"{kind(lom)} {lom.get('id')} (the identity is read at "
+                "load and on a change only)"
+            )
     return errors
 
 

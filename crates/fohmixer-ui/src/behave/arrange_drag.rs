@@ -17,11 +17,16 @@
 //! 1.24.0: the owner could not put BAND at RU's right edge), also between
 //! two layouts (a MOVE: the strip leaves the layout it came from); a layout
 //! that already holds the strip, or a swap that would put a strip twice in
-//! the strip's own layout, takes no drop (`landing`). A carry whose end
+//! the strip's own layout, takes no drop (`landing`); nor does one that
+//! would grow a layout past FULL, as the hub's save would refuse it (#236,
+//! `fits`: the strip's layout on a swap with a wider strip, the target on a
+//! move, a layout's own gaps past its end). A carry whose end
 //! never came ends at the next primary down of its type (#124). All of it
 //! is pure; `pages::sectors` carries it out.
 
-use fohmixer_proto::sectors::{Refusal, SectorId, Sectors, SectorsDoc, Slot, StripRef, trim};
+use fohmixer_proto::sectors::{
+    Pooled, Refusal, SectorId, Sectors, SectorsDoc, Slot, StripRef, grows_past_full, trim, units,
+};
 
 use super::Down;
 use super::arrange_edit::Edit;
@@ -204,7 +209,14 @@ impl Arrange {
 
     /// Where the strip `held` of layout `from`, carried from its slot
     /// `at`, lands in slot `to` of layout `into` (the edit's layouts; none
-    /// while the mode is not on, see [`landing`]).
+    /// while the mode is not on, see [`landing`]). None too when a layout
+    /// it changes would grow past FULL by the served layout's `pool`
+    /// (#236, [`fits`]): the hub's save would refuse it, and a refused save
+    /// ends the mode with every other change of the session. Each drop is
+    /// judged against the edit's slots as they are now, never the
+    /// document's, so the page is never looser than the save; it is
+    /// stricter only for a layout a hand edit put past FULL that a drop
+    /// shrank first (it cannot grow back to where it was in this session).
     pub fn lands(
         &self,
         from: &str,
@@ -212,6 +224,7 @@ impl Arrange {
         into: &str,
         to: usize,
         held: &StripRef,
+        pool: &[Pooled],
     ) -> Option<Landing> {
         let edit = self.edit_now()?;
         let order = edit.slots_of(from)?;
@@ -220,7 +233,15 @@ impl Arrange {
         } else {
             Some(edit.slots_of(into)?)
         };
-        landing(order, target, at, to, held)
+        let landed = landing(order, target, at, to, held)?;
+        let fit = match &landed {
+            Landing::Within(after) => fits(order, after, pool),
+            Landing::Across {
+                from: back,
+                to: there,
+            } => fits(order, back, pool) && target.is_some_and(|t| fits(t, there, pool)),
+        };
+        fit.then_some(landed)
     }
 
     /// The mark of the cell (slot `to` of layout `into`) a carried strip
@@ -235,11 +256,12 @@ impl Arrange {
         into: &str,
         to: usize,
         held: &StripRef,
+        pool: &[Pooled],
     ) -> Option<bool> {
         if into == from && to == at {
             return None;
         }
-        Some(self.lands(from, at, into, to, held).is_some())
+        Some(self.lands(from, at, into, to, held, pool).is_some())
     }
 
     /// The strip `held` of layout `from`, carried from its slot `at`, is
@@ -255,8 +277,9 @@ impl Arrange {
         into: &str,
         to: usize,
         held: &StripRef,
+        pool: &[Pooled],
     ) -> bool {
-        let landed = self.lands(from, at, into, to, held);
+        let landed = self.lands(from, at, into, to, held, pool);
         let (Some(landed), Some(edit)) = (landed, self.edit()) else {
             return false;
         };
@@ -375,6 +398,14 @@ pub fn drop_spot(spots: &[Spot], x: f64, y: f64) -> Option<Spot> {
 pub enum Landing {
     Within(Vec<Slot>),
     Across { from: Vec<Slot>, to: Vec<Slot> },
+}
+
+/// Whether a layout's slots `before` may become `after` by the hub's FULL
+/// rule (#236, `fohmixer_proto::sectors::grows_past_full`, judged on the
+/// `pool`'s units: an empty slot 1, a wide strip 1.1): never grown past
+/// [`SECTOR_UNITS`](fohmixer_proto::sectors::SECTOR_UNITS).
+pub fn fits(before: &[Slot], after: &[Slot], pool: &[Pooled]) -> bool {
+    !grows_past_full(units(before, pool), units(after, pool))
 }
 
 /// Whether `slots` hold `strip`.

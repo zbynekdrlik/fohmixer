@@ -13,16 +13,25 @@ own:
 - the stream runs only while selected: one `qmetro 10`, switched by nothing
   but a `1` or `0` message box (no `loadbang`, no `live.thisdevice`);
 - the select, asked over HTTP (#210: one UDP select port reached only one
-  device of a Live): one `metro <POLL_MS>` banging one `dict.pack url:
+  device of a Live): one `qmetro <POLL_MS>` (#240: the low-priority queue,
+  never Live's audio thread) banging one `dict.pack url:
   http_method: parse_type:` (`get`, `json` from `live.thisdevice`) whose url
   is one `sprintf http://127.0.0.1:<the hub's HTTP port><SELECT_PATH>?device=%ld`
   of the listen id; the listen id through `change` (once: the URL is set,
-  and the metro started, only when the id is known and new, so no request
+  and the poll started, only when the id is known and new, so no request
   goes without a URL and the id's refresh each second asks nothing more), into one `maxurl`, its answer's `dict.unpack body:` then
-  `dict.unpack on:` into `sel 1`, one `delay <SELECT_HOLD_MS>`, and no
-  `udpreceive` at all;
+  `dict.unpack on:` into `sel 1`, one `delay <SELECT_HOLD_MS>` whose end
+  passes a `deferlow` (#240), and no `udpreceive` at all;
+- the threads (#240, `check_lufs_device.thread_errors`): no timed box
+  (`metro`, `delay`, ...) reaches the `maxurl`, the `jit.net.send` or the
+  `udpsend` without a `deferlow` or a `qmetro` between (Max for Live runs
+  the scheduler in Live's audio thread);
 - the announce: one `udpsend 127.0.0.1 <DEFAULT_PORT>` fed by one
-  `pack /fohmixer/listen 1 0 v<version> - - - - 0 0`;
+  `pack /fohmixer/listen 1 0 v<version> - - - - 0 0`, banged each second by
+  `metro 1000` -> `deferlow` -> `t b b` (the sample rate first, `TICK_ONLY`),
+  which reads nothing from Live: the identity is the LUFS devices'
+  (`check_lufs_device.identity_errors`, #240), read at load and on a change
+  into the announce's cold inlets;
 - the hello: one `pack fohmixer_listen 1 0 v<version> 0` into the
   `jit.net.send`'s right inlet;
 - the select logic, box by box (`BOXES`, `WIRING`): an `on` answer
@@ -71,6 +80,10 @@ BOXES = {
     "obj-poll-on": ["dict.unpack", "on:"],
     "obj-poll-sel": ["sel", "1"],
     "obj-select-t": ["t", "b", "b"],
+    "obj-announce-metro": ["metro", "1000"],
+    "obj-announce-defer": ["deferlow"],
+    "obj-announce-t": ["t", "b", "b"],
+    "obj-select-defer": ["deferlow"],
     "obj-select-on": ["1"],
     "obj-select-off": ["0"],
     "obj-state": ["change"],
@@ -88,9 +101,9 @@ WIRING = (
     (("obj-poll-parse", 0), ("obj-poll-request", 2)),
     (("obj-poll-change", 0), ("obj-poll-t", 0)),
     (("obj-poll-t", 1), ("obj-poll-url", 0)),
-    (("obj-poll-t", 0), ("obj-poll-metro", 0)),
+    (("obj-poll-t", 0), ("obj-poll-qmetro", 0)),
     (("obj-poll-url", 0), ("obj-poll-request", 0)),
-    (("obj-poll-metro", 0), ("obj-poll-request", 0)),
+    (("obj-poll-qmetro", 0), ("obj-poll-request", 0)),
     (("obj-poll-request", 0), ("obj-poll-maxurl", 0)),
     (("obj-poll-maxurl", 0), ("obj-poll-body", 0)),
     (("obj-poll-body", 0), ("obj-poll-on", 0)),
@@ -99,7 +112,8 @@ WIRING = (
     (("obj-poll-sel", 1), ("obj-select-off", 0)),
     (("obj-select-t", 1), ("obj-select-hold", 0)),
     (("obj-select-t", 0), ("obj-select-on", 0)),
-    (("obj-select-hold", 0), ("obj-select-off", 0)),
+    (("obj-select-hold", 0), ("obj-select-defer", 0)),
+    (("obj-select-defer", 0), ("obj-select-off", 0)),
     (("obj-select-on", 0), ("obj-state", 0)),
     (("obj-select-off", 0), ("obj-state", 0)),
     (("obj-state", 0), ("obj-state-sel", 0)),
@@ -115,9 +129,23 @@ WIRING = (
     (("obj-session-id", 0), ("obj-announce", 2)),
     (("obj-session-id", 0), ("obj-hello", 2)),
     (("obj-session-id", 0), ("obj-poll-change", 0)),
+    (("obj-thisdevice", 0), ("obj-announce-metro", 0)),
+    (("obj-announce-metro", 0), ("obj-announce-defer", 0)),
+    (("obj-announce-defer", 0), ("obj-announce-t", 0)),
+    (("obj-announce-t", 1), ("obj-dsp", 0)),
+    (("obj-announce-t", 0), ("obj-announce", 0)),
+    (("obj-announce-t", 0), ("obj-hello-gate", 1)),
 )
 # Inlets only the listen id may feed.
 SESSION_ONLY = (("obj-announce", 2), ("obj-hello", 2), ("obj-poll-change", 0))
+# The announce each second (#240): the stored identity and sample rate, sent
+# from the low-priority queue; it reads nothing from Live.
+TICK_ONLY = {
+    ("obj-announce-defer", 0): [["obj-announce-metro", 0]],
+    ("obj-announce", 0): [["obj-announce-t", 0]],
+    ("obj-hello-gate", 1): [["obj-announce-t", 0]],
+    ("obj-dsp", 0): [["obj-announce-t", 1]],
+}
 
 
 def wiring_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
@@ -142,6 +170,11 @@ def wiring_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
         fed = lufs.feeds(patcher, box, inlet)
         if fed != [["obj-session-id", 0]]:
             errors.append(f"{where}: {box}:{inlet} takes the listen id alone, has {fed}")
+    for (box, inlet), sources in TICK_ONLY.items():
+        fed = lufs.feeds(patcher, box, inlet)
+        if fed != sources:
+            errors.append(f"{where}: {box}:{inlet} takes {sources} alone, has {fed}")
+    errors += lufs.identity_errors(where, patcher, every, "obj-announce")
     return errors
 
 
@@ -210,7 +243,7 @@ def patch_errors(where: str, text: str, version: str, numbers: dict) -> list[str
     qmetro, e = one(every, QMETRO, where)
     errors += e
     for wanted in (
-        ["metro", str(numbers["poll"])],
+        ["qmetro", str(numbers["poll"])],
         ["sprintf", poll_url(numbers["hub"], numbers["path"])],
         ["maxurl"],
         ["delay", str(hold)],
@@ -218,7 +251,7 @@ def patch_errors(where: str, text: str, version: str, numbers: dict) -> list[str
         errors += one(every, wanted, where)[1]
     ids = {b.get("id"): b for b in every}
     for box, wanted in (
-        ("obj-poll-metro", ["metro", str(numbers["poll"])]),
+        ("obj-poll-qmetro", ["qmetro", str(numbers["poll"])]),
         ("obj-poll-url", ["sprintf", poll_url(numbers["hub"], numbers["path"])]),
         ("obj-select-hold", ["delay", str(hold)]),
     ):
@@ -236,10 +269,13 @@ def patch_errors(where: str, text: str, version: str, numbers: dict) -> list[str
     errors += e
     hello, e = one(every, ["pack", "fohmixer_listen", "1", "0", f"v{version}", "0"], where)
     errors += e
-    for kind in ("jit.catch~", "jit.net.send", "udpsend", "udpreceive", "qmetro"):
+    for kind in ("jit.catch~", "jit.net.send", "udpsend", "udpreceive"):
         count = len(by_kind(every, kind))
         if count > 1:
             errors.append(f"{where}: {count} {kind} boxes")
+    count = len(by_kind(every, "qmetro"))
+    if count > 2:
+        errors.append(f"{where}: {count} qmetro boxes (the stream's and the poll's)")
     plugin = by_kind(every, "plugin~")
     if catch and plugin:
         fed = lufs.feeds(patcher, catch, 0) + lufs.feeds(patcher, catch, 1)
@@ -261,6 +297,7 @@ def patch_errors(where: str, text: str, version: str, numbers: dict) -> list[str
     if udpsend and announce and lufs.feeds(patcher, udpsend, 0) != [[announce, 0]]:
         errors.append(f"{where}: the udpsend takes the announce alone")
     errors += wiring_errors(where, patcher, every)
+    errors += lufs.thread_errors(where, patcher, every)
     messages = {str(b.get("text", "")) for b in every if b.get("maxclass") == "message"}
     errors += [f"{where}: no '{path}' message" for path in lufs.IDENTITY if path not in messages]
     shown = [b.get("text") for b in every if b.get("varname") == "version"]

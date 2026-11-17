@@ -1701,6 +1701,8 @@ async fn a_refused_read_fails_the_walk_and_a_definite_answer_ends_it() {
     router.handle(msg);
     assert_eq!(router.autotune.targets[STREAM].walk_failures, 1);
     router.autotune_walk(STREAM);
+    // The next walk goes 100 ms after the last answer (#235).
+    pump(&mut router, &mut own, 150).await;
     let asked = next_asked(&mut script).await;
     asked.answer(vec![json!({"ok": true, "data": []})]);
     let msg = next_of(&mut own, "the walk's answer", |m| {
@@ -1869,6 +1871,8 @@ async fn a_walk_answer_read_by_an_index_the_hubs_list_no_longer_names_is_never_r
     // list, which names the same track at the index: found, and held.
     router.reverb_list("band|live_set|tracks|false", &tracks(&after));
     assert!(router.autotune.held.contains("band"));
+    // The next walk goes 100 ms after the last answer (#235).
+    pump(&mut router, &mut own, 150).await;
     let check = walked_to_the_check(&mut script).await;
     check.answer(vec![ok(tracks(&after))]);
     let msg = next_of(&mut own, "the walk's answer", |m| {
@@ -1888,3 +1892,6 @@ async fn a_walk_answer_read_by_an_index_the_hubs_list_no_longer_names_is_never_r
         "held: the release registers"
     );
 }
+
+#[path = "pace_tests.rs"]
+mod pace_tests;
