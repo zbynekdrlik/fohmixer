@@ -48,8 +48,8 @@ The parents name the device's place: on a track `[track, set, -, -]`, in a
 rack's chain `[chain, rack, track, set]`; the hub takes the last named one as
 the set and the one before it as the track (`fohmixer_proto::lufs::wire`).
 Max's `live.path` gives no absolute path (`getpath` echoes the path it was
-given), so the device reads its id and each parent's `name` instead, once at
-load on Max's low-priority thread (`deferlow`), and again only on a change
+given), so the device reads its id and each parent's `name` instead: at
+load on Max's low-priority thread (`deferlow`), on a change, and every 10 s
 (#240; the old read every second cost every device 9 LOM calls a second):
 each parent's `live.path` (its middle outlet follows the path, so a device
 moved elsewhere gets the new parent's id) sets that id into a `live.object`
@@ -67,6 +67,21 @@ takes its id from both of its `live.path`'s outlets: the left one at the
 load's `path` message (as the devices before #240 read it) and the middle
 one on a follow.
 
+The follow does not cover every move: on the PC a device moved from its
+track into a rack's chain kept announcing its track and set for over 30 s
+(the PC proof's attempt 2 on #240). So each device sends its four parents'
+`path` messages again every 10 s (the DECIDED of 2026-11-17):
+`live.thisdevice` → `random 10000` (an offset drawn once at load) → `delay`
+→ `deferlow` → `1` → `qmetro 10000` → `t b b b b` → the paths, parent 1
+first and the set last, as at the load. Each `live.path` resolves its path
+anew and the same `live.object` read follows, so a move is followed within
+10 s, on the low-priority queue, at a tenth of the old reads, and the
+devices loaded together with a set read at their own instants. It is the
+only clock of the identity (`check_lufs_device.py` pins it and names any
+other, a faster one included). A path sent again sets the same id into the
+observer, which may report the name once more: a second read of the same
+name, harmless.
+
 **The identity's format is proved only on the PC** (CI checks which boxes
 are wired to which, never what Max outputs; `scripts/check_lufs_device.py`
 `value_errors` holds the value path). Before a changed device reaches a
@@ -81,10 +96,14 @@ set:
    rollout places a device (`.claude/rules/deploy-pc.md`): only there are
    its parents the old device's.
 4. Read its announce from the hub (`/api/status` `lufs.devices`, or
-   `listen.devices` for Listen): `parents` equal the old device's, no
-   quotes, and **the set's name last** (the decisive check: the set read
-   `-` in the failed rollout). For that moment two devices announce the
-   same parents.
+   `listen.devices` for Listen) **within 10 s of the move** (the 10 s
+   re-read follows a move the `live.path` follow misses; the attempt 2 of
+   #240 read the old parents for over 30 s): `parents` equal the old
+   device's, no quotes, and **the set's name last** (the decisive check:
+   the set read `-` in the failed rollout). For that moment two devices
+   announce the same parents. Move it once more (another chain, or back to
+   the track's end) and read the new parents within 10 s again; rename its
+   chain and read the new name within a second (the observer).
 5. Delete the copy from the chain, leave the set unsaved (the set file's
    time unchanged) and delete the test `.amxd` from the Presets folder.
 

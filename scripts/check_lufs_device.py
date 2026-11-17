@@ -481,7 +481,7 @@ def thread_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
     return errors
 
 
-# The identity (#240): read once at load and again only on a change. The
+# The identity (#240): read at load, on a change and every 10 s. The
 # load: `live.thisdevice` -> `deferlow` -> `obj-id-load` (`t b b b b b b`:
 # the observers' property first, then the device's path, then the four
 # parents' paths). Each parent: its path into a `live.path` whose middle
