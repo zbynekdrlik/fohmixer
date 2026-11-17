@@ -48,8 +48,13 @@ The parents name the device's place: on a track `[track, set, -, -]`, in a
 rack's chain `[chain, rack, track, set]`; the hub takes the last named one as
 the set and the one before it as the track (`fohmixer_proto::lufs::wire`).
 Max's `live.path` gives no absolute path (`getpath` echoes the path it was
-given), so the device reads its id and each parent's `name` instead, at load
-and every second, on Max's low-priority thread (`deferlow`). The whole
+given), so the device reads its id and each parent's `name` instead, once at
+load on Max's low-priority thread (`deferlow`), and again only on a change
+(#240; the old read every second cost every device 9 LOM calls a second):
+each parent's `live.path` (its middle outlet follows the path, so a device
+moved elsewhere gets the new parent's id) binds a `live.observer` on that
+parent's `name`, which gives the name at once and at each rename; a path
+that holds nothing gives `-`. The whole
 message is one `pack` (its slots cold, the identity cached in them), banged
 by `obj-send-trigger` (`t b f`) each time the last value comes out of its
 audio object's own clock (`snapshot~ 200` for the LUFS device, `peakamp~ 33`

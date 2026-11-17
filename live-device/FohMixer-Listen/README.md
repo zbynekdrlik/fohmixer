@@ -11,6 +11,10 @@ devices (`../FohMixer-LUFS/README.md`).
   id mixed with a random number drawn at load so the PC's two Lives never
   share one, `v<version>`,
   its four canonical parents' names, Live's sample rate, whether it streams).
+  The names are read at load and again only on a change (#240: a
+  `live.observer` on each parent's `name`, the LUFS devices' identity); the
+  announce resends the stored ones each second (the hub forgets a device
+  after 3 s) and asks Live nothing.
   `jit.catch~` keeps copying the signal into its own buffer; nothing is
   banged out of it.
 - **Asking** (always): every 250 ms a `maxurl` request
