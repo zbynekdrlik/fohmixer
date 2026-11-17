@@ -681,6 +681,17 @@ test.describe("The fader sectors", () => {
         await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "true");
         await expect.poll(() => cellsOf(page, "ru")).toEqual([...ru, "_", "_"]);
 
+        // Carried just past the slop, over its own slot: no mark (it only
+        // goes back there).
+        const own = coverOf(page, "lu", "Hand1 #");
+        await dispatchPointer(own, [
+          { type: "pointerdown" },
+          { type: "pointermove", dx: 10, dy: 0 },
+        ]);
+        await expect(slots(page, "lu").nth(4)).toHaveAttribute("data-carried", "true");
+        expect(await dropMarks(page)).toEqual([]);
+        await dispatchPointer(own, [{ type: "pointercancel" }]);
+
         // A layout that already holds the strip takes no drop: Keys 1 held
         // over RU's empty cell marks it `no`, and its lift there moves
         // nothing.

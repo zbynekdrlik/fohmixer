@@ -844,7 +844,7 @@ async fn an_edit_with_gaps_puts_a_strip_at_the_right_edge_and_is_written_with_nu
 }
 
 #[tokio::test]
-async fn the_hubs_same_set_check_ignores_gaps_and_full_counts_them() {
+async fn the_hubs_kept_faders_check_ignores_gaps_and_full_counts_them() {
     let dir = tempfile::tempdir().unwrap();
     let first = doc(
         5,

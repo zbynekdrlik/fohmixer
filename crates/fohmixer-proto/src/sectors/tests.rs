@@ -577,7 +577,7 @@ fn ordered_pool_layout() -> Layout {
 }
 
 #[test]
-fn an_edit_takes_the_same_set_at_the_documents_rev() {
+fn an_edit_takes_the_kept_layouts_same_faders_at_the_documents_rev() {
     let before = ordered();
     let layout = ordered_pool_layout();
     let pooled = pool(&layout);
