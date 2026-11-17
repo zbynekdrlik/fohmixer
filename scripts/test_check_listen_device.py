@@ -329,8 +329,12 @@ class ListenDeviceTests(unittest.TestCase):
 
         found = errors(edited(undeferred))
         self.assertIn(
+            "p: obj-id-clock-defer:0 takes [['obj-id-offset-delay', 0]] alone, has []",
+            found,
+        )
+        self.assertIn(
             "p: obj-id-clock-start:0 takes [['obj-id-clock-defer', 0]] alone, "
-            "has [['obj-id-offset-delay', 0]]",
+            "has [['obj-id-clock-defer', 0], ['obj-id-offset-delay', 0]]",
             found,
         )
 
