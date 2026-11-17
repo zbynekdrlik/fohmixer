@@ -10,19 +10,21 @@ from a real Live 12 .amxd):
     b"ptch" u32le(len(json))      then the patcher JSON, UTF-8
 
 The JSON is copied byte for byte, except the ports when `--port` (and, for
-the Listen device, `--select-port`; for the Claps device, `--device-port`)
+the Listen device, `--hub-port`; for the Claps device, `--device-port`)
 ask for others than the hub's defaults (the device cannot read the hub's
 config; README.md): the `udpsend` box's port, the Listen device's
-`jit.net.send` and `udpreceive` boxes, the Claps device's `udpreceive` box.
+`jit.net.send` box and the hub's HTTP port in its select poll's `sprintf`
+box, the Claps device's `udpreceive` box.
 The .amxd is never committed (.gitignore): the main session builds it here
 and installs it on the PC, where Max can freeze it (README.md).
 
-    python3 build_amxd.py [--patch <maxpat>] [--port <n>] [--select-port <n>]
+    python3 build_amxd.py [--patch <maxpat>] [--port <n>] [--hub-port <n>]
                           [--device-port <n>] [--out <amxd>]
 
 `--patch` defaults to the LUFS patch, `--out` to the patch's own name with
 `.amxd`, `--port` to 39110 (39111 for the Listen device, 39113 for the
-Claps device), `--select-port` to 39112 (the Listen device only),
+Claps device), `--hub-port` to 8480 (the hub's HTTP port, the Listen device
+only),
 `--device-port` to 39114 (the Claps device only).
 """
 
@@ -45,10 +47,14 @@ KINDS = (KIND_AUDIO_EFFECT, KIND_MIDI_EFFECT)
 # The hub's default port (fohmixer_proto::lufs::wire::DEFAULT_PORT), as the
 # patches carry it; scripts/check_lufs_device.py keeps them equal.
 DEFAULT_PORT = 39110
-# The Listen device's (#210, fohmixer_proto::listen::DEFAULT_PORT and
-# SELECT_PORT; scripts/check_listen_device.py keeps them equal).
+# The Listen device's (#210, fohmixer_proto::listen::DEFAULT_PORT, and the
+# hub's HTTP port, fohmixer_hub::config::DEFAULT_HTTP_PORT, where it asks
+# whether it is selected; scripts/check_listen_device.py keeps them equal).
 LISTEN_PORT = 39111
-SELECT_PORT = 39112
+HUB_PORT = 8480
+# The select poll's `sprintf` box: the URL a Listen device asks (`%ld` its
+# listen id).
+POLL_BOX = "sprintf http://127.0.0.1:{port}/api/listen/select?device=%ld"
 # The Claps device's (#220, fohmixer_proto::claps::HUB_PORT and
 # DEVICE_PORT; scripts/check_claps_device.py keeps them equal).
 CLAPS_PORT = 39113
@@ -116,13 +122,13 @@ def is_claps(patch: bytes) -> bool:
 def with_ports(
     patch: bytes,
     port: int | None = None,
-    select_port: int | None = None,
+    hub_port: int | None = None,
     device_port: int | None = None,
 ) -> bytes:
     """The patch sending to `port` (its `udpsend`, and the Listen device's
-    `jit.net.send`) and, for the Listen device, taking selects on
-    `select_port`, for the Claps device the hub's words on `device_port`;
-    none keeps the default."""
+    `jit.net.send`) and, for the Listen device, asking the hub's HTTP port
+    `hub_port` whether it is selected, for the Claps device taking the hub's
+    words on `device_port`; none keeps the default."""
     listen = is_listen(patch)
     claps = is_claps(patch)
     default = LISTEN_PORT if listen else CLAPS_PORT if claps else DEFAULT_PORT
@@ -132,23 +138,23 @@ def with_ports(
     if device_port is not None and not claps:
         raise ValueError("only the Claps device takes a device port")
     if claps:
-        if select_port is not None:
-            raise ValueError("only the Listen device takes a select port")
+        if hub_port is not None:
+            raise ValueError("only the Listen device takes a hub port")
         device_port = DEVICE_PORT if device_port is None else device_port
         _check(device_port)
         return _swap(patch, f"udpreceive {DEVICE_PORT}", f"udpreceive {device_port}")
     if not listen:
-        if select_port is not None:
-            raise ValueError("only the Listen device takes a select port")
+        if hub_port is not None:
+            raise ValueError("only the Listen device takes a hub port")
         return patch
-    select_port = SELECT_PORT if select_port is None else select_port
-    _check(select_port)
+    hub_port = HUB_PORT if hub_port is None else hub_port
+    _check(hub_port)
     patch = _swap(
         patch,
         f"jit.net.send @ip 127.0.0.1 @port {LISTEN_PORT}",
         f"jit.net.send @ip 127.0.0.1 @port {port}",
     )
-    return _swap(patch, f"udpreceive {SELECT_PORT}", f"udpreceive {select_port}")
+    return _swap(patch, POLL_BOX.format(port=HUB_PORT), POLL_BOX.format(port=hub_port))
 
 
 def with_port(patch: bytes, port: int) -> bytes:
@@ -160,13 +166,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--patch", "--maxpat", dest="patch", type=Path, default=MAXPAT)
     parser.add_argument("--port", type=int, default=None)
-    parser.add_argument("--select-port", type=int, default=None)
+    parser.add_argument("--hub-port", type=int, default=None)
     parser.add_argument("--device-port", type=int, default=None)
     parser.add_argument("--out", type=Path)
     args = parser.parse_args(argv)
     out = args.out or args.patch.with_suffix(".amxd")
     patch = args.patch.read_bytes()
-    device = amxd(with_ports(patch, args.port, args.select_port, args.device_port))
+    device = amxd(with_ports(patch, args.port, args.hub_port, args.device_port))
     out.write_bytes(device)
     default = LISTEN_PORT if is_listen(patch) else CLAPS_PORT if is_claps(patch) else DEFAULT_PORT
     port = args.port or default

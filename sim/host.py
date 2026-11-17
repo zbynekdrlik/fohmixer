@@ -2,7 +2,7 @@
 
     python3 sim/host.py --port P [--instance band] [--site sim/fixtures/test-site.json]
                         [--meters-hz 30] [--log-dir DIR] [--lufs-port P]
-                        [--listen-port P --select-port S]
+                        [--listen-port P [--hub-port H]]
 
 The process's main thread is SimLive's single Live main thread: it runs the
 script's timer, its scheduled messages and the optional meter animation.
@@ -109,11 +109,17 @@ WebSocket server is bound. Control lines on stdin (never over the WebSocket):
                                 ``Listen``: an empty ``Dry`` chain and a
                                 ``Listen`` chain holding it), or the newest one
                                 removed; it announces itself to
-                                ``--listen-port`` (UDP) once a second and,
-                                while the hub's selects on ``--select-port``
-                                name it, streams to ``--listen-port`` (TCP);
+                                ``--listen-port`` (UDP) once a second, asks
+                                the hub's HTTP port (``--hub-port`` or the
+                                ``listenhub`` line) every 250 ms whether it is
+                                selected and, while it is, streams to
+                                ``--listen-port`` (TCP);
                                 prints ``LISTENDEV <devices on the track>``, or
                                 ``LISTENDEV -1``
+    listenhub <port>            the hub's HTTP port the Listen devices ask
+                                whether they are selected (a test's hub has
+                                its port only after the host started); prints
+                                ``LISTENHUB <port>`` or ``LISTENHUB -1``
     tone <track|return|master> <index> <hz>
                                 the newest Listen device there plays a sine of
                                 <hz> (0: silence); prints ``TONE <hz>`` or
@@ -165,7 +171,7 @@ def parse_args(argv):
     parser.add_argument("--log-dir", default=None)
     parser.add_argument("--lufs-port", type=int, default=None)
     parser.add_argument("--listen-port", type=int, default=None)
-    parser.add_argument("--select-port", type=int, default=None)
+    parser.add_argument("--hub-port", type=int, default=None)
     return parser.parse_args(argv)
 
 
@@ -517,9 +523,14 @@ def maxdev_answer(main_thread, song, line, maxdevs):
 def listendev_answer(main_thread, song, line, listens):
     """A Listen device line's answer (#210), or None for another line."""
     words = line.split()
-    if not words or words[0] not in ("listendev", "tone", "streamed"):
+    if not words or words[0] not in ("listendev", "tone", "streamed", "listenhub"):
         return None
     word = words[0].upper()
+    if words[0] == "listenhub":
+        port = listendev.hub_line(line)
+        if port is None or listens is None:
+            return f"{word} -1"
+        return f"{word} {main_thread.call(lambda: listens.set_hub_port(port))}"
     if words[0] == "listendev":
         parsed = listendev.device_line(line)
         control_of = listendev.device_control
@@ -630,7 +641,7 @@ def main(argv=None):
     song_clock.start()
     maxdevs = maxdev.MaxDevices(song, args.lufs_port)
     maxdevs.start()
-    listens = listendev.ListenDevices(song, args.listen_port, args.select_port)
+    listens = listendev.ListenDevices(song, args.listen_port, args.hub_port)
     listens.start()
 
     def on_stop():

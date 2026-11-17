@@ -430,32 +430,42 @@ impl Default for LufsCfg {
 }
 
 /// `[listen]` (#210): the port on 127.0.0.1 where the Listen devices send
-/// their announces (UDP) and their audio (TCP), and the UDP port they take
-/// the hub's selects on (both fixed in the device's patch: another means
-/// the device rebuilt with `build_amxd.py --port`/`--select-port`); `port =
-/// 0` turns Listen off.
+/// their announces (UDP) and their audio (TCP), fixed in the device's patch
+/// (another means the device rebuilt with `build_amxd.py --port`); `port =
+/// 0` turns Listen off. The devices ask whether they are selected on the
+/// hub's own HTTP port (`--hub-port`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(from = "ListenToml")]
 pub struct ListenCfg {
-    #[serde(default = "default_listen_port")]
     pub port: u16,
-    #[serde(default = "default_select_port")]
-    pub select_port: u16,
+}
+
+/// `[listen]` as written: `select_port`, the UDP select port of the
+/// releases before the devices asked over HTTP (#210: one port reached only
+/// one device), is read and ignored, so an installed config still loads.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListenToml {
+    #[serde(default = "default_listen_port")]
+    port: u16,
+    #[serde(default, rename = "select_port")]
+    _select_port: Option<serde::de::IgnoredAny>,
+}
+
+impl From<ListenToml> for ListenCfg {
+    fn from(toml: ListenToml) -> Self {
+        Self { port: toml.port }
+    }
 }
 
 fn default_listen_port() -> u16 {
     fohmixer_proto::listen::DEFAULT_PORT
 }
 
-fn default_select_port() -> u16 {
-    fohmixer_proto::listen::SELECT_PORT
-}
-
 impl Default for ListenCfg {
     fn default() -> Self {
         Self {
             port: default_listen_port(),
-            select_port: default_select_port(),
         }
     }
 }
@@ -1911,11 +1921,8 @@ mod tests {
     }
 
     #[test]
-    fn listen_ports_default_to_39111_and_39112() {
-        let defaults = ListenCfg {
-            port: 39111,
-            select_port: 39112,
-        };
+    fn listen_port_defaults_to_39111_and_an_old_select_port_is_ignored() {
+        let defaults = ListenCfg { port: 39111 };
         assert_eq!(Config::parse("", &data()).unwrap().listen, defaults);
         assert_eq!(
             Config::parse("[listen]\n", &data()).unwrap().listen,
@@ -1923,13 +1930,17 @@ mod tests {
         );
         assert_eq!(Config::defaults(&data()).listen, defaults);
         assert_eq!(
-            Config::parse("[listen]\nport = 0\nselect_port = 40000\n", &data())
+            Config::parse("[listen]\nport = 0\n", &data())
                 .unwrap()
                 .listen,
-            ListenCfg {
-                port: 0,
-                select_port: 40000
-            }
+            ListenCfg { port: 0 }
+        );
+        // A config installed before the devices asked over HTTP (#210).
+        assert_eq!(
+            Config::parse("[listen]\nport = 39120\nselect_port = 39112\n", &data())
+                .unwrap()
+                .listen,
+            ListenCfg { port: 39120 }
         );
         assert!(Config::parse("[listen]\nhost = \"0.0.0.0\"\n", &data()).is_err());
     }

@@ -1,8 +1,10 @@
 //! Listen (#210): a track's sound, before its fader, to the pages as Opus.
 //!
 //! The `FohMixer Listen` devices announce themselves over UDP
-//! (`listen/udp.rs`), the hub selects the one on the track a page listens
-//! to (the same socket, [`Listen::next_select`]), that device streams its
+//! (`listen/udp.rs`), each asks the hub every 250 ms whether it is the one
+//! on the track a page listens to (`GET /api/listen/select`,
+//! `routes/listen.rs`, [`Listen::select`]: one UDP select port for every
+//! device reached only one of them on the PC), that device streams its
 //! samples over TCP (`listen/stream.rs`: Jitter chunks, 20 ms frames, Opus)
 //! and every listening socket (`listen/session.rs`, `/ws/audio`) gets the
 //! packets from one `broadcast` channel. One track at a time on a hub, the
@@ -11,7 +13,7 @@
 //! `taken` record, and the pages listening to the old one are told `taken`
 //! through the turn ([`Listen::turns`]) and stop; every packet carries the
 //! turn it was sent in, so a page never hears another track's. Listeners
-//! of the same track share it, and the last one leaving ends the selects.
+//! of the same track share it, and the last one leaving ends the stream.
 //!
 //! A device is picked by its track's and Live set's NAMES (its announce's
 //! parents), never by the instance: the set's name is read again at every
@@ -19,8 +21,7 @@
 //! a track renamed meanwhile is no longer found (accepted on the review).
 //!
 //! This file is the shared state; its decisions are small pure functions
-//! ([`choose`], [`start_of`], [`select_now`], [`selecting`]) with their own
-//! tests.
+//! ([`choose`], [`start_of`]) with their own tests.
 
 pub mod encoder;
 pub mod session;
@@ -33,10 +34,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use fohmixer_proto::listen::wire::{Announce, FORGET_MS, Select};
+use fohmixer_proto::listen::wire::{Announce, FORGET_MS};
 use fohmixer_proto::listen::{ListenDeviceStatus, ListenStatus, ListenTargetStatus};
 use serde_json::{Value, json};
-use tokio::sync::{Notify, broadcast, watch};
+use tokio::sync::{broadcast, watch};
 
 use crate::events::EventLog;
 
@@ -124,13 +125,6 @@ pub fn start_of(target: Option<&Target>, instance: &str, set: &str, track: &str)
     }
 }
 
-/// Whether the select loop has anything to send: while a target exists, or
-/// while the stop (a select of 0) is still owed after one ended (`last`:
-/// the device the last select named).
-pub fn selecting(has_target: bool, last: Option<i32>) -> bool {
-    has_target || last.is_some_and(|id| id != 0)
-}
-
 /// The Live set's name of an instance as its script told it now; none while
 /// it is unknown (the hub's `HubInner::set_name`).
 pub type SetNames = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
@@ -141,23 +135,11 @@ pub fn no_sets() -> SetNames {
     Arc::new(|_| None)
 }
 
-/// The device the next select names: the chosen one while a target has
-/// one, 0 (stop) while a target has none, and once more 0 after the target
-/// ended (`last`: the device the last select named); none otherwise.
-pub fn select_now(choice: Option<Choice>, last: Option<i32>) -> Option<i32> {
-    match choice {
-        Some(Choice::Device(id)) => Some(id),
-        Some(_) => Some(0),
-        None => last.filter(|&id| id != 0).map(|_| 0),
-    }
-}
-
 #[derive(Debug, Default)]
 struct State {
     devices: BTreeMap<i32, Heard>,
     target: Option<Target>,
     turn: i32,
-    last_select: Option<i32>,
 }
 
 /// The counts `/api/status` shows.
@@ -225,8 +207,6 @@ pub struct Listen {
     packets: broadcast::Sender<(i32, Bytes)>,
     /// The turn now: a page whose turn is no longer it was taken.
     turns: watch::Sender<i32>,
-    /// Wakes the select loop at a new target, so the device starts at once.
-    pub wake: Notify,
     pub events: EventLog,
     sets: SetNames,
 }
@@ -259,7 +239,6 @@ impl Listen {
             counters: Counters::default(),
             packets,
             turns: watch::Sender::new(0),
-            wake: Notify::new(),
             events,
             sets,
         })
@@ -313,7 +292,6 @@ impl Listen {
                     .record("listen", target_fields("start", &to, state.turn));
                 state.target = Some(to);
                 self.turns.send_replace(state.turn);
-                self.wake.notify_one();
             }
         }
         Lease {
@@ -325,12 +303,6 @@ impl Listen {
     /// The turn now, to watch: a page holding an older one was taken.
     pub fn turns(&self) -> watch::Receiver<i32> {
         self.turns.subscribe()
-    }
-
-    /// Whether the select loop has a select to send ([`selecting`]).
-    pub fn selecting(&self) -> bool {
-        let state = self.state();
-        selecting(state.target.is_some(), state.last_select)
     }
 
     fn leave(&self, turn: i32) {
@@ -348,7 +320,6 @@ impl Listen {
             tracing::info!(instance = ?target.instance, track = ?target.track, turn, "listen: stopped");
             self.events
                 .record("listen", target_fields("stop", &target, turn));
-            self.wake.notify_one();
         }
     }
 
@@ -375,20 +346,11 @@ impl Listen {
         })
     }
 
-    /// The select to send at `now`, if any (counted and remembered).
-    pub fn next_select(&self, now: Instant) -> Option<Select> {
-        let mut state = self.state();
-        let choice = state
-            .target
-            .as_ref()
-            .map(|t| choose(&state.devices, &t.set, &t.track, now));
-        let device = select_now(choice, state.last_select)?;
-        state.last_select = Some(device);
+    /// A device's question at `now`: is it the one to stream
+    /// ([`Listen::accepts`])? Counted (`selects`).
+    pub fn select(&self, device: i32, now: Instant) -> bool {
         self.counters.selects.fetch_add(1, Ordering::Relaxed);
-        Some(Select {
-            device,
-            turn: state.turn,
-        })
+        self.accepts(device, now)
     }
 
     /// A packet to every listening socket, with the turn it is sent in.
@@ -471,7 +433,6 @@ pub fn bind(port: u16) -> std::io::Result<(std::net::TcpListener, std::net::UdpS
 /// shown in `/api/status`; the hub runs on, every page told `no_source`.
 pub fn spawn(
     port: u16,
-    select_port: u16,
     events: EventLog,
     sets: SetNames,
 ) -> (Arc<Listen>, Vec<tokio::task::JoinHandle<()>>) {
@@ -481,13 +442,13 @@ pub fn spawn(
         let addr = tcp.local_addr()?.to_string();
         let tasks = vec![
             stream::spawn(tcp, Arc::clone(&listen))?,
-            udp::spawn(socket, select_port, Arc::clone(&listen))?,
+            udp::spawn(socket, Arc::clone(&listen))?,
         ];
         Ok((addr, tasks))
     });
     match started {
         Ok((addr, tasks)) => {
-            tracing::info!(addr = %addr, select_port, "listen: listening for the Listen devices");
+            tracing::info!(addr = %addr, "listen: listening for the Listen devices");
             events.record("listen", udp::listen_fields(&addr, None));
             listen.counters.set_bound(Some(addr), None);
             (listen, tasks)

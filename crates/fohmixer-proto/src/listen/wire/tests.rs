@@ -99,26 +99,10 @@ fn a_bad_announce_is_refused_with_its_reason() {
 }
 
 #[test]
-fn a_select_round_trips_and_is_checked() {
-    let s = Select { device: 9, turn: 3 };
-    let bytes = encode_select(s);
-    assert_eq!(&bytes[..24], b"/fohmixer/listen/select\0");
-    assert_eq!(&bytes[24..28], b",ii\0");
-    assert_eq!(&bytes[28..], &[0, 0, 0, 9, 0, 0, 0, 3]);
-    assert_eq!(parse_select(&bytes), Ok(s));
-    let mut trailing = bytes.clone();
-    trailing.extend_from_slice(&[0, 0, 0, 0]);
-    assert_eq!(parse_select(&trailing), Err(WireError::Trailing));
-    assert_eq!(
-        parse_select(&encode_announce(&golden())),
-        Err(WireError::Address)
-    );
-    let mut tags = bytes.clone();
-    tags[25] = b's';
-    assert_eq!(parse_select(&tags), Err(WireError::Tags));
-    let mut long = bytes;
-    long.resize(MAX_DATAGRAM + 1, 0);
-    assert_eq!(parse_select(&long), Err(WireError::TooLong));
+fn the_select_answer_is_the_patchs_compact_json() {
+    assert_eq!(select_body(true), r#"{"on":true}"#);
+    assert_eq!(select_body(false), r#"{"on":false}"#);
+    assert_eq!(SELECT_PATH, "/api/listen/select");
 }
 
 #[test]
@@ -156,8 +140,8 @@ fn a_hello_reads_longs_or_whole_floats() {
 
 #[test]
 fn the_timing_constants_hold() {
-    assert_eq!(SELECT_EVERY_MS, 500);
-    assert_eq!(SELECT_HOLD_MS, 1500);
+    assert_eq!(POLL_MS, 250);
+    assert_eq!(SELECT_HOLD_MS, 1000);
     assert_eq!(ANNOUNCE_EVERY_MS, 1000);
     assert_eq!(FORGET_MS, 3000);
     assert_eq!(MAX_DATAGRAM, 512);
@@ -175,9 +159,6 @@ fn a_datagram_of_exactly_the_limit_is_read() {
         .find(|d| d.len() == MAX_DATAGRAM)
         .expect("an announce of exactly the limit");
     assert!(parse_announce(&exact).is_ok());
-    let mut select = encode_select(Select { device: 1, turn: 1 });
-    select.resize(MAX_DATAGRAM, 0);
-    assert_eq!(parse_select(&select), Err(WireError::Trailing));
 }
 
 #[test]

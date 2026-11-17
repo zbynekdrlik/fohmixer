@@ -2,8 +2,9 @@
 //!
 //! A silent Max for Live device, `FohMixer Listen`, sits in a parallel rack
 //! chain of each listenable track (`live-device/FohMixer-Listen/`). It tells
-//! the hub where it is once a second ([`wire`]'s announce, UDP), and while
-//! the hub selects it ([`wire`]'s select, UDP) it streams the track's
+//! the hub where it is once a second ([`wire`]'s announce, UDP), asks the
+//! hub every 250 ms whether it is selected ([`wire`]'s select, HTTP), and
+//! while it is it streams the track's
 //! samples to the hub over TCP as Jitter matrices ([`jitnet`]). The hub
 //! cuts them into 20 ms frames at 48 kHz ([`frames`]), encodes Opus and
 //! sends one packet per frame on `/ws/audio` ([`AudioClientMsg`],
@@ -25,8 +26,6 @@ pub mod wire;
 /// announces (two protocols, one number), fixed in the device's patch
 /// (`scripts/check_listen_device.py` keeps them equal).
 pub const DEFAULT_PORT: u16 = 39111;
-/// The UDP port every Listen device listens on for the hub's selects.
-pub const SELECT_PORT: u16 = 39112;
 /// The one sample rate the hub takes (Opus's own).
 pub const SAMPLE_RATE: u32 = 48_000;
 /// The samples per channel of one 20 ms frame at [`SAMPLE_RATE`].
@@ -102,7 +101,7 @@ pub struct ListenStatus {
     /// The Opus packets sent to the pages' sockets' channel.
     #[serde(default)]
     pub packets: u64,
-    /// The selects sent to the devices.
+    /// The devices' select questions answered (`GET /api/listen/select`).
     #[serde(default)]
     pub selects: u64,
     /// Everything refused, by reason (datagrams, chunks, connections).

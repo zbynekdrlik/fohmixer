@@ -29,6 +29,9 @@ pub enum RouteAccess {
     /// No login: the handler checks the automation token itself (#207,
     /// `POST /api/scene`).
     Automation,
+    /// No login: a Listen device on this PC (#210, `GET
+    /// /api/listen/select`); the handler takes loopback peers only.
+    Device,
 }
 
 /// Every path [`api_routes`] registers, each with its decision in
@@ -46,6 +49,7 @@ pub const API_PATHS: &[&str] = &[
     "/api/lufs/history",
     "/api/lufs/days",
     "/api/scene",
+    "/api/listen/select",
     "/ws",
     "/ws/audio",
 ];
@@ -65,6 +69,7 @@ pub fn route_role(path: &str) -> Option<RouteAccess> {
             Some(RouteAccess::EngineerOnly)
         }
         "/api/scene" => Some(RouteAccess::Automation),
+        "/api/listen/select" => Some(RouteAccess::Device),
         _ => None,
     }
 }
@@ -74,7 +79,12 @@ pub fn route_role(path: &str) -> Option<RouteAccess> {
 pub fn refused(access: Option<RouteAccess>, role: Option<Role>) -> bool {
     match access {
         None => true,
-        Some(RouteAccess::Open | RouteAccess::AnyRole | RouteAccess::Automation) => false,
+        Some(
+            RouteAccess::Open
+            | RouteAccess::AnyRole
+            | RouteAccess::Automation
+            | RouteAccess::Device,
+        ) => false,
         Some(RouteAccess::EngineerOnly) => role == Some(Role::Mbc),
     }
 }

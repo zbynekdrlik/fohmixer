@@ -1,7 +1,7 @@
-//! The Listen device's small messages (#210): its announce and the hub's
-//! select (OSC 1.0 datagrams on 127.0.0.1, as the LUFS devices', whose OSC
-//! readers they share), and the hello that opens its audio connection (a
-//! Jitter message chunk, [`super::jitnet`]).
+//! The Listen device's small messages (#210): its announce (an OSC 1.0
+//! datagram on 127.0.0.1, as the LUFS devices', whose OSC readers it
+//! shares), the select it asks the hub for over HTTP, and the hello that
+//! opens its audio connection (a Jitter message chunk, [`super::jitnet`]).
 //!
 //! **Announce**, the device to the hub's UDP [`super::DEFAULT_PORT`] once a
 //! second: address [`ANNOUNCE_ADDRESS`], type tags [`ANNOUNCE_TAGS`]:
@@ -15,12 +15,16 @@
 //! | 8 | `i` | Live's sample rate (`dspstate~`) |
 //! | 9 | `i` | 1 while it streams, else 0 |
 //!
-//! **Select**, the hub to every device's UDP [`super::SELECT_PORT`], every
-//! [`SELECT_EVERY_MS`] while a page listens: address [`SELECT_ADDRESS`],
-//! `,ii`, the device id to stream (0: none) and the hub's turn (a number
-//! that changes with each new track; the device does not read it, the log
-//! does). A device streams while the newest select names its id, and stops
-//! [`SELECT_HOLD_MS`] after the last one that did.
+//! **Select**, asked by each device every [`POLL_MS`] (Max's `maxurl`):
+//! `GET http://127.0.0.1:<hub HTTP port>`[`SELECT_PATH`]`?device=<listen
+//! id>`, answered [`select_body`] (`{"on":true}` or `{"on":false}`; the
+//! patch asks with `parse_type json` and reads `body` then `on`: Max's dict
+//! holds JSON's `true` as 1, which its `sel 1` takes), to loopback peers
+//! only and with no token. One UDP select port for every device failed on the PC
+//! (#210, P1: the devices that bind one port share one socket, and only one
+//! of them hears a datagram), so each device asks for itself. `on` starts
+//! the stream; `off`, an error or an empty answer stops it at once; a device
+//! whose polls go unanswered stops [`SELECT_HOLD_MS`] after its last `on`.
 //!
 //! **Hello**, the first message chunk on the device's TCP connection:
 //! `fohmixer_listen <wire version> <device id> v<version> <sample rate>`.
@@ -39,18 +43,16 @@ pub const WIRE_VERSION: i32 = 1;
 pub const ANNOUNCE_ADDRESS: &str = "/fohmixer/listen";
 /// The announce's type tags.
 pub const ANNOUNCE_TAGS: &str = ",iisssssii";
-/// The select's address.
-pub const SELECT_ADDRESS: &str = "/fohmixer/listen/select";
-/// The select's type tags.
-pub const SELECT_TAGS: &str = ",ii";
+/// The hub's route a device asks whether it is selected.
+pub const SELECT_PATH: &str = "/api/listen/select";
 /// The hello's first word (its message's selector).
 pub const HELLO_WORD: &str = "fohmixer_listen";
 /// The longest datagram taken.
 pub const MAX_DATAGRAM: usize = 512;
-/// How often the hub selects the device while a page listens.
-pub const SELECT_EVERY_MS: u64 = 500;
-/// How long a device streams after the last select that named it.
-pub const SELECT_HOLD_MS: u64 = 1500;
+/// How often a device asks the hub whether it is selected.
+pub const POLL_MS: u64 = 250;
+/// How long a device streams after the last `on` answer (four polls).
+pub const SELECT_HOLD_MS: u64 = 1000;
 /// The device's announce period.
 pub const ANNOUNCE_EVERY_MS: u64 = 1000;
 /// A device unheard this long is forgotten.
@@ -71,14 +73,6 @@ impl Announce {
     pub fn track_and_set(&self) -> Option<(&str, &str)> {
         track_and_set(&self.parents)
     }
-}
-
-/// One select.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Select {
-    /// The device to stream; 0: none.
-    pub device: i32,
-    pub turn: i32,
 }
 
 /// The hello of an audio connection.
@@ -150,35 +144,14 @@ pub fn encode_announce(a: &Announce) -> Vec<u8> {
     out
 }
 
-/// The datagram of a select.
-pub fn encode_select(s: Select) -> Vec<u8> {
-    let mut out = Vec::with_capacity(48);
-    push_string(&mut out, SELECT_ADDRESS);
-    push_string(&mut out, SELECT_TAGS);
-    out.extend_from_slice(&s.device.to_be_bytes());
-    out.extend_from_slice(&s.turn.to_be_bytes());
-    out
-}
-
-/// Reads a select (the tests' devices).
-pub fn parse_select(datagram: &[u8]) -> Result<Select, WireError> {
-    if datagram.len() > MAX_DATAGRAM {
-        return Err(WireError::TooLong);
+/// The select route's answer, compact JSON (the device's patch parses it
+/// into a dictionary and takes `on`).
+pub fn select_body(on: bool) -> &'static str {
+    if on {
+        r#"{"on":true}"#
+    } else {
+        r#"{"on":false}"#
     }
-    let (address, rest) = osc_string(datagram)?;
-    if address != SELECT_ADDRESS {
-        return Err(WireError::Address);
-    }
-    let (tags, rest) = osc_string(rest)?;
-    if tags != SELECT_TAGS {
-        return Err(WireError::Tags);
-    }
-    let (device, rest) = osc_i32(rest)?;
-    let (turn, rest) = osc_i32(rest)?;
-    if !rest.is_empty() {
-        return Err(WireError::Trailing);
-    }
-    Ok(Select { device, turn })
 }
 
 /// A whole number from a Max atom: a long, or a float with no fraction

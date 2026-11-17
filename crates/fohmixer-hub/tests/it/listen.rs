@@ -43,14 +43,17 @@ fn site() -> PathBuf {
     repo().join("sim").join("fixtures").join("test-site.json")
 }
 
-async fn hub(dir: &Path, host: &Host, port: u16, select_port: u16) -> TestHub {
+/// A hub over `host` with Listen on `port`; the host's devices are told the
+/// hub's HTTP port, where they ask whether they are selected.
+async fn hub(dir: &Path, host: &mut Host, port: u16) -> TestHub {
     let mut config = Config::defaults(dir);
     config.instances = vec![host.cfg()];
     config.layout_poll_ms = 100;
     config.lufs.port = 0;
     config.listen.port = port;
-    config.listen.select_port = select_port;
     let hub = TestHub::start_config(config).await;
+    let http = i64::from(hub.addr.port());
+    assert_eq!(host.listendev(&format!("listenhub {http}")), http);
     hub.status_until(SECS_10, |s| s.instances.iter().all(|i| i.online))
         .await;
     hub
@@ -162,13 +165,13 @@ fn a_page_hears_the_tracks_tone_and_the_device_stops_when_it_leaves() {
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
-        let (port, select_port) = (free_port(), free_port());
-        let mut host = Host::start_listen("band", &site(), port, select_port);
+        let port = free_port();
+        let mut host = Host::start_listen("band", &site(), port);
         assert_eq!(host.listendev("listendev track 1 add rack"), 1);
         assert_eq!(host.listendev("tone track 1 1000"), 1000);
         assert_eq!(host.listendev("listendev track 2 add"), 1);
         assert_eq!(host.listendev("tone track 2 3000"), 3000);
-        let hub = hub(dir.path(), &host, port, select_port).await;
+        let hub = hub(dir.path(), &mut host, port).await;
         let status = hub
             .status_until(SECS_10, |s| s.listen.devices.len() == 2)
             .await;
@@ -261,11 +264,11 @@ fn a_device_at_96_khz_is_decimated_to_the_pages_48_khz_tone() {
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
-        let (port, select_port) = (free_port(), free_port());
-        let mut host = Host::start_listen("band", &site(), port, select_port);
+        let port = free_port();
+        let mut host = Host::start_listen("band", &site(), port);
         assert_eq!(host.listendev("listendev track 1 add rack 96000"), 1);
         assert_eq!(host.listendev("tone track 1 1000"), 1000);
-        let hub = hub(dir.path(), &host, port, select_port).await;
+        let hub = hub(dir.path(), &mut host, port).await;
         let status = hub
             .status_until(SECS_10, |s| s.listen.devices.len() == 1)
             .await;
@@ -300,11 +303,11 @@ fn a_device_at_another_rate_is_refused() {
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
-        let (port, select_port) = (free_port(), free_port());
-        let mut host = Host::start_listen("band", &site(), port, select_port);
+        let port = free_port();
+        let mut host = Host::start_listen("band", &site(), port);
         assert_eq!(host.listendev("listendev track 1 add rack 44100"), 1);
         assert_eq!(host.listendev("tone track 1 1000"), 1000);
-        let hub = hub(dir.path(), &host, port, select_port).await;
+        let hub = hub(dir.path(), &mut host, port).await;
         hub.status_until(SECS_10, |s| s.listen.devices.len() == 1)
             .await;
         let mut a = audio(&hub).await;
@@ -327,9 +330,9 @@ fn a_track_without_a_device_or_an_unknown_instance_is_no_source() {
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
-        let (port, select_port) = (free_port(), free_port());
-        let host = Host::start_listen("band", &site(), port, select_port);
-        let hub = hub(dir.path(), &host, port, select_port).await;
+        let port = free_port();
+        let mut host = Host::start_listen("band", &site(), port);
+        let hub = hub(dir.path(), &mut host, port).await;
         let mut a = audio(&hub).await;
         send(
             &mut a,
@@ -347,7 +350,6 @@ fn a_track_without_a_device_or_an_unknown_instance_is_no_source() {
         assert_eq!(target.problem.as_deref(), Some("no device"));
         // A device for the track comes: told listening again, before its
         // first packet.
-        let mut host = host;
         assert_eq!(host.listendev("listendev track 1 add rack"), 1);
         assert_eq!(host.listendev("tone track 1 1000"), 1000);
         let deadline = Instant::now() + SECS_10;
@@ -397,13 +399,13 @@ fn the_newest_start_takes_the_track_from_the_pages_listening() {
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
-        let (port, select_port) = (free_port(), free_port());
-        let mut host = Host::start_listen("band", &site(), port, select_port);
+        let port = free_port();
+        let mut host = Host::start_listen("band", &site(), port);
         assert_eq!(host.listendev("listendev track 1 add rack"), 1);
         assert_eq!(host.listendev("tone track 1 1000"), 1000);
         assert_eq!(host.listendev("listendev track 2 add"), 1);
         assert_eq!(host.listendev("tone track 2 3000"), 3000);
-        let hub = hub(dir.path(), &host, port, select_port).await;
+        let hub = hub(dir.path(), &mut host, port).await;
         hub.status_until(SECS_10, |s| s.listen.devices.len() == 2)
             .await;
         // Two pages on one track (a tab left open, an iPad).
@@ -499,11 +501,11 @@ fn each_device_asks_the_hub_whether_it_is_selected() {
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
-        let (port, select_port) = (free_port(), free_port());
-        let mut host = Host::start_listen("band", &site(), port, select_port);
+        let port = free_port();
+        let mut host = Host::start_listen("band", &site(), port);
         assert_eq!(host.listendev("listendev track 1 add rack"), 1);
         assert_eq!(host.listendev("listendev track 2 add"), 1);
-        let hub = hub(dir.path(), &host, port, select_port).await;
+        let hub = hub(dir.path(), &mut host, port).await;
         let status = hub
             .status_until(SECS_10, |s| s.listen.devices.len() == 2)
             .await;

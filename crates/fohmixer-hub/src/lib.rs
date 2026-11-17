@@ -742,12 +742,7 @@ impl Hub {
             let sets_of = live.clone();
             let sets: listen::SetNames =
                 Arc::new(move |instance: &str| set_name_of(&sets_of, instance));
-            let (listen, listen_tasks) = listen::spawn(
-                config.listen.port,
-                config.listen.select_port,
-                events.clone(),
-                sets,
-            );
+            let (listen, listen_tasks) = listen::spawn(config.listen.port, events.clone(), sets);
             tasks.extend(listen_tasks);
             listen
         });

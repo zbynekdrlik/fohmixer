@@ -1,8 +1,11 @@
-"""SimLive's Listen devices (#210): the announce, the selects, the stream."""
+"""SimLive's Listen devices (#210): the announce, the polls, the stream."""
 
+import http.server
 import socket
 import struct
+import threading
 import unittest
+import urllib.parse
 
 import _simpath
 import host
@@ -27,9 +30,42 @@ def _site():
     return site_builder.build(_simpath.FIXTURE)
 
 
-def _select(device, turn=1):
-    head = listendev._string(listendev.SELECT_ADDRESS) + listendev._string(",ii")
-    return head + struct.pack(">ii", device, turn)
+class _FakeHub:
+    """The hub's select route: ``on`` names the selected devices; every
+    question is kept (its path and query)."""
+
+    def __init__(self):
+        self.on = set()
+        self.asked = []
+        hub = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 (http.server's name)
+                url = urllib.parse.urlsplit(self.path)
+                hub.asked.append(self.path)
+                device = urllib.parse.parse_qs(url.query).get("device", ["-1"])[0]
+                body = b'{"on":true}' if int(device) in hub.on else b'{"on":false}'
+                if url.path != listendev.SELECT_PATH:
+                    self.send_response(404)
+                    body = b'{"code":"NOT_FOUND"}'
+                else:
+                    self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self.server.server_address[1]
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
 
 
 class EncodeTest(unittest.TestCase):
@@ -39,11 +75,18 @@ class EncodeTest(unittest.TestCase):
         )
         self.assertEqual(data.hex(), listendev.GOLDEN_ANNOUNCE_HEX)
 
-    def test_a_select_reads_and_anything_else_does_not(self):
-        self.assertEqual(listendev.parse_select(_select(7)), 7)
-        self.assertEqual(listendev.parse_select(_select(0, 3)), 0)
-        self.assertIsNone(listendev.parse_select(_select(7) + b"\0\0\0\0"))
-        self.assertIsNone(listendev.parse_select(b"/fohmixer/lufs\0\0"))
+    def test_only_an_on_answer_selects_the_device(self):
+        self.assertTrue(listendev.answers_on(b'{"on":true}'))
+        self.assertTrue(listendev.answers_on(b'{"on": true}'))
+        self.assertFalse(listendev.answers_on(b'{"on":false}'))
+        self.assertFalse(listendev.answers_on(b""))
+        self.assertFalse(listendev.answers_on(b"<html>true</html>"))
+        self.assertFalse(listendev.answers_on(b"[true]"))
+        self.assertFalse(listendev.answers_on(b'{"code":"LOOPBACK_ONLY"}'))
+        self.assertEqual(
+            listendev.select_url(8480, 7), "http://127.0.0.1:8480/api/listen/select?device=7"
+        )
+        self.assertEqual((listendev.POLL_S, listendev.SELECT_HOLD_S), (0.25, 1.0))
 
     def test_a_matrix_chunk_is_laid_out_as_jitters(self):
         data = listendev.encode_matrix([0.5, 0.25] * 4, 2, 2, 12.5)
@@ -79,23 +122,22 @@ class StreamTest(unittest.TestCase):
         self.hub_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.hub_udp.bind(("127.0.0.1", port))
         self.hub_udp.settimeout(5.0)
-        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        probe.bind(("127.0.0.1", 0))
-        self.select_port = probe.getsockname()[1]
-        probe.close()
+        self.hub = _FakeHub()
         self.clock = _Clock()
-        self.devs = listendev.ListenDevices(self.song, port, self.select_port, self.clock)
+        self.devs = listendev.ListenDevices(self.song, port, self.hub.port, self.clock, polls=False)
         self.devs.start()
         self.devs._timer.stop()
-        self.sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     def tearDown(self):
         self.devs.stop()
-        for sock in (self.hub_tcp, self.hub_udp, self.sender):
+        self.hub.close()
+        for sock in (self.hub_tcp, self.hub_udp):
             sock.close()
 
-    def select(self, device):
-        self.sender.sendto(_select(device), ("127.0.0.1", self.select_port))
+    def select(self, *devices):
+        """The hub selects ``devices``; every device asks once."""
+        self.hub.on = set(devices)
+        self.devs.poll_once()
 
     def tick_until(self, check):
         for _ in range(200):
@@ -128,6 +170,7 @@ class StreamTest(unittest.TestCase):
         self.assertEqual(device.streamed % listendev.FRAME, 0)
         # Another device selected: this one stops at once.
         self.select(device.id + 100)
+        self.assertEqual(self.hub.asked[-1], f"{listendev.SELECT_PATH}?device={device.id}")
         self.tick_until(lambda: not device.sending(self.clock.now))
         before = device.streamed
         self.clock.now += 1.0
@@ -135,12 +178,52 @@ class StreamTest(unittest.TestCase):
         self.assertEqual(device.streamed, before)
         conn.close()
 
-    def test_a_device_stops_after_the_hold_with_no_select(self):
+    def test_a_device_stops_after_the_hold_with_no_answer(self):
         device = self.devs.add(self.song.tracks[0], rack=False)
         self.select(device.id)
         self.tick_until(lambda: device.sending(self.clock.now))
         self.clock.now += listendev.SELECT_HOLD_S
         self.assertFalse(device.sending(self.clock.now))
+
+    def test_two_devices_of_one_host_are_each_told_on_their_own(self):
+        # #210, the PC: one UDP select port reached only one device of a
+        # Live. Each device asks for itself now.
+        first = self.devs.add(self.song.tracks[0], rack=True)
+        second = self.devs.add(self.song.tracks[1], rack=True)
+        self.select(second.id)
+        self.devs.tick()
+        self.assertEqual(
+            (first.sending(self.clock.now), second.sending(self.clock.now)), (False, True)
+        )
+        self.select(first.id)
+        self.devs.tick()
+        self.assertEqual(
+            (first.sending(self.clock.now), second.sending(self.clock.now)), (True, False)
+        )
+        asked = {q.rsplit("=", 1)[1] for q in self.hub.asked}
+        self.assertEqual(asked, {str(first.id), str(second.id)})
+
+    def test_a_failed_request_stops_the_device(self):
+        device = self.devs.add(self.song.tracks[0], rack=False)
+        self.select(device.id)
+        self.devs.tick()
+        self.assertTrue(device.sending(self.clock.now))
+        self.hub.close()
+        self.devs.poll_once()
+        self.devs.tick()
+        self.assertFalse(device.sending(self.clock.now))
+
+    def test_no_hub_port_asks_nothing(self):
+        port = self.hub_udp.getsockname()[1]
+        devs = listendev.ListenDevices(self.song, port, None, self.clock, polls=False)
+        devs.start()
+        devs._timer.stop()
+        self.addCleanup(devs.stop)
+        device = devs.add(self.song.tracks[0], rack=False)
+        devs.poll_once()
+        devs.tick()
+        self.assertFalse(device.sending(self.clock.now))
+        self.assertEqual(self.hub.asked, [])
 
     def test_the_owed_frames_are_whole_and_bounded(self):
         device = listendev.ListenDevice(1, None, None)
@@ -173,6 +256,13 @@ class LineTest(unittest.TestCase):
 
     def line(self, text):
         return host.control(self.mt, self.song, text, {}, None, self.devs)
+
+    def test_listenhub_sets_the_hubs_port(self):
+        self.assertEqual(self.line("listenhub 8480"), "LISTENHUB 8480")
+        self.assertEqual(self.devs.hub_port, 8480)
+        for bad in ("listenhub", "listenhub 0", "listenhub 65536", "listenhub x", "listenhub 1 2"):
+            self.assertEqual(self.line(bad), "LISTENHUB -1", bad)
+        self.assertEqual(self.devs.hub_port, 8480)
 
     def test_listendev_tone_and_streamed(self):
         self.assertEqual(self.line("listendev track 1 add rack"), "LISTENDEV 1")

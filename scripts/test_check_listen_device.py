@@ -14,7 +14,14 @@ import check_listen_device as cl  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 TEXT = (ROOT / cl.MAXPAT).read_text(encoding="utf-8")
 VERSION = (ROOT / cl.VERSION_TXT).read_text(encoding="utf-8").strip()
-NUMBERS = {"port": 39111, "select": 39112, "frame": 960, "hold": 1500}
+NUMBERS = {
+    "port": 39111,
+    "frame": 960,
+    "hold": 1000,
+    "poll": 250,
+    "hub": 8480,
+    "path": "/api/listen/select",
+}
 
 
 def errors(text: str, version: str = VERSION, numbers: dict | None = None) -> list[str]:
@@ -37,12 +44,14 @@ class ListenDeviceTests(unittest.TestCase):
         self.assertEqual(cl.check(ROOT), [])
         self.assertEqual(cl.numbers_of(ROOT), NUMBERS)
 
-    def test_the_ports_frame_and_hold_must_match_the_hubs(self) -> None:
+    def test_the_ports_frame_hold_and_poll_must_match_the_hubs(self) -> None:
         for name, word in (
             ("port", "jit.net.send"),
-            ("select", "udpreceive"),
             ("frame", "jit.catch~"),
             ("hold", "delay"),
+            ("poll", "metro"),
+            ("hub", "sprintf"),
+            ("path", "sprintf"),
         ):
             found = errors(TEXT, numbers={**NUMBERS, name: 1})
             self.assertTrue(any(word in e for e in found), (name, found))
@@ -155,12 +164,39 @@ class ListenDeviceTests(unittest.TestCase):
             want = f"p: the line {src[0]}:{src[1]} -> {dst[0]}:{dst[1]} is missing"
             self.assertIn(want, found)
 
-    def test_a_select_of_zero_never_matches_a_device_without_its_id(self) -> None:
+    def test_only_an_on_answer_selects(self) -> None:
         def zero(p: dict) -> None:
-            box(p, "obj-select-mine")["text"] = "== 0"
+            box(p, "obj-poll-sel")["text"] = "sel 0"
 
         found = errors(edited(zero))
-        self.assertIn("p: obj-select-mine must be '== -1', has ['==', '0']", found)
+        self.assertIn("p: obj-poll-sel must be 'sel 1', has ['sel', '0']", found)
+
+    def test_the_select_is_never_a_udp_port_again(self) -> None:
+        def udp(p: dict) -> None:
+            p["boxes"].append(
+                {
+                    "box": {
+                        "id": "obj-u",
+                        "maxclass": "newobj",
+                        "text": "udpreceive 39112",
+                        "numinlets": 1,
+                        "numoutlets": 1,
+                        "outlettype": [""],
+                    }
+                }
+            )
+
+        found = errors(edited(udp))
+        self.assertIn("p: a udpreceive (the select is asked over HTTP)", found)
+
+    def test_the_poll_boxes_are_the_ones_wired(self) -> None:
+        def swapped(p: dict) -> None:
+            box(p, "obj-poll-metro")["text"] = "delay 1000"
+            box(p, "obj-select-hold")["text"] = "metro 250"
+
+        found = errors(edited(swapped))
+        self.assertIn("p: obj-poll-metro must be 'metro 250'", found)
+        self.assertIn("p: obj-select-hold must be 'delay 1000'", found)
 
     def test_only_the_listen_id_names_the_device(self) -> None:
         def max_id(p: dict) -> None:
@@ -174,6 +210,12 @@ class ListenDeviceTests(unittest.TestCase):
     def test_constants_read_with_underscores(self) -> None:
         self.assertEqual(cl.constant("pub const X: u32 = 48_000;\n", "X"), 48000)
         self.assertIsNone(cl.constant("pub const Y: u32 = 1;\n", "X"))
+        self.assertEqual(cl.text_constant('pub const P: &str = "/a/b";\n', "P"), "/a/b")
+        self.assertIsNone(cl.text_constant('pub const Q: &str = "/a";\n', "P"))
+        self.assertEqual(
+            cl.poll_url(8480, "/api/listen/select"),
+            "http://127.0.0.1:8480/api/listen/select?device=%ld",
+        )
 
     def test_main_reports_and_exits(self) -> None:
         self.assertEqual(cl.main(["--root", str(ROOT)]), 0)
