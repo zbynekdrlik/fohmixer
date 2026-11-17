@@ -14,11 +14,14 @@
 //!
 //! A push for a Live key the table already knows is applied to its entries at
 //! once, but a NEW hub key joining that Live key in the batch (#244: a
-//! `…|true` beside a `…|false`) is not linked yet and misses it. So for each
-//! known key the last push of the frames numbered here is heard too (its
-//! value and display, one per key), and at the result the joining key takes
-//! it instead of the result's value when it arrived after the batch was sent
-//! (`newer_push`): one Live key, one value across its hub keys.
+//! `…|true` beside a `…|false`) is not linked yet and misses it, and a key
+//! resolved again on its own Live key gets it, then the result's older read
+//! (#245). So for each known key the last push of the frames numbered here
+//! is heard too (its value and display, one per key), and at the result
+//! every key resolved onto that Live key takes it instead of the result's
+//! value when it arrived after the batch was sent (`newer_push`), whether or
+//! not another key holds it then: one Live key, one value across its hub
+//! keys.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -61,8 +64,8 @@ pub struct Kept {
     heard: HashMap<String, (u64, LiveValue)>,
 }
 
-/// What a new hub key joining a Live key another entry already holds takes
-/// at its batch's result (#244): the last push heard for that Live key when
+/// What a hub key resolved onto a Live key takes at its batch's result
+/// (#244, #245): the last push heard for that Live key when
 /// it arrived after the batch was sent (`mark`) and carries what the key
 /// shows; else none, and the key takes the result's value. A push from
 /// before the send may be older than the result's read. So is one without a
@@ -119,14 +122,14 @@ impl Kept {
         overflow
     }
 
-    /// The push a key joining the Live key `live` takes at the result of a
-    /// batch sent at `mark` (`newer_push`), if any.
+    /// The push a key resolved onto the Live key `live` takes at the result
+    /// of a batch sent at `mark` (`newer_push`), if any.
     pub fn heard_after(&self, live: &str, mark: u64, wants_display: bool) -> Option<&LiveValue> {
         newer_push(self.heard.get(live), mark, wants_display)
     }
 
-    /// Forgets what was heard for `live`: no entry holds it any more, or its
-    /// listener ended (an error pushed).
+    /// Forgets what was heard for `live`: its listener ended (an error
+    /// pushed). A Live key no entry holds any more keeps it (#245).
     pub fn forget(&mut self, live: &str) {
         self.heard.remove(live);
     }
