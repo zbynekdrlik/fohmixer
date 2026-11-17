@@ -18,7 +18,10 @@ devices (`../FohMixer-LUFS/README.md`).
   port, `parse_type json`); an answer whose `on` is true selects it, any
   other answer stops it, and with no answer it stops 1 s after the last
   `on`. Each device asks for itself: one UDP select port shared by every
-  device reached only one of them on the PC (#210).
+  device reached only one of them on the PC (#210). The poll is a
+  `qmetro 250` and the hold's end goes through a `deferlow` (#240): Max for
+  Live runs its scheduler inside Live's audio thread, so no request, and no
+  hello it leads to, starts there.
 - **Selected**: it sends its hello
   (`fohmixer_listen 1 <id> v<version> <sample rate>`) through `jit.net.send`'s
   right inlet, then a `qmetro 10` bangs `jit.catch~ 2 @mode 1 @framesize 960`,
