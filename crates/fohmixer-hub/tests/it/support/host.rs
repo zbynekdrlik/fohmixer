@@ -303,6 +303,17 @@ impl Host {
             .unwrap_or_else(|| panic!("not a LISTENERS line: {answer}"))
     }
 
+    /// A `drain` line (#243): `hold`, `resume`, `step` or `ticks <n>` (the
+    /// script's command drain held, stepped one command, resumed; timer
+    /// ticks waited for); the answer after `DRAIN `.
+    pub fn drain(&mut self, args: &str) -> String {
+        let answer = self.answer(&format!("drain {args}"));
+        answer
+            .strip_prefix("DRAIN ")
+            .map(str::to_string)
+            .unwrap_or_else(|| panic!("not a DRAIN line: {answer}"))
+    }
+
     /// Asks the host to stop (SIGTERM) and waits for it (bounded).
     pub fn stop(mut self) -> ExitStatus {
         self.request_stop()

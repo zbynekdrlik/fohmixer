@@ -31,12 +31,25 @@ for each patch:
   its slots from its one source (`slot_errors`: the device's id, the two
   values);
 - the identity: the `live.path` messages for the device and its first four
-  canonical parents, read once at load and again only on a change
-  (`identity_errors`, #240: a `live.observer` on each parent's `name`, fed
-  by `live.path`'s path-following outlet; no timed box upstream of any LOM
-  object, no `live.object`), the names into the pack's cold inlets;
-- no `metro` or `qmetro` at all (the send follows the audio, the identity
-  its changes);
+  canonical parents, read at load, on a change and every 10 s
+  (`identity_errors`, #240: `live.path`'s path-following outlet and a
+  `live.observer` on the `name` of parents 1 to 3 each trigger a read, each
+  parent's `route id` takes both `live.path` outlets, the left at every
+  `path` message as before #240, the middle on a follow; the set is read at
+  load, on its follow and by the clock; the PC proof's attempt 2 showed
+  the follow misses a move into a chain, so the identity's own clock sends
+  the four parents' `path` messages again every 10 s: `random 10000` drawn
+  at load -> `delay` -> `deferlow` -> `1` -> `qmetro 10000` -> `t b b b b`,
+  each device at its own offset, on the low-priority queue, each of its
+  boxes once and its lines in and out exactly these (`clock_errors`); no
+  other timed box upstream of any LOM object, a faster clock included),
+  each name from `live.object` `get name` -> `route name` -> `zl reg` ->
+  `tosymbol` into the pack's cold inlets, never from an
+  observer's output (`value_errors`: the FINDING of 2026-11-17, an
+  observer's output kept a name with a space in quotes and read the set as
+  `-`, so no device matched);
+- no `metro` or `qmetro` but the identity's `qmetro 10000` (the send
+  follows the audio);
 - every patch line joins two boxes of the patch within their outlets and
   inlets;
 - the LUFS device only: one `gen~` with one codebox whose code equals
@@ -243,9 +256,10 @@ def patch_errors(
         errors += identity_errors(where, patcher, every, sink)
         errors += slot_errors(where, patcher, every, sink, send_from)
     errors += [
-        f"{where}: {b.get('id')} ('{b.get('text')}') runs on a clock (the device has none)"
+        f"{where}: {b.get('id')} ('{b.get('text')}') runs on a clock (the device has none "
+        "but the identity's)"
         for b in every
-        if kind(b) in ("metro", "qmetro")
+        if kind(b) in ("metro", "qmetro") and not is_identity_clock(b)
     ]
     shown = [b.get("text") for b in every if b.get("varname") == "version"]
     if shown != [f"v{version}"]:
@@ -471,21 +485,64 @@ def thread_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
     return errors
 
 
-# The identity (#240): read once at load and again only on a change. The
+# The identity (#240): read at load, on a change and every 10 s. The
 # load: `live.thisdevice` -> `deferlow` -> `obj-id-load` (`t b b b b b b`:
 # the observers' property first, then the device's path, then the four
-# parents' paths). Each parent: its path into a `live.path` whose middle
-# outlet (it follows the path: a new id when another object comes there)
-# goes through `route id` into `t i i`: the id first into the
-# `live.observer`'s right inlet (`prepend id`; `id 0` stops observing),
-# then `sel 0`, whose match sends `-`. The observer's value (the name, now
-# and at each change) and the `-` go through `tosymbol` into the sink's
-# cold inlet (4 + the parent's level - 1), which keeps it for every send.
+# parents' paths). Each parent: its path into a `live.path` whose left
+# outlet (the id at every `path` message) and middle outlet (it follows the
+# path: a new id when another object comes there) go through `route id`
+# into a `t`: the id first into the `live.object`'s
+# right inlet (`prepend id`), then (parents 1 to 3) into the
+# `live.observer`'s (`id 0` stops observing), then into `sel 0`. An id
+# reads the name (`t b b b`: `-` into the `zl reg`, `get name` into the
+# `live.object`, whose `route name` overwrites it, then the `zl reg`
+# banged); 0 stores and sends `-` (`t b b`). The observer's output (the
+# name at its id and at each rename) only bangs the same read (`t b`):
+# never a value. The values take the path the PC proved before #240,
+# `live.object` -> `route name` -> `zl reg` -> `tosymbol` into the sink's
+# cold inlet (4 + the parent's level - 1), which keeps it for every send:
+# an observer's output kept a name with a space in literal quotes (the
+# FINDING of 2026-11-17). The set (parent 4) read `-` there too, and the
+# pack's own default is `-`, so either its observer reported nothing or
+# its `live.path`'s middle outlet never gave an id: the set has no
+# observer. Every parent takes its id from both of its `live.path`'s
+# outlets into its `route id`: the left answers every `path` message (the
+# load's and the 10 s re-read's), as the devices before #240 read it every
+# second for months on the PC; the middle answers the follow. Nothing else
+# takes either outlet.
+#
+# The follow misses a move into another chain (the PC proof's attempt 2 on
+# #240: a moved device kept its old parents for over 30 s), so the identity
+# has one clock of its own (the DECIDED of 2026-11-17): `live.thisdevice`
+# -> `random 10000` (an offset drawn once at load, so devices loaded
+# together read at different instants) -> `delay` (its left inlet takes the
+# offset as its time) -> `deferlow` -> `1` -> `qmetro 10000` (the
+# low-priority queue) -> `t b b b b`, which sends the four parents' `path`
+# messages again in the load's order: each `live.path` resolves its path
+# anew, its left outlet gives the id, and the same read follows. It is the
+# only clock allowed upstream of a LOM object, at exactly 10 s.
 ID_LOAD = "obj-id-load"
 ID_DEFER = "obj-id-defer"
 ID_PROPERTY = "obj-id-property"
 FOLLOWS_PATH = 1
+FOLLOWS_OBJECT = 0
 LOM = ("live.path", "live.object", "live.observer")
+# The parents whose `name` a `live.observer` reports; the set is the last.
+OBSERVED = range(1, PARENTS)
+# The identity's clock (#240): the re-read's period, the offset's range.
+REREAD_MS = 10000
+ID_OFFSET = "obj-id-offset"
+ID_OFFSET_DELAY = "obj-id-offset-delay"
+ID_CLOCK_DEFER = "obj-id-clock-defer"
+ID_CLOCK_START = "obj-id-clock-start"
+ID_CLOCK = "obj-id-clock"
+ID_CLOCK_WORDS = ["qmetro", str(REREAD_MS)]
+ID_TICK = "obj-id-tick"
+
+
+def is_identity_clock(box: dict) -> bool:
+    """The identity's own clock: `obj-id-clock`, exactly `qmetro 10000`."""
+    return box.get("id") == ID_CLOCK and words(box) == ID_CLOCK_WORDS
 
 
 def identity_boxes() -> dict[str, list[str]]:
@@ -497,20 +554,38 @@ def identity_boxes() -> dict[str, list[str]]:
         "obj-id-path": IDENTITY[0].split(),
         "obj-id-live-path": ["live.path"],
         "obj-id-route": ["route", "id"],
+        ID_OFFSET: ["random", str(REREAD_MS)],
+        ID_OFFSET_DELAY: ["delay"],
+        ID_CLOCK_DEFER: ["deferlow"],
+        ID_CLOCK_START: ["1"],
+        ID_CLOCK: ID_CLOCK_WORDS,
+        ID_TICK: ["t", *["b"] * PARENTS],
     }
     for level in range(1, PARENTS + 1):
         name = f"obj-parent{level}"
+        observed = level in OBSERVED
         found |= {
             f"{name}-path": IDENTITY[level].split(),
             f"{name}-live-path": ["live.path"],
             f"{name}-route-id": ["route", "id"],
-            f"{name}-t": ["t", "i", "i"],
+            f"{name}-t": ["t", "i", "i", "i"] if observed else ["t", "i", "i"],
             f"{name}-prepend": ["prepend", "id"],
-            f"{name}-observer": ["live.observer"],
             f"{name}-sel": ["sel", "0"],
+            f"{name}-empty": ["t", "b", "b"],
+            f"{name}-read": ["t", "b", "b", "b"],
             f"{name}-none": ["-"],
+            f"{name}-get": ["get", "name"],
+            f"{name}-object": ["live.object"],
+            f"{name}-route-name": ["route", "name"],
+            f"{name}-reg": ["zl", "reg"],
             f"{name}-symbol": ["tosymbol"],
         }
+        if observed:
+            found |= {
+                f"{name}-observe": ["prepend", "id"],
+                f"{name}-observer": ["live.observer"],
+                f"{name}-changed": ["t", "b"],
+            }
     return found
 
 
@@ -523,27 +598,56 @@ def identity_wiring(sink: str) -> dict[tuple[str, int], list[tuple[str, int]]]:
         ("obj-id-path", 0): [(ID_LOAD, PARENTS)],
         ("obj-id-live-path", 0): [("obj-id-path", 0)],
         ("obj-id-route", 0): [("obj-id-live-path", 0)],
+        (ID_OFFSET, 0): [("obj-thisdevice", 0)],
+        (ID_OFFSET, 1): [],
+        (ID_OFFSET_DELAY, 0): [(ID_OFFSET, 0)],
+        (ID_OFFSET_DELAY, 1): [],
+        (ID_CLOCK_DEFER, 0): [(ID_OFFSET_DELAY, 0)],
+        (ID_CLOCK_START, 0): [(ID_CLOCK_DEFER, 0)],
+        (ID_CLOCK_START, 1): [],
+        (ID_CLOCK, 0): [(ID_CLOCK_START, 0)],
+        (ID_CLOCK, 1): [],
+        (ID_TICK, 0): [(ID_CLOCK, 0)],
     }
     for level in range(1, PARENTS + 1):
         name = f"obj-parent{level}"
+        observed = level in OBSERVED
+        reads = [(f"{name}-sel", 1)] + ([(f"{name}-changed", 0)] if observed else [])
         found |= {
-            (f"{name}-path", 0): [(ID_LOAD, PARENTS - level)],
+            (f"{name}-path", 0): [(ID_LOAD, PARENTS - level), (ID_TICK, PARENTS - level)],
             (f"{name}-live-path", 0): [(f"{name}-path", 0)],
-            (f"{name}-route-id", 0): [(f"{name}-live-path", FOLLOWS_PATH)],
+            (f"{name}-route-id", 0): [
+                (f"{name}-live-path", FOLLOWS_OBJECT),
+                (f"{name}-live-path", FOLLOWS_PATH),
+            ],
             (f"{name}-t", 0): [(f"{name}-route-id", 0)],
-            (f"{name}-prepend", 0): [(f"{name}-t", 1)],
-            (f"{name}-observer", 0): [(ID_PROPERTY, 0)],
-            (f"{name}-observer", 1): [(f"{name}-prepend", 0)],
+            (f"{name}-prepend", 0): [(f"{name}-t", 2 if observed else 1)],
+            (f"{name}-object", 1): [(f"{name}-prepend", 0)],
             (f"{name}-sel", 0): [(f"{name}-t", 0)],
-            (f"{name}-none", 0): [(f"{name}-sel", 0)],
-            (f"{name}-symbol", 0): [(f"{name}-observer", 0), (f"{name}-none", 0)],
+            (f"{name}-empty", 0): [(f"{name}-sel", 0)],
+            (f"{name}-read", 0): reads,
+            (f"{name}-none", 0): [(f"{name}-read", 2), (f"{name}-empty", 1)],
+            (f"{name}-get", 0): [(f"{name}-read", 1)],
+            (f"{name}-object", 0): [(f"{name}-get", 0)],
+            (f"{name}-route-name", 0): [(f"{name}-object", 0)],
+            (f"{name}-reg", 0): [(f"{name}-read", 0), (f"{name}-empty", 0)],
+            (f"{name}-reg", 1): [(f"{name}-route-name", 0), (f"{name}-none", 0)],
+            (f"{name}-symbol", 0): [(f"{name}-reg", 0)],
             (sink, 3 + level): [(f"{name}-symbol", 0)],
         }
+        if observed:
+            found |= {
+                (f"{name}-observe", 0): [(f"{name}-t", 1)],
+                (f"{name}-observer", 0): [(ID_PROPERTY, 0)],
+                (f"{name}-observer", 1): [(f"{name}-observe", 0)],
+                (f"{name}-changed", 0): [(f"{name}-observer", 0)],
+            }
     return found
 
 
 def identity_errors(where: str, patcher: dict, every: list[dict], sink: str) -> list[str]:
-    """The identity read at load and on a change, never on a clock."""
+    """The identity read at load, on a change and by its own 10 s clock,
+    never by another clock, its values from `live.object`."""
     ids = {b.get("id"): b for b in every}
     errors = [
         f"{where}: {box} must be '{' '.join(want)}', has {words(ids.get(box, {}))}"
@@ -557,28 +661,123 @@ def identity_errors(where: str, patcher: dict, every: list[dict], sink: str) -> 
             errors.append(f"{where}: {box}:{inlet} takes {want} alone, has {fed}")
     for level in range(1, PARENTS + 1):
         box = f"obj-parent{level}-live-path"
+        for outlet in (FOLLOWS_OBJECT, FOLLOWS_PATH):
+            out = sorted(
+                item["patchline"]["destination"]
+                for item in patcher.get("lines", [])
+                if item.get("patchline", {}).get("source") == [box, outlet]
+            )
+            if out != [[f"obj-parent{level}-route-id", 0]]:
+                errors.append(
+                    f"{where}: {box}'s outlet {outlet} goes into its route id alone, has {out}"
+                )
+    errors += [
+        f"{where}: the set (parent {PARENTS}) has no observer (it reads at load and follow), "
+        f"has {b.get('id')}"
+        for b in every
+        if b.get("id") == f"obj-parent{PARENTS}-observer"
+    ]
+    errors += value_errors(where, patcher, every, sink)
+    errors += clock_errors(where, patcher, every)
+    errors += lom_clock_errors(where, patcher, every)
+    return errors
+
+
+def clock_outputs() -> dict[str, list[list]]:
+    """Each box of the identity's clock and the only lines out of it
+    ([its outlet, the destination box, its inlet])."""
+    chain = [ID_OFFSET, ID_OFFSET_DELAY, ID_CLOCK_DEFER, ID_CLOCK_START, ID_CLOCK, ID_TICK]
+    found = {chain[i]: [[0, chain[i + 1], 0]] for i in range(len(chain) - 1)}
+    found[ID_TICK] = sorted(
+        [PARENTS - level, f"obj-parent{level}-path", 0] for level in range(1, PARENTS + 1)
+    )
+    return found
+
+
+def clock_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
+    """The identity's clock is exempt from `lom_clock_errors`, so it may
+    drive nothing but the parents' paths (the review of the 10 s re-read:
+    a LOM read fed from the clock or the tick passed every other check):
+    each of its boxes once, the lines out of each exactly
+    `clock_outputs`."""
+    errors = []
+    for box, want in clock_outputs().items():
+        count = sum(1 for b in every if b.get("id") == box)
+        if count != 1:
+            errors.append(f"{where}: {box} must be one box, has {count}")
+        out = sorted(
+            [line["source"][1], *line["destination"]]
+            for line in (item.get("patchline", {}) for item in patcher.get("lines", []))
+            if line.get("source", [None])[0] == box
+        )
+        if out != want:
+            errors.append(f"{where}: {box} outputs into {want} alone, has {out}")
+    return errors
+
+
+def value_inlets(box: dict) -> tuple[int, ...] | None:
+    """The inlets through which a box's input can reach its output as a
+    value: none for a `t` of bangs alone; a message box's right inlet (it
+    sets the text the next bang sends) and its left one only when its text
+    holds a `$` argument; every inlet of any other box."""
+    found = words(box)
+    if box.get("maxclass") == "message":
+        return (0, 1) if "$" in str(box.get("text", "")) else (1,)
+    if found[:1] in (["t"], ["trigger"]) and len(found) > 1 and set(found[1:]) == {"b"}:
+        return ()
+    return None
+
+
+def value_errors(where: str, patcher: dict, every: list[dict], sink: str) -> list[str]:
+    """Each parent slot's value comes from `live.object` `get name` ->
+    `route name` -> `zl reg` -> `tosymbol` (the path the PC proved), never
+    from an observer's output: no `live.observer` reaches a slot through
+    a value inlet (`value_inlets`: a `t b` or a plain message's bang ends
+    the walk), and every observer outputs into its `t b` alone."""
+    ids = {b.get("id"): b for b in every}
+    errors = []
+    for level in range(1, PARENTS + 1):
+        name = f"obj-parent{level}"
+        chain = [f"{name}-object", f"{name}-route-name", f"{name}-reg", f"{name}-symbol"]
+        found = [kind(ids.get(box, {})) for box in chain]
+        if found != ["live.object", "route", "zl", "tosymbol"] or feeds(
+            patcher, sink, 3 + level
+        ) != [[chain[-1], 0]]:
+            errors.append(
+                f"{where}: {sink}:{3 + level} takes its value from live.object -> route name "
+                f"-> zl reg -> tosymbol ({' -> '.join(chain)}), has {found}"
+            )
+        observers = upstream(
+            patcher, ids, [(sink, 3 + level)], value_inlets, ("live.observer",), ends=()
+        )
+        errors += [
+            f"{where}: the observer {src} reaches {sink}:{3 + level} by its "
+            "output (an observer only triggers the read)"
+            for src in observers
+        ]
+    for observer in every:
+        if kind(observer) != "live.observer":
+            continue
         out = sorted(
             item["patchline"]["destination"]
             for item in patcher.get("lines", [])
-            if item.get("patchline", {}).get("source") == [box, 0]
+            if item.get("patchline", {}).get("source", [None])[0] == observer.get("id")
         )
-        if out:
+        targets = [ids.get(dst[0], {}) for dst in out]
+        if len(out) != 1 or out[0][1] != 0 or words(targets[0]) != ["t", "b"]:
             errors.append(
-                f"{where}: {box}'s left outlet (it follows the object) goes nowhere, has {out}"
+                f"{where}: the observer {observer.get('id')} outputs into one 't b' alone "
+                f"(a trigger of the read), has {out}"
             )
-    errors += [
-        f"{where}: {b.get('id')} is a live.object (the names come from live.observer)"
-        for b in every
-        if kind(b) == "live.object"
-    ]
-    errors += lom_clock_errors(where, patcher, every)
     return errors
 
 
 def lom_clock_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
     """A timed box anywhere upstream of a LOM object (any inlet; a
     `deferlow` changes the thread, not the rate): each would call Live
-    again and again."""
+    again and again. The identity's own clock (`is_identity_clock`, its
+    boxes and lines pinned by `identity_wiring`) is the one exception; any
+    other, a faster one included, is named."""
     ids = {b.get("id"): b for b in every}
     clocks = (*TIMED, "qmetro")
     errors = []
@@ -586,10 +785,12 @@ def lom_clock_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
         if kind(lom) not in LOM:
             continue
         for src in upstream(patcher, ids, [(lom.get("id"), None)], lambda _: None, clocks, ends=()):
+            if is_identity_clock(ids[src]):
+                continue
             errors.append(
                 f"{where}: {src} ('{ids[src].get('text')}') drives the "
                 f"{kind(lom)} {lom.get('id')} (the identity is read at "
-                "load and on a change only)"
+                "load, on a change and by its own 10 s clock only)"
             )
     return errors
 

@@ -11,8 +11,15 @@ devices (`../FohMixer-LUFS/README.md`).
   id mixed with a random number drawn at load so the PC's two Lives never
   share one, `v<version>`,
   its four canonical parents' names, Live's sample rate, whether it streams).
-  The names are read at load and again only on a change (#240: a
-  `live.observer` on each parent's `name`, the LUFS devices' identity); the
+  The names are read at load, on a change and every 10 s (#240, the LUFS
+  devices' identity: `live.object` `get name` for each parent, read when its
+  path gives an id (both `live.path` outlets: the left at every `path`
+  message, the middle on a follow) and when a `live.observer` on its `name`
+  reports, the observer's output only a trigger; the set has no observer;
+  a `qmetro 10000` started
+  after a random offset drawn at load sends the parents' paths again, so a
+  move the follow misses is followed within 10 s; the format is proved only
+  on the PC, `../FohMixer-LUFS/README.md`); the
   announce resends the stored ones each second (the hub forgets a device
   after 3 s) and asks Live nothing.
   `jit.catch~` keeps copying the signal into its own buffer; nothing is

@@ -317,6 +317,12 @@ impl HubInner {
         let _ = self.router.send(msg);
     }
 
+    /// Sends a message to the router; false once the router has stopped
+    /// (#246: a page's session then closes the page itself).
+    pub fn try_route(&self, msg: RouterMsg) -> bool {
+        self.router.send(msg).is_ok()
+    }
+
     /// A new client connection id (1, 2, …; 0 is the router's own).
     pub fn next_client(&self) -> u64 {
         self.next_client.fetch_add(1, Ordering::Relaxed)
@@ -785,6 +791,10 @@ impl Hub {
             script_watch::live_running,
             script_watch::CHECK_EVERY,
         )));
+        // The layout file is read before the hub serves: a request right
+        // after the start finds it (a 503 `NO_LAYOUT` until the poll task's
+        // first tick ran, on a loaded box), and the router gets it first.
+        layout_check(&layout, &router_tx);
         tasks.push(tokio::spawn(poll_layout(
             Arc::clone(&layout),
             router_tx.clone(),
@@ -914,6 +924,18 @@ fn remote_http() -> anyhow::Result<http_client::HttpClient> {
     http_client::HttpClient::new()
 }
 
+/// Reads the layout file once: a new layout goes to the router. `false`
+/// when the router is gone.
+fn layout_check(layout: &LayoutStore, router: &mpsc::UnboundedSender<RouterMsg>) -> bool {
+    let Some(rev) = layout.poll() else {
+        return true;
+    };
+    let (served, stage_ctrl) = layout.served();
+    router
+        .send(router::layout_msg(rev, served.as_deref(), stage_ctrl))
+        .is_ok()
+}
+
 /// Checks the layout file every `period`; a new layout goes to the router,
 /// and the router reads `sectors.json` (#148), `colors.json` (#164) and
 /// `mute_alarms.json` (#188) and `mute_guards.json` (#203) again.
@@ -926,14 +948,8 @@ async fn poll_layout(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tick.tick().await;
-        if let Some(rev) = layout.poll() {
-            let (served, stage_ctrl) = layout.served();
-            if router
-                .send(router::layout_msg(rev, served.as_deref(), stage_ctrl))
-                .is_err()
-            {
-                return;
-            }
+        if !layout_check(&layout, &router) {
+            return;
         }
         // The fader sectors' file rides the same tick (#148).
         if router.send(RouterMsg::SectorsPoll).is_err() {
@@ -1918,6 +1934,33 @@ mod tests {
             refused.to_string().contains("runs on Windows only"),
             "{refused}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_started_hub_serves_its_layout_file_before_any_task_ran() {
+        // The layout file is read in `Hub::start`, never only at the poll
+        // task's first tick: `serve_bounded` reports ready and answers
+        // requests right after the start, and a request before that tick
+        // was a 503 `NO_LAYOUT` (two `markers::` host tests failed so on a
+        // loaded box, their first `/api/layout` read). This test's runtime
+        // has one thread and nothing here yields, so no spawned task has
+        // run when the store is read.
+        let dir = tempfile::tempdir().unwrap();
+        let frame = serde_json::json!({
+            "schema": 2,
+            "default_page": "p",
+            "pages": [{"id": "p", "title": "P", "rows": [{"sections": [
+                {"kind": "group", "id": "vocals", "title": "VOCALS", "tags": "VOCALS"}
+            ]}]}]
+        });
+        std::fs::write(dir.path().join("layout.json"), frame.to_string()).unwrap();
+        let mut config = Config::defaults(dir.path());
+        config.instances.clear();
+        let hub = Hub::start(config).unwrap();
+        let (rev, served) = hub.layout.current();
+        assert_eq!(rev, 1);
+        assert!(served.is_some(), "{:?}", hub.layout.error());
+        hub.stop();
     }
 
     #[tokio::test]

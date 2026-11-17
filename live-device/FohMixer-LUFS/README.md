@@ -48,13 +48,79 @@ The parents name the device's place: on a track `[track, set, -, -]`, in a
 rack's chain `[chain, rack, track, set]`; the hub takes the last named one as
 the set and the one before it as the track (`fohmixer_proto::lufs::wire`).
 Max's `live.path` gives no absolute path (`getpath` echoes the path it was
-given), so the device reads its id and each parent's `name` instead, once at
-load on Max's low-priority thread (`deferlow`), and again only on a change
+given), so the device reads its id and each parent's `name` instead: at
+load on Max's low-priority thread (`deferlow`), on a change, and every 10 s
 (#240; the old read every second cost every device 9 LOM calls a second):
-each parent's `live.path` (its middle outlet follows the path, so a device
-moved elsewhere gets the new parent's id) binds a `live.observer` on that
-parent's `name`, which gives the name at once and at each rename; a path
-that holds nothing gives `-`. The whole
+each parent's `live.path` (both outlets into its `route id`: the left
+answers every `path` message, the load's and the 10 s re-read's, as the
+devices before #240 read every parent each second for months; the middle
+follows the path) sets that id into a `live.object`
+and reads `get name` → `route name` → `zl reg` → `tosymbol` into the
+parent's slot, the path the devices before #240 used; a path that holds
+nothing gives `-`. A `live.observer` on the `name` of parents 1 to 3 gives
+the name at once and at each rename, and its output only bangs that read
+(`t b`), never a value: through `live.observer` → `tosymbol` a name with a
+space kept literal double quotes and the set's level read `-`, so on the PC
+no device matched (the FINDING of 2026-11-17 on #240). The set (parent 4)
+read `-` there too, and the cause is not determined: the `pack`'s own
+default is `-`, so either its observer reported nothing or the middle
+outlet never gave an id for the set's path. So the set has no observer;
+like every parent, it takes its id from both of its `live.path`'s outlets.
+
+The follow does not cover every move: on the PC a device moved from its
+track into a rack's chain kept announcing its track and set for over 30 s
+(the PC proof's attempt 2 on #240). So each device sends its four parents'
+`path` messages again every 10 s (the DECIDED of 2026-11-17):
+`live.thisdevice` → `random 10000` (an offset drawn once at load) → `delay`
+→ `deferlow` → `1` → `qmetro 10000` → `t b b b b` → the paths, parent 1
+first and the set last, as at the load. Each `live.path` resolves its path
+anew, its left outlet gives the id, and the same `live.object` read
+follows, so a move is followed within
+10 s, on the low-priority queue, and the devices loaded together with a set
+read at their own instants. It is the only clock of the identity
+(`check_lufs_device.py` pins its boxes and every line into and out of
+them, and names any other clock, a faster one included). Per tick and
+device: 4 `live.path` resolves, then for each parent an id from the left
+outlet and possibly one from the middle, each setting the `live.object`
+(and the observer of parents 1 to 3, which may report once more) and
+reading `get name`: at most 8 ids, 6 observer sets and 14 `get name`, the
+same name read again: at most about 30 LOM calls every 10 s against the
+old 90 (5 paths and 4 names each second), a third or less. A `Listen`
+device in a rack that is off may keep
+this clock too (Max's scheduler may run on), so the PC's A/B includes the
+idle racks.
+
+**The identity's format is proved only on the PC** (CI checks which boxes
+are wired to which, never what Max outputs; `scripts/check_lufs_device.py`
+`value_errors` holds the value path). Before a changed device reaches a
+set:
+
+1. Copy its `.amxd` under a test name into the band user's
+   `Presets\Audio Effects\Max Audio Effect`.
+2. Pick a track whose existing device sits in a chain whose chain or rack
+   name holds a space, so the quote fault is exercised.
+3. Load the copy through the LOM (the hub's `cmd`: `load_item` appends it
+   to the selected track) and `move_device` it into that same chain, as the
+   rollout places a device (`.claude/rules/deploy-pc.md`): only there are
+   its parents the old device's.
+4. Read its announce from the hub (`/api/status` `lufs.devices`, or
+   `listen.devices` for Listen) **within 10 s of the move** (the 10 s
+   re-read follows a move the `live.path` follow misses; the attempt 2 of
+   #240 read the old parents for over 30 s): `parents` equal the old
+   device's, no quotes, and **the set's name last** (the decisive check:
+   the set read `-` in the failed rollout). For that moment two devices
+   announce the same parents. Its device id stays the one it announced
+   before the move. Move it once more (another chain, or back to the
+   track's end) and read the new parents within 10 s again; rename its
+   chain and read the new name within a second (the observer). A pass
+   proves that a `path` sent again gives the new parent's id (the left
+   outlet answers every `path` message, as before #240); old parents after
+   10 s mean it does not: record a FINDING on #240, roll nothing out and
+   save no set.
+5. Delete the copy from the chain, leave the set unsaved (the set file's
+   time unchanged) and delete the test `.amxd` from the Presets folder.
+
+The whole
 message is one `pack` (its slots cold, the identity cached in them), banged
 by `obj-send-trigger` (`t b f`) each time the last value comes out of its
 audio object's own clock (`snapshot~ 200` for the LUFS device, `peakamp~ 33`
@@ -84,7 +150,9 @@ cannot read the hub's config.
 object, on anything but silence into `plugout~`, on a `udpsend` other than
 one `udpsend 127.0.0.1 <DEFAULT_PORT>` (the hub's, read from
 `crates/fohmixer-proto/src/lufs/wire.rs`), on a `pack` with another address
-or version, on a missing identity message, on a line past a box's ports, on a
+or version, on a missing identity message, on an identity read on a clock
+or a name slot fed by anything but `live.object` → `route name` → `zl reg`
+→ `tosymbol` (an observer's output reaching it), on a line past a box's ports, on a
 face whose version is not `version.txt`, on an absolute file path, and for
 the LUFS patch when its embedded code differs from the `.genexpr`. A change to
 the DSP is made in the `.genexpr` and copied into the patcher's codebox (or

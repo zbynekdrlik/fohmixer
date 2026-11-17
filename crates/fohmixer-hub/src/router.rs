@@ -100,6 +100,9 @@ mod sectors;
 
 #[path = "router/colors.rs"]
 mod colors;
+#[cfg(test)]
+#[path = "router/kept_tests.rs"]
+mod kept_tests;
 #[path = "router/marks.rs"]
 mod marks;
 #[path = "router/scenes.rs"]
@@ -109,6 +112,9 @@ mod songmap;
 #[cfg(test)]
 #[path = "router/stage_tests.rs"]
 mod stage_tests;
+#[cfg(test)]
+#[path = "router/stop_tests.rs"]
+mod stop_tests;
 mod unfold;
 
 pub use claps::{CLAPS_CLIENT, ClapsSetup};
@@ -824,6 +830,10 @@ pub struct Router {
     beat: Beat,
 }
 
+/// The record of Live pushes the subscription table kept for a batch in
+/// flight and had to drop past its bound (#243; warn class).
+pub(crate) const KEPT_PUSHES: &str = "kept_pushes";
+
 /// The `link` record of a script's close with a reason (PR #146 review
 /// M5): its instance and the close's words (`1001 silent`).
 pub(crate) fn closed_fields(instance: &str, why: &str) -> Value {
@@ -948,9 +958,10 @@ impl Router {
 
     /// Serves messages until [`RouterMsg::Stop`], then releases the Stream
     /// Deck's held keys and tells its task to stop (#52), hands the Pro-Q 4
-    /// editors' windows back (#71 PR E), and closes every client (it holds a
-    /// sender of its own for its batches' results, so the channel never ends
-    /// by itself: the hub's stop sends `Stop`).
+    /// editors' windows back (#71 PR E), and closes every client, also one
+    /// whose `Attach` came after the `Stop` (#246). It holds a sender of its
+    /// own for its batches' results, so the channel never ends by itself:
+    /// the hub's stop sends `Stop`.
     pub async fn run(mut self, mut rx: mpsc::UnboundedReceiver<RouterMsg>) {
         while let Some(msg) = rx.recv().await {
             let go_on = self.handle(msg);
@@ -960,6 +971,18 @@ impl Router {
             self.beat.stamp();
             if !go_on {
                 break;
+            }
+        }
+        // A page whose session attached while the router took the stop
+        // (#246): the channel closes first, so a later `Attach` is refused
+        // and its session closes the page itself, and each one already
+        // queued behind the `Stop` is closed here. `recv` until `None`, as
+        // tokio documents for a closed channel: `try_recv` can miss a send
+        // that passed the close but has not taken its slot yet.
+        rx.close();
+        while let Some(msg) = rx.recv().await {
+            if let RouterMsg::Attach { outbox, .. } = msg {
+                outbox.close();
             }
         }
         self.deck_stop();
@@ -1613,7 +1636,15 @@ impl Router {
                     self.names.on_result(instance, &uuid, &data);
                 }
             }
-            LiveEvent::Values(items) => self.subs.on_values(instance, &items),
+            LiveEvent::Values(items) => {
+                // Pushes kept for a batch in flight and dropped past the
+                // bound (#243): a warn-class record.
+                if let Some(overflow) = self.subs.on_values(instance, &items) {
+                    self.io
+                        .events
+                        .record(KEPT_PUSHES, overflow.fields(instance));
+                }
+            }
         }
     }
 

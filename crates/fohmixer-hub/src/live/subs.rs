@@ -39,6 +39,28 @@
 //! - A `remove_listener` is sent only while no `add_listener` of the same
 //!   instance is in flight: an `add_listener` sent earlier could return the
 //!   very key being removed, and the script runs requests in order.
+//! - A push for a Live key not known yet, while an `add_listener` batch of
+//!   the instance is in flight, is kept (#243, `kept`): the script answers a
+//!   batch whole at its end, and the listeners it already registered push
+//!   their changes on the ticks between. After each result the pushes for the
+//!   keys it made known are applied again, in arrival order, over the value
+//!   read at registration: only those that arrived after the batch was sent,
+//!   and none of a key whose older listener a `remove_listener` of the same
+//!   drain, or one still in flight, was ending (an older or released
+//!   listener's push is older than the read). The rest go once no batch is
+//!   in flight, and a disconnect forgets them.
+//! - A NEW hub key on a Live key another entry already holds (#244: a
+//!   `…|true` beside a `…|false`) is not linked until its result, so the
+//!   pushes between are the other entry's alone: while a batch is in flight
+//!   the last push of each known Live key is heard (`kept`), and at the
+//!   result the new key takes it instead of the value read at registration
+//!   when it arrived after the batch was sent (`kept::newer_push`). The rule
+//!   keys on the Live key (#245): a key resolved again on its own Live key
+//!   (linked, it already shows the push) and a new key whose sibling left
+//!   before the result take it too; the heard push stays at `unlink`.
+
+mod kept;
+mod replay;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -47,6 +69,9 @@ use fohmixer_proto::path::LomPath;
 use serde_json::{Value, json};
 
 use super::LiveValue;
+use kept::Kept;
+pub use kept::Overflow;
+use replay::warn_overflow;
 
 /// A client connection (an internal subscriber too).
 pub type ClientId = u64;
@@ -98,9 +123,12 @@ enum Tag {
         key: String,
         seq: u64,
     },
-    /// A `remove_listener` (its answer changes nothing: a failed removal
-    /// means the object is gone, and its listener with it).
-    Release,
+    /// A `remove_listener` of the Live key `live` (its answer changes
+    /// nothing: a failed removal means the object is gone, and its listener
+    /// with it).
+    Release {
+        live: String,
+    },
 }
 
 /// A request in flight. A disconnect forgets its instance's requests, so an
@@ -109,6 +137,20 @@ enum Tag {
 struct Batch {
     instance: String,
     tags: Vec<Tag>,
+    /// The instance's kept-push mark when it was sent (#243): a push kept
+    /// before it comes from an older listener.
+    mark: u64,
+    /// Live keys whose listener a `remove_listener` of this drain or one
+    /// still in flight ends (#243): a push kept for one of them may come
+    /// from that older listener even after the mark, and the removal drops
+    /// the script's dirty mark, so no later push would correct it: it is
+    /// never applied (a fresh push of the new listener then goes too, as
+    /// before #243). A removal still queued (`Instance.release`) is not
+    /// here: it waits while this batch is in flight, and this batch's result
+    /// cancels it (`link`), so the script's one listener per key lives on
+    /// and a change after its push pushes again (the script reads the value
+    /// at each flush): replaying in arrival order then ends at Live's value.
+    released: BTreeSet<String>,
 }
 
 #[derive(Debug)]
@@ -153,6 +195,8 @@ struct Instance {
     dirty: BTreeSet<String>,
     /// Live keys no entry holds any more, to remove at a drain.
     release: BTreeSet<String>,
+    /// Pushes for Live keys not known yet while a batch is in flight (#243).
+    kept: Kept,
 }
 
 /// The table.
@@ -333,6 +377,7 @@ impl Subs {
         };
         inst.online = false;
         inst.release.clear();
+        inst.kept.clear();
         for (key, entry) in self.entries.iter_mut() {
             if entry.instance == instance {
                 entry.live = None;
@@ -351,11 +396,33 @@ impl Subs {
         self.instances.get(instance).is_some_and(|i| i.online)
     }
 
-    /// A `values` push of `instance`.
-    pub fn on_values(&mut self, instance: &str, items: &[LiveValue]) {
+    /// A `values` push of `instance`. While a batch of it is in flight, the
+    /// items for Live keys not known yet are kept for its result (#243);
+    /// what that had to drop beyond `KEPT_MAX`, if anything (logged here,
+    /// recorded by the router).
+    pub fn on_values(&mut self, instance: &str, items: &[LiveValue]) -> Option<Overflow> {
         if !self.is_online(instance) {
-            return;
+            return None;
         }
+        let mut dropped = None;
+        if self.resolving(instance) {
+            let by_live = &self.by_live;
+            let known =
+                |live: &str| by_live.contains_key(&(instance.to_string(), live.to_string()));
+            if let Some(inst) = self.instances.get_mut(instance)
+                && let Some(overflow) = inst.kept.frame(items, known)
+            {
+                warn_overflow(instance, &overflow);
+                dropped = Some(overflow);
+            }
+        }
+        self.apply_values(instance, items);
+        dropped
+    }
+
+    /// Applies a push frame to the entries of the Live keys it names (an
+    /// unknown key's item changes nothing).
+    fn apply_values(&mut self, instance: &str, items: &[LiveValue]) {
         // A guard in the frame: the name bindings are resolved again, and
         // their values of this frame may be the renamed object's.
         let fired = |test: fn(&Entry) -> bool| {
@@ -375,6 +442,7 @@ impl Subs {
             if item.error.is_some() {
                 // The script dropped the listener itself: nothing to remove.
                 self.by_live.remove(&id);
+                self.forget_heard(instance, &item.key);
             }
             for key in keys {
                 let Some(entry) = self.entries.get_mut(&key) else {
@@ -415,13 +483,16 @@ impl Subs {
             return true;
         }
         let missing = json!({"ok": false, "error": "no result"});
+        let mut made_known = BTreeSet::new();
         for (i, tag) in batch.tags.iter().enumerate() {
             let slot = slots.get(i).unwrap_or(&missing);
-            match tag {
-                Tag::Resolve { key, seq } => self.resolved(instance, key, *seq, slot),
-                Tag::Release => {}
+            if let Tag::Resolve { key, seq } = tag
+                && let Some(live) = self.resolved(instance, key, *seq, batch.mark, slot)
+            {
+                made_known.insert(live);
             }
         }
+        self.replay_kept(instance, &batch, &made_known);
         true
     }
 
@@ -432,21 +503,22 @@ impl Subs {
         let mut out = Vec::new();
         let names: Vec<String> = self.instances.keys().cloned().collect();
         for name in names {
-            let resolving = self.inflight.values().any(|b| {
-                b.instance == name && b.tags.iter().any(|t| matches!(t, Tag::Resolve { .. }))
-            });
+            let resolving = self.resolving(&name);
+            let mut released = self.releasing(&name);
             let inst = self.instances.get_mut(&name).expect("listed above");
             if !inst.online {
                 continue;
             }
+            let mark = inst.kept.mark();
             let mut commands: Vec<(Value, Tag)> = Vec::new();
             if !resolving {
                 for live in std::mem::take(&mut inst.release) {
                     let (id, prop) = live.rsplit_once('.').unwrap_or((live.as_str(), ""));
                     commands.push((
                         json!({"target": {"$ref": id}, "name": "remove_listener", "args": {"prop": prop}}),
-                        Tag::Release,
+                        Tag::Release { live: live.clone() },
                     ));
+                    released.insert(live);
                 }
             }
             for key in std::mem::take(&mut inst.dirty) {
@@ -478,6 +550,8 @@ impl Subs {
                     Batch {
                         instance: name.clone(),
                         tags,
+                        mark,
+                        released: released.clone(),
                     },
                 );
                 out.push(Outgoing {
@@ -750,6 +824,11 @@ impl Subs {
         };
         keys.remove(key);
         if keys.is_empty() {
+            // The push heard for the Live key stays (#245): a key resolved
+            // onto it in a batch still in flight takes it at its result. A
+            // batch sent later never takes it (it arrived before that
+            // batch's mark), and it goes with the kept pushes once no batch
+            // is in flight.
             self.by_live.remove(&id);
             self.schedule_release(instance, live);
         }
@@ -799,8 +878,17 @@ impl Subs {
         }
     }
 
-    /// The answer to the `add_listener` number `seq` of `key`.
-    fn resolved(&mut self, instance: &str, key: &str, seq: u64, slot: &Value) {
+    /// The answer to the `add_listener` number `seq` of `key`, in a batch
+    /// sent at the kept-push `mark`; the Live key it linked the entry to, if
+    /// any.
+    fn resolved(
+        &mut self,
+        instance: &str,
+        key: &str,
+        seq: u64,
+        mark: u64,
+        slot: &Value,
+    ) -> Option<String> {
         let outcome = parse_slot(slot);
         let current = self.entries.get(key).filter(|e| e.seq == seq);
         let Some(entry) = current else {
@@ -813,20 +901,25 @@ impl Subs {
             {
                 self.schedule_release(instance, &live);
             }
-            return;
+            return None;
         };
         let wants_display = entry.display;
         let guard = entry.guard;
         let old = entry.live.clone();
         match outcome {
             Ok((live, cached)) => {
+                // A push heard for the Live key after the send is newer than
+                // the result's read (#244, #245).
+                let cached = self
+                    .heard_push(instance, key, &live, mark, wants_display)
+                    .unwrap_or(cached);
                 if old.as_deref() != Some(live.as_str()) {
                     if let Some(old) = &old {
                         self.unlink(instance, old, key);
                     }
                     self.link(instance, &live, key);
                     if let Some(entry) = self.entries.get_mut(key) {
-                        entry.live = Some(live);
+                        entry.live = Some(live.clone());
                     }
                 }
                 let cached = match cached {
@@ -837,11 +930,12 @@ impl Subs {
                     error @ Cached::Error(_) => error,
                 };
                 self.set_cached(key, cached);
+                Some(live)
             }
             Err(error) => {
                 if guard {
                     // A guard keeps its object: a rename back fires it again.
-                    return;
+                    return None;
                 }
                 if let Some(old) = &old {
                     self.unlink(instance, old, key);
@@ -850,6 +944,7 @@ impl Subs {
                     entry.live = None;
                 }
                 self.set_cached(key, Cached::Error(error));
+                None
             }
         }
     }

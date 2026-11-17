@@ -87,7 +87,7 @@
 				"box": {
 					"id": "obj-pack",
 					"maxclass": "newobj",
-					"text": "pack /fohmixer/meter 1 0 v1.54.2 - - - - -700 -700",
+					"text": "pack /fohmixer/meter 1 0 v1.54.3 - - - - -700 -700",
 					"numinlets": 10,
 					"numoutlets": 1,
 					"outlettype": [
@@ -477,7 +477,7 @@
 						60.0,
 						18.0
 					],
-					"text": "v1.54.2",
+					"text": "v1.54.3",
 					"varname": "version"
 				}
 			},
@@ -635,14 +635,15 @@
 			},
 			{
 				"box": {
-					"id": "obj-parent1-sel",
+					"id": "obj-parent1-t",
 					"maxclass": "newobj",
-					"text": "sel 0",
-					"numinlets": 2,
-					"numoutlets": 2,
+					"text": "t i i i",
+					"numinlets": 1,
+					"numoutlets": 3,
 					"outlettype": [
-						"bang",
-						""
+						"int",
+						"int",
+						"int"
 					],
 					"patching_rect": [
 						420.0,
@@ -654,19 +655,37 @@
 			},
 			{
 				"box": {
-					"id": "obj-parent1-t",
+					"id": "obj-parent1-sel",
 					"maxclass": "newobj",
-					"text": "t i i",
-					"numinlets": 1,
+					"text": "sel 0",
+					"numinlets": 2,
 					"numoutlets": 2,
 					"outlettype": [
-						"int",
-						"int"
+						"bang",
+						""
 					],
 					"patching_rect": [
-						480.0,
+						420.0,
 						520.0,
 						60.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent1-observe",
+					"maxclass": "newobj",
+					"text": "prepend id",
+					"numinlets": 1,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						490.0,
+						520.0,
+						80.0,
 						22.0
 					]
 				}
@@ -682,9 +701,177 @@
 						""
 					],
 					"patching_rect": [
-						540.0,
+						580.0,
+						520.0,
+						80.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent1-empty",
+					"maxclass": "newobj",
+					"text": "t b b",
+					"numinlets": 1,
+					"numoutlets": 2,
+					"outlettype": [
+						"bang",
+						"bang"
+					],
+					"patching_rect": [
+						420.0,
 						560.0,
-						100.0,
+						50.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent1-observer",
+					"maxclass": "newobj",
+					"text": "live.observer",
+					"numinlets": 2,
+					"numoutlets": 2,
+					"outlettype": [
+						"",
+						""
+					],
+					"patching_rect": [
+						490.0,
+						560.0,
+						92.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent1-changed",
+					"maxclass": "newobj",
+					"text": "t b",
+					"numinlets": 1,
+					"numoutlets": 1,
+					"outlettype": [
+						"bang"
+					],
+					"patching_rect": [
+						490.0,
+						600.0,
+						30.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent1-read",
+					"maxclass": "newobj",
+					"text": "t b b b",
+					"numinlets": 1,
+					"numoutlets": 3,
+					"outlettype": [
+						"bang",
+						"bang",
+						"bang"
+					],
+					"patching_rect": [
+						420.0,
+						640.0,
+						60.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent1-none",
+					"maxclass": "message",
+					"text": "-",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						420.0,
+						680.0,
+						28.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent1-get",
+					"maxclass": "message",
+					"text": "get name",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						490.0,
+						680.0,
+						70.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent1-object",
+					"maxclass": "newobj",
+					"text": "live.object",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						490.0,
+						720.0,
+						80.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent1-route-name",
+					"maxclass": "newobj",
+					"text": "route name",
+					"numinlets": 2,
+					"numoutlets": 2,
+					"outlettype": [
+						"",
+						""
+					],
+					"patching_rect": [
+						490.0,
+						760.0,
+						80.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent1-reg",
+					"maxclass": "newobj",
+					"text": "zl reg",
+					"numinlets": 2,
+					"numoutlets": 2,
+					"outlettype": [
+						"",
+						""
+					],
+					"patching_rect": [
+						420.0,
+						800.0,
+						50.0,
 						22.0
 					]
 				}
@@ -701,8 +888,8 @@
 					],
 					"patching_rect": [
 						420.0,
-						720.0,
-						84.0,
+						840.0,
+						60.0,
 						22.0
 					]
 				}
@@ -766,14 +953,15 @@
 			},
 			{
 				"box": {
-					"id": "obj-parent2-sel",
+					"id": "obj-parent2-t",
 					"maxclass": "newobj",
-					"text": "sel 0",
-					"numinlets": 2,
-					"numoutlets": 2,
+					"text": "t i i i",
+					"numinlets": 1,
+					"numoutlets": 3,
 					"outlettype": [
-						"bang",
-						""
+						"int",
+						"int",
+						"int"
 					],
 					"patching_rect": [
 						680.0,
@@ -785,19 +973,37 @@
 			},
 			{
 				"box": {
-					"id": "obj-parent2-t",
+					"id": "obj-parent2-sel",
 					"maxclass": "newobj",
-					"text": "t i i",
-					"numinlets": 1,
+					"text": "sel 0",
+					"numinlets": 2,
 					"numoutlets": 2,
 					"outlettype": [
-						"int",
-						"int"
+						"bang",
+						""
 					],
 					"patching_rect": [
-						740.0,
+						680.0,
 						520.0,
 						60.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent2-observe",
+					"maxclass": "newobj",
+					"text": "prepend id",
+					"numinlets": 1,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						750.0,
+						520.0,
+						80.0,
 						22.0
 					]
 				}
@@ -813,9 +1019,177 @@
 						""
 					],
 					"patching_rect": [
-						800.0,
+						840.0,
+						520.0,
+						80.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent2-empty",
+					"maxclass": "newobj",
+					"text": "t b b",
+					"numinlets": 1,
+					"numoutlets": 2,
+					"outlettype": [
+						"bang",
+						"bang"
+					],
+					"patching_rect": [
+						680.0,
 						560.0,
-						100.0,
+						50.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent2-observer",
+					"maxclass": "newobj",
+					"text": "live.observer",
+					"numinlets": 2,
+					"numoutlets": 2,
+					"outlettype": [
+						"",
+						""
+					],
+					"patching_rect": [
+						750.0,
+						560.0,
+						92.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent2-changed",
+					"maxclass": "newobj",
+					"text": "t b",
+					"numinlets": 1,
+					"numoutlets": 1,
+					"outlettype": [
+						"bang"
+					],
+					"patching_rect": [
+						750.0,
+						600.0,
+						30.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent2-read",
+					"maxclass": "newobj",
+					"text": "t b b b",
+					"numinlets": 1,
+					"numoutlets": 3,
+					"outlettype": [
+						"bang",
+						"bang",
+						"bang"
+					],
+					"patching_rect": [
+						680.0,
+						640.0,
+						60.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent2-none",
+					"maxclass": "message",
+					"text": "-",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						680.0,
+						680.0,
+						28.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent2-get",
+					"maxclass": "message",
+					"text": "get name",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						750.0,
+						680.0,
+						70.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent2-object",
+					"maxclass": "newobj",
+					"text": "live.object",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						750.0,
+						720.0,
+						80.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent2-route-name",
+					"maxclass": "newobj",
+					"text": "route name",
+					"numinlets": 2,
+					"numoutlets": 2,
+					"outlettype": [
+						"",
+						""
+					],
+					"patching_rect": [
+						750.0,
+						760.0,
+						80.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent2-reg",
+					"maxclass": "newobj",
+					"text": "zl reg",
+					"numinlets": 2,
+					"numoutlets": 2,
+					"outlettype": [
+						"",
+						""
+					],
+					"patching_rect": [
+						680.0,
+						800.0,
+						50.0,
 						22.0
 					]
 				}
@@ -832,8 +1206,8 @@
 					],
 					"patching_rect": [
 						680.0,
-						720.0,
-						84.0,
+						840.0,
+						60.0,
 						22.0
 					]
 				}
@@ -897,14 +1271,15 @@
 			},
 			{
 				"box": {
-					"id": "obj-parent3-sel",
+					"id": "obj-parent3-t",
 					"maxclass": "newobj",
-					"text": "sel 0",
-					"numinlets": 2,
-					"numoutlets": 2,
+					"text": "t i i i",
+					"numinlets": 1,
+					"numoutlets": 3,
 					"outlettype": [
-						"bang",
-						""
+						"int",
+						"int",
+						"int"
 					],
 					"patching_rect": [
 						940.0,
@@ -916,19 +1291,37 @@
 			},
 			{
 				"box": {
-					"id": "obj-parent3-t",
+					"id": "obj-parent3-sel",
 					"maxclass": "newobj",
-					"text": "t i i",
-					"numinlets": 1,
+					"text": "sel 0",
+					"numinlets": 2,
 					"numoutlets": 2,
 					"outlettype": [
-						"int",
-						"int"
+						"bang",
+						""
 					],
 					"patching_rect": [
-						1000.0,
+						940.0,
 						520.0,
 						60.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent3-observe",
+					"maxclass": "newobj",
+					"text": "prepend id",
+					"numinlets": 1,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						1010.0,
+						520.0,
+						80.0,
 						22.0
 					]
 				}
@@ -944,9 +1337,177 @@
 						""
 					],
 					"patching_rect": [
-						1060.0,
+						1100.0,
+						520.0,
+						80.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent3-empty",
+					"maxclass": "newobj",
+					"text": "t b b",
+					"numinlets": 1,
+					"numoutlets": 2,
+					"outlettype": [
+						"bang",
+						"bang"
+					],
+					"patching_rect": [
+						940.0,
 						560.0,
-						100.0,
+						50.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent3-observer",
+					"maxclass": "newobj",
+					"text": "live.observer",
+					"numinlets": 2,
+					"numoutlets": 2,
+					"outlettype": [
+						"",
+						""
+					],
+					"patching_rect": [
+						1010.0,
+						560.0,
+						92.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent3-changed",
+					"maxclass": "newobj",
+					"text": "t b",
+					"numinlets": 1,
+					"numoutlets": 1,
+					"outlettype": [
+						"bang"
+					],
+					"patching_rect": [
+						1010.0,
+						600.0,
+						30.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent3-read",
+					"maxclass": "newobj",
+					"text": "t b b b",
+					"numinlets": 1,
+					"numoutlets": 3,
+					"outlettype": [
+						"bang",
+						"bang",
+						"bang"
+					],
+					"patching_rect": [
+						940.0,
+						640.0,
+						60.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent3-none",
+					"maxclass": "message",
+					"text": "-",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						940.0,
+						680.0,
+						28.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent3-get",
+					"maxclass": "message",
+					"text": "get name",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						1010.0,
+						680.0,
+						70.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent3-object",
+					"maxclass": "newobj",
+					"text": "live.object",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						1010.0,
+						720.0,
+						80.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent3-route-name",
+					"maxclass": "newobj",
+					"text": "route name",
+					"numinlets": 2,
+					"numoutlets": 2,
+					"outlettype": [
+						"",
+						""
+					],
+					"patching_rect": [
+						1010.0,
+						760.0,
+						80.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent3-reg",
+					"maxclass": "newobj",
+					"text": "zl reg",
+					"numinlets": 2,
+					"numoutlets": 2,
+					"outlettype": [
+						"",
+						""
+					],
+					"patching_rect": [
+						940.0,
+						800.0,
+						50.0,
 						22.0
 					]
 				}
@@ -963,8 +1524,8 @@
 					],
 					"patching_rect": [
 						940.0,
-						720.0,
-						84.0,
+						840.0,
+						60.0,
 						22.0
 					]
 				}
@@ -1028,14 +1589,14 @@
 			},
 			{
 				"box": {
-					"id": "obj-parent4-sel",
+					"id": "obj-parent4-t",
 					"maxclass": "newobj",
-					"text": "sel 0",
-					"numinlets": 2,
+					"text": "t i i",
+					"numinlets": 1,
 					"numoutlets": 2,
 					"outlettype": [
-						"bang",
-						""
+						"int",
+						"int"
 					],
 					"patching_rect": [
 						1200.0,
@@ -1047,17 +1608,17 @@
 			},
 			{
 				"box": {
-					"id": "obj-parent4-t",
+					"id": "obj-parent4-sel",
 					"maxclass": "newobj",
-					"text": "t i i",
-					"numinlets": 1,
+					"text": "sel 0",
+					"numinlets": 2,
 					"numoutlets": 2,
 					"outlettype": [
-						"int",
-						"int"
+						"bang",
+						""
 					],
 					"patching_rect": [
-						1260.0,
+						1200.0,
 						520.0,
 						60.0,
 						22.0
@@ -1075,9 +1636,140 @@
 						""
 					],
 					"patching_rect": [
-						1320.0,
+						1360.0,
+						520.0,
+						80.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent4-empty",
+					"maxclass": "newobj",
+					"text": "t b b",
+					"numinlets": 1,
+					"numoutlets": 2,
+					"outlettype": [
+						"bang",
+						"bang"
+					],
+					"patching_rect": [
+						1200.0,
 						560.0,
-						100.0,
+						50.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent4-read",
+					"maxclass": "newobj",
+					"text": "t b b b",
+					"numinlets": 1,
+					"numoutlets": 3,
+					"outlettype": [
+						"bang",
+						"bang",
+						"bang"
+					],
+					"patching_rect": [
+						1200.0,
+						640.0,
+						60.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent4-none",
+					"maxclass": "message",
+					"text": "-",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						1200.0,
+						680.0,
+						28.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent4-get",
+					"maxclass": "message",
+					"text": "get name",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						1270.0,
+						680.0,
+						70.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent4-object",
+					"maxclass": "newobj",
+					"text": "live.object",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						1270.0,
+						720.0,
+						80.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent4-route-name",
+					"maxclass": "newobj",
+					"text": "route name",
+					"numinlets": 2,
+					"numoutlets": 2,
+					"outlettype": [
+						"",
+						""
+					],
+					"patching_rect": [
+						1270.0,
+						760.0,
+						80.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-parent4-reg",
+					"maxclass": "newobj",
+					"text": "zl reg",
+					"numinlets": 2,
+					"numoutlets": 2,
+					"outlettype": [
+						"",
+						""
+					],
+					"patching_rect": [
+						1200.0,
+						800.0,
+						50.0,
 						22.0
 					]
 				}
@@ -1094,8 +1786,8 @@
 					],
 					"patching_rect": [
 						1200.0,
-						720.0,
-						84.0,
+						840.0,
+						60.0,
 						22.0
 					]
 				}
@@ -1180,148 +1872,111 @@
 			},
 			{
 				"box": {
-					"id": "obj-parent1-none",
+					"id": "obj-id-offset",
+					"maxclass": "newobj",
+					"text": "random 10000",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						"int"
+					],
+					"patching_rect": [
+						1200.0,
+						60.0,
+						90.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-id-offset-delay",
+					"maxclass": "newobj",
+					"text": "delay",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						"bang"
+					],
+					"patching_rect": [
+						1200.0,
+						100.0,
+						50.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-id-clock-defer",
+					"maxclass": "newobj",
+					"text": "deferlow",
+					"numinlets": 1,
+					"numoutlets": 1,
+					"outlettype": [
+						""
+					],
+					"patching_rect": [
+						1200.0,
+						140.0,
+						58.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-id-clock-start",
 					"maxclass": "message",
-					"text": "-",
+					"text": "1",
 					"numinlets": 2,
 					"numoutlets": 1,
 					"outlettype": [
 						""
 					],
 					"patching_rect": [
-						480.0,
-						560.0,
-						28.0,
+						1200.0,
+						180.0,
+						30.0,
 						22.0
 					]
 				}
 			},
 			{
 				"box": {
-					"id": "obj-parent1-observer",
+					"id": "obj-id-clock",
 					"maxclass": "newobj",
-					"text": "live.observer",
-					"numinlets": 2,
-					"numoutlets": 2,
-					"outlettype": [
-						"",
-						""
-					],
-					"patching_rect": [
-						480.0,
-						600.0,
-						108.0,
-						22.0
-					]
-				}
-			},
-			{
-				"box": {
-					"id": "obj-parent2-none",
-					"maxclass": "message",
-					"text": "-",
+					"text": "qmetro 10000",
 					"numinlets": 2,
 					"numoutlets": 1,
 					"outlettype": [
-						""
+						"bang"
 					],
 					"patching_rect": [
-						740.0,
-						560.0,
-						28.0,
+						1200.0,
+						220.0,
+						90.0,
 						22.0
 					]
 				}
 			},
 			{
 				"box": {
-					"id": "obj-parent2-observer",
+					"id": "obj-id-tick",
 					"maxclass": "newobj",
-					"text": "live.observer",
-					"numinlets": 2,
-					"numoutlets": 2,
+					"text": "t b b b b",
+					"numinlets": 1,
+					"numoutlets": 4,
 					"outlettype": [
-						"",
-						""
+						"bang",
+						"bang",
+						"bang",
+						"bang"
 					],
 					"patching_rect": [
-						740.0,
-						600.0,
-						108.0,
-						22.0
-					]
-				}
-			},
-			{
-				"box": {
-					"id": "obj-parent3-none",
-					"maxclass": "message",
-					"text": "-",
-					"numinlets": 2,
-					"numoutlets": 1,
-					"outlettype": [
-						""
-					],
-					"patching_rect": [
-						1000.0,
-						560.0,
-						28.0,
-						22.0
-					]
-				}
-			},
-			{
-				"box": {
-					"id": "obj-parent3-observer",
-					"maxclass": "newobj",
-					"text": "live.observer",
-					"numinlets": 2,
-					"numoutlets": 2,
-					"outlettype": [
-						"",
-						""
-					],
-					"patching_rect": [
-						1000.0,
-						600.0,
-						108.0,
-						22.0
-					]
-				}
-			},
-			{
-				"box": {
-					"id": "obj-parent4-none",
-					"maxclass": "message",
-					"text": "-",
-					"numinlets": 2,
-					"numoutlets": 1,
-					"outlettype": [
-						""
-					],
-					"patching_rect": [
-						1260.0,
-						560.0,
-						28.0,
-						22.0
-					]
-				}
-			},
-			{
-				"box": {
-					"id": "obj-parent4-observer",
-					"maxclass": "newobj",
-					"text": "live.observer",
-					"numinlets": 2,
-					"numoutlets": 2,
-					"outlettype": [
-						"",
-						""
-					],
-					"patching_rect": [
-						1260.0,
-						600.0,
-						108.0,
+						1200.0,
+						260.0,
+						100.0,
 						22.0
 					]
 				}
@@ -1607,60 +2262,12 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-parent1-t",
-						1
-					],
-					"destination": [
-						"obj-parent1-prepend",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent1-symbol",
-						0
-					],
-					"destination": [
-						"obj-pack",
-						4
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
 						"obj-parent2-path",
 						0
 					],
 					"destination": [
 						"obj-parent2-live-path",
 						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent2-t",
-						1
-					],
-					"destination": [
-						"obj-parent2-prepend",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent2-symbol",
-						0
-					],
-					"destination": [
-						"obj-pack",
-						5
 					]
 				}
 			},
@@ -1679,60 +2286,12 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-parent3-t",
-						1
-					],
-					"destination": [
-						"obj-parent3-prepend",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent3-symbol",
-						0
-					],
-					"destination": [
-						"obj-pack",
-						6
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
 						"obj-parent4-path",
 						0
 					],
 					"destination": [
 						"obj-parent4-live-path",
 						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent4-t",
-						1
-					],
-					"destination": [
-						"obj-parent4-prepend",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent4-symbol",
-						0
-					],
-					"destination": [
-						"obj-pack",
-						7
 					]
 				}
 			},
@@ -1847,90 +2406,6 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-parent1-route-id",
-						0
-					],
-					"destination": [
-						"obj-parent1-t",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent1-t",
-						0
-					],
-					"destination": [
-						"obj-parent1-sel",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent1-sel",
-						0
-					],
-					"destination": [
-						"obj-parent1-none",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent1-none",
-						0
-					],
-					"destination": [
-						"obj-parent1-symbol",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-id-property",
-						0
-					],
-					"destination": [
-						"obj-parent1-observer",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent1-prepend",
-						0
-					],
-					"destination": [
-						"obj-parent1-observer",
-						1
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent1-observer",
-						0
-					],
-					"destination": [
-						"obj-parent1-symbol",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
 						"obj-id-load",
 						2
 					],
@@ -1948,90 +2423,6 @@
 					],
 					"destination": [
 						"obj-parent2-route-id",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent2-route-id",
-						0
-					],
-					"destination": [
-						"obj-parent2-t",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent2-t",
-						0
-					],
-					"destination": [
-						"obj-parent2-sel",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent2-sel",
-						0
-					],
-					"destination": [
-						"obj-parent2-none",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent2-none",
-						0
-					],
-					"destination": [
-						"obj-parent2-symbol",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-id-property",
-						0
-					],
-					"destination": [
-						"obj-parent2-observer",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent2-prepend",
-						0
-					],
-					"destination": [
-						"obj-parent2-observer",
-						1
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent2-observer",
-						0
-					],
-					"destination": [
-						"obj-parent2-symbol",
 						0
 					]
 				}
@@ -2063,90 +2454,6 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-parent3-route-id",
-						0
-					],
-					"destination": [
-						"obj-parent3-t",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent3-t",
-						0
-					],
-					"destination": [
-						"obj-parent3-sel",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent3-sel",
-						0
-					],
-					"destination": [
-						"obj-parent3-none",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent3-none",
-						0
-					],
-					"destination": [
-						"obj-parent3-symbol",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-id-property",
-						0
-					],
-					"destination": [
-						"obj-parent3-observer",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent3-prepend",
-						0
-					],
-					"destination": [
-						"obj-parent3-observer",
-						1
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent3-observer",
-						0
-					],
-					"destination": [
-						"obj-parent3-symbol",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
 						"obj-id-load",
 						0
 					],
@@ -2171,6 +2478,810 @@
 			{
 				"patchline": {
 					"source": [
+						"obj-parent4-live-path",
+						0
+					],
+					"destination": [
+						"obj-parent4-route-id",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-route-id",
+						0
+					],
+					"destination": [
+						"obj-parent1-t",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-t",
+						2
+					],
+					"destination": [
+						"obj-parent1-prepend",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-prepend",
+						0
+					],
+					"destination": [
+						"obj-parent1-object",
+						1
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-t",
+						0
+					],
+					"destination": [
+						"obj-parent1-sel",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-sel",
+						0
+					],
+					"destination": [
+						"obj-parent1-empty",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-sel",
+						1
+					],
+					"destination": [
+						"obj-parent1-read",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-changed",
+						0
+					],
+					"destination": [
+						"obj-parent1-read",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-read",
+						2
+					],
+					"destination": [
+						"obj-parent1-none",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-empty",
+						1
+					],
+					"destination": [
+						"obj-parent1-none",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-read",
+						1
+					],
+					"destination": [
+						"obj-parent1-get",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-get",
+						0
+					],
+					"destination": [
+						"obj-parent1-object",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-object",
+						0
+					],
+					"destination": [
+						"obj-parent1-route-name",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-read",
+						0
+					],
+					"destination": [
+						"obj-parent1-reg",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-empty",
+						0
+					],
+					"destination": [
+						"obj-parent1-reg",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-route-name",
+						0
+					],
+					"destination": [
+						"obj-parent1-reg",
+						1
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-none",
+						0
+					],
+					"destination": [
+						"obj-parent1-reg",
+						1
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-reg",
+						0
+					],
+					"destination": [
+						"obj-parent1-symbol",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-symbol",
+						0
+					],
+					"destination": [
+						"obj-pack",
+						4
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-t",
+						1
+					],
+					"destination": [
+						"obj-parent1-observe",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-id-property",
+						0
+					],
+					"destination": [
+						"obj-parent1-observer",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-observe",
+						0
+					],
+					"destination": [
+						"obj-parent1-observer",
+						1
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-observer",
+						0
+					],
+					"destination": [
+						"obj-parent1-changed",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-route-id",
+						0
+					],
+					"destination": [
+						"obj-parent2-t",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-t",
+						2
+					],
+					"destination": [
+						"obj-parent2-prepend",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-prepend",
+						0
+					],
+					"destination": [
+						"obj-parent2-object",
+						1
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-t",
+						0
+					],
+					"destination": [
+						"obj-parent2-sel",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-sel",
+						0
+					],
+					"destination": [
+						"obj-parent2-empty",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-sel",
+						1
+					],
+					"destination": [
+						"obj-parent2-read",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-changed",
+						0
+					],
+					"destination": [
+						"obj-parent2-read",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-read",
+						2
+					],
+					"destination": [
+						"obj-parent2-none",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-empty",
+						1
+					],
+					"destination": [
+						"obj-parent2-none",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-read",
+						1
+					],
+					"destination": [
+						"obj-parent2-get",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-get",
+						0
+					],
+					"destination": [
+						"obj-parent2-object",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-object",
+						0
+					],
+					"destination": [
+						"obj-parent2-route-name",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-read",
+						0
+					],
+					"destination": [
+						"obj-parent2-reg",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-empty",
+						0
+					],
+					"destination": [
+						"obj-parent2-reg",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-route-name",
+						0
+					],
+					"destination": [
+						"obj-parent2-reg",
+						1
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-none",
+						0
+					],
+					"destination": [
+						"obj-parent2-reg",
+						1
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-reg",
+						0
+					],
+					"destination": [
+						"obj-parent2-symbol",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-symbol",
+						0
+					],
+					"destination": [
+						"obj-pack",
+						5
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-t",
+						1
+					],
+					"destination": [
+						"obj-parent2-observe",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-id-property",
+						0
+					],
+					"destination": [
+						"obj-parent2-observer",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-observe",
+						0
+					],
+					"destination": [
+						"obj-parent2-observer",
+						1
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-observer",
+						0
+					],
+					"destination": [
+						"obj-parent2-changed",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-route-id",
+						0
+					],
+					"destination": [
+						"obj-parent3-t",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-t",
+						2
+					],
+					"destination": [
+						"obj-parent3-prepend",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-prepend",
+						0
+					],
+					"destination": [
+						"obj-parent3-object",
+						1
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-t",
+						0
+					],
+					"destination": [
+						"obj-parent3-sel",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-sel",
+						0
+					],
+					"destination": [
+						"obj-parent3-empty",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-sel",
+						1
+					],
+					"destination": [
+						"obj-parent3-read",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-changed",
+						0
+					],
+					"destination": [
+						"obj-parent3-read",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-read",
+						2
+					],
+					"destination": [
+						"obj-parent3-none",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-empty",
+						1
+					],
+					"destination": [
+						"obj-parent3-none",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-read",
+						1
+					],
+					"destination": [
+						"obj-parent3-get",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-get",
+						0
+					],
+					"destination": [
+						"obj-parent3-object",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-object",
+						0
+					],
+					"destination": [
+						"obj-parent3-route-name",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-read",
+						0
+					],
+					"destination": [
+						"obj-parent3-reg",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-empty",
+						0
+					],
+					"destination": [
+						"obj-parent3-reg",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-route-name",
+						0
+					],
+					"destination": [
+						"obj-parent3-reg",
+						1
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-none",
+						0
+					],
+					"destination": [
+						"obj-parent3-reg",
+						1
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-reg",
+						0
+					],
+					"destination": [
+						"obj-parent3-symbol",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-symbol",
+						0
+					],
+					"destination": [
+						"obj-pack",
+						6
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-t",
+						1
+					],
+					"destination": [
+						"obj-parent3-observe",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-id-property",
+						0
+					],
+					"destination": [
+						"obj-parent3-observer",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-observe",
+						0
+					],
+					"destination": [
+						"obj-parent3-observer",
+						1
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-observer",
+						0
+					],
+					"destination": [
+						"obj-parent3-changed",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
 						"obj-parent4-route-id",
 						0
 					],
@@ -2184,46 +3295,10 @@
 				"patchline": {
 					"source": [
 						"obj-parent4-t",
-						0
+						1
 					],
 					"destination": [
-						"obj-parent4-sel",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent4-sel",
-						0
-					],
-					"destination": [
-						"obj-parent4-none",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-parent4-none",
-						0
-					],
-					"destination": [
-						"obj-parent4-symbol",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-id-property",
-						0
-					],
-					"destination": [
-						"obj-parent4-observer",
+						"obj-parent4-prepend",
 						0
 					]
 				}
@@ -2235,7 +3310,7 @@
 						0
 					],
 					"destination": [
-						"obj-parent4-observer",
+						"obj-parent4-object",
 						1
 					]
 				}
@@ -2243,11 +3318,323 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-parent4-observer",
+						"obj-parent4-t",
+						0
+					],
+					"destination": [
+						"obj-parent4-sel",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent4-sel",
+						0
+					],
+					"destination": [
+						"obj-parent4-empty",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent4-sel",
+						1
+					],
+					"destination": [
+						"obj-parent4-read",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent4-read",
+						2
+					],
+					"destination": [
+						"obj-parent4-none",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent4-empty",
+						1
+					],
+					"destination": [
+						"obj-parent4-none",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent4-read",
+						1
+					],
+					"destination": [
+						"obj-parent4-get",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent4-get",
+						0
+					],
+					"destination": [
+						"obj-parent4-object",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent4-object",
+						0
+					],
+					"destination": [
+						"obj-parent4-route-name",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent4-read",
+						0
+					],
+					"destination": [
+						"obj-parent4-reg",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent4-empty",
+						0
+					],
+					"destination": [
+						"obj-parent4-reg",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent4-route-name",
+						0
+					],
+					"destination": [
+						"obj-parent4-reg",
+						1
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent4-none",
+						0
+					],
+					"destination": [
+						"obj-parent4-reg",
+						1
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent4-reg",
 						0
 					],
 					"destination": [
 						"obj-parent4-symbol",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent4-symbol",
+						0
+					],
+					"destination": [
+						"obj-pack",
+						7
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-thisdevice",
+						0
+					],
+					"destination": [
+						"obj-id-offset",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-id-offset",
+						0
+					],
+					"destination": [
+						"obj-id-offset-delay",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-id-offset-delay",
+						0
+					],
+					"destination": [
+						"obj-id-clock-defer",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-id-clock-defer",
+						0
+					],
+					"destination": [
+						"obj-id-clock-start",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-id-clock-start",
+						0
+					],
+					"destination": [
+						"obj-id-clock",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-id-clock",
+						0
+					],
+					"destination": [
+						"obj-id-tick",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-id-tick",
+						3
+					],
+					"destination": [
+						"obj-parent1-path",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-id-tick",
+						2
+					],
+					"destination": [
+						"obj-parent2-path",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-id-tick",
+						1
+					],
+					"destination": [
+						"obj-parent3-path",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-id-tick",
+						0
+					],
+					"destination": [
+						"obj-parent4-path",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent1-live-path",
+						0
+					],
+					"destination": [
+						"obj-parent1-route-id",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent2-live-path",
+						0
+					],
+					"destination": [
+						"obj-parent2-route-id",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-parent3-live-path",
+						0
+					],
+					"destination": [
+						"obj-parent3-route-id",
 						0
 					]
 				}
