@@ -147,8 +147,11 @@ fn a_binding_resolved_again_on_its_own_live_key_keeps_its_push_after_the_send() 
     let out = subs.drain_outgoing();
     answer(&mut subs, &out);
     subs.take_deliveries();
-    // A second subscriber of the name binding resolves it again (#245): the
-    // entry stays linked, alone on its Live key.
+    // The binding resolved again on its own Live key (#245), the table's form
+    // of a re-resolve that shares its batch with later commands (a guard's
+    // firing): here a second subscriber's, alone in its batch, which the
+    // script itself answers before any later push. The entry stays linked,
+    // alone on its Live key.
     sub_volume(&mut subs, 2);
     let out = subs.drain_outgoing();
     subs.on_values("band", &[shown("live_10.value", json!(0.6), "-3.00 dB")]);
