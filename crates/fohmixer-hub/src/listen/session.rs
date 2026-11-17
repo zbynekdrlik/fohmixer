@@ -26,6 +26,7 @@ use serde_json::json;
 use tokio::sync::{broadcast, watch};
 use tokio::time::{Instant, MissedTickBehavior};
 
+use super::rack::Outcome;
 use super::{Lease, Listen};
 use crate::Hub;
 use crate::ws::{Opener, SEND_TIMEOUT, WsQuery, opener};
@@ -148,6 +149,18 @@ pub fn names_ok(instance: &str, track: &str) -> bool {
         .all(|name| !name.is_empty() && name.chars().count() <= MAX_NAME)
 }
 
+/// What a page whose start switched its track's rack (`racked`: the
+/// outcome, none when nothing was switched or its answer was lost) is told:
+/// `no_source` at once when the track has no `Listen` rack to switch on
+/// (#238; the page keeps the track, and a device that comes is heard), else
+/// `listening` (a write Live failed is the rack task's warn record only).
+pub fn told_of(racked: Option<&Outcome>) -> AudioState {
+    match racked {
+        Some(Outcome::Missing(_)) => AudioState::NoSource,
+        _ => AudioState::Listening,
+    }
+}
+
 /// What a page's start gets: listening, or the state it is told.
 fn start(
     hub: &Hub,
@@ -195,11 +208,25 @@ async fn session(mut socket: WebSocket, hub: Hub, listen: Arc<Listen>, role: Rol
                     Ok(AudioClientMsg::ListenStart { instance, track }) => {
                         listening = None;
                         match start(&hub, &listen, role, (client, &who.peer), &instance, &track) {
-                            Ok(l) => {
+                            Ok(mut l) => {
+                                // The track's rack is switched on before the
+                                // page is told (#238); each LOM call is
+                                // bounded by the Live client's own timeout.
+                                let racked = match l.lease.take_rack() {
+                                    Some(outcome) => outcome.await.ok(),
+                                    None => None,
+                                };
+                                let state = told_of(racked.as_ref());
+                                // No rack: told now, the silence's word said.
+                                l.told_silent = state == AudioState::NoSource;
+                                // The silence counts from the switch-on's
+                                // end, not from before its wait: the device
+                                // only comes up then.
+                                l.last = Instant::now();
                                 listen.events.record("listen", json!({"what": "page", "on": true,
                                     "instance": instance, "track": track, "peer": who.peer}));
                                 listening = Some(l);
-                                status(AudioState::Listening, Some((&instance, &track)))
+                                status(state, Some((&instance, &track)))
                             }
                             Err(state) => status(state, Some((&instance, &track))),
                         }
@@ -313,6 +340,16 @@ mod tests {
         assert_eq!(SEND_TIMEOUT, Duration::from_secs(5));
         assert_eq!(bounded(async { Err::<(), _>(()) }).await, Err(WRITE_FAILED));
         assert_eq!(bounded(async { Ok::<(), ()>(()) }).await, Ok(()));
+    }
+
+    #[test]
+    fn a_start_with_no_rack_is_told_no_source_at_once() {
+        let missing = Outcome::Missing("no Listen rack".into());
+        assert_eq!(told_of(Some(&missing)), AudioState::NoSource);
+        assert_eq!(told_of(Some(&Outcome::Done)), AudioState::Listening);
+        let failed = Outcome::Failed("offline".into());
+        assert_eq!(told_of(Some(&failed)), AudioState::Listening);
+        assert_eq!(told_of(None), AudioState::Listening);
     }
 
     #[test]

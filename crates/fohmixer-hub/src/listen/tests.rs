@@ -30,6 +30,11 @@ fn listen() -> (Arc<Listen>, std::sync::mpsc::Receiver<Value>) {
     (Listen::new(events, no_sets()), records)
 }
 
+/// A Live that answers no call (no rack is switched in these tests).
+fn no_lom() -> rack::Lom {
+    Arc::new(|_: &str, _| Box::pin(async { Err("offline".to_string()) }))
+}
+
 #[test]
 fn a_device_is_fresh_for_three_seconds() {
     let t0 = Instant::now();
@@ -171,7 +176,7 @@ async fn a_port_taken_is_recorded_and_shown() {
     let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = taken.local_addr().unwrap().port();
     let (events, records) = EventLog::channel(16);
-    let (listen, tasks) = spawn(port, events, no_sets());
+    let (listen, tasks) = spawn(port, events, no_sets(), no_lom());
     assert!(tasks.is_empty());
     let status = listen.status(Instant::now());
     assert_eq!(status.addr, None);
@@ -180,8 +185,8 @@ async fn a_port_taken_is_recorded_and_shown() {
     assert_eq!(record["what"], "listening");
     assert!(record["error"].is_string());
     let (events, records) = EventLog::channel(16);
-    let (listen, tasks) = spawn(0, events, no_sets());
-    assert_eq!(tasks.len(), 2);
+    let (listen, tasks) = spawn(0, events, no_sets(), no_lom());
+    assert_eq!(tasks.len(), 3, "the stream, the announces and the racks");
     let addr = listen.status(Instant::now()).addr.unwrap();
     assert!(addr.starts_with("127.0.0.1:"), "{addr}");
     assert_eq!(records.try_recv().unwrap()["addr"], addr.as_str());
@@ -282,4 +287,67 @@ fn a_set_loaded_while_listening_is_followed() {
     // An instance whose set is unknown for a moment keeps the last one.
     *set.lock().unwrap() = None;
     assert!(listen.accepts(9, t0));
+}
+
+/// A Listen whose rack switches come to the test's queue (#238).
+fn racked() -> (Arc<Listen>, tokio::sync::mpsc::UnboundedReceiver<rack::Job>) {
+    let (events, _records) = EventLog::channel(64);
+    let (racks, jobs) = tokio::sync::mpsc::unbounded_channel();
+    (Listen::with_racks(events, no_sets(), Some(racks)), jobs)
+}
+
+/// The switches queued so far, `(track, on, waited for)`.
+fn queued(jobs: &mut tokio::sync::mpsc::UnboundedReceiver<rack::Job>) -> Vec<(String, bool, bool)> {
+    std::iter::from_fn(|| jobs.try_recv().ok())
+        .map(|job| (job.switch.track, job.switch.on, job.done.is_some()))
+        .collect()
+}
+
+fn job(track: &str, on: bool, waited: bool) -> (String, bool, bool) {
+    (track.to_string(), on, waited)
+}
+
+#[test]
+fn the_lease_switches_its_tracks_rack_on_at_the_start_and_off_when_the_last_leaves() {
+    let (listen, mut jobs) = racked();
+    let mut a = listen.start("band", "FOH Band", "Vox 1", 1, "10.0.0.5");
+    assert_eq!(queued(&mut jobs), vec![job("Vox 1", true, true)]);
+    assert!(
+        a.take_rack().is_some(),
+        "the start's page waits for its rack"
+    );
+    assert!(a.take_rack().is_none(), "taken once");
+    let mut b = listen.start("band", "FOH Band", "Vox 1", 2, "10.0.0.6");
+    assert!(queued(&mut jobs).is_empty(), "a join switches nothing");
+    assert!(b.take_rack().is_none());
+    drop(a);
+    assert!(queued(&mut jobs).is_empty(), "b still listens");
+    drop(b);
+    assert_eq!(queued(&mut jobs), vec![job("Vox 1", false, false)]);
+}
+
+#[test]
+fn a_take_switches_the_new_rack_on_then_the_old_one_off_and_the_old_lease_nothing() {
+    let (listen, mut jobs) = racked();
+    let a = listen.start("band", "FOH Band", "Vox 1", 1, "10.0.0.5");
+    let c = listen.start("band", "FOH Band", "Vox 2", 3, "10.0.0.7");
+    assert_eq!(
+        queued(&mut jobs),
+        vec![
+            job("Vox 1", true, true),
+            job("Vox 2", true, true),
+            job("Vox 1", false, false)
+        ]
+    );
+    drop(a);
+    assert!(queued(&mut jobs).is_empty(), "a lease of an older turn");
+    drop(c);
+    assert_eq!(queued(&mut jobs), vec![job("Vox 2", false, false)]);
+}
+
+#[test]
+fn a_listen_with_no_rack_queue_switches_nothing() {
+    let (listen, _records) = listen();
+    let mut a = listen.start("band", "FOH Band", "Vox 1", 1, "10.0.0.5");
+    assert!(a.take_rack().is_none());
 }

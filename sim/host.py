@@ -102,12 +102,15 @@ WebSocket server is bound. Control lines on stdin (never over the WebSocket):
                                 hub's bound's test); prints ``FLOOD <devices
                                 sending>`` or ``FLOOD -1``
 
-    listendev <track|return|master> <index> <add|remove> [rack]
+    listendev <track|return|master> <index> <add|remove> [rack [off]]
                                 a ``FohMixer Listen`` device (#210,
                                 ``sim/listendev.py``) added at the end of the
                                 track's chain (with ``rack``, inside a new rack
                                 ``Listen``: an empty ``Dry`` chain and a
-                                ``Listen`` chain holding it), or the newest one
+                                ``Listen`` chain holding it; ``off``: the
+                                rack's Device On off, #238, so the device
+                                neither announces nor streams until the hub
+                                switches it on), or the newest one
                                 removed; it announces itself to
                                 ``--listen-port`` (UDP) once a second, asks
                                 the hub's HTTP port (``--hub-port`` or the
@@ -128,6 +131,10 @@ WebSocket server is bound. Control lines on stdin (never over the WebSocket):
                                 prints ``STREAMED <samples per channel>`` the
                                 newest Listen device there streamed since it
                                 was added, or ``STREAMED -1``
+    listenrack <track|return|master> <index>
+                                prints ``LISTENRACK <0|1>``, the Device On of
+                                the newest Listen device's rack there (#238),
+                                or ``LISTENRACK -1`` (no device, no rack)
 
 While Live plays, the song clock moves ``current_song_time`` at the tempo
 (``SongClock``, 30 Hz, as Live's playhead does between the script's ticks).
@@ -523,7 +530,7 @@ def maxdev_answer(main_thread, song, line, maxdevs):
 def listendev_answer(main_thread, song, line, listens):
     """A Listen device line's answer (#210), or None for another line."""
     words = line.split()
-    if not words or words[0] not in ("listendev", "tone", "streamed", "listenhub"):
+    if not words or words[0] not in ("listendev", "tone", "streamed", "listenrack", "listenhub"):
         return None
     word = words[0].upper()
     if words[0] == "listenhub":

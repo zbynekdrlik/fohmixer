@@ -7,6 +7,11 @@ owner's placement) in a new rack ``Listen`` whose chains are an empty ``Dry``
 and a ``Listen`` chain holding it. Its Max id counts from 1 per host, as the
 LUFS devices' do (``maxdev.py``).
 
+A rack's ``Device On`` (its ``parameters 0``, on unless added ``off``, as the
+PC's sets are saved since #238) is honoured: a device in a rack that is off
+neither announces nor streams (Live runs nothing of a device switched off),
+and the hub switches the rack on only while a page listens to its track.
+
 What it plays: a sine at its ``tone`` (Hz; 0 is silence), the left channel
 at amplitude ``LEFT`` and the right at ``RIGHT``, the phase counted from the
 device's stream start, so a test can decode the hub's Opus and find the tone.
@@ -191,6 +196,10 @@ class ListenDevice:
     def sending(self, now):
         return self.selected_until is not None and now < self.selected_until
 
+    def active(self):
+        """Whether Live runs it: no rack, or its rack's ``Device On`` on."""
+        return self.rack is None or self.rack.parameters[0].value >= 0.5
+
     def owed(self, now):
         """The whole frames it owes at ``now`` since its stream started."""
         due = int((now - self.started) * self.rate + 1e-6) // FRAME
@@ -294,13 +303,15 @@ class ListenDevices:
     def on(self, track):
         return [d for d in self.devices if d.track is track]
 
-    def add(self, track, rack, rate=RATE):
+    def add(self, track, rack, rate=RATE, on=True):
         device = Live.Device.Device(NAME, CLASS_NAME)
         if rack:
             chain = Live.Chain.Chain(DEVICE_CHAIN, [device])
             holder = Live.RackDevice.RackDevice(
                 RACK_NAME, "AudioEffectGroupDevice", [Live.Chain.Chain(DRY_CHAIN), chain]
             )
+            if not on:
+                holder.parameters[0]._sim_set("value", 0.0)
             track._devices.append(holder)
             placed = ListenDevice(next(self._ids), device, track, holder, chain, rate)
         else:
@@ -331,9 +342,10 @@ class ListenDevices:
         if self._announced is None or now - self._announced >= ANNOUNCE_S:
             self._announced = now
             for device in self.devices:
-                self._send_announce(device, now)
+                if device.active():
+                    self._send_announce(device, now)
         for device in self.devices:
-            if device.sending(now):
+            if device.active() and device.sending(now):
                 self._stream(device, now)
             else:
                 device.started = None
@@ -393,11 +405,12 @@ class ListenDevices:
 
 
 def device_line(line):
-    """A ``listendev`` line's ``(where, index, add, rack, rate)``, or None:
-    ``listendev <where> <i> add [rack] [<rate>]`` (48000 by default) or
-    ``listendev <where> <i> remove``."""
+    """A ``listendev`` line's ``(where, index, add, rack, rate, on)``, or
+    None: ``listendev <where> <i> add [rack [off]] [<rate>]`` (48000 by
+    default; ``off``: the rack's ``Device On`` off, #238) or ``listendev
+    <where> <i> remove``."""
     words = line.split()
-    if len(words) < 4 or len(words) > 6 or words[1] not in ("track", "return", "master"):
+    if len(words) < 4 or len(words) > 7 or words[1] not in ("track", "return", "master"):
         return None
     if not words[2].isdigit() or words[3] not in ("add", "remove"):
         return None
@@ -407,6 +420,9 @@ def device_line(line):
     rack = bool(rest) and rest[0] == "rack"
     if rack:
         rest = rest[1:]
+    on = not (rack and bool(rest) and rest[0] == "off")
+    if not on:
+        rest = rest[1:]
     rate = RATE
     if rest:
         if len(rest) != 1 or not rest[0].isdigit():
@@ -414,7 +430,7 @@ def device_line(line):
         rate = int(rest[0])
         if not MIN_RATE <= rate <= MAX_RATE:
             return None
-    return words[1], int(words[2]), words[3] == "add", rack, rate
+    return words[1], int(words[2]), words[3] == "add", rack, rate, on
 
 
 def hub_line(line):
@@ -427,14 +443,15 @@ def hub_line(line):
 
 
 def tone_line(line):
-    """A ``tone`` or ``streamed`` line's ``(verb, where, index, hz)``, or None."""
+    """A ``tone``, ``streamed`` or ``listenrack`` line's ``(verb, where,
+    index, hz)``, or None."""
     words = line.split()
     if len(words) < 3 or words[1] not in ("track", "return", "master"):
         return None
     if not words[2].isdigit():
         return None
-    if words[0] == "streamed" and len(words) == 3:
-        return "streamed", words[1], int(words[2]), None
+    if words[0] in ("streamed", "listenrack") and len(words) == 3:
+        return words[0], words[1], int(words[2]), None
     if words[0] == "tone" and len(words) == 4:
         try:
             hz = float(words[3])
@@ -448,21 +465,22 @@ def tone_line(line):
 def device_control(listens, song, parsed):
     """A ``listendev`` line on the main thread: the devices on the track
     then, -1 for no such track or nothing to remove."""
-    where, index, add, rack, rate = parsed
+    where, index, add, rack, rate, on = parsed
     track = track_of(song, where, index)
     if track is None:
         return -1
     if add:
-        listens.add(track, rack, rate)
+        listens.add(track, rack, rate, on)
     elif not listens.remove(track):
         return -1
     return len(listens.on(track))
 
 
 def tone_control(listens, song, parsed):
-    """A ``tone`` line (the newest device's tone; answers it) or a
+    """A ``tone`` line (the newest device's tone; answers it), a
     ``streamed`` line (the samples per channel it streamed since it was
-    added), -1 for no such track or device."""
+    added) or a ``listenrack`` line (its rack's ``Device On``, 0 or 1, #238),
+    -1 for no such track, device or rack."""
     verb, where, index, hz = parsed
     track = track_of(song, where, index)
     placed = listens.on(track) if track is not None else []
@@ -470,5 +488,8 @@ def tone_control(listens, song, parsed):
         return -1
     if verb == "streamed":
         return placed[-1].streamed
+    if verb == "listenrack":
+        rack = placed[-1].rack
+        return -1 if rack is None else int(rack.parameters[0].value >= 0.5)
     placed[-1].tone = hz
     return int(hz)

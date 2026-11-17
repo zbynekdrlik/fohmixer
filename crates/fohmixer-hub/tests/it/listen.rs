@@ -4,7 +4,9 @@
 //! matrices, and the page decodes the hub's Opus packets back to the tone;
 //! a second page shares the track, a page starting another track takes the
 //! hub's one track from them (`taken`), and when the last page leaves the
-//! device stops streaming.
+//! device stops streaming. The hub switches a track's `Listen` rack on only
+//! while a page listens to it (#238): a device in a rack that is off neither
+//! announces nor streams.
 #![cfg(unix)]
 
 use std::net::UdpSocket;
@@ -169,7 +171,7 @@ fn a_page_hears_the_tracks_tone_and_the_device_stops_when_it_leaves() {
         let mut host = Host::start_listen("band", &site(), port);
         assert_eq!(host.listendev("listendev track 1 add rack"), 1);
         assert_eq!(host.listendev("tone track 1 1000"), 1000);
-        assert_eq!(host.listendev("listendev track 2 add"), 1);
+        assert_eq!(host.listendev("listendev track 2 add rack"), 1);
         assert_eq!(host.listendev("tone track 2 3000"), 3000);
         let hub = hub(dir.path(), &mut host, port).await;
         let status = hub
@@ -313,12 +315,34 @@ fn a_device_at_another_rate_is_refused() {
         let mut a = audio(&hub).await;
         send(&mut a, start(VOX)).await;
         assert_eq!(told(&mut a).await["status"], "listening");
+        // The silence counts from here: the rack's switch-on answered.
+        let told_at = Instant::now();
         let status = hub
             .status_until(SECS_10, |s| {
                 s.listen.refused.get("sample_rate").is_some_and(|n| *n > 0)
             })
             .await;
         assert_eq!(status.listen.frames, 0);
+        // Its rack was switched on, yet nothing comes: told once after two
+        // seconds of silence (#238's review: the 2 s silence end to end), at
+        // the first 1 s tick past them.
+        let silent = told(&mut a).await;
+        assert_eq!(
+            silent,
+            json!({"type": "audio_status", "status": "no_source", "instance": "band", "track": VOX})
+        );
+        let after = told_at.elapsed();
+        assert!(
+            after >= Duration::from_millis(1900) && after < Duration::from_millis(3600),
+            "2 to 3 s after the start: {after:?}"
+        );
+        assert!(
+            next_within(&mut a, Duration::from_millis(2500))
+                .await
+                .is_none(),
+            "told once, and no packet"
+        );
+        assert_eq!(host.listendev("listenrack track 1"), 1);
         drop(a);
         hub.stop().await;
         host.stop();
@@ -326,7 +350,7 @@ fn a_device_at_another_rate_is_refused() {
 }
 
 #[test]
-fn a_track_without_a_device_or_an_unknown_instance_is_no_source() {
+fn a_track_without_a_listen_rack_or_an_unknown_instance_is_no_source() {
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -340,16 +364,23 @@ fn a_track_without_a_device_or_an_unknown_instance_is_no_source() {
         )
         .await;
         assert_eq!(told(&mut a).await["status"], "no_source");
+        // The track has no `Listen` rack (#238): told at once, no wait.
         send(&mut a, start(VOX)).await;
-        assert_eq!(told(&mut a).await["status"], "listening");
-        // Nothing comes: told once after two seconds.
-        let silent = told(&mut a).await;
-        assert_eq!(silent["status"], "no_source");
-        assert_eq!(silent["track"], VOX);
+        assert_eq!(
+            told(&mut a).await,
+            json!({"type": "audio_status", "status": "no_source", "instance": "band", "track": VOX})
+        );
         let target = hub.status().await.listen.target.unwrap();
         assert_eq!(target.problem.as_deref(), Some("no device"));
-        // A device for the track comes: told listening again, before its
-        // first packet.
+        let records = hub.events_until(SECS_10, |r| !racks(r).is_empty()).await;
+        let missing = racks(&records);
+        assert_eq!(missing.len(), 1, "{missing:?}");
+        assert_eq!(missing[0]["track"], VOX);
+        assert_eq!(missing[0]["on"], true);
+        assert_eq!(missing[0]["result"], "missing");
+        assert_eq!(missing[0]["problem"], "no Listen rack");
+        // A device in a rack that is on comes: told listening again, before
+        // its first packet.
         assert_eq!(host.listendev("listendev track 1 add rack"), 1);
         assert_eq!(host.listendev("tone track 1 1000"), 1000);
         let deadline = Instant::now() + SECS_10;
@@ -380,6 +411,179 @@ fn a_track_without_a_device_or_an_unknown_instance_is_no_source() {
     });
 }
 
+/// The hub's `listen` `rack` records (#238), in order.
+fn racks(records: &[Value]) -> Vec<Value> {
+    records
+        .iter()
+        .filter(|e| e["ev"] == "listen" && e["what"] == "rack")
+        .cloned()
+        .collect()
+}
+
+/// The `(track, on, result)` of each `rack` record.
+fn rack_steps(records: &[Value]) -> Vec<(String, bool, String)> {
+    racks(records)
+        .iter()
+        .map(|e| {
+            (
+                e["track"].as_str().unwrap().to_string(),
+                e["on"].as_bool().unwrap(),
+                e["result"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+fn step(track: &str, on: bool) -> (String, bool, String) {
+    (track.to_string(), on, "done".to_string())
+}
+
+/// Waits until the Device On of the newest Listen device's rack on `track`
+/// (`listenrack track <i>`) reads `want`.
+async fn rack_until(host: &mut Host, track: usize, want: i64) {
+    let line = format!("listenrack track {track}");
+    let deadline = Instant::now() + SECS_10;
+    loop {
+        let now = host.listendev(&line);
+        if now == want {
+            return;
+        }
+        assert!(Instant::now() < deadline, "{line} reads {now}, not {want}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// A host whose tracks 1 (VOX, 1 kHz) and 2 (OTHER, 3 kHz) hold a Listen
+/// device in a rack that is off, as the PC's sets are saved (#238).
+fn racks_off(port: u16) -> Host {
+    let mut host = Host::start_listen("band", &site(), port);
+    assert_eq!(host.listendev("listendev track 1 add rack off"), 1);
+    assert_eq!(host.listendev("tone track 1 1000"), 1000);
+    assert_eq!(host.listendev("listendev track 2 add rack off"), 1);
+    assert_eq!(host.listendev("tone track 2 3000"), 3000);
+    host
+}
+
+#[test]
+fn a_start_switches_the_tracks_listen_rack_on_and_the_stop_off() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let port = free_port();
+        let mut host = racks_off(port);
+        let hub = hub(dir.path(), &mut host, port).await;
+        // Off, the devices announce nothing; the hub's start switches
+        // nothing on (no sweep of the tracks).
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(hub.status().await.listen.devices.is_empty());
+        assert_eq!(host.listendev("listenrack track 1"), 0);
+        assert_eq!(host.listendev("listenrack track 2"), 0);
+
+        let mut a = audio(&hub).await;
+        send(&mut a, start(VOX)).await;
+        assert_eq!(told(&mut a).await["status"], "listening");
+        // On before the page is told: the device comes up and streams.
+        assert_eq!(host.listendev("listenrack track 1"), 1);
+        assert_eq!(host.listendev("listenrack track 2"), 0);
+        packets(&mut a, 10).await;
+        let (left, _) = decode(&packets(&mut a, 25).await);
+        assert!(power(&left, 1000.0) > 1000.0 * power(&left, 3000.0));
+
+        send(&mut a, json!({"type": "listen_stop"})).await;
+        assert_eq!(told(&mut a).await["status"], "stopped");
+        rack_until(&mut host, 1, 0).await;
+        let streamed = settled(&mut host, "streamed track 1").await;
+        assert!(streamed > 0);
+        let records = hub
+            .events_until(SECS_10, |r| rack_steps(r).len() == 2)
+            .await;
+        assert_eq!(
+            rack_steps(&records),
+            vec![step(VOX, true), step(VOX, false)]
+        );
+        assert_eq!(host.listendev("streamed track 2"), 0, "never on");
+        drop(a);
+        hub.stop().await;
+        host.stop();
+    });
+}
+
+#[test]
+fn a_take_switches_the_new_tracks_rack_on_then_the_old_ones_off() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let port = free_port();
+        let mut host = racks_off(port);
+        let hub = hub(dir.path(), &mut host, port).await;
+        let mut a = audio(&hub).await;
+        send(&mut a, start(VOX)).await;
+        assert_eq!(told(&mut a).await["status"], "listening");
+        assert!(!packets(&mut a, 3).await.is_empty());
+
+        let mut c = audio(&hub).await;
+        send(&mut c, start(OTHER)).await;
+        assert_eq!(told(&mut c).await["status"], "listening");
+        assert_eq!(host.listendev("listenrack track 2"), 1);
+        assert_eq!(told(&mut a).await["status"], "taken");
+        rack_until(&mut host, 1, 0).await;
+        let (left, _) = decode(&packets(&mut c, 20).await[10..]);
+        assert!(power(&left, 3000.0) > 1000.0 * power(&left, 1000.0));
+        // The page it was taken from leaves: the new track's rack stays on.
+        drop(a);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(host.listendev("listenrack track 2"), 1);
+        let records = hub
+            .events_until(SECS_10, |r| rack_steps(r).len() == 3)
+            .await;
+        assert_eq!(
+            rack_steps(&records),
+            vec![step(VOX, true), step(OTHER, true), step(VOX, false)]
+        );
+        drop(c);
+        rack_until(&mut host, 2, 0).await;
+        hub.stop().await;
+        host.stop();
+    });
+}
+
+#[test]
+fn with_two_pages_on_a_track_its_rack_goes_off_only_after_both_leave() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let port = free_port();
+        let mut host = racks_off(port);
+        let hub = hub(dir.path(), &mut host, port).await;
+        let mut a = audio(&hub).await;
+        send(&mut a, start(VOX)).await;
+        assert_eq!(told(&mut a).await["status"], "listening");
+        let mut b = audio(&hub).await;
+        send(&mut b, start(VOX)).await;
+        assert_eq!(told(&mut b).await["status"], "listening");
+        assert!(!packets(&mut b, 3).await.is_empty());
+
+        send(&mut a, json!({"type": "listen_stop"})).await;
+        assert_eq!(told(&mut a).await["status"], "stopped");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(host.listendev("listenrack track 1"), 1, "b still listens");
+        assert!(!packets(&mut b, 5).await.is_empty());
+
+        drop(b);
+        rack_until(&mut host, 1, 0).await;
+        let records = hub
+            .events_until(SECS_10, |r| rack_steps(r).len() == 2)
+            .await;
+        assert_eq!(
+            rack_steps(&records),
+            vec![step(VOX, true), step(VOX, false)]
+        );
+        drop(a);
+        hub.stop().await;
+        host.stop();
+    });
+}
+
 /// The next message within `limit` that is no ping or pong; none when
 /// nothing came.
 async fn next_within(ws: &mut Socket, limit: Duration) -> Option<Message> {
@@ -403,7 +607,7 @@ fn the_newest_start_takes_the_track_from_the_pages_listening() {
         let mut host = Host::start_listen("band", &site(), port);
         assert_eq!(host.listendev("listendev track 1 add rack"), 1);
         assert_eq!(host.listendev("tone track 1 1000"), 1000);
-        assert_eq!(host.listendev("listendev track 2 add"), 1);
+        assert_eq!(host.listendev("listendev track 2 add rack"), 1);
         assert_eq!(host.listendev("tone track 2 3000"), 3000);
         let hub = hub(dir.path(), &mut host, port).await;
         hub.status_until(SECS_10, |s| s.listen.devices.len() == 2)
@@ -504,7 +708,7 @@ fn each_device_asks_the_hub_whether_it_is_selected() {
         let port = free_port();
         let mut host = Host::start_listen("band", &site(), port);
         assert_eq!(host.listendev("listendev track 1 add rack"), 1);
-        assert_eq!(host.listendev("listendev track 2 add"), 1);
+        assert_eq!(host.listendev("listendev track 2 add rack"), 1);
         let hub = hub(dir.path(), &mut host, port).await;
         let status = hub
             .status_until(SECS_10, |s| s.listen.devices.len() == 2)
