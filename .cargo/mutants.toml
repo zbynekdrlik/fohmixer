@@ -451,18 +451,24 @@ exclude_re = [
   # pages/sectors/column.rs since #213): change_mode (the mode's
   # signal written only when the tested behave::arrange_drag::Arrange
   # changed), Carrier (the drag's stored state and the carried slot's
-  # transform and data-carried written and removed on the element),
-  # sector_spots (the sector's cells' slots and centres read from the DOM
-  # at the down) and flash_note (the refused save's note shown, then
-  # cleared by a timer while the tested NoteTimer says it is still its
-  # note). The decisions are the tested Arrange, Drag, NoteTimer, drop_slot,
-  # swapped, dropped, SectorArrangement::cell_of and arrange_note;
-  # sectors.spec.ts drags a strip onto an empty cell and onto another strip,
-  # saves, sees it on a second page and checks nothing reached Live.
+  # transform and data-carried written and removed on the element, the
+  # aimed cell's data-drop and the cell the finger is over, #233; since
+  # #233 in pages/sectors/arrange.rs), page_spots and spot_of (every
+  # visible sector's cells' slots, centres and boxes read from the DOM at
+  # the down), spot_cell (the aimed cell's element), shown_layouts (the
+  # layouts the drop's two sectors show, through the tested picked),
+  # carried_over (the held carry and its tested drop_spot) and
+  # flash_note (the refused save's note shown, then cleared by a timer
+  # while the tested NoteTimer says it is still its note). The decisions
+  # are the tested Arrange (aim, lands, dropped_in), Drag, NoteTimer, drop_spot,
+  # Spot::off_line, landing, swapped, SectorArrangement::cell_of and
+  # arrange_note; sectors.spec.ts drags a strip onto an empty cell, onto
+  # another strip and onto another sector's cell (#233), saves, sees it on
+  # a second page and checks nothing reached Live.
   # blur_field (#148, sectors v2: the focused rename field, found by its
   # class, lets go of the focus once the tested Edit::outside_down ended
   # its rename; sectors.spec.ts renames on Enter and on a tap elsewhere).
-  "fohmixer-ui/src/pages/sectors\\.rs.*(replace|in) (change_mode|sector_spots|Carrier::(new|show|lift|hold|settle|leave))( |$)",
+  "fohmixer-ui/src/pages/sectors/arrange\\.rs.*(replace|in) (change_mode|page_spots|spot_of|spot_cell|shown_layouts|carried_over|Carrier::(new|show|still_over|aim|unaim|lift|hold|settle|leave))( |$)",
   "fohmixer-ui/src/pages/sectors/column\\.rs.*(replace|in) (flash_note|blur_field)( |$)",
   "fohmixer-ui/src/store/live/sectors\\.rs.*(replace|in) LiveStore::(sector_request|sector_tick|sector_edit)( |$)",
   # store/live/claps.rs (#220): clap_tap, clap_beat and clap_stop, one

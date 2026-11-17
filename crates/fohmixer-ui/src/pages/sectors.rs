@@ -14,8 +14,9 @@
 //! while it is on every strip lies under a cover with a ⠿ handle that owns
 //! its touches, the faders, MUTE, SEL and the column's other controls are
 //! dimmed and inert, every position a sector can show is a cell, the empty
-//! ones calm dashed outlines, a strip is dragged within its sector onto an
-//! empty cell (its old place left empty) or another strip (the two swap),
+//! ones calm dashed outlines, a strip is dragged onto an empty cell (its
+//! old place left empty) or another strip (the two swap) of its own sector
+//! or of any other visible one (#233: a move between the layouts shown),
 //! and a second tap saves; nothing reaches Live; in the mode the LAYOUTS
 //! block stays live and renames, adds and removes layouts, mockup v2,
 //! `behave::arrange_edit`, saved with the same tap; no undo, the owner's
@@ -38,18 +39,20 @@ use leptos::prelude::*;
 
 use crate::arrange::sectors::{SectorArrangement, SectorCell, WindowKey, arrange_sectors};
 use crate::arrange::{Arrangement, LineKey, METRICS, Shift, Sides, narrow};
-use crate::behave::arrange_drag::{Arrange, ArrangeEnd, Drag, Held, arrange_note};
-use crate::binding::sectors::{Picks, picked, pool_controls, sector_instances, sector_side};
+use crate::behave::arrange_drag::{Arrange, ArrangeEnd, arrange_note};
+use crate::binding::sectors::{Picks, pool_controls, sector_instances, sector_side};
 use crate::components::stream_lufs::stream_readouts;
-use crate::components::{ControlView, down_of, owns_touches};
+use crate::components::{ControlView, owns_touches};
 use crate::dom;
 use crate::pages::presenter::StageMini;
 use crate::pages::surface::{
     ColumnFoot, ColumnHead, Head, Nav, ThinStrip, extra_attr, measure_page,
 };
 
+mod arrange;
 mod column;
 
+use arrange::{ArrangeCover, Carrier, change_mode};
 use column::{ArrangeButton, LayoutsBlock};
 
 /// The sectors page's arrangement, a memo of what it depends on: the
@@ -126,100 +129,6 @@ fn step_sector_window(
     let _ = offsets.try_update(|all| {
         all.insert(key.clone(), next);
     });
-}
-
-/// ARRANGE's mode changed by `change` (written only when it changed:
-/// every cell reads it); what `change` returned.
-fn change_mode<R>(mode: RwSignal<Arrange>, change: impl FnOnce(&mut Arrange) -> R) -> Option<R> {
-    let mut next = mode.try_get_untracked()?;
-    let out = change(&mut next);
-    if mode.try_with_untracked(|now| *now != next).unwrap_or(false) {
-        let _ = mode.try_set(next);
-    }
-    Some(out)
-}
-
-/// The page's one drag in ARRANGE (`behave::arrange_drag::Drag`) and the
-/// strip's slot it moves under the finger (an element, so kept locally).
-#[derive(Clone, Copy)]
-struct Carrier {
-    drag: StoredValue<Drag>,
-    slot: StoredValue<Option<web_sys::Element>, LocalStorage>,
-}
-
-impl Carrier {
-    fn new() -> Self {
-        Self {
-            drag: StoredValue::new(Drag::default()),
-            slot: StoredValue::new_local(None),
-        }
-    }
-
-    /// The carried slot follows the finger by `dx` px (its own `style`:
-    /// the slot has no reactive one).
-    fn show(self, dx: f64) {
-        let _ = self.slot.try_with_value(|slot| {
-            if let Some(slot) = slot {
-                dom::set_attr(slot, "style", &format!("transform:translateX({dx:.1}px);"));
-                dom::set_attr(slot, "data-carried", "true");
-            }
-        });
-    }
-
-    /// The carried slot goes back to its place.
-    fn lift(self) {
-        if let Some(Some(slot)) = self.slot.try_update_value(Option::take) {
-            dom::remove_attr(&slot, "style");
-            dom::remove_attr(&slot, "data-carried");
-        }
-    }
-
-    /// The slot the drag holds now is `slot` (a previous one put back).
-    fn hold(self, slot: web_sys::Element) {
-        self.lift();
-        let _ = self.slot.try_set_value(Some(slot));
-    }
-
-    /// No carry is held any more: its slot goes back.
-    fn settle(self) {
-        if self
-            .drag
-            .try_with_value(|d| d.held().is_none())
-            .unwrap_or(true)
-        {
-            self.lift();
-        }
-    }
-
-    /// Every carry ends with nothing moved (the mode ended, a hide).
-    fn leave(self) {
-        let _ = self.drag.try_update_value(Drag::leave);
-        self.lift();
-    }
-}
-
-/// The cells of `sector` on `slot`'s line (the line's children: one keyed
-/// list), each its layout slot (`data-slot`) and its centre (px, the
-/// viewport's x).
-fn sector_spots(slot: &web_sys::Element, sector: SectorId) -> Vec<(usize, f64)> {
-    let Some(line) = slot.parent_element() else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    let mut next = line.first_element_child();
-    while let Some(el) = next {
-        let index = el
-            .get_attribute("data-slot")
-            .and_then(|n| n.parse::<usize>().ok());
-        if let Some(index) = index
-            && el.get_attribute("data-sector").as_deref() == Some(sector.as_str())
-        {
-            let rect = el.get_bounding_client_rect();
-            out.push((index, rect.left() + rect.width() / 2.0));
-        }
-        next = el.next_element_sibling();
-    }
-    out
 }
 
 /// The default page with sectors: its lines, the column (its head with the
@@ -567,118 +476,6 @@ fn SectorCellView(
         </div>
     }
     .into_any()
-}
-
-/// ARRANGE's cover over a strip (`sectors.css` shows it only in the mode):
-/// it owns its touches and captures the pointer, so no touch reaches the
-/// strip's controls. A finger moved past the slop carries the strip (its
-/// slot follows the finger); the lift drops it on the nearest cell of its
-/// sector, empty or a strip (`Arrange::dropped_in` over the cells read at
-/// the down). A cancel or a lost capture puts it back with nothing moved; a
-/// carry whose end never came ends at the next primary down of its type on
-/// a cover (#124).
-#[component]
-fn ArrangeCover(
-    sector: SectorId,
-    strip: StripRef,
-    place: Memo<usize>,
-    carrier: Carrier,
-) -> impl IntoView {
-    let nav = expect_context::<Nav>();
-    let store = nav.store;
-    let mode = nav.arrange;
-    let strip = StoredValue::new(strip);
-    let on_down = move |ev: web_sys::PointerEvent| {
-        if !mode.try_with_untracked(Arrange::is_on).unwrap_or(false) {
-            return;
-        }
-        ev.prevent_default();
-        let Some(el) = dom::current_element(&ev) else {
-            return;
-        };
-        let Some(slot_el) = el.closest(".slot").ok().flatten() else {
-            return;
-        };
-        let (Some(strip), Some(from)) = (strip.try_get_value(), place.try_get_untracked()) else {
-            return;
-        };
-        let held = Held {
-            sector,
-            strip,
-            slot: from,
-            spots: sector_spots(&slot_el, sector),
-        };
-        let x = f64::from(ev.client_x());
-        let down = down_of(&ev);
-        let took = carrier
-            .drag
-            .try_update_value(|d| d.down(down, held, x))
-            .unwrap_or(false);
-        if took {
-            carrier.hold(slot_el);
-            let _ = el.set_pointer_capture(down.id);
-        }
-    };
-    let on_move = move |ev: web_sys::PointerEvent| {
-        let x = f64::from(ev.client_x());
-        let offset = carrier
-            .drag
-            .try_update_value(|d| d.moved(ev.pointer_id(), x))
-            .flatten();
-        if let Some(dx) = offset {
-            carrier.show(dx);
-        }
-    };
-    let on_up = move |ev: web_sys::PointerEvent| {
-        let x = f64::from(ev.client_x());
-        let drop = carrier
-            .drag
-            .try_update_value(|d| d.up(ev.pointer_id(), x))
-            .flatten();
-        carrier.settle();
-        let Some((carry, x)) = drop else {
-            return;
-        };
-        // The layout its sector shows now: the edit's (a page in ARRANGE).
-        let picks = nav.picks.try_get_untracked().unwrap_or_default();
-        let shown = store
-            .sectors
-            .try_with_untracked(|told| {
-                told.shown()
-                    .and_then(|doc| mode.try_with_untracked(|m| m.applied(doc)))
-            })
-            .flatten();
-        let Some(layout) = shown
-            .as_ref()
-            .and_then(|doc| picked(doc, &picks, carry.sector))
-            .map(|layout| layout.id.clone())
-        else {
-            return;
-        };
-        let _ = change_mode(mode, |m| {
-            m.dropped_in(&layout, &carry.spots, carry.slot, &carry.strip, x);
-        });
-    };
-    let on_cancel = move |ev: web_sys::PointerEvent| {
-        let _ = carrier.drag.try_update_value(|d| d.cancel(ev.pointer_id()));
-        carrier.settle();
-    };
-    // The cover owns its touches (#43 PR G); it writes no key.
-    let no_keys: Vec<String> = Vec::new();
-    view! {
-        <div
-            class="edit-cover"
-            use:owns_touches=no_keys
-            data-testid="edit-cover"
-            on:pointerdown=on_down
-            on:pointermove=on_move
-            on:pointerup=on_up
-            on:pointercancel=on_cancel
-            on:lostpointercapture=on_cancel
-        >
-            <div class="grip">"⠿"<small>"DRAG"</small></div>
-        </div>
-    }
 }
 
 /// A side's arrows in the column (a side that does not fit): ◀ and ▶ move

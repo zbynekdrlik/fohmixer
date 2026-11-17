@@ -33,12 +33,17 @@ pub use fohmixer_proto::client::{Decision, SwitchWhy};
 /// selectors take about half a second.
 pub const STOP_SPREAD_MS: u64 = 40;
 
-/// Whether a decision's DRY writes are spread out ([`STOP_SPREAD_MS`]): a
-/// stop's only (`transport` while not playing, an unknown transport too).
-/// A start's switch-on stays one batch (a later tune-on would cut the
-/// first notes), and so do a hold's and every other cause's.
-pub fn spreads(cause: Cause, playing: Option<bool>) -> bool {
-    cause == Cause::Transport && playing != Some(true)
+/// Whether a decision's writes are spread out ([`STOP_SPREAD_MS`]): a
+/// transport decision's, playing or not: a stop's DRY (an unknown transport
+/// too) and a start's switch-on alike (#190, the design of 2026-11-17: the
+/// switch-on in one batch still stalled band Live's audio callback). The
+/// start's switch-on already waits `engage_delay_ms`, so another 40 ms per
+/// selector cuts no first note. A hold's, a key change's and every other
+/// cause's stay one batch (a key change keeps the singers in step).
+/// `_playing` (the set's transport) no longer decides: a start and a stop
+/// spread alike.
+pub fn spreads(cause: Cause, _playing: Option<bool>) -> bool {
+    cause == Cause::Transport
 }
 
 /// A second move of a selector by another writer within this many ms of

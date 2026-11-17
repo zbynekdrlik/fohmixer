@@ -391,9 +391,79 @@ async fn an_edit_of_two_layouts_is_one_change() {
         sector_records(&rx),
         vec![
             json!({"ev": "sectors", "what": "edit", "client": 1, "peer": "10.0.0.1",
-                   "rev": 2, "added": 0, "removed": 0, "renamed": 0, "reordered": 2}),
+                   "rev": 2, "added": 0, "removed": 0, "renamed": 0, "reordered": 2,
+                   "moved": 0}),
         ]
     );
+}
+
+#[tokio::test]
+async fn an_edit_that_moves_a_fader_to_another_sector_records_it_moved() {
+    // #233: ARRANGE's drag carried Vox 2 from LU's layout onto RU's.
+    let dir = tempfile::tempdir().unwrap();
+    let first = doc(
+        1,
+        vec![
+            (
+                SectorId::Lu,
+                vec![layout("lu-1", "VOX", &["Vox 1", "Vox 2"])],
+            ),
+            (
+                SectorId::Ru,
+                vec![layout("ru-1", "BAND", &["Klavir", "Bass"])],
+            ),
+        ],
+    );
+    let (mut router, _own, rx) = served(dir.path(), Some(&first));
+    let a = attach(&mut router, 1);
+    let b = attach(&mut router, 2);
+    a.take();
+    b.take();
+    let _ = records(&rx);
+    router.handle(edit_msg(
+        1,
+        "m1",
+        reordered(
+            &first,
+            &[
+                ("lu-1", vec!["Vox 1"]),
+                ("ru-1", vec!["Klavir", "Vox 2", "Bass"]),
+            ],
+        ),
+        1,
+    ));
+    let moved = doc(
+        2,
+        vec![
+            (SectorId::Lu, vec![layout("lu-1", "VOX", &["Vox 1"])]),
+            (
+                SectorId::Ru,
+                vec![layout("ru-1", "BAND", &["Klavir", "Vox 2", "Bass"])],
+            ),
+        ],
+    );
+    assert_eq!(
+        a.take().unwrap(),
+        vec![result("m1"), ServerMsg::Sectors { doc: moved.clone() }]
+    );
+    assert_eq!(told(&b), vec![moved.clone()]);
+    assert_eq!(on_disk(dir.path(), SECTORS_FILE), moved);
+    assert_eq!(
+        sector_records(&rx),
+        vec![
+            json!({"ev": "sectors", "what": "edit", "client": 1, "peer": "10.0.0.1",
+                   "rev": 2, "added": 0, "removed": 0, "renamed": 0, "reordered": 2,
+                   "moved": 1}),
+        ]
+    );
+    // Vox 2 back in LU while RU keeps it (a fader from nowhere): stale,
+    // to the asker alone, nothing written, recorded or told.
+    let nowhere = reordered(&moved, &[("lu-1", vec!["Vox 1", "Vox 2"])]);
+    router.handle(edit_msg(1, "m2", nowhere, 2));
+    assert_eq!(answers(&a), vec![error("m2", "stale")]);
+    assert_eq!(told(&b), Vec::<SectorsDoc>::new());
+    assert_eq!(on_disk(dir.path(), SECTORS_FILE), moved);
+    assert_eq!(sector_records(&rx), Vec::<Value>::new());
 }
 
 #[tokio::test]
@@ -774,7 +844,7 @@ async fn an_edit_with_gaps_puts_a_strip_at_the_right_edge_and_is_written_with_nu
 }
 
 #[tokio::test]
-async fn the_hubs_same_set_check_ignores_gaps_and_full_counts_them() {
+async fn the_hubs_kept_faders_check_ignores_gaps_and_full_counts_them() {
     let dir = tempfile::tempdir().unwrap();
     let first = doc(
         5,
@@ -919,7 +989,8 @@ async fn an_edit_renames_adds_and_removes_layouts_in_one_change() {
         sector_records(&rx),
         vec![
             json!({"ev": "sectors", "what": "edit", "client": 1, "peer": "10.0.0.1",
-                    "rev": 2, "added": 1, "removed": 1, "renamed": 1, "reordered": 0})
+                    "rev": 2, "added": 1, "removed": 1, "renamed": 1, "reordered": 0,
+                    "moved": 0})
         ]
     );
     let back = edited.clone();

@@ -11,8 +11,9 @@
 //!   see the rule's choice and Live's DRY.
 //! - **Its end** ([`RouterMsg::AutotuneEngage`] with the wait's generation;
 //!   a stale one does nothing) records `ends` and decides the set again with
-//!   the start's cause (`transport`): the delayed writes go then, each with
-//!   its own `write` record.
+//!   the start's cause (`transport`): the delayed writes go then, spread one
+//!   selector per `STOP_SPREAD_MS` as a stop's DRY (the design of
+//!   2026-11-17, `spread.rs`), each with its own `write` record.
 //! - **A stop within it** (or a lost transport, `stopped`) and a disconnect
 //!   (`offline`) end it: nothing that waited is written.
 //! - **Immediate as before:** every DRY write (a stop's spread, AUT off, a
