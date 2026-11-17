@@ -38,9 +38,11 @@ for each patch:
   the follow misses a move into a chain, so the identity's own clock sends
   the four parents' `path` messages again every 10 s: `random 10000` drawn
   at load -> `delay` -> `deferlow` -> `1` -> `qmetro 10000` -> `t b b b b`,
-  each device at its own offset, on the low-priority queue; no other timed
-  box upstream of any LOM object, a faster clock included), each name from `live.object` `get name` -> `route name` ->
-  `zl reg` -> `tosymbol` into the pack's cold inlets, never from an
+  each device at its own offset, on the low-priority queue, each of its
+  boxes once and its lines in and out exactly these (`clock_errors`); no
+  other timed box upstream of any LOM object, a faster clock included),
+  each name from `live.object` `get name` -> `route name` -> `zl reg` ->
+  `tosymbol` into the pack's cold inlets, never from an
   observer's output (`value_errors`: the FINDING of 2026-11-17, an
   observer's output kept a name with a space in quotes and read the set as
   `-`, so no device matched);
@@ -667,7 +669,40 @@ def identity_errors(where: str, patcher: dict, every: list[dict], sink: str) -> 
         if b.get("id") == f"obj-parent{PARENTS}-observer"
     ]
     errors += value_errors(where, patcher, every, sink)
+    errors += clock_errors(where, patcher, every)
     errors += lom_clock_errors(where, patcher, every)
+    return errors
+
+
+def clock_outputs() -> dict[str, list[list]]:
+    """Each box of the identity's clock and the only lines out of it
+    ([its outlet, the destination box, its inlet])."""
+    chain = [ID_OFFSET, ID_OFFSET_DELAY, ID_CLOCK_DEFER, ID_CLOCK_START, ID_CLOCK, ID_TICK]
+    found = {chain[i]: [[0, chain[i + 1], 0]] for i in range(len(chain) - 1)}
+    found[ID_TICK] = sorted(
+        [PARENTS - level, f"obj-parent{level}-path", 0] for level in range(1, PARENTS + 1)
+    )
+    return found
+
+
+def clock_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
+    """The identity's clock is exempt from `lom_clock_errors`, so it may
+    drive nothing but the parents' paths (the review of the 10 s re-read:
+    a LOM read fed from the clock or the tick passed every other check):
+    each of its boxes once, the lines out of each exactly
+    `clock_outputs`."""
+    errors = []
+    for box, want in clock_outputs().items():
+        count = sum(1 for b in every if b.get("id") == box)
+        if count != 1:
+            errors.append(f"{where}: {box} must be one box, has {count}")
+        out = sorted(
+            [line["source"][1], *line["destination"]]
+            for line in (item.get("patchline", {}) for item in patcher.get("lines", []))
+            if line.get("source", [None])[0] == box
+        )
+        if out != want:
+            errors.append(f"{where}: {box} outputs into {want} alone, has {out}")
     return errors
 
 
