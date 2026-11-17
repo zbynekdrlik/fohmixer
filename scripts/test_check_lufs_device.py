@@ -486,6 +486,71 @@ class TreeTests(unittest.TestCase):
         self.restore(METER)
         self.assertEqual(self.errors(), [])
 
+    def test_each_pack_slot_has_its_one_source(self) -> None:
+        # The review of #240: the device's id and the two values were unguarded.
+        for device in cl.DEVICES:
+            where = device.maxpat.as_posix()
+            patch = self.patcher(device)
+            patch["patcher"]["lines"] = [
+                ln
+                for ln in patch["patcher"]["lines"]
+                if ln["patchline"]["destination"] not in (["obj-pack", 2], ["obj-pack", 8])
+            ]
+            self.line(patch, ["obj-id-route", 1], ["obj-pack", 2])
+            self.line(patch, [device.send_from, 0], ["obj-pack", 8])
+            self.line(patch, ["obj-parent1-symbol", 0], ["obj-pack", 9])
+            self.save(patch, device)
+            errors = self.errors()
+            self.assertIn(
+                f"{where}: obj-pack:2 takes [['obj-id-route', 0]] alone, has [['obj-id-route', 1]]",
+                errors,
+            )
+            self.assertIn(
+                f"{where}: obj-pack:8 takes the first value's clip alone, "
+                f"has [['{device.send_from}', 0]]",
+                errors,
+            )
+            self.assertTrue(
+                any("obj-pack:9 takes [['obj-send-trigger', 1]] alone" in e for e in errors)
+            )
+            self.restore(device)
+        self.assertEqual(self.errors(), [])
+
+    def test_the_walk_takes_unknown_classes_hot_on_every_inlet(self) -> None:
+        def box_(i: str, text: str, inlets: int = 2) -> dict:
+            return {"id": i, "maxclass": "newobj", "text": text, "numinlets": inlets}
+
+        def line(src: str, dst: str, inlet: int) -> dict:
+            return {"patchline": {"source": [src, 0], "destination": [dst, inlet]}}
+
+        def run(middle: str, inlet: int) -> list[str]:
+            patcher = {
+                "boxes": [
+                    {"box": box_("n", "udpsend 127.0.0.1 1", 1)},
+                    {"box": box_("m", "del 5")},
+                    {"box": box_("k", middle)},
+                ],
+                "lines": [line("m", "k", inlet), line("k", "n", 0)],
+            }
+            return cl.thread_errors("p", patcher, cl.boxes(patcher))
+
+        # `pak` and `join` fire from every inlet; `pack` and `zl reg` store
+        # on the right. `del` is `delay`.
+        self.assertEqual(len(run("pak 0 0", 1)), 1)
+        self.assertEqual(len(run("join 2 @triggers 0 1", 1)), 1)
+        self.assertEqual(run("pack 0 0", 1), [])
+        self.assertEqual(run("zl reg", 1), [])
+        self.assertEqual(len(run("pack 0 0", 0)), 1)
+        for timed in ("midiin", "notein 1", "ctlin", "edge~", "plugsync~", "makenote 100 150"):
+            patcher = {
+                "boxes": [
+                    {"box": box_("n", "udpsend 127.0.0.1 1", 1)},
+                    {"box": box_("m", timed)},
+                ],
+                "lines": [line("m", "n", 0)],
+            }
+            self.assertEqual(len(cl.thread_errors("p", patcher, cl.boxes(patcher))), 1, timed)
+
     def test_a_gone_parent_reads_a_dash(self) -> None:
         patch = self.patcher()
         for b in cl.boxes(patch["patcher"]):

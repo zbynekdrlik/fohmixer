@@ -27,7 +27,9 @@ for each patch:
   window shown as integers) and every `peakamp~` of the meter
   `peakamp~ 33` (~30 a second); they output only while the DSP runs;
 - one `pack` whose first argument is the device's OSC address and whose
-  version argument is `v<version.txt>`, which the face shows too;
+  version argument is `v<version.txt>`, which the face shows too, each of
+  its slots from its one source (`slot_errors`: the device's id, the two
+  values);
 - the identity: the `live.path` messages for the device and its first four
   canonical parents, read once at load and again only on a change
   (`identity_errors`, #240: a `live.observer` on each parent's `name`, fed
@@ -239,6 +241,7 @@ def patch_errors(
     if len(packs) == 1:
         sink = next(b.get("id") for b in every if words(b)[:1] == ["pack"])
         errors += identity_errors(where, patcher, every, sink)
+        errors += slot_errors(where, patcher, every, sink, send_from)
     errors += [
         f"{where}: {b.get('id')} ('{b.get('text')}') runs on a clock (the device has none)"
         for b in every
@@ -247,6 +250,26 @@ def patch_errors(
     shown = [b.get("text") for b in every if b.get("varname") == "version"]
     if shown != [f"v{version}"]:
         errors.append(f"{where}: its face shows {shown}, expected ['v{version}'] (version.txt)")
+    return errors
+
+
+def slot_errors(
+    where: str, patcher: dict, every: list[dict], pack: str, send_from: str
+) -> list[str]:
+    """The pack's other slots, each from its one source: the device's id
+    (inlet 2) from `obj-id-route`, the first value (inlet 8) from its own
+    `clip` (never the last value's), the last value (inlet 9) from the
+    trigger, which bangs the pack after it."""
+    errors = []
+    for inlet, want in ((2, [["obj-id-route", 0]]), (9, [[SEND_TRIGGER, 1]])):
+        if feeds(patcher, pack, inlet) != want:
+            errors.append(
+                f"{where}: {pack}:{inlet} takes {want} alone, has {feeds(patcher, pack, inlet)}"
+            )
+    ids = {b.get("id"): b for b in every}
+    first = feeds(patcher, pack, 8)
+    if len(first) != 1 or first[0][0] == send_from or kind(ids.get(first[0][0], {})) != "clip":
+        errors.append(f"{where}: {pack}:8 takes the first value's clip alone, has {first}")
     return errors
 
 
@@ -314,23 +337,66 @@ def defer_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
 # thread, so a timed object's output (and everything it triggers) runs
 # there; `deferlow` and `qmetro` hand it to the low-priority queue (Live's
 # main thread). A network object is reached from a timed one only through
-# one of them. Hot inlets: the ones whose message makes the box output
-# (`gate` passes its right inlet's message; `jit.net.send` sends both).
+# one of them.
 NETWORK = {"udpsend": (0,), "maxurl": (0,), "jit.net.send": (0, 1)}
 LOW_PRIORITY = ("deferlow", "defer", "qmetro")
+# Boxes that output from the scheduler: clocks, the audio side's readers,
+# the transport, and MIDI in (Max for Live hands it over in the audio
+# thread).
 TIMED = (
     "metro",
     "delay",
+    "del",
     "pipe",
     "snapshot~",
     "peakamp~",
+    "edge~",
+    "plugsync~",
     "transport",
+    "timepoint",
     "clocker",
     "tempo",
     "line",
     "speedlim",
+    "makenote",
+    "midiin",
+    "notein",
+    "ctlin",
 )
-HOT = {"gate": (1,)}
+# Hot inlets: the ones whose message makes the box output. The classes
+# below take their other inlets cold (they store); `gate` passes its right
+# inlet's message (its left is the control); `jit.net.send` sends both. A
+# class not named here is taken as hot on every inlet (the safe side).
+LEFT_HOT = (
+    "pack",
+    "zl",
+    "prepend",
+    "dict.pack",
+    "expr",
+    "sprintf",
+    "delay",
+    "del",
+    "pipe",
+    "sel",
+    "select",
+    "route",
+    "random",
+    "clip",
+    "*",
+    "+",
+    "-",
+    "/",
+    "%",
+    "round",
+    "metro",
+    "qmetro",
+    "change",
+    "live.object",
+    "makenote",
+    "maxurl",
+    "udpsend",
+)
+HOT = {"gate": (1,), "jit.net.send": (0, 1)}
 
 
 def kind(box: dict) -> str:
@@ -339,6 +405,51 @@ def kind(box: dict) -> str:
         return ""
     found = words(box)
     return found[0] if found else ""
+
+
+def hot_inlets(box: dict) -> tuple[int, ...] | None:
+    """The inlets whose message makes `box` output; None for all of them."""
+    if box.get("maxclass") == "message" or kind(box) in LEFT_HOT:
+        return (0,)
+    return HOT.get(kind(box))
+
+
+def upstream(
+    patcher: dict,
+    ids: dict,
+    starts: list[tuple[str, int | None]],
+    inlets,
+    stop: tuple,
+    ends: tuple = LOW_PRIORITY,
+) -> list[str]:
+    """The boxes of a class in `stop` that reach `starts` ((box, inlet), an
+    inlet of None for every inlet), walking upstream through the inlets
+    `inlets(box)` names (None: every inlet). A `stop` box is reported and
+    not crossed; an `ends` box (by default the low-priority ones) ends its
+    path unreported."""
+    reached: list[str] = []
+    seen: set[str] = set()
+    todo = list(starts)
+    while todo:
+        box, inlet = todo.pop()
+        for item in patcher.get("lines", []):
+            line = item.get("patchline", {})
+            dst = line.get("destination", [None, None])
+            if dst[0] != box or (inlet is not None and dst[1] != inlet):
+                continue
+            src = line["source"][0]
+            if src in seen:
+                continue
+            seen.add(src)
+            source = ids.get(src, {})
+            if kind(source) in stop:
+                reached.append(src)
+                continue
+            if kind(source) in ends:
+                continue
+            hot = inlets(source)
+            todo += [(src, None)] if hot is None else [(src, i) for i in hot]
+    return sorted(reached)
 
 
 def thread_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
@@ -350,25 +461,13 @@ def thread_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
     for net in every:
         if kind(net) not in NETWORK:
             continue
-        seen: set[str] = set()
-        todo = [(net.get("id"), inlet) for inlet in NETWORK[kind(net)]]
-        while todo:
-            box, inlet = todo.pop()
-            for src, _ in feeds(patcher, box, inlet):
-                if src in seen:
-                    continue
-                seen.add(src)
-                source = ids.get(src, {})
-                if kind(source) in LOW_PRIORITY:
-                    continue
-                if kind(source) in TIMED:
-                    errors.append(
-                        f"{where}: {src} ('{source.get('text')}') reaches the "
-                        f"{kind(net)} {net.get('id')} on the audio thread "
-                        "(a deferlow or a qmetro goes between)"
-                    )
-                    continue
-                todo += [(src, hot) for hot in HOT.get(kind(source), (0,))]
+        starts = [(net.get("id"), inlet) for inlet in NETWORK[kind(net)]]
+        for src in upstream(patcher, ids, starts, hot_inlets, TIMED):
+            errors.append(
+                f"{where}: {src} ('{ids[src].get('text')}') reaches the "
+                f"{kind(net)} {net.get('id')} on the audio thread "
+                "(a deferlow or a qmetro goes between)"
+            )
     return errors
 
 
@@ -481,30 +580,17 @@ def lom_clock_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
     `deferlow` changes the thread, not the rate): each would call Live
     again and again."""
     ids = {b.get("id"): b for b in every}
+    clocks = (*TIMED, "qmetro")
     errors = []
     for lom in every:
         if kind(lom) not in LOM:
             continue
-        seen: set[str] = set()
-        todo = [lom.get("id")]
-        while todo:
-            box = todo.pop()
-            for item in patcher.get("lines", []):
-                line = item.get("patchline", {})
-                if line.get("destination", [None])[0] != box:
-                    continue
-                src = line["source"][0]
-                if src in seen:
-                    continue
-                seen.add(src)
-                if kind(ids.get(src, {})) in (*TIMED, "qmetro"):
-                    errors.append(
-                        f"{where}: {src} ('{ids[src].get('text')}') drives the "
-                        f"{kind(lom)} {lom.get('id')} (the identity is read at "
-                        "load and on a change only)"
-                    )
-                    continue
-                todo.append(src)
+        for src in upstream(patcher, ids, [(lom.get("id"), None)], lambda _: None, clocks, ends=()):
+            errors.append(
+                f"{where}: {src} ('{ids[src].get('text')}') drives the "
+                f"{kind(lom)} {lom.get('id')} (the identity is read at "
+                "load and on a change only)"
+            )
     return errors
 
 
