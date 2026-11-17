@@ -206,13 +206,23 @@ async fn session(mut socket: WebSocket, hub: Hub, proto: Option<u32>, who: Opene
     }
     let client = hub.next_client();
     let outbox = Arc::new(Outbox::new());
-    hub.route(RouterMsg::Attach {
+    let attached = hub.try_route(RouterMsg::Attach {
         client,
         outbox: Arc::clone(&outbox),
         peer: who.peer.clone(),
         lan: who.is_lan(),
         role,
     });
+    if !attached {
+        // The router stopped between this page's hello and its attach
+        // (#246): it closes only the pages it was told of, so this one
+        // closes itself (its writer sends the close).
+        tracing::info!(
+            client,
+            "the hub is stopping: closing a page it never attached"
+        );
+        outbox.close();
+    }
     log_socket("client connected", client, &who);
     hub.events
         .record("sock", sock_fields("open", client, &who, None));

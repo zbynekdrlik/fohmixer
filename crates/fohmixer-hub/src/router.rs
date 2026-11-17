@@ -958,7 +958,8 @@ impl Router {
 
     /// Serves messages until [`RouterMsg::Stop`], then releases the Stream
     /// Deck's held keys and tells its task to stop (#52), hands the Pro-Q 4
-    /// editors' windows back (#71 PR E), and closes every client (it holds a
+    /// editors' windows back (#71 PR E), and closes every client, also one
+    /// whose `Attach` came after the `Stop` (#246; it holds a
     /// sender of its own for its batches' results, so the channel never ends
     /// by itself: the hub's stop sends `Stop`).
     pub async fn run(mut self, mut rx: mpsc::UnboundedReceiver<RouterMsg>) {
@@ -970,6 +971,16 @@ impl Router {
             self.beat.stamp();
             if !go_on {
                 break;
+            }
+        }
+        // A page whose session attached while the router took the stop
+        // (#246): the channel closes first, so a later `Attach` is refused
+        // and its session closes the page itself, and each one already
+        // queued behind the `Stop` is closed here.
+        rx.close();
+        while let Ok(msg) = rx.try_recv() {
+            if let RouterMsg::Attach { outbox, .. } = msg {
+                outbox.close();
             }
         }
         self.deck_stop();
