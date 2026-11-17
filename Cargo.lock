@@ -1450,7 +1450,6 @@ dependencies = [
  "axum-server",
  "base64 0.22.1",
  "bytes",
- "chrono",
  "fohmixer-proto",
  "futures-util",
  "http-body-util",
@@ -1488,9 +1487,9 @@ dependencies = [
 name = "fohmixer-proto"
 version = "1.53.2"
 dependencies = [
- "chrono",
  "serde",
  "serde_json",
+ "time",
 ]
 
 [[package]]

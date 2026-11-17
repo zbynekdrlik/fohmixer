@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use chrono::NaiveDate;
+use crate::day_files::UtcDate;
 use fohmixer_proto::client::{LufsHistoryStatus, LufsItem};
 use fohmixer_proto::lufs::{HistoryDay, HistorySeries};
 use serde_json::{Value, json};
@@ -184,7 +184,7 @@ impl LufsHistory {
     /// `GET /api/lufs/days`: the days that hold the point, newest first;
     /// the minute not written yet counts for its day.
     pub fn days(&self, instance: &str, target: &str) -> Vec<HistoryDay> {
-        let mut days: Vec<(NaiveDate, HistoryDay)> = Vec::new();
+        let mut days: Vec<(UtcDate, HistoryDay)> = Vec::new();
         if let Some(dir) = &self.dir {
             for (date, path) in day_files_in(dir) {
                 if let Some(day) = day_of(&path, instance, target) {
@@ -225,7 +225,7 @@ pub fn widen(day: Option<HistoryDay>, span: (i64, i64)) -> HistoryDay {
 }
 
 /// Adds the span `(first, last)` to `date`'s day (a new day when none).
-pub fn add_span(days: &mut Vec<(NaiveDate, HistoryDay)>, date: NaiveDate, span: (i64, i64)) {
+pub fn add_span(days: &mut Vec<(UtcDate, HistoryDay)>, date: UtcDate, span: (i64, i64)) {
     match days.iter_mut().find(|(d, _)| *d == date) {
         Some((_, day)) => *day = widen(Some(*day), span),
         None => days.push((date, widen(None, span))),
@@ -233,7 +233,7 @@ pub fn add_span(days: &mut Vec<(NaiveDate, HistoryDay)>, date: NaiveDate, span: 
 }
 
 /// The day files of `dir` with their dates (none when it cannot be read).
-fn day_files_in(dir: &Path) -> Vec<(NaiveDate, PathBuf)> {
+fn day_files_in(dir: &Path) -> Vec<(UtcDate, PathBuf)> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -298,9 +298,9 @@ fn read_window(dir: &Path, point: &Point, start: i64, end: i64, slots: &mut [i16
     }
     let first = day_files::date_of(start);
     let last = day_files::date_of(end - 1);
-    let days = last.signed_duration_since(first).num_days();
+    let days = day_files::days_between(first, last);
     for k in 0..=days {
-        let Some(date) = first.checked_add_days(chrono::Days::new(k as u64)) else {
+        let Some(date) = first.checked_add(time::Duration::days(k)) else {
             continue;
         };
         let path = dir.join(day_files::file_name(STEM, date));
@@ -331,11 +331,11 @@ pub fn place(m: i64, values: &[i16], start: i64, end: i64, slots: &mut [i16]) {
 
 /// The `lufs_history` record of a minute line's write: one when the line
 /// took its day file past the cap (warn class), none otherwise.
-pub fn cap_record(appended: Appended, date: NaiveDate, cap: u64) -> Option<Value> {
+pub fn cap_record(appended: Appended, date: UtcDate, cap: u64) -> Option<Value> {
     (appended == Appended::CapReached).then(|| {
         json!({
             "what": "cap",
-            "date": date.format("%Y-%m-%d").to_string(),
+            "date": day_files::ymd(date),
             "cap_bytes": cap,
         })
     })
@@ -371,7 +371,7 @@ impl Sink<MinuteLine> for LufsWriter {
         self.files.flush();
     }
 
-    fn sweep(&mut self, today: NaiveDate) {
+    fn sweep(&mut self, today: UtcDate) {
         self.files.sweep(today);
     }
 }

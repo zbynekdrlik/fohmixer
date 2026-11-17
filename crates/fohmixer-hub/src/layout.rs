@@ -92,9 +92,20 @@ pub struct LayoutStore {
 pub fn backup_name(file_name: &str, now: SystemTime) -> String {
     let since = now.duration_since(UNIX_EPOCH).unwrap_or_default();
     let secs = i64::try_from(since.as_secs()).unwrap_or(i64::MAX);
-    let stamp = chrono::DateTime::from_timestamp(secs, since.subsec_nanos())
-        .map(|t| t.format("%Y%m%dT%H%M%S%.3fZ").to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+    let stamp = time::OffsetDateTime::from_unix_timestamp(secs)
+        .map(|t| {
+            format!(
+                "{:04}{:02}{:02}T{:02}{:02}{:02}.{:03}Z",
+                t.year(),
+                u8::from(t.month()),
+                t.day(),
+                t.hour(),
+                t.minute(),
+                t.second(),
+                since.subsec_millis()
+            )
+        })
+        .unwrap_or_else(|_| "unknown".to_string());
     format!("{file_name}.{stamp}")
 }
 

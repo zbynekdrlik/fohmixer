@@ -16,8 +16,8 @@ fn item(instance: &str, target: &str, tenths: Option<i16>) -> LufsItem {
     }
 }
 
-fn date(y: i32, m: u32, d: u32) -> NaiveDate {
-    NaiveDate::from_ymd_opt(y, m, d).unwrap()
+fn date(y: i32, m: u8, d: u8) -> UtcDate {
+    time::Date::from_calendar_date(y, time::Month::try_from(m).unwrap(), d).unwrap()
 }
 
 /// One minute line of `band`'s VOX at `m` with `slots`.
@@ -112,11 +112,7 @@ fn an_older_window_is_read_from_the_day_files_and_ram_answers_its_own_hour() {
     let dir = tempfile::tempdir().unwrap();
     let day = date(2026, 11, 15);
     // Yesterday 23:59 and today 00:00 UTC, two files.
-    let midnight = day
-        .and_hms_opt(0, 0, 0)
-        .unwrap()
-        .and_utc()
-        .timestamp_millis();
+    let midnight = day.midnight().assume_utc().unix_timestamp() * 1000;
     let mut slots = vec![-250_i16; 60];
     slots[0] = HOLE;
     std::fs::write(
@@ -231,11 +227,7 @@ fn the_days_hold_only_the_points_spans_newest_first_with_the_unwritten_minute() 
     let mut slots = vec![HOLE; 60];
     slots[5] = -230;
     slots[40] = -700;
-    let sunday = date(2026, 11, 8)
-        .and_hms_opt(9, 0, 0)
-        .unwrap()
-        .and_utc()
-        .timestamp_millis();
+    let sunday = (date(2026, 11, 8).midnight().assume_utc().unix_timestamp() + 9 * 3600) * 1000;
     std::fs::write(
         dir.path().join("lufs-2026-11-08.jsonl"),
         format!(

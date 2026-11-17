@@ -30,7 +30,7 @@ serde_json = { version = "1.0", features = ["float_roundtrip"] }
 # The config file (no writer: the hub only reads it)
 toml = { version = "1", default-features = false, features = ["std", "serde", "parse"] }
 # Layout backup names (UTC time, no clock feature: the time comes from std)
-chrono = { version = "0.4", default-features = false, features = ["alloc"] }
+time = { version = "0.3", default-features = false, features = ["std"] }
 
 # Auth (from iemmixer): JWT, argon2id PIN hashes, random secrets
 jsonwebtoken = "9"

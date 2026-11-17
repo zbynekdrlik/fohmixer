@@ -1,21 +1,18 @@
 use super::*;
-use chrono::Days;
 use std::time::Duration;
 
-fn date(y: i32, m: u32, d: u32) -> NaiveDate {
-    NaiveDate::from_ymd_opt(y, m, d).unwrap()
+fn date(y: i32, m: u8, d: u8) -> UtcDate {
+    time::Date::from_calendar_date(y, time::Month::try_from(m).unwrap(), d).unwrap()
 }
 
 /// `ts` (ms) at noon UTC of a date.
-fn noon(day: NaiveDate) -> i64 {
-    day.and_hms_opt(12, 0, 0)
-        .unwrap()
-        .and_utc()
-        .timestamp_millis()
+fn noon(day: UtcDate) -> i64 {
+    let midnight = day.midnight().assume_utc().unix_timestamp();
+    (midnight + 12 * 3600) * 1000
 }
 
 /// The lines of a day file, parsed.
-fn lines(dir: &std::path::Path, day: NaiveDate) -> Vec<Value> {
+fn lines(dir: &std::path::Path, day: UtcDate) -> Vec<Value> {
     std::fs::read_to_string(dir.join(file_name(day)))
         .unwrap_or_default()
         .lines()
@@ -497,7 +494,7 @@ fn the_writer_thread_writes_sweeps_at_start_and_ends_with_its_handles() {
     let logs = dir.path().join("logs");
     std::fs::create_dir_all(&logs).unwrap();
     let today = date_of(now_ms());
-    let expired_day = today - Days::new(61);
+    let expired_day = today - time::Duration::days(61);
     let old = logs.join(file_name(expired_day));
     std::fs::write(&old, "{}\n").unwrap();
     let (log, writer) = EventLog::start_with(logs.clone(), LIMITS).unwrap();

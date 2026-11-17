@@ -18,7 +18,10 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
 
-use chrono::{DateTime, NaiveDate};
+use time::{Date, Month, OffsetDateTime};
+
+/// A day of the day files: a UTC calendar date.
+pub type UtcDate = Date;
 
 /// How long a writer waits idle before it checks the retention again.
 pub const SWEEP_EVERY: Duration = Duration::from_secs(3600);
@@ -31,30 +34,59 @@ pub struct Limits {
 }
 
 /// The UTC date of `ts` (ms since the Unix epoch).
-pub fn date_of(ts: i64) -> NaiveDate {
-    DateTime::from_timestamp_millis(ts)
-        .unwrap_or(DateTime::UNIX_EPOCH)
-        .date_naive()
+pub fn date_of(ts: i64) -> UtcDate {
+    OffsetDateTime::from_unix_timestamp_nanos(i128::from(ts) * 1_000_000)
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH)
+        .date()
+}
+
+/// `date` as `YYYY-MM-DD`.
+pub fn ymd(date: UtcDate) -> String {
+    format!(
+        "{:04}-{:02}-{:02}",
+        date.year(),
+        u8::from(date.month()),
+        date.day()
+    )
+}
+
+/// A `YYYY-MM-DD` date (exactly those digits); `None` for anything else or a
+/// date that does not exist.
+pub fn parse_ymd(text: &str) -> Option<UtcDate> {
+    let mut parts = text.split('-');
+    let (year, month, day) = (parts.next()?, parts.next()?, parts.next()?);
+    let digits =
+        |part: &str, len: usize| part.len() == len && part.bytes().all(|b| b.is_ascii_digit());
+    if parts.next().is_some() || !digits(year, 4) || !digits(month, 2) || !digits(day, 2) {
+        return None;
+    }
+    let month = Month::try_from(month.parse::<u8>().ok()?).ok()?;
+    Date::from_calendar_date(year.parse().ok()?, month, day.parse().ok()?).ok()
+}
+
+/// The whole days from `from` to `to` (negative when `to` is earlier).
+pub fn days_between(from: UtcDate, to: UtcDate) -> i64 {
+    (to - from).whole_days()
 }
 
 /// The day file of `date` in the folder of `stem`.
-pub fn file_name(stem: &str, date: NaiveDate) -> String {
-    format!("{stem}-{}.jsonl", date.format("%Y-%m-%d"))
+pub fn file_name(stem: &str, date: UtcDate) -> String {
+    format!("{stem}-{}.jsonl", ymd(date))
 }
 
 /// The date of a day file's name of `stem`; `None` for any other file.
-pub fn date_of_file(stem: &str, name: &str) -> Option<NaiveDate> {
+pub fn date_of_file(stem: &str, name: &str) -> Option<UtcDate> {
     let day = name
         .strip_prefix(stem)?
         .strip_prefix('-')?
         .strip_suffix(".jsonl")?;
-    NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()
+    parse_ymd(day)
 }
 
 /// Whether the day file of `file` is past retention on `today`: more than
 /// `keep_days` days old.
-pub fn expired(file: NaiveDate, today: NaiveDate, keep_days: i64) -> bool {
-    today.signed_duration_since(file).num_days() > keep_days
+pub fn expired(file: UtcDate, today: UtcDate, keep_days: i64) -> bool {
+    days_between(file, today) > keep_days
 }
 
 /// Whether a line of `len` bytes takes a day file of `size` bytes past
@@ -90,7 +122,7 @@ fn last_byte(file: &mut File, size: u64) -> std::io::Result<Option<u8>> {
 
 /// The open day file.
 struct Day {
-    date: NaiveDate,
+    date: UtcDate,
     out: BufWriter<File>,
     size: u64,
     capped: bool,
@@ -119,7 +151,7 @@ pub struct DayFiles {
     limits: Limits,
     day: Option<Day>,
     /// The date the retention was last checked for.
-    swept: Option<NaiveDate>,
+    swept: Option<UtcDate>,
     /// The last write failed.
     failing: bool,
 }
@@ -217,7 +249,7 @@ impl DayFiles {
     }
 
     /// The day file of `date`, opened (appending) when another one is open.
-    fn open(&mut self, date: NaiveDate) -> std::io::Result<&mut Day> {
+    fn open(&mut self, date: UtcDate) -> std::io::Result<&mut Day> {
         if self.day.as_ref().is_some_and(|d| d.date != date) {
             self.flush();
             self.day = None;
@@ -255,7 +287,7 @@ impl DayFiles {
 
     /// Deletes the day files past retention on `today`; how many it
     /// deleted.
-    pub fn sweep(&mut self, today: NaiveDate) -> usize {
+    pub fn sweep(&mut self, today: UtcDate) -> usize {
         self.swept = Some(today);
         let Ok(entries) = std::fs::read_dir(&self.dir) else {
             return 0;
@@ -290,11 +322,11 @@ pub trait Sink<T> {
     /// Writes out what it buffers.
     fn flush(&mut self);
     /// Deletes the day files past retention on `today`.
-    fn sweep(&mut self, today: NaiveDate);
+    fn sweep(&mut self, today: UtcDate);
 }
 
 /// Today's UTC date by the hub's clock.
-pub fn today() -> NaiveDate {
+pub fn today() -> UtcDate {
     date_of(crate::events::now_ms())
 }
 

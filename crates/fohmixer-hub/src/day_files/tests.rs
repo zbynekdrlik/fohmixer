@@ -1,18 +1,16 @@
 use super::*;
 
-fn date(y: i32, m: u32, d: u32) -> NaiveDate {
-    NaiveDate::from_ymd_opt(y, m, d).unwrap()
+fn date(y: i32, m: u8, d: u8) -> UtcDate {
+    time::Date::from_calendar_date(y, time::Month::try_from(m).unwrap(), d).unwrap()
 }
 
 /// `ts` (ms) at noon UTC of a date.
-fn noon(day: NaiveDate) -> i64 {
-    day.and_hms_opt(12, 0, 0)
-        .unwrap()
-        .and_utc()
-        .timestamp_millis()
+fn noon(day: UtcDate) -> i64 {
+    let midnight = day.midnight().assume_utc().unix_timestamp();
+    (midnight + 12 * 3600) * 1000
 }
 
-fn read(dir: &Path, stem: &str, day: NaiveDate) -> String {
+fn read(dir: &Path, stem: &str, day: UtcDate) -> String {
     std::fs::read_to_string(dir.join(file_name(stem, day))).unwrap_or_default()
 }
 
@@ -184,7 +182,7 @@ impl Sink<u32> for Kept {
     fn flush(&mut self) {
         self.0.lock().unwrap().push("flush".into());
     }
-    fn sweep(&mut self, _today: NaiveDate) {
+    fn sweep(&mut self, _today: UtcDate) {
         self.0.lock().unwrap().push("sweep".into());
     }
 }
