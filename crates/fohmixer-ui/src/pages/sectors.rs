@@ -14,8 +14,9 @@
 //! while it is on every strip lies under a cover with a ⠿ handle that owns
 //! its touches, the faders, MUTE, SEL and the column's other controls are
 //! dimmed and inert, every position a sector can show is a cell, the empty
-//! ones calm dashed outlines, a strip is dragged within its sector onto an
-//! empty cell (its old place left empty) or another strip (the two swap),
+//! ones calm dashed outlines, a strip is dragged onto an empty cell (its
+//! old place left empty) or another strip (the two swap) of its own sector
+//! or of any other visible one (#233: a move between the layouts shown),
 //! and a second tap saves; nothing reaches Live; in the mode the LAYOUTS
 //! block stays live and renames, adds and removes layouts, mockup v2,
 //! `behave::arrange_edit`, saved with the same tap; no undo, the owner's

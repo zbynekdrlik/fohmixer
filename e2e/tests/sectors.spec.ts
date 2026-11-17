@@ -107,23 +107,49 @@ async function cellsOf(page: Page, sector: string): Promise<string[]> {
 
 /**
  * Carries a strip of `sector` in ARRANGE onto the cell at `to` (its index
- * among the sector's cells): the moves and the lift dispatched on the
- * strip's own cover (a dispatched pointer has no capture), past the slop
- * first, the lift at the target cell's centre.
+ * among the `target` sector's cells; its own sector's by default, #233
+ * another visible one's): the moves and the lift dispatched on the strip's
+ * own cover (a dispatched pointer has no capture), past the slop first,
+ * the lift at the target cell's centre. With `lift` false the finger stays
+ * on the target and the carry is returned for `cancelCarry`.
  */
-async function carry(page: Page, sector: string, strip: string, to: number) {
-  const cover = slots(page, sector)
-    .filter({ has: page.locator(`[data-testid="strip"][data-track="${strip}"]`) })
-    .getByTestId("edit-cover");
+async function carry(page: Page, sector: string, strip: string, to: number, target = sector, lift = true) {
+  const cover = coverOf(page, sector, strip);
   await expect(cover).toBeVisible();
   const from = await centre(cover);
-  const dx = (await centre(slots(page, sector).nth(to))).x - from.x;
+  const goal = await centre(slots(page, target).nth(to));
+  const dx = goal.x - from.x;
+  // `dy` is up from the cover's centre (`dispatchPointer`).
+  const dy = from.y - goal.y;
   await dispatchPointer(cover, [
     { type: "pointerdown" },
     { type: "pointermove", dx: Math.sign(dx) * 10, dy: 0 },
-    { type: "pointermove", dx, dy: 0 },
-    { type: "pointerup", dx, dy: 0 },
+    { type: "pointermove", dx, dy },
+    ...(lift ? [{ type: "pointerup" as const, dx, dy }] : []),
   ]);
+  return cover;
+}
+
+/** The ARRANGE cover of `strip` (by its track) in `sector`. */
+function coverOf(page: Page, sector: string, strip: string): Locator {
+  return slots(page, sector)
+    .filter({ has: page.locator(`[data-testid="strip"][data-track="${strip}"]`) })
+    .getByTestId("edit-cover");
+}
+
+/** The `data-drop` marks of every cell on the sectors page, as `<sector>/<index>=<mark>`. */
+async function dropMarks(page: Page): Promise<string[]> {
+  return page.evaluate((selector) => {
+    const out: string[] = [];
+    for (const sector of ["lu", "ld", "ru", "rd"]) {
+      const cells = [...document.querySelectorAll(`${selector} .slot[data-sector="${sector}"]`)];
+      cells.forEach((cell, i) => {
+        const mark = cell.getAttribute("data-drop");
+        if (mark != null) out.push(`${sector}/${i}=${mark}`);
+      });
+    }
+    return out;
+  }, SECTORS);
 }
 
 /**
@@ -636,6 +662,113 @@ test.describe("The fader sectors", () => {
       await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "false");
       await until(async () => (await hubStatus()).sectors.rev, (rev) => rev > revBefore, "the hub taking the order");
       await expect.poll(() => cellsOf(page, "ru")).toEqual([name(KEYS), name(VOCAL), "master|Hand2 #", "master|Hand4 #"]);
+    });
+
+    test("ARRANGE moves a strip onto another sector's cell and back (#233)", async ({ page }) => {
+      await setSectors(GAP_DOC);
+      await openSectors(page);
+      const lu = [name(VOCAL), name(KEYS), "band|A-Reverb #", "master|A-Reverb #", "master|Hand1 #", "master|Hand4 #"];
+      const ru = ["master|Hand2 #", name(VOCAL), name(KEYS), "master|Hand4 #"];
+      await expect.poll(() => cellsOf(page, "lu")).toEqual(lu);
+      await expect.poll(() => cellsOf(page, "ru")).toEqual(ru);
+      const live = await LiveClient.open();
+      try {
+        const HAND1_VOLUME = volume(track("Hand1 #"));
+        const volumeBefore = await live.get("master", HAND1_VOLUME, "value");
+        const since = Date.now();
+        const revBefore = (await hubStatus()).sectors.rev;
+        await page.getByTestId("arrange").click();
+        await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "true");
+        await expect.poll(() => cellsOf(page, "ru")).toEqual([...ru, "_", "_"]);
+
+        // A layout that already holds the strip takes no drop: Keys 1 held
+        // over RU's empty cell marks it `no`, and its lift there moves
+        // nothing.
+        const keys = await carry(page, "lu", "Keys 1", 4, "ru", false);
+        await expect.poll(() => dropMarks(page)).toEqual(["ru/4=no"]);
+        await dispatchPointer(keys, [{ type: "pointercancel" }]);
+        await expect.poll(() => dropMarks(page)).toEqual([]);
+        await carry(page, "lu", "Keys 1", 4, "ru");
+        await expect.poll(() => cellsOf(page, "ru")).toEqual([...ru, "_", "_"]);
+        await expect.poll(() => cellsOf(page, "lu")).toEqual(lu);
+
+        // Hand1 # from LU onto RU's first empty cell: held there, the cell
+        // is marked `yes`; at the lift it moves, its LU slot left empty.
+        const hand1 = await carry(page, "lu", "Hand1 #", 4, "ru", false);
+        await expect.poll(() => dropMarks(page)).toEqual(["ru/4=yes"]);
+        await dispatchPointer(hand1, [{ type: "pointercancel" }]);
+        await carry(page, "lu", "Hand1 #", 4, "ru");
+        const luMoved = [name(VOCAL), name(KEYS), "band|A-Reverb #", "master|A-Reverb #", "_", "master|Hand4 #"];
+        await expect.poll(() => cellsOf(page, "ru")).toEqual([...ru, "master|Hand1 #", "_"]);
+        await expect.poll(() => cellsOf(page, "lu")).toEqual(luMoved);
+        await expect.poll(() => dropMarks(page)).toEqual([]);
+        expect((await hubStatus()).sectors.rev, "nothing saved before the second tap").toBe(revBefore);
+
+        // The second tap saves it as ONE edit, moved 1.
+        await page.getByTestId("arrange").click();
+        await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "false");
+        await until(async () => (await hubStatus()).sectors.rev, (rev) => rev > revBefore, "the hub taking the move");
+        const steps = await until(() => sectorSteps(since), (s) => s.includes("edit"), "the hub's edit record");
+        expect(steps).toEqual(["edit"]);
+        const record = (await hubEvents()).find((r: any) => r.ev === "sectors" && r.what === "edit" && r.ts >= since);
+        expect({ moved: record.moved, added: record.added, removed: record.removed, reordered: record.reordered }).toEqual({
+          moved: 1,
+          added: 0,
+          removed: 0,
+          reordered: 2,
+        });
+        // Shown in RU, gone from LU (its slot a plain gap now).
+        await expect.poll(() => cellsOf(page, "ru")).toEqual([...ru, "master|Hand1 #"]);
+        await expect.poll(() => cellsOf(page, "lu")).toEqual(luMoved);
+        await expect(slots(page, "lu").filter({ has: page.locator('[data-track="Hand1 #"]') })).toHaveCount(0);
+        await until(
+          async () => live.sectors?.doc?.sectors,
+          (s: any) => s?.ru?.[0]?.strips?.length === 5,
+          "the hub's document with Hand1 # in ru",
+        );
+        expect(live.sectors.doc.sectors.ru[0].strips).toEqual([master("Hand2 #"), VOCAL, KEYS, master("Hand4 #"), master("Hand1 #")]);
+        expect(live.sectors.doc.sectors.lu[0].strips).toEqual([
+          VOCAL,
+          KEYS,
+          band("A-Reverb #"),
+          master("A-Reverb #"),
+          null,
+          master("Hand4 #"),
+        ]);
+
+        // Back: Hand1 # from RU onto LU's empty cell, saved: the fixture's
+        // document as it was.
+        const backSince = Date.now();
+        const revMoved = (await hubStatus()).sectors.rev;
+        await page.getByTestId("arrange").click();
+        await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "true");
+        await expect.poll(() => cellsOf(page, "lu")).toEqual(luMoved);
+        await carry(page, "ru", "Hand1 #", 4, "lu");
+        await expect.poll(() => cellsOf(page, "lu")).toEqual(lu);
+        await page.getByTestId("arrange").click();
+        await expect(sectorsPage(page)).toHaveAttribute("data-arrange", "false");
+        await until(async () => (await hubStatus()).sectors.rev, (rev) => rev > revMoved, "the hub taking the move back");
+        await until(
+          async () => (await hubEvents()).find((r: any) => r.ev === "sectors" && r.what === "edit" && r.ts >= backSince),
+          (r: any) => r != null,
+          "the move back's edit record",
+        ).then((r: any) => expect(r.moved).toBe(1));
+        await expect.poll(() => cellsOf(page, "ru")).toEqual(ru);
+        await expect.poll(() => cellsOf(page, "lu")).toEqual(lu);
+        await until(
+          async () => live.sectors?.doc?.sectors,
+          (s: any) => s?.ru?.[0]?.strips?.length === 4,
+          "the hub's document as the fixture's",
+        );
+        expect(live.sectors.doc.sectors).toEqual(GAP_DOC.sectors);
+
+        // Nothing reached Live.
+        const sets = (await hubEvents()).filter((r: any) => r.ev === "set" && r.ts >= since);
+        expect(sets, JSON.stringify(sets)).toEqual([]);
+        expect(await live.get("master", HAND1_VOLUME, "value")).toBe(volumeBefore);
+      } finally {
+        live.close();
+      }
     });
   });
 
