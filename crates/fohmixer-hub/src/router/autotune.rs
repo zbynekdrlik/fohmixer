@@ -1340,10 +1340,13 @@ impl Router {
     /// a session's first): the set's unfound targets walked again, the key
     /// in force judged, every target decided (a stop is DRY at once).
     pub(super) fn autotune_transport(&mut self, instance: &str, playing: bool, prev: Option<bool>) {
-        // A start drops a stop's DRY still to come: its selectors are
-        // decided afresh (#140).
+        // Every transport change drops a spread still to come, before it
+        // decides: a start a stop's DRY (its selectors are decided afresh,
+        // #140), a stop a switch-on's, so no switch-on goes after the
+        // stop's DRY (#190).
+        let why = if playing { "start" } else { "stop" };
+        self.autotune_unspread(instance, None, why);
         if playing {
-            self.autotune_unspread(instance, None, "start");
             // #190: a play start's switch-on waits, with a delay set.
             self.autotune_engage_start(instance, prev);
         } else {

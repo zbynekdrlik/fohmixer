@@ -569,11 +569,14 @@ fn a_selector_left_dry_is_another_writers_until_the_reset() {
 }
 
 #[test]
-fn only_a_stops_dry_writes_are_spread_40_ms_apart() {
+fn only_a_transport_decisions_writes_are_spread_40_ms_apart() {
     assert_eq!(STOP_SPREAD_MS, 40);
     assert!(spreads(Cause::Transport, Some(false)), "a stop");
     assert!(spreads(Cause::Transport, None), "an unknown transport");
-    assert!(!spreads(Cause::Transport, Some(true)), "a start: one batch");
+    assert!(
+        spreads(Cause::Transport, Some(true)),
+        "a start's switch-on (#190)"
+    );
     for cause in [
         Cause::Position,
         Cause::Key,
@@ -588,5 +591,6 @@ fn only_a_stops_dry_writes_are_spread_40_ms_apart() {
         Cause::Written,
     ] {
         assert!(!spreads(cause, Some(false)), "{cause:?}");
+        assert!(!spreads(cause, Some(true)), "{cause:?} playing");
     }
 }
