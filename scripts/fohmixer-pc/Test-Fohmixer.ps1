@@ -61,6 +61,9 @@
 #   run writing nothing, a changed one written again;
 # - the MBC PC's install and the FOH install's link (#184 PR D): see
 #   Test-FohmixerMbc.ps1, dot-sourced here.
+# - an install whose checking hub's image stays held (#250): the install's
+#   own error always reported, the unpacked folder removed once the image is
+#   free; see Test-FohmixerHeld.ps1, dot-sourced here.
 # Only its own test objects are removed; nothing is ended by force (spec I7).
 param([Parameter(Mandatory)][string]$HubExe, [Parameter(Mandatory)][string]$TrayExe)
 Set-StrictMode -Version Latest
@@ -1106,6 +1109,9 @@ try {
         $leftNames = ($left | ForEach-Object { $_.Name }) -join ', '
         Assert ($left.Count -eq 0) "install-refused-$($r.what)-leaves-no-unpacked-bundle-or-check-file ($leftNames)"
     }
+    # ---- the checking hub's image held (#250): Test-FohmixerHeld.ps1 ----
+    . (Join-Path $here 'Test-FohmixerHeld.ps1')
+
     # ---- installs 12 and 13 (#90): AbleSet's name for the LAN only, then taken out (the rollback) ----
     $o = $remoteOver.Clone()
     $o.Remove('AbleSetAccessAud')
