@@ -195,19 +195,24 @@ $w = Wait-FohFileFree -Path $heldFile -TimeoutSeconds 1
 Assert ($w.free -and -not $w.waited) 'file-wait-free-once-the-handle-is-closed'
 Assert ((Remove-FohLeftover -Path $inUse -What 'test folder') -and -not (Test-Path -LiteralPath $inUse)) 'leftover-removed-once-free'
 Assert (Remove-FohLeftover -Path $inUse -What 'test folder') 'leftover-already-gone-is-removed'
-# Held by another process for 2 s: the removal fails, waits for the file, and its second try removes it.
+# Held by another process until the first removal has run (it deletes 0.txt,
+# listed before held.bin, then fails on held.bin): the removal fails, waits for
+# the file, and its second try removes it. No timer decides the order.
 New-Item -ItemType Directory -Force -Path $inUse | Out-Null
 [IO.File]::WriteAllText($heldFile, 'held')
+$firstGone = Join-Path $inUse '0.txt'
+[IO.File]::WriteAllText($firstGone, 'first')
 $holdingMark = Join-Path $heldDir 'holding'
 $holdScript = Join-Path $heldDir 'hold.ps1'
 [IO.File]::WriteAllText($holdScript, (@(
-            'param([string]$File, [string]$Mark)',
+            'param([string]$File, [string]$Mark, [string]$First)',
             '$ErrorActionPreference = "Stop"',
             '$s = [IO.File]::Open($File, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)',
             '[IO.File]::WriteAllText($Mark, "holding")',
-            'Start-Sleep -Seconds 2',
+            '$deadline = (Get-Date).AddSeconds(60)',
+            'while ((Test-Path -LiteralPath $First) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 20 }',
             '$s.Dispose()') -join "`r`n"))
-$holder = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $holdScript, $heldFile, $holdingMark) -WindowStyle Hidden -PassThru
+$holder = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $holdScript, $heldFile, $holdingMark, $firstGone) -WindowStyle Hidden -PassThru
 try {
     $deadline = (Get-Date).AddSeconds(30)
     while (-not (Test-Path -LiteralPath $holdingMark) -and -not $holder.HasExited -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 50 }
@@ -215,8 +220,10 @@ try {
     $said = @(Remove-FohLeftover -Path $inUse -What 'test folder' -TimeoutSeconds 10 6>&1)
     $gone = @($said | Where-Object { $_ -is [bool] })
     $text = (@($said | Where-Object { $_ -isnot [bool] } | ForEach-Object { "$_" }) -join ' ')
-    Assert ($gone.Count -eq 1 -and $gone[0] -and -not (Test-Path -LiteralPath $inUse) -and $text.Contains('removed at its second try') -and
-        $text.Contains('held.bin (by: ')) "leftover-held-briefly-removed-after-a-wait ($text)"
+    # The holder may let go before the look for held files, so only the second try is asserted here
+    # (the holders' names: leftover-not-removed-warns-with-its-holder).
+    Assert ($gone.Count -eq 1 -and $gone[0] -and -not (Test-Path -LiteralPath $inUse) -and
+        $text.Contains('removed at its second try')) "leftover-held-briefly-removed-after-a-wait ($text)"
 } finally {
     if (-not $holder.WaitForExit(30000)) { throw "the holder process (pid $($holder.Id)) still runs after 30 s" }
 }

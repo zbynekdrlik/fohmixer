@@ -106,7 +106,9 @@ function Test-FohFileFree {
     # Whether $Path opens for reading and writing with no sharing: false
     # while another handle is open on it (whatever its sharing) or it is
     # mapped as a running image, the two ways a later removal or move fails
-    # (a sharing or lock violation). Any other failure throws.
+    # (a sharing or lock violation). Any other failure (the file gone, read
+    # only, refused) is no hold: it is said once and counts as free, so a
+    # wait ends at once and the removal or move after it shows its own error.
     param([Parameter(Mandatory)][string]$Path)
     try {
         $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
@@ -118,7 +120,8 @@ function Test-FohFileFree {
         while ($null -ne $e -and -not ($e -is [IO.IOException])) { $e = $e.InnerException }
         # 0x80070020 ERROR_SHARING_VIOLATION, 0x80070021 ERROR_LOCK_VIOLATION
         if ($null -ne $e -and @(-2147024864, -2147024863) -contains $e.HResult) { return $false }
-        throw
+        Write-Host ('fohmixer install: {0} could not be checked for other handles ({1}); taken as free' -f $Path, $_.Exception.Message)
+        return $true
     }
 }
 
@@ -180,8 +183,8 @@ function Remove-FohLeftover {
     # the reason and the files still held with their holders. Returns whether
     # $Path is gone.
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$What, [int]$TimeoutSeconds = 10)
-    if (-not (Test-Path -LiteralPath $Path)) { return $true }
     try {
+        if (-not (Test-Path -LiteralPath $Path)) { return $true }
         Remove-Item -LiteralPath $Path -Recurse -Force
         return $true
     } catch {
@@ -213,7 +216,12 @@ function Remove-FohLeftover {
     } catch {
         $heldText = "its holders not read: $($_.Exception.Message)"
     }
-    Write-Warning ('fohmixer install: the {0} {1} was not removed: {2} ({3}); remove it by hand' -f $What, $Path, $reason, $heldText)
+    try {
+        Write-Warning ('fohmixer install: the {0} {1} was not removed: {2} ({3}); remove it by hand' -f $What, $Path, $reason, $heldText)
+    } catch {
+        # A warning that cannot be written (a caller's -WarningAction Stop) is no reason to throw here.
+        $null = $_
+    }
     return $false
 }
 
