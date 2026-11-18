@@ -6,18 +6,25 @@
 # here, is bundled as fohmixer-hub.exe: on any check it starts a copy of
 # itself that inherits no handle and keeps running from the unpacked folder
 # (its image held) until a release file appears or its time is up, writes
-# that copy's pid to a file, then refuses the config. Covered:
-# - held past the install's wait: the install reports the hub's refusal,
-#   never the cleanup's error, and warns of the folder it left;
-# - held for 2 s: the install reports the refusal and leaves no unpacked
-#   bundle and no check file;
+# that copy's pid to a file, then refuses the config (or, with
+# FOHMIXER_TEST_PASS=1, accepts it). Without its variables it starts nothing.
+# Covered (the install's output read without whitespace: the console host
+# wraps a warning line at the window's width):
+# - refused, held past the install's waits: the install reports the hub's
+#   refusal, never the cleanup's error, warns that the exe stays in use, and
+#   warns of the folder it left;
+# - refused, held for 2 s: the install reports the refusal, logs its wait
+#   and leaves no unpacked bundle and no check file;
+# - accepted, held past the waits: the install refuses ("stays in use",
+#   nothing changed): no toml, no app\<version>;
 # - the files-in-use helpers (FohmixerHeld.ps1) in this process: a file this
 #   process holds is held, its holders name this process, the wait ends held
-#   after its bound, the leftover's removal warns with its holder and never
-#   throws; once released, free and removed;
-# - the issue's loop: the real hub's config check ten times on a fresh copy,
-#   each returning with the exe free; the waits it logged, with the holders,
-#   and Defender's state are printed (the evidence of what held it).
+#   after its bound, the leftover's removal waits, then warns with its holder
+#   and never throws; once released, free and removed;
+# - the issue's loop: ten rounds as an install does them (a fresh copy of the
+#   real hub in a folder of its own, its config check returning with the exe
+#   free, the folder moved and removed); the waits, with their holders, and
+#   Defender's state are printed (the evidence of what held it).
 # The copies end by themselves (the release file, their time): nothing is
 # ended by force (spec I7).
 Set-StrictMode -Version Latest
@@ -56,9 +63,16 @@ public static class FohmixerTestHub {
         string ms = Environment.GetEnvironmentVariable("FOHMIXER_TEST_HOLD_MS");
         string release = Environment.GetEnvironmentVariable("FOHMIXER_TEST_RELEASE");
         string pidFile = Environment.GetEnvironmentVariable("FOHMIXER_TEST_PIDFILE");
+        int holdMs;
+        // Without its three variables it starts nothing (a copy that is not in
+        // hold mode would start another).
+        if (string.IsNullOrEmpty(release) || string.IsNullOrEmpty(pidFile) || !int.TryParse(ms, out holdMs) || holdMs <= 0) {
+            Console.Error.WriteLine("the test hub needs FOHMIXER_TEST_HOLD_MS, FOHMIXER_TEST_RELEASE and FOHMIXER_TEST_PIDFILE");
+            return 4;
+        }
         StartupInfo si = new StartupInfo();
         si.cb = Marshal.SizeOf(typeof(StartupInfo));
-        StringBuilder cmd = new StringBuilder("\"" + self + "\" hold " + ms + " \"" + release + "\"");
+        StringBuilder cmd = new StringBuilder("\"" + self + "\" hold " + holdMs + " \"" + release + "\"");
         ProcessInfo pi;
         // No inherited handle (the check's output pipe ends with this process),
         // no window (CREATE_NO_WINDOW), its working folder outside the bundle.
@@ -69,6 +83,11 @@ public static class FohmixerTestHub {
         CloseHandle(pi.thread);
         CloseHandle(pi.process);
         File.WriteAllText(pidFile, pi.pid.ToString());
+        // FOHMIXER_TEST_PASS=1: the check passes (its image still held by the copy).
+        if (Environment.GetEnvironmentVariable("FOHMIXER_TEST_PASS") == "1") {
+            Console.Error.WriteLine("fohmixer-hub: the test hub accepts it: OK");
+            return 0;
+        }
         Console.Error.WriteLine("refused by the test hub (#250)");
         return 2;
     }
@@ -98,35 +117,54 @@ function Get-HeldLeftovers([string]$DataDir) {
     return @(Get-ChildItem -LiteralPath $app -Force | Where-Object { $_.Name.StartsWith('.') } | ForEach-Object { $_.Name })
 }
 
-$release = Join-Path $heldDir 'release'
+function Get-Flat([string]$Text) {
+    # The install's output without whitespace: Windows PowerShell's console
+    # host wraps a warning line at the window's width, also when redirected.
+    return ($Text -replace '\s', '')
+}
+
 foreach ($c in @(
-        # Past the install's wait (released by the test after the install returns).
-        @{ what = 'a-held-hub-image'; ms = 120000; release = $release },
-        # 2 s: within the install's wait.
-        @{ what = 'a-briefly-held-hub-image'; ms = 2000; release = (Join-Path $heldDir 'never') })) {
+        # Refused, past the install's waits (released by the test after the install returns).
+        @{ what = 'a-held-hub-image'; ms = 120000; pass = $false },
+        # Refused, 2 s: within the install's wait.
+        @{ what = 'a-briefly-held-hub-image'; ms = 2000; pass = $false },
+        # Passed, past the install's waits: refused before any change.
+        @{ what = 'a-passed-check-and-a-held-hub-image'; ms = 120000; pass = $true })) {
     $dataH = Join-Path $heldDir ('data-' + $c.what)
     $pidFile = Join-Path $heldDir ('pid-' + $c.what)
+    $release = Join-Path $heldDir ('release-' + $c.what)
     $env:FOHMIXER_TEST_HOLD_MS = [string]$c.ms
-    $env:FOHMIXER_TEST_RELEASE = $c.release
+    $env:FOHMIXER_TEST_RELEASE = $release
     $env:FOHMIXER_TEST_PIDFILE = $pidFile
+    if ($c.pass) { $env:FOHMIXER_TEST_PASS = '1' }
     try {
         $res = Invoke-Ps $install (Get-InstallArgs @{ BundleZip = $heldBundle.zip; DataDir = $dataH })
     } finally {
-        Remove-Item -LiteralPath 'Env:FOHMIXER_TEST_HOLD_MS', 'Env:FOHMIXER_TEST_RELEASE', 'Env:FOHMIXER_TEST_PIDFILE'
+        foreach ($v in @('FOHMIXER_TEST_HOLD_MS', 'FOHMIXER_TEST_RELEASE', 'FOHMIXER_TEST_PIDFILE', 'FOHMIXER_TEST_PASS')) {
+            if (Test-Path -LiteralPath "Env:$v") { Remove-Item -LiteralPath "Env:$v" }
+        }
         [IO.File]::WriteAllText($release, 'released')
         Wait-HeldCopy -PidFile $pidFile
     }
     Assert (Test-Path -LiteralPath $pidFile -PathType Leaf) "install-with-$($c.what)-ran-the-test-hub"
-    Assert ($res.code -ne 0 -and $res.out.Contains('refused by the test hub (#250)')) "install-with-$($c.what)-reports-the-hubs-refusal"
+    $flat = Get-Flat $res.out
     $left = @(Get-HeldLeftovers -DataDir $dataH)
+    if ($c.pass) {
+        Assert ($res.code -ne 0 -and $flat.Contains((Get-Flat 'stays in use')) -and $flat.Contains((Get-Flat 'nothing changed, run the install again'))) "install-with-$($c.what)-refuses-it"
+        Assert (-not (Test-Path -LiteralPath (Join-Path $dataH 'fohmixer-hub.toml')) -and -not (Test-Path -LiteralPath (Join-Path $dataH "app\$($heldBundle.version)"))) "install-with-$($c.what)-changes-nothing"
+    } else {
+        Assert ($res.code -ne 0 -and $res.out.Contains('refused by the test hub (#250)')) "install-with-$($c.what)-reports-the-hubs-refusal"
+    }
     if ($c.ms -gt 60000) {
-        Assert ($res.out.Contains('was not removed') -and $res.out.Contains('.unpack-')) "install-with-$($c.what)-warns-of-the-folder-it-left"
+        Assert ($flat.Contains((Get-Flat 'fohmixer-hub.exe is still in use'))) "install-with-$($c.what)-warns-the-exe-stays-in-use"
+        Assert ($flat.Contains((Get-Flat 'the unpacked bundle')) -and $flat.Contains((Get-Flat 'was not removed')) -and
+            @($left | Where-Object { $_.StartsWith('.unpack-') }).Count -eq 1) "install-with-$($c.what)-warns-of-the-folder-it-left ($($left -join ', '))"
         # The folder it left, removed now that the copy has ended.
         foreach ($n in $left) { Remove-Item -LiteralPath (Join-Path (Join-Path $dataH 'app') $n) -Recurse -Force }
     } else {
+        Assert ($flat.Contains((Get-Flat 'fohmixer-hub.exe was in use for'))) "install-with-$($c.what)-logs-its-wait"
         Assert ($left.Count -eq 0) "install-with-$($c.what)-leaves-no-unpacked-bundle-or-check-file ($($left -join ', '))"
     }
-    if (Test-Path -LiteralPath $release) { Remove-Item -LiteralPath $release }
 }
 
 # ---- the files-in-use helpers (FohmixerHeld.ps1), in this process ----
@@ -144,9 +182,10 @@ try {
     $w = Wait-FohFileFree -Path $heldFile -TimeoutSeconds 1
     Assert (-not $w.free -and $w.waited -and $w.ms -ge 1000 -and @($w.holders).Count -ge 1) "file-wait-ends-held-after-its-bound ($($w.ms) ms)"
     $warned = $null
-    $gone = Remove-FohLeftover -Path $inUse -What 'test folder' -WarningVariable warned -WarningAction SilentlyContinue
+    $gone = Remove-FohLeftover -Path $inUse -What 'test folder' -TimeoutSeconds 1 -WarningVariable warned -WarningAction SilentlyContinue
     $said = "$warned"
-    Assert (-not $gone -and $said.Contains('the test folder') -and $said.Contains('was not removed') -and $said.Contains("held.bin (by: $PID ")) "leftover-not-removed-warns-with-its-holder ($said)"
+    Assert (-not $gone -and $said.Contains('the test folder') -and $said.Contains('was not removed') -and
+        $said -match ('held\.bin \(by: ([^)]*, )?' + $PID + ' ')) "leftover-not-removed-warns-with-its-holder ($said)"
 } finally {
     $holding.Dispose()
 }
@@ -161,18 +200,22 @@ try {
     $mp = Get-MpComputerStatus
     Write-Host ('held-loop: defender running mode {0}, real-time protection {1}' -f $mp.AMRunningMode, $mp.RealTimeProtectionEnabled)
 } catch { Write-Host "held-loop: defender status not read ($($_.Exception.Message))" }
-$loopDir = Join-Path $heldDir 'loop'
-$loopHub = Join-Path $loopDir 'fohmixer-hub.exe'
-New-Item -ItemType Directory -Force -Path $loopDir | Out-Null
-Copy-Item -LiteralPath $HubExe -Destination $loopHub
+# Each round as an install does it: a fresh copy of the exe in a folder of
+# its own, its check, then the folder moved (Install-FohAppDir) and removed.
 $loopToml = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182
 $waits = @()
 for ($i = 1; $i -le 10; $i++) {
+    $loopDir = Join-Path $heldDir ".loop-$i"
+    $loopHub = Join-Path $loopDir 'fohmixer-hub.exe'
+    New-Item -ItemType Directory -Force -Path $loopDir | Out-Null
+    Copy-Item -LiteralPath $HubExe -Destination $loopHub
     $r = Invoke-FohHubCheck -Exe $loopHub -ArgList @('config', 'check') -Text $loopToml -Dir $heldDir
-    Assert ($r.code -eq 0 -and $r.image.free -and (Test-FohFileFree -Path $loopHub)) "held-loop-$i-check-passes-and-returns-with-the-exe-free"
+    Assert ($r.code -eq 0 -and $r.image.free) "held-loop-$i-check-passes-and-returns-with-the-exe-free"
     if ($r.image.waited) { $waits += ('{0}: {1} ms (by: {2})' -f $i, $r.image.ms, (Format-FohHolders $r.image.holders)) }
+    $moved = Join-Path $heldDir "loop-$i"
+    Move-Item -LiteralPath $loopDir -Destination $moved
+    Assert ((Test-Path -LiteralPath $moved) -and (Remove-FohLeftover -Path $moved -What 'loop folder')) "held-loop-$i-folder-moved-and-removed"
 }
 $waitText = ''
 if ($waits.Count -gt 0) { $waitText = ': ' + ($waits -join '; ') }
 Write-Host ('held-loop: {0} of 10 checks waited for the exe{1}' -f $waits.Count, $waitText)
-Assert (Remove-FohLeftover -Path $loopDir -What 'loop folder') 'held-loop-folder-removed'
