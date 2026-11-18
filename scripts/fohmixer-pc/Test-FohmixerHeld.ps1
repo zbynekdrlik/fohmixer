@@ -10,7 +10,14 @@
 # - held past the install's wait: the install reports the hub's refusal,
 #   never the cleanup's error, and warns of the folder it left;
 # - held for 2 s: the install reports the refusal and leaves no unpacked
-#   bundle and no check file.
+#   bundle and no check file;
+# - the files-in-use helpers (FohmixerHeld.ps1) in this process: a file this
+#   process holds is held, its holders name this process, the wait ends held
+#   after its bound, the leftover's removal warns with its holder and never
+#   throws; once released, free and removed;
+# - the issue's loop: the real hub's config check ten times on a fresh copy,
+#   each returning with the exe free; the waits it logged, with the holders,
+#   and Defender's state are printed (the evidence of what held it).
 # The copies end by themselves (the release file, their time): nothing is
 # ended by force (spec I7).
 Set-StrictMode -Version Latest
@@ -121,3 +128,51 @@ foreach ($c in @(
     }
     if (Test-Path -LiteralPath $release) { Remove-Item -LiteralPath $release }
 }
+
+# ---- the files-in-use helpers (FohmixerHeld.ps1), in this process ----
+$inUse = Join-Path $heldDir 'in-use'
+$heldFile = Join-Path $inUse 'held.bin'
+New-Item -ItemType Directory -Force -Path $inUse | Out-Null
+[IO.File]::WriteAllText($heldFile, 'held')
+Assert (Test-FohFileFree -Path $heldFile) 'file-free-when-no-one-holds-it'
+# Read sharing only: another reader may open it, a removal or a move may not.
+$holding = [IO.File]::Open($heldFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+try {
+    Assert (-not (Test-FohFileFree -Path $heldFile)) 'file-held-while-a-handle-is-open'
+    $holders = @(Get-FohFileHolders -Path $heldFile)
+    Assert (@($holders | Where-Object { $_.StartsWith("$PID ") }).Count -eq 1) "file-holders-name-this-process ($($holders -join ', '))"
+    $w = Wait-FohFileFree -Path $heldFile -TimeoutSeconds 1
+    Assert (-not $w.free -and $w.waited -and $w.ms -ge 1000 -and @($w.holders).Count -ge 1) "file-wait-ends-held-after-its-bound ($($w.ms) ms)"
+    $warned = $null
+    $gone = Remove-FohLeftover -Path $inUse -What 'test folder' -WarningVariable warned -WarningAction SilentlyContinue
+    $said = "$warned"
+    Assert (-not $gone -and $said.Contains('the test folder') -and $said.Contains('was not removed') -and $said.Contains("held.bin (by: $PID ")) "leftover-not-removed-warns-with-its-holder ($said)"
+} finally {
+    $holding.Dispose()
+}
+$w = Wait-FohFileFree -Path $heldFile -TimeoutSeconds 1
+Assert ($w.free -and -not $w.waited) 'file-wait-free-once-the-handle-is-closed'
+Assert ((Remove-FohLeftover -Path $inUse -What 'test folder') -and -not (Test-Path -LiteralPath $inUse)) 'leftover-removed-once-free'
+Assert (Remove-FohLeftover -Path $inUse -What 'test folder') 'leftover-already-gone-is-removed'
+
+# ---- the issue's loop (#250): the real hub's config check, its exe free each time it returns ----
+# Defender as the runner has it (the evidence of what holds the image).
+try {
+    $mp = Get-MpComputerStatus
+    Write-Host ('held-loop: defender running mode {0}, real-time protection {1}' -f $mp.AMRunningMode, $mp.RealTimeProtectionEnabled)
+} catch { Write-Host "held-loop: defender status not read ($($_.Exception.Message))" }
+$loopDir = Join-Path $heldDir 'loop'
+$loopHub = Join-Path $loopDir 'fohmixer-hub.exe'
+New-Item -ItemType Directory -Force -Path $loopDir | Out-Null
+Copy-Item -LiteralPath $HubExe -Destination $loopHub
+$loopToml = New-FohHubToml -HttpPort 18481 -BandPort 39181 -MasterPort 39182
+$waits = @()
+for ($i = 1; $i -le 10; $i++) {
+    $r = Invoke-FohHubCheck -Exe $loopHub -ArgList @('config', 'check') -Text $loopToml -Dir $heldDir
+    Assert ($r.code -eq 0 -and $r.image.free -and (Test-FohFileFree -Path $loopHub)) "held-loop-$i-check-passes-and-returns-with-the-exe-free"
+    if ($r.image.waited) { $waits += ('{0}: {1} ms (by: {2})' -f $i, $r.image.ms, (Format-FohHolders $r.image.holders)) }
+}
+$waitText = ''
+if ($waits.Count -gt 0) { $waitText = ': ' + ($waits -join '; ') }
+Write-Host ('held-loop: {0} of 10 checks waited for the exe{1}' -f $waits.Count, $waitText)
+Assert (Remove-FohLeftover -Path $loopDir -What 'loop folder') 'held-loop-folder-removed'

@@ -694,7 +694,7 @@ try {
     try { $entries = @($zip.Entries | ForEach-Object { $_.FullName }) } finally { $zip.Dispose() }
     foreach ($n in @('VERSION', 'SHA256SUMS', 'fohmixer-hub.exe', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1', 'FohmixerLivePrefs.ps1', 'FohmixerFirewall.ps1', 'FohmixerRemote.ps1', 'Start-FohmixerHub.ps1',
             'Stop-FohmixerHub.ps1', 'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py', 'FohMixer/transport/server.py',
-            'fohmixer-tray.exe', 'FohmixerTray.ps1', 'FohmixerHubProcess.ps1', 'FohmixerTasks.ps1', 'THIRD-PARTY-NOTICES.md',
+            'fohmixer-tray.exe', 'FohmixerTray.ps1', 'FohmixerHubProcess.ps1', 'FohmixerTasks.ps1', 'FohmixerHeld.ps1', 'THIRD-PARTY-NOTICES.md',
             'live-device/FohMixer LUFS.amxd', 'live-device/FohMixer Meter.amxd', 'live-device/FohMixer Listen.amxd',
             'live-device/FohMixer Claps.amxd')) {
         Assert ($entries -ccontains $n) "bundle-holds-$n"
