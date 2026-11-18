@@ -25,7 +25,7 @@ $script:StopTask = 'fohmixer-hub-stop'
 # What a bundle holds besides SHA256SUMS (design note section 2).
 $script:BundleFiles = @('VERSION', 'fohmixer-hub.exe', 'fohmixer-tray.exe', 'THIRD-PARTY-NOTICES.md', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1',
     'FohmixerLivePrefs.ps1', 'FohmixerFirewall.ps1', 'FohmixerRemote.ps1', 'FohmixerTray.ps1', 'FohmixerHubProcess.ps1',
-    'FohmixerTasks.ps1', 'FohmixerTables.ps1', 'FohmixerMbc.ps1', 'Start-FohmixerHub.ps1', 'Stop-FohmixerHub.ps1', 'mbc-frame.json',
+    'FohmixerTasks.ps1', 'FohmixerTables.ps1', 'FohmixerMbc.ps1', 'FohmixerHeld.ps1', 'Start-FohmixerHub.ps1', 'Stop-FohmixerHub.ps1', 'mbc-frame.json',
     'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py',
     'live-device/FohMixer LUFS.amxd', 'live-device/FohMixer Meter.amxd', 'live-device/FohMixer Listen.amxd',
     'live-device/FohMixer Claps.amxd')
@@ -40,6 +40,9 @@ $script:MidiDevices = @('FohMixer Claps.amxd')
 $script:MidiDevicePresets = 'Presets\MIDI Effects\Max MIDI Effect'
 # The MBC hub's frame (#184), in the bundle beside the scripts.
 $script:MbcFrame = 'mbc-frame.json'
+# How long a check of the new hub waits for its exe to be free again (#250):
+# the unpacked folder is moved or removed right after, which a held file fails.
+$script:HubImageWaitSeconds = 20
 # A SemVer version that is also a safe folder name (no trailing dot, no "..").
 $script:SemVer = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?\z'
 
@@ -66,6 +69,9 @@ $script:SemVer = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z
 # The MBC PC (#184): its toml, its FohMixer copy in Live's own folder, and
 # the FOH install's linked instance, in a file of their own.
 . (Join-Path $PSScriptRoot 'FohmixerMbc.ps1')
+# Files in use (#250): their holders, the wait until one is free, and the
+# removal of a leftover that never throws, in a file of their own.
+. (Join-Path $PSScriptRoot 'FohmixerHeld.ps1')
 
 # ---- small helpers ----
 
@@ -332,7 +338,7 @@ function Expand-FohBundle {
         [IO.Compression.ZipFile]::ExtractToDirectory($BundleZip, $tmp)
         $version = Test-FohBundle -Root $tmp
     } catch {
-        if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force }
+        $null = Remove-FohLeftover -Path $tmp -What 'unpacked bundle'
         throw
     }
     return [pscustomobject]@{ dir = $tmp; version = $version }
@@ -397,29 +403,51 @@ function New-FohHubToml {
     return (($lines -join "`r`n") + "`r`n" + $Linked + $Eq + $Companion + $Presenter + $Scenes + $Claps + $Remote)
 }
 
-function Test-FohHubToml {
-    # $Text checked as a config by the hub it is for ($Exe: `fohmixer-hub
-    # config check`, config.rs, the one set of rules), before the install
-    # stops the running hub: a config the new hub would refuse never reaches
-    # the data folder (the hub would not start, the emergency path included).
-    # The text goes to a file of its own in $Dir (never inside the bundle's
-    # tree, which becomes app\<version>). Returns the hub's answer; throws
-    # with its reason.
-    param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string]$Text, [Parameter(Mandatory)][string]$Dir)
+function Invoke-FohHubCheck {
+    # Runs a check of the new hub: `$Exe <ArgList> <file>`, with $Text (a
+    # config) in a file of its own in $Dir (never inside the bundle's tree,
+    # which becomes app\<version>). Returns its exit code (code), its answer
+    # (said, stderr included) and the wait for its exe (image, Wait-FohFileFree):
+    # it returns only once the exe is free again or after
+    # $script:HubImageWaitSeconds (#250), since the unpacked folder is moved or
+    # removed right after and a held file fails that. A wait is logged with the
+    # processes that held the exe; a wait that ends held is a warning, and the
+    # check's own answer still decides.
+    param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string[]]$ArgList,
+          [Parameter(Mandatory)][string]$Text, [Parameter(Mandatory)][string]$Dir)
     $file = Join-Path $Dir ('.check-' + [guid]::NewGuid().ToString('N') + '.toml')
     [IO.File]::WriteAllText($file, $Text, $script:Utf8NoBom)
     try {
         # Continue only around the native call: its stderr is its answer.
         $said = & {
             $ErrorActionPreference = 'Continue'
-            (& $Exe config check $file 2>&1 | ForEach-Object { "$_" }) -join ' '
+            (& $Exe @ArgList $file 2>&1 | ForEach-Object { "$_" }) -join ' '
         }
         $code = $LASTEXITCODE
     } finally {
-        Remove-Item -LiteralPath $file
+        $null = Remove-FohLeftover -Path $file -What 'check file'
     }
-    if ($code -ne 0) { throw "the new config is refused by the hub (exit $code): $said" }
-    return $said
+    $name = Split-Path -Leaf $Exe
+    $image = Wait-FohFileFree -Path $Exe -TimeoutSeconds $script:HubImageWaitSeconds
+    if (-not $image.free) {
+        Write-Warning ("fohmixer install: the new hub's {0} is still in use {1} ms after its check (by: {2})" -f $name, $image.ms, (Format-FohHolders $image.holders))
+    } elseif ($image.waited) {
+        Write-Host ("fohmixer install: the new hub's {0} was in use for {1} ms after its check (by: {2})" -f $name, $image.ms, (Format-FohHolders $image.holders))
+    }
+    return [pscustomobject]@{ code = $code; said = $said; image = $image }
+}
+
+function Test-FohHubToml {
+    # $Text checked as a config by the hub it is for ($Exe: `fohmixer-hub
+    # config check`, config.rs, the one set of rules), before the install
+    # stops the running hub: a config the new hub would refuse never reaches
+    # the data folder (the hub would not start, the emergency path included).
+    # The text goes to a file of its own in $Dir (Invoke-FohHubCheck). Returns
+    # the hub's answer; throws with its reason.
+    param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string]$Text, [Parameter(Mandatory)][string]$Dir)
+    $r = Invoke-FohHubCheck -Exe $Exe -ArgList @('config', 'check') -Text $Text -Dir $Dir
+    if ($r.code -ne 0) { throw "the new config is refused by the hub (exit $($r.code)): $($r.said)" }
+    return $r.said
 }
 
 function Test-FohHubLayout {
@@ -428,22 +456,12 @@ function Test-FohHubLayout {
     # install stops the running hub (#21): a layout the new hub cannot serve (a
     # schema it does not read, an unknown instance) never meets it, so a schema
     # change never leaves the surface without a layout. The config goes to a
-    # file of its own in $Dir. Returns the hub's answer; throws with its reason.
+    # file of its own in $Dir (Invoke-FohHubCheck). Returns the hub's answer;
+    # throws with its reason.
     param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string]$Layout, [Parameter(Mandatory)][string]$Text, [Parameter(Mandatory)][string]$Dir)
-    $file = Join-Path $Dir ('.check-' + [guid]::NewGuid().ToString('N') + '.toml')
-    [IO.File]::WriteAllText($file, $Text, $script:Utf8NoBom)
-    try {
-        # Continue only around the native call: its stderr is its answer.
-        $said = & {
-            $ErrorActionPreference = 'Continue'
-            (& $Exe layout check $Layout $file 2>&1 | ForEach-Object { "$_" }) -join ' '
-        }
-        $code = $LASTEXITCODE
-    } finally {
-        Remove-Item -LiteralPath $file
-    }
-    if ($code -ne 0) { throw "the layout is refused by the new hub (exit $code): $said" }
-    return $said
+    $r = Invoke-FohHubCheck -Exe $Exe -ArgList @('layout', 'check', $Layout) -Text $Text -Dir $Dir
+    if ($r.code -ne 0) { throw "the layout is refused by the new hub (exit $($r.code)): $($r.said)" }
+    return $r.said
 }
 
 function Set-FohConfigText {
@@ -938,7 +956,8 @@ function Invoke-FohInstall {
         }
         throw ("{0} ({1})`n{2}" -f $failure.Exception.Message, ($again -join '; '), $failure.ScriptStackTrace)
     } finally {
-        if (Test-Path -LiteralPath $unpacked.dir) { Remove-Item -LiteralPath $unpacked.dir -Recurse -Force }
+        # Never a throw here (#250): it would replace the install's own error.
+        $null = Remove-FohLeftover -Path $unpacked.dir -What 'unpacked bundle'
     }
     # 7. the start and the readiness
     $answer = $null
