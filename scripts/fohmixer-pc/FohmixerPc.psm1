@@ -40,9 +40,6 @@ $script:MidiDevices = @('FohMixer Claps.amxd')
 $script:MidiDevicePresets = 'Presets\MIDI Effects\Max MIDI Effect'
 # The MBC hub's frame (#184), in the bundle beside the scripts.
 $script:MbcFrame = 'mbc-frame.json'
-# How long a check of the new hub waits for its exe to be free again (#250):
-# the unpacked folder is moved or removed right after, which a held file fails.
-$script:HubImageWaitSeconds = 20
 # A SemVer version that is also a safe folder name (no trailing dot, no "..").
 $script:SemVer = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?\z'
 
@@ -69,8 +66,9 @@ $script:SemVer = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z
 # The MBC PC (#184): its toml, its FohMixer copy in Live's own folder, and
 # the FOH install's linked instance, in a file of their own.
 . (Join-Path $PSScriptRoot 'FohmixerMbc.ps1')
-# Files in use (#250): their holders, the wait until one is free, and the
-# removal of a leftover that never throws, in a file of their own.
+# Files in use (#250): their holders, the wait until one is free, the
+# removal of a leftover that never throws, and the new hub's check that
+# returns once its exe is free, in a file of their own.
 . (Join-Path $PSScriptRoot 'FohmixerHeld.ps1')
 
 # ---- small helpers ----
@@ -358,7 +356,8 @@ function Install-FohAppDir {
     if (Test-Path -LiteralPath $dest) {
         if (Test-FohSameTree -A $Unpacked.dir -B $dest) {
             $changed = $false
-            Remove-Item -LiteralPath $Unpacked.dir -Recurse -Force
+            # A leftover now (#250): its failure warns, it never fails the install.
+            $null = Remove-FohLeftover -Path $Unpacked.dir -What 'unpacked bundle'
         } else {
             Remove-Item -LiteralPath $dest -Recurse -Force
         }
@@ -403,40 +402,6 @@ function New-FohHubToml {
     return (($lines -join "`r`n") + "`r`n" + $Linked + $Eq + $Companion + $Presenter + $Scenes + $Claps + $Remote)
 }
 
-function Invoke-FohHubCheck {
-    # Runs a check of the new hub: `$Exe <ArgList> <file>`, with $Text (a
-    # config) in a file of its own in $Dir (never inside the bundle's tree,
-    # which becomes app\<version>). Returns its exit code (code), its answer
-    # (said, stderr included) and the wait for its exe (image, Wait-FohFileFree):
-    # it returns only once the exe is free again or after
-    # $script:HubImageWaitSeconds (#250), since the unpacked folder is moved or
-    # removed right after and a held file fails that. A wait is logged with the
-    # processes that held the exe; a wait that ends held is a warning, and the
-    # check's own answer still decides.
-    param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string[]]$ArgList,
-          [Parameter(Mandatory)][string]$Text, [Parameter(Mandatory)][string]$Dir)
-    $file = Join-Path $Dir ('.check-' + [guid]::NewGuid().ToString('N') + '.toml')
-    [IO.File]::WriteAllText($file, $Text, $script:Utf8NoBom)
-    try {
-        # Continue only around the native call: its stderr is its answer.
-        $said = & {
-            $ErrorActionPreference = 'Continue'
-            (& $Exe @ArgList $file 2>&1 | ForEach-Object { "$_" }) -join ' '
-        }
-        $code = $LASTEXITCODE
-    } finally {
-        $null = Remove-FohLeftover -Path $file -What 'check file'
-    }
-    $name = Split-Path -Leaf $Exe
-    $image = Wait-FohFileFree -Path $Exe -TimeoutSeconds $script:HubImageWaitSeconds
-    if (-not $image.free) {
-        Write-Warning ("fohmixer install: the new hub's {0} is still in use {1} ms after its check (by: {2})" -f $name, $image.ms, (Format-FohHolders $image.holders))
-    } elseif ($image.waited) {
-        Write-Host ("fohmixer install: the new hub's {0} was in use for {1} ms after its check (by: {2})" -f $name, $image.ms, (Format-FohHolders $image.holders))
-    }
-    return [pscustomobject]@{ code = $code; said = $said; image = $image }
-}
-
 function Test-FohHubToml {
     # $Text checked as a config by the hub it is for ($Exe: `fohmixer-hub
     # config check`, config.rs, the one set of rules), before the install
@@ -447,6 +412,7 @@ function Test-FohHubToml {
     param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string]$Text, [Parameter(Mandatory)][string]$Dir)
     $r = Invoke-FohHubCheck -Exe $Exe -ArgList @('config', 'check') -Text $Text -Dir $Dir
     if ($r.code -ne 0) { throw "the new config is refused by the hub (exit $($r.code)): $($r.said)" }
+    Assert-FohHubCheckFree -Check $r -Exe $Exe
     return $r.said
 }
 
@@ -461,6 +427,7 @@ function Test-FohHubLayout {
     param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string]$Layout, [Parameter(Mandatory)][string]$Text, [Parameter(Mandatory)][string]$Dir)
     $r = Invoke-FohHubCheck -Exe $Exe -ArgList @('layout', 'check', $Layout) -Text $Text -Dir $Dir
     if ($r.code -ne 0) { throw "the layout is refused by the new hub (exit $($r.code)): $($r.said)" }
+    Assert-FohHubCheckFree -Check $r -Exe $Exe
     return $r.said
 }
 

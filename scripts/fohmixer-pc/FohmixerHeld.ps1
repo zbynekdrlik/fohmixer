@@ -1,8 +1,13 @@
 # Files in use (#250), dot-sourced by FohmixerPc.psm1: which processes hold
-# a file (the Restart Manager), a bounded wait until a file is free, and the
-# removal of what an install leaves behind, which never throws: it runs in a
-# finally or a catch, where a throw would replace the install's own error.
-# Windows PowerShell 5.1.
+# a file (the Restart Manager), a bounded wait until a file is free, the
+# removal of what an install leaves behind, which never throws (it runs in a
+# finally or a catch, where a throw would replace the install's own error),
+# and the run of a new hub's check (Test-FohHubToml, Test-FohHubLayout) that
+# returns once its exe is free again. Windows PowerShell 5.1.
+
+# How long a check of the new hub waits for its exe to be free again (#250):
+# the unpacked folder is moved or removed right after, which a held file fails.
+$script:HubImageWaitSeconds = 20
 
 # The Restart Manager (rstrtmgr.dll): the processes that have a file open or
 # mapped (a running image), the query installers use to name them.
@@ -60,8 +65,13 @@ public static class FohmixerHolders {
             if (rc != 0) { return new string[] { "restart manager error " + rc }; }
             List<string> held = new List<string>();
             for (int i = 0; i < count; i++) {
-                string name = info[i].app;
+                // The process name, never the Restart Manager's app name: for
+                // a program with a window that is its title, which can name a
+                // file, a folder or an account.
+                string name = null;
+                try { name = System.Diagnostics.Process.GetProcessById(info[i].process.pid).ProcessName; } catch (Exception) { name = null; }
                 if (string.IsNullOrEmpty(name)) { name = info[i].service; }
+                if (string.IsNullOrEmpty(name)) { name = "(name not read)"; }
                 held.Add(info[i].process.pid + " " + name);
             }
             return held.ToArray();
@@ -86,9 +96,10 @@ function Get-FohFileHolders {
 
 function Format-FohHolders {
     # Holders for a log line: "<pid> <name>, ..." or "none named".
-    param([AllowEmptyCollection()][string[]]$Holders = @())
-    if (@($Holders).Count -eq 0) { return 'none named' }
-    return (@($Holders) -join ', ')
+    param([AllowEmptyCollection()][AllowNull()][string[]]$Holders = @())
+    $named = @($Holders | Where-Object { $_ })
+    if ($named.Count -eq 0) { return 'none named' }
+    return ($named -join ', ')
 }
 
 function Test-FohFileFree {
@@ -137,12 +148,25 @@ function Wait-FohFileFree {
     }
 }
 
+function Get-FohHeldFiles {
+    # The files of $Path (a file, or every file in a folder) that are held
+    # now (Test-FohFileFree), as their full paths.
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return @() }
+    $files = @(Get-Item -LiteralPath $Path -Force)
+    if ($files[0].PSIsContainer) { $files = @(Get-ChildItem -LiteralPath $Path -Recurse -File -Force) }
+    return @($files | Where-Object { -not (Test-FohFileFree -Path $_.FullName) } | ForEach-Object { $_.FullName })
+}
+
 function Remove-FohLeftover {
     # Removes $Path (a file, or a folder with everything in it) when it is
-    # there. A removal that fails never throws (it may run while an error is
+    # there. When the removal fails on files that are held, it waits for them
+    # (Wait-FohFileFree, $TimeoutSeconds for them all) and tries once more.
+    # A removal that still fails never throws (it may run while an error is
     # in flight, which a throw would replace): one warning names $What, $Path,
-    # the reason and the processes holding its files. Returns whether $Path is gone.
-    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$What)
+    # the reason and the files still held with their holders. Returns whether
+    # $Path is gone.
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$What, [int]$TimeoutSeconds = 10)
     if (-not (Test-Path -LiteralPath $Path)) { return $true }
     try {
         Remove-Item -LiteralPath $Path -Recurse -Force
@@ -150,18 +174,77 @@ function Remove-FohLeftover {
     } catch {
         $reason = $_.Exception.Message
     }
-    $held = @()
+    $heldText = 'held: none'
     try {
-        $files = @(Get-Item -LiteralPath $Path -Force)
-        if ($files[0].PSIsContainer) { $files = @(Get-ChildItem -LiteralPath $Path -Recurse -File -Force) }
-        foreach ($f in $files) {
-            if (-not (Test-FohFileFree -Path $f.FullName)) { $held += ('{0} (by: {1})' -f $f.Name, (Format-FohHolders (Get-FohFileHolders -Path $f.FullName))) }
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        $waitedFor = @()
+        foreach ($f in @(Get-FohHeldFiles -Path $Path)) {
+            $left = [Math]::Max(0, $TimeoutSeconds - [int]$clock.Elapsed.TotalSeconds)
+            $w = Wait-FohFileFree -Path $f -TimeoutSeconds $left
+            $waitedFor += ('{0} (by: {1})' -f (Split-Path -Leaf $f), (Format-FohHolders $w.holders))
         }
-        $heldText = 'held: none'
+        if ($waitedFor.Count -gt 0) {
+            try {
+                Remove-Item -LiteralPath $Path -Recurse -Force
+                Write-Host ('fohmixer install: the {0} removed after a wait of {1} ms for {2}' -f $What, [int]$clock.ElapsedMilliseconds, ($waitedFor -join '; '))
+                return $true
+            } catch {
+                $reason = $_.Exception.Message
+            }
+        }
+        $held = @()
+        foreach ($f in @(Get-FohHeldFiles -Path $Path)) {
+            $held += ('{0} (by: {1})' -f (Split-Path -Leaf $f), (Format-FohHolders @(Get-FohFileHolders -Path $f)))
+        }
         if ($held.Count -gt 0) { $heldText = 'held: ' + ($held -join '; ') }
     } catch {
         $heldText = "its holders not read: $($_.Exception.Message)"
     }
     Write-Warning ('fohmixer install: the {0} {1} was not removed: {2} ({3}); remove it by hand' -f $What, $Path, $reason, $heldText)
     return $false
+}
+
+function Invoke-FohHubCheck {
+    # Runs a check of the new hub: `$Exe <ArgList> <file>`, with $Text (a
+    # config) in a file of its own in $Dir (never inside the bundle's tree,
+    # which becomes app\<version>). Returns its exit code (code), its answer
+    # (said, stderr included) and the wait for its exe (image, Wait-FohFileFree):
+    # it returns only once the exe is free again or after
+    # $script:HubImageWaitSeconds (#250), since the unpacked folder is moved or
+    # removed right after and a held file fails that. A wait is logged with the
+    # processes that held the exe; a wait that ends held is a warning (the
+    # callers refuse a check that passed with its exe still held: the move
+    # of the folder would fail after the stop).
+    param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string[]]$ArgList,
+          [Parameter(Mandatory)][string]$Text, [Parameter(Mandatory)][string]$Dir)
+    $file = Join-Path $Dir ('.check-' + [guid]::NewGuid().ToString('N') + '.toml')
+    [IO.File]::WriteAllText($file, $Text, $script:Utf8NoBom)
+    try {
+        # Continue only around the native call: its stderr is its answer.
+        $said = & {
+            $ErrorActionPreference = 'Continue'
+            (& $Exe @ArgList $file 2>&1 | ForEach-Object { "$_" }) -join ' '
+        }
+        $code = $LASTEXITCODE
+    } finally {
+        $null = Remove-FohLeftover -Path $file -What 'check file'
+    }
+    $name = Split-Path -Leaf $Exe
+    $image = Wait-FohFileFree -Path $Exe -TimeoutSeconds $script:HubImageWaitSeconds
+    if (-not $image.free) {
+        Write-Warning ("fohmixer install: the new hub's {0} is still in use {1} ms after its check (by: {2})" -f $name, $image.ms, (Format-FohHolders $image.holders))
+    } elseif ($image.waited) {
+        Write-Host ("fohmixer install: the new hub's {0} was in use for {1} ms after its check (by: {2})" -f $name, $image.ms, (Format-FohHolders $image.holders))
+    }
+    return [pscustomobject]@{ code = $code; said = $said; image = $image }
+}
+
+function Assert-FohHubCheckFree {
+    # A check that passed while its exe stays held (Invoke-FohHubCheck's
+    # image) stops the install here, before any change: after the stop, the
+    # move of the unpacked folder into app\<version> would fail on it.
+    param([Parameter(Mandatory)]$Check, [Parameter(Mandatory)][string]$Exe)
+    if ($Check.image.free) { return }
+    throw ("the new hub's {0} stays in use {1} ms after its check (by: {2}); nothing changed, run the install again" -f
+        (Split-Path -Leaf $Exe), $Check.image.ms, (Format-FohHolders $Check.image.holders))
 }
