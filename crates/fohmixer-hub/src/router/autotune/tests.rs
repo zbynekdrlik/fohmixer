@@ -13,11 +13,13 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use super::super::retries::{CONNECT_RETRIES, RETRY_MS};
 use super::super::tests::{attach, next_of, offline_router, records, status};
 use super::super::{Router, RouterMsg, layout_msg, markers};
+use super::walk::{
+    AfterWalk, TrackCheck, after_walk, gave_up_problem, item_ref, keeps_found, same_track,
+    track_check, walk_again, walk_retryable,
+};
 use super::{
-    AUTOTUNE_CLIENT, AfterWalk, MOVED_TRACK, PARAMETER_CLASS, TOO_DEEP, Target, TrackCheck,
-    after_walk, autotune_fields, gave_up_problem, item_ref, keeps_found, macro_value, may_write,
-    missing_news, refused_for_good, same_track, slot_failures, state_of, target_key, track_check,
-    walk_again, walk_retryable, write_commands,
+    AUTOTUNE_CLIENT, MOVED_TRACK, PARAMETER_CLASS, TOO_DEEP, Target, autotune_fields, macro_value,
+    may_write, missing_news, refused_for_good, slot_failures, state_of, target_key, write_commands,
 };
 use crate::live::LiveValue;
 use crate::live::client::LiveEvent;
