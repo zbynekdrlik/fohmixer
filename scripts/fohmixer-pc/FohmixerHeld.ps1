@@ -122,6 +122,18 @@ function Test-FohFileFree {
     }
 }
 
+function Read-FohFileHolders {
+    # Get-FohFileHolders for a log line: a lookup that fails (the type not
+    # compiled, the Restart Manager refusing) is named in its place, never a
+    # throw (the holders only explain a wait, they never decide one).
+    param([Parameter(Mandatory)][string]$Path)
+    try {
+        return @(Get-FohFileHolders -Path $Path)
+    } catch {
+        return @("holders not read: $($_.Exception.Message)")
+    }
+}
+
 function Wait-FohFileFree {
     # Waits up to $TimeoutSeconds until $Path is free (Test-FohFileFree),
     # read every 50 ms. Returns free, waited (whether a read found it held),
@@ -137,10 +149,10 @@ function Wait-FohFileFree {
         }
         if (-not $waited) {
             $waited = $true
-            $holders = @(Get-FohFileHolders -Path $Path)
+            $holders = @(Read-FohFileHolders -Path $Path)
         }
         if ($clock.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
-            $now = @(Get-FohFileHolders -Path $Path)
+            $now = @(Read-FohFileHolders -Path $Path)
             if ($now.Count -gt 0) { $holders = $now }
             return [pscustomobject]@{ free = $false; waited = $true; ms = [int]$clock.ElapsedMilliseconds; holders = $holders }
         }
@@ -160,8 +172,9 @@ function Get-FohHeldFiles {
 
 function Remove-FohLeftover {
     # Removes $Path (a file, or a folder with everything in it) when it is
-    # there. When the removal fails on files that are held, it waits for them
-    # (Wait-FohFileFree, $TimeoutSeconds for them all) and tries once more.
+    # there. When the removal fails, it waits for the files that are held then
+    # (Wait-FohFileFree, $TimeoutSeconds for them all) and tries once more
+    # (also when none was seen held: a short hold can end before the look).
     # A removal that still fails never throws (it may run while an error is
     # in flight, which a throw would replace): one warning names $What, $Path,
     # the reason and the files still held with their holders. Returns whether
@@ -183,18 +196,18 @@ function Remove-FohLeftover {
             $w = Wait-FohFileFree -Path $f -TimeoutSeconds $left
             $waitedFor += ('{0} (by: {1})' -f (Split-Path -Leaf $f), (Format-FohHolders $w.holders))
         }
-        if ($waitedFor.Count -gt 0) {
-            try {
-                Remove-Item -LiteralPath $Path -Recurse -Force
-                Write-Host ('fohmixer install: the {0} removed after a wait of {1} ms for {2}' -f $What, [int]$clock.ElapsedMilliseconds, ($waitedFor -join '; '))
-                return $true
-            } catch {
-                $reason = $_.Exception.Message
-            }
+        $forText = 'no file seen held'
+        if ($waitedFor.Count -gt 0) { $forText = $waitedFor -join '; ' }
+        try {
+            Remove-Item -LiteralPath $Path -Recurse -Force
+            Write-Host ('fohmixer install: the {0} removed at its second try, after a wait of {1} ms ({2})' -f $What, [int]$clock.ElapsedMilliseconds, $forText)
+            return $true
+        } catch {
+            $reason = $_.Exception.Message
         }
         $held = @()
         foreach ($f in @(Get-FohHeldFiles -Path $Path)) {
-            $held += ('{0} (by: {1})' -f (Split-Path -Leaf $f), (Format-FohHolders @(Get-FohFileHolders -Path $f)))
+            $held += ('{0} (by: {1})' -f (Split-Path -Leaf $f), (Format-FohHolders @(Read-FohFileHolders -Path $f)))
         }
         if ($held.Count -gt 0) { $heldText = 'held: ' + ($held -join '; ') }
     } catch {

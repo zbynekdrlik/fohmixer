@@ -346,7 +346,8 @@ function Install-FohAppDir {
     # Design note section 3 step 2: moves an unpacked bundle to
     # <DataDir>\app\<version> and points <DataDir>\app\current.txt at it. An
     # installed folder with the same files stays as it is (the unpacked copy is
-    # removed); a different one is replaced, so no hub may run from it. Earlier
+    # left to the caller's cleanup: Invoke-FohInstall's finally removes it as a
+    # leftover, #250); a different one is replaced, so no hub may run from it. Earlier
     # versions stay for a manual rollback. Returns the folder and whether
     # anything changed.
     param([Parameter(Mandatory)]$Unpacked, [Parameter(Mandatory)][string]$DataDir)
@@ -356,8 +357,6 @@ function Install-FohAppDir {
     if (Test-Path -LiteralPath $dest) {
         if (Test-FohSameTree -A $Unpacked.dir -B $dest) {
             $changed = $false
-            # A leftover now (#250): its failure warns, it never fails the install.
-            $null = Remove-FohLeftover -Path $Unpacked.dir -What 'unpacked bundle'
         } else {
             Remove-Item -LiteralPath $dest -Recurse -Force
         }
