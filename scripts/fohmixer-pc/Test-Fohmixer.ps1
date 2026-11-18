@@ -61,6 +61,9 @@
 #   run writing nothing, a changed one written again;
 # - the MBC PC's install and the FOH install's link (#184 PR D): see
 #   Test-FohmixerMbc.ps1, dot-sourced here.
+# - an install whose checking hub's image stays held (#250): the install's
+#   own error always reported, the unpacked folder removed once the image is
+#   free; see Test-FohmixerHeld.ps1, dot-sourced here.
 # Only its own test objects are removed; nothing is ended by force (spec I7).
 param([Parameter(Mandatory)][string]$HubExe, [Parameter(Mandatory)][string]$TrayExe)
 Set-StrictMode -Version Latest
@@ -691,7 +694,7 @@ try {
     try { $entries = @($zip.Entries | ForEach-Object { $_.FullName }) } finally { $zip.Dispose() }
     foreach ($n in @('VERSION', 'SHA256SUMS', 'fohmixer-hub.exe', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1', 'FohmixerLivePrefs.ps1', 'FohmixerFirewall.ps1', 'FohmixerRemote.ps1', 'Start-FohmixerHub.ps1',
             'Stop-FohmixerHub.ps1', 'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py', 'FohMixer/transport/server.py',
-            'fohmixer-tray.exe', 'FohmixerTray.ps1', 'FohmixerHubProcess.ps1', 'FohmixerTasks.ps1', 'THIRD-PARTY-NOTICES.md',
+            'fohmixer-tray.exe', 'FohmixerTray.ps1', 'FohmixerHubProcess.ps1', 'FohmixerTasks.ps1', 'FohmixerHeld.ps1', 'THIRD-PARTY-NOTICES.md',
             'live-device/FohMixer LUFS.amxd', 'live-device/FohMixer Meter.amxd', 'live-device/FohMixer Listen.amxd',
             'live-device/FohMixer Claps.amxd')) {
         Assert ($entries -ccontains $n) "bundle-holds-$n"
@@ -1106,6 +1109,9 @@ try {
         $leftNames = ($left | ForEach-Object { $_.Name }) -join ', '
         Assert ($left.Count -eq 0) "install-refused-$($r.what)-leaves-no-unpacked-bundle-or-check-file ($leftNames)"
     }
+    # ---- the checking hub's image held (#250): Test-FohmixerHeld.ps1 ----
+    . (Join-Path $here 'Test-FohmixerHeld.ps1')
+
     # ---- installs 12 and 13 (#90): AbleSet's name for the LAN only, then taken out (the rollback) ----
     $o = $remoteOver.Clone()
     $o.Remove('AbleSetAccessAud')

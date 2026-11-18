@@ -25,7 +25,7 @@ $script:StopTask = 'fohmixer-hub-stop'
 # What a bundle holds besides SHA256SUMS (design note section 2).
 $script:BundleFiles = @('VERSION', 'fohmixer-hub.exe', 'fohmixer-tray.exe', 'THIRD-PARTY-NOTICES.md', 'Install-Fohmixer.ps1', 'FohmixerPc.psm1',
     'FohmixerLivePrefs.ps1', 'FohmixerFirewall.ps1', 'FohmixerRemote.ps1', 'FohmixerTray.ps1', 'FohmixerHubProcess.ps1',
-    'FohmixerTasks.ps1', 'FohmixerTables.ps1', 'FohmixerMbc.ps1', 'Start-FohmixerHub.ps1', 'Stop-FohmixerHub.ps1', 'mbc-frame.json',
+    'FohmixerTasks.ps1', 'FohmixerTables.ps1', 'FohmixerMbc.ps1', 'FohmixerHeld.ps1', 'Start-FohmixerHub.ps1', 'Stop-FohmixerHub.ps1', 'mbc-frame.json',
     'FohMixer/__init__.py', 'FohMixer/Config.py', 'FohMixer/version.py',
     'live-device/FohMixer LUFS.amxd', 'live-device/FohMixer Meter.amxd', 'live-device/FohMixer Listen.amxd',
     'live-device/FohMixer Claps.amxd')
@@ -66,6 +66,10 @@ $script:SemVer = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z
 # The MBC PC (#184): its toml, its FohMixer copy in Live's own folder, and
 # the FOH install's linked instance, in a file of their own.
 . (Join-Path $PSScriptRoot 'FohmixerMbc.ps1')
+# Files in use (#250): their holders, the wait until one is free, the
+# removal of a leftover that never throws, and the new hub's check that
+# returns once its exe is free, in a file of their own.
+. (Join-Path $PSScriptRoot 'FohmixerHeld.ps1')
 
 # ---- small helpers ----
 
@@ -332,7 +336,7 @@ function Expand-FohBundle {
         [IO.Compression.ZipFile]::ExtractToDirectory($BundleZip, $tmp)
         $version = Test-FohBundle -Root $tmp
     } catch {
-        if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force }
+        $null = Remove-FohLeftover -Path $tmp -What 'unpacked bundle'
         throw
     }
     return [pscustomobject]@{ dir = $tmp; version = $version }
@@ -342,7 +346,8 @@ function Install-FohAppDir {
     # Design note section 3 step 2: moves an unpacked bundle to
     # <DataDir>\app\<version> and points <DataDir>\app\current.txt at it. An
     # installed folder with the same files stays as it is (the unpacked copy is
-    # removed); a different one is replaced, so no hub may run from it. Earlier
+    # left to the caller's cleanup: Invoke-FohInstall's finally removes it as a
+    # leftover, #250); a different one is replaced, so no hub may run from it. Earlier
     # versions stay for a manual rollback. Returns the folder and whether
     # anything changed.
     param([Parameter(Mandatory)]$Unpacked, [Parameter(Mandatory)][string]$DataDir)
@@ -352,7 +357,6 @@ function Install-FohAppDir {
     if (Test-Path -LiteralPath $dest) {
         if (Test-FohSameTree -A $Unpacked.dir -B $dest) {
             $changed = $false
-            Remove-Item -LiteralPath $Unpacked.dir -Recurse -Force
         } else {
             Remove-Item -LiteralPath $dest -Recurse -Force
         }
@@ -402,24 +406,13 @@ function Test-FohHubToml {
     # config check`, config.rs, the one set of rules), before the install
     # stops the running hub: a config the new hub would refuse never reaches
     # the data folder (the hub would not start, the emergency path included).
-    # The text goes to a file of its own in $Dir (never inside the bundle's
-    # tree, which becomes app\<version>). Returns the hub's answer; throws
-    # with its reason.
+    # The text goes to a file of its own in $Dir (Invoke-FohHubCheck). Returns
+    # the hub's answer; throws with its reason.
     param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string]$Text, [Parameter(Mandatory)][string]$Dir)
-    $file = Join-Path $Dir ('.check-' + [guid]::NewGuid().ToString('N') + '.toml')
-    [IO.File]::WriteAllText($file, $Text, $script:Utf8NoBom)
-    try {
-        # Continue only around the native call: its stderr is its answer.
-        $said = & {
-            $ErrorActionPreference = 'Continue'
-            (& $Exe config check $file 2>&1 | ForEach-Object { "$_" }) -join ' '
-        }
-        $code = $LASTEXITCODE
-    } finally {
-        Remove-Item -LiteralPath $file
-    }
-    if ($code -ne 0) { throw "the new config is refused by the hub (exit $code): $said" }
-    return $said
+    $r = Invoke-FohHubCheck -Exe $Exe -ArgList @('config', 'check') -Text $Text -Dir $Dir
+    if ($r.code -ne 0) { throw "the new config is refused by the hub (exit $($r.code)): $($r.said)" }
+    Assert-FohHubCheckFree -Check $r -Exe $Exe
+    return $r.said
 }
 
 function Test-FohHubLayout {
@@ -428,22 +421,13 @@ function Test-FohHubLayout {
     # install stops the running hub (#21): a layout the new hub cannot serve (a
     # schema it does not read, an unknown instance) never meets it, so a schema
     # change never leaves the surface without a layout. The config goes to a
-    # file of its own in $Dir. Returns the hub's answer; throws with its reason.
+    # file of its own in $Dir (Invoke-FohHubCheck). Returns the hub's answer;
+    # throws with its reason.
     param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string]$Layout, [Parameter(Mandatory)][string]$Text, [Parameter(Mandatory)][string]$Dir)
-    $file = Join-Path $Dir ('.check-' + [guid]::NewGuid().ToString('N') + '.toml')
-    [IO.File]::WriteAllText($file, $Text, $script:Utf8NoBom)
-    try {
-        # Continue only around the native call: its stderr is its answer.
-        $said = & {
-            $ErrorActionPreference = 'Continue'
-            (& $Exe layout check $Layout $file 2>&1 | ForEach-Object { "$_" }) -join ' '
-        }
-        $code = $LASTEXITCODE
-    } finally {
-        Remove-Item -LiteralPath $file
-    }
-    if ($code -ne 0) { throw "the layout is refused by the new hub (exit $code): $said" }
-    return $said
+    $r = Invoke-FohHubCheck -Exe $Exe -ArgList @('layout', 'check', $Layout) -Text $Text -Dir $Dir
+    if ($r.code -ne 0) { throw "the layout is refused by the new hub (exit $($r.code)): $($r.said)" }
+    Assert-FohHubCheckFree -Check $r -Exe $Exe
+    return $r.said
 }
 
 function Set-FohConfigText {
@@ -938,7 +922,8 @@ function Invoke-FohInstall {
         }
         throw ("{0} ({1})`n{2}" -f $failure.Exception.Message, ($again -join '; '), $failure.ScriptStackTrace)
     } finally {
-        if (Test-Path -LiteralPath $unpacked.dir) { Remove-Item -LiteralPath $unpacked.dir -Recurse -Force }
+        # Never a throw here (#250): it would replace the install's own error.
+        $null = Remove-FohLeftover -Path $unpacked.dir -What 'unpacked bundle'
     }
     # 7. the start and the readiness
     $answer = $null
