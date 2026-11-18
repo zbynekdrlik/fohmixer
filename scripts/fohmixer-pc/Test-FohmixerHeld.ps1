@@ -151,6 +151,8 @@ foreach ($c in @(
     $left = @(Get-HeldLeftovers -DataDir $dataH)
     if ($c.pass) {
         Assert ($res.code -ne 0 -and $flat.Contains((Get-Flat 'stays in use')) -and $flat.Contains((Get-Flat 'nothing changed, run the install again'))) "install-with-$($c.what)-refuses-it"
+        # Refused at the config check itself: before its "accepts" line, the layout check, the DACL and the stop.
+        Assert (-not $flat.Contains((Get-Flat 'the new hub accepts the config'))) "install-with-$($c.what)-refuses-it-at-the-config-check"
         Assert (-not (Test-Path -LiteralPath (Join-Path $dataH 'fohmixer-hub.toml')) -and -not (Test-Path -LiteralPath (Join-Path $dataH "app\$($heldBundle.version)"))) "install-with-$($c.what)-changes-nothing"
     } else {
         Assert ($res.code -ne 0 -and $res.out.Contains('refused by the test hub (#250)')) "install-with-$($c.what)-reports-the-hubs-refusal"
@@ -160,7 +162,7 @@ foreach ($c in @(
         Assert ($flat.Contains((Get-Flat 'the unpacked bundle')) -and $flat.Contains((Get-Flat 'was not removed')) -and
             @($left | Where-Object { $_.StartsWith('.unpack-') }).Count -eq 1) "install-with-$($c.what)-warns-of-the-folder-it-left ($($left -join ', '))"
         # The folder it left, removed now that the copy has ended.
-        foreach ($n in $left) { Remove-Item -LiteralPath (Join-Path (Join-Path $dataH 'app') $n) -Recurse -Force }
+        foreach ($n in $left) { Assert (Remove-FohLeftover -Path (Join-Path (Join-Path $dataH 'app') $n) -What 'test leftover') "install-with-$($c.what)-its-leftover-removed-after" }
     } else {
         Assert ($flat.Contains((Get-Flat 'fohmixer-hub.exe was in use for'))) "install-with-$($c.what)-logs-its-wait"
         Assert ($left.Count -eq 0) "install-with-$($c.what)-leaves-no-unpacked-bundle-or-check-file ($($left -join ', '))"
@@ -193,6 +195,31 @@ $w = Wait-FohFileFree -Path $heldFile -TimeoutSeconds 1
 Assert ($w.free -and -not $w.waited) 'file-wait-free-once-the-handle-is-closed'
 Assert ((Remove-FohLeftover -Path $inUse -What 'test folder') -and -not (Test-Path -LiteralPath $inUse)) 'leftover-removed-once-free'
 Assert (Remove-FohLeftover -Path $inUse -What 'test folder') 'leftover-already-gone-is-removed'
+# Held by another process for 2 s: the removal fails, waits for the file, and its second try removes it.
+New-Item -ItemType Directory -Force -Path $inUse | Out-Null
+[IO.File]::WriteAllText($heldFile, 'held')
+$holdingMark = Join-Path $heldDir 'holding'
+$holdScript = Join-Path $heldDir 'hold.ps1'
+[IO.File]::WriteAllText($holdScript, (@(
+            'param([string]$File, [string]$Mark)',
+            '$ErrorActionPreference = "Stop"',
+            '$s = [IO.File]::Open($File, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)',
+            '[IO.File]::WriteAllText($Mark, "holding")',
+            'Start-Sleep -Seconds 2',
+            '$s.Dispose()') -join "`r`n"))
+$holder = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $holdScript, $heldFile, $holdingMark) -WindowStyle Hidden -PassThru
+try {
+    $deadline = (Get-Date).AddSeconds(30)
+    while (-not (Test-Path -LiteralPath $holdingMark) -and -not $holder.HasExited -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 50 }
+    Assert (Test-Path -LiteralPath $holdingMark) 'leftover-holder-process-holds-the-file'
+    $said = @(Remove-FohLeftover -Path $inUse -What 'test folder' -TimeoutSeconds 10 6>&1)
+    $gone = @($said | Where-Object { $_ -is [bool] })
+    $text = (@($said | Where-Object { $_ -isnot [bool] } | ForEach-Object { "$_" }) -join ' ')
+    Assert ($gone.Count -eq 1 -and $gone[0] -and -not (Test-Path -LiteralPath $inUse) -and $text.Contains('removed at its second try') -and
+        $text.Contains('held.bin (by: ')) "leftover-held-briefly-removed-after-a-wait ($text)"
+} finally {
+    if (-not $holder.WaitForExit(30000)) { throw "the holder process (pid $($holder.Id)) still runs after 30 s" }
+}
 
 # ---- the issue's loop (#250): the real hub's config check, its exe free each time it returns ----
 # Defender as the runner has it (the evidence of what holds the image).
@@ -214,8 +241,12 @@ for ($i = 1; $i -le 10; $i++) {
     if ($r.image.waited) { $waits += ('{0}: {1} ms (by: {2})' -f $i, $r.image.ms, (Format-FohHolders $r.image.holders)) }
     $moved = Join-Path $heldDir "loop-$i"
     Move-Item -LiteralPath $loopDir -Destination $moved
-    Assert ((Test-Path -LiteralPath $moved) -and (Remove-FohLeftover -Path $moved -What 'loop folder')) "held-loop-$i-folder-moved-and-removed"
+    $said = @(Remove-FohLeftover -Path $moved -What 'loop folder' 6>&1)
+    $gone = @($said | Where-Object { $_ -is [bool] })
+    $text = (@($said | Where-Object { $_ -isnot [bool] } | ForEach-Object { "$_" }) -join ' ')
+    if ($text) { $waits += ('{0}: removal: {1}' -f $i, $text) }
+    Assert ($gone.Count -eq 1 -and $gone[0] -and -not (Test-Path -LiteralPath $moved)) "held-loop-$i-folder-moved-and-removed"
 }
 $waitText = ''
 if ($waits.Count -gt 0) { $waitText = ': ' + ($waits -join '; ') }
-Write-Host ('held-loop: {0} of 10 checks waited for the exe{1}' -f $waits.Count, $waitText)
+Write-Host ('held-loop: {0} waits in 10 rounds (the exe after its check, the folder at its removal){1}' -f $waits.Count, $waitText)
