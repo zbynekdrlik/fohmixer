@@ -1,12 +1,14 @@
 //! The channel detail's middle-box tabs and its LUFS history (#219, the
 //! design on the ticket; the owner's approved mockup
-//! `docs/mockups/lufs-history-v2.html`): `EQ` (the Pro-Q 4 cards) and, on a
-//! `+LUFS` strip, `LUFS`, each filling the whole box. The LUFS tab draws the
-//! point's short-term reading over a window (`10 MIN`, `1 H`, `3 H`, a drag
-//! back in time, a past day), read from the hub's `/api/lufs/history` and
-//! `/api/lufs/days`, its live edge from the page's own readings once a
-//! second. Every decision is `behave::lufs_history`; this is the glue: the
-//! card (`DetailLufs`) and its head, graph and days, sharing one `Lh`.
+//! `docs/mockups/lufs-history-v2.html`, its graph since #253 mockup v3):
+//! `EQ` (the Pro-Q 4 cards) and, on a `+LUFS` strip, `LUFS`, each filling
+//! the whole box. The LUFS tab draws the point's short-term reading over a
+//! window (`10 MIN`, `1 H`, `3 H`, a drag back in time, a past day) as a
+//! calm curve, and the strip's fader beside it on its own dB scale, read
+//! from the hub's `/api/lufs/history` and `/api/lufs/days`, its live edge
+//! from the page's own reading and fader once a second. Every decision is
+//! `behave::lufs_history`; this is the glue: the card (`DetailLufs`) and
+//! its head, graph and days, sharing one `Lh`.
 
 use std::time::Duration;
 
@@ -18,13 +20,17 @@ use leptos::prelude::*;
 use super::{down_of, owns_touches};
 use crate::behave::lufs::{look, point_key};
 use crate::behave::lufs_history::{
-    Answers, BOX, DEFAULT_SPAN_MS, Gesture, HOLD_MS, MINUTE_MS, OnDown, Press, SECOND_MS, Tab,
-    View, WINDOWS, band, column_at, columns, cursor_text, cursor_time, day_chip_at, edge_reading,
-    keep_tail, on_down, pct, push_reading, refresh, retry_series, runs, samples, scale, second_of,
+    Answers, BOX, Column, DEFAULT_SPAN_MS, Gesture, HOLD_MS, MINUTE_MS, OnDown, Press, SECOND_MS,
+    Sample, Tab, View, WINDOWS, band, column_at, column_x, cursor_text, cursor_time, day_chip_at,
+    drawn_columns, edge_reading, fader_label, fader_lines, fader_text, green, keep_tail, lines,
+    live_end, on_down, pct, push_reading, refresh, retry_series, samples, scale, second_of,
     series_end, shown_tab, tab_row, tabs, target_text, tick_label, tick_marks, x_frac, x_of, y_of,
 };
+use crate::binding::strip_subs;
 use crate::dom;
-use crate::store::LiveStore;
+use crate::store::{LiveStore, Slot};
+use fohmixer_proto::layout::MeterSource;
+use fohmixer_proto::lufs::fader_tenths;
 
 /// The middle box's tab and the history's window, kept per page (a context
 /// of the surface, beside `DetailStrip`): the next detail opens on them.
@@ -133,23 +139,26 @@ fn MiddleTabs(shown: Memo<Tab>) -> impl IntoView {
     view! { <div class="mtabs" data-testid="detail-tabs">{keys.collect_view()}</div> }
 }
 
-/// The card's shared state: the point, the view, the clock, the hub's
-/// series and days, the live edge's readings, the cursor, and what is
-/// drawn from them.
+/// The card's shared state: the point, the strip's volume, the view, the
+/// clock, the hub's series and days, the live edge's samples, the cursor,
+/// and what is drawn from them.
 #[derive(Clone, Copy)]
 struct Lh {
     store: LiveStore,
     point: StoredValue<(String, String)>,
+    /// The strip's volume as the detail follows it (#253: the head's fader
+    /// and the live edge's).
+    volume: Option<RwSignal<Slot>>,
     target: Option<i8>,
     kept_span: RwSignal<i64>,
     shown: RwSignal<View>,
     now: RwSignal<i64>,
     answers: RwSignal<Answers>,
-    tail: RwSignal<Vec<(i64, Option<i16>)>>,
+    tail: RwSignal<Vec<Sample>>,
     days: RwSignal<Vec<HistoryDay>>,
     cursor: RwSignal<Option<i64>>,
     window: Memo<(i64, i64)>,
-    cols: Memo<Vec<Option<i16>>>,
+    cols: Memo<Vec<Column>>,
 }
 
 impl Lh {
@@ -196,8 +205,20 @@ impl Lh {
         });
     }
 
-    /// One second: the clock, the live edge's reading, and the hub asked
-    /// again when `refresh` says so (`n` counts the ticks from 1).
+    /// The strip's fader now, dB tenths (none while Live's volume is not
+    /// known).
+    fn fader_now(self, tracked: bool) -> Option<i16> {
+        let volume = self.volume?;
+        let number = if tracked {
+            volume.try_with(Slot::number)
+        } else {
+            volume.try_with_untracked(Slot::number)
+        };
+        fader_tenths(number.flatten())
+    }
+
+    /// One second: the clock, the live edge's reading and fader, and the
+    /// hub asked again when `refresh` says so (`n` counts the ticks from 1).
     fn tick(self, n: u32) {
         let t = wall_ms();
         let _ = self.now.try_set(t);
@@ -216,9 +237,10 @@ impl Lh {
                 .flatten()
                 .flatten();
             let from = v.window(t).0;
+            let fader = self.fader_now(false);
             let _ = self
                 .tail
-                .try_update(|tl| push_reading(tl, second_of(t), reading, from));
+                .try_update(|tl| push_reading(tl, second_of(t), reading, fader, from));
         }
         let known = self
             .days
@@ -260,7 +282,7 @@ pub fn DetailLufs(strip: Strip) -> impl IntoView {
     ));
     let now = RwSignal::new(wall_ms());
     let answers = RwSignal::new(Answers::default());
-    let tail = RwSignal::new(Vec::<(i64, Option<i16>)>::new());
+    let tail = RwSignal::new(Vec::<Sample>::new());
     let window = Memo::new(move |_| {
         let t = now.try_get().unwrap_or(0);
         shown
@@ -275,11 +297,15 @@ pub fn DetailLufs(strip: Strip) -> impl IntoView {
             .flatten()
             .unwrap_or_default();
         all.extend(tail.try_get().unwrap_or_default());
-        columns(&all, t0, t1)
+        drawn_columns(&all, t0, t1)
     });
+    let volume = strip_subs(&strip, MeterSource::Level)
+        .volume
+        .map(|spec| store.slot(&spec));
     let lh = Lh {
         store,
         point: StoredValue::new(key),
+        volume,
         target,
         kept_span: middle.span,
         shown,
@@ -349,13 +375,14 @@ fn LufsHead(lh: Lh, spec: Option<LufsSpec>) -> impl IntoView {
     };
     let now_state = move || reading.try_with(|l| l.state.as_str()).unwrap_or("none");
     let target_line = target_text(lh.target).unwrap_or_default();
+    let fader_line = move || fader_text(lh.fader_now(true)).unwrap_or_default();
     let cursor_line = move || {
         let t = lh.cursor.try_get().flatten()?;
         let (t0, t1) = lh.window.try_get()?;
-        let v = lh
+        let col = lh
             .cols
-            .try_with(|c| c.get(column_at(t, t0, t1)).copied().flatten())?;
-        Some(cursor_text(t, v, offset_at(t)))
+            .try_with(|c| c.get(column_at(t, t0, t1)).copied().unwrap_or_default())?;
+        Some(cursor_text(t, col, offset_at(t)))
     };
     let chips = WINDOWS.map(|(label, span)| {
         let keys: Vec<String> = Vec::new();
@@ -407,6 +434,9 @@ fn LufsHead(lh: Lh, spec: Option<LufsSpec>) -> impl IntoView {
             <div class="lh-target" data-testid="lufs-history-target">
                 {target_line}
             </div>
+            <div class="lh-fader" data-testid="lufs-history-fader">
+                {fader_line}
+            </div>
             <div class="lh-cursor" data-testid="lufs-history-cursor">
                 {cursor_line}
             </div>
@@ -450,13 +480,20 @@ fn LufsGraph(lh: Lh) -> impl IntoView {
         }
     });
 
-    let graph_scale = Memo::new(move |_| scale(lh.target, &lh.cols.try_get().unwrap_or_default()));
-    let line = Memo::new(move |_| {
-        let s = graph_scale
-            .try_get()
-            .unwrap_or_else(|| scale(lh.target, &[]));
-        runs(&lh.cols.try_get().unwrap_or_default(), &s, lh.target)
+    let values = Memo::new(move |_| {
+        lh.cols
+            .try_with(|c| c.iter().map(|c| c.v).collect::<Vec<_>>())
+            .unwrap_or_default()
     });
+    let graph_scale = Memo::new(move |_| scale(lh.target, &values.try_get().unwrap_or_default()));
+    let scale_now = move || {
+        graph_scale
+            .try_get()
+            .unwrap_or_else(|| scale(lh.target, &[]))
+    };
+    let line = Memo::new(move |_| lines(&values.try_get().unwrap_or_default(), &scale_now()));
+    let fader =
+        Memo::new(move |_| fader_lines(&lh.cols.try_get().unwrap_or_default(), &scale_now()));
     let x_parts = Memo::new(move |_| {
         let (t0, t1) = lh.window.try_get().unwrap_or((0, 1));
         tick_marks(t0, t1, offset_at)
@@ -492,8 +529,24 @@ fn LufsGraph(lh: Lh) -> impl IntoView {
                     let main = s.target == Some(*v);
                     let top = format!("top:{}", pct(y_of(*v, &s)));
                     view! {
-                        <span data-main=main.to_string() style=top>
+                        <span data-testid="lufs-y" data-main=main.to_string() style=top>
                             {tick_label(*v)}
+                        </span>
+                    }
+                })
+                .collect_view(),
+        )
+    };
+    let fader_labels = move || {
+        let s = graph_scale.try_get()?;
+        Some(
+            s.ticks
+                .iter()
+                .map(|v| {
+                    let top = format!("top:{}", pct(y_of(*v, &s)));
+                    view! {
+                        <span data-testid="lufs-fader-y" style=top>
+                            {fader_label(*v, &s)}
                         </span>
                     }
                 })
@@ -516,21 +569,68 @@ fn LufsGraph(lh: Lh) -> impl IntoView {
             .map(|(left, text)| view! { <span style=left>{text}</span> })
             .collect_view()
     };
-    let polylines = move || {
+    // The band's clip: the green copy of each path shows only inside it.
+    let clip = move || {
+        let (top, bottom) = band(&graph_scale.try_get()?)?;
+        let height = format!("{:.1}", bottom - top);
+        Some(view! {
+            <defs>
+                <clipPath id=BAND_CLIP>
+                    <rect x="0" y=format!("{top:.1}") width=BOX.to_string() height=height></rect>
+                </clipPath>
+            </defs>
+        })
+    };
+    let has_band = move || lh.target.is_some();
+    let paths = move || {
         line.try_get()
             .unwrap_or_default()
             .into_iter()
-            .map(|r| {
+            .map(|d| {
+                let green_copy = has_band().then(|| {
+                    let d = d.clone();
+                    view! {
+                        <path
+                            class="lh-line"
+                            data-testid="lufs-line-green"
+                            data-green="true"
+                            clip-path=format!("url(#{BAND_CLIP})")
+                            d=d
+                        ></path>
+                    }
+                });
                 view! {
-                    <polyline
-                        class="lh-line"
-                        data-testid="lufs-line"
-                        data-green=r.green.to_string()
-                        points=r.points
-                    ></polyline>
+                    <path class="lh-line" data-testid="lufs-line" data-green="false" d=d></path>
+                    {green_copy}
                 }
             })
             .collect_view()
+    };
+    let fader_paths = move || {
+        fader
+            .try_get()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|points| {
+                view! { <polyline class="lh-fader-line" data-testid="lufs-fader-line" points=points></polyline> }
+            })
+            .collect_view()
+    };
+    // The dot at the line's live end (the live view only).
+    let dot = move || {
+        if !lh.shown.try_with(View::is_live).unwrap_or(false) {
+            return None;
+        }
+        let vals = values.try_get()?;
+        let (i, v) = live_end(&vals)?;
+        let s = graph_scale.try_get()?;
+        let place = format!(
+            "left:{};top:{}",
+            pct(column_x(i, vals.len())),
+            pct(y_of(i32::from(v), &s))
+        );
+        let inside = green(v, lh.target).to_string();
+        Some(view! { <div class="lh-dot" data-testid="lufs-dot" data-in=inside style=place></div> })
     };
     let drawn = move || line.try_with(Vec::len).unwrap_or(0);
     let drawn_any = move || drawn() > 0;
@@ -663,12 +763,18 @@ fn LufsGraph(lh: Lh) -> impl IntoView {
             <div class="lh-y" aria-hidden="true">
                 {y_labels}
             </div>
+            <div class="lh-yr" aria-hidden="true">
+                {fader_labels}
+            </div>
             <div class="lh-plot" node_ref=plot>
                 {y_lines}
                 {x_lines}
                 <svg class="lh-svg" viewBox=view_box preserveAspectRatio="none" aria-hidden="true">
-                    {polylines}
+                    {clip}
+                    {paths}
+                    {fader_paths}
                 </svg>
+                {dot}
                 {cursor_mark}
                 <div class="lh-empty" data-testid="lufs-history-empty" hidden=drawn_any>
                     "NO LUFS IN THIS WINDOW"
@@ -680,9 +786,18 @@ fn LufsGraph(lh: Lh) -> impl IntoView {
             <div class="lh-x" aria-hidden="true">
                 {x_labels}
             </div>
+            <div class="lh-axis" data-side="left" data-testid="lufs-axis" aria-hidden="true">
+                "LUFS"
+            </div>
+            <div class="lh-axis" data-side="right" data-testid="lufs-fader-axis" aria-hidden="true">
+                "FADER dB"
+            </div>
         </div>
     }
 }
+
+/// The band's `clipPath` id (one detail shows at a time).
+const BAND_CLIP: &str = "lh-band-clip";
 
 /// The days that hold this point (newest first; only those, the
 /// show-only-used rule): a past day whole, today the live edge, each named

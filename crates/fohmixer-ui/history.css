@@ -2,11 +2,13 @@
    history (#219; the owner's approved mockup docs/mockups/lufs-history-v2.html;
    linked after eq.css). The middle box gets tabs (EQ, LUFS) only on a +LUFS
    strip; each pane fills the whole box, nothing scrolls past the tabs. The
-   history is calm: one thin grey line, green within +-1.0 LU of an input
-   point's target (the strip's own colours, --lufs-text and --lufs-in),
-   faint labels, nothing lit while idle. The plot is a 1000 x 1000 SVG box
-   stretched over its area, the lines' width not scaled; the grid lines and
-   labels sit beside it in percent. */
+   history is calm (#253, mockup v3): one smooth 3 px line, green where it
+   lies within +-1.0 LU of an input point's target (the same path clipped to
+   the band), a label and a faint grid line every 3 LU, the strip's fader as
+   a thin blue line on its own dB scale at the right, nothing lit while
+   idle. The plot is a 1000 x 1000 SVG box stretched over its area, the
+   lines' width not scaled; the grid lines, the labels and the live end's
+   dot sit beside it in percent. */
 
 /* --- the tabs --- */
 
@@ -118,6 +120,13 @@
     white-space: nowrap;
 }
 
+/* the strip's fader now, beside the target (#253) */
+.lh-fader {
+    color: #6fb8d8;
+    font: 500 11px/1 var(--mono);
+    white-space: nowrap;
+}
+
 .lh-cursor {
     min-width: 0;
     overflow: hidden;
@@ -165,7 +174,8 @@
     display: none;
 }
 
-/* --- the graph: labels left and below, the plot in between --- */
+/* --- the graph: the LUFS labels left, the fader's right, the times
+   below, the plot in between --- */
 
 .lh-graph {
     position: relative;
@@ -176,26 +186,36 @@
 
 .lh-plot {
     position: absolute;
-    inset: 4px 2px 16px 30px;
+    inset: 8px 40px 18px 38px;
+}
+
+.lh-y,
+.lh-yr {
+    position: absolute;
+    top: 8px;
+    bottom: 18px;
 }
 
 .lh-y {
-    position: absolute;
-    top: 4px;
-    bottom: 16px;
     left: 0;
-    width: 25px;
+    width: 33px;
+}
+
+.lh-yr {
+    right: 0;
+    width: 35px;
 }
 
 .lh-x {
     position: absolute;
-    right: 2px;
+    right: 40px;
     bottom: 0;
-    left: 30px;
+    left: 38px;
     height: 14px;
 }
 
 .lh-y span,
+.lh-yr span,
 .lh-x span {
     position: absolute;
     color: var(--faint);
@@ -203,13 +223,46 @@
     white-space: nowrap;
 }
 
+/* a label every 3 LU, readable at a glance (#253) */
 .lh-y span {
     right: 0;
+    color: #8a8aa4;
+    font-size: 13px;
+    line-height: 16px;
     transform: translateY(-50%);
 }
 
 .lh-y span[data-main="true"] {
-    color: var(--muted);
+    color: #c4c4d6;
+}
+
+/* the fader's dB at the same ticks: 1 dB as tall as 1 LU, 0 dB on the
+   target (#253) */
+.lh-yr span {
+    left: 0;
+    color: rgba(111, 184, 216, 0.85);
+    font-size: 12px;
+    line-height: 15px;
+    transform: translateY(-50%);
+}
+
+/* the axes' names in the foot's corners */
+.lh-axis {
+    position: absolute;
+    bottom: 0;
+    color: #8a8aa4;
+    font: 500 10px/12px var(--mono);
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+.lh-axis[data-side="left"] {
+    left: 2px;
+}
+
+.lh-axis[data-side="right"] {
+    right: 2px;
+    color: rgba(111, 184, 216, 0.7);
 }
 
 .lh-x span {
@@ -226,7 +279,7 @@
 }
 
 .lh-hline {
-    border-top: 1px solid rgba(255, 255, 255, 0.05);
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .lh-hline[data-main="true"] {
@@ -263,8 +316,8 @@
 
 .lh-line {
     fill: none;
-    stroke: var(--muted);
-    stroke-width: 1.4px;
+    stroke: #c4c4d6;
+    stroke-width: 3px;
     stroke-linecap: round;
     stroke-linejoin: round;
     vector-effect: non-scaling-stroke;
@@ -272,6 +325,31 @@
 
 .lh-line[data-green="true"] {
     stroke: var(--lufs-in);
+}
+
+/* the strip's fader: a thin blue line, straight between columns */
+.lh-fader-line {
+    fill: none;
+    stroke: #6fb8d8;
+    stroke-width: 2px;
+    stroke-linejoin: round;
+    opacity: 0.9;
+    vector-effect: non-scaling-stroke;
+}
+
+/* the line's live end */
+.lh-dot {
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #c4c4d6;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+}
+
+.lh-dot[data-in="true"] {
+    background: var(--lufs-in);
 }
 
 .lh-empty {

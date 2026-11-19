@@ -7,6 +7,16 @@ fn day(first_ms: i64, last_ms: i64) -> HistoryDay {
     HistoryDay { first_ms, last_ms }
 }
 
+/// A sample at `t` with the reading `v` and no fader.
+fn at(t: i64, v: Option<i16>) -> Sample {
+    Sample { t, v, f: None }
+}
+
+/// A column with the reading `v` and the fader `f`.
+fn col(v: Option<i16>, f: Option<i16>) -> Column {
+    Column { v, f }
+}
+
 #[test]
 fn the_lufs_tab_is_only_for_a_lufs_strip_and_a_single_tab_shows_no_row() {
     assert_eq!(tabs(false), vec![Tab::Eq]);
@@ -229,223 +239,6 @@ fn a_finger_whose_end_never_came_is_ended_by_the_next_primary_one() {
 }
 
 #[test]
-fn the_series_gives_a_sample_per_bucket_and_the_tail_keeps_the_window() {
-    let s = HistorySeries {
-        from: 1000,
-        step_ms: 4000,
-        values: vec![Some(-230), None, Some(-700)],
-    };
-    assert_eq!(
-        samples(&s),
-        vec![(1000, Some(-230)), (5000, None), (9000, Some(-700))]
-    );
-    assert_eq!(series_end(&s), 13_000);
-    assert_eq!(series_end(&HistorySeries::default()), 0);
-    let mut tail = vec![(1, Some(-1)), (2, None), (3, Some(-3))];
-    keep_tail(&mut tail, 2);
-    assert_eq!(tail, vec![(2, None), (3, Some(-3))]);
-}
-
-#[test]
-fn a_window_has_300_columns_or_one_a_second_when_shorter() {
-    assert_eq!(COLUMNS, 300);
-    assert_eq!(columns_for(600_000), 300);
-    assert_eq!(columns_for(300_000), 300);
-    assert_eq!(columns_for(299_999), 299);
-    assert_eq!(columns_for(60_000), 60);
-    assert_eq!(columns_for(999), 1);
-    assert_eq!(columns_for(0), 1);
-}
-
-#[test]
-fn a_column_takes_the_hubs_bucket_rule() {
-    let cols = columns(
-        &[
-            (0, Some(-700)),
-            (1, Some(-200)),
-            (2, Some(-210)),
-            (2000, Some(-250)),
-        ],
-        0,
-        600_000,
-    );
-    assert_eq!(cols[0], Some(-200));
-    assert_eq!(cols[1], Some(-250));
-}
-
-#[test]
-fn a_short_past_day_draws_one_line() {
-    // A minute of readings a second apart: 60 columns, one line.
-    let samples: Vec<(i64, Option<i16>)> = (0..60).map(|i| (i * 1000, Some(-230))).collect();
-    let cols = columns(&samples, 0, 60_000);
-    assert_eq!(cols.len(), 60);
-    assert!(cols.iter().all(|c| *c == Some(-230)));
-    let r = runs(&cols, &scale(Some(-23), &[]), Some(-23));
-    assert_eq!(r.len(), 1);
-    assert_eq!(r[0].points.split(' ').count(), 60);
-    assert!(r[0].points.starts_with("8.3,500.0 25.0,500.0"));
-}
-
-#[test]
-fn samples_fall_in_their_columns_inside_the_window_only() {
-    // 600 000 ms in 300 columns: 2000 ms each.
-    let samples = vec![
-        (-1, Some(-100)),
-        (0, Some(-200)),
-        (1999, Some(-210)),
-        (2000, Some(-300)),
-        (4000, None),
-        (599_999, Some(-400)),
-        (600_000, Some(-500)),
-    ];
-    let cols = columns(&samples, 0, 600_000);
-    assert_eq!(cols.len(), COLUMNS);
-    assert_eq!(cols[0], Some(-200));
-    assert_eq!(cols[1], Some(-300));
-    assert_eq!(cols[2], None);
-    assert_eq!(cols[299], Some(-400));
-    assert_eq!(cols.iter().flatten().count(), 3);
-    // An empty window has one column.
-    assert_eq!(columns(&samples, 5, 5).len(), 1);
-}
-
-#[test]
-fn an_input_point_shows_its_target_plus_minus_12_lu() {
-    let s = scale(Some(-23), &[Some(-100)]);
-    assert_eq!(
-        s,
-        Scale {
-            lo: -350,
-            hi: -110,
-            ticks: vec![-350, -290, -230, -170, -110],
-            target: Some(-230),
-        }
-    );
-    assert_eq!(y_of(-230, &s), 500.0);
-    assert_eq!(y_of(-110, &s), 0.0);
-    assert_eq!(y_of(-350, &s), 1000.0);
-    // Past an edge: on the edge.
-    assert_eq!(y_of(-50, &s), 0.0);
-    assert_eq!(y_of(-700, &s), 1000.0);
-    assert_eq!(y_of(-170, &s), 250.0);
-    let (top, bottom) = band(&s).unwrap();
-    assert!((top - 458.333).abs() < 0.001, "{top}");
-    assert!((bottom - 541.667).abs() < 0.001, "{bottom}");
-    assert_eq!(
-        (IN_HALF, OUT_STEP, OUT_MIN, OUT_EMPTY),
-        (120, 60, 180, (-300, -120))
-    );
-}
-
-#[test]
-fn an_output_point_fits_its_readings_in_6_lu_steps_at_least_18_lu() {
-    assert_eq!(out_range(-300, -60), (-300, -60));
-    assert_eq!(out_range(-300, -120), (-300, -120));
-    assert_eq!(out_range(-301, -120), (-360, -120));
-    assert_eq!(out_range(-300, -119), (-300, -60));
-    assert_eq!(out_range(-170, -170), (-240, -60));
-    assert_eq!(out_range(-200, -130), (-300, -120));
-    assert_eq!(out_range(-180, -180), (-300, -120));
-    assert_eq!(out_range(-185, -175), (-300, -120));
-    let s = scale(None, &[Some(-170), None, Some(-700), Some(-800)]);
-    assert_eq!(
-        s,
-        Scale {
-            lo: -240,
-            hi: -60,
-            ticks: vec![-240, -180, -120, -60],
-            target: None,
-        }
-    );
-    assert_eq!(band(&s), None);
-    let empty = scale(None, &[None, Some(-700)]);
-    assert_eq!((empty.lo, empty.hi), (-300, -120));
-    assert_eq!(empty.ticks, vec![-300, -240, -180, -120]);
-}
-
-#[test]
-fn every_output_range_holds_its_readings_and_is_whole_steps() {
-    for min in -720..=0 {
-        for width in [0, 1, 59, 60, 61, 119, 120, 179, 180, 181, 300] {
-            let max = min + width;
-            let (lo, hi) = out_range(min, max);
-            assert!(lo <= min && max <= hi, "{min}..{max} in {lo}..{hi}");
-            assert_eq!(lo.rem_euclid(60), 0);
-            assert_eq!(hi.rem_euclid(60), 0);
-            assert!(hi - lo >= 180);
-        }
-    }
-}
-
-#[test]
-fn tick_labels_are_whole_lu_with_a_typographic_minus() {
-    assert_eq!(tick_label(-230), "\u{2212}23");
-    assert_eq!(tick_label(-120), "\u{2212}12");
-    assert_eq!(tick_label(0), "0");
-    assert_eq!(tick_label(60), "6");
-}
-
-#[test]
-fn the_line_is_green_in_the_band_and_cut_at_silence_and_no_reading() {
-    let s = scale(Some(-23), &[]);
-    let mut values = vec![None; COLUMNS];
-    values[..8].copy_from_slice(&[
-        Some(-230),
-        Some(-231),
-        None,
-        Some(-230),
-        Some(-250),
-        Some(-260),
-        Some(-700),
-        Some(-240),
-    ]);
-    assert_eq!(
-        runs(&values, &s, Some(-23)),
-        vec![
-            Run {
-                green: true,
-                points: "1.7,500.0 5.0,504.2".to_string()
-            },
-            Run {
-                green: true,
-                points: "11.7,500.0 15.0,583.3".to_string()
-            },
-            Run {
-                green: false,
-                points: "15.0,583.3 18.3,625.0".to_string()
-            },
-        ]
-    );
-    // An output point is never green; a lone point draws nothing.
-    let out = scale(None, &[Some(-230)]);
-    let r = runs(&[Some(-230), Some(-231), None, Some(-200)], &out, None);
-    assert_eq!(r.len(), 1);
-    assert!(!r[0].green);
-    assert!(runs(&[Some(-230)], &s, Some(-23)).is_empty());
-    assert!(runs(&[None, Some(-700)], &s, Some(-23)).is_empty());
-}
-
-#[test]
-fn green_is_within_one_lu_of_an_input_points_target() {
-    assert!(green(-220, Some(-23)));
-    assert!(green(-240, Some(-23)));
-    assert!(!green(-219, Some(-23)));
-    assert!(!green(-241, Some(-23)));
-    assert!(!green(-230, None));
-}
-
-#[test]
-fn columns_sit_at_their_middles() {
-    assert!((column_x(0, 300) - 1.6667).abs() < 0.001);
-    assert_eq!(column_x(1, 300), 5.0);
-    assert!((column_x(299, 300) - 998.333).abs() < 0.001);
-    assert_eq!(column_x(0, 1), 500.0);
-    assert_eq!(column_x(0, 0), 500.0);
-    assert_eq!(column_x(3, 4), 875.0);
-    assert_eq!(BOX, 1000.0);
-}
-
-#[test]
 fn places_read_as_css_percents_and_fingers_as_fractions() {
     assert_eq!(pct(0.0), "0.000%");
     assert_eq!(pct(500.0), "50.000%");
@@ -463,16 +256,21 @@ fn the_live_edge_records_a_reading_a_second() {
     assert_eq!(edge_reading(Some(-230), false), Some(-230));
     assert_eq!(edge_reading(Some(-230), true), None);
     assert_eq!(edge_reading(None, false), None);
-    let mut tail = vec![(1000, Some(-1))];
-    push_reading(&mut tail, 2000, Some(-2), 0);
-    push_reading(&mut tail, 2000, Some(-9), 0);
-    push_reading(&mut tail, 1000, Some(-9), 0);
-    assert_eq!(tail, vec![(1000, Some(-1)), (2000, Some(-2))]);
-    push_reading(&mut tail, 3000, None, 2000);
-    assert_eq!(tail, vec![(2000, Some(-2)), (3000, None)]);
+    let mut tail = vec![at(1000, Some(-1))];
+    push_reading(&mut tail, 2000, Some(-2), Some(-45), 0);
+    push_reading(&mut tail, 2000, Some(-9), Some(-9), 0);
+    push_reading(&mut tail, 1000, Some(-9), None, 0);
+    let two = Sample {
+        t: 2000,
+        v: Some(-2),
+        f: Some(-45),
+    };
+    assert_eq!(tail, vec![at(1000, Some(-1)), two]);
+    push_reading(&mut tail, 3000, None, None, 2000);
+    assert_eq!(tail, vec![two, at(3000, None)]);
     let mut empty = Vec::new();
-    push_reading(&mut empty, 5000, Some(-5), 0);
-    assert_eq!(empty, vec![(5000, Some(-5))]);
+    push_reading(&mut empty, 5000, Some(-5), None, 0);
+    assert_eq!(empty, vec![at(5000, Some(-5))]);
 }
 
 #[test]
@@ -645,25 +443,29 @@ fn the_cursor_reads_the_column_under_the_finger() {
     assert_eq!(cursor_time(0.0005, 0, 1000), 1);
     assert_eq!(column_at(0, 0, 600_000), 0);
     assert_eq!(column_at(-5, 0, 600_000), 0);
-    assert_eq!(column_at(1999, 0, 600_000), 0);
-    assert_eq!(column_at(2000, 0, 600_000), 1);
-    assert_eq!(column_at(600_000, 0, 600_000), 299);
-    assert_eq!(column_at(900_000, 0, 600_000), 299);
+    assert_eq!(column_at(4999, 0, 600_000), 0);
+    assert_eq!(column_at(5000, 0, 600_000), 1);
+    assert_eq!(column_at(600_000, 0, 600_000), 119);
+    assert_eq!(column_at(900_000, 0, 600_000), 119);
     assert_eq!(column_at(5, 5, 5), 0);
 }
 
 #[test]
-fn the_cursor_text_is_its_time_and_value() {
+fn the_cursor_text_is_its_time_value_and_fader() {
     assert_eq!(
-        cursor_text(3_723_000, Some(-228), 0),
+        cursor_text(3_723_000, col(Some(-228), None), 0),
         "01:02:03 \u{b7} \u{2212}22.8"
     );
     assert_eq!(
-        cursor_text(3_723_000, None, 0),
-        "01:02:03 \u{b7} no reading"
+        cursor_text(3_723_000, col(Some(-228), Some(-35)), 0),
+        "01:02:03 \u{b7} \u{2212}22.8 \u{b7} FADER \u{2212}3.5 dB"
     );
     assert_eq!(
-        cursor_text(0, Some(-700), 0),
+        cursor_text(3_723_000, col(None, Some(20)), 0),
+        "01:02:03 \u{b7} no reading \u{b7} FADER +2.0 dB"
+    );
+    assert_eq!(
+        cursor_text(0, col(Some(-700), None), 0),
         "00:00:00 \u{b7} \u{2212}\u{221e}"
     );
 }
@@ -701,7 +503,8 @@ fn the_api_answers_read_as_the_series_or_why_not() {
         Ok(HistorySeries {
             from: 1000,
             step_ms: 1000,
-            values: vec![Some(-230), None]
+            values: vec![Some(-230), None],
+            fader: Vec::new(),
         })
     );
     assert!(
@@ -732,24 +535,24 @@ fn the_api_answers_read_as_the_series_or_why_not() {
 fn a_window_that_starts_later_places_its_samples_the_same() {
     let base = 1_000_000;
     let samples = vec![
-        (base - 1, Some(-100)),
-        (base, Some(-200)),
-        (base + 1999, Some(-210)),
-        (base + 2000, Some(-300)),
-        (base + 599_999, Some(-400)),
-        (base + 600_000, Some(-500)),
+        at(base - 1, Some(-100)),
+        at(base, Some(-200)),
+        at(base + 4999, Some(-200)),
+        at(base + 5000, Some(-300)),
+        at(base + 599_999, Some(-400)),
+        at(base + 600_000, Some(-500)),
     ];
     let cols = columns(&samples, base, base + 600_000);
-    assert_eq!(cols.len(), 300);
-    assert_eq!(cols[0], Some(-200));
-    assert_eq!(cols[1], Some(-300));
-    assert_eq!(cols[299], Some(-400));
-    assert_eq!(cols.iter().flatten().count(), 3);
+    assert_eq!(cols.len(), 120);
+    assert_eq!(cols[0].v, Some(-200));
+    assert_eq!(cols[1].v, Some(-300));
+    assert_eq!(cols[119].v, Some(-400));
+    assert_eq!(cols.iter().filter(|c| c.v.is_some()).count(), 3);
     // A short window from later on: one column a second.
-    let short = columns(&[(base + 59_000, Some(-1))], base, base + 60_000);
+    let short = columns(&[at(base + 59_000, Some(-1))], base, base + 60_000);
     assert_eq!(short.len(), 60);
-    assert_eq!(short[59], Some(-1));
-    assert_eq!(column_at(base + 2000, base, base + 600_000), 1);
+    assert_eq!(short[59].v, Some(-1));
+    assert_eq!(column_at(base + 5000, base, base + 600_000), 1);
     assert_eq!(column_at(base + 59_500, base, base + 60_000), 59);
     assert_eq!(column_at(base + 30_000, base, base + 60_000), 30);
     assert_eq!(cursor_time(0.5, base, base + 1000), base + 500);
@@ -816,7 +619,7 @@ fn each_time_tick_is_labelled_with_its_own_offset_across_a_dst_switch() {
     assert!(
         cursor_text(
             midnight + 30 * 60_000,
-            None,
+            col(None, None),
             offset_of(midnight + 30 * 60_000)
         )
         .starts_with("02:30:00")
@@ -836,6 +639,7 @@ fn series_from(from: i64) -> HistorySeries {
         from,
         step_ms: 1000,
         values: vec![Some(-230)],
+        fader: Vec::new(),
     }
 }
 

@@ -531,8 +531,11 @@ exclude_re = [
   # Lh::fetch / fetch_days (the fetch's spawn and its signals), Lh::tick
   # (the interval's second: the clock and the store's reading into the
   # tested push_reading, edge_reading and refresh) and Lh::show (a view
-  # into its signal and a fetch) carry decisions out and decide nothing.
-  "fohmixer-ui/src/components/detail_lufs\\.rs.*(replace|in) (offset_at|wall_ms|Lh::fetch|Lh::fetch_days|Lh::tick|Lh::show)( |$)",
+  # into its signal and a fetch) carry decisions out and decide nothing;
+  # Lh::fader_now (#253) reads the strip's volume slot into the tested
+  # fohmixer_proto::lufs::fader_tenths (lufs-history.spec.ts reads the
+  # head's FADER text and sees the fader's line).
+  "fohmixer-ui/src/components/detail_lufs\\.rs.*(replace|in) (offset_at|wall_ms|Lh::fetch|Lh::fetch_days|Lh::tick|Lh::show|Lh::fader_now)( |$)",
   # pages/ableset.rs (#90): take_return (location.hash read through the
   # tested behave::ableset::returns_to_tab, then history.replaceState
   # without it); ableset.spec.ts's sign-in comes back to #ableset and finds

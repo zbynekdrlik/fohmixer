@@ -14,6 +14,14 @@ import { LiveClient, dispatchPointer, harness, hostLine, hubStatus, openDetail, 
 // return, the days that hold the point, and a held finger's cursor. The
 // tab and the window are kept for the page. Set up as lufs.spec.ts: SimLive's
 // FohMixer LUFS device on band track 1 behind a `+LUFS:-25` Tuner.
+//
+// #253 (the owner's approved mockup docs/mockups/lufs-history-v3.html): the
+// line is a smooth 3 px curve (120 columns, each the gated energy mean of
+// its seconds, glided 1-2-1), green the same path clipped to the band, a
+// dot at its live end; a label and a grid line every 3 LU; the strip's
+// fader as a 2 px blue line on its own dB scale at the right (0 dB on the
+// target), its value in the head (`FADER −10.0 dB`) and on the cursor; the
+// hub keeps the fader beside the reading.
 
 const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
 
@@ -26,6 +34,7 @@ function withLufs(): any {
 }
 
 const IN_TRACK = "live_set tracks 1";
+const IN_VOLUME = `${IN_TRACK} mixer_device volume`;
 
 /** A `+LUFS` marker strip by its label. */
 function lufsStrip(page: Page, label: string): Locator {
@@ -63,6 +72,7 @@ test.describe("A fader's LUFS history in its channel detail", () => {
   test.use({ viewport: { width: 1194, height: 834 } });
   let live: LiveClient;
   let mute: boolean | undefined;
+  let volume: number | undefined;
   test.beforeEach(async () => {
     live = await LiveClient.open();
   });
@@ -74,12 +84,17 @@ test.describe("A fader's LUFS history in its channel detail", () => {
     await markersGone();
     if (mute !== undefined) await live.set("band", IN_TRACK, "mute", mute);
     mute = undefined;
+    if (volume !== undefined) await live.set("band", IN_VOLUME, "value", volume);
+    volume = undefined;
     live.close();
   });
 
   test("the LUFS tab draws the reading's history, green in the band; the windows, a drag back, NOW ›, a day and the hold's cursor; the tab and window are kept", async ({ page }) => {
     mute = await live.get("band", IN_TRACK, "mute");
     await live.set("band", IN_TRACK, "mute", false);
+    // The strip's fader at −10 dB (Live's 0.6).
+    volume = await live.get("band", IN_VOLUME, "value");
+    await live.set("band", IN_VOLUME, "value", 0.6);
     await openSurface(page);
     await harness("/hub/layout", { layout: withLufs() });
     expect(await hostLine("band", "maxdev lufs track 1 add rack")).toBe("MAXDEV 1");
@@ -117,6 +132,10 @@ test.describe("A fader's LUFS history in its channel detail", () => {
     await expect(now).toHaveAttribute("data-l", "in");
     await expect(now).toHaveCSS("color", "rgb(47, 199, 154)");
     await expect(history.getByTestId("lufs-history-target")).toHaveText("TARGET −25");
+    // The strip's fader beside the target, in its blue.
+    const faderNow = history.getByTestId("lufs-history-fader");
+    await expect(faderNow).toHaveText("FADER −10.0 dB");
+    await expect(faderNow).toHaveCSS("color", "rgb(111, 184, 216)");
 
     // Live, 10 MIN: no NOW ›, the line drawn green within a few seconds.
     await expect(history).toHaveAttribute("data-state", "live");
@@ -126,32 +145,84 @@ test.describe("A fader's LUFS history in its channel detail", () => {
     await expect(history.getByTestId("lufs-now-chip")).toBeHidden();
     const graph = history.getByTestId("lufs-graph");
     await expect.poll(() => runsOf(graph), { timeout: 15_000 }).toBeGreaterThan(0);
-    const lines = graph.getByTestId("lufs-line");
-    await expect(lines.first()).toHaveAttribute("data-green", "true");
-    await expect(lines.first()).toHaveCSS("stroke", "rgb(47, 199, 154)");
+    // One smooth 3 px curve in the calm grey, its green copy clipped to the band.
+    const line = graph.getByTestId("lufs-line").first();
+    await expect(line).toHaveCSS("stroke", "rgb(196, 196, 214)");
+    await expect(line).toHaveCSS("stroke-width", "3px");
+    expect(await line.getAttribute("d")).toMatch(/^M[\d.]+,[\d.]+C/);
+    const greenCopy = graph.getByTestId("lufs-line-green").first();
+    await expect(greenCopy).toHaveAttribute("clip-path", "url(#lh-band-clip)");
+    await expect(greenCopy).toHaveCSS("stroke", "rgb(47, 199, 154)");
+    // The same path (read at once: the line is drawn again each second).
+    expect(
+      await graph.evaluate((g) => {
+        const base = g.querySelector('[data-testid="lufs-line"]')?.getAttribute("d");
+        return base !== undefined && base === g.querySelector('[data-testid="lufs-line-green"]')?.getAttribute("d");
+      }),
+    ).toBe(true);
+    await expect(graph.locator("clipPath#lh-band-clip rect")).toHaveCount(1);
+    // The dot at the live end, green in the band.
+    const dot = graph.getByTestId("lufs-dot");
+    await expect(dot).toHaveAttribute("data-in", "true");
+    await expect(dot).toHaveCSS("background-color", "rgb(47, 199, 154)");
     await expect(history.getByTestId("lufs-history-empty")).toBeHidden();
-    // Out of the band: the line goes on grey.
+
+    // A label and a faint line every 3 LU at 13 px, the target's brighter;
+    // the fader's dB at the same ticks on the right, 0 dB on the target.
+    const yLabels = graph.getByTestId("lufs-y");
+    await expect(yLabels).toHaveText(["−37", "−34", "−31", "−28", "−25", "−22", "−19", "−16", "−13"]);
+    await expect(yLabels.first()).toHaveCSS("font-size", "13px");
+    await expect(yLabels.nth(4)).toHaveAttribute("data-main", "true");
+    await expect(yLabels.nth(4)).toHaveCSS("color", "rgb(196, 196, 214)");
+    await expect(graph.getByTestId("lufs-fader-y")).toHaveText(["−12", "−9", "−6", "−3", "0", "+3", "+6", "+9", "+12"]);
+    await expect(graph.getByTestId("lufs-axis")).toHaveText("LUFS");
+    await expect(graph.getByTestId("lufs-fader-axis")).toHaveText("FADER dB");
+    // Each label sits on its own line: the target's label and the fader's
+    // 0 dB at the same height.
+    const mid = async (l: Locator) => {
+      const b = (await l.boundingBox())!;
+      return b.y + b.height / 2;
+    };
+    expect(Math.abs((await mid(yLabels.nth(4))) - (await mid(graph.getByTestId("lufs-fader-y").nth(4))))).toBeLessThan(1);
+
+    // The fader's line: 2 px of blue, its live end at −10 dB, 10 LU under
+    // the target line (on the −35 LU height: 10/24 of the plot under its
+    // middle). An earlier spec's minutes of this point may hold another
+    // fader: only the live end is this test's.
+    const faderLine = graph.getByTestId("lufs-fader-line").last();
+    await expect(faderLine).toBeAttached({ timeout: 15_000 });
+    await expect(faderLine).toHaveCSS("stroke", "rgb(111, 184, 216)");
+    await expect(faderLine).toHaveCSS("stroke-width", "2px");
+    const faderEnd = async () => {
+      const points = (await faderLine.getAttribute("points")) ?? "";
+      return Number(points.split(" ").at(-1)?.split(",")[1]);
+    };
+    await expect.poll(faderEnd, { timeout: 15_000 }).toBeCloseTo(916.7, 1);
+
+    // Out of the band: the dot goes grey and, once the columns hold −30.0
+    // (5 s each in 10 MIN, glided over their neighbours), sits on −30.
     expect(await hostLine("band", "lufs track 1 -300 -100")).toBe("LUFS 1");
     await expect(now).toHaveText("−30.0", { timeout: 10_000 });
     await expect(now).toHaveAttribute("data-l", "off");
-    await expect(graph.locator('[data-testid="lufs-line"][data-green="false"]').first()).toBeAttached({ timeout: 15_000 });
-    await expect(graph.locator('[data-testid="lufs-line"][data-green="false"]').first()).toHaveCSS("stroke", "rgb(154, 154, 180)");
+    await expect(dot).toHaveAttribute("data-in", "false", { timeout: 15_000 });
+    await expect(dot).toHaveCSS("background-color", "rgb(196, 196, 214)");
+    // −30 on the −37..−13 scale: 70.833 % from the top.
+    await expect.poll(() => dot.getAttribute("style"), { timeout: 30_000 }).toContain("top:70.833%");
 
-    // A finger held still at the live edge of 10 MIN (2 s columns) shows
-    // the cursor: its time and the reading there, −30.0 since the line went
-    // grey.
-    // At least 4 grey columns (8 s of −30.0) first: the finger sits 2-4 s
-    // back from now.
-    const greyPoints = () => graph.locator('[data-testid="lufs-line"][data-green="false"]').last().evaluate((e) => (e.getAttribute("points") ?? "").split(" ").length);
-    await expect.poll(greyPoints, { timeout: 20_000 }).toBeGreaterThanOrEqual(5);
+    // A finger held still at the live edge shows the cursor: its time, the
+    // reading there and the fader there.
     const cursor = history.getByTestId("lufs-history-cursor");
     const edge = (await graph.boundingBox())!.width / 2 - 4;
     await dispatchPointer(graph, [{ type: "pointerdown", dx: edge }, { wait: 600 }], 22);
     await expect(graph.getByTestId("lufs-cursor")).toBeAttached();
-    await expect(cursor).toHaveText(/^\d\d:\d\d:\d\d · −30\.0$/);
+    await expect(cursor).toHaveText(/^\d\d:\d\d:\d\d · −30\.0 · FADER −10\.0 dB$/);
     await dispatchPointer(graph, [{ type: "pointerup", dx: edge }], 22);
     await expect(graph.getByTestId("lufs-cursor")).toHaveCount(0);
     await expect(cursor).toHaveText("");
+
+    // The fader moved in Live: the head follows at once.
+    await live.set("band", IN_VOLUME, "value", 0.85);
+    await expect(faderNow).toHaveText("FADER 0.0 dB");
 
     // The day that holds it: today.
     const days = history.getByTestId("lufs-days").getByTestId("lufs-day");
@@ -200,6 +271,9 @@ test.describe("A fader's LUFS history in its channel detail", () => {
     // An hour asked from a time within a second: 3600 or 3601 s, so 4 or 5 s a value.
     expect([4000, 5000]).toContain(series.step_ms);
     expect(series.values.some((v: number | null) => v === -300), "the hub's history holds −30.0").toBe(true);
+    // The hub keeps the strip's fader beside the readings (#253).
+    expect(series.fader.length).toBe(series.values.length);
+    expect(series.fader.some((v: number | null) => v === -100), "the hub's history holds the fader at −10 dB").toBe(true);
     await expect.poll(() => runsOf(again.getByTestId("lufs-graph")), { timeout: 10_000 }).toBeGreaterThan(0);
 
     // A strip without +LUFS: no tabs, its EQ pane, though LUFS is kept.
