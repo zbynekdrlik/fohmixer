@@ -229,11 +229,14 @@ test.describe("A fader's LUFS history in its channel detail", () => {
     await expect(days.first()).toHaveText("TODAY", { timeout: 15_000 });
     await expect(days.first()).toHaveAttribute("data-today", "true");
 
-    // 1 H: the hub's history read for it, the line still drawn.
+    // 1 H: the hub's history read for it, its live end still drawn (30 s
+    // columns: the point's first minute may fill only one, which draws the
+    // dot but no curve yet).
     await tap(windows.nth(1));
     await expect(windows.nth(1)).toHaveAttribute("aria-pressed", "true");
     await expect(windows.nth(0)).toHaveAttribute("aria-pressed", "false");
-    await expect.poll(() => runsOf(graph), { timeout: 10_000 }).toBeGreaterThan(0);
+    await expect(dot).toBeAttached({ timeout: 10_000 });
+    await expect(dot).toHaveAttribute("data-in", "false");
 
     // A drag right goes back in time: NOW › shows; it returns to the live edge.
     const nowChip = history.getByTestId("lufs-now-chip");
@@ -276,7 +279,7 @@ test.describe("A fader's LUFS history in its channel detail", () => {
     // The hub keeps the strip's fader beside the readings (#253).
     expect(series.fader.length).toBe(series.values.length);
     expect(series.fader.some((v: number | null) => v === -100), "the hub's history holds the fader at −10 dB").toBe(true);
-    await expect.poll(() => runsOf(again.getByTestId("lufs-graph")), { timeout: 10_000 }).toBeGreaterThan(0);
+    await expect(again.getByTestId("lufs-graph").getByTestId("lufs-dot")).toBeAttached({ timeout: 10_000 });
 
     // A strip without +LUFS: no tabs, its EQ pane, though LUFS is kept.
     await tap(again.getByTestId("detail-exit"));
