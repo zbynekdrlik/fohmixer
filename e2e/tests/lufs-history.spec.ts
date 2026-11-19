@@ -421,19 +421,21 @@ test.describe("The LUFS history's transport and songs (#255)", () => {
     const plotBox = (await graph.locator(".lh-plot").boundingBox())!;
     expect(laneBox.y - (plotBox.y + plotBox.height)).toBeCloseTo(3, 0);
     expect(laneBox.width).toBeCloseTo(plotBox.width, 0);
-    // The set stands: an empty track, no bar (asked again: a tap of 10 MIN
-    // reads the hub's history at once).
+    // The set stands: the track reaches the live edge and no bar does (asked
+    // again: a tap of 10 MIN reads the hub's history at once). The window
+    // can hold an earlier spec's minutes of this point: only the live end
+    // is this test's (`.claude/rules/e2e.md`).
     await expect
       .poll(
         async () => {
           await tap(windows.nth(0));
-          return tracks.count();
+          return (await runEnds(tracks)).at(-1) ?? 0;
         },
         { timeout: 15_000, intervals: [2000] },
       )
-      .toBeGreaterThan(0);
-    await expect(bars).toHaveCount(0);
-    await expect(tracks.first()).toHaveCSS("border-top-color", "rgb(42, 42, 64)");
+      .toBeGreaterThan(99);
+    expect((await runEnds(bars)).at(-1) ?? 0).toBeLessThan(98);
+    await expect(tracks.last()).toHaveCSS("border-top-color", "rgb(42, 42, 64)");
 
     // It plays song 031: a dim bar at the live edge, the song's dashed line
     // at its start, then, once its span is 40 px wide, its name.
@@ -442,24 +444,36 @@ test.describe("The LUFS history's transport and songs (#255)", () => {
       .poll(
         async () => {
           await tap(windows.nth(0));
-          return bars.count();
+          return (await runEnds(bars)).at(-1) ?? 0;
         },
         { timeout: 20_000, intervals: [3000] },
       )
-      .toBeGreaterThan(0);
+      .toBeGreaterThan(99);
     await expect(bars.last()).toHaveCSS("background-color", "rgb(58, 58, 82)");
-    expect((await runEnds(bars)).at(-1)).toBeCloseTo(100, 0);
-    const songLine = graph.getByTestId("lufs-song-line");
-    await expect(songLine.first()).toBeAttached({ timeout: 10_000 });
-    await expect(songLine.first()).toHaveCSS("border-left-style", "dashed");
-    const name = graph.getByTestId("lufs-song").first();
-    await expect(name).toHaveAttribute("data-song", "31", { timeout: 80_000 });
+    // A mark's left edge in percent (a name's is `calc(<edge>% + 4px)`).
+    const leftOf = (l: Locator) => l.evaluate((e) => Number(/left:(?:calc\()?([\d.]+)%/.exec(e.getAttribute("style") ?? "")?.[1] ?? NaN));
+    const songLine = graph.getByTestId("lufs-song-line").last();
+    await expect(songLine).toBeAttached({ timeout: 10_000 });
+    await expect(songLine).toHaveCSS("border-left-style", "dashed");
+    // The newest song's line stands where the newest bar starts.
+    expect(Math.abs((await leftOf(songLine)) - (await leftOf(bars.last())))).toBeLessThan(0.01);
+    const name = graph.getByTestId("lufs-song").last();
+    await expect
+      .poll(
+        async () => {
+          await tap(windows.nth(0));
+          const at = await leftOf(songLine);
+          const ours = at === (await leftOf(bars.last())) && (await name.count()) > 0 && at === (await leftOf(name));
+          return ours && (await name.getAttribute("data-song")) === "31" && (await songLine.getAttribute("data-line")) === "full";
+        },
+        { timeout: 80_000, intervals: [5000] },
+      )
+      .toBe(true);
     await expect(name).toHaveText(/^031 Morning Light$|^031[^…]*…$/);
-    await expect(songLine.first()).toHaveAttribute("data-line", "full");
     await expect(name).toHaveCSS("color", "rgb(122, 122, 146)");
     // At the plot's top, right of its line, inside the plot.
     const nameBox = (await name.boundingBox())!;
-    const lineBox = (await songLine.first().boundingBox())!;
+    const lineBox = (await songLine.boundingBox())!;
     expect(nameBox.x).toBeGreaterThan(lineBox.x);
     expect(nameBox.y - plotBox.y).toBeLessThan(6);
     expect(nameBox.x + nameBox.width).toBeLessThanOrEqual(plotBox.x + plotBox.width + 0.5);
