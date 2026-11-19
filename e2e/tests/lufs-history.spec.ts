@@ -90,6 +90,12 @@ test.describe("A fader's LUFS history in its channel detail", () => {
   });
 
   test("the LUFS tab draws the reading's history, green in the band; the windows, a drag back, NOW ›, a day and the hold's cursor; the tab and window are kept", async ({ page }) => {
+    // The graph's columns are 5 s (10 MIN) and 30 s (1 H), each glided over
+    // its neighbours (#253): the dot reaching −30 and the 1 H column leaving
+    // the band wait for real seconds of −30 to fill them (CI, 8b138005:
+    // 5.0 + 7.0 + 8.0 s of the test's polls, 31.6 s in all), past the 30 s
+    // default. The waits are the design's, not a slow page.
+    test.setTimeout(60_000);
     mute = await live.get("band", IN_TRACK, "mute");
     await live.set("band", IN_TRACK, "mute", false);
     // The strip's fader at −10 dB (Live's 0.6).
