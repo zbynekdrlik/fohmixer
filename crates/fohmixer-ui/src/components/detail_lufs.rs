@@ -19,10 +19,10 @@ use leptos::prelude::*;
 use super::owns_touches;
 use crate::behave::lufs::{look, point_key};
 use crate::behave::lufs_history::{
-    Answers, Column, DEFAULT_SPAN_MS, MINUTE_MS, SECOND_MS, Sample, Tab, View, WINDOWS, column_at,
-    cursor_text, day_chip_at, drawn_columns, edge_reading, fader_text, keep_tail, last_set,
-    push_reading, refresh, retry_series, samples, second_of, series_end, shown_tab, tab_row, tabs,
-    target_text, transport_text,
+    Answers, Column, DEFAULT_SPAN_MS, LiveSet, MINUTE_MS, SECOND_MS, Sample, Tab, View, WINDOWS,
+    column_at, cursor_text, day_chip_at, drawn_columns, edge_reading, edge_set, fader_text,
+    keep_tail, last_set, live_set, name_due, push_reading, refresh, retry_series, samples,
+    second_of, series_end, shown_tab, tab_row, tabs, target_text, transport_text,
 };
 use crate::binding::strip_subs;
 use crate::dom;
@@ -163,6 +163,8 @@ struct Lh {
     cols: Memo<Vec<Column>>,
     /// The songs' names the drawn answer holds (#255).
     songs: Memo<BTreeMap<u16, String>>,
+    /// The tick of the last ask for a live song's name (#255).
+    name_ask: StoredValue<Option<u32>>,
 }
 
 impl Lh {
@@ -226,6 +228,42 @@ impl Lh {
         )
     }
 
+    /// The point's Live set as the page hears it now (#255): AUTOTUNE's
+    /// state for the set of the layout's first AUTOTUNE target and the
+    /// recording watch's, as the hub told this connection (no subscription
+    /// of its own), into the tested `live_set`.
+    fn live_now(self) -> LiveSet {
+        let Some(instance) = self.point.try_with_value(|(instance, _)| instance.clone()) else {
+            return LiveSet::default();
+        };
+        let set = self
+            .store
+            .layout
+            .try_with_untracked(|l| {
+                l.as_ref().and_then(|l| {
+                    l.autotune_targets()
+                        .first()
+                        .map(|t| t.binding.instance.clone())
+                })
+            })
+            .flatten();
+        let autotune = self
+            .store
+            .autotune
+            .try_with_untracked(|a| a.fresh().cloned())
+            .flatten();
+        let rec = self
+            .store
+            .rec
+            .try_with_untracked(|r| r.fresh().cloned())
+            .flatten();
+        live_set(
+            &instance,
+            set.as_deref().zip(autotune.as_ref()),
+            rec.as_ref(),
+        )
+    }
+
     /// One second: the clock, the live edge's reading and fader, and the
     /// hub asked again when `refresh` says so (`n` counts the ticks from 1).
     fn tick(self, n: u32) {
@@ -247,14 +285,25 @@ impl Lh {
                 .flatten();
             let from = v.window(t).0;
             let fader = self.edge_fader();
-            let set = self
+            let last = self
                 .answers
                 .try_with_untracked(|a| a.drawn().map(last_set))
                 .flatten()
                 .unwrap_or((None, None));
+            let set = edge_set(self.live_now(), last);
             let _ = self
                 .tail
                 .try_update(|tl| push_reading(tl, second_of(t), (reading, fader), set, from));
+            // A song begun after the last answer: its name asked for.
+            let last_ask = self.name_ask.try_get_value().flatten();
+            let due = self
+                .songs
+                .try_with_untracked(|names| name_due(set.1, names, last_ask, n))
+                .unwrap_or(false);
+            if due {
+                let _ = self.name_ask.try_set_value(Some(n));
+                self.fetch();
+            }
         }
         let known = self
             .days
@@ -336,6 +385,7 @@ pub fn DetailLufs(strip: Strip) -> impl IntoView {
                 .flatten()
                 .unwrap_or_default()
         }),
+        name_ask: StoredValue::new(None),
     };
     lh.fetch();
     lh.fetch_days();

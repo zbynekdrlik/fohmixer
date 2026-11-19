@@ -437,18 +437,14 @@ test.describe("The LUFS history's transport and songs (#255)", () => {
     expect((await runEnds(bars)).at(-1) ?? 0).toBeLessThan(98);
     await expect(tracks.last()).toHaveCSS("border-top-color", "rgb(42, 42, 64)");
 
-    // It plays song 031: a dim bar at the live edge, the song's dashed line
-    // at its start, then, once its span is 40 px wide, its name.
+    // It plays song 031: within seconds a dim bar at the live edge, with no
+    // new answer from the hub (the page hears the start through AUTOTUNE's
+    // and the recording watch's states), the song's dashed line at its
+    // start, then, once its span is 40 px wide, its name.
     await live.call("band", "live_set", "start_playing");
-    await expect
-      .poll(
-        async () => {
-          await tap(windows.nth(0));
-          return (await runEnds(bars)).at(-1) ?? 0;
-        },
-        { timeout: 20_000, intervals: [3000] },
-      )
-      .toBeGreaterThan(99);
+    const started = Date.now();
+    await expect.poll(async () => (await runEnds(bars)).at(-1) ?? 0, { timeout: 8_000, intervals: [250] }).toBeGreaterThan(99.5);
+    console.log(`lufs history lane: the start seen in ${Date.now() - started} ms`);
     await expect(bars.last()).toHaveCSS("background-color", "rgb(58, 58, 82)");
     // A mark's left edge in percent (a name's is `calc(<edge>% + 4px)`).
     const leftOf = (l: Locator) => l.evaluate((e) => Number(/left:(?:calc\()?([\d.]+)%/.exec(e.getAttribute("style") ?? "")?.[1] ?? NaN));
@@ -461,7 +457,6 @@ test.describe("The LUFS history's transport and songs (#255)", () => {
     await expect
       .poll(
         async () => {
-          await tap(windows.nth(0));
           const at = await leftOf(songLine);
           const ours = at === (await leftOf(bars.last())) && (await name.count()) > 0 && at === (await leftOf(name));
           return ours && (await name.getAttribute("data-song")) === "31" && (await songLine.getAttribute("data-line")) === "full";
@@ -488,18 +483,12 @@ test.describe("The LUFS history's transport and songs (#255)", () => {
     await dispatchPointer(graph, [{ type: "pointerup", dx: edge }], 22);
     await expect(cursor).toHaveText("");
 
-    // It stops: the bar ends before the live edge, the track goes on, and
-    // the hold there says STOP.
+    // It stops: within seconds the bar ends before the live edge, the track
+    // goes on, and the hold there says STOP.
     await live.call("band", "live_set", "stop_playing");
-    await expect
-      .poll(
-        async () => {
-          await tap(windows.nth(0));
-          return (await runEnds(bars)).at(-1) ?? 100;
-        },
-        { timeout: 30_000, intervals: [3000] },
-      )
-      .toBeLessThan(98);
+    const stopped = Date.now();
+    await expect.poll(async () => (await runEnds(bars)).at(-1) ?? 100, { timeout: 8_000, intervals: [250] }).toBeLessThan(99.5);
+    console.log(`lufs history lane: the stop seen in ${Date.now() - stopped} ms`);
     expect((await runEnds(tracks)).at(-1)).toBeCloseTo(100, 0);
     await dispatchPointer(graph, [{ type: "pointerdown", dx: edge }, { wait: 600 }], 22);
     await expect(cursor.getByTestId("lufs-cursor-set")).toHaveText("· STOP");

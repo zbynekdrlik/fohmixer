@@ -230,3 +230,130 @@ fn the_cursor_says_play_with_the_song_or_stop() {
     assert_eq!(transport_text(col(STOP, None), &names), "\u{b7} STOP");
     assert_eq!(transport_text(col(None, Some(31)), &names), "");
 }
+
+/// AUTOTUNE's state with the set's transport and song.
+fn autotune(playing: Option<bool>, song: Option<u16>) -> AutotuneState {
+    serde_json::from_value(serde_json::json!({
+        "aut": false,
+        "playing": playing,
+        "targets": [],
+        "song": song,
+    }))
+    .unwrap()
+}
+
+/// The recording watch's state with the band's transport.
+fn rec(playing: Option<bool>) -> RecState {
+    RecState {
+        playing,
+        record_mode: None,
+        tracks: Vec::new(),
+    }
+}
+
+#[test]
+fn the_live_set_comes_from_autotune_for_its_set_else_from_the_recording_watch() {
+    let at = autotune(Some(true), Some(31));
+    // AUTOTUNE's set: its transport and song.
+    assert_eq!(
+        live_set("band", Some(("band", &at)), None),
+        LiveSet {
+            playing: Some(true),
+            song: Some(Some(31)),
+        }
+    );
+    // Out of every song is a song known live.
+    let out = autotune(Some(true), None);
+    assert_eq!(
+        live_set("band", Some(("band", &out)), None).song,
+        Some(None)
+    );
+    // AUTOTUNE's transport not heard yet: the recording watch's.
+    let unheard = autotune(None, None);
+    assert_eq!(
+        live_set("band", Some(("band", &unheard)), Some(&rec(Some(false)))),
+        LiveSet {
+            playing: Some(false),
+            song: Some(None),
+        }
+    );
+    // AUTOTUNE's wins over the watch's.
+    assert_eq!(
+        live_set("band", Some(("band", &at)), Some(&rec(Some(false)))).playing,
+        Some(true)
+    );
+    // Another set's AUTOTUNE: the watch's transport only, no song.
+    assert_eq!(
+        live_set("band", Some(("mbc", &at)), Some(&rec(Some(false)))),
+        LiveSet {
+            playing: Some(false),
+            song: None,
+        }
+    );
+    // The watch is the band's only.
+    assert_eq!(
+        live_set("mbc", None, Some(&rec(Some(true)))),
+        LiveSet::default()
+    );
+    assert_eq!(live_set("band", None, None), LiveSet::default());
+    assert_eq!(live_set("band", None, Some(&rec(None))), LiveSet::default());
+}
+
+#[test]
+fn the_live_edge_takes_the_live_transport_and_song_else_the_series_last() {
+    let heard = |playing, song| LiveSet { playing, song };
+    // A start heard live while the series ended stopped.
+    assert_eq!(
+        edge_set(heard(Some(true), Some(Some(57))), (Some(false), None)),
+        (Some(true), Some(57))
+    );
+    // A stop heard live: no song.
+    assert_eq!(
+        edge_set(heard(Some(false), Some(Some(57))), (Some(true), Some(31))),
+        (Some(false), None)
+    );
+    // Playing out of every song, heard live.
+    assert_eq!(
+        edge_set(heard(Some(true), Some(None)), (Some(true), Some(31))),
+        (Some(true), None)
+    );
+    // The transport live, the song not: the series' last song while it played.
+    assert_eq!(
+        edge_set(heard(Some(true), None), (Some(true), Some(31))),
+        (Some(true), Some(31))
+    );
+    assert_eq!(
+        edge_set(heard(Some(true), None), (Some(false), Some(31))),
+        (Some(true), None)
+    );
+    // Nothing heard live: the series' last bucket, as before.
+    assert_eq!(
+        edge_set(LiveSet::default(), (Some(true), Some(31))),
+        (Some(true), Some(31))
+    );
+    assert_eq!(
+        edge_set(LiveSet::default(), (Some(false), None)),
+        (Some(false), None)
+    );
+    assert_eq!(edge_set(LiveSet::default(), (None, None)), (None, None));
+    // A song with an unknown transport is no song.
+    assert_eq!(
+        edge_set(heard(None, Some(Some(31))), (None, None)),
+        (None, None)
+    );
+}
+
+#[test]
+fn a_live_songs_name_is_asked_for_at_most_every_five_ticks() {
+    assert_eq!(NAME_RETRY_TICKS, 5);
+    let names = BTreeMap::from([(31, "Morning Light".to_string()), (88, String::new())]);
+    assert!(name_due(Some(57), &names, None, 1));
+    assert!(!name_due(Some(57), &names, Some(2), 4));
+    assert!(!name_due(Some(57), &names, Some(2), 6));
+    assert!(name_due(Some(57), &names, Some(2), 7));
+    assert!(name_due(Some(57), &names, Some(2), 8));
+    // A known name, even an empty one, and no song: no ask.
+    assert!(!name_due(Some(31), &names, None, 9));
+    assert!(!name_due(Some(88), &names, None, 9));
+    assert!(!name_due(None, &names, None, 9));
+}

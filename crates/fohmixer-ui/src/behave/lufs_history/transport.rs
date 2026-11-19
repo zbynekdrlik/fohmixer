@@ -5,12 +5,15 @@
 //! line at its start, the song's `031 Name` at the plot's top, cut with an
 //! ellipsis to its span, left out and the line at half strength when the
 //! span is too narrow), the cursor's `· PLAY 031 Name` / `· STOP`, and the
-//! time labels that give way to the axes' names in the corners. Pure and
+//! time labels that give way to the axes' names in the corners, and the
+//! live edge's set as the page hears it (`live_set`, `edge_set`). Pure and
 //! tested; the glue (`components/detail_lufs/graph.rs`) measures only the
 //! plot's width, never a text: a label's width is estimated from the
 //! display face's advances.
 
 use std::collections::BTreeMap;
+
+use fohmixer_proto::client::{AutotuneState, REC_INSTANCE, RecState};
 
 use super::graph::Column;
 use super::{BOX, pct};
@@ -223,6 +226,72 @@ pub fn time_label_shows(frac: f64, plot_px: f64) -> bool {
     }
     let x = frac * plot_px;
     x > TIME_LEFT_PX && x < plot_px - TIME_RIGHT_PX
+}
+
+/// The point's Live set as the page hears it now (#255): its transport and
+/// its song (`Some(None)`: known to be out of every song; `None`: not
+/// heard live).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LiveSet {
+    pub playing: Option<bool>,
+    pub song: Option<Option<u16>>,
+}
+
+/// What the page hears live of `instance`'s Live set with no subscription
+/// of its own (#255): AUTOTUNE's state (`autotune`: the set of its first
+/// target and the state the hub told this connection) names the set's
+/// transport and song; the recording watch's (`rec`, `REC_INSTANCE`'s)
+/// its transport when AUTOTUNE's does not; else nothing.
+pub fn live_set(
+    instance: &str,
+    autotune: Option<(&str, &AutotuneState)>,
+    rec: Option<&RecState>,
+) -> LiveSet {
+    let rec_playing = rec
+        .filter(|_| instance == REC_INSTANCE)
+        .and_then(|r| r.playing);
+    match autotune.filter(|(set, _)| *set == instance) {
+        Some((_, state)) => LiveSet {
+            playing: state.playing.or(rec_playing),
+            song: Some(state.song),
+        },
+        None => LiveSet {
+            playing: rec_playing,
+            song: None,
+        },
+    }
+}
+
+/// The set a live edge's second records (#255): the transport heard live,
+/// else the one the hub's series ends on (`last`, `last_set`); the song
+/// heard live, else the series' last song while that bucket played; no
+/// song while the set does not play. So the lane follows a start or a
+/// stop at once, and a window in the past (which records no live second)
+/// is never touched.
+pub fn edge_set(live: LiveSet, last: (Option<bool>, Option<u16>)) -> (Option<bool>, Option<u16>) {
+    let playing = live.playing.or(last.0);
+    let song = match live.song {
+        Some(song) => song,
+        None => last.1.filter(|_| last.0 == Some(true)),
+    };
+    (playing, song.filter(|_| playing == Some(true)))
+}
+
+/// Ticks (seconds) between two asks of the hub for a song's name.
+pub const NAME_RETRY_TICKS: u32 = 5;
+
+/// Whether the page asks the hub's series again for the name of the song
+/// heard live (#255): its name is not known yet, and no ask for it went in
+/// the last [`NAME_RETRY_TICKS`] ticks (`last_ask`: the tick of the last
+/// one), so a song started after the last answer is named within seconds.
+pub fn name_due(
+    song: Option<u16>,
+    names: &BTreeMap<u16, String>,
+    last_ask: Option<u32>,
+    tick: u32,
+) -> bool {
+    song.is_some_and(|n| !names.contains_key(&n))
+        && last_ask.is_none_or(|t| tick >= t + NAME_RETRY_TICKS)
 }
 
 /// The cursor's second line (#255): `· PLAY 031 Morning Light`, `· PLAY`
