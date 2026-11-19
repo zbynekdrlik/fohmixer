@@ -482,15 +482,29 @@ pub fn bind(port: u16) -> std::io::Result<(std::net::TcpListener, std::net::UdpS
 /// The picks a port 0 pair takes before it gives up (#256).
 pub const PAIR_TRIES: usize = 16;
 
-/// [`bind`] with the TCP listener from `next_tcp` (#256).
+/// [`bind`] with the TCP listener from `next_tcp` (#256): a fixed port is
+/// one pick; a port 0 takes up to [`PAIR_TRIES`] picks, since a free TCP
+/// number is not a free UDP number (Windows hands out both from one
+/// sequence, and its excluded ranges differ per protocol), and keeps the
+/// first whose UDP socket binds; else the last error.
 pub fn bind_with(
-    _port: u16,
+    port: u16,
     mut next_tcp: impl FnMut() -> std::io::Result<std::net::TcpListener>,
 ) -> std::io::Result<(std::net::TcpListener, std::net::UdpSocket)> {
-    let tcp = next_tcp()?;
-    let bound = tcp.local_addr()?.port();
-    let udp = std::net::UdpSocket::bind(udp::bind_addr(bound))?;
-    Ok((tcp, udp))
+    let tries = if port == 0 { PAIR_TRIES } else { 1 };
+    let mut last = None;
+    for pick in 1..=tries {
+        let tcp = next_tcp()?;
+        let bound = tcp.local_addr()?.port();
+        match std::net::UdpSocket::bind(udp::bind_addr(bound)) {
+            Ok(udp) => return Ok((tcp, udp)),
+            Err(e) => {
+                tracing::debug!(port = bound, pick, error = %e, "listen: the UDP number of this TCP port cannot be bound");
+                last = Some(e);
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::other("listen: no port pair tried")))
 }
 
 /// Starts Listen (inside a tokio runtime): its state and tasks, the rack
