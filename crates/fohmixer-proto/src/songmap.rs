@@ -112,6 +112,12 @@ pub struct Span {
     /// (#140 PR 3c: the panel names the coming one); not serialized.
     #[serde(skip)]
     pub clips: Vec<String>,
+    /// The song's name (#255, the LUFS history's song marks): its
+    /// locator's name without the number, the `{…}` description, the flags
+    /// and the tags ([`song_name`]); empty when nothing else is there; not
+    /// serialized (the map's own words stay as they were).
+    #[serde(skip)]
+    pub name: String,
 }
 
 /// What is wrong.
@@ -274,6 +280,24 @@ fn song_number(name: &str) -> Option<u16> {
     } else {
         None
     }
+}
+
+/// A song locator's name as the LUFS history shows it (#255): its words
+/// after the three-digit number (and the optional `.` before it), without
+/// the `{…}` description and without the flags and tags (`+…`, `#…`, `[…]`,
+/// as [`classify`] leaves them out), joined by one space; empty when
+/// nothing else is there or the name holds no song number.
+pub fn song_name(name: &str) -> String {
+    let name = name.trim();
+    let rest = name.strip_prefix('.').unwrap_or(name).trim_start();
+    if song_number(rest).is_none() {
+        return String::new();
+    }
+    outside(rest.get(4..).unwrap_or_default())
+        .into_iter()
+        .filter(|w| !w.starts_with(['+', '#', '[']))
+        .collect::<Vec<&str>>()
+        .join(" ")
 }
 
 /// What a locator's name is (it is trimmed first).
@@ -525,6 +549,7 @@ fn spans(placed: &[Placed], problems: &mut Vec<Problem>) -> Vec<Building> {
                 key,
                 changes: Vec::new(),
                 clips: Vec::new(),
+                name: song_name(cue.name),
             },
             keyless,
         });
@@ -644,6 +669,13 @@ fn key_clips(clips: &[ClipName], spans: &mut [Span], problems: &mut Vec<Problem>
 /// keyless song is still a song); none outside every span.
 pub fn song_at(map: &SongMap, time: f64) -> Option<u16> {
     span_at(&map.spans, time).map(|i| map.spans[i].number)
+}
+
+/// The song whose span holds `time` with its name (#255, the LUFS
+/// history: [`Span::name`]); none outside every span.
+pub fn song_name_at(map: &SongMap, time: f64) -> Option<(u16, &str)> {
+    let span = &map.spans[span_at(&map.spans, time)?];
+    Some((span.number, span.name.as_str()))
 }
 
 /// The key in force at `time`: the song whose span holds it, if it has a
