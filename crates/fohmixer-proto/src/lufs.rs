@@ -61,8 +61,7 @@ pub fn fader_tenths(volume: Option<f64>) -> Option<i16> {
 }
 
 /// The median of `values` (the upper middle of an even count); none when
-/// empty. A history bucket's fader (#253) and, through [`bucket_of`], its
-/// reading.
+/// empty: a history bucket's fader (#253).
 pub fn median(values: &[i16]) -> Option<i16> {
     let mut sorted = values.to_vec();
     sorted.sort_unstable();
@@ -89,10 +88,41 @@ pub fn mostly_silent(silent: usize, heard: usize) -> bool {
     silent * 2 >= heard
 }
 
+/// The relative gate in tenths (#253, BS.1770's as integrated loudness
+/// uses it): a bucket's readings more than 10 LU under its energy mean are
+/// left out of its value.
+pub const GATE_TENTHS: i32 = 100;
+
+/// The energy mean of `values` (tenths of LU) in tenths; none of nothing.
+pub fn energy_mean(values: &[i16]) -> Option<f64> {
+    let energy: f64 = values
+        .iter()
+        .map(|v| 10f64.powf(f64::from(*v) / 100.0))
+        .sum();
+    (!values.is_empty()).then(|| 100.0 * (energy / values.len() as f64).log10())
+}
+
+/// The gated loudness of readings above silence (#253): their energy mean
+/// (rounded to a tenth), then the mean again of those at most
+/// [`GATE_TENTHS`] under it, rounded; none of nothing. A breath between two
+/// phrases no longer pulls a bucket down; a quiet song still reads quiet.
+/// The gate compares whole tenths, so its boundary is a value a test can
+/// name.
+pub fn gated(sounding: &[i16]) -> Option<i16> {
+    let floor = energy_mean(sounding)?.round() as i32 - GATE_TENTHS;
+    let kept: Vec<i16> = sounding
+        .iter()
+        .copied()
+        .filter(|v| i32::from(*v) >= floor)
+        .collect();
+    energy_mean(&kept).map(|m| m.round() as i16)
+}
+
 /// One bucket's value from its readings (no holes among them; #219, the
-/// hub's history buckets and the page's graph columns): none without a
-/// reading, silence when half or more are silence ([`mostly_silent`]),
-/// else the median of the readings above silence (the upper middle).
+/// hub's history buckets and the page's graph columns, one rule): none
+/// without a reading, silence when half or more are silence
+/// ([`mostly_silent`]), else since #253 the [`gated`] loudness of the
+/// readings above silence (#219 took their median).
 pub fn bucket_of(readings: &[i16]) -> Option<i16> {
     if readings.is_empty() {
         return None;
@@ -105,7 +135,7 @@ pub fn bucket_of(readings: &[i16]) -> Option<i16> {
     if mostly_silent(readings.len() - sounding.len(), readings.len()) {
         return Some(SILENT_TENTHS);
     }
-    median(&sounding)
+    gated(&sounding)
 }
 
 /// How a strip shows its reading (§6.1).

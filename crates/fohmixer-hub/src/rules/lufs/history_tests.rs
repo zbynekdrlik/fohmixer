@@ -280,15 +280,16 @@ fn a_bucket_holds_at_most_900_values() {
 }
 
 #[test]
-fn a_bucket_is_the_median_above_silence_silence_from_half_and_none_empty() {
+fn a_bucket_is_the_gated_loudness_above_silence_silence_from_half_and_none_empty() {
     assert_eq!(bucket_value(&[]), None);
     assert_eq!(bucket_value(&[HOLE, HOLE]), None);
     assert_eq!(bucket_value(&[-230]), Some(-230));
-    // The upper middle of the sounding ones.
-    assert_eq!(bucket_value(&[-200, -240, -220, HOLE]), Some(-220));
-    assert_eq!(bucket_value(&[-200, -240, -220, -210]), Some(-210));
-    // One silent of three heard: the median of the others.
-    assert_eq!(bucket_value(&[-700, -200, -240, HOLE]), Some(-200));
+    // The gated loudness of the sounding ones (#253, the page's column
+    // rule: their energy mean here, nothing 10 LU under it).
+    assert_eq!(bucket_value(&[-200, -240, -220, HOLE]), Some(-217));
+    assert_eq!(bucket_value(&[-200, -240, -220, -210]), Some(-215));
+    // One silent of three heard: the others' gated loudness.
+    assert_eq!(bucket_value(&[-700, -200, -240, HOLE]), Some(-216));
     // Half silent: silence.
     assert_eq!(bucket_value(&[-700, -200, HOLE, HOLE]), Some(-700));
 }

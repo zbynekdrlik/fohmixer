@@ -7,7 +7,7 @@
 //! box; pure and tested.
 
 use fohmixer_proto::lufs::{
-    FADER_FLOOR_TENTHS, HistorySeries, SILENT_TENTHS, in_band, median, mostly_silent,
+    FADER_FLOOR_TENTHS, HistorySeries, SILENT_TENTHS, bucket_of, in_band, median,
 };
 
 use super::{BOX, SECOND_MS};
@@ -59,62 +59,21 @@ pub fn series_end(series: &HistorySeries) -> i64 {
     series.from + series.values.len() as i64 * series.step_ms
 }
 
-/// A column of the graph: its reading ([`column_value`]) and its fader
-/// (the median of its seconds' fader, none without one).
+/// A column of the graph: its reading ([`columns`]) and its fader (the
+/// median of its seconds' fader, none without one).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Column {
     pub v: Option<i16>,
     pub f: Option<i16>,
 }
 
-/// The relative gate in tenths (#253, BS.1770's as integrated loudness
-/// uses it): a column's seconds more than 10 LU under its energy mean are
-/// left out of its value.
-pub const GATE_TENTHS: i32 = 100;
-
-/// The energy mean of `values` (tenths of LU) in tenths; none of nothing.
-pub fn energy_mean(values: &[i16]) -> Option<f64> {
-    let energy: f64 = values
-        .iter()
-        .map(|v| 10f64.powf(f64::from(*v) / 100.0))
-        .sum();
-    (!values.is_empty()).then(|| 100.0 * (energy / values.len() as f64).log10())
-}
-
-/// The gated loudness of a column's readings above silence (#253): their
-/// energy mean (rounded to a tenth), then the mean again of those at most
-/// [`GATE_TENTHS`] under it, rounded; none of nothing. A breath between two
-/// phrases no longer pulls the column down; a quiet song still reads quiet.
-pub fn gated(sounding: &[i16]) -> Option<i16> {
-    let floor = energy_mean(sounding)?.round() as i32 - GATE_TENTHS;
-    let kept: Vec<i16> = sounding
-        .iter()
-        .copied()
-        .filter(|v| i32::from(*v) >= floor)
-        .collect();
-    energy_mean(&kept).map(|m| m.round() as i16)
-}
-
-/// A column's value from its readings (no holes among them): none without
-/// a reading, silence when half or more are silence (the hub's rule,
-/// `mostly_silent`), else the [`gated`] loudness of those above silence.
-pub fn column_value(readings: &[i16]) -> Option<i16> {
-    if readings.is_empty() {
-        return None;
-    }
-    let sounding: Vec<i16> = readings
-        .iter()
-        .copied()
-        .filter(|v| *v > SILENT_TENTHS)
-        .collect();
-    if mostly_silent(readings.len() - sounding.len(), readings.len()) {
-        return Some(SILENT_TENTHS);
-    }
-    gated(&sounding)
-}
-
 /// The samples in [`columns_for`] columns over `t0..t1`: each column's
-/// reading ([`column_value`]) and fader (the median of the faders known).
+/// reading by the hub's own bucket rule (`fohmixer_proto::lufs::bucket_of`:
+/// none without a reading, silence when half or more are silent, else the
+/// gated energy mean of those above silence, #253) and its fader (the
+/// median of the faders known). In `10 MIN` the hub's buckets are its
+/// seconds; in `1 H` and `3 H` they are 4 s and 12 s buckets gated by the
+/// same rule, so a column is the gated loudness of gated buckets.
 pub fn columns(samples: &[Sample], t0: i64, t1: i64) -> Vec<Column> {
     let span = (t1 - t0).max(1);
     let n = columns_for(span);
@@ -132,7 +91,7 @@ pub fn columns(samples: &[Sample], t0: i64, t1: i64) -> Vec<Column> {
         .iter()
         .zip(&faders)
         .map(|(v, f)| Column {
-            v: column_value(v),
+            v: bucket_of(v),
             f: median(f),
         })
         .collect()
@@ -301,8 +260,13 @@ pub fn curve(points: &[(f64, f64)]) -> String {
     }));
     m.push(d[n - 2]);
     for (i, di) in d.iter().enumerate() {
-        // Past a radius of 3 the tangents are scaled back onto it (a
-        // flat segment has both tangents 0 already: no scaling).
+        // A flat segment stays flat; elsewhere tangents past a radius of 3
+        // (against the segment's slope) are scaled back onto it.
+        if *di == 0.0 {
+            m[i] = 0.0;
+            m[i + 1] = 0.0;
+            continue;
+        }
         let k = (3.0 / (m[i] / di).hypot(m[i + 1] / di)).min(1.0);
         m[i] *= k;
         m[i + 1] *= k;
@@ -343,13 +307,15 @@ pub fn lines(values: &[Option<i16>], scale: &Scale) -> Vec<String> {
 }
 
 /// The line's live end (#253): the last column that sounds and its value,
-/// where the graph draws its dot; none without one.
-pub fn live_end(values: &[Option<i16>]) -> Option<(usize, i16)> {
+/// where the graph draws its dot; none without one, and none unless the
+/// view is `live` (a window dragged back or a past day has no live end).
+pub fn live_end(live: bool, values: &[Option<i16>]) -> Option<(usize, i16)> {
     values
         .iter()
         .enumerate()
         .rev()
         .find_map(|(i, v)| sounding(*v).map(|v| (i, v)))
+        .filter(|_| live)
 }
 
 /// Where the fader's 0 dB sits on the scale (#253, 1 dB as tall as 1 LU):

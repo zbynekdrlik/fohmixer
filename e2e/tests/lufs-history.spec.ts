@@ -247,6 +247,8 @@ test.describe("A fader's LUFS history in its channel detail", () => {
     await dragBack();
     await expect(history).toHaveAttribute("data-state", "back");
     await expect(nowChip).toBeVisible();
+    // A window dragged back has no live end: no dot.
+    await expect(graph.getByTestId("lufs-dot")).toHaveCount(0);
     await tap(nowChip);
     await expect(history).toHaveAttribute("data-state", "live");
     await expect(nowChip).toBeHidden();

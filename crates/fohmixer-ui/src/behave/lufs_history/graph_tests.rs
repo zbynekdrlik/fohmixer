@@ -71,41 +71,18 @@ fn a_window_has_120_columns_or_one_a_second_when_shorter() {
 }
 
 #[test]
-fn an_energy_mean_weighs_the_loud_seconds_as_loudness_does() {
-    assert_eq!(energy_mean(&[]), None);
-    let one = energy_mean(&[-230]).unwrap();
-    assert!((one + 230.0).abs() < 1e-9, "{one}");
-    // −20 and −30 LU: 10·log10((0.01 + 0.001) / 2) = −22.596 LU.
-    let two = energy_mean(&[-200, -300]).unwrap();
-    assert!((two + 225.96).abs() < 0.01, "{two}");
-    assert_eq!(GATE_TENTHS, 100);
-}
-
-#[test]
-fn a_column_is_its_gated_energy_mean_so_a_breath_does_not_pull_it_down() {
-    // Sung at −20, one breath at −34 (more than 10 LU under the mean):
-    // gated out, the column reads −20.0.
-    assert_eq!(gated(&[-200, -200, -200, -340]), Some(-200));
-    // The mean before the gate: 10·log10((3·0.01 + 0.00078) / 4) = −21.14,
-    // −21.1 rounded; a second at −31.1, exactly 10 LU under it, stays.
-    assert_eq!(gated(&[-200, -200, -200, -311]), Some(-211));
-    // One a tenth further under it is gated out.
-    assert_eq!(gated(&[-200, -200, -200, -312]), Some(-200));
-    // A quiet song stays quiet.
-    assert_eq!(gated(&[-300, -300]), Some(-300));
-    // Two loud and two soft 8 LU apart: no gate, the energy mean
-    // (10·log10((2·0.01 + 2·0.00158) / 4) = −22.37).
-    assert_eq!(gated(&[-200, -200, -280, -280]), Some(-224));
-    assert_eq!(gated(&[]), None);
-}
-
-#[test]
-fn a_column_keeps_the_hubs_silence_rule() {
-    assert_eq!(column_value(&[]), None);
-    assert_eq!(column_value(&[-700, -700, -200]), Some(-700));
-    assert_eq!(column_value(&[-700, -200]), Some(-700));
-    assert_eq!(column_value(&[-700, -200, -200]), Some(-200));
-    assert_eq!(column_value(&[-800, -230, -230]), Some(-230));
+fn a_column_takes_the_hubs_bucket_rule_a_breath_gated_out() {
+    // Sung at −20 with a breath at −34 in one column (5 s in 10 MIN): the
+    // breath is gated out; half silent is silence; none without a reading.
+    let sung: Vec<Sample> = [-200, -200, -200, -340]
+        .iter()
+        .enumerate()
+        .map(|(i, v)| at(i as i64 * 1000, Some(*v)))
+        .collect();
+    assert_eq!(columns(&sung, 0, 600_000)[0].v, Some(-200));
+    let half = [at(0, Some(-700)), at(1000, Some(-200))];
+    assert_eq!(columns(&half, 0, 600_000)[0].v, Some(-700));
+    assert_eq!(columns(&half, 0, 600_000)[1].v, None);
 }
 
 #[test]
@@ -315,6 +292,18 @@ fn a_curve_passes_its_points_and_never_swings_past_them() {
         curve(&[(0.0, 0.0), (30.0, 30.0), (60.0, 120.0)]),
         "M0.0,0.0C10.0,10.0 20.0,10.0 30.0,30.0C40.0,50.0 50.0,90.0 60.0,120.0"
     );
+    // A rise into a flat stretch: the middle tangent of the slopes 1 and
+    // 0 is 0 (they do not keep their sign), and the rise's scaled one is
+    // 3.0 (5.5 against the slope 1, hypot 5.5, scaled by 3 / 5.5).
+    assert_eq!(
+        curve(&[
+            (0.0, 0.0),
+            (100.0, 1000.0),
+            (200.0, 1100.0),
+            (300.0, 1100.0)
+        ]),
+        "M0.0,0.0C33.3,333.3 66.7,900.0 100.0,1000.0C133.3,1100.0 166.7,1100.0 200.0,1100.0C233.3,1100.0 266.7,1100.0 300.0,1100.0"
+    );
     // A flat stretch stays flat.
     assert_eq!(
         curve(&[(0.0, 50.0), (30.0, 50.0), (60.0, 50.0)]),
@@ -395,13 +384,18 @@ fn the_line_is_a_curve_per_run_cut_at_silence_and_no_reading() {
 
 #[test]
 fn the_dot_sits_at_the_last_column_that_sounds() {
-    assert_eq!(live_end(&[]), None);
-    assert_eq!(live_end(&[None, Some(-700)]), None);
+    assert_eq!(live_end(true, &[]), None);
+    assert_eq!(live_end(true, &[None, Some(-700)]), None);
     assert_eq!(
-        live_end(&[Some(-200), Some(-230), Some(-700), None]),
+        live_end(true, &[Some(-200), Some(-230), Some(-700), None]),
         Some((1, -230))
     );
-    assert_eq!(live_end(&[Some(-200), None, Some(-210)]), Some((2, -210)));
+    assert_eq!(
+        live_end(true, &[Some(-200), None, Some(-210)]),
+        Some((2, -210))
+    );
+    // A window dragged back or a past day: no dot.
+    assert_eq!(live_end(false, &[Some(-200), None, Some(-210)]), None);
 }
 
 #[test]

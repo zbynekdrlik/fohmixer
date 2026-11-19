@@ -15,8 +15,10 @@
 //!   [`HOLE`] while unknown, left out when the whole minute is unknown; a
 //!   line without it (an older hub's) reads as no fader, and an older hub
 //!   reads a newer line (it ignores `f`).
-//! - A bucket ([`bucket_value`]): the median of its samples above silence
-//!   (the upper middle), silence when half or more are silent, none when it
+//! - A bucket ([`bucket_value`]): since #253 the gated loudness of its
+//!   samples above silence (`fohmixer_proto::lufs::bucket_of`, the page's
+//!   column rule: a breath no longer pulls a 1 H or 3 H bucket down; #219
+//!   took their median), silence when half or more are silent, none when it
 //!   holds no sample; its fader ([`fader_value`]) the median of its known
 //!   fader seconds.
 
