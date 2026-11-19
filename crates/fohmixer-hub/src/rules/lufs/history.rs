@@ -8,18 +8,24 @@
 //!   anything under it), [`HOLE`] for a second with no reading (no device,
 //!   stale, Live offline). Both draw as a gap.
 //! - A minute line: `{"m": <minute start, UTC ms>, "p": [{"i": <instance>,
-//!   "t": <target>, "v": <base64 of 60 i16 LE>}]}`; a point-minute with no
-//!   sample above silence is left out, a minute with none is no line.
+//!   "t": <target>, "v": <base64 of 60 i16 LE>, "f": <the same of the
+//!   strip's fader>}]}`; a point-minute with no sample above silence is
+//!   left out, a minute with none is no line. `f` (#253): the strip's fader
+//!   each second in dB tenths (`fohmixer_proto::lufs::fader_tenths`),
+//!   [`HOLE`] while unknown, left out when the whole minute is unknown; a
+//!   line without it (an older hub's) reads as no fader, and an older hub
+//!   reads a newer line (it ignores `f`).
 //! - A bucket ([`bucket_value`]): the median of its samples above silence
 //!   (the upper middle), silence when half or more are silent, none when it
-//!   holds no sample.
+//!   holds no sample; its fader ([`fader_value`]) the median of its known
+//!   fader seconds.
 
 use std::collections::{BTreeMap, VecDeque};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 pub use fohmixer_proto::lufs::HistorySeries as Series;
-use fohmixer_proto::lufs::{SILENT_TENTHS, bucket_of};
+use fohmixer_proto::lufs::{SILENT_TENTHS, bucket_of, median};
 use serde::{Deserialize, Serialize};
 
 /// Seconds kept in RAM per point: the last hour.
@@ -52,6 +58,20 @@ pub fn minute_of(ms: i64) -> i64 {
 /// [`SILENT_TENTHS`].
 pub fn slot_of(tenths: Option<i16>) -> i16 {
     tenths.map_or(HOLE, |t| t.max(SILENT_TENTHS))
+}
+
+/// A point's fader slot: its dB in tenths, none a hole.
+pub fn fader_slot(tenths: Option<i16>) -> i16 {
+    tenths.unwrap_or(HOLE)
+}
+
+/// One second of a point (#253): its reading and its strip's fader (dB
+/// tenths, `fohmixer_proto::lufs::fader_tenths`), each none when unknown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sample {
+    pub point: Point,
+    pub tenths: Option<i16>,
+    pub fader: Option<i16>,
 }
 
 /// Whether a slot holds a sample above silence.
@@ -96,6 +116,9 @@ pub struct PointMinute {
     /// The slots, base64 ([`encode`]).
     #[serde(rename = "v")]
     pub values: String,
+    /// The fader's slots, base64 (#253); none when the minute knows none.
+    #[serde(rename = "f", default, skip_serializing_if = "Option::is_none")]
+    pub faders: Option<String>,
 }
 
 /// A minute line of the day files.
@@ -126,6 +149,17 @@ impl MinuteLine {
             .find(|p| p.instance == instance && p.target == target)
             .and_then(|p| decode(&p.values))
     }
+
+    /// The fader's slots of `point` in this line (#253); none when the point
+    /// is not there, its minute holds no fader (an older hub's line) or
+    /// they do not decode.
+    pub fn fader_slots(&self, instance: &str, target: &str) -> Option<Vec<i16>> {
+        self.points
+            .iter()
+            .find(|p| p.instance == instance && p.target == target)
+            .and_then(|p| p.faders.as_deref())
+            .and_then(decode)
+    }
 }
 
 /// The first and last second with a reading in a minute starting at `m`.
@@ -142,8 +176,8 @@ pub struct Recorder {
     last: Option<i64>,
     /// The first second sampled since the start.
     first: Option<i64>,
-    /// Each point's slots, the back at `last`.
-    rings: BTreeMap<Point, VecDeque<i16>>,
+    /// Each point's slots (the reading, the fader), the back at `last`.
+    rings: BTreeMap<Point, VecDeque<(i16, i16)>>,
 }
 
 impl Recorder {
@@ -156,12 +190,12 @@ impl Recorder {
         self.last.is_none_or(|last| second_of(ms) > last)
     }
 
-    /// Samples every point's reading at the second of `ms` (`items`: each
-    /// served point and its reading; a point the hub kept but no longer
+    /// Samples every point's reading and fader at the second of `ms`
+    /// (`items`: each served point; a point the hub kept but no longer
     /// serves gets a hole). A second already sampled, or one before it (a
     /// clock stepped back), samples nothing. Gives the line of the minute
     /// that ended, if any.
-    pub fn sample(&mut self, ms: i64, items: &[(Point, Option<i16>)]) -> Option<MinuteLine> {
+    pub fn sample(&mut self, ms: i64, items: &[Sample]) -> Option<MinuteLine> {
         let second = second_of(ms);
         if !self.due(ms) {
             return None;
@@ -174,20 +208,20 @@ impl Recorder {
         for (point, ring) in &mut self.rings {
             let slot = items
                 .iter()
-                .find(|(p, _)| p == point)
-                .map_or(HOLE, |(_, t)| slot_of(*t));
+                .find(|s| &s.point == point)
+                .map_or((HOLE, HOLE), slots_of);
             push(ring, holes, slot);
         }
-        for (point, tenths) in items {
-            if !self.rings.contains_key(point) {
+        for sample in items {
+            if !self.rings.contains_key(&sample.point) {
                 let mut ring = VecDeque::new();
-                ring.push_back(slot_of(*tenths));
-                self.rings.insert(point.clone(), ring);
+                ring.push_back(slots_of(sample));
+                self.rings.insert(sample.point.clone(), ring);
             }
         }
         // A point no longer served whose hour holds nothing is let go.
         self.rings.retain(|point, ring| {
-            items.iter().any(|(p, _)| p == point) || ring.iter().any(|s| heard(*s))
+            items.iter().any(|s| &s.point == point) || ring.iter().any(|s| heard(s.0))
         });
         self.last = Some(second);
         self.first.get_or_insert(second);
@@ -196,17 +230,28 @@ impl Recorder {
 
     /// The slot of `point` at the second `t` (a hole outside the hour).
     pub fn at(&self, point: &Point, t: i64) -> i16 {
+        self.pair_at(point, t).0
+    }
+
+    /// The fader's slot of `point` at the second `t` (#253; a hole outside
+    /// the hour).
+    pub fn fader_at(&self, point: &Point, t: i64) -> i16 {
+        self.pair_at(point, t).1
+    }
+
+    /// The reading's and the fader's slots of `point` at the second `t`.
+    fn pair_at(&self, point: &Point, t: i64) -> (i16, i16) {
         let (Some(last), Some(ring)) = (self.last, self.rings.get(point)) else {
-            return HOLE;
+            return (HOLE, HOLE);
         };
         if t > last {
-            return HOLE;
+            return (HOLE, HOLE);
         }
         let back = ((last - t) / 1000) as usize;
         ring.len()
             .checked_sub(back + 1)
             .and_then(|i| ring.get(i).copied())
-            .unwrap_or(HOLE)
+            .unwrap_or((HOLE, HOLE))
     }
 
     /// The line of the minute starting at `m` from what the hour holds.
@@ -216,10 +261,12 @@ impl Recorder {
             .keys()
             .filter_map(|point| {
                 let slots = self.minute(point, m);
+                let faders = self.minute_faders(point, m);
                 slots.iter().any(|s| sounds(*s)).then(|| PointMinute {
                     instance: point.0.clone(),
                     target: point.1.clone(),
                     values: encode(&slots),
+                    faders: faders_text(&faders),
                 })
             })
             .collect();
@@ -230,6 +277,13 @@ impl Recorder {
     pub fn minute(&self, point: &Point, m: i64) -> Vec<i16> {
         (0..MINUTE_S as i64)
             .map(|i| self.at(point, m + i * 1000))
+            .collect()
+    }
+
+    /// The fader's slots of `point` in the minute starting at `m` (#253).
+    pub fn minute_faders(&self, point: &Point, m: i64) -> Vec<i16> {
+        (0..MINUTE_S as i64)
+            .map(|i| self.fader_at(point, m + i * 1000))
             .collect()
     }
 
@@ -258,9 +312,20 @@ pub fn gap_holes(last: i64, second: i64) -> usize {
     usize::try_from(gap).unwrap_or(0).min(RING_S)
 }
 
+/// A sample's slots: the reading's and the fader's.
+pub fn slots_of(sample: &Sample) -> (i16, i16) {
+    (slot_of(sample.tenths), fader_slot(sample.fader))
+}
+
+/// A minute's fader slots as a line writes them (#253): base64, none when
+/// the minute knows no fader.
+pub fn faders_text(faders: &[i16]) -> Option<String> {
+    faders.iter().any(|f| heard(*f)).then(|| encode(faders))
+}
+
 /// Pushes `holes` holes, then `slot`, keeping the last [`RING_S`].
-fn push(ring: &mut VecDeque<i16>, holes: usize, slot: i16) {
-    ring.extend(std::iter::repeat_n(HOLE, holes));
+fn push(ring: &mut VecDeque<(i16, i16)>, holes: usize, slot: (i16, i16)) {
+    ring.extend(std::iter::repeat_n((HOLE, HOLE), holes));
     ring.push_back(slot);
     let over = ring.len().saturating_sub(RING_S);
     ring.drain(..over);
@@ -320,13 +385,22 @@ pub fn bucket_value(slots: &[i16]) -> Option<i16> {
     bucket_of(&heard)
 }
 
-/// The slots of a window starting at `from`, one a second, bucketed.
-pub fn bucket(from: i64, slots: &[i16]) -> Series {
+/// One bucket's fader (#253): the median of its known fader slots, none
+/// when it knows none.
+pub fn fader_value(faders: &[i16]) -> Option<i16> {
+    let known: Vec<i16> = faders.iter().copied().filter(|f| heard(*f)).collect();
+    median(&known)
+}
+
+/// The slots of a window starting at `from`, one a second, bucketed, and
+/// the fader's slots of the same seconds beside them (#253).
+pub fn bucket(from: i64, slots: &[i16], faders: &[i16]) -> Series {
     let step = step_for(slots.len());
     Series {
         from,
         step_ms: step as i64 * 1000,
         values: slots.chunks(step).map(bucket_value).collect(),
+        fader: faders.chunks(step).map(fader_value).collect(),
     }
 }
 

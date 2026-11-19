@@ -145,6 +145,7 @@ fn the_history_answers_read_as_the_hub_writes_them() {
         from: 1_794_736_800_000,
         step_ms: 2000,
         values: vec![Some(-230), None, Some(-700)],
+        fader: Vec::new(),
     };
     let text = serde_json::to_string(&series).unwrap();
     assert_eq!(
@@ -164,6 +165,60 @@ fn the_history_answers_read_as_the_hub_writes_them() {
     let text = serde_json::to_string(&days).unwrap();
     assert_eq!(text, r#"{"days":[{"first_ms":10,"last_ms":20}]}"#);
     assert_eq!(serde_json::from_str::<HistoryDays>(&text).unwrap(), days);
+}
+
+#[test]
+fn a_series_carries_the_fader_beside_the_readings_and_an_older_hubs_reads_as_none() {
+    let series = HistorySeries {
+        from: 1_794_736_800_000,
+        step_ms: 2000,
+        values: vec![Some(-230), None],
+        fader: vec![Some(-45), None],
+    };
+    let text = serde_json::to_string(&series).unwrap();
+    assert_eq!(
+        text,
+        r#"{"from":1794736800000,"step_ms":2000,"values":[-230,null],"fader":[-45,null]}"#
+    );
+    assert_eq!(
+        serde_json::from_str::<HistorySeries>(&text).unwrap(),
+        series
+    );
+    // An older hub's answer has no `fader`.
+    let old: HistorySeries =
+        serde_json::from_str(r#"{"from":5,"step_ms":1000,"values":[-230]}"#).unwrap();
+    assert_eq!(old.fader, Vec::<Option<i16>>::new());
+    assert_eq!(old.values, vec![Some(-230)]);
+}
+
+#[test]
+fn a_faders_volume_reads_as_db_tenths_minus_infinity_at_the_floor() {
+    assert_eq!(FADER_FLOOR_TENTHS, -700);
+    assert_eq!(FADER_TOP_TENTHS, 60);
+    assert_eq!(fader_tenths(None), None);
+    // 0 dB at Live's 0.85, +6 dB at 1.0, -10 dB at 0.6.
+    assert_eq!(fader_tenths(Some(0.85)), Some(0));
+    assert_eq!(fader_tenths(Some(1.0)), Some(60));
+    assert_eq!(fader_tenths(Some(0.6)), Some(-100));
+    // Rounded to the nearest tenth: 0.84 is -0.4 dB, 0.8425 is -0.3 dB.
+    assert_eq!(fader_tenths(Some(0.84)), Some(-4));
+    assert_eq!(fader_tenths(Some(0.8425)), Some(-3));
+    // -inf at 0 and at the floor.
+    assert_eq!(fader_tenths(Some(0.0)), Some(-700));
+    // 0.97 is +4.8 dB.
+    assert_eq!(fader_tenths(Some(0.97)), Some(48));
+    // Just above the floor: -69.9 dB stays a number.
+    let near = crate::volume::volume_of(-69.9);
+    assert_eq!(fader_tenths(Some(near)), Some(-699));
+}
+
+#[test]
+fn a_median_is_the_upper_middle_and_none_of_nothing() {
+    assert_eq!(median(&[]), None);
+    assert_eq!(median(&[-40]), Some(-40));
+    assert_eq!(median(&[-10, -40]), Some(-10));
+    assert_eq!(median(&[-10, -40, -20]), Some(-20));
+    assert_eq!(median(&[5, -10, -40, -20]), Some(-10));
 }
 
 #[test]

@@ -12,14 +12,21 @@ use fohmixer_proto::roles::Role;
 const VOX: &str = "live_set tracks 1";
 const DAY: i64 = 86_400_000;
 
-/// A minute line of `instance`'s `target`, every second at `tenths`.
+/// A minute line of `instance`'s `target`, every second at `tenths`, an
+/// older hub's (no fader).
 fn line(m: i64, instance: &str, tenths: i16) -> String {
+    line_with(m, instance, tenths, None)
+}
+
+/// A minute line as `line`, with the fader every second at `fader` (#253).
+fn line_with(m: i64, instance: &str, tenths: i16, fader: Option<i16>) -> String {
     MinuteLine {
         m,
         points: vec![PointMinute {
             instance: instance.into(),
             target: VOX.into(),
             values: encode(&[tenths; 60]),
+            faders: fader.map(|f| encode(&[f; 60])),
         }],
     }
     .text()
@@ -45,7 +52,7 @@ async fn the_history_of_earlier_runs_is_served_and_an_mbc_login_reaches_only_its
         lufs.join(&name),
         format!(
             "{}\n{}\n{}\n",
-            line(m, "band", -230),
+            line_with(m, "band", -230, Some(-45)),
             line(m + 60_000, "band", -700),
             line(m, "mbc", -140)
         ),
@@ -72,6 +79,13 @@ async fn the_history_of_earlier_runs_is_served_and_an_mbc_login_reaches_only_its
     assert_eq!(series.values[0], Some(-230));
     assert_eq!(series.values[60], Some(-700));
     assert_eq!(series.values[120], None);
+    // The fader beside them (#253): the newer minute's, none for the older
+    // hub's minute and the empty one.
+    assert_eq!(series.fader.len(), 180);
+    assert_eq!(series.fader[0], Some(-45));
+    assert_eq!(series.fader[59], Some(-45));
+    assert_eq!(series.fader[60], None);
+    assert_eq!(series.fader[120], None);
 
     let (code, body) = hub
         .get("/api/lufs/days?instance=band&target=live_set%20tracks%201")

@@ -6,13 +6,15 @@ use fohmixer_proto::lufs::SILENT_TENTHS;
 const T0: i64 = 1_794_736_800_000;
 const VOX: &str = "live_set tracks 1";
 
-fn item(instance: &str, target: &str, tenths: Option<i16>) -> LufsItem {
-    LufsItem {
-        instance: instance.into(),
-        target: target.into(),
+fn item(instance: &str, target: &str, tenths: Option<i16>) -> Sample {
+    with_fader(instance, target, tenths, None)
+}
+
+fn with_fader(instance: &str, target: &str, tenths: Option<i16>, fader: Option<i16>) -> Sample {
+    Sample {
+        point: (instance.into(), target.into()),
         tenths,
-        voice: None,
-        problem: None,
+        fader,
     }
 }
 
@@ -28,6 +30,7 @@ fn line(m: i64, slots: &[i16]) -> String {
             instance: "band".into(),
             target: VOX.into(),
             values: encode(slots),
+            faders: None,
         }],
     }
     .text()
@@ -145,6 +148,47 @@ fn an_older_window_is_read_from_the_day_files_and_ram_answers_its_own_hour() {
     assert_eq!(both.values[59], Some(-240));
     assert_eq!(both.values[60], None);
     assert_eq!(both.values[120], Some(-200));
+}
+
+#[test]
+fn a_window_carries_the_fader_from_the_day_files_and_from_ram_beside_the_readings() {
+    let dir = tempfile::tempdir().unwrap();
+    // Two minutes before T0 in the file: one with `f`, one an older hub's.
+    let mut faders = vec![-45_i16; 60];
+    faders[1] = HOLE;
+    let with_f = MinuteLine {
+        m: T0 - 120_000,
+        points: vec![crate::rules::lufs::history::PointMinute {
+            instance: "band".into(),
+            target: VOX.into(),
+            values: encode(&[-240; 60]),
+            faders: Some(encode(&faders)),
+        }],
+    }
+    .text();
+    std::fs::write(
+        dir.path().join("lufs-2026-11-15.jsonl"),
+        format!("{with_f}\n{}\n", line(T0 - 60_000, &[-230; 60])),
+    )
+    .unwrap();
+    let (history, _rx) = LufsHistory::channel(Some(dir.path().to_path_buf()), 8);
+    history.sample(T0, || vec![with_fader("band", VOX, Some(-200), Some(-100))]);
+    let series = history
+        .history("band", VOX, T0 - 120_000, T0 + 1000)
+        .unwrap();
+    assert_eq!(series.step_ms, 1000);
+    assert_eq!(series.fader.len(), 121);
+    assert_eq!(series.fader[0], Some(-45));
+    assert_eq!(series.fader[1], None);
+    assert_eq!(series.fader[59], Some(-45));
+    assert_eq!(series.values[59], Some(-240));
+    // The older hub's minute: readings, no fader.
+    assert_eq!(series.values[60], Some(-230));
+    assert_eq!(series.fader[60], None);
+    assert_eq!(series.fader[119], None);
+    // RAM's second.
+    assert_eq!(series.values[120], Some(-200));
+    assert_eq!(series.fader[120], Some(-100));
 }
 
 #[test]
