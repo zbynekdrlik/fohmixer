@@ -221,8 +221,13 @@ test.describe("A fader's LUFS history in its channel detail", () => {
     const edge = (await graph.boundingBox())!.width / 2 - 4;
     await dispatchPointer(graph, [{ type: "pointerdown", dx: edge }, { wait: 600 }], 22);
     await expect(graph.getByTestId("lufs-cursor")).toBeAttached();
-    await expect(cursor).toHaveText(/^\d\d:\d\d:\d\d · −30\.0 · FADER −10\.0 dB$/);
+    // Its first line (#255: the set's transport is the second line's).
+    await expect(cursor.getByTestId("lufs-cursor-text")).toHaveText(/^\d\d:\d\d:\d\d · −30\.0 · FADER −10\.0 dB$/);
+    // TARGET and FADER step aside while it is held (#255).
+    await expect(history.getByTestId("lufs-history-target")).toBeHidden();
+    await expect(faderNow).toBeHidden();
     await dispatchPointer(graph, [{ type: "pointerup", dx: edge }], 22);
+    await expect(history.getByTestId("lufs-history-target")).toBeVisible();
     await expect(graph.getByTestId("lufs-cursor")).toHaveCount(0);
     await expect(cursor).toHaveText("");
 
@@ -330,5 +335,170 @@ test.describe("A fader's LUFS history in its channel detail", () => {
     await expect(middle.getByTestId("detail-pane-eq")).toBeVisible();
     await expect(middle.getByTestId("eq-cards")).toBeAttached();
     await expect(middle.getByTestId("lufs-history")).toHaveCount(0);
+  });
+});
+
+// #255 (the owner's approved mockup docs/mockups/lufs-history-v4.html): the
+// point's Live set in the same graph. The hub keeps the set's transport and
+// the song at its playhead once a second beside the reading (the song map
+// and AUTOTUNE's playhead: the set needs an AUTOTUNE target, here band
+// track 8's `+AUTOTUNE` with the AUTOTUNE button on the FOH rail); the
+// graph draws a 6 px lane under the plot (a dim bar while the set plays, an
+// empty track while it stands), a faint dashed line at a song's start with
+// its `031 Name` at the plot's top, and the held cursor adds `· PLAY 031
+// Name` or `· STOP`. Invented song names (a public repo).
+
+/** The LUFS fixture with the AUTOTUNE button where the FOH rail's AUTOTUNE toggle stood. */
+function withLufsAndAutotune(): any {
+  const frame = withLufs();
+  const foh = frame.pages.find((p: any) => p.id === "foh");
+  const at = foh.rail.findIndex((c: any) => c.kind === "param_toggle" && c.label === "AUTOTUNE");
+  foh.rail.splice(at, 1, { kind: "autotune", label: "AUTOTUNE" });
+  return frame;
+}
+
+/** Two invented songs at 120 bpm: 031 from 0 to 400 beats (200 s), 057 after it. */
+const SONGS = ["cue add 0 031 Morning Light {C 120 4/4}", "cue add 400 SONG END", "cue add 410 057 Quiet Hill", "cue add 800 SONG END"];
+
+/** A run's right edge in percent of the lane, from its `left:` and `width:`. */
+async function runEnds(runs: Locator): Promise<number[]> {
+  return runs.evaluateAll((els) =>
+    els.map((e) => {
+      const style = e.getAttribute("style") ?? "";
+      const num = (name: string) => Number(new RegExp(`${name}:([\\d.]+)%`).exec(style)?.[1] ?? NaN);
+      return num("left") + num("width");
+    }),
+  );
+}
+
+test.describe("The LUFS history's transport and songs (#255)", () => {
+  test.use({ viewport: { width: 1194, height: 834 } });
+  let live: LiveClient;
+  test.beforeEach(async () => {
+    live = await LiveClient.open();
+  });
+  test.afterEach(async () => {
+    await live.call("band", "live_set", "stop_playing");
+    for (const index of [3, 2, 1, 0]) await hostLine("band", `cue remove ${index}`);
+    expect(await hostLine("band", "song time 0")).toBe("SONG 0.0");
+    await hostLine("band", "lufs track 1 off");
+    await hostLine("band", "maxdev lufs track 1 remove");
+    await hostLine("band", "tuner track 1 remove");
+    await hostLine("band", "tuner track 8 remove");
+    await harness("/hub/layout/reset");
+    await markersGone();
+    await until(async () => (await hubStatus()).autotune.targets.length, (n: number) => n === 0, "no AUTOTUNE target", 10_000);
+    live.close();
+  });
+
+  test("the lane shows the set playing and standing, a song's line and name at its start, and the hold's PLAY with the song and STOP", async ({ page }) => {
+    // A song's name needs 40 px of its span: in 10 MIN (5 s columns) about
+    // 45 s of play at the iPad's size, the design's, not a slow page.
+    test.setTimeout(150_000);
+    await live.call("band", "live_set", "stop_playing");
+    expect(await hostLine("band", "song time 0")).toBe("SONG 0.0");
+    for (const line of SONGS) expect(await hostLine("band", line)).toMatch(/^CUE \d+$/);
+    await openSurface(page);
+    await harness("/hub/layout", { layout: withLufsAndAutotune() });
+    expect(await hostLine("band", "maxdev lufs track 1 add rack")).toBe("MAXDEV 1");
+    expect(await hostLine("band", `tuner track 1 set '"Vox 1" +G:LUFS +LUFS:-25 +PIN'`)).toBe("TUNER 1");
+    expect(await hostLine("band", "tuner track 8 set '+AUTOTUNE'")).toBe("TUNER 1");
+    await until(async () => (await hubStatus()).autotune.targets.length, (n: number) => n === 1, "the AUTOTUNE target", 10_000);
+    expect(await hostLine("band", "lufs track 1 -250 -100")).toBe("LUFS 1");
+    await expect(lufsStrip(page, "Vox 1").getByTestId("lufs")).toHaveText("−25.0", { timeout: 10_000 });
+
+    const detail = await openVox(page);
+    await tap(detail.getByTestId("detail-middle").getByTestId("detail-tab").nth(1));
+    const history = detail.getByTestId("lufs-history");
+    const graph = history.getByTestId("lufs-graph");
+    const windows = history.getByTestId("lufs-window");
+    const lane = graph.getByTestId("lufs-lane");
+    const tracks = lane.getByTestId("lufs-lane-track");
+    const bars = lane.getByTestId("lufs-lane-play");
+    // The lane: 6 px under the plot, 3 px apart, as wide as it.
+    const laneBox = (await lane.boundingBox())!;
+    expect(laneBox.height).toBeCloseTo(6, 0);
+    const plotBox = (await graph.locator(".lh-plot").boundingBox())!;
+    expect(laneBox.y - (plotBox.y + plotBox.height)).toBeCloseTo(3, 0);
+    expect(laneBox.width).toBeCloseTo(plotBox.width, 0);
+    // The set stands: an empty track, no bar (asked again: a tap of 10 MIN
+    // reads the hub's history at once).
+    await expect
+      .poll(
+        async () => {
+          await tap(windows.nth(0));
+          return tracks.count();
+        },
+        { timeout: 15_000, intervals: [2000] },
+      )
+      .toBeGreaterThan(0);
+    await expect(bars).toHaveCount(0);
+    await expect(tracks.first()).toHaveCSS("border-top-color", "rgb(42, 42, 64)");
+
+    // It plays song 031: a dim bar at the live edge, the song's dashed line
+    // at its start, then, once its span is 40 px wide, its name.
+    await live.call("band", "live_set", "start_playing");
+    await expect
+      .poll(
+        async () => {
+          await tap(windows.nth(0));
+          return bars.count();
+        },
+        { timeout: 20_000, intervals: [3000] },
+      )
+      .toBeGreaterThan(0);
+    await expect(bars.last()).toHaveCSS("background-color", "rgb(58, 58, 82)");
+    expect((await runEnds(bars)).at(-1)).toBeCloseTo(100, 0);
+    const songLine = graph.getByTestId("lufs-song-line");
+    await expect(songLine.first()).toBeAttached({ timeout: 10_000 });
+    await expect(songLine.first()).toHaveCSS("border-left-style", "dashed");
+    const name = graph.getByTestId("lufs-song").first();
+    await expect(name).toHaveAttribute("data-song", "31", { timeout: 80_000 });
+    await expect(name).toHaveText(/^031 Morning Light$|^031[^…]*…$/);
+    await expect(songLine.first()).toHaveAttribute("data-line", "full");
+    await expect(name).toHaveCSS("color", "rgb(122, 122, 146)");
+    // At the plot's top, right of its line, inside the plot.
+    const nameBox = (await name.boundingBox())!;
+    const lineBox = (await songLine.first().boundingBox())!;
+    expect(nameBox.x).toBeGreaterThan(lineBox.x);
+    expect(nameBox.y - plotBox.y).toBeLessThan(6);
+    expect(nameBox.x + nameBox.width).toBeLessThanOrEqual(plotBox.x + plotBox.width + 0.5);
+
+    // A finger held at the live edge: PLAY with the song on the second line.
+    const cursor = history.getByTestId("lufs-history-cursor");
+    const edge = (await graph.boundingBox())!.width / 2 - 4;
+    await dispatchPointer(graph, [{ type: "pointerdown", dx: edge }, { wait: 600 }], 22);
+    await expect(cursor.getByTestId("lufs-cursor-set")).toHaveText("· PLAY 031 Morning Light");
+    await expect(cursor.getByTestId("lufs-cursor-text")).toHaveText(/^\d\d:\d\d:\d\d · −25\.0/);
+    await expect(history.getByTestId("lufs-history-target")).toBeHidden();
+    await dispatchPointer(graph, [{ type: "pointerup", dx: edge }], 22);
+    await expect(cursor).toHaveText("");
+
+    // It stops: the bar ends before the live edge, the track goes on, and
+    // the hold there says STOP.
+    await live.call("band", "live_set", "stop_playing");
+    await expect
+      .poll(
+        async () => {
+          await tap(windows.nth(0));
+          return (await runEnds(bars)).at(-1) ?? 100;
+        },
+        { timeout: 30_000, intervals: [3000] },
+      )
+      .toBeLessThan(98);
+    expect((await runEnds(tracks)).at(-1)).toBeCloseTo(100, 0);
+    await dispatchPointer(graph, [{ type: "pointerdown", dx: edge }, { wait: 600 }], 22);
+    await expect(cursor.getByTestId("lufs-cursor-set")).toHaveText("· STOP");
+    await dispatchPointer(graph, [{ type: "pointerup", dx: edge }], 22);
+
+    // The hub's answer carries the set beside the readings.
+    const answer = page.waitForResponse((r) => r.url().includes("/api/lufs/history") && r.status() === 200);
+    await tap(windows.nth(0));
+    const series = await (await answer).json();
+    expect(series.play.length).toBe(series.values.length);
+    expect(series.play).toContain(true);
+    expect(series.play).toContain(false);
+    expect(series.song).toContain(31);
+    expect(series.songs["31"]).toBe("Morning Light");
   });
 });
