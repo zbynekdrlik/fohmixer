@@ -979,10 +979,14 @@ jobs:
           MUTANTS_PER_SHARD: "2"
           # The proto, UI and tray mutants (the `mutation-light` matrix): a
           # mutant is tested with its own package's tests only, so one of
-          # these rebuilds no hub; 8 of them fit a shard's 20 minutes (#151,
-          # PR #155: 640 diff-scoped mutants, 449 of them the hub's, were past
-          # one 256-job matrix at 2 per shard).
-          LIGHT_PER_SHARD: "8"
+          # these rebuilds no hub (#151, PR #155: 640 diff-scoped mutants, 449
+          # of them the hub's, were past one 256-job matrix at 2 per shard).
+          # 8 per shard ran out in #253's PR (run 44537986841, ~300 UI
+          # mutants): a mutated UI's round of two took ~3 to 3.5 minutes and
+          # the setup ~4.5, the shards 13 to 19 minutes and 2 of 38 cancelled
+          # at 20, every mutant caught by a failing test (no timeout). 4 per
+          # shard is 2 rounds plus setup, about 11 minutes.
+          LIGHT_PER_SHARD: "4"
           BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
