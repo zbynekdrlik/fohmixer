@@ -72,8 +72,8 @@ pub struct Column {
 /// none without a reading, silence when half or more are silent, else the
 /// gated energy mean of those above silence, #253) and its fader (the
 /// median of the faders known). In `10 MIN` the hub's buckets are its
-/// seconds; in `1 H` and `3 H` they are 4 s and 12 s buckets gated by the
-/// same rule, so a column is the gated loudness of gated buckets.
+/// seconds; in `1 H` and `3 H` they are 4–5 s and 12–13 s buckets gated by
+/// the same rule, so a column is the gated loudness of gated buckets.
 pub fn columns(samples: &[Sample], t0: i64, t1: i64) -> Vec<Column> {
     let span = (t1 - t0).max(1);
     let n = columns_for(span);
@@ -304,6 +304,13 @@ pub fn lines(values: &[Option<i16>], scale: &Scale) -> Vec<String> {
     out.push(curve(&run));
     out.retain(|path| !path.is_empty());
     out
+}
+
+/// Whether the graph says `NO LUFS IN THIS WINDOW` (#253): neither a run of
+/// the line nor its live end's dot is drawn (a single sounding column at
+/// the live edge draws a dot and no curve yet, and is no empty window).
+pub fn empty_window(runs: usize, end: Option<(usize, i16)>) -> bool {
+    runs == 0 && end.is_none()
 }
 
 /// The line's live end (#253): the last column that sounds and its value,

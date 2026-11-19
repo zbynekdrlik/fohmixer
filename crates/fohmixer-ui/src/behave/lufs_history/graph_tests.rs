@@ -383,6 +383,14 @@ fn the_line_is_a_curve_per_run_cut_at_silence_and_no_reading() {
 }
 
 #[test]
+fn a_window_is_empty_only_with_neither_a_run_nor_a_dot() {
+    assert!(empty_window(0, None));
+    assert!(!empty_window(1, None));
+    assert!(!empty_window(0, Some((3, -230))));
+    assert!(!empty_window(2, Some((3, -230))));
+}
+
+#[test]
 fn the_dot_sits_at_the_last_column_that_sounds() {
     assert_eq!(live_end(true, &[]), None);
     assert_eq!(live_end(true, &[None, Some(-700)]), None);

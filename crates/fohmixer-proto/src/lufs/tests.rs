@@ -235,6 +235,8 @@ fn a_bucket_is_the_gated_loudness_above_silence() {
     assert_eq!(bucket_of(&[]), None);
     assert_eq!(bucket_of(&[-700]), Some(SILENT_TENTHS));
     assert_eq!(bucket_of(&[-701, -200]), Some(SILENT_TENTHS));
+    // Exactly −70 is silence too: half of two.
+    assert_eq!(bucket_of(&[-700, -200]), Some(SILENT_TENTHS));
     // One silent of three: the gated loudness of the others.
     assert_eq!(bucket_of(&[-700, -200, -210]), Some(-205));
     assert_eq!(bucket_of(&[-250, -200, -210]), Some(-215));

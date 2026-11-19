@@ -17,8 +17,8 @@ use super::super::{down_of, owns_touches};
 use super::{Lh, offset_at, wall_ms};
 use crate::behave::lufs_history::{
     Answers, BOX, Gesture, HOLD_MS, OnDown, Press, Scale, View, band, column_x, cursor_time,
-    fader_label, fader_lines, green, lines, live_end, on_down, pct, scale, tick_label, tick_marks,
-    x_frac, x_of, y_of,
+    empty_window, fader_label, fader_lines, green, lines, live_end, on_down, pct, scale,
+    tick_label, tick_marks, x_frac, x_of, y_of,
 };
 use crate::dom;
 
@@ -77,7 +77,11 @@ pub(super) fn LufsGraph(lh: Lh) -> impl IntoView {
             .collect_view()
     };
     let drawn = move || line.try_with(Vec::len).unwrap_or(0);
-    let drawn_any = move || drawn() > 0;
+    let drawn_any = move || {
+        let live = lh.shown.try_with(View::is_live).unwrap_or(false);
+        let end = values.try_with(|v| live_end(live, v)).flatten();
+        !empty_window(drawn(), end)
+    };
     let answered = move || !lh.answers.try_with(Answers::failed).unwrap_or(false);
     let cursor_mark = move || {
         let t = lh.cursor.try_get().flatten()?;
