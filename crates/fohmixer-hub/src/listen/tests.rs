@@ -171,21 +171,35 @@ async fn packets_reach_every_subscriber_and_are_counted() {
     assert_eq!(PACKETS, 64);
 }
 
+/// A TCP listener on a free port and a UDP socket held on its number
+/// (#256): a pick whose UDP number is taken. Found from a TCP port, never
+/// a UDP one: Windows refuses a TCP bind on some numbers a UDP socket can
+/// take (10013, its per-protocol excluded ranges; CI of a59888e5).
+fn pick_with_its_udp_number_taken() -> (std::net::TcpListener, std::net::UdpSocket) {
+    for _ in 0..64 {
+        let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = tcp.local_addr().unwrap().port();
+        if let Ok(udp) = std::net::UdpSocket::bind(("127.0.0.1", port)) {
+            return (tcp, udp);
+        }
+    }
+    panic!("no free TCP port whose UDP number could be held");
+}
+
 /// #256: a free TCP number is not a free UDP number (Windows hands out
 /// both from one sequence), so a port 0 pair takes another TCP pick when
 /// its number's UDP socket cannot be bound.
 #[test]
 fn a_port_0_pair_takes_another_pick_when_its_udp_number_is_taken() {
-    let held = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-    let taken = held.local_addr().unwrap().port();
+    let (first, _held) = pick_with_its_udp_number_taken();
+    let taken = first.local_addr().unwrap().port();
+    let mut first = Some(first);
     let mut picks = 0;
     let (tcp, udp) = bind_with(0, || {
         picks += 1;
-        if picks == 1 {
-            std::net::TcpListener::bind(("127.0.0.1", taken))
-        } else {
-            std::net::TcpListener::bind("127.0.0.1:0")
-        }
+        first
+            .take()
+            .map_or_else(|| std::net::TcpListener::bind("127.0.0.1:0"), Ok)
     })
     .expect("the second pick is a free pair");
     let port = tcp.local_addr().unwrap().port();
@@ -197,12 +211,15 @@ fn a_port_0_pair_takes_another_pick_when_its_udp_number_is_taken() {
 /// #256: a fixed port is tried once, as before; its error is the answer.
 #[test]
 fn a_fixed_port_whose_udp_number_is_taken_is_one_pick_and_its_error() {
-    let held = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-    let taken = held.local_addr().unwrap().port();
+    let (first, _held) = pick_with_its_udp_number_taken();
+    let taken = first.local_addr().unwrap().port();
+    let mut first = Some(first);
     let mut picks = 0;
     let result = bind_with(taken, || {
         picks += 1;
-        std::net::TcpListener::bind(("127.0.0.1", taken))
+        first
+            .take()
+            .map_or_else(|| std::net::TcpListener::bind(("127.0.0.1", taken)), Ok)
     });
     assert!(result.is_err());
     assert_eq!(picks, 1);
@@ -212,12 +229,16 @@ fn a_fixed_port_whose_udp_number_is_taken_is_one_pick_and_its_error() {
 /// error.
 #[test]
 fn a_port_0_pair_gives_up_after_its_tries() {
-    let held = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-    let taken = held.local_addr().unwrap().port();
+    let mut pairs: Vec<_> = (0..PAIR_TRIES + 1)
+        .map(|_| pick_with_its_udp_number_taken())
+        .collect();
+    let mut held = Vec::new();
     let mut picks = 0;
     let result = bind_with(0, || {
         picks += 1;
-        std::net::TcpListener::bind(("127.0.0.1", taken))
+        let (tcp, udp) = pairs.pop().expect("a pick for every try");
+        held.push(udp);
+        Ok(tcp)
     });
     assert!(result.is_err());
     assert_eq!(picks, PAIR_TRIES);
