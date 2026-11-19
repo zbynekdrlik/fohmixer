@@ -171,6 +171,59 @@ async fn packets_reach_every_subscriber_and_are_counted() {
     assert_eq!(PACKETS, 64);
 }
 
+/// #256: a free TCP number is not a free UDP number (Windows hands out
+/// both from one sequence), so a port 0 pair takes another TCP pick when
+/// its number's UDP socket cannot be bound.
+#[test]
+fn a_port_0_pair_takes_another_pick_when_its_udp_number_is_taken() {
+    let held = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let taken = held.local_addr().unwrap().port();
+    let mut picks = 0;
+    let (tcp, udp) = bind_with(0, || {
+        picks += 1;
+        if picks == 1 {
+            std::net::TcpListener::bind(("127.0.0.1", taken))
+        } else {
+            std::net::TcpListener::bind("127.0.0.1:0")
+        }
+    })
+    .expect("the second pick is a free pair");
+    let port = tcp.local_addr().unwrap().port();
+    assert_ne!(port, taken);
+    assert_eq!(udp.local_addr().unwrap().port(), port);
+    assert_eq!(picks, 2);
+}
+
+/// #256: a fixed port is tried once, as before; its error is the answer.
+#[test]
+fn a_fixed_port_whose_udp_number_is_taken_is_one_pick_and_its_error() {
+    let held = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let taken = held.local_addr().unwrap().port();
+    let mut picks = 0;
+    let result = bind_with(taken, || {
+        picks += 1;
+        std::net::TcpListener::bind(("127.0.0.1", taken))
+    });
+    assert!(result.is_err());
+    assert_eq!(picks, 1);
+}
+
+/// #256: a port 0 pair gives up after [`PAIR_TRIES`] picks, with the last
+/// error.
+#[test]
+fn a_port_0_pair_gives_up_after_its_tries() {
+    let held = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let taken = held.local_addr().unwrap().port();
+    let mut picks = 0;
+    let result = bind_with(0, || {
+        picks += 1;
+        std::net::TcpListener::bind(("127.0.0.1", taken))
+    });
+    assert!(result.is_err());
+    assert_eq!(picks, PAIR_TRIES);
+    assert_eq!(PAIR_TRIES, 16);
+}
+
 #[tokio::test]
 async fn a_port_taken_is_recorded_and_shown() {
     let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

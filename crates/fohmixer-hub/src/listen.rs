@@ -476,7 +476,18 @@ impl Listen {
 /// Binds `127.0.0.1:<port>` for both: TCP first (a port 0 picks a free
 /// one), then UDP on the same number.
 pub fn bind(port: u16) -> std::io::Result<(std::net::TcpListener, std::net::UdpSocket)> {
-    let tcp = std::net::TcpListener::bind(udp::bind_addr(port))?;
+    bind_with(port, || std::net::TcpListener::bind(udp::bind_addr(port)))
+}
+
+/// The picks a port 0 pair takes before it gives up (#256).
+pub const PAIR_TRIES: usize = 16;
+
+/// [`bind`] with the TCP listener from `next_tcp` (#256).
+pub fn bind_with(
+    _port: u16,
+    mut next_tcp: impl FnMut() -> std::io::Result<std::net::TcpListener>,
+) -> std::io::Result<(std::net::TcpListener, std::net::UdpSocket)> {
+    let tcp = next_tcp()?;
     let bound = tcp.local_addr()?.port();
     let udp = std::net::UdpSocket::bind(udp::bind_addr(bound))?;
     Ok((tcp, udp))
