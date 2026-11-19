@@ -260,11 +260,11 @@ pub fn curve(points: &[(f64, f64)]) -> String {
     }));
     m.push(d[n - 2]);
     for (i, di) in d.iter().enumerate() {
-        // A flat segment stays flat; elsewhere tangents past a radius of 3
-        // (against the segment's slope) are scaled back onto it.
+        // A flat segment stays flat: both its tangents are already 0 (an
+        // inner one by the sign rule above, an end one is the segment's own
+        // slope), so it is skipped, never divided by. Elsewhere tangents past
+        // a radius of 3 (against the segment's slope) are scaled back onto it.
         if *di == 0.0 {
-            m[i] = 0.0;
-            m[i + 1] = 0.0;
             continue;
         }
         let k = (3.0 / (m[i] / di).hypot(m[i + 1] / di)).min(1.0);
