@@ -347,6 +347,7 @@ impl Press {
 }
 
 pub use graph::*;
+pub use transport::*;
 
 /// The time ticks' steps in minutes: calm steps, at most 7 ticks; past
 /// 7 h (a long past day) whole hours more.
@@ -473,21 +474,24 @@ pub fn edge_reading(tenths: Option<i16>, problem: bool) -> Option<i16> {
     if problem { None } else { tenths }
 }
 
-/// The live edge's reading and fader of `second` into `tail`, once a
+/// The live edge's reading, fader and set (#255: the transport and song
+/// the hub's series ends on, `last_set`) of `second` into `tail`, once a
 /// second (a tick that comes twice in one second records nothing more), the
 /// samples before `from` dropped.
 pub fn push_reading(
     tail: &mut Vec<Sample>,
     second: i64,
-    reading: Option<i16>,
-    fader: Option<i16>,
+    (reading, fader): (Option<i16>, Option<i16>),
+    (p, s): (Option<bool>, Option<u16>),
     from: i64,
 ) {
-    if tail.last().is_none_or(|s| s.t < second) {
+    if tail.last().is_none_or(|x| x.t < second) {
         tail.push(Sample {
             t: second,
             v: reading,
             f: fader,
+            p,
+            s,
         });
     }
     keep_tail(tail, from);
@@ -648,6 +652,7 @@ pub fn retry_series(tick: u32, failed: bool) -> bool {
 }
 
 mod graph;
+mod transport;
 
 #[cfg(test)]
 mod tests;

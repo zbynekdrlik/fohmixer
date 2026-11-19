@@ -20,12 +20,14 @@ use super::owns_touches;
 use crate::behave::lufs::{look, point_key};
 use crate::behave::lufs_history::{
     Answers, Column, DEFAULT_SPAN_MS, MINUTE_MS, SECOND_MS, Sample, Tab, View, WINDOWS, column_at,
-    cursor_text, day_chip_at, drawn_columns, edge_reading, fader_text, keep_tail, push_reading,
-    refresh, retry_series, samples, second_of, series_end, shown_tab, tab_row, tabs, target_text,
+    cursor_text, day_chip_at, drawn_columns, edge_reading, fader_text, keep_tail, last_set,
+    push_reading, refresh, retry_series, samples, second_of, series_end, shown_tab, tab_row, tabs,
+    target_text, transport_text,
 };
 use crate::binding::strip_subs;
 use crate::dom;
 use crate::store::{LiveStore, Slot};
+use std::collections::BTreeMap;
 
 mod graph;
 use fohmixer_proto::layout::MeterSource;
@@ -159,6 +161,8 @@ struct Lh {
     cursor: RwSignal<Option<i64>>,
     window: Memo<(i64, i64)>,
     cols: Memo<Vec<Column>>,
+    /// The songs' names the drawn answer holds (#255).
+    songs: Memo<BTreeMap<u16, String>>,
 }
 
 impl Lh {
@@ -243,9 +247,14 @@ impl Lh {
                 .flatten();
             let from = v.window(t).0;
             let fader = self.edge_fader();
+            let set = self
+                .answers
+                .try_with_untracked(|a| a.drawn().map(last_set))
+                .flatten()
+                .unwrap_or((None, None));
             let _ = self
                 .tail
-                .try_update(|tl| push_reading(tl, second_of(t), reading, fader, from));
+                .try_update(|tl| push_reading(tl, second_of(t), (reading, fader), set, from));
         }
         let known = self
             .days
@@ -321,6 +330,12 @@ pub fn DetailLufs(strip: Strip) -> impl IntoView {
         cursor: RwSignal::new(None),
         window,
         cols,
+        songs: Memo::new(move |_| {
+            answers
+                .try_with(|a| a.drawn().map(|s| s.songs.clone()))
+                .flatten()
+                .unwrap_or_default()
+        }),
     };
     lh.fetch();
     lh.fetch_days();
@@ -387,8 +402,20 @@ fn LufsHead(lh: Lh, spec: Option<LufsSpec>) -> impl IntoView {
         let col = lh
             .cols
             .try_with(|c| c.get(column_at(t, t0, t1)).copied().unwrap_or_default())?;
-        Some(cursor_text(t, col, offset_at(t)))
+        // Two lines while held (#255, mockup v4): v3's text, then the set's
+        // transport and song under it.
+        let set = lh
+            .songs
+            .try_with(|names| transport_text(col, names))
+            .unwrap_or_default();
+        Some(view! {
+            <span data-testid="lufs-cursor-text">{cursor_text(t, col, offset_at(t))}</span>
+            <span data-testid="lufs-cursor-set">{set}</span>
+        })
     };
+    // While a finger holds the cursor, TARGET and FADER step aside (the
+    // readout carries the fader), so nothing wraps.
+    let held = move || lh.cursor.try_get().flatten().is_some();
     let chips = WINDOWS.map(|(label, span)| {
         let keys: Vec<String> = Vec::new();
         let on = move || {
@@ -436,10 +463,10 @@ fn LufsHead(lh: Lh, spec: Option<LufsSpec>) -> impl IntoView {
             <div class="lh-now" data-testid="lufs-history-now" data-l=now_state>
                 {now_text}
             </div>
-            <div class="lh-target" data-testid="lufs-history-target">
+            <div class="lh-target" data-testid="lufs-history-target" hidden=held>
                 {target_line}
             </div>
-            <div class="lh-fader" data-testid="lufs-history-fader">
+            <div class="lh-fader" data-testid="lufs-history-fader" hidden=held>
                 {fader_line}
             </div>
             <div class="lh-cursor" data-testid="lufs-history-cursor">

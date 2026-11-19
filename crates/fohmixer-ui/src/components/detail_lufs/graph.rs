@@ -5,22 +5,32 @@
 //! cursor) and the layout; `GraphScales` the labels (LUFS left, the
 //! fader's dB right), `GraphGrid` the faint lines, `GraphLines` the SVG
 //! (the band's clip, the curve and its green copy, the fader's line) and
-//! the live end's dot. Every decision is a pure function; nothing here
-//! decides.
+//! the live end's dot; since #255 (mockup v4) `GraphLane` the Live set's
+//! transport lane under the plot and `GraphSongs` the songs' dashed lines
+//! and names at its top, for which `LufsGraph` measures the plot's width
+//! (a `ResizeObserver`; never a text). Every decision is a pure function;
+//! nothing here decides.
 
 use std::time::Duration;
 
 use leptos::html;
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 
 use super::super::{down_of, owns_touches};
 use super::{Lh, offset_at, wall_ms};
 use crate::behave::lufs_history::{
-    Answers, BOX, Gesture, HOLD_MS, OnDown, Press, Scale, View, band, column_x, cursor_time,
-    empty_window, fader_label, fader_lines, green, lines, live_end, on_down, pct, scale,
-    tick_label, tick_marks, x_frac, x_of, y_of,
+    Answers, BOX, Gesture, HOLD_MS, LABEL_PAD_PX, Line, OnDown, Press, Scale, View, band,
+    column_edge, column_x, cursor_time, empty_window, fader_label, fader_lines, green, known_runs,
+    lines, live_end, on_down, pct, play_runs, run_style, scale, song_marks, tick_label, tick_marks,
+    time_label_shows, x_frac, x_of, y_of,
 };
 use crate::dom;
+
+/// The plot's width watcher: a `ResizeObserver` and its callback, kept
+/// until the graph goes.
+type PlotObserver = (web_sys::ResizeObserver, Closure<dyn FnMut()>);
 
 /// The band's `clipPath` id (one detail shows at a time).
 const BAND_CLIP: &str = "lh-band-clip";
@@ -43,9 +53,27 @@ pub(super) fn LufsGraph(lh: Lh) -> impl IntoView {
     let held = StoredValue::new(None::<Held>);
     let hold_timer = StoredValue::new(None::<TimeoutHandle>);
     let plot = NodeRef::<html::Div>::new();
+    // The plot's width in px (#255): the songs' names are cut to their
+    // spans and the corner time labels give way by it.
+    let plot_px = RwSignal::new(0.0_f64);
+    let watcher = StoredValue::new_local(None::<PlotObserver>);
+    plot.on_load(move |el: web_sys::HtmlDivElement| {
+        let _ = plot_px.try_set(f64::from(el.client_width()));
+        let measured = el.clone();
+        let callback = Closure::wrap(Box::new(move || {
+            let _ = plot_px.try_set(f64::from(measured.client_width()));
+        }) as Box<dyn FnMut()>);
+        if let Ok(observer) = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()) {
+            observer.observe(&el);
+            let _ = watcher.try_set_value(Some((observer, callback)));
+        }
+    });
     on_cleanup(move || {
         if let Some(Some(handle)) = hold_timer.try_update_value(Option::take) {
             handle.clear();
+        }
+        if let Some(Some((observer, _callback))) = watcher.try_update_value(Option::take) {
+            observer.disconnect();
         }
     });
 
@@ -69,11 +97,15 @@ pub(super) fn LufsGraph(lh: Lh) -> impl IntoView {
             .collect::<Vec<_>>()
     });
     let x_labels = move || {
-        x_parts
-            .try_get()
-            .unwrap_or_default()
+        let (t0, t1) = lh.window.try_get().unwrap_or((0, 1));
+        let px = plot_px.try_get().unwrap_or(0.0);
+        tick_marks(t0, t1, offset_at)
             .into_iter()
-            .map(|(left, text)| view! { <span style=left>{text}</span> })
+            .filter(|(t, _)| time_label_shows(x_of(*t, t0, t1) / BOX, px))
+            .map(|(t, text)| {
+                let left = format!("left:{}", pct(x_of(t, t0, t1)));
+                view! { <span data-testid="lufs-x" style=left>{text}</span> }
+            })
             .collect_view()
     };
     let drawn = move || line.try_with(Vec::len).unwrap_or(0);
@@ -210,6 +242,7 @@ pub(super) fn LufsGraph(lh: Lh) -> impl IntoView {
             <GraphScales graph_scale=graph_scale />
             <div class="lh-plot" node_ref=plot>
                 <GraphGrid graph_scale=graph_scale x_parts=x_parts />
+                <GraphSongs lh=lh plot_px=plot_px />
                 <GraphLines lh=lh values=values graph_scale=graph_scale line=line />
                 {cursor_mark}
                 <div class="lh-empty" data-testid="lufs-history-empty" hidden=drawn_any>
@@ -219,6 +252,7 @@ pub(super) fn LufsGraph(lh: Lh) -> impl IntoView {
                     "NO ANSWER FROM THE HUB"
                 </div>
             </div>
+            <GraphLane lh=lh />
             <div class="lh-x" aria-hidden="true">
                 {x_labels}
             </div>
@@ -230,6 +264,103 @@ pub(super) fn LufsGraph(lh: Lh) -> impl IntoView {
             </div>
         </div>
     }
+}
+
+/// The Live set's transport lane under the plot (#255): the track where
+/// the transport is known, the dim bar where the set plays.
+#[component]
+fn GraphLane(lh: Lh) -> impl IntoView {
+    let parts = Memo::new(move |_| {
+        lh.cols
+            .try_with(|c| {
+                let n = c.len();
+                let style = |runs: Vec<(usize, usize)>| {
+                    runs.into_iter()
+                        .map(|(a, b)| run_style(a, b, n))
+                        .collect::<Vec<_>>()
+                };
+                (style(known_runs(c)), style(play_runs(c)))
+            })
+            .unwrap_or_default()
+    });
+    let tracks = move || {
+        parts
+            .try_get()
+            .unwrap_or_default()
+            .0
+            .into_iter()
+            .map(|style| view! { <div class="lh-lane-track" data-testid="lufs-lane-track" style=style></div> })
+            .collect_view()
+    };
+    let bars = move || {
+        parts
+            .try_get()
+            .unwrap_or_default()
+            .1
+            .into_iter()
+            .map(|style| view! { <div class="lh-lane-play" data-testid="lufs-lane-play" style=style></div> })
+            .collect_view()
+    };
+    view! {
+        <div class="lh-lane" data-testid="lufs-lane" aria-hidden="true">
+            {tracks}
+            {bars}
+        </div>
+    }
+}
+
+/// The songs' marks at the plot's top (#255): a faint dashed line at each
+/// song's start, its name cut to its span (`song_marks` decides both).
+#[component]
+fn GraphSongs(lh: Lh, plot_px: RwSignal<f64>) -> impl IntoView {
+    let marks = Memo::new(move |_| {
+        let px = plot_px.try_get().unwrap_or(0.0);
+        let names = lh.songs.try_get().unwrap_or_default();
+        lh.cols
+            .try_with(|c| {
+                let n = c.len();
+                song_marks(c, &names, px)
+                    .into_iter()
+                    .map(|m| {
+                        let left = pct(column_edge(m.from, n));
+                        (m, left)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    });
+    let drawn = move || {
+        marks
+            .try_get()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(m, left)| {
+                let line = (m.line != Line::None).then(|| {
+                    view! {
+                        <div
+                            class="lh-song-line"
+                            data-testid="lufs-song-line"
+                            data-line=m.line.name()
+                            style=format!("left:{left}")
+                        ></div>
+                    }
+                });
+                let label = m.label.map(|text| {
+                    let place = format!(
+                        "left:calc({left} + {LABEL_PAD_PX}px);max-width:{:.1}px",
+                        m.room
+                    );
+                    view! {
+                        <div class="lh-song" data-testid="lufs-song" data-song=m.song.to_string() style=place>
+                            {text}
+                        </div>
+                    }
+                });
+                view! { {line} {label} }
+            })
+            .collect_view()
+    };
+    view! { {drawn} }
 }
 
 /// The scale's labels: LUFS every 3 LU at the left (the target's
