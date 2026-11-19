@@ -93,6 +93,7 @@ fn a_minute_line_reads_back_and_names_its_points() {
             values: encode(&[-230; 60]),
             faders: None,
         }],
+        sets: Vec::new(),
     };
     let text = line.text();
     assert!(
@@ -427,4 +428,278 @@ fn an_older_hubs_line_reads_as_no_fader() {
         line.slots("band", "live_set tracks 1"),
         Some(vec![-230; 60])
     );
+}
+
+/// A second of `instance`'s Live set (#255): its transport and song.
+fn set(instance: &str, playing: Option<bool>, song: Option<(u16, &str)>) -> SetSample {
+    SetSample {
+        instance: instance.to_string(),
+        playing,
+        song: song.map(|(n, name)| (n, name.to_string())),
+    }
+}
+
+#[test]
+fn a_sets_slots_are_its_transport_and_song_and_read_back() {
+    assert_eq!(play_slot(Some(true)), 1);
+    assert_eq!(play_slot(Some(false)), 0);
+    assert_eq!(play_slot(None), HOLE);
+    assert_eq!(song_slot(Some(31)), 31);
+    assert_eq!(song_slot(Some(0)), 0);
+    assert_eq!(song_slot(Some(999)), 999);
+    assert_eq!(song_slot(None), HOLE);
+    // A number past a slot's range (no locator holds one) is no song.
+    assert_eq!(song_slot(Some(40_000)), HOLE);
+    assert_eq!(playing_of(1), Some(true));
+    assert_eq!(playing_of(0), Some(false));
+    assert_eq!(playing_of(HOLE), None);
+    assert_eq!(playing_of(2), None);
+    assert_eq!(playing_of(-1), None);
+    assert_eq!(song_number(31), Some(31));
+    assert_eq!(song_number(0), Some(0));
+    assert_eq!(song_number(HOLE), None);
+    assert_eq!(
+        set_slots_of(&set("band", Some(true), Some((31, "A")))),
+        (1, 31)
+    );
+    assert_eq!(set_slots_of(&set("band", None, None)), (HOLE, HOLE));
+    assert!(set_heard((1, HOLE)));
+    assert!(set_heard((HOLE, 31)));
+    assert!(!set_heard((HOLE, HOLE)));
+}
+
+#[test]
+fn the_sets_transport_and_song_are_written_as_x_with_the_minutes_song_names() {
+    let mut r = Recorder::new();
+    for s in 0..60 {
+        let (playing, song) = match s {
+            0..20 => (Some(false), None),
+            20..40 => (Some(true), Some((31, "Morning Light"))),
+            40..50 => (Some(true), Some((57, "Quiet Hill"))),
+            _ => (None, None),
+        };
+        let line = r.sample_with(
+            T0 + s * 1000,
+            &[with_fader(vox(), Some(-230), None)],
+            &[set("band", playing, song)],
+        );
+        assert_eq!(line, None, "second {s}");
+    }
+    assert_eq!(r.set_at("band", T0), (0, HOLE));
+    assert_eq!(r.set_at("band", T0 + 20_000), (1, 31));
+    assert_eq!(r.set_at("band", T0 + 45_000), (1, 57));
+    assert_eq!(r.set_at("band", T0 + 55_000), (HOLE, HOLE));
+    assert_eq!(
+        r.set_at("band", T0 + 60_000),
+        (HOLE, HOLE),
+        "not sampled yet"
+    );
+    assert_eq!(r.set_at("master", T0), (HOLE, HOLE));
+    assert_eq!(
+        r.set_names("band"),
+        BTreeMap::from([
+            (31, "Morning Light".to_string()),
+            (57, "Quiet Hill".to_string())
+        ])
+    );
+    assert!(r.set_names("master").is_empty());
+    let (plays, songs) = r.set_minute("band", T0);
+    assert_eq!(plays[19], 0);
+    assert_eq!(songs[39], 31);
+    let line = r
+        .sample_with(T0 + 60_000, &[with_fader(vox(), Some(-230), None)], &[])
+        .unwrap();
+    assert_eq!(line.sets.len(), 1);
+    let (plays, songs, names) = line.set_slots("band").unwrap();
+    assert_eq!(plays, r.set_minute("band", T0).0);
+    assert_eq!(songs, r.set_minute("band", T0).1);
+    assert_eq!(
+        names,
+        &BTreeMap::from([
+            (31, "Morning Light".to_string()),
+            (57, "Quiet Hill".to_string())
+        ])
+    );
+    assert_eq!(line.set_slots("master"), None);
+    let text = line.text();
+    assert!(
+        text.contains(r#","x":[{"i":"band","p":""#)
+            && text.ends_with(r#""n":{"31":"Morning Light","57":"Quiet Hill"}}]}"#),
+        "{text}"
+    );
+    assert_eq!(MinuteLine::parse(&text), Some(line));
+}
+
+#[test]
+fn a_minutes_names_are_only_the_songs_it_holds() {
+    let names = BTreeMap::from([(31, "A".to_string()), (57, "B".to_string())]);
+    assert_eq!(
+        names_in(Some(&names), &[HOLE, 57, 57, 12]),
+        BTreeMap::from([(57, "B".to_string())])
+    );
+    assert!(names_in(Some(&names), &[HOLE; 3]).is_empty());
+    assert!(names_in(None, &[31]).is_empty());
+}
+
+#[test]
+fn a_set_minute_with_nothing_known_is_left_out_and_a_known_one_makes_a_line_alone() {
+    // Silence on the point: no `p`, but the set stood (a stop between
+    // songs): the minute is a line of its set alone.
+    let mut r = Recorder::new();
+    for s in 0..60 {
+        r.sample_with(
+            T0 + s * 1000,
+            &[with_fader(vox(), Some(-700), None)],
+            &[set("band", (s == 10).then_some(false), None)],
+        );
+    }
+    let line = r.current().unwrap();
+    assert!(line.points.is_empty());
+    assert_eq!(line.sets.len(), 1);
+    assert!(line.sets[0].names.is_empty());
+    assert!(!line.text().contains(r#""n""#), "{}", line.text());
+    // Only the song known (the transport not yet) is a known second too.
+    let mut r = Recorder::new();
+    r.sample_with(T0, &[], &[set("band", None, Some((31, "A")))]);
+    assert_eq!(r.current().map(|l| l.sets.len()), Some(1));
+    // Nothing known in the minute: no line.
+    let mut r = Recorder::new();
+    for s in 0..60 {
+        r.sample_with(
+            T0 + s * 1000,
+            &[with_fader(vox(), Some(-700), None)],
+            &[set("band", None, None)],
+        );
+    }
+    assert_eq!(r.current(), None);
+    // A sounding point with its set unknown: the line has no `x`.
+    let mut r = Recorder::new();
+    r.sample_with(
+        T0,
+        &[with_fader(vox(), Some(-230), None)],
+        &[set("band", None, None)],
+    );
+    let line = r.current().unwrap();
+    assert!(line.sets.is_empty());
+    assert!(!line.text().contains(r#""x""#), "{}", line.text());
+}
+
+#[test]
+fn a_set_no_longer_listed_gets_holes_and_goes_once_its_hour_is_empty() {
+    let mut r = Recorder::new();
+    r.sample_with(T0, &[], &[set("band", Some(true), Some((31, "A")))]);
+    // A missed second is a hole, then the set is no longer listed.
+    r.sample_with(T0 + 2000, &[], &[]);
+    assert_eq!(r.set_at("band", T0), (1, 31));
+    assert_eq!(r.set_at("band", T0 + 1000), (HOLE, HOLE));
+    assert_eq!(r.set_at("band", T0 + 2000), (HOLE, HOLE));
+    assert_eq!(r.set_names("band").len(), 1, "kept while its hour holds it");
+    // Its known second leaves the hour: let go, its names too.
+    r.sample_with(T0 + RING_S as i64 * 1000, &[], &[]);
+    assert_eq!(r.set_at("band", T0 + RING_S as i64 * 1000), (HOLE, HOLE));
+    assert!(r.set_names("band").is_empty());
+    // A listed set with nothing known stays (the points of it are served).
+    let mut r = Recorder::new();
+    r.sample_with(T0, &[], &[set("band", None, None)]);
+    r.sample_with(T0 + 1000, &[], &[set("band", Some(false), None)]);
+    assert_eq!(r.set_at("band", T0 + 1000), (0, HOLE));
+    // One known only by its song is kept too.
+    let mut r = Recorder::new();
+    r.sample_with(T0, &[], &[set("band", None, Some((31, "A")))]);
+    r.sample_with(T0 + 1000, &[], &[]);
+    assert_eq!(r.set_at("band", T0), (HOLE, 31));
+    // A name heard again wins.
+    r.sample_with(T0 + 2000, &[], &[set("band", None, Some((31, "B")))]);
+    assert_eq!(r.set_names("band"), BTreeMap::from([(31, "B".to_string())]));
+}
+
+#[test]
+fn an_older_hubs_line_reads_as_no_set_and_a_bad_set_as_none() {
+    let old = format!(
+        r#"{{"m":{T0},"p":[{{"i":"band","t":"live_set tracks 1","v":"{}"}}]}}"#,
+        encode(&[-230; 60])
+    );
+    let line = MinuteLine::parse(&old).unwrap();
+    assert!(line.sets.is_empty());
+    assert_eq!(line.set_slots("band"), None);
+    // A set whose slots do not decode reads as none.
+    let good = encode(&[1; 60]);
+    for (p, s) in [("AAA", good.as_str()), (good.as_str(), "AAA")] {
+        let bad = format!(r#"{{"m":{T0},"p":[],"x":[{{"i":"band","p":"{p}","s":"{s}"}}]}}"#);
+        let line = MinuteLine::parse(&bad).unwrap();
+        assert_eq!(line.set_slots("band"), None, "{bad}");
+    }
+    let fine = format!(r#"{{"m":{T0},"p":[],"x":[{{"i":"band","p":"{good}","s":"{good}"}}]}}"#);
+    let line = MinuteLine::parse(&fine).unwrap();
+    let (plays, songs, names) = line.set_slots("band").unwrap();
+    assert_eq!((plays, songs), (vec![1; 60], vec![1; 60]));
+    assert!(names.is_empty());
+}
+
+#[test]
+fn a_buckets_transport_and_song_follow_the_shared_rules() {
+    assert_eq!(play_value(&[]), None);
+    assert_eq!(play_value(&[HOLE, HOLE]), None);
+    // Half of the KNOWN seconds: the unknown ones do not count.
+    assert_eq!(play_value(&[1, 0, HOLE, HOLE, HOLE]), Some(true));
+    assert_eq!(play_value(&[1, 0, 0, HOLE]), Some(false));
+    assert_eq!(play_value(&[0]), Some(false));
+    // The song: of the playing seconds only, none for a bucket that stands.
+    assert_eq!(song_value(&[1, 1, 0, 0], &[31, 57, 57, 57]), Some(31));
+    assert_eq!(song_value(&[1, 1, 1, 0], &[31, 57, 57, 31]), Some(57));
+    assert_eq!(song_value(&[0, 0, 0, 1], &[31, 31, 31, 31]), None);
+    assert_eq!(
+        song_value(&[1, 1], &[HOLE, HOLE]),
+        None,
+        "outside every song"
+    );
+    assert_eq!(
+        song_value(&[1, HOLE], &[HOLE, 31]),
+        None,
+        "a song of no playing second"
+    );
+    assert_eq!(song_value(&[HOLE], &[31]), None);
+}
+
+#[test]
+fn a_window_is_bucketed_with_its_sets_transport_song_and_names() {
+    let slots = [-230; 6];
+    let faders = [HOLE; 6];
+    let set = SetSlots {
+        plays: vec![1, 1, 0, 0, HOLE, HOLE],
+        songs: vec![31, 31, 31, HOLE, HOLE, HOLE],
+        names: BTreeMap::from([(31, "A".to_string()), (57, "B".to_string())]),
+    };
+    let series = bucket_with(T0, &slots, &faders, &set);
+    assert_eq!(series.values, vec![Some(-230); 6]);
+    assert_eq!(
+        series.play,
+        vec![Some(true), Some(true), Some(false), Some(false), None, None]
+    );
+    assert_eq!(
+        series.song,
+        vec![Some(31), Some(31), None, None, None, None]
+    );
+    // Only the names of the songs the buckets hold.
+    assert_eq!(series.songs, BTreeMap::from([(31, "A".to_string())]));
+    // Two seconds a bucket: (1,1) (0,0) (H,H).
+    let slots = vec![-230; 1800];
+    let mut set = SetSlots::holes(1800);
+    set.plays[..2].copy_from_slice(&[1, 0]);
+    set.songs[..2].copy_from_slice(&[57, 57]);
+    set.names.insert(57, "B".into());
+    let series = bucket_with(T0, &slots, &vec![HOLE; 1800], &set);
+    assert_eq!(series.step_ms, 2000);
+    assert_eq!(series.play.len(), 900);
+    assert_eq!(series.play[0], Some(true));
+    assert_eq!(series.song[0], Some(57));
+    assert_eq!(series.play[1], None);
+    assert_eq!(series.songs.len(), 1);
+    // Without a set (the plain `bucket`): no transport, no song.
+    let plain = bucket(T0, &[-230; 3], &[HOLE; 3]);
+    assert!(plain.play.is_empty() && plain.song.is_empty() && plain.songs.is_empty());
+    let holes = SetSlots::holes(2);
+    assert_eq!(holes.plays, vec![HOLE, HOLE]);
+    assert_eq!(holes.songs, vec![HOLE, HOLE]);
+    assert!(holes.names.is_empty());
 }

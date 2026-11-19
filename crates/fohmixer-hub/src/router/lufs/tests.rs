@@ -637,3 +637,120 @@ async fn the_tick_records_each_points_fader_with_no_page_open() {
         series.fader
     );
 }
+
+/// The test site's band set with two songs, as its song map reads them.
+fn two_songs() -> fohmixer_proto::songmap::SongMap {
+    use fohmixer_proto::songmap::{Cue, build};
+    let cue = |name: &str, time: f64| Cue {
+        name: name.into(),
+        time: Some(time),
+    };
+    build(
+        &[
+            cue("031 Morning Light {C 120 4/4}", 0.0),
+            cue("SONG END", 100.0),
+            cue("057 Quiet Hill", 120.0),
+            cue("SONG END", 200.0),
+        ],
+        &[],
+    )
+}
+
+#[tokio::test]
+async fn the_tick_records_each_points_sets_transport_and_song_at_its_playhead() {
+    let dir = tempfile::tempdir().unwrap();
+    let (router, _rx, _records) = offline_router(dir.path());
+    let history = crate::lufs_history::LufsHistory::off();
+    let mut router = router.with_lufs_history(history.clone());
+    router.lufs_layout(vec![
+        point("live_set tracks 1", Anchor::TrackAt { index: 1 }, true),
+        point("live_set tracks 2", Anchor::TrackAt { index: 2 }, true),
+    ]);
+    router.transport.get_mut("band").unwrap().playing = Some(true);
+    router
+        .autotune
+        .positions
+        .entry("band".into())
+        .or_default()
+        .time = Some(130.0);
+    router.songmap.maps.insert(
+        "band".into(),
+        super::super::songmap::Read {
+            map: two_songs(),
+            sections: fohmixer_proto::songmap::SectionsState::None,
+            at_ms: 0,
+            read_no: 1,
+        },
+    );
+    // The map is not read since the connect yet: the transport alone.
+    assert_eq!(router.history_set("band"), (Some(true), None));
+    router.autotune.current_maps.insert("band".into());
+    assert_eq!(
+        router.history_set("band"),
+        (Some(true), Some((57, "Quiet Hill".to_string())))
+    );
+    // Out of every song; a set the hub has no playhead of.
+    router.autotune.positions.get_mut("band").unwrap().time = Some(110.0);
+    assert_eq!(router.history_set("band"), (Some(true), None));
+    router.autotune.positions.get_mut("band").unwrap().time = None;
+    assert_eq!(router.history_set("band"), (Some(true), None));
+    assert_eq!(router.history_set("master"), (None, None));
+    router.autotune.positions.get_mut("band").unwrap().time = Some(10.0);
+    let before = crate::events::now_ms();
+    router.lufs_tick();
+    let after = crate::events::now_ms() + 1000;
+    for target in ["live_set tracks 1", "live_set tracks 2"] {
+        let series = history.history("band", target, before, after).unwrap();
+        assert!(
+            series.play.contains(&Some(true)),
+            "{target}: {:?}",
+            series.play
+        );
+        assert!(
+            series.song.contains(&Some(31)),
+            "{target}: {:?}",
+            series.song
+        );
+        assert_eq!(
+            series.songs.get(&31).map(String::as_str),
+            Some("Morning Light")
+        );
+    }
+}
+
+#[test]
+fn the_historys_sets_are_each_points_instance_once_in_order() {
+    let sample = |instance: &str, target: &str| Sample {
+        point: (instance.into(), target.into()),
+        tenths: None,
+        fader: None,
+    };
+    let points = [
+        sample("master", "live_set master_track"),
+        sample("band", "live_set tracks 1"),
+        sample("master", "live_set tracks 2"),
+        sample("band", "live_set tracks 3"),
+    ];
+    let sets = sets_of(&points, |instance| {
+        (
+            Some(instance == "band"),
+            (instance == "band").then(|| (31, "A".to_string())),
+        )
+    });
+    assert_eq!(
+        sets,
+        vec![
+            SetSample {
+                instance: "master".into(),
+                playing: Some(false),
+                song: None,
+            },
+            SetSample {
+                instance: "band".into(),
+                playing: Some(true),
+                song: Some((31, "A".into())),
+            },
+        ]
+    );
+    assert!(sets_of(&[], |_| (None, None)).is_empty());
+}
