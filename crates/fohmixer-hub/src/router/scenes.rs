@@ -11,14 +11,14 @@
 //! a scene comes (`Subs::live_value`); its subscriptions are the hub's own
 //! (`/api/status` counts the pages').
 //!
-//! A hub with neither an automation token nor `[scenes]` (the scene read
-//! from Companion) takes no scene: its pages are sent no `scenes` document
-//! (they show no SCENES section) and a page's rule is refused.
+//! A hub without an automation token takes no scene: its pages are sent no
+//! `scenes` document (they show no SCENES section) and a page's rule is
+//! refused.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use fohmixer_proto::client::{SceneSourceStatus, ScenesStatus, ServerMsg, set_key};
+use fohmixer_proto::client::{ScenesStatus, ServerMsg, set_key};
 use fohmixer_proto::layout::Layout;
 use fohmixer_proto::roles;
 use fohmixer_proto::scenes::{self as model, SceneRule};
@@ -39,7 +39,7 @@ pub const SCENES_CLIENT: ClientId = ClientId::MAX - 7;
 /// The peer its writes name in the event log.
 pub const SCENES_PEER: &str = "rule:scenes";
 /// The words a page's rule is refused with on a hub without the token.
-pub const OFF: &str = "scenes are off: no automation token and no [scenes]";
+pub const OFF: &str = "scenes are off: no automation token";
 
 /// The last scene that came: its name, when (UTC ms) and what it moved.
 #[derive(Debug, Clone, PartialEq)]
@@ -52,7 +52,7 @@ pub(super) struct LastScene {
 /// The router's scenes.
 pub(super) struct ScenesIo {
     pub store: SceneStore,
-    /// The hub has an automation token or reads Companion: it takes scenes.
+    /// The hub has an automation token: it takes scenes.
     pub on: bool,
     pub rule: Scenes,
     /// Each followed key (write key) → its hub key.
@@ -162,7 +162,7 @@ pub(super) fn followed(targets: &FaderTargets) -> Vec<(String, String, &'static 
 }
 
 impl Router {
-    /// The hub takes scenes (it has an automation token or `[scenes]`).
+    /// The hub takes scenes (it has an automation token).
     pub fn with_scenes(mut self, on: bool) -> Self {
         self.scenes.on = on;
         self
@@ -567,8 +567,6 @@ impl Router {
             last: self.scenes.last.as_ref().map(|l| l.name.clone()),
             glides: self.scenes.rule.glides(),
             writes: self.scenes.rule.writes(),
-            // The poll's own state (`scene_source`), filled by `Hub::status`.
-            companion: SceneSourceStatus::default(),
         }
     }
 }

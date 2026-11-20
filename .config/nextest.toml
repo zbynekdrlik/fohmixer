@@ -29,12 +29,11 @@ test-group = 'hub-ports'
 # and the listener's flood (host-free, timed); the sectors (#148), the
 # strips' colours (#164) and the mute alarm (#188): host-free, an in-process hub polling its files, as
 # the scenes (#207): SimLive hosts and a glide's timing on the records;
-# the scene read from Companion (#207): SimLive hosts and the 500 ms poll;
 # Listen (#210): SimLive hosts streaming, the 2 s silence, real sockets;
 # claps (#220): SimLive hosts playing, the device a real UDP socket;
 # a stopping hub's late page (#246): host-free, a 3 s close window;
 # layout
-filter = 'binary_id(fohmixer-hub::it) & (test(/^live_client::/) | test(/^fanout::/) | test(/^stage_aut::/) | test(/^layout::/) | test(/^auth::/) | test(/^names::/) | test(/^ping::/) | test(/^setter::/) | test(/^companion_client::/) | test(/^deck::/) | test(/^unfold::/) | test(/^markers::/) | test(/^eq::/) | test(/^reverb::/) | test(/^rec::/) | test(/^fader_link::/) | test(/^autotune::/) | test(/^autotune_keys::/) | test(/^autotune_safe::/) | test(/^autotune_switch::/) | test(/^songmap::/) | test(/^lufs::/) | test(/^lufs_listener::/) | test(/^sectors::/) | test(/^colors::/) | test(/^mute_alarms::/) | test(/^mute_guards::/) | test(/^roles::/) | test(/^instance_link::/) | test(/^scenes::/) | test(/^scene_source::/) | test(/^listen::/) | test(/^listen_wire::/) | test(/^claps::/) | test(/^stopping::/))'
+filter = 'binary_id(fohmixer-hub::it) & (test(/^live_client::/) | test(/^fanout::/) | test(/^stage_aut::/) | test(/^layout::/) | test(/^auth::/) | test(/^names::/) | test(/^ping::/) | test(/^setter::/) | test(/^companion_client::/) | test(/^deck::/) | test(/^unfold::/) | test(/^markers::/) | test(/^eq::/) | test(/^reverb::/) | test(/^rec::/) | test(/^fader_link::/) | test(/^autotune::/) | test(/^autotune_keys::/) | test(/^autotune_safe::/) | test(/^autotune_switch::/) | test(/^songmap::/) | test(/^lufs::/) | test(/^lufs_listener::/) | test(/^sectors::/) | test(/^colors::/) | test(/^mute_alarms::/) | test(/^mute_guards::/) | test(/^roles::/) | test(/^instance_link::/) | test(/^scenes::/) | test(/^listen::/) | test(/^listen_wire::/) | test(/^claps::/) | test(/^stopping::/))'
 test-group = 'hub-hosts'
 
 [profile.mutants]

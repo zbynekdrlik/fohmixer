@@ -56,12 +56,6 @@
 //! bitmap_px = 144        # 32..=512, the keys' image size
 //! title = "Stream Deck"  # 1..=24 characters, the tab's title
 //!
-//! # The service's scene read from Companion (#207), optional: its custom
-//! # variable on [companion]'s host, polled every 500 ms (`config/scenes.rs`)
-//! [scenes]
-//! companion_variable = "scena"
-//! companion_http_port = 8000  # the default, Companion's web server
-//!
 //! # The instance link (#184), optional: the MBC hub serves its local
 //! # instance on a given LAN address (never every address), and another
 //! # hub reaches it as a linked instance (`link` instead of `port`):
@@ -109,8 +103,6 @@ pub use crate::plugwin::capture::Capture;
 
 mod link;
 pub use link::{LinkCfg, is_link_url};
-mod scenes;
-pub use scenes::{DEFAULT_COMPANION_HTTP_PORT, ScenesCfg};
 
 /// The configuration file inside the data folder.
 pub const CONFIG_FILE: &str = "fohmixer-hub.toml";
@@ -747,9 +739,6 @@ pub struct Config {
     /// The Stream Deck tab (#52); none: no tab.
     #[serde(default)]
     pub companion: Option<CompanionCfg>,
-    /// The scene read from Companion (#207); none: no poll.
-    #[serde(default)]
-    pub scenes: Option<ScenesCfg>,
     /// The Pro-Q 4 screen (#71 PR E); none: the platform's backend.
     #[serde(default)]
     pub eq: Option<EqCfg>,
@@ -791,7 +780,6 @@ impl Config {
             iem: None,
             presenter: None,
             companion: None,
-            scenes: None,
             eq: None,
             lufs: LufsCfg::default(),
             listen: ListenCfg::default(),
@@ -875,7 +863,6 @@ impl Config {
             link::validate_listen(cfg, &self.instances)?;
         }
         self.validate_companion()?;
-        scenes::validate(self.scenes.as_ref(), self.companion.as_ref())?;
         self.claps.validate()?;
         if self.autotune.engage_delay_ms > MAX_ENGAGE_DELAY_MS {
             bail!(
@@ -2034,6 +2021,17 @@ mod tests {
         assert!(refused("[autotune]\nengage_delay_ms = -1\n").contains("engage_delay_ms"));
         assert!(refused("[autotune]\ndelay = 1000\n").contains("unknown field"));
         assert!(refused("engage_delay_ms = 1000\n").contains("unknown field"));
+    }
+
+    /// The scene read from Companion is gone (#207: Companion pushes the
+    /// scene to `POST /api/scene`): its old `[scenes]` table is refused.
+    #[test]
+    fn the_old_scenes_table_is_refused() {
+        let refused = format!(
+            "{:#}",
+            Config::parse("[scenes]\ncompanion_variable = \"scena\"\n", &data()).unwrap_err()
+        );
+        assert!(refused.contains("unknown field `scenes`"), "{refused}");
     }
 
     /// A config's `[eq]` backend.
