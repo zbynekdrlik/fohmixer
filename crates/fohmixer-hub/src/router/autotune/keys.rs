@@ -23,7 +23,8 @@ use super::{AUTOTUNE_CLIENT, AutotuneIo, missing_news};
 use crate::live::subs::{Cached, ClientId};
 use crate::rules::autotune::find::KeyFound;
 use crate::rules::autotune::keys::{
-    InForce, KeyFollow, KeyTarget, KeyWhy, in_force, kept_ahead, lookahead_beats, shows,
+    InForce, KeyFollow, KeySettleAct, KeyTarget, KeyWhy, in_force, kept_ahead, lookahead_beats,
+    shows,
 };
 use crate::rules::autotune::{Cause, Step};
 
@@ -61,6 +62,10 @@ pub(in crate::router) struct Position {
     /// The song in force's coming key change (#140 PR 3c, PR #150 review
     /// K1: the panel's head), judged where the key in force is.
     pub change: Option<ComingChange>,
+    /// The set's last play start (#190: its key writes start
+    /// `KEY_AFTER_START_MS` after it). Never cleared: a start more than
+    /// that ago is no start to the pace, and a stopped set settles anyway.
+    pub started: Option<tokio::time::Instant>,
 }
 
 /// Where a key change's lateness is measured from (spec §6): its song, the
@@ -257,6 +262,7 @@ impl Router {
             bar_owed: false,
             late: None,
             change: None,
+            started: None,
         };
         self.autotune
             .positions
@@ -405,8 +411,10 @@ impl Router {
                 }
             }
         }
-        if let Some(key) = key.filter(|_| matches!(why, KeyWhy::Song | KeyWhy::Change)) {
-            self.autotune_key_write(instance, &keys, key, why);
+        match key.filter(|_| matches!(why, KeyWhy::Song | KeyWhy::Change)) {
+            Some(key) => self.autotune_key_paced(instance, &keys, song, key, why),
+            // A key still to come is no longer the key in force (#190).
+            None => self.autotune_key_unpace(instance, KeySettleAct::Dropped),
         }
         self.autotune_decide(instance, Cause::Position);
     }

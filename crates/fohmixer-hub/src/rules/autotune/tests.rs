@@ -768,3 +768,31 @@ fn a_play_starts_wait_has_its_lines_and_is_never_a_warning() {
         serde_json::json!({"step": "engage", "instance": "band", "ms": 1000, "act": "stopped"})
     );
 }
+
+#[test]
+fn a_paced_key_write_has_its_line_and_is_never_a_warning() {
+    // #190: a stopped set's key waits for the playhead to stay, then goes
+    // one key device at a time.
+    let settle = |song, act| Step::KeySettle {
+        instance: "band".into(),
+        song,
+        key: "F#m".into(),
+        act,
+    };
+    let waits = settle(Some(3), keys::KeySettleAct::Waits);
+    assert!(!step_warn(&waits));
+    assert!(!step_warn(&settle(Some(3), keys::KeySettleAct::Dropped)));
+    assert_eq!(
+        step_line(&waits),
+        "AUTOTUNE's write of song 3 F#m to band waits for the playhead to stay"
+    );
+    assert_eq!(
+        step_line(&settle(None, keys::KeySettleAct::Offline)),
+        "AUTOTUNE's write of no song to band is dropped: offline"
+    );
+    assert_eq!(
+        serde_json::to_value(&waits).unwrap(),
+        serde_json::json!({"step": "key_settle", "instance": "band", "song": 3, "key": "F#m",
+                           "act": "waits"})
+    );
+}

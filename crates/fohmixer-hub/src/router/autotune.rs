@@ -96,6 +96,8 @@ use keys::{Position, key_status};
 mod delivery;
 #[path = "autotune/engage.rs"]
 mod engage;
+#[path = "autotune/key_pace.rs"]
+mod key_pace;
 #[path = "autotune/key_writes.rs"]
 mod key_writes;
 #[path = "autotune/pace.rs"]
@@ -274,6 +276,10 @@ pub(super) struct AutotuneIo {
     pub spread_turns: u64,
     /// The play starts' waits of their selector-on writes (#190).
     pub engage: engage::Engage,
+    /// Each Live set's key write paced by its transport (#190).
+    pub key_paces: BTreeMap<String, key_pace::KeyPacing>,
+    /// The paced key writes' turns' own counter (a stale turn does nothing).
+    pub key_turns: u64,
     /// Each Live set's walks, one at a time (#235).
     pub paces: BTreeMap<String, pace::Pace>,
     /// The walks' gaps' own counter (a stale gap does nothing).
@@ -305,6 +311,8 @@ impl AutotuneIo {
             spreads: BTreeMap::new(),
             spread_turns: 0,
             engage: engage::Engage::default(),
+            key_paces: BTreeMap::new(),
+            key_turns: 0,
             paces: BTreeMap::new(),
             pace_gaps: 0,
         };

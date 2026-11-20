@@ -518,6 +518,90 @@ pub fn bar_state(want: Key, shows: Option<Key>) -> BarState {
     }
 }
 
+/// How long a stopped set's playhead stays in a song before that song's
+/// key is written, in ms (#190, dasio#22: four batches of every key device
+/// in 600 ms while the playhead jumped from song to song): a run of jumps
+/// writes only the song it stops in.
+pub const KEY_SETTLE_MS: f64 = 500.0;
+/// How long after a play start its key writes start, in ms (#190): none on
+/// the start's own millisecond, and a set's 12 targets, one per
+/// `STOP_SPREAD_MS`, are written by ~780 ms, before the 1000 ms engage.
+pub const KEY_AFTER_START_MS: f64 = 300.0;
+
+/// How a song start's or a key change's write goes (#190).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum KeyPace {
+    /// Every target and Live's bar in one call now: the set plays, so the
+    /// singers stay in step and [`LATE_BOUND_MS`] holds.
+    Batch,
+    /// The set stands: the write waits until the playhead stayed `until`
+    /// ms in the song (a newer song starts the wait over), then is spread.
+    Settle { until: f64 },
+    /// One target per `STOP_SPREAD_MS`, each its own call, Live's bar
+    /// last, the first `from` ms from now: a play start's.
+    Spread { from: f64 },
+}
+
+/// The pace of a key write of a set known to play (`playing`) or not, `since_start` ms after its play start
+/// (none: no start heard in this play, a hub start or a reconnect while
+/// Live plays): stopped it settles; within [`KEY_AFTER_START_MS`] of a
+/// start it is spread from then; else it is one batch.
+pub fn key_pace(playing: bool, since_start: Option<f64>) -> KeyPace {
+    if !playing {
+        return KeyPace::Settle {
+            until: KEY_SETTLE_MS,
+        };
+    }
+    match since_start {
+        Some(ms) if ms < KEY_AFTER_START_MS => KeyPace::Spread {
+            from: KEY_AFTER_START_MS - ms,
+        },
+        _ => KeyPace::Batch,
+    }
+}
+
+/// A settle's wait at its timer, the playhead `stayed` ms in the song:
+/// none once it stayed [`KEY_SETTLE_MS`] (the spread goes now), else the
+/// ms still to wait.
+pub fn settle_left(stayed: f64) -> Option<f64> {
+    (stayed < KEY_SETTLE_MS).then_some(KEY_SETTLE_MS - stayed)
+}
+
+/// Where a set's paced key write stands (#190; the `key_settle` record's
+/// `act`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeySettleAct {
+    /// A stopped set's song came into force: its key waits.
+    Waits,
+    /// A newer song (or key) came while one waited: the wait starts over.
+    Restarted,
+    /// The playhead stayed: the key goes, one target per `STOP_SPREAD_MS`.
+    Ends,
+    /// A play start: the key still to come goes [`KEY_AFTER_START_MS`]
+    /// after it.
+    AfterStart,
+    /// The key still to come no longer is the key in force (another key's
+    /// batch, a keyless song, out of every song): nothing more of it goes.
+    Dropped,
+    /// The set went offline: nothing more of it goes.
+    Offline,
+}
+
+impl KeySettleAct {
+    /// Its words in a log line.
+    pub fn words(self) -> &'static str {
+        match self {
+            KeySettleAct::Waits => "waits for the playhead to stay",
+            KeySettleAct::Restarted => "waits again: a newer song",
+            KeySettleAct::Ends => "goes, one key device at a time",
+            KeySettleAct::AfterStart => "goes after the play start",
+            KeySettleAct::Dropped => "is dropped: no longer the key in force",
+            KeySettleAct::Offline => "is dropped: offline",
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "keys_tests.rs"]
 mod tests;

@@ -404,13 +404,22 @@ fn states(router: &mut Router) -> Vec<Option<KeyState>> {
         .collect()
 }
 
+/// Live heard playing, as its first transport value (no play start): a
+/// song start or a key change is one batch of every target and the bar
+/// (#190: these tests pin the batch; a stopped set's pace is
+/// `key_pace_tests.rs`').
+fn playing(router: &mut Router) {
+    transport(router, true);
+}
+
 /// The stream target found with its key device's values heard (`values`)
-/// and the song map read: Live stands out of every song.
+/// and the song map read, Live [`playing`]: it stands out of every song.
 fn ready_stream(router: &mut Router, values: (f64, f64)) {
     router.handle(layout(1, vec![stream()]));
     find(router, STREAM, rack(7, ""));
     heard(router, STREAM, values);
     map_read(router, 1, songs());
+    playing(router);
 }
 
 #[test]
@@ -613,6 +622,7 @@ async fn a_song_start_writes_every_key_device_and_the_bar() {
     heard(&mut router, PA, (0.75, 2.0 / 28.0));
     heard(&mut router, STREAM, (0.0, 0.0));
     map_read(&mut router, 1, songs());
+    playing(&mut router);
     let _ = steps(&rx);
     no_call(&mut script);
     // Song 1 starts: D, every key device and the bar in one call through
@@ -758,6 +768,7 @@ async fn a_refused_write_is_a_mismatch_retried_once() {
     heard(&mut router, PA, (0.75, 2.0 / 28.0));
     heard(&mut router, STREAM, (0.5, 0.0));
     map_read(&mut router, 1, songs());
+    playing(&mut router);
     deliver(&mut router, TIME, 10.0);
     let _ = steps(&rx);
     let write = call(&mut script);
@@ -893,6 +904,7 @@ async fn the_pages_are_told_a_read_back_and_a_refusal_at_once() {
     heard(&mut router, PA, (0.75, 2.0 / 28.0));
     heard(&mut router, STREAM, (0.5, 0.0));
     map_read(&mut router, 1, songs());
+    playing(&mut router);
     deliver(&mut router, TIME, 10.0);
     let page = attach(&mut router, 1);
     let _ = told(&page);
@@ -1075,16 +1087,23 @@ async fn a_key_change_records_its_lateness() {
     // lateness (no change in force there).
     deliver(&mut router, TIME, 20.0);
     confirm(&mut router, &mut own, &mut script).await;
-    // Stopped, a jump past the clip: no crossing, no lateness.
+    // Stopped, a jump past the clip: no crossing, no lateness (the write
+    // paced, #190: the key device, then Live's bar on its own turn).
     transport(&mut router, false);
     deliver(&mut router, TIME, 60.0);
+    no_call(&mut script);
+    assert!(router.autotune_key_now("band"));
     confirm(&mut router, &mut own, &mut script).await;
+    assert!(router.autotune_key_now("band"));
+    confirm(&mut router, &mut own, &mut script).await;
+    assert!(!router.autotune_key_now("band"));
     let got = steps(&rx);
     assert_eq!(
         of(&got, "key_write"),
         vec![
             key_write("D", "change", &["#8"], true),
-            key_write("G", "change", &["#8"], true)
+            key_write("G", "change", &["#8"], false),
+            key_write("G", "change", &[], true)
         ]
     );
     assert_eq!(of(&got, "late"), Vec::<Value>::new());
@@ -1547,6 +1566,7 @@ async fn a_target_found_after_the_song_start_gets_the_key_once_its_values_are_he
     find(&mut router, STREAM, rack(7, ""));
     heard(&mut router, STREAM, (0.5, 1.0 / 28.0));
     map_read(&mut router, 1, songs());
+    playing(&mut router);
     deliver(&mut router, TIME, 10.0);
     // Only the stream is found: it and the bar.
     let [root, scale] = set_bar(2, "Major");
@@ -1608,6 +1628,8 @@ async fn no_key_is_written_from_the_map_before_the_connect() {
         }),
     });
     router.autotune_release("band", "settled");
+    // The reconnect forgot the transport: Live heard playing again.
+    playing(&mut router);
     let _ = steps(&rx);
     deliver(&mut router, TIME, 10.0);
     find(&mut router, STREAM, rack(7, "c"));
@@ -1690,3 +1712,6 @@ async fn no_selector_is_ever_written() {
     assert!(!quiet, "a macro was written");
     assert_eq!(status(&mut router).autotune.writes, 0);
 }
+
+#[path = "key_pace_tests.rs"]
+mod key_pace;

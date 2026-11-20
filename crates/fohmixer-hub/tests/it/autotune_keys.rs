@@ -19,6 +19,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::support::{Client, Host, TestHub, runtime, serial};
+use fohmixer_hub::rules::autotune::keys::KEY_SETTLE_MS;
+use fohmixer_hub::rules::autotune::switch::STOP_SPREAD_MS;
 use fohmixer_proto::client::{ClientMsg, HubStatus, KeyState, KeyTargetStatus, ServerMsg};
 use serde_json::{Value, json};
 
@@ -461,16 +463,45 @@ fn a_song_start_writes_and_confirms_the_key() {
         }
         tokio::time::sleep(QUIET).await;
         let records = hub.events();
-        let writes: Vec<(Value, Value, Value)> = steps_of(&records, "key_write")
+        // Live stands (#190): the key waits for the playhead to stay 500 ms,
+        // then goes one key device per 40 ms, each its own write, the bar
+        // last; Stream B's retry goes at once after its refusal.
+        let song: Vec<Value> = steps_of(&records, "key_write")
+            .into_iter()
+            .filter(|w| w["why"] == "song")
+            .collect();
+        let paced: Vec<(Value, Value)> = song
             .iter()
-            .map(|w| (w["why"].clone(), w["targets"].clone(), w["bar"].clone()))
+            .map(|w| (w["targets"].clone(), w["bar"].clone()))
             .collect();
         assert_eq!(
-            writes,
+            paced,
             vec![
-                (json!("song"), json!(["#1", "#2", "#3"]), json!(true)),
-                (json!("retry"), json!(["#2"]), json!(false))
+                (json!(["#1"]), json!(false)),
+                (json!(["#2"]), json!(false)),
+                (json!(["#3"]), json!(false)),
+                (json!([]), json!(true))
             ]
+        );
+        let retries: Vec<(Value, Value)> = steps_of(&records, "key_write")
+            .into_iter()
+            .filter(|w| w["why"] == "retry")
+            .map(|w| (w["targets"].clone(), w["bar"].clone()))
+            .collect();
+        assert_eq!(retries, vec![(json!(["#2"]), json!(false))]);
+        // On the hub's own clock, its records' `ts` (#186).
+        let ts = |r: &Value| r["ts"].as_i64().unwrap();
+        let key = steps_of(&records, "key")
+            .into_iter()
+            .find(|k| k["song"] == 1)
+            .expect("song 1's key");
+        let waited = ts(&song[0]) - ts(&key);
+        assert!(waited as f64 >= KEY_SETTLE_MS, "settled {waited} ms");
+        let gaps: Vec<i64> = song.windows(2).map(|w| ts(&w[1]) - ts(&w[0])).collect();
+        println!("song 1's key {waited} ms after the jump, its writes {gaps:?} ms apart");
+        assert!(
+            gaps.iter().all(|&gap| gap >= STOP_SPREAD_MS as i64),
+            "one per {STOP_SPREAD_MS} ms: {gaps:?}"
         );
         assert_eq!(readbacks_of(&records, 1).len(), 2);
         assert_eq!(host.sets("value", &format!("{PLUGIN_B} parameters 1")), 2);
@@ -500,7 +531,7 @@ fn a_song_start_writes_and_confirms_the_key() {
             2,
             "the song start's and the other writer's"
         );
-        assert_eq!(count(&hub.events(), "key_write"), 2);
+        assert_eq!(count(&hub.events(), "key_write"), 5);
         // The next song start writes it again: F#m.
         assert_eq!(host.song_time(130.0), 130.0);
         hub.status_until(SECS_5, |s| stands(s, 0, "F#m", KeyState::Confirmed))
@@ -544,19 +575,30 @@ fn a_held_map_refuses_its_keys_until_released() {
                 );
             }
         }
-        // Retried once, together; never a write loop.
+        // Each written on its own turn (#190: Live stands), each refused
+        // one retried once; never a write loop.
         tokio::time::sleep(QUIET).await;
         let records = hub.events();
-        let writes: Vec<(Value, Value)> = steps_of(&records, "key_write")
-            .iter()
-            .map(|w| (w["why"].clone(), w["targets"].clone()))
-            .collect();
+        let writes = |why: &str| -> Vec<(Value, Value)> {
+            steps_of(&records, "key_write")
+                .into_iter()
+                .filter(|w| w["why"] == why)
+                .map(|w| (w["targets"].clone(), w["bar"].clone()))
+                .collect()
+        };
+        let (no, yes) = (json!(false), json!(true));
         assert_eq!(
-            writes,
+            writes("song"),
             vec![
-                (json!("song"), json!(["#1", "#2", "#3"])),
-                (json!("retry"), json!(["#2", "#3"]))
+                (json!(["#1"]), no.clone()),
+                (json!(["#2"]), no.clone()),
+                (json!(["#3"]), no.clone()),
+                (json!([]), yes)
             ]
+        );
+        assert_eq!(
+            writes("retry"),
+            vec![(json!(["#2"]), no.clone()), (json!(["#3"]), no)]
         );
         for plugin in [PLUGIN_B, PLUGIN_V] {
             assert_eq!(

@@ -7,7 +7,16 @@
 //! a second call (a rewrite of an unchanged value fires no listener).
 //!
 //! - **When:** a song start and a key change write every target of the
-//!   set and the bar (`song`, `change`); a target found anew, or owed the
+//!   set and the bar (`song`, `change`), paced by the transport (#190,
+//!   dasio#22: a batch of every Auto-Tune while the set stood stalled band
+//!   Live): playing, one batch at once (the singers stay in step); stopped
+//!   (or not known to play), once the playhead stayed in the song
+//!   `KEY_SETTLE_MS` (a newer song starts the wait over, so a run of
+//!   jumps writes only the song it stops in), then one target per
+//!   `STOP_SPREAD_MS`, each its own call and read-back, the bar last;
+//!   within `KEY_AFTER_START_MS` of a play start (a key still to come
+//!   included), spread from then. A key still to come that is no longer
+//!   the key in force is dropped (`key_settle` records). A target found anew, or owed the
 //!   key since a disconnect, a held write or another device, is written
 //!   alone (`found`) once its Key and Scale values are heard, so the
 //!   nudge rule (`keys::write_value`) sees what Live holds; a write
@@ -207,6 +216,30 @@ pub(super) fn late_note(
     })
 }
 
+/// What a key write does with Live's bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BarWrite {
+    /// The set's own write (a song start, a key change): the bar goes with
+    /// it, or is owed while the write is held.
+    Own,
+    /// A target's own write (`found`, `retry`): the bar only when a held
+    /// write owes it.
+    Owed,
+    /// A spread's target (#190): the bar goes on its own turn, last.
+    Later,
+}
+
+impl BarWrite {
+    /// Whether the bar goes with this write (`owed`: a held write owes it).
+    pub(super) fn goes(self, owed: bool) -> bool {
+        match self {
+            BarWrite::Own => true,
+            BarWrite::Owed => owed,
+            BarWrite::Later => false,
+        }
+    }
+}
+
 /// One key device a write goes to: its target's key, the device, its
 /// target's label and the values written.
 struct Going {
@@ -226,7 +259,25 @@ impl Router {
     /// then owe the key. A target without its values heard owes it too.
     /// Nothing to write: no record, no call.
     pub(super) fn autotune_key_write(&mut self, set: &str, keys: &[String], key: Key, why: KeyWhy) {
-        let own = matches!(why, KeyWhy::Song | KeyWhy::Change);
+        let bar = if matches!(why, KeyWhy::Song | KeyWhy::Change) {
+            BarWrite::Own
+        } else {
+            BarWrite::Owed
+        };
+        self.autotune_key_send(set, keys, key, why, bar);
+    }
+
+    /// [`Router::autotune_key_write`] with Live's bar as `bar_write` says
+    /// (#190: a spread's target leaves it to its own turn, last): whether a
+    /// call went out.
+    pub(super) fn autotune_key_send(
+        &mut self,
+        set: &str,
+        keys: &[String],
+        key: Key,
+        why: KeyWhy,
+        bar_write: BarWrite,
+    ) -> bool {
         let holding = self.autotune.held.contains(set);
         if !may_write(holding, self.reverb_settled(set)) {
             for k in keys {
@@ -235,10 +286,10 @@ impl Router {
                 }
             }
             if let Some(position) = self.autotune.positions.get_mut(set) {
-                position.bar_owed |= own;
+                position.bar_owed |= bar_write == BarWrite::Own;
             }
             self.autotune_hold(set, "markers");
-            return;
+            return false;
         }
         let mut found: Vec<Going> = Vec::new();
         for k in keys {
@@ -265,12 +316,12 @@ impl Router {
             .autotune
             .positions
             .get(set)
-            .is_some_and(|p| own || p.bar_owed);
+            .is_some_and(|p| bar_write.goes(p.bar_owed));
         if found.is_empty() && !bar {
-            return;
+            return false;
         }
         let Some(live) = self.live.get(set).cloned() else {
-            return;
+            return false;
         };
         self.autotune.key_writes += 1;
         let write = self.autotune.key_writes;
@@ -323,6 +374,7 @@ impl Router {
                 rtt_ms,
             });
         });
+        true
     }
 
     /// What `set`'s key change now is measured from: its song's change in

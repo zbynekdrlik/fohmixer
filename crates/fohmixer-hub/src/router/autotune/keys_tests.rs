@@ -285,6 +285,7 @@ fn the_key_in_force_at_a_position_needs_a_map_and_a_position() {
         bar_owed: false,
         late: None,
         change: None,
+        started: None,
     };
     assert_eq!(
         key_now(None, &at(Some(10.0), None, None)),
@@ -344,6 +345,7 @@ fn the_coming_change_is_judged_where_the_key_in_force_is() {
         bar_owed: false,
         late: None,
         change: None,
+        started: None,
     };
     let g = Some(fohmixer_proto::client::ComingChange {
         key: "G".into(),
@@ -435,6 +437,7 @@ fn a_stopped_set_is_judged_with_the_lookahead_it_kept() {
         bar_owed: false,
         late: None,
         change: None,
+        started: None,
     };
     let (c, g) = (Some(major(0)), Some(major(7)));
     assert_eq!(key_now(Some(&map), &at(Some(false), 0.07)), (Some(1), g));
