@@ -3,15 +3,14 @@
 # (Get-FohInstalledEqToml, Resolve-FohEq: the Pro-Q 4 screen, #71;
 # Get-FohCompanionToml, Get-FohInstalledCompanionToml, Resolve-FohCompanion:
 # the Stream Deck tab, #52; Get-FohPresenterToml, Get-FohInstalledPresenterToml,
-# Resolve-FohPresenter: Presenter's stage tab, #90; Resolve-FohScenes: the
-# scene read from Companion, #207, a table written by hand like [eq];
-# Resolve-FohClaps: claps from the surface's pitches, #220, likewise), dot-sourced by
+# Resolve-FohPresenter: Presenter's stage tab, #90; Resolve-FohClaps: claps
+# from the surface's pitches, #220, a table written by hand like [eq]), dot-sourced by
 # FohmixerPc.psm1 and shipped in the bundle next to it. Windows PowerShell
 # 5.1, ASCII only.
 
 function Get-FohInstalledHandTable {
     # A table written by hand into an installed fohmixer-hub.toml's text ([eq],
-    # #71; [scenes], #207), so an update keeps it as it is (its values
+    # #71; [claps], #220), so an update keeps it as it is (its values
     # included; the new hub checks them). Its lines from [<Name>] to the next
     # table or the end, looked for only before [tls]: from there on the text
     # is the remote tables, kept or rewritten as a whole
@@ -36,17 +35,6 @@ function Get-FohInstalledEqToml {
     # Get-FohInstalledHandTable reads it; '' without one.
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
     return (Get-FohInstalledHandTable -Text $Text -Name 'eq')
-}
-
-function Resolve-FohScenes {
-    # The [scenes] table of an install (#207, the scene read from Companion):
-    # written by hand on the FOH PC (.claude/rules/deploy-pc.md), the
-    # installed toml's as it is (Get-FohInstalledHandTable), else '' (a first
-    # install: no poll). The new hub checks it with the rest of the config.
-    param([Parameter(Mandatory)][string]$DataDir)
-    $toml = Join-Path (Resolve-FohPath $DataDir) 'fohmixer-hub.toml'
-    if (-not (Test-Path -LiteralPath $toml -PathType Leaf)) { return '' }
-    return (Get-FohInstalledHandTable -Text ([IO.File]::ReadAllText($toml)) -Name 'scenes')
 }
 
 function Resolve-FohClaps {

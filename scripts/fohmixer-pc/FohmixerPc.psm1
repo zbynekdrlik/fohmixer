@@ -376,16 +376,15 @@ function New-FohHubToml {
     # from the installed file, never written by the install itself), then
     # $Companion (Get-FohCompanionToml: the Stream Deck tab, #52), then
     # $Presenter (Get-FohPresenterToml: Presenter's stage tab, #90), then
-    # $Scenes (Resolve-FohScenes: the scene read from Companion, #207, kept
-    # from the installed file, never written by the install itself), then
-    # $Claps (Resolve-FohClaps: claps from the surface, #220, kept likewise), then
+    # $Claps (Resolve-FohClaps: claps from the surface, #220, kept from the
+    # installed file, never written by the install itself), then
     # $Remote (Get-FohRemoteToml: the remote-access tables, #17, always last:
     # Get-FohInstalledRemoteToml reads from [tls] to the end).
     # There is no data_dir key: the hub's data folder is FOHMIXER_DATA.
     param([Parameter(Mandatory)][int]$HttpPort, [Parameter(Mandatory)][int]$BandPort, [Parameter(Mandatory)][int]$MasterPort,
           [AllowEmptyString()][string]$Eq = '', [AllowEmptyString()][string]$Companion = '', [AllowEmptyString()][string]$Remote = '',
           [AllowEmptyString()][string]$Presenter = '', [AllowEmptyString()][string]$Linked = '',
-          [AllowEmptyString()][string]$Scenes = '', [AllowEmptyString()][string]$Claps = '')
+          [AllowEmptyString()][string]$Claps = '')
     $lines = @(
         '# fohmixer-hub configuration, written by Install-Fohmixer.ps1: run the install again to change it.',
         ('http_port = {0}' -f $HttpPort),
@@ -398,7 +397,7 @@ function New-FohHubToml {
         '[[instances]]',
         'name = "master"',
         ('port = {0}' -f $MasterPort))
-    return (($lines -join "`r`n") + "`r`n" + $Linked + $Eq + $Companion + $Presenter + $Scenes + $Claps + $Remote)
+    return (($lines -join "`r`n") + "`r`n" + $Linked + $Eq + $Companion + $Presenter + $Claps + $Remote)
 }
 
 function Test-FohHubToml {
@@ -718,8 +717,7 @@ function Invoke-FohInstall {
     # is Resolve-FohRemote's plan (#17), resolved and checked by the caller;
     # $Companion is the [companion] table (#52, Resolve-FohCompanion); $Eq the
     # installed [eq] table kept (#71, Resolve-FohEq); $Presenter the
-    # [presenter] table (#90, Resolve-FohPresenter); $Scenes the installed
-    # [scenes] table kept (#207, Resolve-FohScenes); $Claps the installed
+    # [presenter] table (#90, Resolve-FohPresenter); $Claps the installed
     # [claps] table kept (#220, Resolve-FohClaps); $Linked the MBC Live's
     # linked instance (#184, Resolve-FohMbcLink). -Site Mbc (#184) installs
     # the MBC PC instead: its hub runs as -MbcUser, its toml is
@@ -752,7 +750,6 @@ function Invoke-FohInstall {
         [AllowEmptyString()][string]$Companion = '',
         [AllowEmptyString()][string]$Eq = '',
         [AllowEmptyString()][string]$Presenter = '',
-        [AllowEmptyString()][string]$Scenes = '',
         [AllowEmptyString()][string]$Claps = '',
         $Remote = $null
     )
@@ -806,7 +803,7 @@ function Invoke-FohInstall {
             if (Test-Path -LiteralPath $installedToml -PathType Leaf) { $kept = Get-FohInstalledRemoteToml -Text ([IO.File]::ReadAllText($installedToml)) }
             $tomlText = New-FohMbcHubToml -HttpPort $HttpPort -MbcPort $MbcPort -LinkListen $LinkListen -Remote $kept
         } else {
-            $tomlText = New-FohHubToml -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Linked $Linked -Eq $Eq -Companion $Companion -Presenter $Presenter -Scenes $Scenes -Claps $Claps -Remote $remoteToml
+            $tomlText = New-FohHubToml -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Linked $Linked -Eq $Eq -Companion $Companion -Presenter $Presenter -Claps $Claps -Remote $remoteToml
         }
         $accepted = Test-FohHubToml -Exe (Join-Path $unpacked.dir $script:HubExe) -Text $tomlText -Dir (Split-Path -Parent $unpacked.dir)
         Write-Host "fohmixer install: the new hub accepts the config ($accepted)"
@@ -838,7 +835,6 @@ function Invoke-FohInstall {
         $toml = Write-FohText -Path (Join-Path $DataDir 'fohmixer-hub.toml') -Text $tomlText
         Write-Host "fohmixer install: fohmixer-hub.toml (changed: $toml)"
         if ($Eq) { Write-Host 'fohmixer install: the [eq] table kept as installed (the Pro-Q 4 screen)' }
-        if ($Scenes) { Write-Host 'fohmixer install: the [scenes] table kept as installed (the scene read from Companion)' }
         if ($Claps) { Write-Host 'fohmixer install: the [claps] table kept as installed (claps from the surface)' }
         # 4. the layout
         $layoutChanged = $false
@@ -943,6 +939,6 @@ function Invoke-FohInstall {
     return [pscustomobject]@{
         version = $unpacked.version; app = $app.dir; app_changed = $app.changed; config_changed = $toml
         layout_changed = $layoutChanged; copies = $copies; hub = $answer; tray = $trayPid; remote = $remoteResult; companion = [bool]$Companion; presenter = [bool]$Presenter
-        eq = [bool]$Eq; scenes = [bool]$Scenes; claps = [bool]$Claps; site = $Site; linked = [bool]$Linked
+        eq = [bool]$Eq; claps = [bool]$Claps; site = $Site; linked = [bool]$Linked
     }
 }
