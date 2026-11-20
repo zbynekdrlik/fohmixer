@@ -118,7 +118,7 @@ fn live_answers(router: &mut Router) {
 fn the_rules_client_is_after_the_recording_watchs() {
     assert_eq!(SCENES_CLIENT, u64::MAX - 7);
     assert_eq!(SCENES_PEER, "rule:scenes");
-    assert_eq!(OFF, "scenes are off: no automation token and no [scenes]");
+    assert_eq!(OFF, "scenes are off: no automation token");
 }
 
 #[test]

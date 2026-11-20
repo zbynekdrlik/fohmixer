@@ -939,13 +939,6 @@ fn api_bodies_round_trip() {
             last: Some("intro".into()),
             glides: 1,
             writes: 40,
-            companion: SceneSourceStatus {
-                on: true,
-                last: Some("intro".into()),
-                ok: Some(false),
-                error: Some("no answer within 2000 ms".into()),
-                since: Some(1_700_000_000_000),
-            },
         },
         link: Some(LinkStatus {
             listen: "10.0.0.5:39201".into(),
@@ -1046,30 +1039,7 @@ fn api_bodies_round_trip() {
     assert_eq!(
         json["scenes"],
         json!({"on": true, "strips": 2, "unknown": 0, "known": 3, "last": "intro",
-               "glides": 1, "writes": 40,
-               "companion": {"on": true, "last": "intro", "ok": false,
-                             "error": "no answer within 2000 ms", "since": 1_700_000_000_000u64}})
-    );
-    // An older hub's scenes have no `companion`: off; a source not read yet
-    // says only that it is on.
-    let mut older_scenes = json["scenes"].clone();
-    older_scenes.as_object_mut().unwrap().remove("companion");
-    assert_eq!(
-        serde_json::from_value::<ScenesStatus>(older_scenes)
-            .unwrap()
-            .companion,
-        SceneSourceStatus::default()
-    );
-    assert_eq!(
-        serde_json::to_value(SceneSourceStatus {
-            on: true,
-            last: None,
-            ok: None,
-            error: None,
-            since: None,
-        })
-        .unwrap(),
-        json!({"on": true})
+               "glides": 1, "writes": 40})
     );
     let mut older_hub = json.clone();
     older_hub.as_object_mut().unwrap().remove("scenes");
