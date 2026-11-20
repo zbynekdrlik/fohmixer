@@ -7,7 +7,16 @@
 //! a second call (a rewrite of an unchanged value fires no listener).
 //!
 //! - **When:** a song start and a key change write every target of the
-//!   set and the bar (`song`, `change`); a target found anew, or owed the
+//!   set and the bar (`song`, `change`), paced by the transport (#190,
+//!   dasio#22: a batch of every Auto-Tune while the set stood stalled band
+//!   Live): playing, one batch at once (the singers stay in step); stopped
+//!   (or not known to play), once the playhead stayed in the song
+//!   `KEY_SETTLE_MS` (a newer song starts the wait over, so a run of
+//!   jumps writes only the song it stops in), then one target per
+//!   `STOP_SPREAD_MS`, each its own call and read-back, the bar last;
+//!   within [`KEY_AFTER_START_MS`] of a play start (a key still to come
+//!   included), spread from then. A key still to come that is no longer
+//!   the key in force is dropped (`key_settle` records). A target found anew, or owed the
 //!   key since a disconnect, a held write or another device, is written
 //!   alone (`found`) once its Key and Scale values are heard, so the
 //!   nudge rule (`keys::write_value`) sees what Live holds; a write
@@ -32,6 +41,7 @@
 //! the decision (#140 PR 3b, `switch.rs`) the key's new state, before a
 //! retry goes (a read-back that disagrees takes a selected track to DRY).
 
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use fohmixer_proto::songmap::Key;
@@ -44,9 +54,11 @@ use crate::eq::close::STALE_REF;
 use crate::eq::walk::{answered, get, refused};
 use crate::rules::autotune::find::KeyFound;
 use crate::rules::autotune::keys::{
-    KeyState, KeyTarget, KeyWhy, Readback, bar_shows, bar_state, change_time, crossed, judge,
-    key_values, late_ms, lookahead_beats, shows,
+    KEY_AFTER_START_MS, KeyPace, KeySettleAct, KeyState, KeyTarget, KeyWhy, Readback, bar_shows,
+    bar_state, change_time, crossed, judge, key_pace, key_values, late_ms, lookahead_beats,
+    settle_left, shows,
 };
+use crate::rules::autotune::switch::STOP_SPREAD_MS;
 use crate::rules::autotune::{Cause, Step};
 
 /// Live's bar's key: an index on Live's scale, C = 0 to B = 11 (spec A.5).
@@ -207,6 +219,30 @@ pub(super) fn late_note(
     })
 }
 
+/// What a key write does with Live's bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BarWrite {
+    /// The set's own write (a song start, a key change): the bar goes with
+    /// it, or is owed while the write is held.
+    Own,
+    /// A target's own write (`found`, `retry`): the bar only when a held
+    /// write owes it.
+    Owed,
+    /// A spread's target (#190): the bar goes on its own turn, last.
+    Later,
+}
+
+impl BarWrite {
+    /// Whether the bar goes with this write (`owed`: a held write owes it).
+    fn goes(self, owed: bool) -> bool {
+        match self {
+            BarWrite::Own => true,
+            BarWrite::Owed => owed,
+            BarWrite::Later => false,
+        }
+    }
+}
+
 /// One key device a write goes to: its target's key, the device, its
 /// target's label and the values written.
 struct Going {
@@ -226,7 +262,25 @@ impl Router {
     /// then owe the key. A target without its values heard owes it too.
     /// Nothing to write: no record, no call.
     pub(super) fn autotune_key_write(&mut self, set: &str, keys: &[String], key: Key, why: KeyWhy) {
-        let own = matches!(why, KeyWhy::Song | KeyWhy::Change);
+        let bar = if matches!(why, KeyWhy::Song | KeyWhy::Change) {
+            BarWrite::Own
+        } else {
+            BarWrite::Owed
+        };
+        self.autotune_key_send(set, keys, key, why, bar);
+    }
+
+    /// [`Router::autotune_key_write`] with Live's bar as `bar_write` says
+    /// (#190: a spread's target leaves it to its own turn, last): whether a
+    /// call went out.
+    fn autotune_key_send(
+        &mut self,
+        set: &str,
+        keys: &[String],
+        key: Key,
+        why: KeyWhy,
+        bar_write: BarWrite,
+    ) -> bool {
         let holding = self.autotune.held.contains(set);
         if !may_write(holding, self.reverb_settled(set)) {
             for k in keys {
@@ -235,10 +289,10 @@ impl Router {
                 }
             }
             if let Some(position) = self.autotune.positions.get_mut(set) {
-                position.bar_owed |= own;
+                position.bar_owed |= bar_write == BarWrite::Own;
             }
             self.autotune_hold(set, "markers");
-            return;
+            return false;
         }
         let mut found: Vec<Going> = Vec::new();
         for k in keys {
@@ -265,12 +319,12 @@ impl Router {
             .autotune
             .positions
             .get(set)
-            .is_some_and(|p| own || p.bar_owed);
+            .is_some_and(|p| bar_write.goes(p.bar_owed));
         if found.is_empty() && !bar {
-            return;
+            return false;
         }
         let Some(live) = self.live.get(set).cloned() else {
-            return;
+            return false;
         };
         self.autotune.key_writes += 1;
         let write = self.autotune.key_writes;
@@ -323,6 +377,7 @@ impl Router {
                 rtt_ms,
             });
         });
+        true
     }
 
     /// What `set`'s key change now is measured from: its song's change in
@@ -602,6 +657,248 @@ impl Router {
             target.key_write = 0;
             target.key_wrote = None;
             target.key_sure = false;
+        }
+    }
+}
+
+/// One turn of a paced key write's spread (#190): a target's write, or
+/// Live's bar's, last.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Turn {
+    Target(String),
+    Bar,
+}
+
+/// Where a paced key write stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Stage {
+    /// Waiting for the playhead to stay in the song it came into at `since`.
+    Settle { since: tokio::time::Instant },
+    /// Spread: the turns still to come (none: every target of the set in
+    /// Live's order, then the bar, taken at the first turn).
+    Spread(Option<VecDeque<Turn>>),
+}
+
+/// A Live set's key write paced by its transport (#190): its turn's
+/// generation, the song and key it writes, why, and where it stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::router) struct KeyPacing {
+    pub(super) generation: u64,
+    pub(super) song: Option<u16>,
+    pub(super) key: Key,
+    pub(super) why: KeyWhy,
+    pub(super) stage: Stage,
+}
+
+/// A wait of `ms` (never below 0) as a timer's duration, to the µs.
+fn wait_of(ms: f64) -> Duration {
+    Duration::from_micros((ms.max(0.0) * 1000.0).round() as u64)
+}
+
+impl Router {
+    /// A song start or a key change of `set` (song `song`'s `key` in
+    /// force, `keys` its targets in Live's order) written at its
+    /// transport's pace ([`key_pace`]; #190, dasio#22): playing, one batch
+    /// now (a key still to come is dropped: the batch writes every
+    /// target); stopped, it waits for the playhead to stay
+    /// `KEY_SETTLE_MS` in the song (a newer song starts the wait over);
+    /// within [`KEY_AFTER_START_MS`] of a play start, spread from then. A
+    /// set whose writes may not go now takes the held path at once (every
+    /// target and the bar owe the key; the release writes it `found`).
+    pub(super) fn autotune_key_paced(
+        &mut self,
+        set: &str,
+        keys: &[String],
+        song: Option<u16>,
+        key: Key,
+        why: KeyWhy,
+    ) {
+        let holding = self.autotune.held.contains(set);
+        let pace = self.autotune.positions.get(set).map(|p| {
+            let since_start = p.started.map(|at| elapsed_ms(at.elapsed()));
+            key_pace(p.playing == Some(true), since_start)
+        });
+        let (stage, wait, act) = match pace {
+            Some(KeyPace::Settle { until }) if may_write(holding, self.reverb_settled(set)) => {
+                let act = if self.autotune.key_paces.contains_key(set) {
+                    KeySettleAct::Restarted
+                } else {
+                    KeySettleAct::Waits
+                };
+                let since = tokio::time::Instant::now();
+                (Stage::Settle { since }, until, act)
+            }
+            Some(KeyPace::Spread { from }) if may_write(holding, self.reverb_settled(set)) => {
+                (Stage::Spread(None), from, KeySettleAct::AfterStart)
+            }
+            _ => {
+                self.autotune_key_unpace(set, KeySettleAct::Dropped);
+                self.autotune_key_write(set, keys, key, why);
+                return;
+            }
+        };
+        let pacing = KeyPacing {
+            generation: 0,
+            song,
+            key,
+            why,
+            stage,
+        };
+        self.autotune_key_arm(set, pacing, wait, Some(act));
+    }
+
+    /// A play start of `set` (`prev`: its transport before; a start is one
+    /// heard after a stop, as the engage's): its time is kept for
+    /// [`key_pace`], and a key still to come (waiting, or spreading) goes
+    /// [`KEY_AFTER_START_MS`] after it, so nothing lands on the start.
+    pub(super) fn autotune_key_start(&mut self, set: &str, prev: Option<bool>) {
+        if prev != Some(false) {
+            return;
+        }
+        if let Some(position) = self.autotune.positions.get_mut(set) {
+            position.started = Some(tokio::time::Instant::now());
+        }
+        let Some(mut pacing) = self.autotune.key_paces.remove(set) else {
+            return;
+        };
+        if let Stage::Settle { .. } = pacing.stage {
+            pacing.stage = Stage::Spread(None);
+        }
+        self.autotune_key_arm(
+            set,
+            pacing,
+            KEY_AFTER_START_MS,
+            Some(KeySettleAct::AfterStart),
+        );
+    }
+
+    /// Puts `pacing` in `set`'s place and arms its turn `wait` ms from now
+    /// (a turn armed before it is stale then), recorded with `act`.
+    fn autotune_key_arm(
+        &mut self,
+        set: &str,
+        mut pacing: KeyPacing,
+        wait: f64,
+        act: Option<KeySettleAct>,
+    ) {
+        self.autotune.key_turns += 1;
+        let generation = self.autotune.key_turns;
+        pacing.generation = generation;
+        if let Some(act) = act {
+            self.autotune_key_settle_step(set, &pacing, act);
+        }
+        self.autotune.key_paces.insert(set.to_string(), pacing);
+        self.autotune_turn_in(
+            wait_of(wait),
+            RouterMsg::AutotuneKeyTurn {
+                instance: set.to_string(),
+                generation,
+            },
+        );
+    }
+
+    /// `set`'s paced key write's turn `generation` came: a settle ends once
+    /// the playhead stayed (else it waits the rest), then the spread's next
+    /// turn goes (one with nothing to send passes it on at once) and the
+    /// next one is armed `STOP_SPREAD_MS` on while any is left. A set whose
+    /// writes may not go now takes the held path with every target still
+    /// to come. A stale turn does nothing.
+    pub(in crate::router) fn autotune_key_turn(&mut self, set: &str, generation: u64) {
+        if self.autotune.key_paces.get(set).map(|p| p.generation) != Some(generation) {
+            return;
+        }
+        let Some(mut pacing) = self.autotune.key_paces.remove(set) else {
+            return;
+        };
+        let queue = match pacing.stage {
+            Stage::Settle { since } => {
+                if let Some(left) = settle_left(elapsed_ms(since.elapsed())) {
+                    self.autotune_key_arm(set, pacing, left, None);
+                    return;
+                }
+                self.autotune_key_settle_step(set, &pacing, KeySettleAct::Ends);
+                None
+            }
+            Stage::Spread(queue) => queue,
+        };
+        let mut queue = queue.unwrap_or_else(|| {
+            let keys = self.autotune.keys_in_order(set).into_iter();
+            keys.map(Turn::Target).chain([Turn::Bar]).collect()
+        });
+        let (key, why) = (pacing.key, pacing.why);
+        let holding = self.autotune.held.contains(set);
+        if !may_write(holding, self.reverb_settled(set)) {
+            let keys: Vec<String> = queue
+                .into_iter()
+                .filter_map(|turn| match turn {
+                    Turn::Target(k) => Some(k),
+                    Turn::Bar => None,
+                })
+                .collect();
+            self.autotune_key_write(set, &keys, key, why);
+            return;
+        }
+        while let Some(turn) = queue.pop_front() {
+            let sent = match turn {
+                Turn::Target(k) => self.autotune_key_send(set, &[k], key, why, BarWrite::Later),
+                Turn::Bar => self.autotune_key_send(set, &[], key, why, BarWrite::Own),
+            };
+            if sent {
+                break;
+            }
+        }
+        if !queue.is_empty() {
+            pacing.stage = Stage::Spread(Some(queue));
+            self.autotune_key_arm(set, pacing, STOP_SPREAD_MS as f64, None);
+        }
+    }
+
+    /// Drops `set`'s key still to come, recorded with `act` (none: nothing).
+    pub(super) fn autotune_key_unpace(&mut self, set: &str, act: KeySettleAct) {
+        if let Some(pacing) = self.autotune.key_paces.remove(set) {
+            self.autotune_key_settle_step(set, &pacing, act);
+        }
+    }
+
+    /// The `key_settle` record of `set`'s `pacing`.
+    fn autotune_key_settle_step(&self, set: &str, pacing: &KeyPacing, act: KeySettleAct) {
+        self.autotune_step(
+            Step::KeySettle {
+                instance: set.to_string(),
+                song: pacing.song,
+                key: pacing.key.name(),
+                act,
+            },
+            None,
+        );
+    }
+}
+
+/// The router tests' hands on the pace (#190) for a test on tokio's real
+/// clock, which cannot wait out a settle (the spreads' `next_turn`'s
+/// kind).
+#[cfg(test)]
+impl Router {
+    /// `set`'s paced key write's next turn handed over at once, a settle's
+    /// as if the playhead had stayed `KEY_SETTLE_MS`: whether one was
+    /// there.
+    pub(super) fn autotune_key_now(&mut self, set: &str) -> bool {
+        let Some(pacing) = self.autotune.key_paces.get_mut(set) else {
+            return false;
+        };
+        if let Stage::Settle { since } = &mut pacing.stage {
+            *since -= Duration::from_millis(500);
+        }
+        let generation = pacing.generation;
+        self.autotune_key_turn(set, generation);
+        true
+    }
+
+    /// `set`'s play start `KEY_AFTER_START_MS` back: Live has played on,
+    /// so a key change is one batch again.
+    pub(super) fn autotune_played_on(&mut self, set: &str) {
+        if let Some(position) = self.autotune.positions.get_mut(set) {
+            position.started = position.started.map(|at| at - Duration::from_millis(300));
         }
     }
 }

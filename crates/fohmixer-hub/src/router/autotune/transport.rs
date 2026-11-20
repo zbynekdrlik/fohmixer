@@ -7,6 +7,7 @@
 //! start's wait is `engage.rs`, the spreads `spread.rs`).
 
 use super::super::Router;
+use crate::rules::autotune::keys::KeySettleAct;
 use crate::rules::autotune::{Cause, EngageAct, Step};
 
 impl Router {
@@ -25,6 +26,8 @@ impl Router {
     pub(in crate::router) fn autotune_offline(&mut self, instance: &str) {
         // A stop's DRY still to come: the script made it (#140).
         self.autotune_unspread(instance, None, "offline");
+        // A key still to come goes to none of the next session's refs.
+        self.autotune_key_unpace(instance, KeySettleAct::Offline);
         self.autotune_engage_cancel(instance, EngageAct::Offline);
         // The walks still to come: the connect walks them all again (#235).
         self.autotune_pace_offline(instance);
@@ -163,8 +166,10 @@ impl Router {
         let why = if playing { "start" } else { "stop" };
         self.autotune_unspread(instance, None, why);
         if playing {
-            // #190: a play start's switch-on waits, with a delay set.
+            // #190: a play start's switch-on waits, with a delay set, and
+            // its key writes start `KEY_AFTER_START_MS` after it.
             self.autotune_engage_start(instance, prev);
+            self.autotune_key_start(instance, prev);
         } else {
             self.autotune_engage_cancel(instance, EngageAct::Stopped);
         }

@@ -242,13 +242,14 @@ async fn a_singers_key_is_confirmed_only_once_written_and_read_back() {
     map_read(&mut router, 1, songs());
     deliver(&mut router, TEMPO_KEY, 120.0);
     deliver(&mut router, TIME, 10.0);
-    // The keys written, not yet read back: no singer is confirmed.
+    // The keys on their way (stopped, they wait for the playhead to stay,
+    // #190), not yet read back: no singer is confirmed.
     let state = router.autotune.state();
     assert!(
         state.singers.iter().all(|s| s.key_ok && !s.confirmed),
         "{state:?}"
     );
-    live.settle(&mut router).await;
+    keys_now(&mut router, &mut live).await;
     let state = router.autotune.state();
     assert!(state.singers[0].confirmed, "{state:?}");
     // Out of every song: no key in force, nothing confirmed.

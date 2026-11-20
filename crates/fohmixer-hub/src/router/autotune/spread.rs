@@ -132,15 +132,25 @@ impl Router {
         if let Some(spread) = self.autotune.spreads.get_mut(set) {
             spread.generation = generation;
         }
+        self.autotune_turn_in(
+            std::time::Duration::from_millis(STOP_SPREAD_MS),
+            RouterMsg::AutotuneSpread {
+                instance: set.to_string(),
+                generation,
+            },
+        );
+    }
+
+    /// Hands the router `turn` (a turn-counted message: a stale one does
+    /// nothing) `after` from now: the spreads' and the paced key writes'
+    /// timer (#190).
+    pub(super) fn autotune_turn_in(&self, after: std::time::Duration, turn: RouterMsg) {
         // Counted from now, not from the task's first poll.
-        let at = tokio::time::Instant::now() + std::time::Duration::from_millis(STOP_SPREAD_MS);
-        let (instance, tx) = (set.to_string(), self.io.tx.clone());
+        let at = tokio::time::Instant::now() + after;
+        let tx = self.io.tx.clone();
         tokio::spawn(async move {
             tokio::time::sleep_until(at).await;
-            let _ = tx.send(RouterMsg::AutotuneSpread {
-                instance,
-                generation,
-            });
+            let _ = tx.send(turn);
         });
     }
 

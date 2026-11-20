@@ -216,6 +216,8 @@ async fn another_writer_is_shown_and_dry_wins() {
     );
     aut_on(&mut router);
     transport(&mut router, true);
+    // Live plays on: a song start is one batch (#190).
+    router.autotune_played_on("band");
     live.settle(&mut router).await;
     assert_eq!(decisions(&mut router)[1], off(SwitchWhy::AnotherWriter));
     let singer = &router.autotune.state().singers[0];

@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use fohmixer_proto::client::TargetState;
 use serde::Serialize;
 
-use keys::{BarState, KeyDevice, KeyState, KeyWhy, LATE_BOUND_MS, state_word};
+use keys::{BarState, KeyDevice, KeySettleAct, KeyState, KeyWhy, LATE_BOUND_MS, state_word};
 use switch::{SwitchWhy, why_word};
 
 #[path = "autotune/find.rs"]
@@ -343,6 +343,15 @@ pub enum Step {
         targets: Vec<String>,
         bar: bool,
     },
+    /// A Live set's key write paced by its transport (#190): song `song`'s
+    /// key `key` waits for the playhead to stay, waits again, goes spread,
+    /// goes after a play start, or is dropped ([`KeySettleAct`]).
+    KeySettle {
+        instance: String,
+        song: Option<u16>,
+        key: String,
+        act: KeySettleAct,
+    },
     /// A target's write of `key` and its read-back: where the key stands
     /// (`state`), the key Live's values show, and Live's words when it
     /// refused (a Max map holds the parameter).
@@ -580,6 +589,16 @@ pub fn step_line(step: &Step) -> String {
             key_devices(targets.len()),
             if *bar { " and Live's bar" } else { "" },
             why.word()
+        ),
+        Step::KeySettle {
+            instance,
+            song,
+            key,
+            act,
+        } => format!(
+            "AUTOTUNE's write of {} to {instance} {}",
+            key_words(*song, Some(key)),
+            act.words()
         ),
         Step::Readback {
             instance,

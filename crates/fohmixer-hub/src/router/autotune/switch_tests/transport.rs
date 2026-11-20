@@ -46,6 +46,8 @@ async fn aut_on_and_playing_in_a_keyed_song_switches_on_after_the_keys() {
     deliver(&mut router, TIME, 105.0);
     aut_on(&mut router);
     transport(&mut router, true);
+    // Live plays on: a song start is one batch (#190).
+    router.autotune_played_on("band");
     live.settle(&mut router).await;
     assert_eq!(live.written(), Vec::<Vec<(String, f64)>>::new());
     assert_eq!(

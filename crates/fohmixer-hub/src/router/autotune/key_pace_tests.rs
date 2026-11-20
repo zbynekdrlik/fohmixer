@@ -185,3 +185,216 @@ async fn a_jump_out_of_every_song_within_the_settle_writes_nothing() {
         )
     );
 }
+
+#[test]
+fn a_spreads_target_leaves_the_bar_to_its_own_turn() {
+    use super::super::{BarWrite, wait_of};
+    assert!(BarWrite::Own.goes(false));
+    assert!(BarWrite::Own.goes(true));
+    assert!(!BarWrite::Owed.goes(false));
+    assert!(BarWrite::Owed.goes(true));
+    assert!(!BarWrite::Later.goes(false));
+    assert!(!BarWrite::Later.goes(true), "a held write's bar waits too");
+    assert_eq!(wait_of(500.0), 500 * MS);
+    assert_eq!(wait_of(0.5), Duration::from_micros(500));
+    assert_eq!(wait_of(-3.0), Duration::ZERO, "never below 0");
+}
+
+/// A `key_settle` record of the band.
+fn key_settle(song: u16, key: &str, act: &str) -> Value {
+    json!({"step": "key_settle", "instance": "band", "song": song, "key": key, "act": act})
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_target_with_nothing_to_write_passes_its_turn_on_at_once() {
+    // The PA found but its values not yet heard: owed, never written blind
+    // (#140 PR 2b); its turn goes to the stream at once, no 40 ms lost.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, rx, mut script) = scripted_router(dir.path());
+    router.handle(layout(1, vec![pa(), stream()]));
+    find(&mut router, PA, rack(6, ""));
+    find(&mut router, STREAM, rack(7, ""));
+    heard(&mut router, STREAM, (0.0, 0.0));
+    map_read(&mut router, 1, songs());
+    transport(&mut router, false);
+    deliver(&mut router, TIME, 250.0);
+    pass(&mut router, &mut own, 500 * MS).await;
+    let [_, stream_write, bar_write] = f_sharp_m();
+    assert_eq!(
+        confirm(&mut router, &mut own, &mut script).await,
+        stream_write
+    );
+    pass(&mut router, &mut own, 39 * MS).await;
+    no_call(&mut script);
+    pass(&mut router, &mut own, MS).await;
+    assert_eq!(confirm(&mut router, &mut own, &mut script).await, bar_write);
+    assert_eq!(router.autotune.targets[PA].key_wrote, None, "owed");
+    assert_eq!(
+        of(&steps(&rx), "key_write"),
+        vec![
+            key_write("F#m", "song", &["#8"], false),
+            key_write("F#m", "song", &[], true)
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_turn_before_the_playhead_stayed_waits_the_rest() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, rx, mut script) = scripted_router(dir.path());
+    stopped_with_both(&mut router, &mut script);
+    deliver(&mut router, TIME, 250.0);
+    pass(&mut router, &mut own, 100 * MS).await;
+    // A turn of the settle's own generation 100 ms in (no timer of
+    // tokio's fires early): it waits the 400 ms still to go.
+    let generation = router.autotune.key_paces["band"].generation;
+    router.autotune_key_turn("band", generation);
+    no_call(&mut script);
+    pass(&mut router, &mut own, 399 * MS).await;
+    no_call(&mut script);
+    pass(&mut router, &mut own, MS).await;
+    let [pa_write, ..] = f_sharp_m();
+    assert_eq!(confirm(&mut router, &mut own, &mut script).await, pa_write);
+    // A stale turn does nothing.
+    router.autotune_key_turn("band", generation);
+    no_call(&mut script);
+    assert_eq!(
+        of(&steps(&rx), "key_settle"),
+        vec![key_settle(3, "F#m", "waits"), key_settle(3, "F#m", "ends")]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_play_start_within_a_spread_puts_its_rest_300_ms_after_the_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, rx, mut script) = scripted_router(dir.path());
+    stopped_with_both(&mut router, &mut script);
+    deliver(&mut router, TIME, 250.0);
+    pass(&mut router, &mut own, 500 * MS).await;
+    let [pa_write, stream_write, bar_write] = f_sharp_m();
+    assert_eq!(confirm(&mut router, &mut own, &mut script).await, pa_write);
+    // 20 ms on, Live starts: the stream and the bar wait for 300 ms after
+    // the start, not for the spread's next 40 ms.
+    pass(&mut router, &mut own, 20 * MS).await;
+    let _ = steps(&rx);
+    transport(&mut router, true);
+    pass(&mut router, &mut own, 299 * MS).await;
+    no_call(&mut script);
+    pass(&mut router, &mut own, MS).await;
+    assert_eq!(
+        confirm(&mut router, &mut own, &mut script).await,
+        stream_write
+    );
+    pass(&mut router, &mut own, 40 * MS).await;
+    assert_eq!(confirm(&mut router, &mut own, &mut script).await, bar_write);
+    pass(&mut router, &mut own, 1000 * MS).await;
+    no_call(&mut script);
+    assert_eq!(
+        of(&steps(&rx), "key_settle"),
+        vec![key_settle(3, "F#m", "after_start")]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_key_change_while_playing_on_is_one_batch_and_drops_the_starts_rest() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, rx, mut script) = scripted_router(dir.path());
+    stopped_with_both(&mut router, &mut script);
+    transport(&mut router, true);
+    // 100 ms after the start a jump into song 3: spread from 300 ms.
+    pass(&mut router, &mut own, 100 * MS).await;
+    deliver(&mut router, TIME, 250.0);
+    pass(&mut router, &mut own, 199 * MS).await;
+    no_call(&mut script);
+    pass(&mut router, &mut own, MS).await;
+    let [pa_write, ..] = f_sharp_m();
+    assert_eq!(confirm(&mut router, &mut own, &mut script).await, pa_write);
+    // 320 ms after the start a jump into song 1 (D): Live has played on,
+    // one batch of both and the bar now, F#m's rest dropped.
+    pass(&mut router, &mut own, 20 * MS).await;
+    deliver(&mut router, TIME, 10.0);
+    let write = confirm(&mut router, &mut own, &mut script).await;
+    assert_eq!(write.len(), 6, "{write:?}");
+    pass(&mut router, &mut own, 1000 * MS).await;
+    no_call(&mut script);
+    let got = steps(&rx);
+    assert_eq!(
+        of(&got, "key_settle"),
+        vec![
+            key_settle(3, "F#m", "after_start"),
+            key_settle(3, "F#m", "dropped")
+        ]
+    );
+    assert_eq!(
+        of(&got, "key_write"),
+        vec![
+            key_write("F#m", "song", &["Vox 2"], false),
+            key_write("D", "song", &["Vox 2", "#8"], true)
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_hold_within_a_spread_leaves_its_rest_owed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, rx, mut script) = scripted_router(dir.path());
+    stopped_with_both(&mut router, &mut script);
+    deliver(&mut router, TIME, 250.0);
+    pass(&mut router, &mut own, 500 * MS).await;
+    confirm(&mut router, &mut own, &mut script).await;
+    // A track-list change holds the band: the next turn writes nothing;
+    // the stream and the bar owe F#m (the release's walk writes it found).
+    router.autotune_hold("band", "tracks");
+    pass(&mut router, &mut own, 40 * MS).await;
+    no_call(&mut script);
+    assert!(router.autotune.targets[PA].key_wrote.is_some(), "written");
+    assert_eq!(router.autotune.targets[STREAM].key_wrote, None);
+    assert!(router.autotune.positions["band"].bar_owed);
+    assert!(router.autotune.key_paces.is_empty());
+    pass(&mut router, &mut own, 1000 * MS).await;
+    no_call(&mut script);
+    assert_eq!(
+        of(&steps(&rx), "key_write"),
+        vec![key_write("F#m", "song", &["Vox 2"], false)]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_held_set_owes_its_song_start_at_once_and_waits_for_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, rx, mut script) = scripted_router(dir.path());
+    stopped_with_both(&mut router, &mut script);
+    router.autotune_hold("band", "tracks");
+    let _ = steps(&rx);
+    deliver(&mut router, TIME, 250.0);
+    assert_eq!(router.autotune.targets[PA].key_wrote, None);
+    assert!(router.autotune.positions["band"].bar_owed);
+    assert!(router.autotune.key_paces.is_empty());
+    pass(&mut router, &mut own, 1000 * MS).await;
+    no_call(&mut script);
+    assert_eq!(of(&steps(&rx), "key_settle"), Vec::<Value>::new());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_disconnect_within_the_settle_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, rx, mut script) = scripted_router(dir.path());
+    stopped_with_both(&mut router, &mut script);
+    deliver(&mut router, TIME, 250.0);
+    pass(&mut router, &mut own, 100 * MS).await;
+    router.handle(RouterMsg::Live {
+        instance: "band".into(),
+        event: LiveEvent::Disconnected,
+    });
+    pass(&mut router, &mut own, 1000 * MS).await;
+    no_call(&mut script);
+    let got = steps(&rx);
+    assert_eq!(of(&got, "key_write"), Vec::<Value>::new());
+    assert_eq!(
+        of(&got, "key_settle"),
+        vec![
+            key_settle(3, "F#m", "waits"),
+            key_settle(3, "F#m", "offline")
+        ]
+    );
+}
