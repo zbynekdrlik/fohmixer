@@ -1690,3 +1690,6 @@ async fn no_selector_is_ever_written() {
     assert!(!quiet, "a macro was written");
     assert_eq!(status(&mut router).autotune.writes, 0);
 }
+
+#[path = "key_pace_tests.rs"]
+mod key_pace;
