@@ -142,8 +142,8 @@ impl Router {
     }
 
     /// Hands the router `turn` (a turn-counted message: a stale one does
-    /// nothing) `after` from now: the spreads' and the paced key writes'
-    /// timer (#190).
+    /// nothing) `after` from now: AUTOTUNE's one timer (the spreads', the
+    /// engage's, the walks' gaps and the paced key writes', #190).
     pub(super) fn autotune_turn_in(&self, after: std::time::Duration, turn: RouterMsg) {
         // Counted from now, not from the task's first poll.
         let at = tokio::time::Instant::now() + after;

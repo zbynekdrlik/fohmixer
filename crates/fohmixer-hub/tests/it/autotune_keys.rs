@@ -483,12 +483,12 @@ fn a_song_start_writes_and_confirms_the_key() {
                 (json!([]), json!(true))
             ]
         );
-        let retries: Vec<Value> = steps_of(&records, "key_write")
+        let retries: Vec<(Value, Value)> = steps_of(&records, "key_write")
             .into_iter()
             .filter(|w| w["why"] == "retry")
-            .map(|w| w["targets"].clone())
+            .map(|w| (w["targets"].clone(), w["bar"].clone()))
             .collect();
-        assert_eq!(retries, vec![json!(["#2"])]);
+        assert_eq!(retries, vec![(json!(["#2"]), json!(false))]);
         // On the hub's own clock, its records' `ts` (#186).
         let ts = |r: &Value| r["ts"].as_i64().unwrap();
         let key = steps_of(&records, "key")
@@ -579,18 +579,27 @@ fn a_held_map_refuses_its_keys_until_released() {
         // one retried once; never a write loop.
         tokio::time::sleep(QUIET).await;
         let records = hub.events();
-        let writes = |why: &str| -> Vec<Value> {
+        let writes = |why: &str| -> Vec<(Value, Value)> {
             steps_of(&records, "key_write")
                 .into_iter()
                 .filter(|w| w["why"] == why)
-                .map(|w| w["targets"].clone())
+                .map(|w| (w["targets"].clone(), w["bar"].clone()))
                 .collect()
         };
+        let (no, yes) = (json!(false), json!(true));
         assert_eq!(
             writes("song"),
-            vec![json!(["#1"]), json!(["#2"]), json!(["#3"]), json!([])]
+            vec![
+                (json!(["#1"]), no.clone()),
+                (json!(["#2"]), no.clone()),
+                (json!(["#3"]), no.clone()),
+                (json!([]), yes)
+            ]
         );
-        assert_eq!(writes("retry"), vec![json!(["#2"]), json!(["#3"])]);
+        assert_eq!(
+            writes("retry"),
+            vec![(json!(["#2"]), no.clone()), (json!(["#3"]), no)]
+        );
         for plugin in [PLUGIN_B, PLUGIN_V] {
             assert_eq!(
                 host.sets("value", &format!("{plugin} parameters 1")),

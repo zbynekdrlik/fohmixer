@@ -188,7 +188,8 @@ async fn a_jump_out_of_every_song_within_the_settle_writes_nothing() {
 
 #[test]
 fn a_spreads_target_leaves_the_bar_to_its_own_turn() {
-    use super::super::{BarWrite, wait_of};
+    use super::super::super::key_pace::wait_of;
+    use super::super::BarWrite;
     assert!(BarWrite::Own.goes(false));
     assert!(BarWrite::Own.goes(true));
     assert!(!BarWrite::Owed.goes(false));
@@ -202,7 +203,7 @@ fn a_spreads_target_leaves_the_bar_to_its_own_turn() {
 
 #[test]
 fn a_target_written_its_key_since_the_pace_began_is_not_written_again() {
-    use super::super::written_since;
+    use super::super::super::key_pace::written_since;
     let f_sharp_m = Key {
         root: 6,
         minor: true,
@@ -450,5 +451,79 @@ async fn a_disconnect_within_the_settle_writes_nothing() {
             key_settle(3, "F#m", "waits"),
             key_settle(3, "F#m", "offline")
         ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_settle_that_ends_with_live_playing_is_one_batch() {
+    // The transport listener failed, then Live is heard playing as a first
+    // value (no start): the settle's end writes as a playing set does.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, rx, mut script) = scripted_router(dir.path());
+    stopped_with_both(&mut router, &mut script);
+    deliver(&mut router, TIME, 250.0);
+    pass(&mut router, &mut own, 100 * MS).await;
+    router.transport_failed(TRANSPORT, "the listener failed");
+    transport(&mut router, true);
+    pass(&mut router, &mut own, 399 * MS).await;
+    no_call(&mut script);
+    pass(&mut router, &mut own, MS).await;
+    let [pa_write, stream_write, bar_write] = f_sharp_m();
+    assert_eq!(
+        confirm(&mut router, &mut own, &mut script).await,
+        [pa_write, stream_write, bar_write].concat()
+    );
+    pass(&mut router, &mut own, 1000 * MS).await;
+    no_call(&mut script);
+    let got = steps(&rx);
+    assert_eq!(
+        of(&got, "key_write"),
+        vec![key_write("F#m", "song", &["Vox 2", "#8"], true)]
+    );
+    assert_eq!(of(&got, "key_settle"), vec![key_settle(3, "F#m", "waits")]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_held_set_within_a_play_starts_window_owes_its_song_start_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, rx, mut script) = scripted_router(dir.path());
+    stopped_with_both(&mut router, &mut script);
+    transport(&mut router, true);
+    router.autotune_hold("band", "tracks");
+    pass(&mut router, &mut own, 100 * MS).await;
+    let _ = steps(&rx);
+    deliver(&mut router, TIME, 250.0);
+    assert!(router.autotune.key_paces.is_empty());
+    assert_eq!(router.autotune.targets[PA].key_wrote, None);
+    assert!(router.autotune.positions["band"].bar_owed);
+    pass(&mut router, &mut own, 1000 * MS).await;
+    no_call(&mut script);
+    assert_eq!(of(&steps(&rx), "key_settle"), Vec::<Value>::new());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_settle_that_ends_held_leaves_a_target_written_since_as_it_is() {
+    // A target written `found` within the settle keeps its write; the
+    // others and the bar owe the key; the held end records no `ends`.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, rx, mut script) = scripted_router(dir.path());
+    stopped_with_both(&mut router, &mut script);
+    deliver(&mut router, TIME, 250.0);
+    pass(&mut router, &mut own, 100 * MS).await;
+    router.autotune_key_forget(PA);
+    heard(&mut router, PA, (0.75, 2.0 / 28.0));
+    confirm(&mut router, &mut own, &mut script).await;
+    let wrote = router.autotune.targets[PA].key_wrote.clone();
+    assert!(wrote.is_some());
+    router.autotune_hold("band", "tracks");
+    pass(&mut router, &mut own, 400 * MS).await;
+    no_call(&mut script);
+    assert_eq!(router.autotune.targets[PA].key_wrote, wrote, "kept");
+    assert_eq!(router.autotune.targets[STREAM].key_wrote, None, "owed");
+    assert!(router.autotune.positions["band"].bar_owed);
+    assert!(router.autotune.key_paces.is_empty());
+    assert_eq!(
+        of(&steps(&rx), "key_settle"),
+        vec![key_settle(3, "F#m", "waits")]
     );
 }
