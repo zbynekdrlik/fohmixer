@@ -1,0 +1,43 @@
+name: cache cleanup
+
+# A closed PR's caches (#257): a run reads only its own ref's caches and the
+# default branch's, so the entries saved under `refs/pull/<n>/merge` are
+# never read again once the PR is merged or closed. They held a third of the
+# repository's 10 GB cache budget (2026-11-20: 11.0 GB, the PR's merge ref
+# 3.5 GB), and GitHub evicts the least recently used entries past the
+# budget: master's own (read only at a merge) went first, and a merge's E2E
+# then installed its browsers from a slow mirror past the step's bound.
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [master, dev]
+
+permissions:
+  actions: write
+
+jobs:
+  delete-pr-caches:
+    name: delete the PR's caches
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      REF: refs/pull/${{ github.event.pull_request.number }}/merge
+    steps:
+      - name: Delete every cache of the PR's merge ref
+        run: |
+          set -euo pipefail
+          gh cache list --repo "$REPO" --ref "$REF" --limit 100 \
+            --json id,key,sizeInBytes > "$RUNNER_TEMP/caches.json"
+          # gh prints nothing at all for a ref with no cache (checked
+          # 2026-11-20 on an evicted ref), not an empty list.
+          [ -s "$RUNNER_TEMP/caches.json" ] || echo '[]' > "$RUNNER_TEMP/caches.json"
+          count="$(jq length "$RUNNER_TEMP/caches.json")"
+          bytes="$(jq '[.[].sizeInBytes] | add // 0' "$RUNNER_TEMP/caches.json")"
+          echo "$REF: $count cache(s), $bytes bytes"
+          for id in $(jq -r '.[].id' "$RUNNER_TEMP/caches.json"); do
+            gh cache delete "$id" --repo "$REPO"
+          done
+          echo "deleted $count cache(s), $bytes bytes freed"
