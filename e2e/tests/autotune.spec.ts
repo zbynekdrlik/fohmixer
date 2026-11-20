@@ -93,15 +93,26 @@ async function autotuneRecords(since: number): Promise<any[]> {
   return (await hubEvents()).filter((r: any) => r.ev === "autotune" && r.ts >= since);
 }
 
-/** Waits until the hub heard the band's transport `playing` since `since` (its `transport` record). */
-async function transportHeard(since: number, playing: boolean) {
-  await until(
-    async () => (await hubEvents()).some((r: any) => r.ev === "transport" && r.instance === "band" && r.playing === playing && r.ts >= since),
-    (v: boolean) => v,
+/**
+ * Waits until the hub heard the band's transport `playing` since `since` (its
+ * `transport` record) and returns that record's `ts`.
+ */
+async function transportHeard(since: number, playing: boolean): Promise<number> {
+  const heard = await until(
+    async () => (await hubEvents()).find((r: any) => r.ev === "transport" && r.instance === "band" && r.playing === playing && r.ts >= since),
+    (r: any) => r !== undefined,
     `the hub heard Live ${playing ? "start" : "stop"}`,
     10_000,
   );
+  return heard.ts;
 }
+
+/**
+ * The hub's key pace after a play start (#190, `KEY_AFTER_START_MS`): a key
+ * the set needs within 300 ms of its start goes from 300 ms after it, one
+ * target at a time; from then on a key goes in one batch.
+ */
+const KEY_AFTER_START_MS = 300;
 
 /** Waits until the hub found every one of `count` targets (a path or a problem each). */
 async function targetsFound(count: number): Promise<any[]> {
@@ -333,11 +344,16 @@ test.describe("AUTOTUNE and its singers' panel", () => {
     // Live plays between the songs: nothing tunes.
     const started = Date.now();
     await live.call("band", "live_set", "start_playing");
-    await transportHeard(started, true);
+    const startedAt = await transportHeard(started, true);
     await expect(button.getByTestId("btn-sub")).toHaveText("no song");
     expect(await macros(live)).toEqual(DRY);
-    // Into the song while playing: its key written (the first time) and
-    // read back first (`checking · C`), then both tracks tune.
+    // Into the song while playing, as a set that plays on runs into it: the
+    // jump comes after the start's key window (#190; within it the key
+    // would go one target at a time from 300 ms after the start, which the
+    // hub's own tests pin), so its key goes to both in one batch, is read
+    // back first (`checking · C`), then both tracks tune.
+    const rest = startedAt + KEY_AFTER_START_MS + 50 - Date.now();
+    if (rest > 0) await page.waitForTimeout(rest);
     await watchLines(button);
     const since = Date.now();
     expect(await hostLine("band", "song time 10")).toBe("SONG 10.0");
@@ -360,6 +376,11 @@ test.describe("AUTOTUNE and its singers' panel", () => {
       expect(confirmed, `${target}'s read-back`).toBeGreaterThanOrEqual(0);
       expect(confirmed, `${target}: on only after its key`).toBeLessThan(on);
     }
+    // The key in one batch of both and Live's bar, with no pace (a playing
+    // set past its start's window).
+    const keyWrites = records.filter((r) => r.step === "key_write").map((r) => [r.targets, r.bar, r.why]);
+    expect(keyWrites, "one key batch of both").toEqual([[["Vox 1", "#8"], true, "song"]]);
+    expect(records.filter((r) => r.step === "key_settle"), "no paced key").toEqual([]);
     const write = records.findIndex((r) => r.step === "write" && r.on.length === 2);
     expect(write, "one selector batch with both").toBeGreaterThan(records.findIndex((r) => r.step === "readback"));
     expect((await hubStatus()).autotune.targets.map((t: any) => t.decision)).toEqual([
