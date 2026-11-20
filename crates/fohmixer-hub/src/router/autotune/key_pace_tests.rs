@@ -200,6 +200,60 @@ fn a_spreads_target_leaves_the_bar_to_its_own_turn() {
     assert_eq!(wait_of(-3.0), Duration::ZERO, "never below 0");
 }
 
+#[test]
+fn a_target_written_its_key_since_the_pace_began_is_not_written_again() {
+    use super::super::written_since;
+    let f_sharp_m = Key {
+        root: 6,
+        minor: true,
+    };
+    let d = Key {
+        root: 2,
+        minor: false,
+    };
+    assert!(written_since(8, 7, Some(f_sharp_m), f_sharp_m));
+    assert!(
+        !written_since(7, 7, Some(f_sharp_m), f_sharp_m),
+        "before it"
+    );
+    assert!(!written_since(6, 7, Some(f_sharp_m), f_sharp_m));
+    assert!(!written_since(8, 7, Some(d), f_sharp_m), "another key");
+    assert!(!written_since(8, 7, None, f_sharp_m));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_target_found_and_written_within_the_settle_is_not_written_again() {
+    // A reconnect: the song start waits while the walks answer, and each
+    // target found then is written `found` at once; the spread passes it on.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut router, mut own, rx, mut script) = scripted_router(dir.path());
+    stopped_with_both(&mut router, &mut script);
+    deliver(&mut router, TIME, 250.0);
+    pass(&mut router, &mut own, 100 * MS).await;
+    router.autotune_key_forget(PA);
+    heard(&mut router, PA, (0.75, 2.0 / 28.0));
+    let [pa_write, stream_write, bar_write] = f_sharp_m();
+    assert_eq!(confirm(&mut router, &mut own, &mut script).await, pa_write);
+    // The settle's end: the stream at once, the bar 40 ms on.
+    pass(&mut router, &mut own, 400 * MS).await;
+    assert_eq!(
+        confirm(&mut router, &mut own, &mut script).await,
+        stream_write
+    );
+    pass(&mut router, &mut own, 40 * MS).await;
+    assert_eq!(confirm(&mut router, &mut own, &mut script).await, bar_write);
+    pass(&mut router, &mut own, 1000 * MS).await;
+    no_call(&mut script);
+    assert_eq!(
+        of(&steps(&rx), "key_write"),
+        vec![
+            key_write("F#m", "found", &["Vox 2"], false),
+            key_write("F#m", "song", &["#8"], false),
+            key_write("F#m", "song", &[], true)
+        ]
+    );
+}
+
 /// A `key_settle` record of the band.
 fn key_settle(song: u16, key: &str, act: &str) -> Value {
     json!({"step": "key_settle", "instance": "band", "song": song, "key": key, "act": act})

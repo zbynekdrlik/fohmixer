@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::support::{Client, Host, TestHub, runtime, serial};
+use fohmixer_hub::rules::autotune::keys::KEY_AFTER_START_MS;
 use fohmixer_hub::rules::autotune::switch::STOP_SPREAD_MS;
 use fohmixer_proto::client::{
     ClientMsg, HubStatus, KeyState, SafeState, ServerMsg, SwitchWhy, TrackState,
@@ -217,6 +218,9 @@ fn a_song_played_with_aut_on_tunes_after_the_keys_and_a_stop_goes_dry() {
         })
         .await;
         assert_eq!(macros(&mut a).await, DRY);
+        // Live plays on past the start's key window (#190: a song start
+        // within KEY_AFTER_START_MS of the start is spread from then).
+        tokio::time::sleep(Duration::from_millis(KEY_AFTER_START_MS as u64)).await;
         // Into song 2: its key first, then each track whose key reads back
         // tunes; Stream B's key is refused, so it stays DRY.
         let start = now_ts();

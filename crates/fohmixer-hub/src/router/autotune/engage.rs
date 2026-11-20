@@ -17,8 +17,9 @@
 //! - **A stop within it** (or a lost transport, `stopped`) and a disconnect
 //!   (`offline`) end it: nothing that waited is written.
 //! - **Immediate as before:** every DRY write (a stop's spread, AUT off, a
-//!   singer off, a hold), the key writes, AUT and singer taps; only the
-//!   writes to the chain wait.
+//!   singer off, a hold), AUT and singer taps; only the writes to the chain
+//!   wait. The key writes keep their own pace (`key_writes.rs`: a play
+//!   start's go `KEY_AFTER_START_MS` after it, done before the engage).
 
 use std::collections::BTreeMap;
 

@@ -680,14 +680,23 @@ pub(super) enum Stage {
 }
 
 /// A Live set's key write paced by its transport (#190): its turn's
-/// generation, the song and key it writes, why, and where it stands.
+/// generation, the key writes' counter when it began (`base`: a target
+/// written since with its key, a `found` write after a reconnect, is not
+/// written again), the song and key it writes, why, and where it stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::router) struct KeyPacing {
     pub(super) generation: u64,
+    pub(super) base: u64,
     pub(super) song: Option<u16>,
     pub(super) key: Key,
     pub(super) why: KeyWhy,
     pub(super) stage: Stage,
+}
+
+/// Whether a target whose newest key write is `newest`, wanting `wanted`,
+/// was written `key` after the key writes' counter stood at `base`.
+fn written_since(newest: u64, base: u64, wanted: Option<Key>, key: Key) -> bool {
+    newest > base && wanted == Some(key)
 }
 
 /// A wait of `ms` (never below 0) as a timer's duration, to the µs.
@@ -739,6 +748,7 @@ impl Router {
         };
         let pacing = KeyPacing {
             generation: 0,
+            base: self.autotune.key_writes,
             song,
             key,
             why,
@@ -840,6 +850,7 @@ impl Router {
         }
         while let Some(turn) = queue.pop_front() {
             let sent = match turn {
+                Turn::Target(k) if self.autotune_key_written_since(&k, pacing.base, key) => false,
                 Turn::Target(k) => self.autotune_key_send(set, &[k], key, why, BarWrite::Later),
                 Turn::Bar => self.autotune_key_send(set, &[], key, why, BarWrite::Own),
             };
@@ -851,6 +862,15 @@ impl Router {
             pacing.stage = Stage::Spread(Some(queue));
             self.autotune_key_arm(set, pacing, STOP_SPREAD_MS as f64, None);
         }
+    }
+
+    /// Whether target `k` was written `key` since the key writes' counter
+    /// stood at `base` (a `found` write while its set's key waited).
+    fn autotune_key_written_since(&self, k: &str, base: u64, key: Key) -> bool {
+        self.autotune
+            .targets
+            .get(k)
+            .is_some_and(|t| written_since(t.key_write, base, t.keyt.wanted(), key))
     }
 
     /// Drops `set`'s key still to come, recorded with `act` (none: nothing).
