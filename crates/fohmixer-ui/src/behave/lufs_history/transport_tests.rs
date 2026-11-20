@@ -258,7 +258,7 @@ fn the_live_set_comes_from_autotune_for_its_set_else_from_the_recording_watch() 
     assert_eq!(
         live_set("band", Some(("band", &at)), None),
         LiveSet {
-            playing: Some(true),
+            playing: Some(Some(true)),
             song: Some(Some(31)),
         }
     );
@@ -268,35 +268,55 @@ fn the_live_set_comes_from_autotune_for_its_set_else_from_the_recording_watch() 
         live_set("band", Some(("band", &out)), None).song,
         Some(None)
     );
-    // AUTOTUNE's transport not heard yet: the recording watch's.
-    let unheard = autotune(None, None);
+    // AUTOTUNE's transport not known: the recording watch's.
+    let unknown = autotune(None, None);
     assert_eq!(
-        live_set("band", Some(("band", &unheard)), Some(&rec(Some(false)))),
+        live_set("band", Some(("band", &unknown)), Some(&rec(Some(false)))),
         LiveSet {
-            playing: Some(false),
+            playing: Some(Some(false)),
             song: Some(None),
         }
+    );
+    // Neither knows it (Live offline): heard live as unknown, never "not
+    // heard".
+    assert_eq!(
+        live_set("band", Some(("band", &unknown)), Some(&rec(None))),
+        LiveSet {
+            playing: Some(None),
+            song: Some(None),
+        }
+    );
+    assert_eq!(
+        live_set("band", Some(("band", &unknown)), None).playing,
+        Some(None)
     );
     // AUTOTUNE's wins over the watch's.
     assert_eq!(
         live_set("band", Some(("band", &at)), Some(&rec(Some(false)))).playing,
-        Some(true)
+        Some(Some(true))
     );
     // Another set's AUTOTUNE: the watch's transport only, no song.
     assert_eq!(
         live_set("band", Some(("mbc", &at)), Some(&rec(Some(false)))),
         LiveSet {
-            playing: Some(false),
+            playing: Some(Some(false)),
             song: None,
         }
     );
-    // The watch is the band's only.
+    // The watch told this connection with no transport: unknown.
+    assert_eq!(
+        live_set("band", None, Some(&rec(None))),
+        LiveSet {
+            playing: Some(None),
+            song: None,
+        }
+    );
+    // The watch is the band's only; nothing told: nothing heard.
     assert_eq!(
         live_set("mbc", None, Some(&rec(Some(true)))),
         LiveSet::default()
     );
     assert_eq!(live_set("band", None, None), LiveSet::default());
-    assert_eq!(live_set("band", None, Some(&rec(None))), LiveSet::default());
 }
 
 #[test]
@@ -304,26 +324,38 @@ fn the_live_edge_takes_the_live_transport_and_song_else_the_series_last() {
     let heard = |playing, song| LiveSet { playing, song };
     // A start heard live while the series ended stopped.
     assert_eq!(
-        edge_set(heard(Some(true), Some(Some(57))), (Some(false), None)),
+        edge_set(heard(Some(Some(true)), Some(Some(57))), (Some(false), None)),
         (Some(true), Some(57))
     );
     // A stop heard live: no song.
     assert_eq!(
-        edge_set(heard(Some(false), Some(Some(57))), (Some(true), Some(31))),
+        edge_set(
+            heard(Some(Some(false)), Some(Some(57))),
+            (Some(true), Some(31))
+        ),
         (Some(false), None)
+    );
+    // Live offline, heard live: unknown, never the series' last PLAY.
+    assert_eq!(
+        edge_set(heard(Some(None), Some(None)), (Some(true), Some(31))),
+        (None, None)
+    );
+    assert_eq!(
+        edge_set(heard(Some(None), None), (Some(true), Some(31))),
+        (None, None)
     );
     // Playing out of every song, heard live.
     assert_eq!(
-        edge_set(heard(Some(true), Some(None)), (Some(true), Some(31))),
+        edge_set(heard(Some(Some(true)), Some(None)), (Some(true), Some(31))),
         (Some(true), None)
     );
     // The transport live, the song not: the series' last song while it played.
     assert_eq!(
-        edge_set(heard(Some(true), None), (Some(true), Some(31))),
+        edge_set(heard(Some(Some(true)), None), (Some(true), Some(31))),
         (Some(true), Some(31))
     );
     assert_eq!(
-        edge_set(heard(Some(true), None), (Some(false), Some(31))),
+        edge_set(heard(Some(Some(true)), None), (Some(false), Some(31))),
         (Some(true), None)
     );
     // Nothing heard live: the series' last bucket, as before.
@@ -336,11 +368,6 @@ fn the_live_edge_takes_the_live_transport_and_song_else_the_series_last() {
         (Some(false), None)
     );
     assert_eq!(edge_set(LiveSet::default(), (None, None)), (None, None));
-    // A song with an unknown transport is no song.
-    assert_eq!(
-        edge_set(heard(None, Some(Some(31))), (None, None)),
-        (None, None)
-    );
 }
 
 #[test]

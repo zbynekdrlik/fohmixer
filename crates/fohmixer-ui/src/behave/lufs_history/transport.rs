@@ -229,11 +229,12 @@ pub fn time_label_shows(frac: f64, plot_px: f64) -> bool {
 }
 
 /// The point's Live set as the page hears it now (#255): its transport and
-/// its song (`Some(None)`: known to be out of every song; `None`: not
-/// heard live).
+/// its song, each `None` when not heard live and `Some(None)` when heard
+/// live as unknown (Live offline: no transport; out of every song: no
+/// song).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LiveSet {
-    pub playing: Option<bool>,
+    pub playing: Option<Option<bool>>,
     pub song: Option<Option<u16>>,
 }
 
@@ -241,18 +242,17 @@ pub struct LiveSet {
 /// of its own (#255): AUTOTUNE's state (`autotune`: the set of its first
 /// target and the state the hub told this connection) names the set's
 /// transport and song; the recording watch's (`rec`, `REC_INSTANCE`'s)
-/// its transport when AUTOTUNE's does not; else nothing.
+/// its transport when AUTOTUNE's does not know it; else nothing. A state
+/// told this connection that knows no transport is heard as unknown.
 pub fn live_set(
     instance: &str,
     autotune: Option<(&str, &AutotuneState)>,
     rec: Option<&RecState>,
 ) -> LiveSet {
-    let rec_playing = rec
-        .filter(|_| instance == REC_INSTANCE)
-        .and_then(|r| r.playing);
+    let rec_playing = rec.filter(|_| instance == REC_INSTANCE).map(|r| r.playing);
     match autotune.filter(|(set, _)| *set == instance) {
         Some((_, state)) => LiveSet {
-            playing: state.playing.or(rec_playing),
+            playing: Some(state.playing.or(rec_playing.flatten())),
             song: Some(state.song),
         },
         None => LiveSet {
@@ -262,14 +262,15 @@ pub fn live_set(
     }
 }
 
-/// The set a live edge's second records (#255): the transport heard live,
-/// else the one the hub's series ends on (`last`, `last_set`); the song
+/// The set a live edge's second records (#255): the transport heard live
+/// (unknown too: Live offline is no play), else the one the hub's series
+/// ends on (`last`, `last_set`); the song
 /// heard live, else the series' last song while that bucket played; no
 /// song while the set does not play. So the lane follows a start or a
 /// stop at once, and a window in the past (which records no live second)
 /// is never touched.
 pub fn edge_set(live: LiveSet, last: (Option<bool>, Option<u16>)) -> (Option<bool>, Option<u16>) {
-    let playing = live.playing.or(last.0);
+    let playing = live.playing.unwrap_or(last.0);
     let song = match live.song {
         Some(song) => song,
         None => last.1.filter(|_| last.0 == Some(true)),
