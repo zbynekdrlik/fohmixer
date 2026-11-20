@@ -67,8 +67,8 @@ pub fn play_of(known: &[bool]) -> Option<bool> {
 
 /// A bucket's song from the songs its playing seconds hold (#255, one
 /// rule for the hub and the page): the one most of them hold, the first
-/// heard of a tie; none of nothing. One pass: each song's count in the
-/// order first heard (a bucket holds a song or two).
+/// heard of a tie; none of nothing. Linear: each song's count in the
+/// order first heard, then the most held (a bucket holds a song or two).
 pub fn song_of(songs: &[u16]) -> Option<u16> {
     let mut counts: Vec<(u16, usize)> = Vec::new();
     for song in songs {

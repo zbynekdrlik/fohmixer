@@ -473,13 +473,22 @@ test.describe("The LUFS history's transport and songs (#255)", () => {
           line: box(line),
           name: box(name),
           plot: { x: plot.x, y: plot.y, right: plot.right },
-          // The time labels' centres from the plot's left edge (px).
-          times: all("lufs-x").map((t) => {
-            const r = t.getBoundingClientRect();
-            return r.x + r.width / 2 - plot.x;
-          }),
+          // The time grid's lines and labels, each its left in percent.
+          grid: [...g.querySelectorAll(".lh-vline")].map(left),
+          times: all("lufs-x").map(left),
         };
       });
+    // The labels are exactly the grid lines outside the corners: none
+    // within 10 px of the plot's left edge (`LUFS`) or 32 px of its right
+    // (`FADER dB`), every other line labelled.
+    const cornerProblems = (m: Awaited<ReturnType<typeof marks>>) => {
+      const width = m.plot.right - m.plot.x;
+      const shown = m.grid.filter((pct) => {
+        const x = (pct / 100) * width;
+        return x > 10 && x < width - 32;
+      });
+      return JSON.stringify(m.times) === JSON.stringify(shown) ? [] : [`labels ${JSON.stringify(m.times)}, lines ${JSON.stringify(m.grid)} of ${width} px`];
+    };
     // The line first (faint while its span is narrow), where the newest bar starts.
     await expect
       .poll(async () => {
@@ -507,9 +516,8 @@ test.describe("The LUFS history's transport and songs (#255)", () => {
         if (!(m.name.x > m.line.x)) problems.push(`name at ${m.name.x}, line at ${m.line.x}`);
         if (!(m.name.y - m.plot.y < 6)) problems.push(`name ${m.name.y - m.plot.y} px under the plot's top`);
         if (!(m.name.right <= m.plot.right + 0.5)) problems.push(`name past the plot ${m.name.right - m.plot.right}`);
-        const width = m.plot.right - m.plot.x;
         if (m.times.length === 0) problems.push("no time label");
-        for (const x of m.times) if (!(x > 10 && x < width - 32)) problems.push(`a time label at ${x} of ${width} px`);
+        problems.push(...cornerProblems(m));
         return problems;
       }, { timeout: 10_000, intervals: [250] })
       .toEqual([]);
@@ -544,5 +552,25 @@ test.describe("The LUFS history's transport and songs (#255)", () => {
     expect(series.play).toContain(false);
     expect(series.song).toContain(31);
     expect(series.songs["31"]).toBe("Morning Light");
+
+    // A grid line dragged into the right corner keeps its line and loses
+    // its label (it would meet `FADER dB`): the window moved back by the
+    // drag's px, a line at 16 px from the plot's right edge.
+    const before = await marks();
+    const width = before.plot.right - before.plot.x;
+    const xs = before.grid.map((pct) => (pct / 100) * width).filter((x) => x < width - 48);
+    expect(xs.length, "a grid line left of the corner").toBeGreaterThan(0);
+    const dx = width - 16 - Math.max(...xs);
+    await dispatchPointer(graph, [
+      { type: "pointerdown" },
+      { type: "pointermove", dx: 10 },
+      { type: "pointermove", dx },
+      { type: "pointerup", dx },
+    ]);
+    await expect(history).toHaveAttribute("data-state", "back");
+    const after = await marks();
+    const inCorner = after.grid.map((pct) => (pct / 100) * width).filter((x) => x >= width - 32);
+    expect(inCorner.length, `a line in the right corner: ${JSON.stringify(after.grid)} of ${width} px`).toBeGreaterThan(0);
+    expect(cornerProblems(after)).toEqual([]);
   });
 });

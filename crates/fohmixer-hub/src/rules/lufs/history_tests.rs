@@ -747,3 +747,32 @@ fn a_windows_set_is_known_by_any_known_second() {
     set.songs[0] = 31;
     assert!(set.known());
 }
+
+#[test]
+fn a_set_the_layout_drops_goes_at_once_while_another_stays_and_a_served_one_stays_unheard() {
+    // Two sets served, neither heard: both are kept (their points are
+    // served).
+    let mut r = Recorder::new();
+    r.sample_with(
+        T0,
+        &[],
+        &[set("band", None, None), set("master", None, None)],
+    );
+    assert!(r.sets.contains_key("band"));
+    assert!(r.sets.contains_key("master"));
+    // The layout drops band while master stays served: band's hour holds
+    // nothing known, so it goes at once; master stays, heard or not.
+    r.sample_with(T0 + 1000, &[], &[set("master", None, None)]);
+    assert!(
+        !r.sets.contains_key("band"),
+        "a dropped, unheard set is let go"
+    );
+    assert!(r.sets.contains_key("master"));
+    // A set served alone and never heard is still kept, second after second.
+    let mut r = Recorder::new();
+    for s in 0..3 {
+        r.sample_with(T0 + s * 1000, &[], &[set("band", None, None)]);
+    }
+    assert!(r.sets.contains_key("band"));
+    assert_eq!(r.sets["band"].len(), 3);
+}
