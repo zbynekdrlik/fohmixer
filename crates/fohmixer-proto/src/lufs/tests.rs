@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use super::*;
 
 const TARGET: Option<i8> = Some(-25);
@@ -146,6 +148,9 @@ fn the_history_answers_read_as_the_hub_writes_them() {
         step_ms: 2000,
         values: vec![Some(-230), None, Some(-700)],
         fader: Vec::new(),
+        play: Vec::new(),
+        song: Vec::new(),
+        songs: BTreeMap::new(),
     };
     let text = serde_json::to_string(&series).unwrap();
     assert_eq!(
@@ -174,6 +179,9 @@ fn a_series_carries_the_fader_beside_the_readings_and_an_older_hubs_reads_as_non
         step_ms: 2000,
         values: vec![Some(-230), None],
         fader: vec![Some(-45), None],
+        play: Vec::new(),
+        song: Vec::new(),
+        songs: BTreeMap::new(),
     };
     let text = serde_json::to_string(&series).unwrap();
     assert_eq!(
@@ -273,4 +281,54 @@ fn the_gate_leaves_out_what_lies_more_than_10_lu_under_the_mean() {
     // (10·log10((2·0.01 + 2·0.00158) / 4) = −22.37).
     assert_eq!(gated(&[-200, -200, -280, -280]), Some(-224));
     assert_eq!(gated(&[]), None);
+}
+
+#[test]
+fn a_series_carries_the_sets_transport_and_song_and_an_older_hubs_reads_as_unknown() {
+    let series = HistorySeries {
+        from: 1_794_736_800_000,
+        step_ms: 1000,
+        values: vec![Some(-230), None, Some(-700)],
+        fader: Vec::new(),
+        play: vec![Some(true), Some(false), None],
+        song: vec![Some(31), None, None],
+        songs: BTreeMap::from([(31, "Morning Light".to_string())]),
+    };
+    let text = serde_json::to_string(&series).unwrap();
+    assert_eq!(
+        text,
+        r#"{"from":1794736800000,"step_ms":1000,"values":[-230,null,-700],"play":[true,false,null],"song":[31,null,null],"songs":{"31":"Morning Light"}}"#
+    );
+    assert_eq!(
+        serde_json::from_str::<HistorySeries>(&text).unwrap(),
+        series
+    );
+    let old: HistorySeries =
+        serde_json::from_str(r#"{"from":5,"step_ms":1000,"values":[-230]}"#).unwrap();
+    assert!(old.play.is_empty());
+    assert!(old.song.is_empty());
+    assert!(old.songs.is_empty());
+}
+
+#[test]
+fn a_bucket_plays_when_half_or_more_of_its_known_seconds_play() {
+    assert_eq!(play_of(&[]), None);
+    assert_eq!(play_of(&[true]), Some(true));
+    assert_eq!(play_of(&[false]), Some(false));
+    // Half is enough; under half is a stop.
+    assert_eq!(play_of(&[true, false]), Some(true));
+    assert_eq!(play_of(&[false, true, false]), Some(false));
+    assert_eq!(play_of(&[true, true, false]), Some(true));
+    assert_eq!(play_of(&[false, false, false, true]), Some(false));
+}
+
+#[test]
+fn a_buckets_song_is_the_one_most_of_its_playing_seconds_hold() {
+    assert_eq!(song_of(&[]), None);
+    assert_eq!(song_of(&[31]), Some(31));
+    assert_eq!(song_of(&[31, 57, 57]), Some(57));
+    assert_eq!(song_of(&[57, 31, 31, 57, 31]), Some(31));
+    // A tie: the song heard first (a song ending, the next starting).
+    assert_eq!(song_of(&[31, 31, 57, 57]), Some(31));
+    assert_eq!(song_of(&[57, 31]), Some(57));
 }

@@ -7,7 +7,7 @@
 //! box; pure and tested.
 
 use fohmixer_proto::lufs::{
-    FADER_FLOOR_TENTHS, HistorySeries, SILENT_TENTHS, bucket_of, in_band, median,
+    FADER_FLOOR_TENTHS, HistorySeries, SILENT_TENTHS, bucket_of, in_band, median, play_of, song_of,
 };
 
 use super::{BOX, SECOND_MS};
@@ -25,16 +25,19 @@ pub fn columns_for(span: i64) -> usize {
 
 /// One second of a point (a hub bucket, or the page's own second at the
 /// live edge): its time (UTC ms), reading and strip's fader (dB tenths,
-/// #253), each none when unknown.
+/// #253), and since #255 its Live set's transport (`p`) and song (`s`),
+/// each none when unknown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sample {
     pub t: i64,
     pub v: Option<i16>,
     pub f: Option<i16>,
+    pub p: Option<bool>,
+    pub s: Option<u16>,
 }
 
-/// The series' samples: each value at its bucket's start, with its fader
-/// (none from an older hub, which sends no fader).
+/// The series' samples: each value at its bucket's start, with its fader,
+/// its set's transport and song (none from an older hub, which sends none).
 pub fn samples(series: &HistorySeries) -> Vec<Sample> {
     series
         .values
@@ -44,8 +47,20 @@ pub fn samples(series: &HistorySeries) -> Vec<Sample> {
             t: series.from + i as i64 * series.step_ms,
             v: *v,
             f: series.fader.get(i).copied().flatten(),
+            p: series.play.get(i).copied().flatten(),
+            s: series.song.get(i).copied().flatten(),
         })
         .collect()
+}
+
+/// The set's transport and song the series ends on (#255, its last
+/// bucket's): what the live edge's own seconds carry until the next answer
+/// (the mockup's "as at the last second").
+pub fn last_set(series: &HistorySeries) -> (Option<bool>, Option<u16>) {
+    (
+        series.play.last().copied().flatten(),
+        series.song.last().copied().flatten(),
+    )
 }
 
 /// The page's own samples after the series' end: one a second at the live
@@ -59,12 +74,16 @@ pub fn series_end(series: &HistorySeries) -> i64 {
     series.from + series.values.len() as i64 * series.step_ms
 }
 
-/// A column of the graph: its reading ([`columns`]) and its fader (the
-/// median of its seconds' fader, none without one).
+/// A column of the graph: its reading ([`columns`]), its fader (the
+/// median of its seconds' fader, none without one) and its set's transport
+/// and song (#255: `fohmixer_proto::lufs::play_of` of its known samples,
+/// `song_of` of its playing samples' songs while it plays).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Column {
     pub v: Option<i16>,
     pub f: Option<i16>,
+    pub p: Option<bool>,
+    pub s: Option<u16>,
 }
 
 /// The samples in [`columns_for`] columns over `t0..t1`: each column's
@@ -79,6 +98,8 @@ pub fn columns(samples: &[Sample], t0: i64, t1: i64) -> Vec<Column> {
     let n = columns_for(span);
     let mut readings: Vec<Vec<i16>> = vec![Vec::new(); n];
     let mut faders: Vec<Vec<i16>> = vec![Vec::new(); n];
+    let mut plays: Vec<Vec<bool>> = vec![Vec::new(); n];
+    let mut songs: Vec<Vec<u16>> = vec![Vec::new(); n];
     for s in samples {
         if s.t < t0 || s.t >= t1 {
             continue;
@@ -86,13 +107,18 @@ pub fn columns(samples: &[Sample], t0: i64, t1: i64) -> Vec<Column> {
         let i = ((s.t - t0) as i128 * n as i128 / span as i128) as usize;
         readings[i].extend(s.v);
         faders[i].extend(s.f);
+        plays[i].extend(s.p);
+        songs[i].extend(s.s.filter(|_| s.p == Some(true)));
     }
-    readings
-        .iter()
-        .zip(&faders)
-        .map(|(v, f)| Column {
-            v: bucket_of(v),
-            f: median(f),
+    (0..n)
+        .map(|i| {
+            let p = play_of(&plays[i]);
+            Column {
+                v: bucket_of(&readings[i]),
+                f: median(&faders[i]),
+                p,
+                s: song_of(&songs[i]).filter(|_| p == Some(true)),
+            }
         })
         .collect()
 }
@@ -133,7 +159,12 @@ pub fn drawn_columns(samples: &[Sample], t0: i64, t1: i64) -> Vec<Column> {
     let glided = glide(&raw.iter().map(|c| c.v).collect::<Vec<_>>());
     raw.iter()
         .zip(glided)
-        .map(|(c, v)| Column { v, f: c.f })
+        .map(|(c, v)| Column {
+            v,
+            f: c.f,
+            p: c.p,
+            s: c.s,
+        })
         .collect()
 }
 

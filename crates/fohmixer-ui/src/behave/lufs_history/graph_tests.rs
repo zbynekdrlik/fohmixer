@@ -2,12 +2,23 @@ use super::*;
 
 /// A sample at `t` with the reading `v` and no fader.
 fn at(t: i64, v: Option<i16>) -> Sample {
-    Sample { t, v, f: None }
+    Sample {
+        t,
+        v,
+        f: None,
+        p: None,
+        s: None,
+    }
 }
 
 /// A column with the reading `v` and the fader `f`.
 fn col(v: Option<i16>, f: Option<i16>) -> Column {
-    Column { v, f }
+    Column {
+        v,
+        f,
+        p: None,
+        s: None,
+    }
 }
 
 /// The readings of `cols`.
@@ -22,6 +33,9 @@ fn the_series_gives_a_sample_per_bucket_with_its_fader_and_the_tail_keeps_the_wi
         step_ms: 4000,
         values: vec![Some(-230), None, Some(-700)],
         fader: vec![Some(-45), Some(-40), None],
+        play: Vec::new(),
+        song: Vec::new(),
+        songs: Default::default(),
     };
     assert_eq!(
         samples(&s),
@@ -29,17 +43,23 @@ fn the_series_gives_a_sample_per_bucket_with_its_fader_and_the_tail_keeps_the_wi
             Sample {
                 t: 1000,
                 v: Some(-230),
-                f: Some(-45)
+                f: Some(-45),
+                p: None,
+                s: None,
             },
             Sample {
                 t: 5000,
                 v: None,
-                f: Some(-40)
+                f: Some(-40),
+                p: None,
+                s: None,
             },
             Sample {
                 t: 9000,
                 v: Some(-700),
-                f: None
+                f: None,
+                p: None,
+                s: None,
             },
         ]
     );
@@ -49,6 +69,9 @@ fn the_series_gives_a_sample_per_bucket_with_its_fader_and_the_tail_keeps_the_wi
         step_ms: 4000,
         values: vec![Some(-230), None, Some(-700)],
         fader: Vec::new(),
+        play: Vec::new(),
+        song: Vec::new(),
+        songs: Default::default(),
     };
     assert!(samples(&old).iter().all(|x| x.f.is_none()));
     assert_eq!(samples(&old)[0].v, Some(-230));
@@ -93,21 +116,29 @@ fn a_column_takes_its_readings_and_its_faders_median() {
                 t: 0,
                 v: Some(-700),
                 f: Some(-40),
+                p: None,
+                s: None,
             },
             Sample {
                 t: 1,
                 v: Some(-200),
                 f: None,
+                p: None,
+                s: None,
             },
             Sample {
                 t: 2,
                 v: Some(-200),
                 f: Some(-50),
+                p: None,
+                s: None,
             },
             Sample {
                 t: 3,
                 v: None,
                 f: Some(-45),
+                p: None,
+                s: None,
             },
             at(5000, Some(-250)),
         ],
@@ -187,6 +218,8 @@ fn the_drawn_columns_are_glided_and_keep_their_faders() {
             t: 0,
             v: Some(-200),
             f: Some(-30),
+            p: None,
+            s: None,
         },
         at(5000, Some(-240)),
     ];
@@ -513,4 +546,109 @@ fn columns_sit_at_their_middles() {
     assert_eq!(column_x(0, 0), 500.0);
     assert_eq!(column_x(3, 4), 875.0);
     assert_eq!(BOX, 1000.0);
+}
+
+/// A second at `t` of the set's transport `p` and song `s` (#255).
+fn set_at(t: i64, p: Option<bool>, s: Option<u16>) -> Sample {
+    Sample {
+        t,
+        v: None,
+        f: None,
+        p,
+        s,
+    }
+}
+
+#[test]
+fn the_series_gives_each_sample_its_sets_transport_and_song_and_ends_on_its_last() {
+    let s = HistorySeries {
+        from: 0,
+        step_ms: 1000,
+        values: vec![Some(-230), None, None],
+        fader: Vec::new(),
+        play: vec![Some(true), Some(false), None],
+        song: vec![Some(31), None, None],
+        songs: Default::default(),
+    };
+    let got = samples(&s);
+    assert_eq!(
+        got.iter().map(|x| (x.p, x.s)).collect::<Vec<_>>(),
+        vec![(Some(true), Some(31)), (Some(false), None), (None, None)]
+    );
+    assert_eq!(last_set(&s), (None, None));
+    let ends_playing = HistorySeries {
+        from: 0,
+        step_ms: 1000,
+        values: vec![None, None],
+        fader: Vec::new(),
+        play: vec![Some(false), Some(true)],
+        song: vec![None, Some(57)],
+        songs: Default::default(),
+    };
+    assert_eq!(last_set(&ends_playing), (Some(true), Some(57)));
+    // An older hub's series: nothing known.
+    assert_eq!(last_set(&HistorySeries::default()), (None, None));
+    assert!(
+        samples(&HistorySeries {
+            from: 0,
+            step_ms: 1000,
+            values: vec![Some(-230)],
+            fader: Vec::new(),
+            play: Vec::new(),
+            song: Vec::new(),
+            songs: Default::default(),
+        })
+        .iter()
+        .all(|x| x.p.is_none() && x.s.is_none())
+    );
+}
+
+#[test]
+fn a_column_plays_when_half_or_more_of_its_known_samples_play_and_holds_their_song() {
+    // 10 MIN: 120 columns of 5 s.
+    let cols = columns(
+        &[
+            set_at(0, Some(true), Some(31)),
+            set_at(1000, Some(false), Some(31)),
+            set_at(2000, None, None),
+            set_at(5000, Some(false), None),
+            set_at(6000, Some(false), None),
+            set_at(7000, Some(true), Some(57)),
+            set_at(10_000, Some(true), Some(57)),
+            set_at(11_000, Some(true), Some(31)),
+            set_at(12_000, Some(true), Some(31)),
+            set_at(13_000, Some(false), Some(57)),
+            set_at(14_000, Some(false), Some(57)),
+            set_at(15_000, Some(true), None),
+        ],
+        0,
+        600_000,
+    );
+    assert_eq!((cols[0].p, cols[0].s), (Some(true), Some(31)));
+    // Under half: a stop, and a stop holds no song.
+    assert_eq!((cols[1].p, cols[1].s), (Some(false), None));
+    // Its playing samples' songs only: 57 twice while stopped does not count.
+    assert_eq!((cols[2].p, cols[2].s), (Some(true), Some(31)));
+    // Playing outside every song: plays, no song.
+    assert_eq!((cols[3].p, cols[3].s), (Some(true), None));
+    assert_eq!((cols[4].p, cols[4].s), (None, None));
+    // The drawn columns keep them.
+    let drawn = drawn_columns(&[set_at(0, Some(true), Some(31))], 0, 600_000);
+    assert_eq!((drawn[0].p, drawn[0].s), (Some(true), Some(31)));
+}
+
+#[test]
+fn a_playing_columns_song_is_the_one_most_of_its_playing_samples_hold() {
+    let cols = columns(
+        &[
+            set_at(0, Some(true), Some(31)),
+            set_at(1000, Some(true), Some(57)),
+            set_at(2000, Some(true), Some(57)),
+            set_at(3000, Some(false), Some(31)),
+            set_at(4000, Some(false), Some(31)),
+        ],
+        0,
+        600_000,
+    );
+    assert_eq!((cols[0].p, cols[0].s), (Some(true), Some(57)));
 }

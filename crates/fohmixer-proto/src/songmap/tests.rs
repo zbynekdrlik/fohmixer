@@ -1268,3 +1268,39 @@ fn the_map_serializes_in_english_words() {
     );
     assert_eq!(TIME_CHUNK, 200);
 }
+
+#[test]
+fn a_songs_name_is_its_locator_without_the_number_the_description_and_the_tags() {
+    // #255: the LUFS history names a song as `031 Morning Light`.
+    assert_eq!(song_name("031 Morning Light {C 120 4/4}"), "Morning Light");
+    assert_eq!(song_name("  057 Quiet   Hill  "), "Quiet Hill");
+    assert_eq!(song_name(". 112 River Song +G #intro [x]"), "River Song");
+    assert_eq!(song_name(".204 Open {D} Doors"), "Open Doors");
+    // A number alone, or a name that holds no song number: empty.
+    assert_eq!(song_name("148 {Am}"), "");
+    assert_eq!(song_name("148 "), "");
+    assert_eq!(song_name("SONG END"), "");
+    assert_eq!(song_name("12 Short"), "");
+    // A `#` inside a word is part of it.
+    assert_eq!(song_name("076 C#minor Song"), "C#minor Song");
+}
+
+#[test]
+fn a_built_span_carries_its_songs_name_and_the_song_at_a_time_names_it() {
+    let m = build(
+        &[
+            cue("031 Morning Light {C 120 4/4}", 0.0),
+            cue("SONG END", 100.0),
+            cue("057 Quiet Hill", 120.0),
+            cue("STOP", 200.0),
+        ],
+        &[],
+    );
+    assert_eq!(m.spans[0].name, "Morning Light");
+    assert_eq!(m.spans[1].name, "Quiet Hill");
+    assert_eq!(song_name_at(&m, 0.0), Some((31, "Morning Light")));
+    assert_eq!(song_name_at(&m, 99.5), Some((31, "Morning Light")));
+    assert_eq!(song_name_at(&m, 100.0), None);
+    assert_eq!(song_name_at(&m, 150.0), Some((57, "Quiet Hill")));
+    assert_eq!(song_name_at(&m, 250.0), None);
+}

@@ -535,8 +535,12 @@ exclude_re = [
   # Lh::fader_now and Lh::edge_fader (#253) read the strip's volume slot
   # (as last heard for the head, fresh only for the live edge) into the
   # tested fohmixer_proto::lufs::fader_tenths (lufs-history.spec.ts reads
-  # the head's FADER text and the fader line's live end).
-  "fohmixer-ui/src/components/detail_lufs\\.rs.*(replace|in) (offset_at|wall_ms|Lh::fetch|Lh::fetch_days|Lh::tick|Lh::show|Lh::fader_now|Lh::edge_fader)( |$)",
+  # the head's FADER text and the fader line's live end). Lh::live_now
+  # (#255) reads the store's AUTOTUNE and recording-watch states and the
+  # layout's first AUTOTUNE target's set into the tested
+  # behave::lufs_history::live_set (lufs-history.spec.ts sees a start and
+  # a stop in the lane within seconds).
+  "fohmixer-ui/src/components/detail_lufs\\.rs.*(replace|in) (offset_at|wall_ms|Lh::fetch|Lh::fetch_days|Lh::tick|Lh::show|Lh::fader_now|Lh::edge_fader|Lh::live_now)( |$)",
   # pages/ableset.rs (#90): take_return (location.hash read through the
   # tested behave::ableset::returns_to_tab, then history.replaceState
   # without it); ableset.spec.ts's sign-in comes back to #ableset and finds

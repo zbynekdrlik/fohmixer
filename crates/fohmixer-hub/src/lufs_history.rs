@@ -13,7 +13,7 @@
 //! - A window ([`LufsHistory::history`]): the last hour from RAM, anything
 //!   older read from the day files line by line (never a whole file in
 //!   memory), bucketed to at most 900 values, each with the strip's fader
-//!   beside it (#253).
+//!   beside it (#253) and its Live set's transport and song (#255).
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -29,7 +29,8 @@ use serde_json::{Value, json};
 use crate::day_files::{self, Appended, DayFiles, Limits, Sink};
 use crate::events::EventLog;
 use crate::rules::lufs::history::{
-    HOLE, MINUTE_MS, MinuteLine, Point, Recorder, Sample, WindowError, bucket, span_of, window,
+    HOLE, MINUTE_MS, MinuteLine, Point, Recorder, Sample, SetSample, SetSlots, WindowError,
+    bucket_with, span_of, window,
 };
 
 /// The day files' folder in the data folder, and their stem.
@@ -117,12 +118,23 @@ impl LufsHistory {
     /// readings and faders, `router/lufs.rs` `samples_of`) is asked only
     /// then. A minute that ended goes to the writer; never waits.
     pub fn sample(&self, ms: i64, items: impl FnOnce() -> Vec<Sample>) {
+        self.sample_with(ms, || (items(), Vec::new()));
+    }
+
+    /// [`LufsHistory::sample`] with the points' Live sets (#255): `items`
+    /// gives the points' samples and their sets' (`router/lufs.rs`).
+    pub fn sample_with<'a>(
+        &self,
+        ms: i64,
+        items: impl FnOnce() -> (Vec<Sample>, Vec<SetSample<'a>>),
+    ) {
         let line = {
             let mut recorder = self.recorder();
             if !recorder.due(ms) {
                 return;
             }
-            recorder.sample(ms, &items())
+            let (points, sets) = items();
+            recorder.sample_with(ms, &points, &sets)
         };
         if let Some(line) = line {
             self.send(line);
@@ -163,9 +175,15 @@ impl LufsHistory {
         let covers = self.recorder().covers_from();
         let mut slots = vec![HOLE; n];
         let mut faders = vec![HOLE; n];
+        let mut set = SetSlots::holes(n);
         let files_end = files_until(covers, end);
         if let Some(dir) = &self.dir {
-            read_window(dir, &point, (start, files_end), &mut slots, &mut faders);
+            let window = Window {
+                slots: &mut slots,
+                faders: &mut faders,
+                set: &mut set,
+            };
+            read_window(dir, &point, (start, files_end), window);
         }
         if let Some(covers) = covers {
             let recorder = self.recorder();
@@ -174,10 +192,20 @@ impl LufsHistory {
                 if t >= covers {
                     *slot = recorder.at(&point, t);
                     *fader = recorder.fader_at(&point, t);
+                    (set.plays[i], set.songs[i]) = recorder.set_at(&point.0, t);
                 }
             }
+            // The hour's names (the newest) only for a window that reaches it.
+            if end > covers {
+                set.names.extend(recorder.set_names(&point.0));
+            }
         }
-        Ok(bucket(start, &slots, &faders))
+        // A set never known in the window sends no transport or song at
+        // all (the page reads none as unknown), not a null per bucket.
+        if !set.known() {
+            set = SetSlots::default();
+        }
+        Ok(bucket_with(start, &slots, &faders, &set))
     }
 
     /// `GET /api/lufs/days`: the days that hold the point, newest first;
@@ -289,16 +317,20 @@ fn day_of(path: &Path, instance: &str, target: &str) -> Option<HistoryDay> {
     day
 }
 
-/// Fills `slots` and `faders` (one a second from `start`) from the day
-/// files of `dir` for the seconds before `end`; a minute without the fader
-/// (an older hub's line) leaves its fader slots holes.
-fn read_window(
-    dir: &Path,
-    point: &Point,
-    (start, end): (i64, i64),
-    slots: &mut [i16],
-    faders: &mut [i16],
-) {
+/// A window's seconds being filled: the point's readings and faders, its
+/// Live set's transport and song (#255).
+struct Window<'a> {
+    slots: &'a mut [i16],
+    faders: &'a mut [i16],
+    set: &'a mut SetSlots,
+}
+
+/// Fills the window's slots (one a second from `start`) from the day files
+/// of `dir` for the seconds before `end`; a minute without the fader or the
+/// set (an older hub's line) leaves those slots holes; a later minute's
+/// song names win.
+fn read_window(dir: &Path, point: &Point, (start, end): (i64, i64), window: Window<'_>) {
+    let Window { slots, faders, set } = window;
     if end <= start {
         return;
     }
@@ -319,6 +351,12 @@ fn read_window(
             }
             if let Some(values) = line.fader_slots(&point.0, &point.1) {
                 place(line.m, &values, start, end, faders);
+            }
+            if let Some((plays, songs, names)) = line.set_slots(&point.0) {
+                place(line.m, &plays, start, end, &mut set.plays);
+                place(line.m, &songs, start, end, &mut set.songs);
+                set.names
+                    .extend(names.iter().map(|(n, name)| (*n, name.clone())));
             }
         });
     }

@@ -2008,6 +2008,7 @@ fn a_song_map_reports_keys_with_their_names() {
             },
         }],
         clips: vec!["Key {Eb}".into()],
+        name: "Morning Light".into(),
     };
     let report = SpanReport::from(&span);
     assert_eq!(
@@ -2023,6 +2024,7 @@ fn a_song_map_reports_keys_with_their_names() {
         key: None,
         changes: Vec::new(),
         clips: Vec::new(),
+        name: String::new(),
     };
     assert_eq!(
         serde_json::to_value(SpanReport::from(&keyless)).unwrap(),

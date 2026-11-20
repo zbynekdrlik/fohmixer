@@ -32,6 +32,7 @@ fn line(m: i64, slots: &[i16]) -> String {
             values: encode(slots),
             faders: None,
         }],
+        sets: Vec::new(),
     }
     .text()
 }
@@ -164,6 +165,7 @@ fn a_window_carries_the_fader_from_the_day_files_and_from_ram_beside_the_reading
             values: encode(&[-240; 60]),
             faders: Some(encode(&faders)),
         }],
+        sets: Vec::new(),
     }
     .text();
     std::fs::write(
@@ -287,6 +289,7 @@ fn the_days_hold_only_the_points_spans_newest_first_with_the_unwritten_minute() 
         MinuteLine {
             m: sunday + 2 * 86_400_000,
             points: Vec::new(),
+            sets: Vec::new(),
         }
         .text()
             + "\n",
@@ -426,4 +429,145 @@ fn a_day_file_reports_how_many_lines_it_skipped() {
     assert_eq!(each_line(&path, |l| read.push(l.m)), 2);
     assert_eq!(read, [T0, T0 + 60_000]);
     assert_eq!(each_line(&dir.path().join("none.jsonl"), |_| ()), 0);
+}
+
+#[test]
+fn a_window_reads_its_sets_transport_and_song_from_the_day_files_and_the_hour() {
+    use crate::rules::lufs::history::{PointMinute, SetMinute, SetSample};
+    use std::collections::BTreeMap;
+    let dir = tempfile::tempdir().unwrap();
+    // Two minutes before T0 in the file: one with the band's set (it played
+    // song 31 for the first 30 s, then stood), one an older hub's (no `x`).
+    let mut plays = vec![0_i16; 60];
+    plays[..30].fill(1);
+    let mut songs = vec![HOLE; 60];
+    songs[..30].fill(31);
+    let with_x = MinuteLine {
+        m: T0 - 120_000,
+        points: vec![PointMinute {
+            instance: "band".into(),
+            target: VOX.into(),
+            values: encode(&[-240; 60]),
+            faders: None,
+        }],
+        sets: vec![
+            SetMinute {
+                instance: "band".into(),
+                plays: encode(&plays),
+                songs: encode(&songs),
+                names: BTreeMap::from([(31, "Old Name".to_string())]),
+            },
+            SetMinute {
+                instance: "master".into(),
+                plays: encode(&[1; 60]),
+                songs: encode(&[57; 60]),
+                names: BTreeMap::from([(57, "Not This Set".to_string())]),
+            },
+        ],
+    }
+    .text();
+    std::fs::write(
+        dir.path().join("lufs-2026-11-15.jsonl"),
+        format!("{with_x}\n{}\n", line(T0 - 60_000, &[-230; 60])),
+    )
+    .unwrap();
+    let (history, _rx) = LufsHistory::channel(Some(dir.path().to_path_buf()), 8);
+    history.sample_with(T0, || {
+        (
+            vec![item("band", VOX, Some(-200))],
+            vec![SetSample {
+                instance: "band",
+                playing: Some(true),
+                song: Some((31, "Morning Light")),
+            }],
+        )
+    });
+    let series = history
+        .history("band", VOX, T0 - 120_000, T0 + 1000)
+        .unwrap();
+    assert_eq!(series.play.len(), 121);
+    assert_eq!(series.song.len(), 121);
+    assert_eq!(series.play[0], Some(true));
+    assert_eq!(series.song[0], Some(31));
+    assert_eq!(series.play[29], Some(true));
+    assert_eq!(series.play[30], Some(false));
+    assert_eq!(series.song[30], None);
+    // The older hub's minute: unknown.
+    assert_eq!(series.play[60], None);
+    assert_eq!(series.song[119], None);
+    // RAM's second.
+    assert_eq!(series.play[120], Some(true));
+    assert_eq!(series.song[120], Some(31));
+    // The hour's name is the newest; the other set's songs are not this
+    // point's.
+    assert_eq!(
+        series.songs,
+        BTreeMap::from([(31, "Morning Light".to_string())])
+    );
+    // The files alone (a window that ends where the hour starts) name it
+    // as written.
+    let older = history.history("band", VOX, T0 - 120_000, T0).unwrap();
+    assert_eq!(older.songs, BTreeMap::from([(31, "Old Name".to_string())]));
+    assert_eq!(older.play[0], Some(true));
+}
+
+#[test]
+fn a_minute_where_only_the_set_is_known_goes_to_the_writer() {
+    use crate::rules::lufs::history::SetSample;
+    let (history, rx) = LufsHistory::channel(None, 4);
+    for s in 0..=60 {
+        history.sample_with(T0 + s * 1000, || {
+            (
+                vec![item("band", VOX, Some(SILENT_TENTHS))],
+                vec![SetSample {
+                    instance: "band",
+                    playing: Some(false),
+                    song: None,
+                }],
+            )
+        });
+    }
+    let line = rx.try_recv().unwrap();
+    assert_eq!(line.m, T0);
+    assert!(line.points.is_empty());
+    assert_eq!(line.set_slots("band").unwrap().0, vec![0; 60]);
+}
+
+#[test]
+fn a_window_whose_set_is_never_known_sends_no_transport_or_song() {
+    use crate::rules::lufs::history::SetSample;
+    let (history, _rx) = LufsHistory::channel(None, 4);
+    history.sample_with(T0, || {
+        (
+            vec![item("master", VOX, Some(-200))],
+            vec![SetSample {
+                instance: "master",
+                playing: None,
+                song: None,
+            }],
+        )
+    });
+    let series = history
+        .history("master", VOX, T0 - 5000, T0 + 1000)
+        .unwrap();
+    assert_eq!(series.values.len(), 6);
+    assert!(series.play.is_empty(), "{:?}", series.play);
+    assert!(series.song.is_empty(), "{:?}", series.song);
+    // Known in one second of it: one value per bucket.
+    history.sample_with(T0 + 1000, || {
+        (
+            vec![item("master", VOX, Some(-200))],
+            vec![SetSample {
+                instance: "master",
+                playing: Some(false),
+                song: None,
+            }],
+        )
+    });
+    let series = history
+        .history("master", VOX, T0 - 5000, T0 + 2000)
+        .unwrap();
+    assert_eq!(series.play.len(), 7);
+    assert_eq!(series.play[6], Some(false));
+    assert_eq!(series.song.len(), 7);
 }

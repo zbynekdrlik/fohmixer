@@ -15,19 +15,28 @@
 //!   [`HOLE`] while unknown, left out when the whole minute is unknown; a
 //!   line without it (an older hub's) reads as no fader, and an older hub
 //!   reads a newer line (it ignores `f`).
+//! - `x` (#255): each Live set that has a LUFS point, once a second, its
+//!   transport (`p`: 1 playing, 0 stopped, [`HOLE`] unknown) and its song
+//!   at the playhead (`s`: the song's number, [`HOLE`] outside every song
+//!   or with no song map), base64 like `v`, and the names of the songs the
+//!   minute holds (`n`: number to name): `{"i": <instance>, "p": …, "s":
+//!   …, "n": {"31": "Morning Light"}}`. A set-minute with no known second
+//!   is left out; a minute with a known set second is a line even when no
+//!   point sounds in it (`p` empty then: a stop between songs is kept); a
+//!   line without `x` reads as unknown, and an older hub ignores `x`.
 //! - A bucket ([`bucket_value`]): since #253 the gated loudness of its
 //!   samples above silence (`fohmixer_proto::lufs::bucket_of`, the page's
 //!   column rule: a breath no longer pulls a 1 H or 3 H bucket down; #219
 //!   took their median), silence when half or more are silent, none when it
 //!   holds no sample; its fader ([`fader_value`]) the median of its known
-//!   fader seconds.
+//!   fader seconds; its transport and its song ([`set_value`]) by `fohmixer_proto::lufs::play_of` and `song_of`.
 
 use std::collections::{BTreeMap, VecDeque};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 pub use fohmixer_proto::lufs::HistorySeries as Series;
-use fohmixer_proto::lufs::{SILENT_TENTHS, bucket_of, median};
+use fohmixer_proto::lufs::{SILENT_TENTHS, bucket_of, median, play_of, song_of};
 use serde::{Deserialize, Serialize};
 
 /// Seconds kept in RAM per point: the last hour.
@@ -74,6 +83,55 @@ pub struct Sample {
     pub point: Point,
     pub tenths: Option<i16>,
     pub fader: Option<i16>,
+}
+
+/// One second of a Live set that has a LUFS point (#255): its transport
+/// (`live_set is_playing` as the rules follow it) and the song at its
+/// playhead with the song's name, each none when unknown. Borrowed from
+/// the router's own state: a second allocates nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetSample<'a> {
+    pub instance: &'a str,
+    pub playing: Option<bool>,
+    pub song: Option<(u16, &'a str)>,
+}
+
+/// A set's transport slot: 1 playing, 0 stopped, a hole while unknown.
+pub fn play_slot(playing: Option<bool>) -> i16 {
+    playing.map_or(HOLE, i16::from)
+}
+
+/// A set's song slot: the song's number, a hole for none (or a number past
+/// a slot's range, which no locator holds).
+pub fn song_slot(song: Option<u16>) -> i16 {
+    song.and_then(|n| i16::try_from(n).ok()).unwrap_or(HOLE)
+}
+
+/// A transport slot read back: none for a hole or anything but 1 and 0.
+pub fn playing_of(slot: i16) -> Option<bool> {
+    match slot {
+        1 => Some(true),
+        0 => Some(false),
+        _ => None,
+    }
+}
+
+/// A song slot read back: none for a hole.
+pub fn song_number(slot: i16) -> Option<u16> {
+    u16::try_from(slot).ok()
+}
+
+/// A set sample's slots: the transport's and the song's.
+pub fn set_slots_of(sample: &SetSample<'_>) -> (i16, i16) {
+    (
+        play_slot(sample.playing),
+        song_slot(sample.song.as_ref().map(|(n, _)| *n)),
+    )
+}
+
+/// Whether a set's second is known: its transport or its song.
+pub fn set_heard(slot: (i16, i16)) -> bool {
+    heard(slot.0) || heard(slot.1)
 }
 
 /// Whether a slot holds a sample above silence.
@@ -123,6 +181,51 @@ pub struct PointMinute {
     pub faders: Option<String>,
 }
 
+/// One Live set's minute in a line (#255).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetMinute {
+    #[serde(rename = "i")]
+    pub instance: String,
+    /// The transport's slots, base64 ([`encode`]).
+    #[serde(rename = "p")]
+    pub plays: String,
+    /// The song's slots, base64.
+    #[serde(rename = "s")]
+    pub songs: String,
+    /// The names of the songs the minute holds.
+    #[serde(rename = "n", default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub names: BTreeMap<u16, String>,
+}
+
+/// A Live set's seconds of a window (#255): its transport's and its song's
+/// slots, one a second, and the songs' names.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SetSlots {
+    pub plays: Vec<i16>,
+    pub songs: Vec<i16>,
+    pub names: BTreeMap<u16, String>,
+}
+
+/// A line's minute of a Live set read back: its transport's slots, its
+/// song's slots and the songs' names.
+pub type SetMinuteSlots<'a> = (Vec<i16>, Vec<i16>, &'a BTreeMap<u16, String>);
+
+impl SetSlots {
+    /// Whether any second of it is known (its transport or its song).
+    pub fn known(&self) -> bool {
+        self.plays.iter().chain(&self.songs).any(|s| heard(*s))
+    }
+
+    /// `n` unknown seconds.
+    pub fn holes(n: usize) -> Self {
+        SetSlots {
+            plays: vec![HOLE; n],
+            songs: vec![HOLE; n],
+            names: BTreeMap::new(),
+        }
+    }
+}
+
 /// A minute line of the day files.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MinuteLine {
@@ -130,6 +233,9 @@ pub struct MinuteLine {
     pub m: i64,
     #[serde(rename = "p")]
     pub points: Vec<PointMinute>,
+    /// The points' Live sets (#255); none in an older hub's line.
+    #[serde(rename = "x", default, skip_serializing_if = "Vec::is_empty")]
+    pub sets: Vec<SetMinute>,
 }
 
 impl MinuteLine {
@@ -162,6 +268,14 @@ impl MinuteLine {
             .and_then(|p| p.faders.as_deref())
             .and_then(decode)
     }
+
+    /// The transport's and the song's slots of `instance` in this line and
+    /// the songs' names (#255); none when the set is not there (an older
+    /// hub's line) or its slots do not decode.
+    pub fn set_slots(&self, instance: &str) -> Option<SetMinuteSlots<'_>> {
+        let set = self.sets.iter().find(|s| s.instance == instance)?;
+        Some((decode(&set.plays)?, decode(&set.songs)?, &set.names))
+    }
 }
 
 /// The first and last second with a reading in a minute starting at `m`.
@@ -180,6 +294,12 @@ pub struct Recorder {
     first: Option<i64>,
     /// Each point's slots (the reading, the fader), the back at `last`.
     rings: BTreeMap<Point, VecDeque<(i16, i16)>>,
+    /// Each Live set's slots (the transport, the song; #255), the back at
+    /// `last`.
+    sets: BTreeMap<String, VecDeque<(i16, i16)>>,
+    /// Each Live set's songs' names as last heard (at most one per song
+    /// number: a set holds at most 1000).
+    names: BTreeMap<String, BTreeMap<u16, String>>,
 }
 
 impl Recorder {
@@ -198,6 +318,18 @@ impl Recorder {
     /// clock stepped back), samples nothing. Gives the line of the minute
     /// that ended, if any.
     pub fn sample(&mut self, ms: i64, items: &[Sample]) -> Option<MinuteLine> {
+        self.sample_with(ms, items, &[])
+    }
+
+    /// [`Recorder::sample`] with the points' Live sets (#255, `sets`: each
+    /// set of a served point; a set the hub kept but no longer has a point
+    /// of gets a hole, and goes once its hour holds nothing).
+    pub fn sample_with(
+        &mut self,
+        ms: i64,
+        items: &[Sample],
+        sets: &[SetSample<'_>],
+    ) -> Option<MinuteLine> {
         let second = second_of(ms);
         if !self.due(ms) {
             return None;
@@ -225,9 +357,36 @@ impl Recorder {
         self.rings.retain(|point, ring| {
             items.iter().any(|s| &s.point == point) || ring.iter().any(|s| heard(s.0))
         });
+        self.sample_sets(holes, sets);
         self.last = Some(second);
         self.first.get_or_insert(second);
         ended
+    }
+
+    /// The sets' second (#255): as the points' in [`Recorder::sample_with`].
+    fn sample_sets(&mut self, holes: usize, sets: &[SetSample<'_>]) {
+        for (instance, ring) in &mut self.sets {
+            let slot = sets
+                .iter()
+                .find(|s| s.instance == instance)
+                .map_or((HOLE, HOLE), set_slots_of);
+            push(ring, holes, slot);
+        }
+        for sample in sets {
+            if !self.sets.contains_key(sample.instance) {
+                let mut ring = VecDeque::new();
+                ring.push_back(set_slots_of(sample));
+                self.sets.insert(sample.instance.to_string(), ring);
+            }
+            if let Some((number, name)) = sample.song {
+                keep_name(&mut self.names, sample.instance, number, name);
+            }
+        }
+        self.sets.retain(|instance, ring| {
+            sets.iter().any(|s| s.instance == instance) || ring.iter().any(|s| set_heard(*s))
+        });
+        let kept = &self.sets;
+        self.names.retain(|instance, _| kept.contains_key(instance));
     }
 
     /// The slot of `point` at the second `t` (a hole outside the hour).
@@ -243,7 +402,23 @@ impl Recorder {
 
     /// The reading's and the fader's slots of `point` at the second `t`.
     fn pair_at(&self, point: &Point, t: i64) -> (i16, i16) {
-        let (Some(last), Some(ring)) = (self.last, self.rings.get(point)) else {
+        self.ring_at(self.rings.get(point), t)
+    }
+
+    /// The transport's and the song's slots of the Live set `instance` at
+    /// the second `t` (#255; holes outside the hour).
+    pub fn set_at(&self, instance: &str, t: i64) -> (i16, i16) {
+        self.ring_at(self.sets.get(instance), t)
+    }
+
+    /// The songs' names the hour knows of the Live set `instance` (#255).
+    pub fn set_names(&self, instance: &str) -> BTreeMap<u16, String> {
+        self.names.get(instance).cloned().unwrap_or_default()
+    }
+
+    /// A ring's slots at the second `t` (holes outside the hour).
+    fn ring_at(&self, ring: Option<&VecDeque<(i16, i16)>>, t: i64) -> (i16, i16) {
+        let (Some(last), Some(ring)) = (self.last, ring) else {
             return (HOLE, HOLE);
         };
         if t > last {
@@ -272,7 +447,33 @@ impl Recorder {
                 })
             })
             .collect();
-        (!points.is_empty()).then_some(MinuteLine { m, points })
+        let sets: Vec<SetMinute> = self
+            .sets
+            .keys()
+            .filter_map(|instance| self.set_minute_line(instance, m))
+            .collect();
+        (!points.is_empty() || !sets.is_empty()).then_some(MinuteLine { m, points, sets })
+    }
+
+    /// The Live set's minute starting at `m` as a line writes it (#255):
+    /// none when no second of it is known.
+    fn set_minute_line(&self, instance: &str, m: i64) -> Option<SetMinute> {
+        let (plays, songs) = self.set_minute(instance, m);
+        let known = plays.iter().zip(&songs).any(|(p, s)| set_heard((*p, *s)));
+        known.then(|| SetMinute {
+            instance: instance.to_string(),
+            plays: encode(&plays),
+            songs: encode(&songs),
+            names: names_in(self.names.get(instance), &songs),
+        })
+    }
+
+    /// The Live set's slots in the minute starting at `m` (#255): the
+    /// transport's and the song's.
+    pub fn set_minute(&self, instance: &str, m: i64) -> (Vec<i16>, Vec<i16>) {
+        (0..MINUTE_S as i64)
+            .map(|i| self.set_at(instance, m + i * 1000))
+            .unzip()
     }
 
     /// The slots of `point` in the minute starting at `m`.
@@ -312,6 +513,43 @@ impl Recorder {
 pub fn gap_holes(last: i64, second: i64) -> usize {
     let gap = ((second - last) / 1000).saturating_sub(1);
     usize::try_from(gap).unwrap_or(0).min(RING_S)
+}
+
+/// Keeps the name of `instance`'s song `number` (#255): written only when
+/// it is new or changed, so a song that plays on allocates nothing.
+pub fn keep_name(
+    names: &mut BTreeMap<String, BTreeMap<u16, String>>,
+    instance: &str,
+    number: u16,
+    name: &str,
+) {
+    if names
+        .get(instance)
+        .and_then(|n| n.get(&number))
+        .map(String::as_str)
+        == Some(name)
+    {
+        return;
+    }
+    if !names.contains_key(instance) {
+        names.insert(instance.to_string(), BTreeMap::new());
+    }
+    if let Some(set) = names.get_mut(instance) {
+        set.insert(number, name.to_string());
+    }
+}
+
+/// The names of the songs `songs` holds (#255, a minute's `n`): those of
+/// `names` only.
+pub fn names_in(names: Option<&BTreeMap<u16, String>>, songs: &[i16]) -> BTreeMap<u16, String> {
+    let Some(names) = names else {
+        return BTreeMap::new();
+    };
+    songs
+        .iter()
+        .filter_map(|s| song_number(*s))
+        .filter_map(|n| names.get(&n).map(|name| (n, name.clone())))
+        .collect()
 }
 
 /// A sample's slots: the reading's and the fader's.
@@ -394,15 +632,60 @@ pub fn fader_value(faders: &[i16]) -> Option<i16> {
     median(&known)
 }
 
+/// One bucket's transport (#255): `fohmixer_proto::lufs::play_of` of its
+/// known seconds.
+pub fn play_value(plays: &[i16]) -> Option<bool> {
+    let known: Vec<bool> = plays.iter().filter_map(|p| playing_of(*p)).collect();
+    play_of(&known)
+}
+
+/// One bucket's transport ([`play_value`], judged once) and song (#255):
+/// none unless it plays, else `fohmixer_proto::lufs::song_of` of the songs
+/// its playing seconds hold.
+pub fn set_value(plays: &[i16], songs: &[i16]) -> (Option<bool>, Option<u16>) {
+    let play = play_value(plays);
+    if play != Some(true) {
+        return (play, None);
+    }
+    let held: Vec<u16> = plays
+        .iter()
+        .zip(songs)
+        .filter(|(p, _)| playing_of(**p) == Some(true))
+        .filter_map(|(_, s)| song_number(*s))
+        .collect();
+    (play, song_of(&held))
+}
+
 /// The slots of a window starting at `from`, one a second, bucketed, and
 /// the fader's slots of the same seconds beside them (#253).
 pub fn bucket(from: i64, slots: &[i16], faders: &[i16]) -> Series {
+    bucket_with(from, slots, faders, &SetSlots::default())
+}
+
+/// [`bucket`] with the point's Live set beside it (#255): each bucket's
+/// transport and song, and the names of the songs the buckets hold.
+pub fn bucket_with(from: i64, slots: &[i16], faders: &[i16], set: &SetSlots) -> Series {
     let step = step_for(slots.len());
+    let (play, song): (Vec<Option<bool>>, Vec<Option<u16>>) = set
+        .plays
+        .chunks(step)
+        .zip(set.songs.chunks(step))
+        .map(|(p, s)| set_value(p, s))
+        .unzip();
+    let songs = set
+        .names
+        .iter()
+        .filter(|(n, _)| song.contains(&Some(**n)))
+        .map(|(n, name)| (*n, name.clone()))
+        .collect();
     Series {
         from,
         step_ms: step as i64 * 1000,
         values: slots.chunks(step).map(bucket_value).collect(),
         fader: faders.chunks(step).map(fader_value).collect(),
+        play,
+        song,
+        songs,
     }
 }
 

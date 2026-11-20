@@ -14,6 +14,8 @@
 //! - [`wire`] is the devices' datagram and its parser (§4.4).
 //! - [`LufsProblem`] is a loudness point's problem in words (§6.5).
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::layout::LufsKind;
@@ -34,6 +36,12 @@ pub const SILENT_TENTHS: i16 = -700;
 /// strip's fader beside them, one value per bucket ([`median`] of its
 /// seconds' fader in dB tenths, [`FADER_FLOOR_TENTHS`] at −∞, none while
 /// unknown). An older hub sends no `fader`: it reads as none (empty).
+/// Since #255 the point's Live set beside them, one value per bucket: its
+/// transport (`play`: [`play_of`] of its known seconds, none while unknown)
+/// and its song (`song`: [`song_of`] of its playing seconds' songs, none
+/// while it does not play or plays outside every song), and the songs'
+/// names (`songs`, number to name). An older hub sends none of them: they
+/// read as unknown (empty).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistorySeries {
     pub from: i64,
@@ -41,6 +49,41 @@ pub struct HistorySeries {
     pub values: Vec<Option<i16>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fader: Vec<Option<i16>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub play: Vec<Option<bool>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub song: Vec<Option<u16>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub songs: BTreeMap<u16, String>,
+}
+
+/// A bucket's transport from its known seconds (#255; the hub's buckets
+/// and the page's columns, one rule): playing when half or more of them
+/// play, stopped otherwise, none with no known second.
+pub fn play_of(known: &[bool]) -> Option<bool> {
+    let plays = known.iter().filter(|p| **p).count();
+    (!known.is_empty()).then_some(plays * 2 >= known.len())
+}
+
+/// A bucket's song from the songs its playing seconds hold (#255, one
+/// rule for the hub and the page): the one most of them hold, the first
+/// heard of a tie; none of nothing. Linear: each song's count in the
+/// order first heard, then the most held (a bucket holds a song or two).
+pub fn song_of(songs: &[u16]) -> Option<u16> {
+    let mut counts: Vec<(u16, usize)> = Vec::new();
+    for song in songs {
+        match counts.iter_mut().find(|(s, _)| s == song) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((*song, 1)),
+        }
+    }
+    let mut best: Option<(u16, usize)> = None;
+    for (song, held) in counts {
+        if best.is_none_or(|(_, most)| held > most) {
+            best = Some((song, held));
+        }
+    }
+    best.map(|(song, _)| song)
 }
 
 /// A fader's dB in tenths at Live's floor and under it (−70 dB): −∞
