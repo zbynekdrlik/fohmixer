@@ -1056,6 +1056,15 @@ try {
     Assert ($r11.code -eq 0) 'install-11-again-exits-0'
     $newer = @(Get-ChangedFiles $watchE)
     Assert ($newer.Count -eq 0 -and [IO.File]::ReadAllText($tomlC) -ceq $wantEqC) "install-11-again-keeps-the-eq-table-writing-nothing ($($newer -join ', '))"
+    # ---- install 11b (#220): a [claps] table written by hand after [companion] is kept ----
+    $wantClapsC = $wantEqC + "`r`n[claps]`r`nnotes = [52, 57]`r`n"
+    [IO.File]::WriteAllText($tomlC, $wantClapsC)
+    $r11b = Invoke-Ps $install (Get-InstallArgs @{ DataDir = $dataC })
+    Assert ($r11b.code -eq 0 -and $r11b.out.Contains('the [claps] table kept as installed')) "install-11b-with-a-claps-table-exits-0 ($($r11b.out))"
+    Assert ([IO.File]::ReadAllText($tomlC) -ceq $wantClapsC) 'install-11b-keeps-the-claps-table-after-companion'
+    Assert ($r11b.out -match '"claps":\s*true') 'install-11b-result-says-claps'
+    # Back to the toml the later steps expect.
+    [IO.File]::WriteAllText($tomlC, $wantEqC)
     # A config the hub refuses stops the install before any change: checked
     # by the new hub itself (the kept [tls] on the new HTTP port included).
     foreach ($r in @(

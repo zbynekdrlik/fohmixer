@@ -1,5 +1,5 @@
 //! The automation token (#207): what an outside automation on the LAN
-//! (Companion's trigger on the service's scene) shows to `POST /api/scene`.
+//! (Companion's scene buttons for the service's scenes) shows to `POST /api/scene`.
 //!
 //! - Its own secret, never the PIN or a login token: set with `fohmixer-hub
 //!   automation set-token` (one line on stdin, never argv), sealed for the
