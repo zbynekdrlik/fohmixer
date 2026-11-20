@@ -26,7 +26,11 @@
 //!   meters) and at attach; records each `lufs` line with one log line;
 //! - samples the history (#219) once a second: each point's reading and,
 //!   since #253, its strip's fader from the volume this subscriber already
-//!   follows ([`samples_of`]), so it is kept with no page open.
+//!   follows ([`samples_of`]), so it is kept with no page open; since #255
+//!   each point's Live set beside them ([`sets_of`]): its transport as the
+//!   rules follow it and the song at its playhead on its song map (a set
+//!   with AUTOTUNE targets: their playhead and the map read since the
+//!   connect, as the key in force reads them).
 //!
 //! It never writes anything to Live.
 
@@ -37,6 +41,7 @@ use fohmixer_proto::client::{LufsItem, LufsStatus, METER_PROPS, ValueItem, hub_k
 use fohmixer_proto::layout::{Anchor, LufsPoint};
 use fohmixer_proto::lufs::fader_tenths;
 use fohmixer_proto::lufs::wire::Reading;
+use fohmixer_proto::songmap::song_name_at;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
@@ -49,7 +54,7 @@ use crate::live::subs::{Cached, ClientId};
 use crate::lufs_history::LufsHistory;
 use crate::outbox::Outbox;
 use crate::rules::lufs::confirm::{self, Confirm, Step};
-use crate::rules::lufs::history::Sample;
+use crate::rules::lufs::history::{Sample, SetSample};
 use crate::rules::lufs::{Act, Answer, Fader, Key, Lufs, LufsStrip, meter_values};
 
 /// The rule's own subscriber (the points' faders, pans, mutes and arms).
@@ -216,6 +221,28 @@ pub(super) fn samples_of(
             }
         })
         .collect()
+}
+
+/// The history's Live sets of the served points (#255, `instances`: each
+/// point's): each once, in the points' order, with its transport and song
+/// as `set_of` knows them, borrowed (a second allocates no name).
+pub(super) fn sets_of<'a>(
+    instances: impl Iterator<Item = &'a str>,
+    set_of: impl Fn(&'a str) -> (Option<bool>, Option<(u16, &'a str)>),
+) -> Vec<SetSample<'a>> {
+    let mut sets: Vec<SetSample<'a>> = Vec::new();
+    for instance in instances {
+        if sets.iter().any(|s| s.instance == instance) {
+            continue;
+        }
+        let (playing, song) = set_of(instance);
+        sets.push(SetSample {
+            instance,
+            playing,
+            song,
+        });
+    }
+    sets
 }
 
 /// Whether a failed names read is tried again: Live did not answer or was
@@ -421,10 +448,32 @@ impl Router {
         let now = self.lufs_now();
         let acts = self.lufs.rule.tick(now);
         self.lufs_apply(acts);
-        let (rule, faders) = (&self.lufs.rule, &self.lufs.faders);
-        self.lufs
-            .history
-            .sample(crate::events::now_ms(), || samples_of(rule.items(), faders));
+        let this = &*self;
+        this.lufs.history.sample_with(crate::events::now_ms(), || {
+            let points = samples_of(this.lufs.rule.items(), &this.lufs.faders);
+            let instances = this.lufs.points.iter().map(|p| p.instance.as_str());
+            let sets = sets_of(instances, |instance| this.history_set(instance));
+            (points, sets)
+        });
+    }
+
+    /// A Live set's second for the history (#255): its transport as last
+    /// heard and its song at the playhead.
+    fn history_set(&self, instance: &str) -> (Option<bool>, Option<(u16, &str)>) {
+        (self.transport_now(instance), self.history_song(instance))
+    }
+
+    /// The song at a Live set's playhead with its name (#255): AUTOTUNE's
+    /// playhead of the set on the map read since its connect (PR 2a review
+    /// M1: one from before may be another set's); none without either, or
+    /// out of every song.
+    fn history_song(&self, instance: &str) -> Option<(u16, &str)> {
+        if !self.autotune.current_maps.contains(instance) {
+            return None;
+        }
+        let time = self.autotune.positions.get(instance)?.time?;
+        let map = &self.songmap.maps.get(instance)?.map;
+        song_name_at(map, time)
     }
 
     /// The hub's LUFS history (#219): the router samples it.

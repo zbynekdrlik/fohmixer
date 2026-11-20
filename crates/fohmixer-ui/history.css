@@ -8,7 +8,11 @@
    a thin blue line on its own dB scale at the right, nothing lit while
    idle. The plot is a 1000 x 1000 SVG box stretched over its area, the
    lines' width not scaled; the grid lines, the labels and the live end's
-   dot sit beside it in percent. */
+   dot sit beside it in percent. Since #255 (mockup v4) the Live set's
+   transport lane under the plot (6 px and a 3 px gap, taken from the
+   plot's bottom: a dim bar while it plays, an empty track while it
+   stands, nothing while unknown) and each song's faint dashed line and
+   dim name at the plot's top. */
 
 /* --- the tabs --- */
 
@@ -132,8 +136,25 @@
     overflow: hidden;
     color: var(--muted);
     font: 500 12px/1 var(--mono);
+}
+
+/* two lines while held (#255): v3's text, then PLAY with the song or STOP */
+.lh-cursor span {
+    display: block;
+    overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.lh-cursor span + span {
+    margin-top: 2px;
+    color: #7a7a92;
+}
+
+/* TARGET and FADER step aside while a finger holds the cursor */
+.lh-target[hidden],
+.lh-fader[hidden] {
+    display: none;
 }
 
 .lh-chips {
@@ -186,14 +207,14 @@
 
 .lh-plot {
     position: absolute;
-    inset: 8px 40px 18px 38px;
+    inset: 8px 40px 27px 38px;
 }
 
 .lh-y,
 .lh-yr {
     position: absolute;
     top: 8px;
-    bottom: 18px;
+    bottom: 27px;
 }
 
 .lh-y {
@@ -377,6 +398,62 @@
     color: var(--faint);
     font: 700 10px/12px var(--display);
     letter-spacing: 0.08em;
+    pointer-events: none;
+}
+
+/* the Live set's transport lane (#255): under the plot, above the times */
+.lh-lane {
+    position: absolute;
+    right: 40px;
+    bottom: 18px;
+    left: 38px;
+    height: 6px;
+    pointer-events: none;
+}
+
+.lh-lane-track,
+.lh-lane-play {
+    position: absolute;
+    top: 0;
+    height: 6px;
+    box-sizing: border-box;
+    border-radius: 1.5px;
+}
+
+.lh-lane-track {
+    border: 1px solid #2a2a40;
+}
+
+.lh-lane-play {
+    background: #3a3a52;
+}
+
+/* a song's start: a faint dashed line through the plot, at half strength
+   when its span is too narrow for its name */
+.lh-song-line {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    border-left: 1px dashed #4a4a62;
+    pointer-events: none;
+}
+
+.lh-song-line[data-line="faint"] {
+    opacity: 0.5;
+}
+
+/* its number and name at the plot's top, cut to its span (the cut is the
+   page's estimate; the ellipsis here the last guard) */
+.lh-song {
+    position: absolute;
+    top: 2px;
+    overflow: hidden;
+    color: #7a7a92;
+    font: 700 11px/14px var(--display);
+    letter-spacing: 0.04em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     pointer-events: none;
 }
 

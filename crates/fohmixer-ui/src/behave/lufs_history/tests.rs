@@ -9,12 +9,23 @@ fn day(first_ms: i64, last_ms: i64) -> HistoryDay {
 
 /// A sample at `t` with the reading `v` and no fader.
 fn at(t: i64, v: Option<i16>) -> Sample {
-    Sample { t, v, f: None }
+    Sample {
+        t,
+        v,
+        f: None,
+        p: None,
+        s: None,
+    }
 }
 
 /// A column with the reading `v` and the fader `f`.
 fn col(v: Option<i16>, f: Option<i16>) -> Column {
-    Column { v, f }
+    Column {
+        v,
+        f,
+        p: None,
+        s: None,
+    }
 }
 
 #[test]
@@ -257,19 +268,27 @@ fn the_live_edge_records_a_reading_a_second() {
     assert_eq!(edge_reading(Some(-230), true), None);
     assert_eq!(edge_reading(None, false), None);
     let mut tail = vec![at(1000, Some(-1))];
-    push_reading(&mut tail, 2000, Some(-2), Some(-45), 0);
-    push_reading(&mut tail, 2000, Some(-9), Some(-9), 0);
-    push_reading(&mut tail, 1000, Some(-9), None, 0);
+    push_reading(&mut tail, 2000, (Some(-2), Some(-45)), (None, None), 0);
+    push_reading(
+        &mut tail,
+        2000,
+        (Some(-9), Some(-9)),
+        (Some(true), Some(31)),
+        0,
+    );
+    push_reading(&mut tail, 1000, (Some(-9), None), (None, None), 0);
     let two = Sample {
         t: 2000,
         v: Some(-2),
         f: Some(-45),
+        p: None,
+        s: None,
     };
     assert_eq!(tail, vec![at(1000, Some(-1)), two]);
-    push_reading(&mut tail, 3000, None, None, 2000);
+    push_reading(&mut tail, 3000, (None, None), (None, None), 2000);
     assert_eq!(tail, vec![two, at(3000, None)]);
     let mut empty = Vec::new();
-    push_reading(&mut empty, 5000, Some(-5), None, 0);
+    push_reading(&mut empty, 5000, (Some(-5), None), (None, None), 0);
     assert_eq!(empty, vec![at(5000, Some(-5))]);
 }
 
@@ -505,6 +524,9 @@ fn the_api_answers_read_as_the_series_or_why_not() {
             step_ms: 1000,
             values: vec![Some(-230), None],
             fader: Vec::new(),
+            play: Vec::new(),
+            song: Vec::new(),
+            songs: Default::default(),
         })
     );
     assert!(
@@ -640,6 +662,9 @@ fn series_from(from: i64) -> HistorySeries {
         step_ms: 1000,
         values: vec![Some(-230)],
         fader: Vec::new(),
+        play: Vec::new(),
+        song: Vec::new(),
+        songs: Default::default(),
     }
 }
 
@@ -676,4 +701,26 @@ fn a_failed_ask_is_asked_again_every_5_s() {
     assert!(retry_series(10, true));
     assert!(!retry_series(6, true));
     assert!(!retry_series(5, false));
+}
+
+#[test]
+fn the_live_edge_carries_the_set_the_series_ends_on() {
+    let mut tail = Vec::new();
+    push_reading(
+        &mut tail,
+        1000,
+        (Some(-230), Some(-45)),
+        (Some(true), Some(31)),
+        0,
+    );
+    assert_eq!(
+        tail,
+        vec![Sample {
+            t: 1000,
+            v: Some(-230),
+            f: Some(-45),
+            p: Some(true),
+            s: Some(31),
+        }]
+    );
 }

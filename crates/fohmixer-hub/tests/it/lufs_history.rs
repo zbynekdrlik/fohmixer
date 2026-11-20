@@ -28,6 +28,7 @@ fn line_with(m: i64, instance: &str, tenths: i16, fader: Option<i16>) -> String 
             values: encode(&[tenths; 60]),
             faders: fader.map(|f| encode(&[f; 60])),
         }],
+        sets: Vec::new(),
     }
     .text()
 }
@@ -143,5 +144,86 @@ async fn the_history_of_earlier_runs_is_served_and_an_mbc_login_reaches_only_its
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     assert!(lufs.join(&name).exists());
+    hub.stop().await;
+}
+
+#[tokio::test]
+async fn the_history_serves_each_points_sets_transport_and_song_of_earlier_runs() {
+    use fohmixer_hub::rules::lufs::history::{HOLE, SetMinute};
+    use std::collections::BTreeMap;
+    let dir = tempfile::tempdir().unwrap();
+    let lufs = dir.path().join("lufs");
+    std::fs::create_dir_all(&lufs).unwrap();
+    let now = fohmixer_hub::events::now_ms();
+    let m = now - now.rem_euclid(DAY) - DAY + 36_000_000;
+    // The first minute: song 31 plays its first 40 s, then the set stands;
+    // the next minute no point sounds (a stop between songs), the set's
+    // line alone; the third an older hub's (no `x`).
+    let mut plays = vec![0_i16; 60];
+    plays[..40].fill(1);
+    let mut songs = vec![HOLE; 60];
+    songs[..40].fill(31);
+    let mut first: MinuteLine = MinuteLine::parse(&line(m, "band", -230)).unwrap();
+    first.sets = vec![SetMinute {
+        instance: "band".into(),
+        plays: encode(&plays),
+        songs: encode(&songs),
+        names: BTreeMap::from([(31, "Morning Light".to_string())]),
+    }];
+    let stop = MinuteLine {
+        m: m + 60_000,
+        points: Vec::new(),
+        sets: vec![SetMinute {
+            instance: "band".into(),
+            plays: encode(&[0; 60]),
+            songs: encode(&[HOLE; 60]),
+            names: BTreeMap::new(),
+        }],
+    };
+    let name = fohmixer_hub::day_files::file_name("lufs", fohmixer_hub::day_files::date_of(m));
+    std::fs::write(
+        lufs.join(&name),
+        format!(
+            "{}\n{}\n{}\n",
+            first.text(),
+            stop.text(),
+            line(m + 120_000, "band", -240)
+        ),
+    )
+    .unwrap();
+
+    let hub = TestHub::start(Vec::new(), dir.path()).await;
+    let (code, body) = hub
+        .get(&format!(
+            "/api/lufs/history?instance=band&target=live_set%20tracks%201&from={m}&to={}",
+            m + 180_000
+        ))
+        .await;
+    assert_eq!(code, 200, "{body}");
+    assert_eq!(
+        body["songs"],
+        serde_json::json!({"31": "Morning Light"}),
+        "{body}"
+    );
+    let series: HistorySeries = serde_json::from_value(body).unwrap();
+    assert_eq!(series.play.len(), 180);
+    assert_eq!(series.play[0], Some(true));
+    assert_eq!(series.song[0], Some(31));
+    assert_eq!(series.play[39], Some(true));
+    assert_eq!(series.play[40], Some(false));
+    assert_eq!(series.song[40], None);
+    assert_eq!(series.play[60], Some(false), "the set's line alone");
+    assert_eq!(series.values[60], None);
+    assert_eq!(series.play[120], None, "an older hub's minute");
+    assert_eq!(series.values[120], Some(-240));
+    // The day holds the point only where it sounded.
+    let (code, body) = hub
+        .get("/api/lufs/days?instance=band&target=live_set%20tracks%201")
+        .await;
+    assert_eq!(code, 200, "{body}");
+    let days: HistoryDays = serde_json::from_value(body).unwrap();
+    assert_eq!(days.days.len(), 1);
+    assert_eq!(days.days[0].first_ms, m);
+    assert_eq!(days.days[0].last_ms, m + 179_000);
     hub.stop().await;
 }
