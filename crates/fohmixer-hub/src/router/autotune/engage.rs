@@ -17,8 +17,9 @@
 //! - **A stop within it** (or a lost transport, `stopped`) and a disconnect
 //!   (`offline`) end it: nothing that waited is written.
 //! - **Immediate as before:** every DRY write (a stop's spread, AUT off, a
-//!   singer off, a hold), the key writes, AUT and singer taps; only the
-//!   writes to the chain wait.
+//!   singer off, a hold), AUT and singer taps; only the writes to the chain
+//!   wait. The key writes keep their own pace (`key_writes.rs`: a play
+//!   start's go `KEY_AFTER_START_MS` after it, done before the engage).
 
 use std::collections::BTreeMap;
 
@@ -73,16 +74,13 @@ impl Router {
             .waiting
             .insert(set.to_string(), generation);
         self.autotune_engage_step(set, EngageAct::Waits);
-        // Counted from now, not from the task's first poll.
-        let at = tokio::time::Instant::now() + std::time::Duration::from_millis(ms);
-        let (instance, tx) = (set.to_string(), self.io.tx.clone());
-        tokio::spawn(async move {
-            tokio::time::sleep_until(at).await;
-            let _ = tx.send(RouterMsg::AutotuneEngage {
-                instance,
+        self.autotune_turn_in(
+            std::time::Duration::from_millis(ms),
+            RouterMsg::AutotuneEngage {
+                instance: set.to_string(),
                 generation,
-            });
-        });
+            },
+        );
     }
 
     /// `set`'s wait ends early (`act`: a stop, offline): nothing that

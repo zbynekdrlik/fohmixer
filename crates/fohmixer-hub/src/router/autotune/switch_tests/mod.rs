@@ -506,7 +506,7 @@ async fn ready_with(
     map_read(&mut router, 1, listing);
     deliver(&mut router, TEMPO_KEY, 120.0);
     deliver(&mut router, TIME, 10.0);
-    live.settle(&mut router).await;
+    keys_now(&mut router, &mut live).await;
     assert_eq!(router.autotune.safe["band"].state, SafeState::Kept);
     let keys: Vec<Option<KeyState>> = status(&mut router)
         .autotune
@@ -522,6 +522,21 @@ async fn ready_with(
     );
     let _ = steps(&rx);
     (router, live, rx)
+}
+
+/// Every call answered, then the band's paced key write (#190) to its
+/// end, each turn handed over at once (a settle as if the playhead had
+/// stayed; [`next_turn`]'s kind for a test on tokio's real clock), every
+/// call answered after each.
+async fn keys_now(router: &mut Router, live: &mut Live) {
+    live.settle(router).await;
+    for _ in 0..20 {
+        if !router.autotune_key_now("band") {
+            return;
+        }
+        live.settle(router).await;
+    }
+    panic!("the band's key write never ended");
 }
 
 /// The band's spread turn now (its timer's message handed over at once;
@@ -540,6 +555,8 @@ async fn tuning(dir: &std::path::Path) -> (Router, Live, std::sync::mpsc::Receiv
     let (mut router, mut live, rx) = ready(dir, HubState::default()).await;
     aut_on(&mut router);
     transport(&mut router, true);
+    // Live plays on: a key change is one batch (#190).
+    router.autotune_played_on("band");
     live.settle(&mut router).await;
     assert_eq!(live.written(), vec![batch(&[("p6", 0.0)])]);
     next_turn(&mut router);

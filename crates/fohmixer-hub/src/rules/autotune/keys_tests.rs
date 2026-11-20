@@ -712,3 +712,74 @@ fn only_continuous_play_crosses_a_key_change() {
     assert!(crossed(Some(49.0), 50.0, 50.0, 0.0), "one beat");
     assert!(!crossed(Some(48.75), 50.0, 50.0, 0.0), "more than one beat");
 }
+
+#[test]
+fn a_key_write_is_one_batch_only_while_playing_past_the_starts_300_ms() {
+    // #190: stopped (or not known to play) a key settles 500 ms; within
+    // 300 ms of a play start it is spread from 300 ms after the start;
+    // else one batch.
+    assert_eq!((KEY_SETTLE_MS, KEY_AFTER_START_MS), (500.0, 300.0));
+    let settle = KeyPace::Settle { until: 500.0 };
+    assert_eq!(key_pace(false, None), settle);
+    assert_eq!(key_pace(false, Some(10.0)), settle, "a start is a play's");
+    assert_eq!(key_pace(true, None), KeyPace::Batch, "no start heard");
+    assert_eq!(
+        key_pace(true, Some(0.0)),
+        KeyPace::Spread { from: 300.0 },
+        "the start itself"
+    );
+    assert_eq!(key_pace(true, Some(120.0)), KeyPace::Spread { from: 180.0 });
+    let before = 300.0_f64.next_down();
+    assert_eq!(
+        key_pace(true, Some(before)),
+        KeyPace::Spread {
+            from: 300.0 - before
+        }
+    );
+    assert_eq!(key_pace(true, Some(300.0)), KeyPace::Batch);
+    assert_eq!(key_pace(true, Some(5000.0)), KeyPace::Batch);
+}
+
+#[test]
+fn a_settle_ends_once_the_playhead_stayed_500_ms() {
+    assert_eq!(settle_left(500.0), None);
+    assert_eq!(settle_left(800.0), None);
+    let before = 500.0_f64.next_down();
+    assert_eq!(settle_left(before), Some(500.0 - before));
+    assert_eq!(settle_left(120.0), Some(380.0));
+    assert_eq!(settle_left(0.0), Some(500.0));
+}
+
+#[test]
+fn a_paced_writes_acts_have_their_words() {
+    let acts = [
+        KeySettleAct::Waits,
+        KeySettleAct::Restarted,
+        KeySettleAct::Ends,
+        KeySettleAct::AfterStart,
+        KeySettleAct::Dropped,
+        KeySettleAct::Offline,
+    ];
+    assert_eq!(
+        serde_json::to_value(acts).unwrap(),
+        serde_json::json!([
+            "waits",
+            "restarted",
+            "ends",
+            "after_start",
+            "dropped",
+            "offline"
+        ])
+    );
+    assert_eq!(
+        acts.map(KeySettleAct::words),
+        [
+            "waits for the playhead to stay",
+            "waits again: a newer song",
+            "goes, one key device at a time",
+            "goes after the play start",
+            "is dropped: no longer the key in force",
+            "is dropped: offline",
+        ]
+    );
+}

@@ -36,7 +36,7 @@ async function automationToken(): Promise<string> {
   return answer.token;
 }
 
-/** `POST /api/scene` as Companion's trigger sends it: the status and the body. */
+/** `POST /api/scene` as Companion's scene button sends it: the status and the body. */
 async function scene(name: string, bearer: string): Promise<{ status: number; body: any }> {
   const response = await fetch(`${BASE}/api/scene`, {
     method: "POST",

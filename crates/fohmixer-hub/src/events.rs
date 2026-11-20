@@ -211,7 +211,6 @@ pub fn is_warn(record: &Value) -> bool {
                 | "scene"
                 | "scene_rule"
                 | "scene_glide"
-                | "scene_source"
                 | "script"
                 | "listen"
                 | "lufs_history"

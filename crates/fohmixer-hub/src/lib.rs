@@ -103,7 +103,6 @@ pub mod remote;
 pub mod router;
 pub mod routes;
 pub mod rules;
-pub mod scene_source;
 pub mod scenes;
 pub mod script_watch;
 pub mod sealed;
@@ -241,9 +240,6 @@ pub struct HubInner {
     pub scene_refusals: Mutex<ration::Ration>,
     /// The ration of the Listen select route's refusal lines (#210).
     pub select_refusals: Mutex<ration::Ration>,
-    /// The scene read from Companion (#207, `[scenes]`); none: no poll. The
-    /// served hub runs its poll (`start_scene_source`).
-    pub scene_source: Option<Arc<scene_source::SceneSource>>,
     /// Its window worker, awaited after the stop so its windows are handed
     /// back and its contact ended before the process ends.
     plugwin: Option<plugwin::Plugwin>,
@@ -424,17 +420,6 @@ impl HubInner {
         answer.await.unwrap_or(Err(router::SongMapMissing::NotRead))
     }
 
-    /// The router's `scenes` with Companion's poll (#207).
-    fn scenes_status(
-        &self,
-        mut scenes: fohmixer_proto::client::ScenesStatus,
-    ) -> fohmixer_proto::client::ScenesStatus {
-        if let Some(source) = &self.scene_source {
-            scenes.companion = source.status();
-        }
-        scenes
-    }
-
     /// `GET /api/status`.
     pub async fn status(&self) -> HubStatus {
         let now = auth::now_secs() as i64;
@@ -507,7 +492,7 @@ impl HubInner {
             colors: router.colors,
             mute_alarms: router.mute_alarms,
             mute_guards: router.mute_guards,
-            scenes: self.scenes_status(router.scenes),
+            scenes: router.scenes,
             link: self.link.as_ref().map(|state| state.status()),
             listen: self
                 .listen
@@ -655,15 +640,6 @@ impl Hub {
         if let Some(warning) = warning {
             tracing::warn!("{warning}");
         }
-        // The scene read from Companion (#207): `[scenes]` on `[companion]`'s
-        // host (the config check refuses one without the other).
-        let scene_source = match (&config.scenes, &config.companion) {
-            (Some(scenes), Some(companion)) => Some(Arc::new(scene_source::SceneSource::new(
-                scenes.value_url(companion),
-                scenes.authority(companion),
-            ))),
-            _ => None,
-        };
         let mut router = router::Router::new(
             live.clone(),
             hub_state,
@@ -687,7 +663,7 @@ impl Hub {
             .with_lufs_history(lufs_history.clone())
             .with_beat(beat)
             .with_engage_delay(config.autotune.engage_delay_ms)
-            .with_scenes(automation.is_some() || scene_source.is_some())
+            .with_scenes(automation.is_some())
             .with_claps(router::ClapsSetup {
                 notes: config.claps.notes.clone(),
                 device_port: config.claps.device_port,
@@ -832,7 +808,6 @@ impl Hub {
             automation,
             scene_refusals: Mutex::new(ration::Ration::default()),
             select_refusals: Mutex::new(ration::Ration::default()),
-            scene_source,
             next_client: AtomicU64::new(1),
             tasks: Mutex::new(tasks),
         })))
@@ -1241,13 +1216,6 @@ where
     }
     start_link(&hub, ableset::link::PERIOD);
     start_presenter(&hub);
-    // The scene read from Companion (#207, `[scenes]`): only the served hub
-    // reads it.
-    if let Some(source) = &hub.scene_source
-        && let Some(task) = scene_source::spawn(source, hub.router.clone(), hub.events.clone())
-    {
-        hub.add_task(task);
-    }
     tracing::info!(
         addr = %local,
         version = %fohmixer_proto::full_version(),

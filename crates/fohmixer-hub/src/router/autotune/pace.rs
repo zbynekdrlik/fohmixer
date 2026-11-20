@@ -124,16 +124,13 @@ impl Router {
             pace.gap = Some(generation);
             tracing::debug!(instance = %set, key = %key, walk, generation, queued = pace.queue.len(), "AUTOTUNE walk ended, the gap runs");
         }
-        // Counted from now, not from the task's first poll.
-        let at = tokio::time::Instant::now() + std::time::Duration::from_millis(WALK_GAP_MS);
-        let tx = self.io.tx.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep_until(at).await;
-            let _ = tx.send(RouterMsg::AutotuneWalkNext {
+        self.autotune_turn_in(
+            std::time::Duration::from_millis(WALK_GAP_MS),
+            RouterMsg::AutotuneWalkNext {
                 instance: set,
                 generation,
-            });
-        });
+            },
+        );
     }
 
     /// `set`'s gap `generation` is over: its next walk starts. A stale gap

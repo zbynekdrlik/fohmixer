@@ -53,6 +53,8 @@ async fn a_selector_write_live_refuses_gets_one_retry_then_the_hub_stops() {
     let walk = router.autotune.targets[STREAM].walk;
     aut_on(&mut router);
     transport(&mut router, true);
+    // Live plays on: a key change is one batch (#190).
+    router.autotune_played_on("band");
     live.settle(&mut router).await;
     next_turn(&mut router);
     live.settle(&mut router).await;

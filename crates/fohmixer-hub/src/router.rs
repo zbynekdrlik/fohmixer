@@ -436,6 +436,13 @@ pub enum RouterMsg {
         instance: String,
         generation: u64,
     },
+    /// The turn `generation` of `instance`'s paced key write is due (#190):
+    /// a settle's end or the next target of its spread; void once a newer
+    /// turn or none is armed.
+    AutotuneKeyTurn {
+        instance: String,
+        generation: u64,
+    },
     /// The gap `generation` after `instance`'s last AUTOTUNE walk is over
     /// (#235): its next walk starts; void once a disconnect dropped its
     /// walks.
@@ -1417,6 +1424,10 @@ impl Router {
                 instance,
                 generation,
             } => self.autotune_engage_end(&instance, generation),
+            RouterMsg::AutotuneKeyTurn {
+                instance,
+                generation,
+            } => self.autotune_key_turn(&instance, generation),
             RouterMsg::AutotuneSafe {
                 instance,
                 seq,

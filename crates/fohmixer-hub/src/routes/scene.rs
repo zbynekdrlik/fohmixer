@@ -1,4 +1,4 @@
-//! `POST /api/scene` (#207): Companion's trigger on the service's scene
+//! `POST /api/scene` (#207): Companion's scene button for the service's scene
 //! tells the hub the scene, `{"scene": "<name>"}`, with the automation
 //! token as `Authorization: Bearer <token>` (`crate::automation`). Taken on
 //! the LAN only; the router learns the name and moves the faders with a
