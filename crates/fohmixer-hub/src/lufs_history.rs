@@ -123,7 +123,11 @@ impl LufsHistory {
 
     /// [`LufsHistory::sample`] with the points' Live sets (#255): `items`
     /// gives the points' samples and their sets' (`router/lufs.rs`).
-    pub fn sample_with(&self, ms: i64, items: impl FnOnce() -> (Vec<Sample>, Vec<SetSample>)) {
+    pub fn sample_with<'a>(
+        &self,
+        ms: i64,
+        items: impl FnOnce() -> (Vec<Sample>, Vec<SetSample<'a>>),
+    ) {
         let line = {
             let mut recorder = self.recorder();
             if !recorder.due(ms) {
@@ -195,6 +199,11 @@ impl LufsHistory {
             if end > covers {
                 set.names.extend(recorder.set_names(&point.0));
             }
+        }
+        // A set never known in the window sends no transport or song at
+        // all (the page reads none as unknown), not a null per bucket.
+        if !set.known() {
+            set = SetSlots::default();
         }
         Ok(bucket_with(start, &slots, &faders, &set))
     }

@@ -687,7 +687,7 @@ async fn the_tick_records_each_points_sets_transport_and_song_at_its_playhead() 
     router.autotune.current_maps.insert("band".into());
     assert_eq!(
         router.history_set("band"),
-        (Some(true), Some((57, "Quiet Hill".to_string())))
+        (Some(true), Some((57, "Quiet Hill")))
     );
     // Out of every song; a set the hub has no playhead of.
     router.autotune.positions.get_mut("band").unwrap().time = Some(110.0);
@@ -720,37 +720,27 @@ async fn the_tick_records_each_points_sets_transport_and_song_at_its_playhead() 
 
 #[test]
 fn the_historys_sets_are_each_points_instance_once_in_order() {
-    let sample = |instance: &str, target: &str| Sample {
-        point: (instance.into(), target.into()),
-        tenths: None,
-        fader: None,
-    };
-    let points = [
-        sample("master", "live_set master_track"),
-        sample("band", "live_set tracks 1"),
-        sample("master", "live_set tracks 2"),
-        sample("band", "live_set tracks 3"),
-    ];
-    let sets = sets_of(&points, |instance| {
+    let instances = ["master", "band", "master", "band"];
+    let sets = sets_of(instances.into_iter(), |instance| {
         (
             Some(instance == "band"),
-            (instance == "band").then(|| (31, "A".to_string())),
+            (instance == "band").then_some((31, "A")),
         )
     });
     assert_eq!(
         sets,
         vec![
             SetSample {
-                instance: "master".into(),
+                instance: "master",
                 playing: Some(false),
                 song: None,
             },
             SetSample {
-                instance: "band".into(),
+                instance: "band",
                 playing: Some(true),
-                song: Some((31, "A".into())),
+                song: Some((31, "A")),
             },
         ]
     );
-    assert!(sets_of(&[], |_| (None, None)).is_empty());
+    assert!(sets_of(std::iter::empty(), |_| (None, None)).is_empty());
 }

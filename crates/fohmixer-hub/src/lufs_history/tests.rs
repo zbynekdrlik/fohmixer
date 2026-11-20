@@ -476,9 +476,9 @@ fn a_window_reads_its_sets_transport_and_song_from_the_day_files_and_the_hour() 
         (
             vec![item("band", VOX, Some(-200))],
             vec![SetSample {
-                instance: "band".into(),
+                instance: "band",
                 playing: Some(true),
-                song: Some((31, "Morning Light".into())),
+                song: Some((31, "Morning Light")),
             }],
         )
     });
@@ -520,7 +520,7 @@ fn a_minute_where_only_the_set_is_known_goes_to_the_writer() {
             (
                 vec![item("band", VOX, Some(SILENT_TENTHS))],
                 vec![SetSample {
-                    instance: "band".into(),
+                    instance: "band",
                     playing: Some(false),
                     song: None,
                 }],
@@ -531,4 +531,43 @@ fn a_minute_where_only_the_set_is_known_goes_to_the_writer() {
     assert_eq!(line.m, T0);
     assert!(line.points.is_empty());
     assert_eq!(line.set_slots("band").unwrap().0, vec![0; 60]);
+}
+
+#[test]
+fn a_window_whose_set_is_never_known_sends_no_transport_or_song() {
+    use crate::rules::lufs::history::SetSample;
+    let (history, _rx) = LufsHistory::channel(None, 4);
+    history.sample_with(T0, || {
+        (
+            vec![item("master", VOX, Some(-200))],
+            vec![SetSample {
+                instance: "master",
+                playing: None,
+                song: None,
+            }],
+        )
+    });
+    let series = history
+        .history("master", VOX, T0 - 5000, T0 + 1000)
+        .unwrap();
+    assert_eq!(series.values.len(), 6);
+    assert!(series.play.is_empty(), "{:?}", series.play);
+    assert!(series.song.is_empty(), "{:?}", series.song);
+    // Known in one second of it: one value per bucket.
+    history.sample_with(T0 + 1000, || {
+        (
+            vec![item("master", VOX, Some(-200))],
+            vec![SetSample {
+                instance: "master",
+                playing: Some(false),
+                song: None,
+            }],
+        )
+    });
+    let series = history
+        .history("master", VOX, T0 - 5000, T0 + 2000)
+        .unwrap();
+    assert_eq!(series.play.len(), 7);
+    assert_eq!(series.play[6], Some(false));
+    assert_eq!(series.song.len(), 7);
 }

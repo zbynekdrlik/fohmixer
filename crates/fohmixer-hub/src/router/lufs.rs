@@ -223,22 +223,21 @@ pub(super) fn samples_of(
         .collect()
 }
 
-/// The history's Live sets of the points' samples (#255): each point's
-/// instance once, in the points' order, with its transport and song as
-/// `set_of` knows them.
-pub(super) fn sets_of(
-    points: &[Sample],
-    set_of: impl Fn(&str) -> (Option<bool>, Option<(u16, String)>),
-) -> Vec<SetSample> {
-    let mut sets: Vec<SetSample> = Vec::new();
-    for sample in points {
-        let instance = &sample.point.0;
-        if sets.iter().any(|s| &s.instance == instance) {
+/// The history's Live sets of the served points (#255, `instances`: each
+/// point's): each once, in the points' order, with its transport and song
+/// as `set_of` knows them, borrowed (a second allocates no name).
+pub(super) fn sets_of<'a>(
+    instances: impl Iterator<Item = &'a str>,
+    set_of: impl Fn(&'a str) -> (Option<bool>, Option<(u16, &'a str)>),
+) -> Vec<SetSample<'a>> {
+    let mut sets: Vec<SetSample<'a>> = Vec::new();
+    for instance in instances {
+        if sets.iter().any(|s| s.instance == instance) {
             continue;
         }
         let (playing, song) = set_of(instance);
         sets.push(SetSample {
-            instance: instance.clone(),
+            instance,
             playing,
             song,
         });
@@ -452,14 +451,15 @@ impl Router {
         let this = &*self;
         this.lufs.history.sample_with(crate::events::now_ms(), || {
             let points = samples_of(this.lufs.rule.items(), &this.lufs.faders);
-            let sets = sets_of(&points, |instance| this.history_set(instance));
+            let instances = this.lufs.points.iter().map(|p| p.instance.as_str());
+            let sets = sets_of(instances, |instance| this.history_set(instance));
             (points, sets)
         });
     }
 
     /// A Live set's second for the history (#255): its transport as last
     /// heard and its song at the playhead.
-    fn history_set(&self, instance: &str) -> (Option<bool>, Option<(u16, String)>) {
+    fn history_set(&self, instance: &str) -> (Option<bool>, Option<(u16, &str)>) {
         (self.transport_now(instance), self.history_song(instance))
     }
 
@@ -467,13 +467,13 @@ impl Router {
     /// playhead of the set on the map read since its connect (PR 2a review
     /// M1: one from before may be another set's); none without either, or
     /// out of every song.
-    fn history_song(&self, instance: &str) -> Option<(u16, String)> {
+    fn history_song(&self, instance: &str) -> Option<(u16, &str)> {
         if !self.autotune.current_maps.contains(instance) {
             return None;
         }
         let time = self.autotune.positions.get(instance)?.time?;
         let map = &self.songmap.maps.get(instance)?.map;
-        song_name_at(map, time).map(|(number, name)| (number, name.to_string()))
+        song_name_at(map, time)
     }
 
     /// The hub's LUFS history (#219): the router samples it.

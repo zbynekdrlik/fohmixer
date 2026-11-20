@@ -431,11 +431,15 @@ fn an_older_hubs_line_reads_as_no_fader() {
 }
 
 /// A second of `instance`'s Live set (#255): its transport and song.
-fn set(instance: &str, playing: Option<bool>, song: Option<(u16, &str)>) -> SetSample {
+fn set<'a>(
+    instance: &'a str,
+    playing: Option<bool>,
+    song: Option<(u16, &'a str)>,
+) -> SetSample<'a> {
     SetSample {
-        instance: instance.to_string(),
+        instance,
         playing,
-        song: song.map(|(n, name)| (n, name.to_string())),
+        song,
     }
 }
 
@@ -645,20 +649,29 @@ fn a_buckets_transport_and_song_follow_the_shared_rules() {
     assert_eq!(play_value(&[1, 0, 0, HOLE]), Some(false));
     assert_eq!(play_value(&[0]), Some(false));
     // The song: of the playing seconds only, none for a bucket that stands.
-    assert_eq!(song_value(&[1, 1, 0, 0], &[31, 57, 57, 57]), Some(31));
-    assert_eq!(song_value(&[1, 1, 1, 0], &[31, 57, 57, 31]), Some(57));
-    assert_eq!(song_value(&[0, 0, 0, 1], &[31, 31, 31, 31]), None);
     assert_eq!(
-        song_value(&[1, 1], &[HOLE, HOLE]),
-        None,
+        set_value(&[1, 1, 0, 0], &[31, 57, 57, 57]),
+        (Some(true), Some(31))
+    );
+    assert_eq!(
+        set_value(&[1, 1, 1, 0], &[31, 57, 57, 31]),
+        (Some(true), Some(57))
+    );
+    assert_eq!(
+        set_value(&[0, 0, 0, 1], &[31, 31, 31, 31]),
+        (Some(false), None)
+    );
+    assert_eq!(
+        set_value(&[1, 1], &[HOLE, HOLE]),
+        (Some(true), None),
         "outside every song"
     );
     assert_eq!(
-        song_value(&[1, HOLE], &[HOLE, 31]),
-        None,
+        set_value(&[1, HOLE], &[HOLE, 31]),
+        (Some(true), None),
         "a song of no playing second"
     );
-    assert_eq!(song_value(&[HOLE], &[31]), None);
+    assert_eq!(set_value(&[HOLE], &[31]), (None, None));
 }
 
 #[test]
@@ -702,4 +715,35 @@ fn a_window_is_bucketed_with_its_sets_transport_song_and_names() {
     assert_eq!(holes.plays, vec![HOLE, HOLE]);
     assert_eq!(holes.songs, vec![HOLE, HOLE]);
     assert!(holes.names.is_empty());
+}
+
+#[test]
+fn a_songs_name_is_kept_once_and_written_again_only_when_it_changes() {
+    let mut names = BTreeMap::new();
+    keep_name(&mut names, "band", 31, "Morning Light");
+    keep_name(&mut names, "band", 31, "Morning Light");
+    keep_name(&mut names, "band", 57, "Quiet Hill");
+    keep_name(&mut names, "master", 31, "Other");
+    assert_eq!(
+        names["band"],
+        BTreeMap::from([
+            (31, "Morning Light".to_string()),
+            (57, "Quiet Hill".to_string())
+        ])
+    );
+    assert_eq!(names["master"], BTreeMap::from([(31, "Other".to_string())]));
+    keep_name(&mut names, "band", 31, "Renamed");
+    assert_eq!(names["band"][&31], "Renamed");
+}
+
+#[test]
+fn a_windows_set_is_known_by_any_known_second() {
+    assert!(!SetSlots::holes(3).known());
+    assert!(!SetSlots::default().known());
+    let mut set = SetSlots::holes(3);
+    set.plays[2] = 0;
+    assert!(set.known());
+    let mut set = SetSlots::holes(3);
+    set.songs[0] = 31;
+    assert!(set.known());
 }
