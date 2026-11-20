@@ -145,6 +145,7 @@ fn the_history_answers_read_as_the_hub_writes_them() {
         from: 1_794_736_800_000,
         step_ms: 2000,
         values: vec![Some(-230), None, Some(-700)],
+        fader: Vec::new(),
     };
     let text = serde_json::to_string(&series).unwrap();
     assert_eq!(
@@ -167,6 +168,60 @@ fn the_history_answers_read_as_the_hub_writes_them() {
 }
 
 #[test]
+fn a_series_carries_the_fader_beside_the_readings_and_an_older_hubs_reads_as_none() {
+    let series = HistorySeries {
+        from: 1_794_736_800_000,
+        step_ms: 2000,
+        values: vec![Some(-230), None],
+        fader: vec![Some(-45), None],
+    };
+    let text = serde_json::to_string(&series).unwrap();
+    assert_eq!(
+        text,
+        r#"{"from":1794736800000,"step_ms":2000,"values":[-230,null],"fader":[-45,null]}"#
+    );
+    assert_eq!(
+        serde_json::from_str::<HistorySeries>(&text).unwrap(),
+        series
+    );
+    // An older hub's answer has no `fader`.
+    let old: HistorySeries =
+        serde_json::from_str(r#"{"from":5,"step_ms":1000,"values":[-230]}"#).unwrap();
+    assert_eq!(old.fader, Vec::<Option<i16>>::new());
+    assert_eq!(old.values, vec![Some(-230)]);
+}
+
+#[test]
+fn a_faders_volume_reads_as_db_tenths_minus_infinity_at_the_floor() {
+    assert_eq!(FADER_FLOOR_TENTHS, -700);
+    assert_eq!(FADER_TOP_TENTHS, 60);
+    assert_eq!(fader_tenths(None), None);
+    // 0 dB at Live's 0.85, +6 dB at 1.0, -10 dB at 0.6.
+    assert_eq!(fader_tenths(Some(0.85)), Some(0));
+    assert_eq!(fader_tenths(Some(1.0)), Some(60));
+    assert_eq!(fader_tenths(Some(0.6)), Some(-100));
+    // Rounded to the nearest tenth: 0.84 is -0.4 dB, 0.8425 is -0.3 dB.
+    assert_eq!(fader_tenths(Some(0.84)), Some(-4));
+    assert_eq!(fader_tenths(Some(0.8425)), Some(-3));
+    // -inf at 0 and at the floor.
+    assert_eq!(fader_tenths(Some(0.0)), Some(-700));
+    // 0.97 is +4.8 dB.
+    assert_eq!(fader_tenths(Some(0.97)), Some(48));
+    // Just above the floor: -69.9 dB stays a number.
+    let near = crate::volume::volume_of(-69.9);
+    assert_eq!(fader_tenths(Some(near)), Some(-699));
+}
+
+#[test]
+fn a_median_is_the_upper_middle_and_none_of_nothing() {
+    assert_eq!(median(&[]), None);
+    assert_eq!(median(&[-40]), Some(-40));
+    assert_eq!(median(&[-10, -40]), Some(-10));
+    assert_eq!(median(&[-10, -40, -20]), Some(-20));
+    assert_eq!(median(&[5, -10, -40, -20]), Some(-10));
+}
+
+#[test]
 fn a_bucket_is_silence_when_half_or_more_are_silent() {
     assert!(mostly_silent(1, 2));
     assert!(!mostly_silent(1, 3));
@@ -176,13 +231,46 @@ fn a_bucket_is_silence_when_half_or_more_are_silent() {
 }
 
 #[test]
-fn a_bucket_is_the_median_above_silence() {
+fn a_bucket_is_the_gated_loudness_above_silence() {
     assert_eq!(bucket_of(&[]), None);
     assert_eq!(bucket_of(&[-700]), Some(SILENT_TENTHS));
     assert_eq!(bucket_of(&[-701, -200]), Some(SILENT_TENTHS));
-    assert_eq!(bucket_of(&[-700, -200, -210]), Some(-200));
-    assert_eq!(bucket_of(&[-250, -200, -210]), Some(-210));
+    // Exactly −70 is silence too: half of two.
+    assert_eq!(bucket_of(&[-700, -200]), Some(SILENT_TENTHS));
+    // One silent of three: the gated loudness of the others.
+    assert_eq!(bucket_of(&[-700, -200, -210]), Some(-205));
+    assert_eq!(bucket_of(&[-250, -200, -210]), Some(-215));
     assert_eq!(bucket_of(&[-699]), Some(-699));
-    assert_eq!(bucket_of(&[-200, -250]), Some(-200));
-    assert_eq!(bucket_of(&[-200, -240, -220, -210]), Some(-210));
+    assert_eq!(bucket_of(&[-200, -250]), Some(-218));
+    assert_eq!(bucket_of(&[-200, -240, -220, -210]), Some(-215));
+    // A breath more than 10 LU under the sung level is gated out.
+    assert_eq!(bucket_of(&[-200, -200, -200, -340]), Some(-200));
+}
+
+#[test]
+fn an_energy_mean_weighs_the_loud_readings_as_loudness_does() {
+    assert_eq!(energy_mean(&[]), None);
+    let one = energy_mean(&[-230]).unwrap();
+    assert!((one + 230.0).abs() < 1e-9, "{one}");
+    // −20 and −30 LU: 10·log10((0.01 + 0.001) / 2) = −22.596 LU.
+    let two = energy_mean(&[-200, -300]).unwrap();
+    assert!((two + 225.96).abs() < 0.01, "{two}");
+    assert_eq!(GATE_TENTHS, 100);
+}
+
+#[test]
+fn the_gate_leaves_out_what_lies_more_than_10_lu_under_the_mean() {
+    // Sung at −20, one breath at −34: gated out, −20.0.
+    assert_eq!(gated(&[-200, -200, -200, -340]), Some(-200));
+    // The mean before the gate: 10·log10((3·0.01 + 0.00078) / 4) = −21.14,
+    // −21.1 rounded; a reading at −31.1, exactly 10 LU under it, stays.
+    assert_eq!(gated(&[-200, -200, -200, -311]), Some(-211));
+    // One a tenth further under it is gated out.
+    assert_eq!(gated(&[-200, -200, -200, -312]), Some(-200));
+    // A quiet song stays quiet.
+    assert_eq!(gated(&[-300, -300]), Some(-300));
+    // Two loud and two soft 8 LU apart: no gate, the energy mean
+    // (10·log10((2·0.01 + 2·0.00158) / 4) = −22.37).
+    assert_eq!(gated(&[-200, -200, -280, -280]), Some(-224));
+    assert_eq!(gated(&[]), None);
 }

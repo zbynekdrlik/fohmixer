@@ -158,6 +158,68 @@ fn each_part_lands_in_its_field() {
 }
 
 #[test]
+fn the_historys_samples_carry_each_points_fader_as_heard() {
+    let item = |target: &str, tenths| LufsItem {
+        instance: "band".into(),
+        target: target.into(),
+        tenths,
+        voice: None,
+        problem: None,
+    };
+    let mut faders = BTreeMap::new();
+    faders.insert(
+        ("band".to_string(), "live_set tracks 1".to_string()),
+        Fader {
+            volume: Some(0.85),
+            mute: Some(true),
+            pan: None,
+            arm: None,
+        },
+    );
+    faders.insert(
+        ("band".to_string(), "live_set tracks 2".to_string()),
+        Fader {
+            volume: None,
+            mute: Some(false),
+            pan: Some(0.0),
+            arm: None,
+        },
+    );
+    let samples = samples_of(
+        vec![
+            item("live_set tracks 1", Some(-230)),
+            item("live_set tracks 2", None),
+            item("live_set tracks 3", Some(-180)),
+        ],
+        &faders,
+    );
+    let point = |t: &str| ("band".to_string(), t.to_string());
+    assert_eq!(
+        samples,
+        vec![
+            // 0 dB at 0.85; a muted track keeps its fader's value.
+            Sample {
+                point: point("live_set tracks 1"),
+                tenths: Some(-230),
+                fader: Some(0),
+            },
+            // No volume heard yet: no fader.
+            Sample {
+                point: point("live_set tracks 2"),
+                tenths: None,
+                fader: None,
+            },
+            // A point whose fader the hub never heard.
+            Sample {
+                point: point("live_set tracks 3"),
+                tenths: Some(-180),
+                fader: None,
+            },
+        ]
+    );
+}
+
+#[test]
 fn a_points_meter_keys_carry_its_levels() {
     let keys = meter_keys("band", "live_set tracks 1", (0.25, 0.5));
     assert_eq!(
@@ -541,4 +603,37 @@ async fn the_tick_samples_the_served_points_into_the_history_once_a_second() {
     router.lufs_tick();
     assert_eq!(history.status().points, 1, "the served point is sampled");
     assert_eq!(router.lufs_status().history.points, 1);
+}
+
+#[tokio::test]
+async fn the_tick_records_each_points_fader_with_no_page_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let (router, _rx, _records) = offline_router(dir.path());
+    let history = crate::lufs_history::LufsHistory::off();
+    let mut router = router.with_lufs_history(history.clone());
+    router.lufs_layout(vec![point(
+        "live_set tracks 1",
+        Anchor::TrackAt { index: 1 },
+        true,
+    )]);
+    // The LUFS rule's own subscription of the volume hears −10 dB.
+    let volume = hub_key(
+        "band",
+        "live_set tracks 1 mixer_device volume",
+        "value",
+        false,
+    );
+    assert_eq!(router.subs.clients_of(&volume), vec![LEVELS_CLIENT]);
+    router.lufs_value(&volume, Some(json!(0.6)));
+    let before = crate::events::now_ms();
+    router.lufs_tick();
+    let after = crate::events::now_ms() + 1000;
+    let series = history
+        .history("band", "live_set tracks 1", before, after)
+        .unwrap();
+    assert!(
+        series.fader.contains(&Some(-100)),
+        "the fader of the sampled second: {:?}",
+        series.fader
+    );
 }

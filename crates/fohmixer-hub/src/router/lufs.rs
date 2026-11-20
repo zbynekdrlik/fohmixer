@@ -23,15 +23,19 @@
 //! - runs the rule's confirming walks (`rules/lufs/confirm.rs`) through the
 //!   instance's script, one task each ([`RouterMsg::LufsConfirmed`]);
 //! - sends the points' items to every page (`Outbox::lufs`, paced with the
-//!   meters) and at attach; records each `lufs` line with one log line.
+//!   meters) and at attach; records each `lufs` line with one log line;
+//! - samples the history (#219) once a second: each point's reading and,
+//!   since #253, its strip's fader from the volume this subscriber already
+//!   follows ([`samples_of`]), so it is kept with no page open.
 //!
 //! It never writes anything to Live.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use fohmixer_proto::client::{LufsStatus, METER_PROPS, ValueItem, hub_key};
+use fohmixer_proto::client::{LufsItem, LufsStatus, METER_PROPS, ValueItem, hub_key};
 use fohmixer_proto::layout::{Anchor, LufsPoint};
+use fohmixer_proto::lufs::fader_tenths;
 use fohmixer_proto::lufs::wire::Reading;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -45,6 +49,7 @@ use crate::live::subs::{Cached, ClientId};
 use crate::lufs_history::LufsHistory;
 use crate::outbox::Outbox;
 use crate::rules::lufs::confirm::{self, Confirm, Step};
+use crate::rules::lufs::history::Sample;
 use crate::rules::lufs::{Act, Answer, Fader, Key, Lufs, LufsStrip, meter_values};
 
 /// The rule's own subscriber (the points' faders, pans, mutes and arms).
@@ -190,6 +195,27 @@ pub(super) fn names_of(slots: &[Value]) -> Result<(String, String), String> {
             Value::from(slots.to_vec())
         )),
     }
+}
+
+/// The history's samples of the points' items (#253): each reading with
+/// its strip's fader as heard (`faders`, by instance and target; its
+/// volume in dB tenths, none while unknown).
+pub(super) fn samples_of(
+    items: Vec<LufsItem>,
+    faders: &BTreeMap<(String, String), Fader>,
+) -> Vec<Sample> {
+    items
+        .into_iter()
+        .map(|item| {
+            let point = (item.instance, item.target);
+            let fader = faders.get(&point).and_then(|f| fader_tenths(f.volume));
+            Sample {
+                point,
+                tenths: item.tenths,
+                fader,
+            }
+        })
+        .collect()
 }
 
 /// Whether a failed names read is tried again: Live did not answer or was
@@ -390,15 +416,15 @@ impl Router {
     }
 
     /// The rule's tick; then the history's sample of the points' readings
-    /// at the hub clock's whole second (#219: every tenth tick).
+    /// and faders at the hub clock's whole second (#219: every tenth tick).
     pub(super) fn lufs_tick(&mut self) {
         let now = self.lufs_now();
         let acts = self.lufs.rule.tick(now);
         self.lufs_apply(acts);
-        let rule = &self.lufs.rule;
+        let (rule, faders) = (&self.lufs.rule, &self.lufs.faders);
         self.lufs
             .history
-            .sample(crate::events::now_ms(), || rule.items());
+            .sample(crate::events::now_ms(), || samples_of(rule.items(), faders));
     }
 
     /// The hub's LUFS history (#219): the router samples it.

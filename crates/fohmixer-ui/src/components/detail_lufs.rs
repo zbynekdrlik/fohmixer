@@ -1,30 +1,36 @@
 //! The channel detail's middle-box tabs and its LUFS history (#219, the
 //! design on the ticket; the owner's approved mockup
-//! `docs/mockups/lufs-history-v2.html`): `EQ` (the Pro-Q 4 cards) and, on a
-//! `+LUFS` strip, `LUFS`, each filling the whole box. The LUFS tab draws the
-//! point's short-term reading over a window (`10 MIN`, `1 H`, `3 H`, a drag
-//! back in time, a past day), read from the hub's `/api/lufs/history` and
-//! `/api/lufs/days`, its live edge from the page's own readings once a
-//! second. Every decision is `behave::lufs_history`; this is the glue: the
-//! card (`DetailLufs`) and its head, graph and days, sharing one `Lh`.
+//! `docs/mockups/lufs-history-v2.html`, its graph since #253 mockup v3):
+//! `EQ` (the Pro-Q 4 cards) and, on a `+LUFS` strip, `LUFS`, each filling
+//! the whole box. The LUFS tab draws the point's short-term reading over a
+//! window (`10 MIN`, `1 H`, `3 H`, a drag back in time, a past day) as a
+//! calm curve, and the strip's fader beside it on its own dB scale, read
+//! from the hub's `/api/lufs/history` and `/api/lufs/days`, its live edge
+//! from the page's own reading and fader once a second. Every decision is
+//! `behave::lufs_history`; this is the glue: the card (`DetailLufs`) and
+//! its head, graph and days, sharing one `Lh`.
 
 use std::time::Duration;
 
 use fohmixer_proto::layout::{LufsSpec, Strip};
 use fohmixer_proto::lufs::{HistoryDay, caption};
-use leptos::html;
 use leptos::prelude::*;
 
-use super::{down_of, owns_touches};
+use super::owns_touches;
 use crate::behave::lufs::{look, point_key};
 use crate::behave::lufs_history::{
-    Answers, BOX, DEFAULT_SPAN_MS, Gesture, HOLD_MS, MINUTE_MS, OnDown, Press, SECOND_MS, Tab,
-    View, WINDOWS, band, column_at, columns, cursor_text, cursor_time, day_chip_at, edge_reading,
-    keep_tail, on_down, pct, push_reading, refresh, retry_series, runs, samples, scale, second_of,
-    series_end, shown_tab, tab_row, tabs, target_text, tick_label, tick_marks, x_frac, x_of, y_of,
+    Answers, Column, DEFAULT_SPAN_MS, MINUTE_MS, SECOND_MS, Sample, Tab, View, WINDOWS, column_at,
+    cursor_text, day_chip_at, drawn_columns, edge_reading, fader_text, keep_tail, push_reading,
+    refresh, retry_series, samples, second_of, series_end, shown_tab, tab_row, tabs, target_text,
 };
+use crate::binding::strip_subs;
 use crate::dom;
-use crate::store::LiveStore;
+use crate::store::{LiveStore, Slot};
+
+mod graph;
+use fohmixer_proto::layout::MeterSource;
+use fohmixer_proto::lufs::fader_tenths;
+use graph::LufsGraph;
 
 /// The middle box's tab and the history's window, kept per page (a context
 /// of the surface, beside `DetailStrip`): the next detail opens on them.
@@ -133,23 +139,26 @@ fn MiddleTabs(shown: Memo<Tab>) -> impl IntoView {
     view! { <div class="mtabs" data-testid="detail-tabs">{keys.collect_view()}</div> }
 }
 
-/// The card's shared state: the point, the view, the clock, the hub's
-/// series and days, the live edge's readings, the cursor, and what is
-/// drawn from them.
+/// The card's shared state: the point, the strip's volume, the view, the
+/// clock, the hub's series and days, the live edge's samples, the cursor,
+/// and what is drawn from them.
 #[derive(Clone, Copy)]
 struct Lh {
     store: LiveStore,
     point: StoredValue<(String, String)>,
+    /// The strip's volume as the detail follows it (#253: the head's fader
+    /// and the live edge's).
+    volume: Option<RwSignal<Slot>>,
     target: Option<i8>,
     kept_span: RwSignal<i64>,
     shown: RwSignal<View>,
     now: RwSignal<i64>,
     answers: RwSignal<Answers>,
-    tail: RwSignal<Vec<(i64, Option<i16>)>>,
+    tail: RwSignal<Vec<Sample>>,
     days: RwSignal<Vec<HistoryDay>>,
     cursor: RwSignal<Option<i64>>,
     window: Memo<(i64, i64)>,
-    cols: Memo<Vec<Option<i16>>>,
+    cols: Memo<Vec<Column>>,
 }
 
 impl Lh {
@@ -196,8 +205,25 @@ impl Lh {
         });
     }
 
-    /// One second: the clock, the live edge's reading, and the hub asked
-    /// again when `refresh` says so (`n` counts the ticks from 1).
+    /// The strip's fader as the head shows it, dB tenths: Live's volume as
+    /// last heard, kept through an outage like the strip's own (none while
+    /// it is not known).
+    fn fader_now(self) -> Option<i16> {
+        fader_tenths(self.volume?.try_with(Slot::number).flatten())
+    }
+
+    /// The strip's fader the live edge records, dB tenths: only a fresh
+    /// value (a stale one through an outage is no second's fader).
+    fn edge_fader(self) -> Option<i16> {
+        fader_tenths(
+            self.volume?
+                .try_with_untracked(Slot::fresh_number)
+                .flatten(),
+        )
+    }
+
+    /// One second: the clock, the live edge's reading and fader, and the
+    /// hub asked again when `refresh` says so (`n` counts the ticks from 1).
     fn tick(self, n: u32) {
         let t = wall_ms();
         let _ = self.now.try_set(t);
@@ -216,9 +242,10 @@ impl Lh {
                 .flatten()
                 .flatten();
             let from = v.window(t).0;
+            let fader = self.edge_fader();
             let _ = self
                 .tail
-                .try_update(|tl| push_reading(tl, second_of(t), reading, from));
+                .try_update(|tl| push_reading(tl, second_of(t), reading, fader, from));
         }
         let known = self
             .days
@@ -260,7 +287,7 @@ pub fn DetailLufs(strip: Strip) -> impl IntoView {
     ));
     let now = RwSignal::new(wall_ms());
     let answers = RwSignal::new(Answers::default());
-    let tail = RwSignal::new(Vec::<(i64, Option<i16>)>::new());
+    let tail = RwSignal::new(Vec::<Sample>::new());
     let window = Memo::new(move |_| {
         let t = now.try_get().unwrap_or(0);
         shown
@@ -275,11 +302,15 @@ pub fn DetailLufs(strip: Strip) -> impl IntoView {
             .flatten()
             .unwrap_or_default();
         all.extend(tail.try_get().unwrap_or_default());
-        columns(&all, t0, t1)
+        drawn_columns(&all, t0, t1)
     });
+    let volume = strip_subs(&strip, MeterSource::Level)
+        .volume
+        .map(|spec| store.slot(&spec));
     let lh = Lh {
         store,
         point: StoredValue::new(key),
+        volume,
         target,
         kept_span: middle.span,
         shown,
@@ -349,13 +380,14 @@ fn LufsHead(lh: Lh, spec: Option<LufsSpec>) -> impl IntoView {
     };
     let now_state = move || reading.try_with(|l| l.state.as_str()).unwrap_or("none");
     let target_line = target_text(lh.target).unwrap_or_default();
+    let fader_line = move || fader_text(lh.fader_now()).unwrap_or_default();
     let cursor_line = move || {
         let t = lh.cursor.try_get().flatten()?;
         let (t0, t1) = lh.window.try_get()?;
-        let v = lh
+        let col = lh
             .cols
-            .try_with(|c| c.get(column_at(t, t0, t1)).copied().flatten())?;
-        Some(cursor_text(t, v, offset_at(t)))
+            .try_with(|c| c.get(column_at(t, t0, t1)).copied().unwrap_or_default())?;
+        Some(cursor_text(t, col, offset_at(t)))
     };
     let chips = WINDOWS.map(|(label, span)| {
         let keys: Vec<String> = Vec::new();
@@ -407,6 +439,9 @@ fn LufsHead(lh: Lh, spec: Option<LufsSpec>) -> impl IntoView {
             <div class="lh-target" data-testid="lufs-history-target">
                 {target_line}
             </div>
+            <div class="lh-fader" data-testid="lufs-history-fader">
+                {fader_line}
+            </div>
             <div class="lh-cursor" data-testid="lufs-history-cursor">
                 {cursor_line}
             </div>
@@ -422,263 +457,6 @@ fn LufsHead(lh: Lh, spec: Option<LufsSpec>) -> impl IntoView {
                     "NOW ›"
                 </button>
                 {chips.into_iter().collect_view()}
-            </div>
-        </div>
-    }
-}
-
-/// A finger on the graph: its press, the view it began on, and the plot's
-/// left edge and width (px) at the down.
-#[derive(Clone, Copy)]
-struct Held {
-    press: Press,
-    start: View,
-    left: f64,
-    width: f64,
-}
-
-/// The graph: the scale's labels and lines, the time ticks, the line's
-/// runs, the cursor; a drag pans back in time, a hold shows the cursor.
-#[component]
-fn LufsGraph(lh: Lh) -> impl IntoView {
-    let held = StoredValue::new(None::<Held>);
-    let hold_timer = StoredValue::new(None::<TimeoutHandle>);
-    let plot = NodeRef::<html::Div>::new();
-    on_cleanup(move || {
-        if let Some(Some(handle)) = hold_timer.try_update_value(Option::take) {
-            handle.clear();
-        }
-    });
-
-    let graph_scale = Memo::new(move |_| scale(lh.target, &lh.cols.try_get().unwrap_or_default()));
-    let line = Memo::new(move |_| {
-        let s = graph_scale
-            .try_get()
-            .unwrap_or_else(|| scale(lh.target, &[]));
-        runs(&lh.cols.try_get().unwrap_or_default(), &s, lh.target)
-    });
-    let x_parts = Memo::new(move |_| {
-        let (t0, t1) = lh.window.try_get().unwrap_or((0, 1));
-        tick_marks(t0, t1, offset_at)
-            .into_iter()
-            .map(|(t, text)| (format!("left:{}", pct(x_of(t, t0, t1))), text))
-            .collect::<Vec<_>>()
-    });
-    let y_lines = move || {
-        let s = graph_scale.try_get()?;
-        let band_lines = band(&s).map(|(top, bottom)| {
-            view! {
-                <div class="lh-band" style=format!("top:{}", pct(top))></div>
-                <div class="lh-band" style=format!("top:{}", pct(bottom))></div>
-            }
-        });
-        let lines = s
-            .ticks
-            .iter()
-            .map(|v| {
-                let main = s.target == Some(*v);
-                let top = format!("top:{}", pct(y_of(*v, &s)));
-                view! { <div class="lh-hline" data-main=main.to_string() style=top></div> }
-            })
-            .collect_view();
-        Some(view! { {lines} {band_lines} })
-    };
-    let y_labels = move || {
-        let s = graph_scale.try_get()?;
-        Some(
-            s.ticks
-                .iter()
-                .map(|v| {
-                    let main = s.target == Some(*v);
-                    let top = format!("top:{}", pct(y_of(*v, &s)));
-                    view! {
-                        <span data-main=main.to_string() style=top>
-                            {tick_label(*v)}
-                        </span>
-                    }
-                })
-                .collect_view(),
-        )
-    };
-    let x_lines = move || {
-        x_parts
-            .try_get()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(left, _)| view! { <div class="lh-vline" style=left></div> })
-            .collect_view()
-    };
-    let x_labels = move || {
-        x_parts
-            .try_get()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(left, text)| view! { <span style=left>{text}</span> })
-            .collect_view()
-    };
-    let polylines = move || {
-        line.try_get()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|r| {
-                view! {
-                    <polyline
-                        class="lh-line"
-                        data-testid="lufs-line"
-                        data-green=r.green.to_string()
-                        points=r.points
-                    ></polyline>
-                }
-            })
-            .collect_view()
-    };
-    let drawn = move || line.try_with(Vec::len).unwrap_or(0);
-    let drawn_any = move || drawn() > 0;
-    let answered = move || !lh.answers.try_with(Answers::failed).unwrap_or(false);
-    let cursor_mark = move || {
-        let t = lh.cursor.try_get().flatten()?;
-        let (t0, t1) = lh.window.try_get()?;
-        let left = format!("left:{}", pct(x_of(t.clamp(t0, t1), t0, t1)));
-        Some(view! { <div class="lh-cursor-line" data-testid="lufs-cursor" style=left></div> })
-    };
-    let view_box = format!("0 0 {BOX} {BOX}");
-
-    // A finger on the graph.
-    let time_at = move |x: f64, h: &Held| {
-        let (t0, t1) = lh.window.try_get_untracked().unwrap_or((0, 1));
-        cursor_time(x_frac(x, h.left, h.width), t0, t1)
-    };
-    let end_press = move |why: &str| {
-        if let Some(Some(handle)) = hold_timer.try_update_value(Option::take) {
-            handle.clear();
-        }
-        let Some(Some(h)) = held.try_update_value(Option::take) else {
-            return;
-        };
-        let _ = lh.cursor.try_set(None);
-        dom::log(&format!(
-            "lufs history: press {why} (dragged {}, held {})",
-            h.press.dragged(),
-            h.press.holding()
-        ));
-        if h.press.dragged()
-            && let Some(v) = lh.shown.try_get_untracked()
-        {
-            lh.show(v, "drag");
-        }
-    };
-    let graph_keys: Vec<String> = Vec::new();
-    let on_down_ev = move |ev: web_sys::PointerEvent| {
-        ev.prevent_default();
-        let down = down_of(&ev);
-        let act = held
-            .try_with_value(|h| on_down(h.as_ref().map(|h| &h.press), down))
-            .unwrap_or(OnDown::Ignore);
-        match act {
-            OnDown::Ignore => return,
-            OnDown::Restart => end_press("lost"),
-            OnDown::Start => {}
-        }
-        let (Some(area), Some(start)) = (plot.get_untracked(), lh.shown.try_get_untracked()) else {
-            return;
-        };
-        let rect = area.get_bounding_client_rect();
-        let x = f64::from(ev.client_x());
-        let _ = held.try_set_value(Some(Held {
-            press: Press::down(x, dom::now(), down),
-            start,
-            left: rect.left(),
-            width: rect.width(),
-        }));
-        if let Some(el) = dom::current_element(&ev) {
-            let _ = el.set_pointer_capture(ev.pointer_id());
-        }
-        let timer = set_timeout_with_handle(
-            move || {
-                let _ = hold_timer.try_set_value(None);
-                let holds = held
-                    .try_update_value(|h| h.as_mut().is_some_and(|h| h.press.check(dom::now())))
-                    .unwrap_or(false);
-                if holds && let Some(Some(h)) = held.try_get_value() {
-                    let _ = lh.cursor.try_set(Some(time_at(h.press.x0(), &h)));
-                    dom::log("lufs history: hold, cursor shown");
-                }
-            },
-            Duration::from_millis(HOLD_MS as u64 + 20),
-        );
-        let _ = hold_timer.try_set_value(timer.ok());
-    };
-    let on_move = move |ev: web_sys::PointerEvent| {
-        let x = f64::from(ev.client_x());
-        let Some(Some((gesture, h))) = held.try_update_value(|h| {
-            let h = h.as_mut().filter(|h| h.press.is(ev.pointer_id()))?;
-            Some((h.press.moved(x), *h))
-        }) else {
-            return;
-        };
-        match gesture {
-            Gesture::Still => {}
-            Gesture::Pan(dx) => {
-                let _ = lh
-                    .shown
-                    .try_set(View::panned(h.start, dx, h.width, wall_ms()));
-            }
-            Gesture::Cursor(x) => {
-                let _ = lh.cursor.try_set(Some(time_at(x, &h)));
-            }
-        }
-    };
-    let ours = move |ev: &web_sys::PointerEvent| {
-        held.try_with_value(|h| h.is_some_and(|h| h.press.is(ev.pointer_id())))
-            .unwrap_or(false)
-    };
-    let on_up = move |ev: web_sys::PointerEvent| {
-        if ours(&ev) {
-            end_press("up");
-        }
-    };
-    let on_cancel = move |ev: web_sys::PointerEvent| {
-        if ours(&ev) {
-            end_press("cancel");
-        }
-    };
-    let on_lost = move |ev: web_sys::PointerEvent| {
-        if ours(&ev) {
-            end_press("lost");
-        }
-    };
-
-    view! {
-        <div
-            class="lh-graph"
-            data-testid="lufs-graph"
-            data-runs=move || drawn().to_string()
-            use:owns_touches=graph_keys
-            on:pointerdown=on_down_ev
-            on:pointermove=on_move
-            on:pointerup=on_up
-            on:pointercancel=on_cancel
-            on:lostpointercapture=on_lost
-        >
-            <div class="lh-y" aria-hidden="true">
-                {y_labels}
-            </div>
-            <div class="lh-plot" node_ref=plot>
-                {y_lines}
-                {x_lines}
-                <svg class="lh-svg" viewBox=view_box preserveAspectRatio="none" aria-hidden="true">
-                    {polylines}
-                </svg>
-                {cursor_mark}
-                <div class="lh-empty" data-testid="lufs-history-empty" hidden=drawn_any>
-                    "NO LUFS IN THIS WINDOW"
-                </div>
-                <div class="lh-failed" data-testid="lufs-history-failed" hidden=answered>
-                    "NO ANSWER FROM THE HUB"
-                </div>
-            </div>
-            <div class="lh-x" aria-hidden="true">
-                {x_labels}
             </div>
         </div>
     }

@@ -30,12 +30,42 @@ pub const SILENT_TENTHS: i16 = -700;
 
 /// `GET /api/lufs/history` (#219): a point's readings from `from` (UTC
 /// ms, a whole second), one value per `step_ms` (tenths, [`SILENT_TENTHS`]
-/// for silence, none for no reading), at most 900 of them.
+/// for silence, none for no reading), at most 900 of them; since #253 its
+/// strip's fader beside them, one value per bucket ([`median`] of its
+/// seconds' fader in dB tenths, [`FADER_FLOOR_TENTHS`] at −∞, none while
+/// unknown). An older hub sends no `fader`: it reads as none (empty).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistorySeries {
     pub from: i64,
     pub step_ms: i64,
     pub values: Vec<Option<i16>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fader: Vec<Option<i16>>,
+}
+
+/// A fader's dB in tenths at Live's floor and under it (−70 dB): −∞
+/// (#253, the history's fader line).
+pub const FADER_FLOOR_TENTHS: i16 = -700;
+/// A fader's dB in tenths at Live's top (+6 dB).
+pub const FADER_TOP_TENTHS: i16 = 60;
+
+/// A Live volume (0..1) as the fader's dB in tenths for the history
+/// (#253): `volume::value2db` rounded, [`FADER_FLOOR_TENTHS`] at −∞ and
+/// under the floor, at most [`FADER_TOP_TENTHS`]; none without a volume.
+pub fn fader_tenths(volume: Option<f64>) -> Option<i16> {
+    let tenths = (crate::volume::value2db(volume?) * 10.0).round();
+    let kept = tenths
+        .max(f64::from(FADER_FLOOR_TENTHS))
+        .min(f64::from(FADER_TOP_TENTHS));
+    Some(kept as i16)
+}
+
+/// The median of `values` (the upper middle of an even count); none when
+/// empty: a history bucket's fader (#253).
+pub fn median(values: &[i16]) -> Option<i16> {
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    sorted.get(sorted.len() / 2).copied()
 }
 
 /// One day a point's history holds (#219, `GET /api/lufs/days`): its first
@@ -58,15 +88,46 @@ pub fn mostly_silent(silent: usize, heard: usize) -> bool {
     silent * 2 >= heard
 }
 
+/// The relative gate in tenths (#253, BS.1770's as integrated loudness
+/// uses it): a bucket's readings more than 10 LU under its energy mean are
+/// left out of its value.
+pub const GATE_TENTHS: i32 = 100;
+
+/// The energy mean of `values` (tenths of LU) in tenths; none of nothing.
+pub fn energy_mean(values: &[i16]) -> Option<f64> {
+    let energy: f64 = values
+        .iter()
+        .map(|v| 10f64.powf(f64::from(*v) / 100.0))
+        .sum();
+    (!values.is_empty()).then(|| 100.0 * (energy / values.len() as f64).log10())
+}
+
+/// The gated loudness of readings above silence (#253): their energy mean
+/// (rounded to a tenth), then the mean again of those at most
+/// [`GATE_TENTHS`] under it, rounded; none of nothing. A breath between two
+/// phrases no longer pulls a bucket down; a quiet song still reads quiet.
+/// The gate compares whole tenths, so its boundary is a value a test can
+/// name.
+pub fn gated(sounding: &[i16]) -> Option<i16> {
+    let floor = energy_mean(sounding)?.round() as i32 - GATE_TENTHS;
+    let kept: Vec<i16> = sounding
+        .iter()
+        .copied()
+        .filter(|v| i32::from(*v) >= floor)
+        .collect();
+    energy_mean(&kept).map(|m| m.round() as i16)
+}
+
 /// One bucket's value from its readings (no holes among them; #219, the
-/// hub's history buckets and the page's graph columns): none without a
-/// reading, silence when half or more are silence ([`mostly_silent`]),
-/// else the median of the readings above silence (the upper middle).
+/// hub's history buckets and the page's graph columns, one rule): none
+/// without a reading, silence when half or more are silence
+/// ([`mostly_silent`]), else since #253 the [`gated`] loudness of the
+/// readings above silence (#219 took their median).
 pub fn bucket_of(readings: &[i16]) -> Option<i16> {
     if readings.is_empty() {
         return None;
     }
-    let mut sounding: Vec<i16> = readings
+    let sounding: Vec<i16> = readings
         .iter()
         .copied()
         .filter(|v| *v > SILENT_TENTHS)
@@ -74,8 +135,7 @@ pub fn bucket_of(readings: &[i16]) -> Option<i16> {
     if mostly_silent(readings.len() - sounding.len(), readings.len()) {
         return Some(SILENT_TENTHS);
     }
-    sounding.sort_unstable();
-    Some(sounding[sounding.len() / 2])
+    gated(&sounding)
 }
 
 /// How a strip shows its reading (§6.1).

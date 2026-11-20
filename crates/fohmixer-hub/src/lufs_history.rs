@@ -12,7 +12,8 @@
 //!   `lufs.history.dropped`).
 //! - A window ([`LufsHistory::history`]): the last hour from RAM, anything
 //!   older read from the day files line by line (never a whole file in
-//!   memory), bucketed to at most 900 values.
+//!   memory), bucketed to at most 900 values, each with the strip's fader
+//!   beside it (#253).
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -21,14 +22,14 @@ use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::day_files::UtcDate;
-use fohmixer_proto::client::{LufsHistoryStatus, LufsItem};
+use fohmixer_proto::client::LufsHistoryStatus;
 use fohmixer_proto::lufs::{HistoryDay, HistorySeries};
 use serde_json::{Value, json};
 
 use crate::day_files::{self, Appended, DayFiles, Limits, Sink};
 use crate::events::EventLog;
 use crate::rules::lufs::history::{
-    HOLE, MINUTE_MS, MinuteLine, Point, Recorder, WindowError, bucket, span_of, window,
+    HOLE, MINUTE_MS, MinuteLine, Point, Recorder, Sample, WindowError, bucket, span_of, window,
 };
 
 /// The day files' folder in the data folder, and their stem.
@@ -113,19 +114,15 @@ impl LufsHistory {
 
     /// Samples every served point at the second of `ms` (the hub's UTC
     /// clock) when that second is not sampled yet; `items` (the points'
-    /// readings, `Lufs::items`) is asked only then. A minute that ended
-    /// goes to the writer; never waits.
-    pub fn sample(&self, ms: i64, items: impl FnOnce() -> Vec<LufsItem>) {
+    /// readings and faders, `router/lufs.rs` `samples_of`) is asked only
+    /// then. A minute that ended goes to the writer; never waits.
+    pub fn sample(&self, ms: i64, items: impl FnOnce() -> Vec<Sample>) {
         let line = {
             let mut recorder = self.recorder();
             if !recorder.due(ms) {
                 return;
             }
-            let readings: Vec<(Point, Option<i16>)> = items()
-                .into_iter()
-                .map(|item| ((item.instance, item.target), item.tenths))
-                .collect();
-            recorder.sample(ms, &readings)
+            recorder.sample(ms, &items())
         };
         if let Some(line) = line {
             self.send(line);
@@ -165,20 +162,22 @@ impl LufsHistory {
         let point: Point = (instance.to_string(), target.to_string());
         let covers = self.recorder().covers_from();
         let mut slots = vec![HOLE; n];
+        let mut faders = vec![HOLE; n];
         let files_end = files_until(covers, end);
         if let Some(dir) = &self.dir {
-            read_window(dir, &point, start, files_end, &mut slots);
+            read_window(dir, &point, (start, files_end), &mut slots, &mut faders);
         }
         if let Some(covers) = covers {
             let recorder = self.recorder();
-            for (i, slot) in slots.iter_mut().enumerate() {
+            for (i, (slot, fader)) in slots.iter_mut().zip(faders.iter_mut()).enumerate() {
                 let t = start + i as i64 * 1000;
                 if t >= covers {
                     *slot = recorder.at(&point, t);
+                    *fader = recorder.fader_at(&point, t);
                 }
             }
         }
-        Ok(bucket(start, &slots))
+        Ok(bucket(start, &slots, &faders))
     }
 
     /// `GET /api/lufs/days`: the days that hold the point, newest first;
@@ -290,9 +289,16 @@ fn day_of(path: &Path, instance: &str, target: &str) -> Option<HistoryDay> {
     day
 }
 
-/// Fills `slots` (one a second from `start`) from the day files of `dir`
-/// for the seconds before `end`.
-fn read_window(dir: &Path, point: &Point, start: i64, end: i64, slots: &mut [i16]) {
+/// Fills `slots` and `faders` (one a second from `start`) from the day
+/// files of `dir` for the seconds before `end`; a minute without the fader
+/// (an older hub's line) leaves its fader slots holes.
+fn read_window(
+    dir: &Path,
+    point: &Point,
+    (start, end): (i64, i64),
+    slots: &mut [i16],
+    faders: &mut [i16],
+) {
     if end <= start {
         return;
     }
@@ -310,6 +316,9 @@ fn read_window(dir: &Path, point: &Point, start: i64, end: i64, slots: &mut [i16
             }
             if let Some(values) = line.slots(&point.0, &point.1) {
                 place(line.m, &values, start, end, slots);
+            }
+            if let Some(values) = line.fader_slots(&point.0, &point.1) {
+                place(line.m, &values, start, end, faders);
             }
         });
     }

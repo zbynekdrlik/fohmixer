@@ -1,5 +1,6 @@
 //! A fader's LUFS history in its channel detail (#219, the design on the
-//! ticket; the owner's approved mockup `docs/mockups/lufs-history-v2.html`).
+//! ticket; the owner's approved mockup `docs/mockups/lufs-history-v2.html`,
+//! the graph's look since #253 `docs/mockups/lufs-history-v3.html`).
 //! Every decision the detail's LUFS tab makes, pure and tested:
 //!
 //! - which middle-box tabs a strip has and which one shows (`tabs`,
@@ -10,12 +11,17 @@
 //!   (`View::pick_day`), and `NOW ›` back to the live edge;
 //! - a finger's press on the graph (`Press`): a drag after 6 px, a hold
 //!   (the cursor) after 350 ms without one;
-//! - the values in screen columns (`columns`, the hub's bucket rule: the
-//!   median of the readings above silence, silence when half or more are
-//!   silent), the scale (`scale`), the line's runs (`runs`: green within
-//!   ±1.0 LU of an input point's target, gaps at silence and no reading),
-//!   the time ticks (`time_step`, `time_ticks`) and every text (`hh_mm`,
-//!   `day_label`, `cursor_text`);
+//! - the values in screen columns (#253, the owner's approved mockup v3:
+//!   `columns`, 120 of them, each the gated energy mean of its readings
+//!   above silence (`gated`), silence when half or more are silent, then
+//!   `glide`d 1-2-1 over its neighbours, never across a gap), the scale
+//!   (`scale`, a tick every 3 LU), the line (`lines`: one monotone cubic
+//!   `curve` per run, cut at silence and no reading; green is the same path
+//!   clipped to ±1.0 LU of an input point's target) and its live end
+//!   (`live_end`), the strip's fader on its own dB scale (`fader_zero`,
+//!   `fader_y`, `fader_label`, `fader_lines`, `fader_text`), the time ticks
+//!   (`time_step`, `time_ticks`) and every text (`hh_mm`, `day_label`,
+//!   `cursor_text`);
 //! - the API's URLs and answers (`history_url`, `days_url`,
 //!   `series_answer`, `days_answer`).
 //!
@@ -23,9 +29,7 @@
 //! (`preserveAspectRatio="none"`, the lines' width not scaled), so nothing
 //! here needs the page's pixels; the labels sit beside it in percent.
 
-use fohmixer_proto::lufs::{
-    HistoryDay, HistoryDays, HistorySeries, SILENT_TENTHS, bucket_of, in_band, text,
-};
+use fohmixer_proto::lufs::{HistoryDay, HistoryDays, HistorySeries, text};
 
 use super::Down;
 use super::eq::encode_component;
@@ -342,203 +346,7 @@ impl Press {
     }
 }
 
-/// The graph's most columns: values drawn across the plot.
-pub const COLUMNS: usize = 300;
-
-/// The columns of a window `span` ms long: [`COLUMNS`], or one a second
-/// for a window shorter than that (a short past day), so readings a second
-/// apart draw a line, never lone points.
-pub fn columns_for(span: i64) -> usize {
-    (span / SECOND_MS).clamp(1, COLUMNS as i64) as usize
-}
-
-/// The series' samples: each value at its bucket's start.
-pub fn samples(series: &HistorySeries) -> Vec<(i64, Option<i16>)> {
-    series
-        .values
-        .iter()
-        .enumerate()
-        .map(|(i, v)| (series.from + i as i64 * series.step_ms, *v))
-        .collect()
-}
-
-/// The page's own readings after the series' end: a value a second at the
-/// live edge (`tail`), kept only from `from` on.
-pub fn keep_tail(tail: &mut Vec<(i64, Option<i16>)>, from: i64) {
-    tail.retain(|(t, _)| *t >= from);
-}
-
-/// Where the hub's series ends (its last bucket's end); `from` when empty.
-pub fn series_end(series: &HistorySeries) -> i64 {
-    series.from + series.values.len() as i64 * series.step_ms
-}
-
-/// The samples in [`columns_for`] columns over `t0..t1`, each column's
-/// value by the hub's own bucket rule (`fohmixer_proto::lufs::bucket_of`:
-/// the median above silence, silence when half or more are silent, none
-/// without a reading).
-pub fn columns(samples: &[(i64, Option<i16>)], t0: i64, t1: i64) -> Vec<Option<i16>> {
-    let span = (t1 - t0).max(1);
-    let n = columns_for(span);
-    let mut cols: Vec<Vec<i16>> = vec![Vec::new(); n];
-    for (t, v) in samples {
-        let Some(v) = v else { continue };
-        if *t < t0 || *t >= t1 {
-            continue;
-        }
-        let i = ((t - t0) as i128 * n as i128 / span as i128) as usize;
-        cols[i].push(*v);
-    }
-    cols.into_iter().map(|c| bucket_of(&c)).collect()
-}
-
-/// Column `i`'s x in the box (of `n` columns): its middle.
-pub fn column_x(i: usize, n: usize) -> f64 {
-    (i as f64 + 0.5) * BOX / n.max(1) as f64
-}
-
-/// The graph's scale in tenths: `lo` at the bottom, `hi` at the top, the
-/// labelled ticks, and an input point's target.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Scale {
-    pub lo: i32,
-    pub hi: i32,
-    pub ticks: Vec<i32>,
-    pub target: Option<i32>,
-}
-
-/// An input point's half range: ±12 LU.
-pub const IN_HALF: i32 = 120;
-/// An output point's step: 6 LU.
-pub const OUT_STEP: i32 = 60;
-/// An output point's least range: 18 LU.
-pub const OUT_MIN: i32 = 180;
-/// An output point's range with no reading: −30 to −12.
-pub const OUT_EMPTY: (i32, i32) = (-300, -120);
-
-/// The scale: an input point's target ±12 LU, ticks at the target, ±6 and
-/// ±12; an output point's readings in 6 LU steps, at least 18 LU, a tick
-/// at every step.
-pub fn scale(target: Option<i8>, values: &[Option<i16>]) -> Scale {
-    if let Some(target) = target {
-        let t = i32::from(target) * 10;
-        return Scale {
-            lo: t - IN_HALF,
-            hi: t + IN_HALF,
-            ticks: [-IN_HALF, -IN_HALF / 2, 0, IN_HALF / 2, IN_HALF]
-                .iter()
-                .map(|d| t + d)
-                .collect(),
-            target: Some(t),
-        };
-    }
-    let sounding: Vec<i32> = values
-        .iter()
-        .flatten()
-        .filter(|v| **v > SILENT_TENTHS)
-        .map(|v| i32::from(*v))
-        .collect();
-    let (lo, hi) = match (sounding.iter().min(), sounding.iter().max()) {
-        (Some(min), Some(max)) => out_range(*min, *max),
-        _ => OUT_EMPTY,
-    };
-    Scale {
-        lo,
-        hi,
-        ticks: (lo..=hi).step_by(OUT_STEP as usize).collect(),
-        target: None,
-    }
-}
-
-/// An output point's range for readings `min..=max`: whole 6 LU steps
-/// around them, widened about their middle to at least 18 LU.
-pub fn out_range(min: i32, max: i32) -> (i32, i32) {
-    let lo = min.div_euclid(OUT_STEP) * OUT_STEP;
-    let hi = -((-max).div_euclid(OUT_STEP)) * OUT_STEP;
-    if hi - lo >= OUT_MIN {
-        return (lo, hi);
-    }
-    let lo = (hi + lo - OUT_MIN).div_euclid(2 * OUT_STEP) * OUT_STEP;
-    (lo, lo + OUT_MIN)
-}
-
-/// A value's y in the box (`hi` at 0), a value past an edge on the edge.
-pub fn y_of(v: i32, scale: &Scale) -> f64 {
-    let v = v.clamp(scale.lo, scale.hi);
-    BOX - f64::from(v - scale.lo) * BOX / f64::from(scale.hi - scale.lo)
-}
-
-/// The band's two dashed lines: an input point's target ±1.0 LU.
-pub fn band(scale: &Scale) -> Option<(f64, f64)> {
-    let t = scale.target?;
-    let b = i32::from(fohmixer_proto::lufs::BAND_TENTHS);
-    Some((y_of(t + b, scale), y_of(t - b, scale)))
-}
-
-/// A tick's label: whole LU with a typographic minus.
-pub fn tick_label(tenths: i32) -> String {
-    let lu = tenths / 10;
-    if lu < 0 {
-        format!("\u{2212}{}", -lu)
-    } else {
-        lu.to_string()
-    }
-}
-
-/// One stretch of the line: green within the band, else the calm grey;
-/// its `points` for an SVG `polyline`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Run {
-    pub green: bool,
-    pub points: String,
-}
-
-/// Whether a reading draws green: an input point within ±1.0 LU of its
-/// target.
-pub fn green(v: i16, target: Option<i8>) -> bool {
-    target.is_some_and(|t| in_band(v, t))
-}
-
-/// The line: runs of one colour, cut at silence and no reading; a change
-/// of colour ends the old run at the new point. A run of one point draws
-/// nothing.
-pub fn runs(values: &[Option<i16>], scale: &Scale, target: Option<i8>) -> Vec<Run> {
-    let mut out = Vec::new();
-    let mut run: Vec<String> = Vec::new();
-    let mut colour: Option<bool> = None;
-    let flush = |run: &mut Vec<String>, colour: Option<bool>, out: &mut Vec<Run>| {
-        if run.len() > 1 {
-            out.push(Run {
-                green: colour == Some(true),
-                points: run.join(" "),
-            });
-        }
-        run.clear();
-    };
-    for (i, v) in values.iter().enumerate() {
-        let Some(v) = v.filter(|v| *v > SILENT_TENTHS) else {
-            flush(&mut run, colour, &mut out);
-            colour = None;
-            continue;
-        };
-        let xy = format!(
-            "{:.1},{:.1}",
-            column_x(i, values.len()),
-            y_of(i32::from(v), scale)
-        );
-        let c = green(v, target);
-        if colour != Some(c) {
-            if !run.is_empty() {
-                run.push(xy.clone());
-                flush(&mut run, colour, &mut out);
-            }
-            colour = Some(c);
-        }
-        run.push(xy);
-    }
-    flush(&mut run, colour, &mut out);
-    out
-}
+pub use graph::*;
 
 /// The time ticks' steps in minutes: calm steps, at most 7 ticks; past
 /// 7 h (a long past day) whole hours more.
@@ -665,17 +473,22 @@ pub fn edge_reading(tenths: Option<i16>, problem: bool) -> Option<i16> {
     if problem { None } else { tenths }
 }
 
-/// The live edge's reading of `second` into `tail`, once a second (a tick
-/// that comes twice in one second records nothing more), the readings
-/// before `from` dropped.
+/// The live edge's reading and fader of `second` into `tail`, once a
+/// second (a tick that comes twice in one second records nothing more), the
+/// samples before `from` dropped.
 pub fn push_reading(
-    tail: &mut Vec<(i64, Option<i16>)>,
+    tail: &mut Vec<Sample>,
     second: i64,
     reading: Option<i16>,
+    fader: Option<i16>,
     from: i64,
 ) {
-    if tail.last().is_none_or(|(t, _)| *t < second) {
-        tail.push((second, reading));
+    if tail.last().is_none_or(|s| s.t < second) {
+        tail.push(Sample {
+            t: second,
+            v: reading,
+            f: fader,
+        });
     }
     keep_tail(tail, from);
 }
@@ -698,11 +511,16 @@ pub fn refresh(tick: u32, live: bool, days_known: bool) -> Refresh {
     }
 }
 
-/// The cursor's text in the head: its local time and the value there
-/// (`19:31:07 · −22.8`; `−∞` in silence, `no reading` without one).
-pub fn cursor_text(t: i64, v: Option<i16>, offset: i64) -> String {
-    let value = v.map_or_else(|| "no reading".to_string(), text);
-    format!("{} \u{b7} {value}", hh_mm_ss(t, offset))
+/// The cursor's text in the head: its local time, the value there and,
+/// since #253, the fader there (`19:31:07 · −22.8 · FADER −3.5 dB`; `−∞`
+/// in silence, `no reading` without one, no fader part while unknown).
+pub fn cursor_text(t: i64, col: Column, offset: i64) -> String {
+    let value = col.v.map_or_else(|| "no reading".to_string(), text);
+    let fader = col
+        .f
+        .map(|f| format!(" \u{b7} FADER {}", db_text(f)))
+        .unwrap_or_default();
+    format!("{} \u{b7} {value}{fader}", hh_mm_ss(t, offset))
 }
 
 /// An input point's target line in the head: `TARGET −23`.
@@ -828,6 +646,8 @@ impl Answers {
 pub fn retry_series(tick: u32, failed: bool) -> bool {
     failed && tick.is_multiple_of(5)
 }
+
+mod graph;
 
 #[cfg(test)]
 mod tests;
