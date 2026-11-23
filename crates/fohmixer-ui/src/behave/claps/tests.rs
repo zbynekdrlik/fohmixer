@@ -50,11 +50,11 @@ fn the_playhead_moves_on_at_the_tempo_from_the_one_told() {
     assert_eq!(position(&s, 1000.0, 1000.0), Some(8.0));
     assert_eq!(position(&s, 1000.0, 1750.0), Some(9.5));
     assert_eq!(
-        position(&s, 1000.0, 1000.0 + RING_MS),
-        Some(8.0 + RING_MS / 500.0)
+        position(&s, 1000.0, 1000.0 + GUESS_MS),
+        Some(8.0 + GUESS_MS / 500.0)
     );
     assert_eq!(
-        position(&s, 1000.0, 1000.0 + RING_MS + 1.0),
+        position(&s, 1000.0, 1000.0 + GUESS_MS + 1.0),
         None,
         "too old"
     );
@@ -71,23 +71,23 @@ fn the_playhead_moves_on_at_the_tempo_from_the_one_told() {
 }
 
 #[test]
-fn the_ring_shows_the_beat_of_the_bar_only_while_something_moves() {
+fn the_beat_now_is_known_only_while_something_moves() {
     let s = told(ClapsPhase::On, [true; 4], Some(8.0), Some(120.0));
-    assert_eq!(ring(&s, 0.0, 0.0), Some(0));
-    assert_eq!(ring(&s, 0.0, 499.0), Some(0));
-    assert_eq!(ring(&s, 0.0, 500.0), Some(1));
-    assert_eq!(ring(&s, 0.0, 1999.0), Some(3));
-    assert_eq!(ring(&s, 0.0, 2000.0), Some(0), "the next bar");
+    assert_eq!(beat_now(&s, 0.0, 0.0), Some(0));
+    assert_eq!(beat_now(&s, 0.0, 499.0), Some(0));
+    assert_eq!(beat_now(&s, 0.0, 500.0), Some(1));
+    assert_eq!(beat_now(&s, 0.0, 1999.0), Some(3));
+    assert_eq!(beat_now(&s, 0.0, 2000.0), Some(0), "the next bar");
     for phase in [ClapsPhase::Tapping, ClapsPhase::NextBar, ClapsPhase::Clip] {
         let s = told(phase, [false; 4], Some(5.0), Some(120.0));
-        assert_eq!(ring(&s, 0.0, 0.0), Some(1), "{phase:?}");
+        assert_eq!(beat_now(&s, 0.0, 0.0), Some(1), "{phase:?}");
     }
     for phase in [ClapsPhase::Off, ClapsPhase::Waits, ClapsPhase::Signature] {
         let s = told(phase, [true; 4], Some(5.0), Some(120.0));
-        assert_eq!(ring(&s, 0.0, 0.0), None, "{phase:?}");
+        assert_eq!(beat_now(&s, 0.0, 0.0), None, "{phase:?}");
     }
     let stopped = told(ClapsPhase::On, [true; 4], None, Some(120.0));
-    assert_eq!(ring(&stopped, 0.0, 0.0), None);
+    assert_eq!(beat_now(&stopped, 0.0, 0.0), None);
 }
 
 #[test]

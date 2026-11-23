@@ -44,8 +44,8 @@
 
 /* TAP: a tall key in the room the beat dots had (#260: 72 px + their
    32 px + their 6 px gap), its word vertical; a ring while tapping; the
-   accent's fill at each clap Live plays; the 1 s hold's fill from the
-   bottom, red as a stop. */
+   accent's fill (no ring) at each clap Live plays, except under a hold;
+   the 1 s hold's fill from the bottom, red as a stop. */
 .claps-tap {
     position: relative;
     display: grid;
@@ -89,7 +89,7 @@
     color: var(--text);
 }
 
-.claps-tap[data-hit="true"] {
+.claps-tap[data-hit="true"]:not([data-holding="true"]) {
     background: var(--accent);
     box-shadow: none;
     color: #0b0b12;

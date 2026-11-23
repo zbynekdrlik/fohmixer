@@ -163,8 +163,13 @@ test.describe("Claps from the surface", () => {
     expect(flashes.length).toBeLessThanOrEqual(beats.size * 2 + 1);
     const lit = await tap.evaluate(
       (el) =>
-        new Promise<string>((done) => {
-          const look = () => (el.getAttribute("data-hit") === "true" ? done(getComputedStyle(el).backgroundColor) : requestAnimationFrame(look));
+        new Promise<string | null>((done) => {
+          const end = performance.now() + 3_000;
+          const look = () => {
+            if (el.getAttribute("data-hit") === "true") done(getComputedStyle(el).backgroundColor);
+            else if (performance.now() > end) done(null);
+            else requestAnimationFrame(look);
+          };
           look();
         }),
     );
