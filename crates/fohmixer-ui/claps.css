@@ -1,8 +1,9 @@
 /* The Claps strip's left column (#220; the owner's approved mockup
-   docs/mockups/claps-v2.html): above SEL and the ARM key, where other
-   strips show LUFS, so the fader keeps its whole travel. Top down: the calm
-   state line, the four beat dots (2 x 2) and TAP. SEL's width and left
-   edge, so it stays as clear of the cap as SEL; nothing lit while off. */
+   docs/mockups/claps-v2.html, its beat dots removed by #260's v3): above
+   SEL and the ARM key, where other strips show LUFS, so the fader keeps its
+   whole travel. Top down: the calm state line and TAP, which flashes at
+   each clap. SEL's width and left edge, so it stays as clear of the cap as
+   SEL; nothing lit while off. */
 .claps-col {
     position: absolute;
     left: -4px;
@@ -41,55 +42,16 @@
     color: var(--muted);
 }
 
-/* The beat dots: each its own target, a ring only; a set beat is filled
-   grey, Live's beat now has the accent's ring, a clap flashes it. */
-.claps-dots {
-    display: grid;
-    grid-template-columns: 14px 14px;
-    gap: 4px;
-}
-
-.claps-dot {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 14px;
-    height: 14px;
-    margin: 0;
-    padding: 0;
-    border: 0;
-    border-radius: 7px;
-    background: none;
-    box-shadow: inset 0 0 0 1px #4a4a66;
-    color: var(--faint);
-    font: 500 8px/1 var(--mono);
-    cursor: pointer;
-    touch-action: none;
-    -webkit-tap-highlight-color: transparent;
-}
-
-.claps-dot[data-set="true"] {
-    background: #4a4a66;
-    color: var(--text);
-}
-
-.claps-dot[data-now="true"] {
-    box-shadow: inset 0 0 0 1.5px var(--accent);
-}
-
-.claps-dot[data-set="true"][data-hit="true"] {
-    background: var(--accent);
-    color: #0b0b12;
-}
-
-/* TAP: a tall key, its word vertical; a ring while tapping; the 1 s hold's
-   fill from the bottom, red as a stop. */
+/* TAP: a tall key in the room the beat dots had (#260: 72 px + their
+   32 px + their 6 px gap), its word vertical; a ring while tapping; the
+   accent's fill at each clap Live plays; the 1 s hold's fill from the
+   bottom, red as a stop. */
 .claps-tap {
     position: relative;
     display: grid;
     place-items: center;
     width: 100%;
-    height: 72px;
+    height: 110px;
     margin: 0;
     padding: 0;
     border: 0;
@@ -125,6 +87,12 @@
 .claps-tap[data-state="tapping"] {
     box-shadow: inset 0 0 0 1.5px rgba(78, 205, 196, 0.6);
     color: var(--text);
+}
+
+.claps-tap[data-hit="true"] {
+    background: var(--accent);
+    box-shadow: none;
+    color: #0b0b12;
 }
 
 .claps-tap-word {

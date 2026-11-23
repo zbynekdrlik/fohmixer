@@ -1,17 +1,16 @@
 //! The Claps strip's left column (#220; the owner's approved mockup
-//! `docs/mockups/claps-v2.html`): the calm state line, the four beat dots
-//! and TAP. Everything the hub decides (the taps' beats, the bar, the clip,
+//! `docs/mockups/claps-v2.html`; #260's v3 removed the beat dots): the calm
+//! state line and TAP. Everything the hub decides (the taps' beats, the bar, the clip,
 //! 4/4) comes in its `claps` message (`fohmixer_proto::claps::ClapsState`);
-//! here only what the page draws from it between messages: the words, the
-//! "now" ring moving with Live's playhead at its tempo, the clap's flash,
-//! and what a dot's tap asks.
+//! here only what the page draws from it between messages: the words and
+//! TAP's flash at each clap, timed by Live's playhead moved on at its tempo.
 
 use fohmixer_proto::claps::{BEATS, ClapsPhase, ClapsState};
 
-/// A dot lights as Live claps for this much of a beat.
+/// TAP lights as Live claps for this much of a beat.
 pub const HIT_BEATS: f64 = 0.24;
-/// The ring is drawn from a told playhead at most this long (ms): past it
-/// the page has heard nothing for too long to guess Live's beat.
+/// Live's beat is moved on from a told playhead at most this long (ms):
+/// past it the page has heard nothing for too long to guess it.
 pub const RING_MS: f64 = 30_000.0;
 
 /// The state line's words: nothing while nothing claps.
@@ -59,9 +58,8 @@ pub fn position(state: &ClapsState, at: f64, now: f64) -> Option<f64> {
         .then(|| beat + dt * tempo / 60_000.0)
 }
 
-/// The beat of the bar the ring shows (0 to 3), while the column says
-/// something moves on the beats (tapping, the next bar, clapping, a clip);
-/// none else.
+/// The beat of Live's bar now (0 to 3), while the column says something
+/// moves on the beats (tapping, the next bar, clapping, a clip); none else.
 pub fn ring(state: &ClapsState, at: f64, now: f64) -> Option<usize> {
     let moving = matches!(
         state.state,
@@ -71,8 +69,8 @@ pub fn ring(state: &ClapsState, at: f64, now: f64) -> Option<usize> {
     Some((pos.floor() as i64).rem_euclid(BEATS as i64) as usize)
 }
 
-/// Whether the ring's dot flashes now: Live claps that beat (on, the beat
-/// in the pattern) and the beat began less than [`HIT_BEATS`] ago.
+/// Whether TAP flashes now: Live claps this beat (on, the beat in the
+/// pattern) and the beat began less than [`HIT_BEATS`] ago.
 pub fn hit(state: &ClapsState, at: f64, now: f64) -> bool {
     if state.state != ClapsPhase::On {
         return false;
@@ -81,11 +79,6 @@ pub fn hit(state: &ClapsState, at: f64, now: f64) -> bool {
         return false;
     };
     state.pattern[beat] && pos - pos.floor() < HIT_BEATS
-}
-
-/// What a tap of dot `beat` asks: the beat switched the other way.
-pub fn dot_tap(pattern: &[bool; BEATS], beat: usize) -> bool {
-    !pattern.get(beat).copied().unwrap_or(false)
 }
 
 /// What a 1 s hold of TAP may do now: stop, while the page is connected

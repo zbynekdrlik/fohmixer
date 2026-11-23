@@ -91,7 +91,7 @@ fn the_ring_shows_the_beat_of_the_bar_only_while_something_moves() {
 }
 
 #[test]
-fn a_dot_flashes_at_the_start_of_a_beat_live_claps() {
+fn tap_flashes_at_the_start_of_a_beat_live_claps() {
     let s = told(
         ClapsPhase::On,
         [false, true, false, true],
@@ -113,17 +113,6 @@ fn a_dot_flashes_at_the_start_of_a_beat_live_claps() {
     assert!(!hit(&tapping, 0.0, 0.0));
     let unknown = told(ClapsPhase::On, [true; 4], None, None);
     assert!(!hit(&unknown, 0.0, 0.0));
-}
-
-#[test]
-fn a_dot_asks_its_beat_the_other_way() {
-    let pattern = [false, true, false, false];
-    assert!(dot_tap(&pattern, 0));
-    assert!(!dot_tap(&pattern, 1));
-    assert!(
-        dot_tap(&pattern, 9),
-        "past the bar: asks on, the hub refuses it"
-    );
 }
 
 #[test]
