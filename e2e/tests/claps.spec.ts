@@ -18,13 +18,13 @@ import {
   until,
 } from "./support/live";
 
-// Claps from the surface (#220; the approved mockup docs/mockups/claps-v2.html):
-// SimLive's band track 0 (Hand1 #) tagged `"CLAPS" +G:CLAPS +CLAPS` is the
-// Claps strip, shown in a CLAPS group the test adds to the FOH page. Its
-// left column, above SEL: the calm state line, four beat dots and TAP. A tap
-// acts on its lift (the hub snaps it to Live's beat), a bar with no tap
-// gives the pattern to the device from the next bar, a dot switches its
-// beat, a 1 s hold of TAP stops everything. The device itself is the hub's
+// Claps from the surface (#220; the approved mockup docs/mockups/claps-v2.html,
+// its beat dots removed by #260's v3): SimLive's band track 0 (Hand1 #) tagged
+// `"CLAPS" +G:CLAPS +CLAPS` is the Claps strip, shown in a CLAPS group the test
+// adds to the FOH page. Its left column, above SEL: the calm state line and
+// TAP. A tap acts on its lift (the hub snaps it to Live's beat), a bar with no
+// tap gives the pattern to the device from the next bar, TAP flashes at each
+// clap, a 1 s hold of TAP stops everything. The device itself is the hub's
 // UDP peer (nothing listens in the E2E); the page reads the hub's `claps`.
 
 const LAYOUT = join(__dirname, "..", "..", "tools", "import-tosc", "fixtures", "expected-layout.json");
@@ -42,6 +42,26 @@ function withClapsGroup(): any {
 /** The Claps strip. */
 const clapsStrip = (page: Page): Locator =>
   page.locator('.slot[data-group="claps"] [data-testid="strip"]').and(page.locator('[data-label="CLAPS"]'));
+
+/** The times (page ms) TAP turned `data-hit` true within `ms`, recorded in
+ * the page: a flash lasts a quarter of a beat, too short for a poll. */
+async function flashesWithin(tap: Locator, ms: number): Promise<number[]> {
+  return tap.evaluate(
+    (el, ms) =>
+      new Promise<number[]>((done) => {
+        const at: number[] = [];
+        const watch = new MutationObserver(() => {
+          if (el.getAttribute("data-hit") === "true") at.push(performance.now());
+        });
+        watch.observe(el, { attributes: true, attributeFilter: ["data-hit"] });
+        setTimeout(() => {
+          watch.disconnect();
+          done(at);
+        }, ms);
+      }),
+    ms,
+  );
+}
 
 /** The hub's claps in `/api/status` once `ok` holds. */
 async function clapsUntil(ok: (claps: any) => boolean, what: string): Promise<any> {
@@ -65,7 +85,7 @@ test.describe("Claps from the surface", () => {
     live.close();
   });
 
-  test("taps choose the beats, a dot switches one, a hold stops; the fader keeps its travel", async ({ page }) => {
+  test("taps choose the beats, TAP flashes at each clap, a hold stops; the fader keeps its travel", async ({ page }) => {
     await openSurface(page);
     await harness("/hub/layout", { layout: withClapsGroup() });
     await selectPage(page, "foh");
@@ -78,7 +98,6 @@ test.describe("Claps from the surface", () => {
     const column = claps.getByTestId("claps-col");
     const tap = claps.getByTestId("claps-tap");
     const line = claps.getByTestId("claps-state");
-    const dots = claps.getByTestId("claps-dot");
 
     // The fader keeps its whole travel: the column sits beside it.
     const travel = (await claps.getByTestId("fader").boundingBox())!.height;
@@ -88,23 +107,21 @@ test.describe("Claps from the surface", () => {
     const cap = (await claps.getByTestId("fader-cap").boundingBox())!;
     expect(col.x + col.width, "the column ends left of the cap").toBeLessThanOrEqual(cap.x + 0.5);
 
-    // Nothing lit while off: no words, no dot set or ringed; every part owns its touches.
+    // No beat dots (#260): TAP takes their room, 110 px high.
+    await expect(claps.getByTestId("claps-dot")).toHaveCount(0);
+    expect((await tap.boundingBox())!.height).toBeCloseTo(110, 0);
+
+    // Nothing lit while off: no words, no flash; TAP owns its touches.
     await expect(column).toHaveAttribute("data-state", "off");
     await expect(line).toHaveText("");
-    await expect(dots).toHaveCount(4);
-    for (let i = 0; i < 4; i++) {
-      await expect(dots.nth(i)).toHaveAttribute("data-set", "false");
-      await expect(dots.nth(i)).toHaveAttribute("data-now", "false");
-    }
-    for (const part of [tap, dots.nth(0)]) {
-      expect(
-        await part.evaluate((el) => {
-          const e = new Event("touchstart", { bubbles: true, cancelable: true });
-          el.dispatchEvent(e);
-          return e.defaultPrevented;
-        }),
-      ).toBe(true);
-    }
+    await expect(tap).toHaveAttribute("data-hit", "false");
+    expect(
+      await tap.evaluate((el) => {
+        const e = new Event("touchstart", { bubbles: true, cancelable: true });
+        el.dispatchEvent(e);
+        return e.defaultPrevented;
+      }),
+    ).toBe(true);
 
     // A tap while Live stands is refused by the hub: nothing changes.
     await dispatchPointer(tap, TAP);
@@ -139,26 +156,32 @@ test.describe("Claps from the surface", () => {
     expect(on.words.pattern).toEqual([0, 1, 2, 3].map((i) => beats.has(i)));
     await expect(line).toHaveText(/^(NEXT BAR|CLAPS)$/);
     await expect(line).toHaveText("CLAPS", { timeout: 6_000 });
-    for (let i = 0; i < 4; i++) {
-      await expect(dots.nth(i)).toHaveAttribute("data-set", String(beats.has(i)));
-    }
-    // The ring moves with Live's beat.
-    await expect(claps.locator('[data-testid="claps-dot"][data-now="true"]')).toHaveCount(1);
-
-    // A dot set: its beat claps too.
-    const free = [0, 1, 2, 3].find((i) => !beats.has(i))!;
-    await dispatchPointer(dots.nth(free), [{ type: "pointerdown" }, { type: "pointerup" }]);
-    const added = await clapsUntil((c) => c.words.pattern[free] === true, "the dot's beat set");
-    expect(added.words.on).toBe(true);
-    await expect(dots.nth(free)).toHaveAttribute("data-set", "true");
+    // TAP flashes at each clap: the pattern's beats over 4 s at 120 bpm
+    // (8 beats, two bars), and its fill is the accent's.
+    const flashes = await flashesWithin(tap, 4_000);
+    expect(flashes.length, `TAP flashed ${flashes.length} times for ${beats.size} beats a bar`).toBeGreaterThanOrEqual(beats.size * 2 - 1);
+    expect(flashes.length).toBeLessThanOrEqual(beats.size * 2 + 1);
+    const lit = await tap.evaluate(
+      (el) =>
+        new Promise<string | null>((done) => {
+          const end = performance.now() + 3_000;
+          const look = () => {
+            if (el.getAttribute("data-hit") === "true") done(getComputedStyle(el).backgroundColor);
+            else if (performance.now() > end) done(null);
+            else requestAnimationFrame(look);
+          };
+          look();
+        }),
+    );
+    expect(lit).toBe("rgb(78, 205, 196)");
 
     // A 1 s hold of TAP: nothing claps, nothing lit.
     await dispatchPointer(tap, HOLD);
     await clapsUntil((c) => c.words.on === false && c.words.pattern.every((b: boolean) => !b), "the device switched off");
     await expect(line).toHaveText("");
     await expect(column).toHaveAttribute("data-state", "off");
-    for (let i = 0; i < 4; i++) await expect(dots.nth(i)).toHaveAttribute("data-set", "false");
-    await expect(claps.locator('[data-testid="claps-dot"][data-now="true"]')).toHaveCount(0);
+    await expect(tap).toHaveAttribute("data-hit", "false");
+    expect(await flashesWithin(tap, 1_500), "no flash once stopped").toEqual([]);
     const steps = (await hubEvents()).filter((r: any) => r.ev === "claps").map((r: any) => r.step);
     expect(steps).toContain("stop");
   });
