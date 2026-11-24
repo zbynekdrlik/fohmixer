@@ -121,3 +121,22 @@ fn a_hold_stops_only_on_this_connections_state() {
     assert_eq!(stop_value(false, true), None);
     assert_eq!(stop_value(true, false), None);
 }
+
+#[test]
+fn a_tap_flashes_tap_right_after_its_lift_for_a_moment() {
+    assert!(!tap_flash(None, 1_000.0), "no tap: nothing lit");
+    assert!(tap_flash(Some(1_000.0), 1_000.0), "the lift itself");
+    assert!(tap_flash(Some(1_000.0), 1_000.0 + TAP_FLASH_MS - 1.0));
+    assert!(
+        !tap_flash(Some(1_000.0), 1_000.0 + TAP_FLASH_MS),
+        "exactly TAP_FLASH_MS later it is over"
+    );
+    assert!(
+        !tap_flash(Some(1_000.0), 999.0),
+        "a clock before the tap lights nothing"
+    );
+    assert_eq!(
+        TAP_FLASH_MS, 160.0,
+        "long enough to see, short enough for the next tap"
+    );
+}

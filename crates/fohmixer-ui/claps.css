@@ -80,16 +80,30 @@
     transition: transform 1000ms linear;
 }
 
-.claps-tap[data-holding="true"] {
-    color: #e8a0a8;
-}
 
 .claps-tap[data-state="tapping"] {
     box-shadow: inset 0 0 0 1.5px rgba(78, 205, 196, 0.6);
     color: var(--text);
 }
 
+/* Each touch shows on the key itself (#262): while the finger is down the
+   whole key is lit with the accent's ring (the part that sticks out from
+   under the finger shows it), a hold's red fill rising over it;
+   after the tapping ring, so it wins while tapping too. */
+.claps-tap[data-holding="true"] {
+    background: #2e4a50;
+    box-shadow: inset 0 0 0 2px var(--accent);
+    color: #e8a0a8;
+}
+
 .claps-tap[data-hit="true"]:not([data-holding="true"]) {
+    background: var(--accent);
+    box-shadow: none;
+    color: #0b0b12;
+}
+
+/* A tap's flash after its lift (TAP_FLASH_MS), even one the hub refuses. */
+.claps-tap[data-tapped="true"]:not([data-holding="true"]) {
     background: var(--accent);
     box-shadow: none;
     color: #0b0b12;

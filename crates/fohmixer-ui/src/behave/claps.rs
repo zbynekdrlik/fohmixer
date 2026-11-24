@@ -10,6 +10,9 @@ use fohmixer_proto::claps::{BEATS, ClapsPhase, ClapsState};
 
 /// TAP lights as Live claps for this much of a beat.
 pub const HIT_BEATS: f64 = 0.24;
+/// TAP flashes this long (ms) after the lift of each tap, so the engineer
+/// sees every touch land (#262), whatever the hub makes of it.
+pub const TAP_FLASH_MS: f64 = 160.0;
 /// Live's beat is moved on from a told playhead at most this long (ms):
 /// past it the page has heard nothing for too long to guess it.
 pub const GUESS_MS: f64 = 30_000.0;
@@ -80,6 +83,12 @@ pub fn hit(state: &ClapsState, at: f64, now: f64) -> bool {
         return false;
     };
     state.pattern[beat] && pos - pos.floor() < HIT_BEATS
+}
+
+/// Whether TAP shows the flash of a tap lifted at `tapped` (page epoch ms)
+/// at `now`: from the lift for [`TAP_FLASH_MS`].
+pub fn tap_flash(tapped: Option<f64>, now: f64) -> bool {
+    tapped.is_some_and(|t| now >= t && now - t < TAP_FLASH_MS)
 }
 
 /// What a 1 s hold of TAP may do now: stop, while the page is connected

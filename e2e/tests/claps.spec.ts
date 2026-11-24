@@ -123,11 +123,89 @@ test.describe("Claps from the surface", () => {
       }),
     ).toBe(true);
 
+    // Every touch on TAP answers on the key itself (#262): a pressed look
+    // while the finger is down, then a short flash after the lift, even a
+    // tap the hub refuses (Live stands).
+    const idle = await tap.evaluate((el) => getComputedStyle(el).backgroundColor);
+    const pressed = await tap.evaluate(
+      (el) =>
+        new Promise<string>((done) => {
+          const id = 41;
+          const at = { bubbles: true, cancelable: true, pointerId: id, isPrimary: true, pointerType: "touch" };
+          const box = el.getBoundingClientRect();
+          const xy = { clientX: box.x + box.width / 2, clientY: box.y + box.height / 2 };
+          el.dispatchEvent(new PointerEvent("pointerdown", { ...at, ...xy }));
+          requestAnimationFrame(() =>
+            requestAnimationFrame(() => {
+              const look = getComputedStyle(el).backgroundColor;
+              el.dispatchEvent(new PointerEvent("pointerup", { ...at, ...xy }));
+              done(look);
+            }),
+          );
+        }),
+    );
+    expect(pressed, "the pressed key's own fill").toBe("rgb(46, 74, 80)");
+    expect(idle).not.toBe(pressed);
+    // That press's own flash ends before the next tap is watched.
+    await expect(tap).toHaveAttribute("data-tapped", "false");
+    await page.waitForTimeout(300);
+    const tapFlash = await tap.evaluate(
+      (el) =>
+        new Promise<{ on: number; off: number }>((done) => {
+          let on = 0;
+          let off = 0;
+          const watch = new MutationObserver((records) => {
+            for (const r of records) {
+              if (r.oldValue === "false") on += 1;
+              else if (r.oldValue === "true") off += 1;
+            }
+          });
+          watch.observe(el, { attributes: true, attributeOldValue: true, attributeFilter: ["data-tapped"] });
+          const id = 42;
+          const at = { bubbles: true, cancelable: true, pointerId: id, isPrimary: true, pointerType: "touch" };
+          const box = el.getBoundingClientRect();
+          const xy = { clientX: box.x + box.width / 2, clientY: box.y + box.height / 2 };
+          el.dispatchEvent(new PointerEvent("pointerdown", { ...at, ...xy }));
+          setTimeout(() => el.dispatchEvent(new PointerEvent("pointerup", { ...at, ...xy })), 80);
+          setTimeout(() => {
+            watch.disconnect();
+            done({ on, off });
+          }, 800);
+        }),
+    );
+    expect(tapFlash.on, "TAP flashed after the lift").toBe(1);
+    expect(tapFlash.off, "and went dark again").toBe(1);
+    await expect(tap).toHaveAttribute("data-tapped", "false");
+    const flashLook = await tap.evaluate(
+      (el) =>
+        new Promise<string | null>((done) => {
+          const id = 43;
+          const at = { bubbles: true, cancelable: true, pointerId: id, isPrimary: true, pointerType: "touch" };
+          const box = el.getBoundingClientRect();
+          const xy = { clientX: box.x + box.width / 2, clientY: box.y + box.height / 2 };
+          el.dispatchEvent(new PointerEvent("pointerdown", { ...at, ...xy }));
+          el.dispatchEvent(new PointerEvent("pointerup", { ...at, ...xy }));
+          const end = performance.now() + 1_000;
+          const look = () => {
+            if (el.getAttribute("data-tapped") === "true") done(getComputedStyle(el).backgroundColor);
+            else if (performance.now() > end) done(null);
+            else requestAnimationFrame(look);
+          };
+          look();
+        }),
+    );
+    expect(flashLook, "the tap's flash is the accent").toBe("rgb(78, 205, 196)");
+    await expect(tap).toHaveAttribute("data-tapped", "false");
+
     // A tap while Live stands is refused by the hub: nothing changes.
+    const refused = async () =>
+      (await hubEvents()).filter((r: any) => r.ev === "claps" && r.step === "refused" && r.why === "Live does not play").length;
+    await until(refused, (n: number) => n >= 3, "the touches' taps refused");
+    const before = await refused();
     await dispatchPointer(tap, TAP);
     await until(
-      async () => (await hubEvents()).filter((r: any) => r.ev === "claps" && r.step === "refused" && r.why === "Live does not play").length,
-      (n: number) => n >= 1,
+      refused,
+      (n: number) => n > before,
       "the stopped tap refused",
     );
     await expect(line).toHaveText("");
