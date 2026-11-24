@@ -135,8 +135,8 @@ fn a_tap_flashes_tap_right_after_its_lift_for_a_moment() {
         !tap_flash(Some(1_000.0), 999.0),
         "a clock before the tap lights nothing"
     );
-    assert!(
-        (100.0..=300.0).contains(&TAP_FLASH_MS),
+    assert_eq!(
+        TAP_FLASH_MS, 160.0,
         "long enough to see, short enough for the next tap"
     );
 }

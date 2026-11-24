@@ -144,17 +144,23 @@ test.describe("Claps from the surface", () => {
           );
         }),
     );
-    expect(pressed, "the pressed key looks different from the idle one").not.toBe(idle);
+    expect(pressed, "the pressed key's own fill").toBe("rgb(46, 74, 80)");
+    expect(idle).not.toBe(pressed);
+    // That press's own flash ends before the next tap is watched.
+    await expect(tap).toHaveAttribute("data-tapped", "false");
+    await page.waitForTimeout(300);
     const tapFlash = await tap.evaluate(
       (el) =>
         new Promise<{ on: number; off: number }>((done) => {
           let on = 0;
           let off = 0;
-          const watch = new MutationObserver(() => {
-            if (el.getAttribute("data-tapped") === "true") on += 1;
-            else off += 1;
+          const watch = new MutationObserver((records) => {
+            for (const r of records) {
+              if (r.oldValue === "false") on += 1;
+              else if (r.oldValue === "true") off += 1;
+            }
           });
-          watch.observe(el, { attributes: true, attributeFilter: ["data-tapped"] });
+          watch.observe(el, { attributes: true, attributeOldValue: true, attributeFilter: ["data-tapped"] });
           const id = 42;
           const at = { bubbles: true, cancelable: true, pointerId: id, isPrimary: true, pointerType: "touch" };
           const box = el.getBoundingClientRect();
@@ -192,10 +198,14 @@ test.describe("Claps from the surface", () => {
     await expect(tap).toHaveAttribute("data-tapped", "false");
 
     // A tap while Live stands is refused by the hub: nothing changes.
+    const refused = async () =>
+      (await hubEvents()).filter((r: any) => r.ev === "claps" && r.step === "refused" && r.why === "Live does not play").length;
+    await until(refused, (n: number) => n >= 3, "the touches' taps refused");
+    const before = await refused();
     await dispatchPointer(tap, TAP);
     await until(
-      async () => (await hubEvents()).filter((r: any) => r.ev === "claps" && r.step === "refused" && r.why === "Live does not play").length,
-      (n: number) => n >= 1,
+      refused,
+      (n: number) => n > before,
       "the stopped tap refused",
     );
     await expect(line).toHaveText("");
