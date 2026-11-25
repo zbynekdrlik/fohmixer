@@ -1443,6 +1443,7 @@ mod tests {
             parents: ["Ambience", "MBC", "-", "-"].map(str::to_string),
             first: -230,
             second: -230,
+            port: None,
         })
     }
 

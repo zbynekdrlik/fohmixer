@@ -153,6 +153,7 @@ fn a_key_of_a_reading() {
         ],
         first: -120,
         second: -180,
+        port: None,
     };
     let k = Key::of(&reading);
     assert_eq!((k.kind, k.device), (DeviceKind::Meter, 9));

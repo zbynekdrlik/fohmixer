@@ -16,7 +16,7 @@ REPO = Path(__file__).resolve().parent.parent
 LUFS, METER = cl.DEVICES
 
 
-class TreeTests(unittest.TestCase):
+class TreeCase(unittest.TestCase):
     """The real files, copied into a scratch root and changed one at a time."""
 
     def setUp(self) -> None:
@@ -53,6 +53,36 @@ class TreeTests(unittest.TestCase):
 
     def errors(self) -> list[str]:
         return cl.check(self.root)
+
+    def line(self, patch: dict, src: list, dst: list) -> None:
+        patch["patcher"]["lines"].append({"patchline": {"source": src, "destination": dst}})
+
+    def node(self, patch: dict, box_id: str, text: str, inlets: int = 2) -> None:
+        patch["patcher"]["boxes"].append(
+            {
+                "box": {
+                    "id": box_id,
+                    "maxclass": "newobj",
+                    "text": text,
+                    "numinlets": inlets,
+                    "numoutlets": 1,
+                }
+            }
+        )
+
+    def drop_lines(self, patch: dict, src: list | None = None, dst: list | None = None) -> None:
+        patch["patcher"]["lines"] = [
+            ln
+            for ln in patch["patcher"]["lines"]
+            if not (
+                (src is None or ln["patchline"]["source"] == src)
+                and (dst is None or ln["patchline"]["destination"] == dst)
+            )
+        ]
+
+
+class TreeTests(TreeCase):
+    """The checks of both patches."""
 
     def test_the_repository_passes(self) -> None:
         self.assertEqual(cl.check(REPO), [])
@@ -106,12 +136,14 @@ class TreeTests(unittest.TestCase):
         self.assertTrue(any("exactly one 'udpsend" in e for e in self.errors()))
 
     def test_the_audio_clock_sets_each_devices_rate(self) -> None:
-        # The owner's ruling of 27.10: the LUFS device sends every 200 ms,
-        # the meter every 33 ms, each on its audio object's own interval.
-        self.assertEqual([d.send_ms for d in cl.DEVICES], [200, 33])
+        # The owner's ruling of 27.10: the meter sends every 33 ms on its
+        # audio object's own interval. The LUFS device's readers run no
+        # clock since #264 (`snapshot~ 0`): the hub polls it every 200 ms.
+        self.assertEqual([d.send_ms for d in cl.DEVICES], [0, 33])
+        self.assertEqual([d.pulled for d in cl.DEVICES], [True, False])
         self.assertEqual([d.clock for d in cl.DEVICES], ["snapshot~", "peakamp~"])
         for device, old, wrong in (
-            (LUFS, '"snapshot~ 200"', "snapshot~ 100"),
+            (LUFS, '"snapshot~ 0"', "snapshot~ 200"),
             (METER, '"peakamp~ 33"', "peakamp~ 200"),
         ):
             self.edit(device.maxpat, old, f'"{wrong}"')
@@ -156,9 +188,10 @@ class TreeTests(unittest.TestCase):
             self.restore(device)
 
     def test_the_send_leaves_the_audio_thread_through_a_deferlow(self) -> None:
-        # #240: the audio side's clock (peakamp~, snapshot~) runs in Live's
-        # audio thread; the socket write goes through obj-send-defer.
-        for device in cl.DEVICES:
+        # #240: the meter's audio clock (peakamp~) runs in Live's audio
+        # thread; the socket write goes through obj-send-defer. (The LUFS
+        # device has no deferlow since #264: its own tests below.)
+        for device in (METER,):
             patch = self.patcher(device)
             patch["patcher"]["lines"] = [
                 ln
@@ -187,7 +220,7 @@ class TreeTests(unittest.TestCase):
         self.assertEqual(self.errors(), [])
 
     def test_the_deferlow_is_fed_by_the_pack_alone(self) -> None:
-        for device in cl.DEVICES:
+        for device in (METER,):
             patch = self.patcher(device)
             self.box(patch, "deferlow")
             for b in cl.boxes(patch["patcher"]):
@@ -394,22 +427,6 @@ class TreeTests(unittest.TestCase):
         )
         self.assertEqual(len(cl.IDENTITY), 5)
 
-    def line(self, patch: dict, src: list, dst: list) -> None:
-        patch["patcher"]["lines"].append({"patchline": {"source": src, "destination": dst}})
-
-    def node(self, patch: dict, box_id: str, text: str, inlets: int = 2) -> None:
-        patch["patcher"]["boxes"].append(
-            {
-                "box": {
-                    "id": box_id,
-                    "maxclass": "newobj",
-                    "text": text,
-                    "numinlets": inlets,
-                    "numoutlets": 1,
-                }
-            }
-        )
-
     def test_the_identity_is_never_read_by_another_clock(self) -> None:
         # #240: a `metro 1000` re-read every name each second (9 LOM calls
         # per device) on Live's main thread.
@@ -451,10 +468,16 @@ class TreeTests(unittest.TestCase):
             ids = {b.get("id"): cl.words(b) for b in cl.boxes(patch["patcher"])}
             self.assertEqual(ids.get(cl.ID_CLOCK), ["qmetro", "10000"])
             self.assertEqual(ids.get(cl.ID_OFFSET), ["random", "10000"])
+            load, tick = cl.load_offset(device.pulled), cl.tick_offset(device.pulled)
             for level in range(1, cl.PARENTS + 1):
                 self.assertEqual(
                     cl.feeds(patch["patcher"], f"obj-parent{level}-path", 0),
-                    sorted([[cl.ID_LOAD, cl.PARENTS - level], [cl.ID_TICK, cl.PARENTS - level]]),
+                    sorted(
+                        [
+                            [cl.ID_LOAD, load + cl.PARENTS - level],
+                            [cl.ID_TICK, tick + cl.PARENTS - level],
+                        ]
+                    ),
                 )
             for text in ("qmetro 1000", "qmetro 9999", "metro 10000", "qmetro 10000 @interval 10"):
                 patch = self.patcher(device)
@@ -483,11 +506,11 @@ class TreeTests(unittest.TestCase):
     def test_the_identity_clock_drives_the_parents_paths_alone(self) -> None:
         # The review of the 10 s re-read: the clock is exempt from
         # lom_clock_errors, so a LOM read fed from it passed every check.
-        tick = sorted(
-            [cl.PARENTS - level, f"obj-parent{level}-path", 0] for level in range(1, cl.PARENTS + 1)
-        )
         for device in cl.DEVICES:
             where = device.maxpat.as_posix()
+            tick = cl.clock_outputs(device.pulled)[cl.ID_TICK]
+            if device.pulled:
+                self.assertIn([0, cl.PULL_GATE, 1], tick)
             for src in (["obj-id-clock", 0], ["obj-id-tick", 0], ["obj-id-offset-delay", 0]):
                 patch = self.patcher(device)
                 self.node(patch, "obj-x-get", "get value")
@@ -826,6 +849,10 @@ class TreeTests(unittest.TestCase):
                 "lines": [line("m", "n", 0)],
             }
             self.assertEqual(len(cl.thread_errors("p", patcher, cl.boxes(patcher))), 1, timed)
+
+    # The pull (#264, the DECIDED of 25.11.2026): the hub polls the LUFS
+    # device and it answers in Max's main thread; nothing starts a message
+    # in Live's audio thread.
 
     def test_a_gone_parent_reads_a_dash(self) -> None:
         patch = self.patcher()

@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 use crate::support::{TestHub, runtime, serial};
 use fohmixer_hub::config::Config;
 use fohmixer_proto::client::HubStatus;
-use fohmixer_proto::lufs::wire::{DeviceKind, MAX_DATAGRAM, Reading, encode};
+use fohmixer_proto::lufs::wire::{
+    DeviceKind, MAX_DATAGRAM, POLL_PORT_MIN, POLL_PORT_SPAN, Reading, encode, poll_datagram,
+};
 
 const SECS_5: Duration = Duration::from_secs(5);
 
@@ -35,6 +37,7 @@ fn datagram(device: i32) -> Vec<u8> {
         parents: ["Vox 1", "FOH Band", "-", "-"].map(str::to_string),
         first: -300,
         second: -253,
+        port: None,
     })
 }
 
@@ -202,6 +205,124 @@ fn a_taken_port_is_an_error_and_the_hub_runs() {
             .unwrap();
         assert!(failed["error"].is_string(), "{failed}");
         drop(taken);
+        hub.stop().await;
+    });
+}
+
+/// A device's poll socket (#264): bound on 127.0.0.1 at the first free
+/// port of the range a device draws from, as the real one listens there.
+fn poll_socket() -> UdpSocket {
+    let range = POLL_PORT_MIN..POLL_PORT_MIN + POLL_PORT_SPAN;
+    let socket = range
+        .into_iter()
+        .find_map(|port| UdpSocket::bind(("127.0.0.1", port)).ok())
+        .expect("a free poll port");
+    socket
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+    socket
+}
+
+/// The polled form of [`datagram`], naming `port`.
+fn polled(device: i32, port: u16) -> Vec<u8> {
+    encode(&Reading {
+        kind: DeviceKind::Lufs,
+        device,
+        version: "v1.58.0".to_string(),
+        parents: ["Vox 1", "FOH Band", "-", "-"].map(str::to_string),
+        first: -300,
+        second: -253,
+        port: Some(port),
+    })
+}
+
+/// The polls `device` reads within `window` (each must be the hub's poll),
+/// answering each with `answer` when there is one.
+fn polls_within(device: &UdpSocket, window: Duration, answer: Option<(&[u8], u16)>) -> usize {
+    let until = Instant::now() + window;
+    let mut buf = [0u8; 64];
+    let mut got = 0;
+    while Instant::now() < until {
+        let Ok(n) = device.recv(&mut buf) else {
+            continue;
+        };
+        assert_eq!(&buf[..n], poll_datagram().as_slice(), "only the hub's poll");
+        got += 1;
+        if let Some((reading, hub)) = answer {
+            device.send_to(reading, ("127.0.0.1", hub)).unwrap();
+        }
+    }
+    got
+}
+
+#[test]
+fn a_polled_device_is_polled_while_it_answers_and_dropped_once_lost() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let port = free_port();
+        let hub = TestHub::start_config(config(dir.path(), port)).await;
+        let device = poll_socket();
+        let at = device.local_addr().unwrap().port();
+        let reading = polled(3, at);
+        // One datagram at load: the hub learns the port and polls it every
+        // 200 ms; each answer keeps the key, so the polls go on.
+        device.send_to(&reading, ("127.0.0.1", port)).unwrap();
+        let answered = tokio::task::block_in_place(|| {
+            polls_within(&device, Duration::from_millis(2000), Some((&reading, port)))
+        });
+        assert!((7..=12).contains(&answered), "about 5 a second: {answered}");
+        let status = hub
+            .status_until(SECS_5, |s| s.lufs.listener.polling == 1)
+            .await;
+        assert!(
+            status.lufs.listener.polled >= 7,
+            "{:?}",
+            status.lufs.listener
+        );
+        assert_eq!(status.lufs.listener.poll_failed, 0);
+        assert_eq!(status.lufs.devices.len(), 1);
+        // Switched off: it answers nothing. The key is lost after 1 s and
+        // its port dropped: at most a stale window of polls, then none.
+        let unanswered = tokio::task::block_in_place(|| {
+            polls_within(&device, Duration::from_millis(1500), None)
+        });
+        assert!(
+            (1..=6).contains(&unanswered),
+            "one stale window: {unanswered}"
+        );
+        let after =
+            tokio::task::block_in_place(|| polls_within(&device, Duration::from_millis(600), None));
+        assert_eq!(after, 0, "a lost key's port is polled no more");
+        let status = hub
+            .status_until(SECS_5, |s| s.lufs.listener.polling == 0)
+            .await;
+        assert_eq!(status.lufs.listener.polling, 0);
+        hub.stop().await;
+    });
+}
+
+#[test]
+fn a_pushed_form_device_is_never_polled() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let port = free_port();
+        let hub = TestHub::start_config(config(dir.path(), port)).await;
+        sender().send_to(&datagram(5), ("127.0.0.1", port)).unwrap();
+        let status = hub
+            .status_until(SECS_5, |s| s.lufs.devices.len() == 1)
+            .await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let status_after = hub.status().await;
+        assert_eq!(status.lufs.listener.taken, 1);
+        assert_eq!(
+            (
+                status_after.lufs.listener.polled,
+                status_after.lufs.listener.polling
+            ),
+            (0, 0)
+        );
         hub.stop().await;
     });
 }

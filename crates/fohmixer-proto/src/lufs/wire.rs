@@ -11,6 +11,17 @@
 //! | 4–7 | `s` | the names of the device's first four canonical parents, nearest first ([`NO_PARENT`] past the top) |
 //! | 8 | `i` | `/lufs`: `S` in tenths of LU (−700…0); `/meter`: the L peak in tenths of dBFS (−700…120) |
 //! | 9 | `i` | `/lufs`: `V` in tenths (−700…0); `/meter`: the R peak |
+//! | 10 | `i` | wire version [`POLLED_WIRE_VERSION`] only: the device's poll port |
+//!
+//! **Two forms (#264).** Wire version [`WIRE_VERSION`] (tags [`TYPE_TAGS`],
+//! nine fields) is the pushed form: the device sends on its audio object's
+//! own clock (FohMixer Meter, and a LUFS device from before 1.58.0 during
+//! the rollout). Wire version [`POLLED_WIRE_VERSION`] (tags
+//! [`POLLED_TYPE_TAGS`]) adds the port the device listens on, in
+//! [`POLL_PORT_MIN`]..[`POLL_PORT_MIN`] + [`POLL_PORT_SPAN`]: the hub sends
+//! [`poll_datagram`] there every [`POLL_EVERY_MS`] and the device answers
+//! each poll with one reading, pulled in Max's main thread, so no message
+//! starts in Live's audio thread (FohMixer LUFS since 1.58.0).
 //!
 //! Max's `live.path` gives no absolute path of a device (its `getpath`
 //! echoes the path it was given: #151's probe of 27.10), so the device names
@@ -25,8 +36,22 @@
 /// The hub's default port, fixed in the devices' patches
 /// (`scripts/check_lufs_device.py` keeps them equal).
 pub const DEFAULT_PORT: u16 = 39110;
-/// The wire version the devices send; a new field is a new version.
+/// The wire version of the pushed form; a new field is a new version.
 pub const WIRE_VERSION: i32 = 1;
+/// The wire version of the polled form: the pushed form plus the device's
+/// poll port (#264).
+pub const POLLED_WIRE_VERSION: i32 = 2;
+/// The polled form's type tags: the pushed form's and the port.
+pub const POLLED_TYPE_TAGS: &str = ",iisssssiii";
+/// The lowest poll port a device draws (`random` [`POLL_PORT_SPAN`] `+`
+/// this, once at load).
+pub const POLL_PORT_MIN: u16 = 40_000;
+/// How many poll ports a device draws from.
+pub const POLL_PORT_SPAN: u16 = 10_000;
+/// The hub's poll: an OSC message with no argument.
+pub const POLL_ADDRESS: &str = "/fohmixer/lufs/poll";
+/// How often the hub polls each device it knows the port of.
+pub const POLL_EVERY_MS: u64 = 200;
 /// The longest datagram the hub takes.
 pub const MAX_DATAGRAM: usize = 512;
 /// The LUFS device's address.
@@ -95,6 +120,8 @@ pub struct Reading {
     pub first: i16,
     /// `V` or the R peak, in tenths.
     pub second: i16,
+    /// The polled form's port (none: the pushed form).
+    pub port: Option<u16>,
 }
 
 impl Reading {
@@ -195,6 +222,24 @@ fn value(kind: DeviceKind, raw: i32) -> Result<i16, WireError> {
         .ok_or(WireError::Range)
 }
 
+/// A port the polled form may name: within [`POLL_PORT_MIN`] and
+/// [`POLL_PORT_SPAN`] ports above it, else [`WireError::Range`].
+pub fn poll_port(raw: i32) -> Result<u16, WireError> {
+    u16::try_from(raw)
+        .ok()
+        .filter(|p| (POLL_PORT_MIN..POLL_PORT_MIN + POLL_PORT_SPAN).contains(p))
+        .ok_or(WireError::Range)
+}
+
+/// The wire version each form's type tags go with.
+fn version_of(tags: &str) -> Result<i32, WireError> {
+    match tags {
+        TYPE_TAGS => Ok(WIRE_VERSION),
+        POLLED_TYPE_TAGS => Ok(POLLED_WIRE_VERSION),
+        _ => Err(WireError::Tags),
+    }
+}
+
 /// Reads one datagram.
 pub fn parse(datagram: &[u8]) -> Result<Reading, WireError> {
     if datagram.len() > MAX_DATAGRAM {
@@ -207,11 +252,9 @@ pub fn parse(datagram: &[u8]) -> Result<Reading, WireError> {
         _ => return Err(WireError::Address),
     };
     let (tags, rest) = osc_string(rest)?;
-    if tags != TYPE_TAGS {
-        return Err(WireError::Tags);
-    }
+    let expected = version_of(tags)?;
     let (wire, rest) = osc_i32(rest)?;
-    if wire != WIRE_VERSION {
+    if wire != expected {
         return Err(WireError::Version);
     }
     let (device, rest) = osc_i32(rest)?;
@@ -222,6 +265,12 @@ pub fn parse(datagram: &[u8]) -> Result<Reading, WireError> {
     let (p3, rest) = osc_string(rest)?;
     let (first, rest) = osc_i32(rest)?;
     let (second, rest) = osc_i32(rest)?;
+    let (port, rest) = if wire == POLLED_WIRE_VERSION {
+        let (port, rest) = osc_i32(rest)?;
+        (Some(poll_port(port)?), rest)
+    } else {
+        (None, rest)
+    };
     if !rest.is_empty() {
         return Err(WireError::Trailing);
     }
@@ -232,6 +281,7 @@ pub fn parse(datagram: &[u8]) -> Result<Reading, WireError> {
         parents: [p0, p1, p2, p3].map(str::to_string),
         first: value(kind, first)?,
         second: value(kind, second)?,
+        port,
     };
     if reading.track_and_set().is_none() {
         return Err(WireError::Identity);
@@ -246,12 +296,17 @@ pub(crate) fn push_string(out: &mut Vec<u8>, text: &str) {
     out.resize(out.len() + padded - text.len(), 0);
 }
 
-/// The datagram of a reading (the tests' and the hub tests' sender).
+/// The datagram of a reading (the tests' and the hub tests' sender): the
+/// polled form when it names a port, else the pushed form.
 pub fn encode(r: &Reading) -> Vec<u8> {
+    let (tags, wire) = match r.port {
+        Some(_) => (POLLED_TYPE_TAGS, POLLED_WIRE_VERSION),
+        None => (TYPE_TAGS, WIRE_VERSION),
+    };
     let mut out = Vec::with_capacity(MAX_DATAGRAM);
     push_string(&mut out, r.kind.address());
-    push_string(&mut out, TYPE_TAGS);
-    out.extend_from_slice(&WIRE_VERSION.to_be_bytes());
+    push_string(&mut out, tags);
+    out.extend_from_slice(&wire.to_be_bytes());
     out.extend_from_slice(&r.device.to_be_bytes());
     push_string(&mut out, &r.version);
     for parent in &r.parents {
@@ -259,6 +314,18 @@ pub fn encode(r: &Reading) -> Vec<u8> {
     }
     out.extend_from_slice(&i32::from(r.first).to_be_bytes());
     out.extend_from_slice(&i32::from(r.second).to_be_bytes());
+    if let Some(port) = r.port {
+        out.extend_from_slice(&i32::from(port).to_be_bytes());
+    }
+    out
+}
+
+/// The hub's poll ([`POLL_ADDRESS`], type tags `,`): the device answers it
+/// with one reading.
+pub fn poll_datagram() -> Vec<u8> {
+    let mut out = Vec::with_capacity(32);
+    push_string(&mut out, POLL_ADDRESS);
+    push_string(&mut out, ",");
     out
 }
 

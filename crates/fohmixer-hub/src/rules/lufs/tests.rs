@@ -20,6 +20,7 @@ fn reading(device: i32, parents: [&str; 4], first: i16, second: i16) -> Reading 
         parents: parents.map(str::to_string),
         first,
         second,
+        port: None,
     }
 }
 
@@ -712,6 +713,7 @@ fn meter_reading(device: i32, left: i16, right: i16) -> Reading {
         parents: ["Meter", "Meter", "Vox 1", SET].map(str::to_string),
         first: left,
         second: right,
+        port: None,
     }
 }
 
