@@ -559,10 +559,11 @@ def upstream(
                 continue
             src = line["source"][0]
             source = ids.get(src, {})
-            if is_signal(source, line["source"][1]):
+            if is_signal(source, line["source"][1]) and kind(source) not in stop:
                 # An audio line carries no message: nothing upstream of it
                 # runs in the thread of what it feeds (#264: the filters'
-                # coefficients are set at DSP start and at load).
+                # coefficients are set at DSP start and at load). A `stop`
+                # box is still reported, whatever its saved outlet type.
                 continue
             if src in seen:
                 continue

@@ -156,6 +156,40 @@ class PatchTests(TreeCase):
         self.assertEqual(averages, ["576000", "576000", "576000", "76800"])
         self.assertEqual(cl.words(ids["obj-gate"]), [">=~", ld.lit(ld.GATE_MEAN_SQUARE)])
 
+    def test_each_coefficient_list_leaves_its_pack_complete(self) -> None:
+        # `t` fires right to left: the pack's hot inlet must be reached by
+        # the trigger's lowest outlet, after every cold one, so the biquad~
+        # gets the five new coefficients in one list (the review of #264:
+        # b0 went first, so the shelf ran on b0 alone after the load).
+        self.assertEqual(self.firing_errors(self.patcher(LUFS)["patcher"]), [])
+        # The order the review found: a2 last, b0 first.
+        patch = self.patcher(LUFS)
+        for index, name in enumerate(ld.SHELF_ORDER):
+            self.drop_lines(patch, src=["obj-shelf-t", index], dst=[f"obj-shelf-{name}", 0])
+            self.line(patch, ["obj-shelf-t", 4 - index], [f"obj-shelf-{name}", 0])
+        self.assertEqual(
+            self.firing_errors(patch["patcher"]), ["obj-shelf-pack: hot inlet from outlet 4"]
+        )
+        self.save(patch, LUFS)
+        self.assertTrue(any("obj-shelf-b0:0 takes" in e for e in self.errors()))
+
+    @staticmethod
+    def firing_errors(patcher: dict) -> list[str]:
+        errors = []
+        for trigger, pack in (("obj-shelf-t", "obj-shelf-pack"), ("obj-hp-t", "obj-hp-pack")):
+            outlet_of = {}
+            for inlet in range(5):
+                for src, out in cl.feeds(patcher, pack, inlet):
+                    if src == trigger:
+                        outlet_of[inlet] = out
+                    for up, up_out in cl.feeds(patcher, src, 0):
+                        if up == trigger:
+                            outlet_of[inlet] = up_out
+            hot = outlet_of.get(0)
+            if hot is None or any(out <= hot for i, out in outlet_of.items() if i != 0):
+                errors.append(f"{pack}: hot inlet from outlet {hot}")
+        return errors
+
     def test_an_expr_other_than_the_reference_fails(self) -> None:
         where = LUFS.maxpat.as_posix()
         self.edit(LUFS.maxpat, "0.7071752369554196", "0.7071752369554197")

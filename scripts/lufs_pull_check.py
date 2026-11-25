@@ -69,9 +69,9 @@ def poll_constants(wire_text: str) -> Poll | None:
 
 # The pull (#264, the DECIDED of 25.11.2026, built on probe B3): the hub
 # polls the device on a port it draws at load; each poll, the load's and the
-# `t b b b`, which bangs the three `snapshot~ 0` (short-term first), so the
+# 10 s re-read's last outlet, and Device On turning 1 open the gate's right
 # inlet; the gate (its left inlet `is_active`, observed) passes the bang to
-# `t b b`, which bangs both `snapshot~ 0` (short-term first), so the
+# `t b b b`, which bangs the three `snapshot~ 0` (short-term first), so the
 # reading, the face and the send run in Max's main thread.
 PULL = "obj-pull"
 POLL_RECEIVE = "obj-poll-receive"

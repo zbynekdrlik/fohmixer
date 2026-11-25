@@ -103,15 +103,15 @@ Status: draft for the owner's approval, 2026-10-26. The rules in §2 are the own
 
 ### 3.3 The two readings the device makes
 
-Every 100 ms (EBU Tech 3341's 10 Hz minimum), on the stereo input (L and R, each weight 1.0, as BS.1770 sums a stereo track; a centred mono mic on a stereo track therefore reads as trueLevel reads it on that track):
+Continuously since #264 (1.60.0; read by the hub's poll every 200 ms, §4.4; *history:* until 1.59 every 100 ms sub-block, EBU Tech 3341's 10 Hz minimum), on the stereo input (L and R, each weight 1.0, as BS.1770 sums a stereo track; a centred mono mic on a stereo track therefore reads as trueLevel reads it on that track):
 
 1. **K-weighting:** BS.1770's two biquads (the high-shelf pre-filter and the RLB high-pass), coefficients derived for the running sample rate from the standard's analog prototypes (at 48 kHz they give the standard's published values; the device as a whole is checked against trueLevel, §10).
-2. **Sub-blocks:** the mean square of each 100 ms sub-block, summed over channels.
-3. **Short-term** `S`: −0.691 + 10·log10 of the mean of the last 30 sub-blocks (3 s). No gating (BS.1770 short-term has none). Floor −70 (shown `—`).
+2. **The mean square:** each K-weighted channel squared, summed over the channels, averaged over a sliding window (`average~`). *History: until 1.59 the mean square of each 100 ms sub-block.*
+3. **Short-term** `S`: −0.691 + 10·log10 of the mean square over the last 3 s (the 30 sub-blocks until 1.59). No gating (BS.1770 short-term has none). Floor −70 (shown `—`).
 4. **Voice** `V` *(call; the gate rule G3 asks for)*:
-   - A sub-block is **voiced** when the momentary loudness of the 400 ms ending with it (its 4 sub-blocks) is at least **−40 LUFS**, that is 15 LU under the target and 9 LU under the red line.
-   - `V` is the loudness of the mean of the **voiced** sub-blocks among the last 30 (3 s).
-   - `V` is valid only when at least **10** of those 30 are voiced (1 s of voice in 3 s). Otherwise `V` = −70 (silent).
+   - An instant is **voiced** when the momentary loudness of the 400 ms ending with it is at least **−40 LUFS** (until 1.59: a 100 ms sub-block, with its 4 sub-blocks), that is 15 LU under the target and 9 LU under the red line.
+   - `V` is the loudness of the mean square over the **voiced** part of the last 3 s: the 3 s mean of (mean square × voiced) over the 3 s mean of voiced (0…1).
+   - `V` is valid only when at least a third of those 3 s is voiced (1 s of voice in 3 s, the 10 of 30 sub-blocks until 1.59). Otherwise `V` = −70 (silent).
 
    Why this rule:
    - A pause shorter than the window does not drag the reading down: unvoiced sub-blocks are left out, so a phrase end never turns yellow on its way to silence (plain `S` falls through −28, −31 for 3 s after every phrase).
@@ -166,7 +166,7 @@ The v2 strip draws a track's output as two bars, L and R, inside its fader's tra
 - **Source in the repo, binary built on the PC** *(call)*: `live-device/FohMixer-LUFS/` and `live-device/FohMixer-Meter/` hold each patch (`.maxpat` JSON); *history:* until 1.59 the LUFS `gen~` code also as `.genexpr` text (#264 removed both; the formulas live in `scripts/lufs_dsp_check.py`). The `.amxd` is never committed: a frozen device can embed the author's file paths, which hold the Windows user name (public-repo hygiene), and the denylist scan skips binary files.
 - **Version:** `version.txt` beside each patch follows the workspace version; the face shows `v<version>` and every datagram carries it (§4.4), so the hub logs which build each device runs.
 - **Built from the patcher** *(call)*: `build_amxd.py` writes the unfrozen `.amxd` (the `ampf`/`aaaa` header, then the `.maxpat` JSON byte for byte) for either patch; the devices have no file dependencies. `scripts/check_lufs_device.py` (CI) keeps, for both patches: the patch's shape (`plugin~`, `plugout~`; in the LUFS device no `gen~` and its MSP chain with the `expr` coefficient texts of `scripts/lufs_dsp_check.py` (#264); one `udpsend 127.0.0.1 <port>` with the port equal to the hub's default; the OSC address and the version in the one `pack`; `plugout~` fed by `plugin~` alone; the identity's `live.path` messages); no parameter objects; no absolute paths; the face's version equal to `version.txt`. *History: until 27.10 it also kept a constants table equal to a Rust reference DSP (`fohmixer_proto::lufs::dsp`, PR #154); the owner dropped the reference for the trueLevel comparison (§9), and PR 2 deletes both.*
-- **Edges of the readings** *(call)*: before 3 s of audio the missing sub-blocks count as silence (the device's rings start at zero); a reading above 0 LUFS is sent as 0; each reading is rounded to tenths before it is sent.
+- **Edges of the readings** *(call)*: before 3 s of audio the missing part of the window counts as silence (taken from `average~` starting at zero, to be confirmed on the PC; until 1.59 the gen~'s rings started at zero); a reading above 0 LUFS is sent as 0; each reading is rounded to tenths before it is sent.
 
 ### 4.3 Probe P1 on the PC (done 27.10)
 

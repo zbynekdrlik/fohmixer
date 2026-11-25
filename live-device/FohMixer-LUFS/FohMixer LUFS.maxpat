@@ -5240,35 +5240,11 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-shelf-t",
-						4
-					],
-					"destination": [
-						"obj-shelf-b0",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
 						"obj-shelf-b0",
 						0
 					],
 					"destination": [
 						"obj-shelf-pack",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-shelf-t",
-						3
-					],
-					"destination": [
-						"obj-shelf-b1",
 						0
 					]
 				}
@@ -5288,36 +5264,12 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-shelf-t",
-						2
-					],
-					"destination": [
-						"obj-shelf-b2",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
 						"obj-shelf-b2",
 						0
 					],
 					"destination": [
 						"obj-shelf-pack",
 						2
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-shelf-t",
-						1
-					],
-					"destination": [
-						"obj-shelf-a1",
-						0
 					]
 				}
 			},
@@ -5336,11 +5288,23 @@
 			{
 				"patchline": {
 					"source": [
+						"obj-shelf-a2",
+						0
+					],
+					"destination": [
+						"obj-shelf-pack",
+						4
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
 						"obj-shelf-t",
 						0
 					],
 					"destination": [
-						"obj-shelf-a2",
+						"obj-shelf-b0",
 						0
 					]
 				}
@@ -5348,12 +5312,48 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-shelf-a2",
-						0
+						"obj-shelf-t",
+						1
 					],
 					"destination": [
-						"obj-shelf-pack",
+						"obj-shelf-b1",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-shelf-t",
+						2
+					],
+					"destination": [
+						"obj-shelf-b2",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-shelf-t",
+						3
+					],
+					"destination": [
+						"obj-shelf-a1",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-shelf-t",
 						4
+					],
+					"destination": [
+						"obj-shelf-a2",
+						0
 					]
 				}
 			}

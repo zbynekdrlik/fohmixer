@@ -944,7 +944,15 @@ class TreeTests(TreeCase):
         patch = self.patcher(LUFS)
         self.node(patch, "obj-x-defer", "deferlow", inlets=1)
         self.line(patch, ["obj-x-defer", 0], ["obj-clip-v", 0])
+        # A clock whose saved outlet type claims audio is still a clock.
+        self.node(patch, "obj-x-clock", "delay 5")
+        patch["patcher"]["boxes"][-1]["box"]["outlettype"] = ["signal"]
+        self.line(patch, ["obj-x-clock", 0], ["obj-clip-s", 0])
         self.save(patch)
+        self.assertTrue(
+            any("is fed from obj-x-clock ('delay 5')" in e for e in self.errors()),
+            self.errors(),
+        )
         self.assertIn(
             f"{LUFS.maxpat.as_posix()}: obj-x-defer ('deferlow') is on the send path (the "
             "pull runs in the main thread: no deferlow)",

@@ -251,7 +251,8 @@ def dsp_wiring() -> dict[tuple[str, int], list[tuple[str, int]]]:
         ("obj-voice", 0): [("obj-face-v", 0)],
     }
     for index, name in enumerate(SHELF_ORDER):
-        found[(f"obj-shelf-{name}", 0)] = [("obj-shelf-t", len(SHELF_ORDER) - 1 - index)]
+        # `t` fires right to left: a2 first, b0 (the hot inlet) last.
+        found[(f"obj-shelf-{name}", 0)] = [("obj-shelf-t", index)]
         found[("obj-shelf-pack", index)] = [(f"obj-shelf-{name}", 0)]
     for box in ("obj-shelf-l", "obj-shelf-r", "obj-hp-l", "obj-hp-r"):
         for inlet in range(1, 6):
