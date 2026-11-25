@@ -58,7 +58,10 @@ def build_from_spec(spec):
     for track_spec in spec.get("tracks", ()):
         _add_track(song, track_spec, None, return_names)
     song._returns = [_make_track(song, r, None, return_names) for r in spec.get("returns", ())]
-    song._master = _make_track(song, spec.get("master", {"name": "Main"}), None, ())
+    # A real main track goes to the external output 1/2 (#267).
+    master = {"output": {"type": "Ext. Out", "channel": "1/2"}}
+    master.update(spec.get("master", {"name": "Main"}))
+    song._master = _make_track(song, master, None, ())
     for track in [*song._returns, song._master]:
         track._v["can_be_armed"] = False
     song._cue_points = [

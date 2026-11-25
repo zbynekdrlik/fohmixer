@@ -32,6 +32,7 @@ use rust_embed::RustEmbed;
 use crate::auth::{Rejection, error_response};
 use crate::{Assets, Hub};
 
+pub mod automation_gate;
 pub mod listen;
 pub mod lufs;
 pub mod role;

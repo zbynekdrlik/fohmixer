@@ -6,25 +6,32 @@
 //!
 //! The hub walks the set with `get_prop` only (`fohmixer-hub`
 //! `stream_proof.rs`) and hands [`decide`] what it read ([`Set`]); this
-//! module decides, pure. **Every doubt makes the proof fail, never pass:**
+//! module decides, pure. **Every doubt makes the proof fail, never pass.**
 //!
-//! - [`Proof::open`]: every unmuted track that is no group and reaches the
-//!   bus [`BUS`]: through its chain of groups (the bus somewhere up the
-//!   chain, no muted group on the way, the bus included) or routed straight
-//!   to it (its output type names the bus). A [`SENDS_ONLY`] track feeds
-//!   nothing only with no sends or no returns; with both it stays open (its
-//!   audio may come back through a return). The returns count as tracks
-//!   routed straight to the bus too.
+//! **The routing graph.** Every track and return is a node; its output type
+//! ([`Output::kind`]) is its edge: [`GROUP`] goes to the group it sits in,
+//! a type that names one track or return goes to that one (a group or a
+//! track routed to another track), [`SENDS_ONLY`] goes to every return when
+//! the track has sends and the set has returns (else nowhere), any other
+//! type (`Main`, `Ext. Out`, …) leaves the set. A muted node passes nothing
+//! on. A type naming two tracks, [`GROUP`] on a track in no group, or a loop
+//! is an error.
+//!
+//! - [`Proof::open`]: every unmuted track that is no group, and every
+//!   unmuted return, from which a path of unmuted nodes reaches the bus
+//!   [`BUS`] (the bus itself unmuted).
 //! - [`Proof::outputs`]: the bus's output (normally the track
 //!   [`STREAM_TRACK`]), that track's output (type and channel, the external
-//!   output the stream PC takes), and every other track, return or the main
-//!   track routed to the stream track or to that same output ([`Routed`]),
+//!   output the stream PC takes), and every other track, group, return or
+//!   the main track routed to the stream track or to an output sharing a
+//!   channel with its output ([`same_output`]: `3` and `3/4` share one; a
+//!   channel without numbers shares when it differs at all) ([`Routed`]),
 //!   muted or not: the fact is about routing.
 //! - [`Proof::hand1_sync_only`]: `open` is exactly [`HAND1_SYNC`], the bus
 //!   goes to the stream track and nothing else goes there or to its output.
 //!
 //! No bus, or two tracks of the bus's or the stream track's name, is an
-//! error ([`decide`]'s `Err`): the answer is then `ok: false` with that
+//! error too ([`decide`]'s `Err`): the answer is then `ok: false` with that
 //! reason, which camera-box treats as strict. The names are the set's own
 //! (config-like constants, recorded on #267: one set, one reader).
 
@@ -38,6 +45,8 @@ pub const STREAM_TRACK: &str = "OM STREAM";
 pub const HAND1_SYNC: &str = "Hand1sync #";
 /// The output type of a track that feeds its sends only.
 pub const SENDS_ONLY: &str = "Sends Only";
+/// The output type of a track that goes to the group it sits in.
+pub const GROUP: &str = "Group";
 
 /// A track's output routing as Live shows it: the type's and the channel's
 /// `display_name`.
@@ -179,77 +188,144 @@ fn the_one(tracks: &[Track], name: &str) -> Result<usize, String> {
     }
 }
 
-/// Whether track `at`'s audio reaches the bus `bus` through its groups:
-/// the bus up its chain and no muted group on the way (the bus included).
-/// The chain is walked at most once per track, so a cycle in a broken read
-/// ends there (no bus found).
-fn through_groups(tracks: &[Track], at: usize, bus: usize) -> bool {
-    let mut parent = tracks[at].parent;
-    for _ in 0..tracks.len() {
-        let Some(group) = parent.and_then(|p| tracks.get(p).map(|t| (p, t))) else {
-            return false;
-        };
-        if group.1.mute {
-            return false;
-        }
-        if group.0 == bus {
-            return true;
-        }
-        parent = group.1.parent;
-    }
-    false
+/// A node of the routing graph: track `i` is `i`, return `j` is
+/// `tracks.len() + j`.
+struct Graph<'a> {
+    set: &'a Set,
 }
 
-/// Whether a track with this output feeds anything at all: a
-/// [`SENDS_ONLY`] one only with sends and returns.
-fn feeds(output: &Output, sends: usize, returns: usize) -> bool {
-    output.kind != SENDS_ONLY || (sends > 0 && returns > 0)
+impl Graph<'_> {
+    fn len(&self) -> usize {
+        self.set.tracks.len() + self.set.returns.len()
+    }
+
+    fn name(&self, node: usize) -> &str {
+        self.set.tracks.get(node).map_or_else(
+            || &self.set.returns[node - self.set.tracks.len()].name,
+            |t| &t.name,
+        )
+    }
+
+    fn mute(&self, node: usize) -> bool {
+        self.set.tracks.get(node).map_or_else(
+            || self.set.returns[node - self.set.tracks.len()].mute,
+            |t| t.mute,
+        )
+    }
+
+    fn output(&self, node: usize) -> &Output {
+        self.set.tracks.get(node).map_or_else(
+            || &self.set.returns[node - self.set.tracks.len()].output,
+            |t| &t.output,
+        )
+    }
+
+    /// Where `node`'s audio goes (see the module's doc), or why it is in
+    /// doubt.
+    fn edges(&self, node: usize) -> Result<Vec<usize>, String> {
+        let kind = self.output(node).kind.as_str();
+        let track = self.set.tracks.get(node);
+        if kind == GROUP {
+            return match track.and_then(|t| t.parent) {
+                Some(p) if p < self.set.tracks.len() => Ok(vec![p]),
+                _ => Err(format!(
+                    "{} goes to {GROUP} but sits in no group",
+                    self.name(node)
+                )),
+            };
+        }
+        if kind == SENDS_ONLY {
+            let sends = track.map_or(0, |t| t.sends);
+            return Ok(if sends > 0 {
+                (self.set.tracks.len()..self.len()).collect()
+            } else {
+                Vec::new()
+            });
+        }
+        let named: Vec<usize> = (0..self.len())
+            .filter(|&n| n != node && self.name(n) == kind)
+            .collect();
+        if named.len() > 1 {
+            return Err(format!(
+                "{} goes to {kind}, which names two tracks",
+                self.name(node)
+            ));
+        }
+        Ok(named)
+    }
+
+    /// Whether a path of unmuted nodes leads from `node` to `bus` (the bus
+    /// unmuted); `path` holds the nodes before it, and a node met again on
+    /// it is a loop.
+    fn reaches(&self, node: usize, bus: usize, path: &mut Vec<usize>) -> Result<bool, String> {
+        if path.contains(&node) {
+            return Err(format!("the routing loops through {}", self.name(node)));
+        }
+        path.push(node);
+        for next in self.edges(node)? {
+            if self.mute(next) {
+                continue;
+            }
+            if next == bus || self.reaches(next, bus, path)? {
+                return Ok(true);
+            }
+        }
+        path.pop();
+        Ok(false)
+    }
+}
+
+/// The numbers of an output channel (`3/4 Final LR` is 3 and 4), none when
+/// its first word holds anything but numbers and `/`.
+fn channel_numbers(channel: &str) -> Option<Vec<u32>> {
+    let first = channel.split_whitespace().next()?;
+    first.split('/').map(|n| n.parse().ok()).collect()
+}
+
+/// Whether `a` and `b` are the same output or share a channel of it: the
+/// same type and the same channel, or channels whose numbers overlap, or
+/// (a doubt) channels that differ without both having numbers.
+pub fn same_output(a: &Output, b: &Output) -> bool {
+    if a.kind != b.kind {
+        return false;
+    }
+    if a.channel == b.channel {
+        return true;
+    }
+    match (channel_numbers(&a.channel), channel_numbers(&b.channel)) {
+        (Some(x), Some(y)) => x.iter().any(|n| y.contains(n)),
+        _ => true,
+    }
 }
 
 /// The proof of `set` (see the module's doc), or why there is none.
 pub fn decide(set: &Set) -> Result<Proof, String> {
     let bus = the_one(&set.tracks, BUS)?;
     let stream = the_one(&set.tracks, STREAM_TRACK)?;
-    let returns = set.returns.len();
-    let mut open: Vec<String> = set
-        .tracks
-        .iter()
-        .enumerate()
-        .filter(|&(i, t)| {
-            i != bus
-                && !t.group
-                && !t.mute
-                && feeds(&t.output, t.sends, returns)
-                && (t.output.kind == BUS || through_groups(&set.tracks, i, bus))
-        })
-        .map(|(_, t)| t.name.clone())
-        .collect();
-    open.extend(
-        set.returns
-            .iter()
-            .filter(|r| !r.mute && r.output.kind == BUS)
-            .map(|r| r.name.clone()),
-    );
+    let graph = Graph { set };
+    let bus_open = !set.tracks[bus].mute;
+    let mut open = Vec::new();
+    for node in 0..graph.len() {
+        let group = set.tracks.get(node).is_some_and(|t| t.group);
+        if node == bus || group || graph.mute(node) {
+            continue;
+        }
+        if bus_open && graph.reaches(node, bus, &mut Vec::new())? {
+            open.push(graph.name(node).to_string());
+        }
+    }
     let stream_to = set.tracks[stream].output.clone();
-    let to_stream = |output: &Output| output.kind == STREAM_TRACK || *output == stream_to;
+    let to_stream =
+        |output: &Output| output.kind == STREAM_TRACK || same_output(output, &stream_to);
     let routed = |name: &str, output: &Output| Routed {
         name: name.to_string(),
         kind: output.kind.clone(),
         channel: output.channel.clone(),
     };
-    let mut others: Vec<Routed> = set
-        .tracks
-        .iter()
-        .enumerate()
-        .filter(|&(i, t)| i != bus && i != stream && to_stream(&t.output))
-        .map(|(_, t)| routed(&t.name, &t.output))
+    let mut others: Vec<Routed> = (0..graph.len())
+        .filter(|&n| n != bus && n != stream && to_stream(graph.output(n)))
+        .map(|n| routed(graph.name(n), graph.output(n)))
         .collect();
-    others.extend(
-        set.returns
-            .iter()
-            .filter(|r| to_stream(&r.output))
-            .map(|r| routed(&r.name, &r.output)),
-    );
     if to_stream(&set.main) {
         others.push(routed("Main", &set.main));
     }

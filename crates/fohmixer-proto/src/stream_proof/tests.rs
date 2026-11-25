@@ -46,12 +46,12 @@ fn mbc() -> Set {
     Set {
         tracks: vec![
             group(BUS, None, STREAM_TRACK),
-            track(HAND1_SYNC, Some(0), "Group"),
-            muted(group("Speech grp", Some(0), "Group")),
-            track("Mic A", Some(2), "Group"),
-            track("Mic B", Some(2), "Group"),
-            muted(group("Outer grp", Some(0), "Group")),
-            track("Inner", Some(5), "Group"),
+            track(HAND1_SYNC, Some(0), GROUP),
+            muted(group("Speech grp", Some(0), GROUP)),
+            track("Mic A", Some(2), GROUP),
+            track("Mic B", Some(2), GROUP),
+            muted(group("Outer grp", Some(0), GROUP)),
+            track("Inner", Some(5), GROUP),
             Track {
                 output: out(EXT, STREAM_CH),
                 ..track(STREAM_TRACK, None, "")
@@ -103,7 +103,7 @@ fn a_nested_group_reaches_the_bus_only_when_no_group_on_the_way_is_muted() {
     set.tracks[5].mute = false;
     assert_eq!(decide(&set).unwrap().open, vec![HAND1_SYNC, "Inner"]);
     // One level deeper: Inner in a group inside Outer grp.
-    set.tracks.push(group("Deep grp", Some(5), "Group"));
+    set.tracks.push(group("Deep grp", Some(5), GROUP));
     set.tracks[6].parent = Some(10);
     assert_eq!(decide(&set).unwrap().open, vec![HAND1_SYNC, "Inner"]);
     set.tracks[10].mute = true;
@@ -119,7 +119,7 @@ fn a_nested_group_reaches_the_bus_only_when_no_group_on_the_way_is_muted() {
 fn a_track_in_another_group_or_none_does_not_reach_the_bus() {
     let mut set = mbc();
     set.tracks.push(group("Band grp", None, "Main"));
-    set.tracks.push(track("Keys", Some(10), "Group"));
+    set.tracks.push(track("Keys", Some(10), GROUP));
     let proof = decide(&set).unwrap();
     assert_eq!(proof.open, vec![HAND1_SYNC]);
     assert!(proof.hand1_sync_only);
@@ -143,30 +143,120 @@ fn a_track_routed_straight_to_the_bus_is_open() {
     assert_eq!(decide(&set).unwrap().open, vec![HAND1_SYNC]);
 }
 
+fn ret(name: &str, kind: &str) -> Return {
+    Return {
+        name: name.into(),
+        mute: false,
+        output: out(kind, ""),
+    }
+}
+
 #[test]
-fn a_sends_only_track_feeds_nothing_without_sends_or_returns() {
+fn a_sends_only_track_feeds_only_the_returns_and_only_with_sends() {
     let mut set = mbc();
     // Sends but no returns: nothing.
     set.tracks[9].sends = 2;
     assert_eq!(decide(&set).unwrap().open, vec![HAND1_SYNC]);
-    // Returns but no sends: nothing.
-    set.tracks[9].sends = 0;
-    set.returns.push(Return {
-        name: "A-Reverb".into(),
-        mute: false,
-        output: out("Main", ""),
-    });
+    // A return on the main output: the Sends Only track reaches no bus.
+    set.returns.push(ret("A-Reverb", "Main"));
     assert_eq!(decide(&set).unwrap().open, vec![HAND1_SYNC]);
-    // Both: open (its audio may come back through a return).
-    set.tracks[9].sends = 1;
+    // A return routed to the bus: it and the track feeding it are open.
+    set.returns.push(ret("B-Delay", BUS));
     let proof = decide(&set).unwrap();
-    assert_eq!(proof.open, vec![HAND1_SYNC, "Quiet"]);
+    assert_eq!(proof.open, vec![HAND1_SYNC, "Quiet", "B-Delay"]);
     assert!(!proof.hand1_sync_only);
-    // Any other output type with both sends and returns stays open too.
-    assert!(feeds(&out("Group", ""), 0, 0));
-    assert!(!feeds(&out(SENDS_ONLY, ""), 1, 0));
-    assert!(!feeds(&out(SENDS_ONLY, ""), 0, 1));
-    assert!(feeds(&out(SENDS_ONLY, ""), 1, 1));
+    // No sends: the track feeds nothing, the return is still open.
+    set.tracks[9].sends = 0;
+    assert_eq!(decide(&set).unwrap().open, vec![HAND1_SYNC, "B-Delay"]);
+    // The return muted: nothing through it.
+    set.tracks[9].sends = 1;
+    set.returns[1].mute = true;
+    assert_eq!(decide(&set).unwrap().open, vec![HAND1_SYNC]);
+}
+
+#[test]
+fn two_ways_to_one_return_are_no_loop() {
+    // Quiet's sends reach A-Reverb and B-Delay; B-Delay goes to A-Reverb,
+    // which goes to the bus: A-Reverb is met twice, on two paths.
+    let mut set = mbc();
+    set.tracks[9].sends = 1;
+    set.returns.push(ret("A-Reverb", "Main"));
+    set.returns.push(ret("B-Delay", "A-Reverb"));
+    assert_eq!(decide(&set).unwrap().open, vec![HAND1_SYNC]);
+    set.returns[0].output = out(BUS, "");
+    assert_eq!(
+        decide(&set).unwrap().open,
+        vec![HAND1_SYNC, "Quiet", "A-Reverb", "B-Delay"]
+    );
+}
+
+#[test]
+fn a_group_or_a_track_routed_into_the_bus_from_outside_is_followed() {
+    // A group outside the bus, routed to the bus: its unmuted track is open.
+    let mut set = mbc();
+    set.tracks.push(group("Side grp", None, BUS));
+    set.tracks.push(track("Side A", Some(10), GROUP));
+    assert_eq!(decide(&set).unwrap().open, vec![HAND1_SYNC, "Side A"]);
+    set.tracks[10].mute = true;
+    assert_eq!(decide(&set).unwrap().open, vec![HAND1_SYNC]);
+    // A track routed to a track inside the bus.
+    let mut set = mbc();
+    set.tracks[8].output = out(HAND1_SYNC, "");
+    assert_eq!(decide(&set).unwrap().open, vec![HAND1_SYNC, "Room"]);
+    // To a group inside the bus that is muted: nothing passes.
+    set.tracks[8].output = out("Speech grp", "");
+    assert_eq!(decide(&set).unwrap().open, vec![HAND1_SYNC]);
+    // A group shown by its own name instead of Group is followed the same.
+    let mut set = mbc();
+    set.tracks[1].output = out(BUS, "");
+    assert_eq!(decide(&set).unwrap().open, vec![HAND1_SYNC]);
+    assert!(decide(&set).unwrap().hand1_sync_only);
+}
+
+#[test]
+fn a_type_naming_two_tracks_or_group_outside_a_group_is_a_doubt() {
+    let mut set = mbc();
+    set.tracks.push(track("Twin", None, "Main"));
+    set.tracks.push(track("Twin", None, "Main"));
+    set.tracks[8].output = out("Twin", "");
+    assert_eq!(
+        decide(&set),
+        Err("Room goes to Twin, which names two tracks".into())
+    );
+    let mut set = mbc();
+    set.tracks[8].output = out(GROUP, "");
+    assert_eq!(
+        decide(&set),
+        Err("Room goes to Group but sits in no group".into())
+    );
+    // A group index past the list.
+    let mut set = mbc();
+    set.tracks[8].output = out(GROUP, "");
+    set.tracks[8].parent = Some(set.tracks.len());
+    assert_eq!(
+        decide(&set),
+        Err("Room goes to Group but sits in no group".into())
+    );
+}
+
+#[test]
+fn outputs_share_a_channel_when_their_numbers_overlap() {
+    let stereo = out(EXT, STREAM_CH);
+    assert!(same_output(&stereo, &stereo));
+    assert!(same_output(&out(EXT, "3"), &stereo));
+    assert!(same_output(&out(EXT, "4"), &stereo));
+    assert!(same_output(&out(EXT, "4/5"), &stereo));
+    assert!(!same_output(&out(EXT, "5/6"), &stereo));
+    assert!(!same_output(&out(EXT, "1"), &stereo));
+    assert!(!same_output(&out("Main", STREAM_CH), &stereo));
+    // A channel without numbers that differs is a doubt: shared.
+    assert!(same_output(&out(EXT, "Final"), &stereo));
+    assert!(same_output(&out(EXT, ""), &stereo));
+    assert!(same_output(&out(EXT, ""), &out(EXT, "")));
+    assert_eq!(channel_numbers("3/4 Final LR"), Some(vec![3, 4]));
+    assert_eq!(channel_numbers("12"), Some(vec![12]));
+    assert_eq!(channel_numbers("3/x"), None);
+    assert_eq!(channel_numbers(""), None);
 }
 
 #[test]
@@ -266,15 +356,18 @@ fn a_missing_or_doubled_bus_or_stream_track_is_no_answer() {
 }
 
 #[test]
-fn a_broken_chain_of_groups_reaches_nothing() {
+fn a_routing_loop_is_a_doubt() {
     let mut set = mbc();
-    // A cycle that never meets the bus.
+    // Speech grp and Outer grp each in the other: Mic A loops.
     set.tracks[2].parent = Some(5);
     set.tracks[2].mute = false;
     set.tracks[5].parent = Some(2);
     set.tracks[5].mute = false;
-    // A parent index past the list.
-    set.tracks[8].parent = Some(99);
+    let why = decide(&set).unwrap_err();
+    assert!(why.starts_with("the routing loops through "), "{why}");
+    // A track routed to itself is no edge (a name names another track).
+    let mut set = mbc();
+    set.tracks[8].output = out("Room", "");
     assert_eq!(decide(&set).unwrap().open, vec![HAND1_SYNC]);
 }
 

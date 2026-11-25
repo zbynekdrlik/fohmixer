@@ -17,18 +17,24 @@
 //!    another track). `group_track` answers the group as an object whose
 //!    `$ref` is the listed group's (the script's id is Live's pointer), so
 //!    the chain is followed by `$ref`, never by name;
-//! 3. `<track> mixer_device sends` of each `Sends Only` track (its count).
+//! 3. the `name` (checked again) and `<track> mixer_device sends` (its
+//!    count) of each `Sends Only` track.
 //!
 //! Any slot that fails fails the walk with the script's words
-//! (`<path> <prop>: <error>`), and so does a call (offline, a timeout).
+//! (`<path> <prop>: <error>`), and so do a call (offline, a timeout), an
+//! answer with fewer or more slots than reads, a list that is no list or
+//! holds an object without a path or `$ref`, and a sends answer that is no
+//! list.
 //!
 //! **The answer** ([`StreamProofs::answer`]): the walks take turns on one
 //! lock, and an answer younger than [`WINDOW`] is served again with its
 //! `age_ms` (a request that waited for a walk gets that walk's answer); a
 //! hub without `mbc` or with `mbc` offline is answered at once and nothing
-//! is cached (no read was made). Every walk is one `stream_proof` record
-//! (`ok`, `ms`, `open`, `hand1_sync_only`, or `error`) and one info line
-//! (warn when it failed).
+//! is cached (no read was made); a cached answer is served for the rest of
+//! its window even when `mbc` went offline meanwhile (its `ts` and `age_ms`
+//! say how old it is). Every walk is one `stream_proof` record (`ok`, `ms`,
+//! `open`, `hand1_sync_only`, or `error`, which makes it warn class) and
+//! one info line (warn when it failed).
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -75,16 +81,26 @@ fn data<'a>(slots: &'a [Value], at: usize, what: &str) -> Result<&'a Value, Stri
     }
 }
 
-/// A list answer's objects.
+/// A list answer's objects: a list whose every object has a path and a
+/// `$ref`, or why not.
 fn listed(slots: &[Value], at: usize, what: &str) -> Result<Vec<Listed>, String> {
-    Ok(items(data(slots, at, what)?)
+    let value = data(slots, at, what)?;
+    let Some(all) = value.as_array() else {
+        return Err(format!("{what}: not a list: {value}"));
+    };
+    let objects: Vec<Listed> = items(value)
         .into_iter()
+        .filter(|item| !item.id.is_empty())
         .map(|item| Listed {
             path: item.path.to_string(),
             name: item.name.to_string(),
             id: item.id.to_string(),
         })
-        .collect())
+        .collect();
+    if objects.len() != all.len() {
+        return Err(format!("{what}: an object without a path or a $ref"));
+    }
+    Ok(objects)
 }
 
 /// The `get_prop`s of an object's output routing.
@@ -160,7 +176,7 @@ fn parent(value: &Value, tracks: &[Listed], what: &str) -> Result<Option<usize>,
     let id = value.get("$ref").and_then(Value::as_str).unwrap_or("");
     tracks
         .iter()
-        .position(|t| t.id == id)
+        .position(|t| !id.is_empty() && t.id == id)
         .map(Some)
         .ok_or_else(|| format!("{what}: a group that is not in the track list"))
 }
@@ -201,14 +217,34 @@ fn facts(slots: &[Value], tracks: &[Listed], returns: &[Listed]) -> Result<Set, 
     Ok(set)
 }
 
-/// The tracks of step 3 (each `Sends Only` one) and their commands.
+/// The tracks of step 3 (each `Sends Only` one) and their commands: its
+/// name (a move meanwhile fails the walk) and its sends.
 fn sends_commands(set: &Set, tracks: &[Listed]) -> (Vec<usize>, Vec<Value>) {
-    set.tracks
+    let which: Vec<usize> = set
+        .tracks
         .iter()
         .enumerate()
         .filter(|(_, t)| t.output.kind == SENDS_ONLY)
-        .map(|(i, _)| (i, get(&format!("{} mixer_device", tracks[i].path), "sends")))
-        .unzip()
+        .map(|(i, _)| i)
+        .collect();
+    let commands = which
+        .iter()
+        .flat_map(|&i| {
+            [
+                get(&tracks[i].path, "name"),
+                get(&format!("{} mixer_device", tracks[i].path), "sends"),
+            ]
+        })
+        .collect();
+    (which, commands)
+}
+
+/// A sends answer's count, or why it is none.
+fn sends_count(slots: &[Value], at: usize, what: &str) -> Result<usize, String> {
+    match data(slots, at, what)? {
+        Value::Array(sends) => Ok(sends.len()),
+        other => Err(format!("{what}: not a list: {other}")),
+    }
 }
 
 /// Every command through `live`, at most [`CHUNK`] per request, in order.
@@ -219,6 +255,13 @@ async fn call(live: &LiveHandle, commands: Vec<Value>) -> Result<Vec<Value>, Str
             .call(chunk.to_vec())
             .await
             .map_err(|e| format!("Live did not answer: {e}"))?;
+        if answer.len() != chunk.len() {
+            return Err(format!(
+                "Live answered {} of {} reads",
+                answer.len(),
+                chunk.len()
+            ));
+        }
         slots.extend(answer);
     }
     Ok(slots)
@@ -234,8 +277,9 @@ pub async fn walk(live: &LiveHandle) -> Result<Set, String> {
     let (which, commands) = sends_commands(&set, &tracks);
     let slots = call(live, commands).await?;
     for (n, &i) in which.iter().enumerate() {
+        same_name(&slots, 2 * n, &tracks[i])?;
         let what = format!("{} mixer_device sends", tracks[i].path);
-        set.tracks[i].sends = data(&slots, n, &what)?.as_array().map_or(0, Vec::len);
+        set.tracks[i].sends = sends_count(&slots, 2 * n + 1, &what)?;
     }
     Ok(set)
 }

@@ -4,16 +4,15 @@
 //! the LAN only; the router learns the name and moves the faders with a
 //! rule for it (`router/scenes.rs`), and the answer says how many.
 //!
-//! The order of the checks ([`check`], pure): an internet request is 403
-//! (`LAN_ONLY`) before anything else; a hub without a token 503
-//! (`NO_AUTOMATION`, naming the command that sets one); a missing or wrong
-//! token 401 (`UNAUTHORIZED`); a body that is not `{"scene": <name>}` with
-//! a scene name 400 (`BAD_SCENE`, why). Every refusal is one `scene`
-//! record with `refused` and one warn line, at most
-//! [`REFUSED_LINES`] per `ration::GAP`.
+//! The order of the checks ([`check`], pure): the automation gate's
+//! (`automation_gate::gate`: an internet request 403 `LAN_ONLY`, a hub
+//! without a token 503 `NO_AUTOMATION`, a missing or wrong token 401
+//! `UNAUTHORIZED`), then a body that is not `{"scene": <name>}` with a
+//! scene name 400 (`BAD_SCENE`, why). Every refusal is one `scene` record
+//! with `refused` and one warn line, at most [`REFUSED_LINES`] per
+//! `ration::GAP` (`automation_gate::note`).
 
 use std::net::SocketAddr;
-use std::time::Instant;
 
 use axum::{
     Json,
@@ -26,6 +25,7 @@ use fohmixer_proto::scenes::scene_name;
 use serde::Deserialize;
 use serde_json::json;
 
+use super::automation_gate::{self, Gate, Refusal};
 use crate::Hub;
 use crate::access::{self, Origin};
 use crate::auth::{bearer, error_response};
@@ -44,12 +44,8 @@ struct SceneBody {
 /// Why a scene request is refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refused {
-    /// An internet request (403).
-    Internet,
-    /// The hub has no automation token (503).
-    NoToken,
-    /// A missing or wrong token (401).
-    Token,
+    /// The automation gate's refusal (403, 503, 401).
+    Gate(Gate),
     /// The body is no scene (400), why.
     Body(String),
 }
@@ -58,9 +54,7 @@ impl Refused {
     /// Its word in the record.
     pub fn word(&self) -> &'static str {
         match self {
-            Refused::Internet => "internet",
-            Refused::NoToken => "no_token",
-            Refused::Token => "token",
+            Refused::Gate(gate) => gate.word(),
             Refused::Body(_) => "body",
         }
     }
@@ -68,21 +62,7 @@ impl Refused {
     /// Its answer.
     pub fn response(&self) -> Response {
         match self {
-            Refused::Internet => error_response(
-                StatusCode::FORBIDDEN,
-                "LAN_ONLY",
-                "Scenes are taken on the local network only",
-            ),
-            Refused::NoToken => error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "NO_AUTOMATION",
-                "This hub takes no scenes: set a token with `fohmixer-hub automation set-token` and restart it",
-            ),
-            Refused::Token => error_response(
-                StatusCode::UNAUTHORIZED,
-                "UNAUTHORIZED",
-                "Send the automation token as Authorization: Bearer <token>",
-            ),
+            Refused::Gate(gate) => gate.response(),
             Refused::Body(why) => error_response(StatusCode::BAD_REQUEST, "BAD_SCENE", why),
         }
     }
@@ -102,15 +82,7 @@ pub fn check(
     token_ok: bool,
     body: &[u8],
 ) -> Result<String, Refused> {
-    if origin == Origin::Internet {
-        return Err(Refused::Internet);
-    }
-    if !token_set {
-        return Err(Refused::NoToken);
-    }
-    if !token_ok {
-        return Err(Refused::Token);
-    }
+    automation_gate::gate(origin, token_set, token_ok).map_err(Refused::Gate)?;
     body_scene(body).map_err(Refused::Body)
 }
 
@@ -138,20 +110,18 @@ pub async fn post_scene(
     let scene = match check(origin, token.is_some(), ok, &body) {
         Ok(scene) => scene,
         Err(refused) => {
-            let allowed = hub
-                .scene_refusals
-                .lock()
-                .map(|mut r| r.take(Instant::now(), REFUSED_LINES))
-                .ok()
-                .flatten();
-            if let Some(skipped) = allowed {
-                tracing::warn!("{}", refused_line(&refused, &peer_ip, skipped));
-                hub.events.record(
-                    "scene",
-                    json!({"refused": refused.word(), "source": source, "peer": peer_ip,
-                           "skipped": skipped}),
-                );
-            }
+            automation_gate::note(
+                &hub.scene_refusals,
+                REFUSED_LINES,
+                &hub.events,
+                Refusal {
+                    ev: "scene",
+                    word: refused.word(),
+                    source,
+                    peer: &peer_ip,
+                    line: |skipped| refused_line(&refused, &peer_ip, skipped),
+                },
+            );
             return refused.response();
         }
     };
@@ -186,17 +156,20 @@ mod tests {
         assert_eq!(check(Origin::Local, true, true, good), Ok("intro".into()));
         assert_eq!(
             check(Origin::Internet, true, true, good),
-            Err(Refused::Internet)
+            Err(Refused::Gate(Gate::Internet))
         );
         assert_eq!(
             check(Origin::Internet, false, false, b"x"),
-            Err(Refused::Internet)
+            Err(Refused::Gate(Gate::Internet))
         );
         assert_eq!(
             check(Origin::Local, false, false, good),
-            Err(Refused::NoToken)
+            Err(Refused::Gate(Gate::NoToken))
         );
-        assert_eq!(check(Origin::Local, true, false, good), Err(Refused::Token));
+        assert_eq!(
+            check(Origin::Local, true, false, good),
+            Err(Refused::Gate(Gate::Token))
+        );
         assert!(matches!(
             check(Origin::Local, true, true, b"{}"),
             Err(Refused::Body(_))
@@ -227,13 +200,21 @@ mod tests {
     #[test]
     fn each_refusal_has_its_status_code_and_word() {
         for (refused, status, word) in [
-            (Refused::Internet, StatusCode::FORBIDDEN, "internet"),
             (
-                Refused::NoToken,
+                Refused::Gate(Gate::Internet),
+                StatusCode::FORBIDDEN,
+                "internet",
+            ),
+            (
+                Refused::Gate(Gate::NoToken),
                 StatusCode::SERVICE_UNAVAILABLE,
                 "no_token",
             ),
-            (Refused::Token, StatusCode::UNAUTHORIZED, "token"),
+            (
+                Refused::Gate(Gate::Token),
+                StatusCode::UNAUTHORIZED,
+                "token",
+            ),
             (Refused::Body("x".into()), StatusCode::BAD_REQUEST, "body"),
         ] {
             assert_eq!(refused.response().status(), status);
@@ -245,7 +226,7 @@ mod tests {
     #[test]
     fn a_refusal_line_names_why_and_the_peer() {
         assert_eq!(
-            refused_line(&Refused::Token, "10.0.0.5", 2),
+            refused_line(&Refused::Gate(Gate::Token), "10.0.0.5", 2),
             "a scene request is refused (token) from 10.0.0.5; 2 left out before"
         );
         assert_eq!(

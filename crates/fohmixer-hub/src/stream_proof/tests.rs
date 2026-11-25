@@ -42,6 +42,11 @@ struct Fake {
     renamed: Option<(usize, String)>,
     /// A `group_track` `$ref` the list never gave.
     stray_group: bool,
+    /// One slot answered as given: target, prop, the slot.
+    slot_as: Option<(String, String, Value)>,
+    /// The track-name reads after the facts' request answer this (a move
+    /// between step 2 and step 3).
+    late_name: Option<String>,
 }
 
 /// The MBC set's shape (invented names besides the constants).
@@ -68,6 +73,8 @@ fn mbc() -> Fake {
         fail: None,
         renamed: None,
         stray_group: false,
+        slot_as: None,
+        late_name: None,
     }
 }
 
@@ -87,6 +94,12 @@ impl Fake {
         let prop = command["args"]["prop"].as_str().unwrap();
         if self.fail.as_deref() == Some(target) {
             return json!({"ok": false, "error": "not found"});
+        }
+        if let Some((t, p, slot)) = &self.slot_as
+            && t == target
+            && p == prop
+        {
+            return slot.clone();
         }
         if target == "live_set" {
             let (kind, list) = match prop {
@@ -135,12 +148,22 @@ impl Fake {
     }
 }
 
-/// Answers every call of `script` from `fake` (or drops it unanswered
-/// when `drop_calls`), counting the calls and their commands.
+/// How the fake answers a call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Answer,
+    /// Every call dropped unanswered.
+    Drop,
+    /// The second call's answer one slot short.
+    Short,
+}
+
+/// Answers every call of `script` from `fake` as `mode` says, counting the
+/// calls and their commands.
 fn drive(
     mut script: Script,
-    fake: Fake,
-    drop_calls: bool,
+    mut fake: Fake,
+    mode: Mode,
 ) -> (Arc<AtomicUsize>, Arc<std::sync::Mutex<Vec<usize>>>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let sizes = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -149,13 +172,22 @@ fn drive(
         loop {
             match script.try_call() {
                 Some(asked) => {
-                    c.fetch_add(1, Ordering::SeqCst);
+                    let n = c.fetch_add(1, Ordering::SeqCst);
                     s.lock().unwrap().push(asked.commands.len());
-                    if drop_calls {
+                    if mode == Mode::Drop {
                         drop(asked);
                         continue;
                     }
-                    let slots = asked.commands.iter().map(|cmd| fake.slot(cmd)).collect();
+                    let mut slots: Vec<Value> =
+                        asked.commands.iter().map(|cmd| fake.slot(cmd)).collect();
+                    if mode == Mode::Short && n == 1 {
+                        slots.pop();
+                    }
+                    if n == 1
+                        && let Some(name) = fake.late_name.take()
+                    {
+                        fake.renamed = Some((4, name));
+                    }
                     asked.answer(slots);
                 }
                 None => tokio::time::sleep(Duration::from_millis(1)).await,
@@ -175,7 +207,7 @@ fn live(
 ) {
     let (handle, script) = scripted(MBC_INSTANCE);
     handle.set_online(true);
-    let (calls, sizes) = drive(script, fake, false);
+    let (calls, sizes) = drive(script, fake, Mode::Answer);
     (handle, calls, sizes)
 }
 
@@ -190,19 +222,19 @@ async fn a_walk_reads_the_set_and_the_proof_holds() {
     assert_eq!(set.tracks[5].output.channel, "3/4 Final LR");
     assert_eq!(set.main.channel, "1/2");
     // Three requests: the lists, the facts (6 per track and the main
-    // track's 2), the one Sends Only track's sends.
+    // track's 2), the one Sends Only track's name and sends.
     assert_eq!(calls.load(Ordering::SeqCst), 3);
-    assert_eq!(*sizes.lock().unwrap(), vec![2, 7 * 6 + 2, 1]);
+    assert_eq!(*sizes.lock().unwrap(), vec![2, 7 * 6 + 2, 2]);
     let proof = decide(&set).unwrap();
     assert_eq!(proof.open, vec![HAND1_SYNC]);
     assert!(proof.hand1_sync_only);
 }
 
 #[tokio::test]
-async fn returns_and_sends_are_read_and_a_sends_only_track_with_both_is_open() {
+async fn returns_and_sends_are_read_and_a_sends_only_track_reaches_the_bus_through_a_return() {
     let mut fake = mbc();
     fake.tracks[4].sends = 1;
-    fake.returns.push(ft("A-Reverb", None, "Main"));
+    fake.returns.push(ft("A-Reverb", None, BUS));
     let mut delay = ft("B-Delay", None, "Ext. Out");
     delay.mute = true;
     delay.out.1 = "5/6".into();
@@ -211,15 +243,18 @@ async fn returns_and_sends_are_read_and_a_sends_only_track_with_both_is_open() {
     let set = walk(&handle).await.unwrap();
     assert_eq!(set.returns.len(), 2);
     assert_eq!(set.returns[0].name, "A-Reverb");
-    assert_eq!(set.returns[0].output.kind, "Main");
+    assert_eq!(set.returns[0].output.kind, BUS);
     assert!(!set.returns[0].mute);
     assert_eq!(set.returns[1].name, "B-Delay");
     assert!(set.returns[1].mute);
     assert_eq!(set.returns[1].output.channel, "5/6");
     assert_eq!(set.main.channel, "1/2");
     assert_eq!(set.tracks[4].sends, 1);
-    assert_eq!(*sizes.lock().unwrap(), vec![2, 7 * 6 + 2 * 4 + 2, 1]);
-    assert_eq!(decide(&set).unwrap().open, vec![HAND1_SYNC, "Quiet"]);
+    assert_eq!(*sizes.lock().unwrap(), vec![2, 7 * 6 + 2 * 4 + 2, 2]);
+    assert_eq!(
+        decide(&set).unwrap().open,
+        vec![HAND1_SYNC, "Quiet", "A-Reverb"]
+    );
 }
 
 #[tokio::test]
@@ -233,7 +268,7 @@ async fn a_large_set_is_read_in_requests_of_at_most_a_chunk() {
     assert_eq!(set.tracks.len(), 47);
     assert_eq!(
         *sizes.lock().unwrap(),
-        vec![2, CHUNK, 47 * 6 + 2 - CHUNK, 1]
+        vec![2, CHUNK, 47 * 6 + 2 - CHUNK, 2]
     );
     assert!(decide(&set).unwrap().hand1_sync_only);
 }
@@ -320,7 +355,7 @@ fn a_slot_of_the_wrong_kind_is_named() {
 async fn live_not_answering_fails_the_walk() {
     let (handle, script) = scripted(MBC_INSTANCE);
     handle.set_online(true);
-    let (calls, _) = drive(script, mbc(), true);
+    let (calls, _) = drive(script, mbc(), Mode::Drop);
     assert_eq!(
         walk(&handle).await,
         Err("Live did not answer: instance offline".into())
@@ -463,4 +498,81 @@ async fn no_mbc_or_an_offline_mbc_is_answered_at_once_and_not_cached() {
     let walked = proofs.answer(Some(&handle), &events).await;
     assert!(walked.ok, "{walked:?}");
     assert_eq!(calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn an_answer_that_is_no_list_or_short_or_without_refs_fails_the_walk() {
+    let mut fake = mbc();
+    fake.slot_as = Some(("live_set".into(), "return_tracks".into(), ok(json!("none"))));
+    let (handle, _, _) = live(fake);
+    assert_eq!(
+        walk(&handle).await,
+        Err("live_set return_tracks: not a list: \"none\"".into())
+    );
+    let mut fake = mbc();
+    fake.slot_as = Some((
+        "live_set".into(),
+        "return_tracks".into(),
+        ok(json!([{"$ref": "q0", "class": "Track", "name": "A"}])),
+    ));
+    let (handle, _, _) = live(fake);
+    assert_eq!(
+        walk(&handle).await,
+        Err("live_set return_tracks: an object without a path or a $ref".into())
+    );
+    let mut fake = mbc();
+    fake.slot_as = Some((
+        "live_set".into(),
+        "return_tracks".into(),
+        ok(json!([{"path": "live_set return_tracks 0", "class": "Track", "name": "A"}])),
+    ));
+    let (handle, _, _) = live(fake);
+    assert_eq!(
+        walk(&handle).await,
+        Err("live_set return_tracks: an object without a path or a $ref".into())
+    );
+    let mut fake = mbc();
+    fake.slot_as = Some((
+        "live_set tracks 4 mixer_device".into(),
+        "sends".into(),
+        ok(json!(2)),
+    ));
+    let (handle, _, _) = live(fake);
+    assert_eq!(
+        walk(&handle).await,
+        Err("live_set tracks 4 mixer_device sends: not a list: 2".into())
+    );
+    let (handle, script) = scripted(MBC_INSTANCE);
+    handle.set_online(true);
+    drive(script, mbc(), Mode::Short);
+    assert_eq!(
+        walk(&handle).await,
+        Err(format!(
+            "Live answered {} of {} reads",
+            7 * 6 + 1,
+            7 * 6 + 2
+        ))
+    );
+}
+
+#[tokio::test]
+async fn a_group_without_a_ref_or_a_move_before_the_sends_fails_the_walk() {
+    let mut fake = mbc();
+    fake.slot_as = Some((
+        "live_set tracks 1".into(),
+        "group_track".into(),
+        ok(json!({"path": "live_set tracks 0", "class": "Track"})),
+    ));
+    let (handle, _, _) = live(fake);
+    assert_eq!(
+        walk(&handle).await,
+        Err("live_set tracks 1 group_track: a group that is not in the track list".into())
+    );
+    let mut fake = mbc();
+    fake.late_name = Some("Elsewhere".into());
+    let (handle, _, _) = live(fake);
+    assert_eq!(
+        walk(&handle).await,
+        Err("the tracks changed during the read: live_set tracks 4 is now \"Elsewhere\", was \"Quiet\"".into())
+    );
 }
