@@ -203,13 +203,22 @@ async fn returns_and_sends_are_read_and_a_sends_only_track_with_both_is_open() {
     let mut fake = mbc();
     fake.tracks[4].sends = 1;
     fake.returns.push(ft("A-Reverb", None, "Main"));
+    let mut delay = ft("B-Delay", None, "Ext. Out");
+    delay.mute = true;
+    delay.out.1 = "5/6".into();
+    fake.returns.push(delay);
     let (handle, _, sizes) = live(fake);
     let set = walk(&handle).await.unwrap();
-    assert_eq!(set.returns.len(), 1);
+    assert_eq!(set.returns.len(), 2);
     assert_eq!(set.returns[0].name, "A-Reverb");
     assert_eq!(set.returns[0].output.kind, "Main");
+    assert!(!set.returns[0].mute);
+    assert_eq!(set.returns[1].name, "B-Delay");
+    assert!(set.returns[1].mute);
+    assert_eq!(set.returns[1].output.channel, "5/6");
+    assert_eq!(set.main.channel, "1/2");
     assert_eq!(set.tracks[4].sends, 1);
-    assert_eq!(*sizes.lock().unwrap(), vec![2, 7 * 6 + 4 + 2, 1]);
+    assert_eq!(*sizes.lock().unwrap(), vec![2, 7 * 6 + 2 * 4 + 2, 1]);
     assert_eq!(decide(&set).unwrap().open, vec![HAND1_SYNC, "Quiet"]);
 }
 
