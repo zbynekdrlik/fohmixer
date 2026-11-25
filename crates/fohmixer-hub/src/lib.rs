@@ -109,6 +109,7 @@ pub mod sealed;
 pub mod secrets;
 pub mod sectors;
 pub mod setter;
+pub mod stream_proof;
 #[cfg(test)]
 pub(crate) mod test_keys;
 pub mod tls;
@@ -238,6 +239,9 @@ pub struct HubInner {
     pub automation: Option<automation::AutomationToken>,
     /// The ration of the scene requests' refusal lines and records.
     pub scene_refusals: Mutex<ration::Ration>,
+    /// The MBC stream proofs (#267, `GET /api/mbc/stream-proof`): the last
+    /// answer and the route's refusal ration.
+    pub stream_proofs: stream_proof::StreamProofs,
     /// The ration of the Listen select route's refusal lines (#210).
     pub select_refusals: Mutex<ration::Ration>,
     /// Its window worker, awaited after the stop so its windows are handed
@@ -807,6 +811,7 @@ impl Hub {
             router: router_tx,
             automation,
             scene_refusals: Mutex::new(ration::Ration::default()),
+            stream_proofs: stream_proof::StreamProofs::default(),
             select_refusals: Mutex::new(ration::Ration::default()),
             next_client: AtomicU64::new(1),
             tasks: Mutex::new(tasks),

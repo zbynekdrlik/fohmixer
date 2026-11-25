@@ -28,7 +28,7 @@ pub enum RouteAccess {
     /// The engineer's login only: an MBC token gets 403 `ROLE`.
     EngineerOnly,
     /// No login: the handler checks the automation token itself (#207,
-    /// `POST /api/scene`).
+    /// `POST /api/scene`; #267, `GET /api/mbc/stream-proof`).
     Automation,
     /// No login: a Listen device on this PC (#210, `GET
     /// /api/listen/select`); the handler takes loopback peers only.
@@ -50,6 +50,7 @@ pub const API_PATHS: &[&str] = &[
     "/api/lufs/history",
     "/api/lufs/days",
     "/api/scene",
+    "/api/mbc/stream-proof",
     SELECT_PATH,
     "/ws",
     "/ws/audio",
@@ -69,7 +70,7 @@ pub fn route_role(path: &str) -> Option<RouteAccess> {
         "/api/markers/migration" | "/api/eq/picture" | "/api/songmap" => {
             Some(RouteAccess::EngineerOnly)
         }
-        "/api/scene" => Some(RouteAccess::Automation),
+        "/api/scene" | "/api/mbc/stream-proof" => Some(RouteAccess::Automation),
         SELECT_PATH => Some(RouteAccess::Device),
         _ => None,
     }

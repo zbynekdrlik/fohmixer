@@ -1,0 +1,30 @@
+{
+ "name": "MBC stream",
+ "live_version": [12, 2, 5],
+ "tracks": [
+  {
+   "name": "ToStream 1s sync #",
+   "output": {"type": "OM STREAM"},
+   "children": [
+    {"name": "Hand1sync #"},
+    {
+     "name": "Talk grp",
+     "mute": true,
+     "children": [{"name": "Talk A"}, {"name": "Talk B"}]
+    },
+    {
+     "name": "Outer grp",
+     "mute": true,
+     "children": [
+      {"name": "Inner grp", "children": [{"name": "Inner"}]}
+     ]
+    },
+    {"name": "Quiet", "output": {"type": "Sends Only"}}
+   ]
+  },
+  {"name": "OM STREAM", "output": {"type": "Ext. Out", "channel": "3/4 Final LR"}},
+  {"name": "Room", "output": {"type": "Main"}}
+ ],
+ "returns": [],
+ "master": {"name": "Main", "output": {"type": "Ext. Out", "channel": "1/2"}}
+}
