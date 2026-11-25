@@ -22,15 +22,15 @@ fn track(name: &str, parent: Option<usize>, kind: &str) -> Track {
 
 /// A group track.
 fn group(name: &str, parent: Option<usize>, kind: &str) -> Track {
-    Track {
-        group: true,
-        ..track(name, parent, kind)
-    }
+    let mut t = track(name, parent, kind);
+    t.group = true;
+    t
 }
 
 /// Muted.
-fn muted(t: Track) -> Track {
-    Track { mute: true, ..t }
+fn muted(mut t: Track) -> Track {
+    t.mute = true;
+    t
 }
 
 const EXT: &str = "Ext. Out";
@@ -53,8 +53,12 @@ fn mbc() -> Set {
             muted(group("Outer grp", Some(0), GROUP)),
             track("Inner", Some(5), GROUP),
             Track {
+                name: STREAM_TRACK.to_string(),
+                mute: false,
+                group: false,
+                parent: None,
                 output: out(EXT, STREAM_CH),
-                ..track(STREAM_TRACK, None, "")
+                sends: 0,
             },
             track("Room", None, "Main"),
             track("Quiet", Some(0), SENDS_ONLY),
@@ -365,10 +369,63 @@ fn a_routing_loop_is_a_doubt() {
     set.tracks[5].mute = false;
     let why = decide(&set).unwrap_err();
     assert!(why.starts_with("the routing loops through "), "{why}");
-    // A track routed to itself is no edge (a name names another track).
+    // A track routed to itself names no other track: a doubt.
     let mut set = mbc();
     set.tracks[8].output = out("Room", "");
-    assert_eq!(decide(&set).unwrap().open, vec![HAND1_SYNC]);
+    assert_eq!(
+        decide(&set),
+        Err("Room goes to Room, which is no track and no known output".into())
+    );
+}
+
+#[test]
+fn a_type_that_is_no_track_and_no_known_output_is_a_doubt_reached_or_not() {
+    // The bus's shown name (Live shows its `#` as a number) names no node.
+    let mut set = mbc();
+    set.tracks[8].output = out("ToStream 1s sync 1", "");
+    assert_eq!(
+        decide(&set),
+        Err("Room goes to ToStream 1s sync 1, which is no track and no known output".into())
+    );
+    // Also on a muted track nothing reaches through.
+    set.tracks[8].mute = true;
+    assert!(decide(&set).is_err());
+    // The known ones leave the set.
+    for kind in OUT_OF_SET {
+        let mut set = mbc();
+        set.tracks[8].output = out(kind, "5/6");
+        assert!(decide(&set).unwrap().hand1_sync_only, "{kind}");
+    }
+}
+
+#[test]
+fn the_bus_must_be_a_group_and_the_stream_track_must_leave_the_set() {
+    let mut set = mbc();
+    set.tracks[0].group = false;
+    assert_eq!(decide(&set), Err(format!("{BUS} is no group")));
+    // The stream track relayed through another track.
+    let mut set = mbc();
+    set.tracks[7].output = out("Room", "");
+    assert_eq!(
+        decide(&set),
+        Err(format!("{STREAM_TRACK} goes to Room, not out of the set"))
+    );
+    let mut set = mbc();
+    set.tracks[7].output = out(SENDS_ONLY, "");
+    assert_eq!(
+        decide(&set),
+        Err(format!(
+            "{STREAM_TRACK} goes to {SENDS_ONLY}, not out of the set"
+        ))
+    );
+    // On the main output it leaves the set; Room shares that output now.
+    let mut set = mbc();
+    set.tracks[7].output = out("Main", "");
+    let proof = decide(&set).unwrap();
+    assert_eq!(proof.outputs.others[0].name, "Room");
+    assert!(!proof.hand1_sync_only);
+    set.tracks[8].output = out(EXT, "5/6");
+    assert!(decide(&set).unwrap().hand1_sync_only);
 }
 
 #[test]

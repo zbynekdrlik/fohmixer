@@ -6,16 +6,22 @@
 //!
 //! The hub walks the set with `get_prop` only (`fohmixer-hub`
 //! `stream_proof.rs`) and hands [`decide`] what it read ([`Set`]); this
-//! module decides, pure. **Every doubt makes the proof fail, never pass.**
+//! module decides, pure. **Every doubt it can see makes the proof fail,
+//! never pass**; what the walk does not read (the stream track's own
+//! input, a cue output) it cannot see (#267).
 //!
 //! **The routing graph.** Every track and return is a node; its output type
 //! ([`Output::kind`]) is its edge: [`GROUP`] goes to the group it sits in,
 //! a type that names one track or return goes to that one (a group or a
 //! track routed to another track), [`SENDS_ONLY`] goes to every return when
-//! the track has sends and the set has returns (else nowhere), any other
-//! type (`Main`, `Ext. Out`, …) leaves the set. A muted node passes nothing
-//! on. A type naming two tracks, [`GROUP`] on a track in no group, or a loop
-//! is an error.
+//! the track has sends and the set has returns (else nowhere), and the
+//! types of [`OUT_OF_SET`] (`Main`, `Master`, `Ext. Out`) leave the set. A
+//! muted node passes nothing on. A type naming two tracks or none and no
+//! known output (Live shows a `#` in a name as a number, so a route to a
+//! track by its shown name would be one), [`GROUP`] on a track in no group,
+//! a loop, a bus that is no group, or a stream track whose own output does
+//! not leave the set, is an error: every node's output is checked, reached
+//! or not.
 //!
 //! - [`Proof::open`]: every unmuted track that is no group, and every
 //!   unmuted return, from which a path of unmuted nodes reaches the bus
@@ -47,6 +53,10 @@ pub const HAND1_SYNC: &str = "Hand1sync #";
 pub const SENDS_ONLY: &str = "Sends Only";
 /// The output type of a track that goes to the group it sits in.
 pub const GROUP: &str = "Group";
+/// The output types that leave the set: the main output (Live 12's name
+/// and the older one) and the external outputs. Any other type that names
+/// no track or return is a doubt.
+pub const OUT_OF_SET: &[&str] = &["Main", "Master", "Ext. Out"];
 
 /// A track's output routing as Live shows it: the type's and the channel's
 /// `display_name`.
@@ -251,6 +261,12 @@ impl Graph<'_> {
                 self.name(node)
             ));
         }
+        if named.is_empty() && !OUT_OF_SET.contains(&kind) {
+            return Err(format!(
+                "{} goes to {kind}, which is no track and no known output",
+                self.name(node)
+            ));
+        }
         Ok(named)
     }
 
@@ -302,7 +318,20 @@ pub fn same_output(a: &Output, b: &Output) -> bool {
 pub fn decide(set: &Set) -> Result<Proof, String> {
     let bus = the_one(&set.tracks, BUS)?;
     let stream = the_one(&set.tracks, STREAM_TRACK)?;
+    if !set.tracks[bus].group {
+        return Err(format!("{BUS} is no group"));
+    }
     let graph = Graph { set };
+    // Every node's output is read whole first: a doubt anywhere fails.
+    for node in 0..graph.len() {
+        graph.edges(node)?;
+    }
+    let stream_kind = &set.tracks[stream].output.kind;
+    if !graph.edges(stream)?.is_empty() || stream_kind == SENDS_ONLY {
+        return Err(format!(
+            "{STREAM_TRACK} goes to {stream_kind}, not out of the set"
+        ));
+    }
     let bus_open = !set.tracks[bus].mute;
     let mut open = Vec::new();
     for node in 0..graph.len() {
