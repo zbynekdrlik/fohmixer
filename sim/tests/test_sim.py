@@ -2,6 +2,7 @@
 
 import itertools
 import operator
+import os
 import threading
 import time
 import unittest
@@ -27,6 +28,45 @@ def _all_objects(song):
 
     walk(song)
     return seen
+
+
+class RoutingTest(unittest.TestCase):
+    """A track's output routing (#267): Live's RoutingType / RoutingChannel
+    objects read as ``display_name``, from a fixture's ``output``."""
+
+    def setUp(self):
+        path = os.path.join(os.path.dirname(_simpath.FIXTURE), "mbc-stream-site.json")
+        self.song = site_builder.build(path)
+
+    def test_a_fixture_output_sets_type_and_channel(self):
+        by_name = {t.name: t for t in self.song.tracks}
+        stream = by_name["OM STREAM"]
+        self.assertEqual(stream.output_routing_type.display_name, "Ext. Out")
+        self.assertEqual(stream.output_routing_channel.display_name, "3/4 Final LR")
+        self.assertEqual(type(stream.output_routing_type).__name__, "RoutingType")
+        self.assertEqual(type(stream.output_routing_channel).__module__, "Live.Track")
+        bus = by_name["ToStream 1s sync #"]
+        self.assertEqual(bus.output_routing_type.display_name, "OM STREAM")
+        self.assertEqual(bus.output_routing_channel.display_name, "")
+        self.assertEqual(by_name["Quiet"].output_routing_type.display_name, "Sends Only")
+        self.assertEqual(self.song.master_track.output_routing_channel.display_name, "1/2")
+
+    def test_the_default_output_is_main_or_the_group(self):
+        by_name = {t.name: t for t in self.song.tracks}
+        self.assertEqual(by_name["Hand1sync #"].output_routing_type.display_name, "Group")
+        self.assertEqual(by_name["Inner"].group_track.name, "Inner grp")
+        self.assertTrue(by_name["Talk grp"].mute)
+        self.assertTrue(by_name["Talk grp"].is_foldable)
+        song = Live.Song.Song("x")
+        track = Live.Track.Track(song, "Solo")
+        self.assertEqual(track.output_routing_type.display_name, "Main")
+
+    def test_the_routing_is_read_only_here(self):
+        track = self.song.tracks[0]
+        with self.assertRaises(AttributeError):
+            track.output_routing_type = None
+        with self.assertRaises(AttributeError):
+            track.output_routing_type.display_name = "x"
 
 
 class SiteTest(unittest.TestCase):

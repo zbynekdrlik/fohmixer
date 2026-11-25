@@ -707,6 +707,33 @@ def _arm(obj, value):
     return _bool(obj, value)
 
 
+class _RoutingTypeClass(_LiveObject):
+    """A track's output routing type (#267): what Live shows in the output
+    menu's first box (``Main``, ``Ext. Out``, a group or track name,
+    ``Sends Only``), read as ``display_name``."""
+
+    display_name = _Prop(readonly=True, observable=False)
+
+    def __init__(self, display_name):
+        super().__init__()
+        self._v["display_name"] = display_name
+
+
+class _RoutingChannelClass(_LiveObject):
+    """A track's output routing channel (#267): the second box (``3/4``
+    of an external output, empty for a track), read as ``display_name``."""
+
+    display_name = _Prop(readonly=True, observable=False)
+
+    def __init__(self, display_name):
+        super().__init__()
+        self._v["display_name"] = display_name
+
+
+_export(Track, _RoutingTypeClass, "RoutingType")
+_export(Track, _RoutingChannelClass, "RoutingChannel")
+
+
 class _TrackClass(_LiveObject):
     name = _Prop(coerce=_str)
     color = _Prop(coerce=_int)
@@ -726,6 +753,12 @@ class _TrackClass(_LiveObject):
     is_grouped = _Prop(readonly=True, observable=False)
     group_track = _Prop(readonly=True, observable=False)
     mixer_device = _Prop(readonly=True, observable=False)
+    # The output routing (#267, the stream proof reads it): objects with a
+    # `display_name`, as Live's RoutingType / RoutingChannel. Live can set
+    # and listen to them; nothing in fohmixer does, so SimLive keeps them
+    # read only (a fixture's `output` sets them).
+    output_routing_type = _Prop(readonly=True, observable=False)
+    output_routing_channel = _Prop(readonly=True, observable=False)
     # Not fold_state: Live answers add_listener on it with "not observable"
     # (read on the PC, #58); a fold shows in Song.visible_tracks.
     # arrangement_clips (#140): observable on the PC's Live 12.4.6.
@@ -752,6 +785,8 @@ class _TrackClass(_LiveObject):
             is_grouped=group is not None,
             group_track=group,
             mixer_device=mixer or _MixerDeviceClass(),
+            output_routing_type=_RoutingTypeClass("Group" if group is not None else "Main"),
+            output_routing_channel=_RoutingChannelClass(""),
         )
 
     @property

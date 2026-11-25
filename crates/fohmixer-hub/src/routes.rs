@@ -32,10 +32,12 @@ use rust_embed::RustEmbed;
 use crate::auth::{Rejection, error_response};
 use crate::{Assets, Hub};
 
+pub mod automation_gate;
 pub mod listen;
 pub mod lufs;
 pub mod role;
 pub mod scene;
+pub mod stream_proof;
 
 pub use role::{API_PATHS, RouteAccess, route_role};
 use role::{role_gate, status_for};
@@ -392,6 +394,7 @@ pub fn api_routes(hub: Hub) -> Router<Hub> {
             // 1 KiB, a literal for cargo-mutants (a name is 64 characters).
             post(scene::post_scene).layer(DefaultBodyLimit::max(1_024)),
         )
+        .route(stream_proof::PATH, get(stream_proof::get_stream_proof))
         .route(
             fohmixer_proto::listen::wire::SELECT_PATH,
             get(listen::get_select),

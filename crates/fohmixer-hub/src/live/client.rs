@@ -338,6 +338,14 @@ pub(crate) fn scripted(name: &str) -> (LiveHandle, Script) {
     (handle, Script { rx })
 }
 
+#[cfg(test)]
+impl LiveHandle {
+    /// Sets a [`scripted`] handle's state online or offline.
+    pub(crate) fn set_online(&self, online: bool) {
+        lock(&self.snapshot).online = online;
+    }
+}
+
 /// The test's side of a [`scripted`] handle.
 #[cfg(test)]
 pub(crate) struct Script {

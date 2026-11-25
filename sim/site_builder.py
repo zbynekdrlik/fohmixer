@@ -14,6 +14,8 @@ Fixture shape::
     TRACK  = {"name", "color"?, "mute"?, "solo"?, "volume"?, "panning"?,
               "devices"?: [DEVICE...], "children"?: [TRACK...] (makes a group),
               "fold_state"?: 0|1 (groups),
+              "output"?: {"type", "channel"?} (the output routing's display
+                         names, #267; Main, or Group inside a group, by default),
               "arrangement_clips"?: [{"name", "start_time", "end_time",
                                       "muted"? (#220)}...] (#140)}
     DEVICE = {"template": "plain"|"eq8"|"rack"|"plugin", "name", "class_name"?,
@@ -56,7 +58,10 @@ def build_from_spec(spec):
     for track_spec in spec.get("tracks", ()):
         _add_track(song, track_spec, None, return_names)
     song._returns = [_make_track(song, r, None, return_names) for r in spec.get("returns", ())]
-    song._master = _make_track(song, spec.get("master", {"name": "Main"}), None, ())
+    # A real main track goes to the external output 1/2 (#267).
+    master = {"output": {"type": "Ext. Out", "channel": "1/2"}}
+    master.update(spec.get("master", {"name": "Main"}))
+    song._master = _make_track(song, master, None, ())
     for track in [*song._returns, song._master]:
         track._v["can_be_armed"] = False
     song._cue_points = [
@@ -96,6 +101,11 @@ def _make_track(song, spec, group, return_names):
     track._v["mute"] = bool(spec.get("mute", False))
     track._v["solo"] = bool(spec.get("solo", False))
     track._v["fold_state"] = int(spec.get("fold_state", 0))
+    if "output" in spec:
+        track._v["output_routing_type"] = Live.Track.RoutingType(spec["output"]["type"])
+        track._v["output_routing_channel"] = Live.Track.RoutingChannel(
+            spec["output"].get("channel", "")
+        )
     track._devices = [_make_device(d) for d in spec.get("devices", ())]
     track._arrangement_clips = sorted(
         (

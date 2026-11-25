@@ -12,7 +12,8 @@
 //! the tablet ([`colors`], #164), the faders marked for the mute alarm
 //! ([`mute_alarms`], #188) and for the hold-guarded mute ([`mute_guards`],
 //! #203), both sets of marks one logic ([`strip_marks`]), and the scene
-//! automation's rules ([`scenes`], #207).
+//! automation's rules ([`scenes`], #207), and the proof of the MBC stream
+//! mix ([`stream_proof`], #267).
 
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +33,7 @@ pub mod roles;
 pub mod scenes;
 pub mod sectors;
 pub mod songmap;
+pub mod stream_proof;
 pub mod strip_marks;
 pub mod volume;
 

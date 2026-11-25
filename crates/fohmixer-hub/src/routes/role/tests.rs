@@ -25,6 +25,11 @@ fn every_api_route_has_a_role_decision() {
     }
     // #207: the automation token, checked by the handler.
     assert_eq!(route_role("/api/scene"), Some(RouteAccess::Automation));
+    // #267: the stream proof, the same token.
+    assert_eq!(
+        route_role("/api/mbc/stream-proof"),
+        Some(RouteAccess::Automation)
+    );
     // #210: a Listen device, loopback only, checked by the handler.
     assert_eq!(route_role("/api/listen/select"), Some(RouteAccess::Device));
 }
