@@ -10,8 +10,19 @@
 //!
 //! A bind that fails is one `lufs` record with its error and an error line,
 //! shown in `/api/status`; the hub runs on without LUFS.
+//!
+//! **The polls (#264):** a device of the polled form names the port it
+//! listens on (`Reading.port`); the same task sends each such port
+//! [`wire::poll_datagram`] every [`wire::POLL_EVERY_MS`] from a socket of
+//! its own (bound to `127.0.0.1`, never read: an ICMP reset from a port that
+//! closed lands there, not in the listener's receive), and the device
+//! answers each with one reading, pulled in Max's main thread. A port is
+//! polled while its key is heard ([`Polls`]): a key lost
+//! (`rules::lufs::is_stale`, 1 s for a LUFS key) drops it, so a device
+//! switched off (it answers nothing) or gone is polled for one stale window
+//! at most, and a device moved (a new key, the same port) is polled once.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,7 +39,7 @@ use crate::events::EventLog;
 use crate::link::server::Tap;
 use crate::router::RouterMsg;
 use crate::rules::lufs::bound::{Admit, Bound, Dropping, FORGET_MS, Key};
-use crate::rules::lufs::kind_word;
+use crate::rules::lufs::{is_stale, kind_word};
 
 /// The reason a receive error is counted under.
 pub const RECV_ERROR: &str = "recv";
@@ -43,6 +54,9 @@ pub struct Counters {
     taken: AtomicU64,
     dropped: AtomicU64,
     full: AtomicU64,
+    polled: AtomicU64,
+    poll_failed: AtomicU64,
+    polling: AtomicU64,
     refused: Mutex<BTreeMap<String, u64>>,
     addr: Mutex<Option<String>>,
     error: Mutex<Option<String>>,
@@ -63,6 +77,14 @@ impl Counters {
             Admit::Full => &self.full,
         };
         counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// One round of polls: `sent` datagrams went, `failed` did not, to
+    /// `ports` ports.
+    pub fn polled(&self, sent: u64, failed: u64, ports: u64) {
+        self.polled.fetch_add(sent, Ordering::Relaxed);
+        self.poll_failed.fetch_add(failed, Ordering::Relaxed);
+        self.polling.store(ports, Ordering::Relaxed);
     }
 
     fn set_addr(&self, addr: Option<String>, error: Option<String>) {
@@ -91,8 +113,58 @@ impl Counters {
                 .clone(),
             dropped: self.dropped.load(Ordering::Relaxed),
             full: self.full.load(Ordering::Relaxed),
+            polled: self.polled.load(Ordering::Relaxed),
+            poll_failed: self.poll_failed.load(Ordering::Relaxed),
+            polling: self.polling.load(Ordering::Relaxed),
         }
     }
+}
+
+/// The ports to poll (#264): each polled-form key's port and when the key
+/// was last heard. A key is kept only while the bound keeps it (at most
+/// `bound::MAX_KEYS`), and is dropped once lost.
+#[derive(Debug, Default)]
+pub struct Polls {
+    keys: BTreeMap<Key, (u16, Instant)>,
+}
+
+impl Polls {
+    /// A reading the bound kept (taken or dropped, never `Full`): its key's
+    /// port, heard at `now`. A pushed-form reading names none.
+    pub fn heard(&mut self, key: &Key, port: Option<u16>, now: Instant) {
+        if let Some(port) = port {
+            self.keys.insert(key.clone(), (port, now));
+        }
+    }
+
+    /// The ports to poll at `now`, each once: the lost keys are dropped
+    /// first.
+    pub fn due(&mut self, now: Instant) -> BTreeSet<u16> {
+        self.keys.retain(|key, (_, heard)| !lost(key, *heard, now));
+        self.keys.values().map(|(port, _)| *port).collect()
+    }
+
+    /// The keys polled.
+    pub fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    /// No key polled.
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+}
+
+/// Whether a key last heard at `heard` is lost at `now` (the LUFS rule's
+/// stale window; a clock that went back is no loss).
+pub fn lost(key: &Key, heard: Instant, now: Instant) -> bool {
+    let ms = now.saturating_duration_since(heard).as_millis();
+    is_stale(key.kind, 0, u64::try_from(ms).unwrap_or(u64::MAX))
+}
+
+/// The address a poll goes to: the device's port on `127.0.0.1`.
+pub fn poll_addr(port: u16) -> SocketAddrV4 {
+    SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)
 }
 
 /// The only address the listener binds: `127.0.0.1:<port>`.
@@ -137,12 +209,9 @@ pub fn spawn(
     tap: Option<Tap>,
 ) -> io::Result<(SocketAddr, JoinHandle<()>)> {
     let wanted = bind_addr(port);
-    let bound = std::net::UdpSocket::bind(wanted).and_then(|socket| {
-        socket.set_nonblocking(true)?;
-        tokio::net::UdpSocket::from_std(socket)
-    });
-    let socket = match bound {
-        Ok(socket) => socket,
+    let bound = udp_socket(wanted).and_then(|socket| Ok((socket, poll_socket()?)));
+    let (socket, poller) = match bound {
+        Ok(sockets) => sockets,
         Err(e) => {
             let error = e.to_string();
             tracing::error!(addr = %wanted, error = %error, "lufs: cannot listen for the LUFS devices; the hub runs on without them");
@@ -158,16 +227,54 @@ pub fn spawn(
     tracing::info!(addr = %addr, "lufs: listening for the LUFS devices");
     events.record("lufs", listen_fields(&addr.to_string(), None));
     counters.set_addr(Some(addr.to_string()), None);
-    let task = tokio::spawn(listen(socket, tx, counters, events, tap));
+    let task = tokio::spawn(listen(socket, poller, tx, counters, events, tap));
     Ok((addr, task))
+}
+
+/// A non-blocking tokio UDP socket bound to `addr`.
+fn udp_socket(addr: SocketAddrV4) -> io::Result<tokio::net::UdpSocket> {
+    let socket = std::net::UdpSocket::bind(addr)?;
+    socket.set_nonblocking(true)?;
+    tokio::net::UdpSocket::from_std(socket)
+}
+
+/// The polls' socket: `127.0.0.1`, any port, non-blocking (a send that
+/// would block is a failed poll, never a wait in the listener's task).
+fn poll_socket() -> io::Result<std::net::UdpSocket> {
+    let socket = std::net::UdpSocket::bind(bind_addr(0))?;
+    socket.set_nonblocking(true)?;
+    Ok(socket)
+}
+
+/// Sends one poll to each port due at `now` from `poller`, counted.
+pub fn poll_round(
+    poller: &std::net::UdpSocket,
+    polls: &mut Polls,
+    now: Instant,
+    counters: &Counters,
+) {
+    let ports = polls.due(now);
+    let poll = wire::poll_datagram();
+    let mut failed = 0;
+    for port in &ports {
+        if let Err(e) = poller.send_to(&poll, poll_addr(*port)) {
+            tracing::debug!(port, error = %e, "lufs: a poll could not be sent");
+            failed += 1;
+        }
+    }
+    let count = u64::try_from(ports.len()).unwrap_or(u64::MAX);
+    counters.polled(count - failed, failed, count);
 }
 
 /// One datagram's way: parsed, bounded, counted, to the router when taken.
 /// False once the router is gone.
+/// With `polls` (this hub's own listener, never a link's) a kept
+/// reading's port is polled from then on.
 pub fn handle_datagram(
     data: &[u8],
     now: Instant,
     bound: &mut Bound,
+    polls: Option<&mut Polls>,
     counters: &Counters,
     events: &EventLog,
     tx: &mpsc::UnboundedSender<RouterMsg>,
@@ -182,6 +289,11 @@ pub fn handle_datagram(
     let key = Key::of(&reading);
     let (admit, change) = bound.admit(&key, now);
     counters.admitted(admit);
+    if admit != Admit::Full
+        && let Some(polls) = polls
+    {
+        polls.heard(&key, reading.port, now);
+    }
     if let Some(change) = change {
         let fields = dropping_fields(&key, change);
         match change {
@@ -229,7 +341,15 @@ impl LinkedLufs {
     pub fn take(&self, data: &[u8], now: Instant) -> bool {
         let mut guard = self.bound.lock().unwrap_or_else(PoisonError::into_inner);
         let (bound, swept) = &mut *guard;
-        let alive = handle_datagram(data, now, bound, &self.counters, &self.events, &self.tx);
+        let alive = handle_datagram(
+            data,
+            now,
+            bound,
+            None,
+            &self.counters,
+            &self.events,
+            &self.tx,
+        );
         if sweep_due(*swept, now) {
             *swept = now;
             if let Some(cutoff) = now.checked_sub(Duration::from_millis(FORGET_MS)) {
@@ -257,6 +377,7 @@ pub fn sweep_due(swept: Instant, now: Instant) -> bool {
 
 async fn listen(
     socket: tokio::net::UdpSocket,
+    poller: std::net::UdpSocket,
     tx: mpsc::UnboundedSender<RouterMsg>,
     counters: Arc<Counters>,
     events: EventLog,
@@ -265,9 +386,19 @@ async fn listen(
     // One byte over the limit, so a datagram too long reads as too long.
     let mut buf = vec![0u8; MAX_DATAGRAM + 1];
     let mut bound = Bound::new();
+    let mut polls = Polls::default();
     let mut swept = Instant::now();
+    let mut poll_clock = tokio::time::interval(Duration::from_millis(wire::POLL_EVERY_MS));
+    poll_clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        let n = match socket.recv(&mut buf).await {
+        let received = tokio::select! {
+            received = socket.recv(&mut buf) => received,
+            _ = poll_clock.tick() => {
+                poll_round(&poller, &mut polls, Instant::now(), &counters);
+                continue;
+            }
+        };
+        let n = match received {
             Ok(n) => n,
             Err(e) => {
                 // A datagram larger than the buffer is an error on Windows;
@@ -283,7 +414,15 @@ async fn listen(
             let _ = tap.send(Arc::from(&buf[..n]));
         }
         let now = Instant::now();
-        if !handle_datagram(&buf[..n], now, &mut bound, &counters, &events, &tx) {
+        if !handle_datagram(
+            &buf[..n],
+            now,
+            &mut bound,
+            Some(&mut polls),
+            &counters,
+            &events,
+            &tx,
+        ) {
             return;
         }
         if sweep_due(swept, now) {
@@ -308,6 +447,7 @@ mod tests {
             parents: ["Vox 1", "FOH Band", "-", "-"].map(str::to_string),
             first: -300,
             second: -253,
+            port: None,
         })
     }
 
@@ -329,13 +469,14 @@ mod tests {
                 &datagram(1),
                 t0,
                 &mut bound,
+                None,
                 &counters,
                 &events,
                 &tx
             ));
         }
         assert!(handle_datagram(
-            b"junk", t0, &mut bound, &counters, &events, &tx
+            b"junk", t0, &mut bound, None, &counters, &events, &tx
         ));
         let status = counters.status();
         assert_eq!((status.taken, status.dropped, status.full), (10, 1, 0));
@@ -356,6 +497,7 @@ mod tests {
                 &datagram(1),
                 t0 + Duration::from_secs(2),
                 &mut bound,
+                None,
                 &counters,
                 &events,
                 &tx
@@ -475,5 +617,174 @@ mod tests {
         assert_eq!(status.refused.get("tags"), Some(&2));
         assert_eq!(status.refused.get("recv"), Some(&1));
         assert_eq!((status.addr, status.error), (None, None));
+    }
+
+    fn polled_datagram(device: i32, port: u16) -> Vec<u8> {
+        encode(&Reading {
+            kind: DeviceKind::Lufs,
+            device,
+            version: "v1.58.0".to_string(),
+            parents: ["Vox 1", "FOH Band", "-", "-"].map(str::to_string),
+            first: -300,
+            second: -253,
+            port: Some(port),
+        })
+    }
+
+    fn key(kind: DeviceKind, device: i32) -> Key {
+        Key {
+            kind,
+            device,
+            parents: ["Vox 1", "FOH Band", "-", "-"].map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_polled_key_is_polled_until_it_is_lost() {
+        // #264: the port is polled while its key is heard; a LUFS key is
+        // lost after 1 s, a meter key after 0.5 s (the rule's windows).
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut polls = Polls::default();
+        assert!(polls.is_empty());
+        polls.heard(&key(DeviceKind::Lufs, 1), None, t0);
+        assert!(polls.is_empty(), "a pushed-form reading names no port");
+        polls.heard(&key(DeviceKind::Lufs, 1), Some(41_000), t0);
+        polls.heard(&key(DeviceKind::Lufs, 2), Some(41_000), t0 + ms(300));
+        polls.heard(&key(DeviceKind::Meter, 3), Some(42_000), t0);
+        assert_eq!(polls.len(), 3);
+        assert_eq!(
+            polls.due(t0 + ms(499)),
+            BTreeSet::from([41_000, 42_000]),
+            "a port shared by two keys (a device moved) is polled once"
+        );
+        assert_eq!(polls.due(t0 + ms(500)), BTreeSet::from([41_000]));
+        assert_eq!(polls.len(), 2, "the meter key lost at 500 ms");
+        assert_eq!(polls.due(t0 + ms(999)), BTreeSet::from([41_000]));
+        assert_eq!(polls.due(t0 + ms(1000)), BTreeSet::from([41_000]));
+        assert_eq!(polls.len(), 1, "key 1 lost at 1000 ms, key 2 heard later");
+        // Heard again: kept another window.
+        polls.heard(&key(DeviceKind::Lufs, 2), Some(41_000), t0 + ms(1200));
+        assert_eq!(polls.due(t0 + ms(2199)), BTreeSet::from([41_000]));
+        assert!(polls.due(t0 + ms(2200)).is_empty());
+        assert!(polls.is_empty());
+    }
+
+    #[test]
+    fn a_clock_that_went_back_loses_no_key() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let lufs = key(DeviceKind::Lufs, 1);
+        assert!(!lost(&lufs, t0 + ms(5000), t0));
+        assert!(!lost(&lufs, t0, t0 + ms(999)));
+        assert!(lost(&lufs, t0, t0 + ms(1000)));
+        assert!(!lost(&key(DeviceKind::Meter, 1), t0, t0 + ms(499)));
+        assert!(lost(&key(DeviceKind::Meter, 1), t0, t0 + ms(500)));
+        assert_eq!(poll_addr(41_234).to_string(), "127.0.0.1:41234");
+    }
+
+    #[test]
+    fn a_kept_datagram_teaches_its_port_and_a_full_table_teaches_none() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let counters = Counters::default();
+        let (events, _records) = EventLog::channel(16);
+        let mut bound = Bound::new();
+        let mut polls = Polls::default();
+        let t0 = Instant::now();
+        assert!(handle_datagram(
+            &polled_datagram(1, 41_001),
+            t0,
+            &mut bound,
+            Some(&mut polls),
+            &counters,
+            &events,
+            &tx
+        ));
+        assert_eq!(polls.due(t0), BTreeSet::from([41_001]));
+        // Over its bound (dropped, still kept): the port stays known.
+        for _ in 0..12 {
+            handle_datagram(
+                &polled_datagram(1, 41_001),
+                t0,
+                &mut bound,
+                Some(&mut polls),
+                &counters,
+                &events,
+                &tx,
+            );
+        }
+        assert!(counters.status().dropped > 0);
+        assert_eq!(polls.len(), 1);
+        // Fill the key table, then a new key finds no room: no port.
+        for device in 2..=64 {
+            handle_datagram(
+                &datagram(device),
+                t0,
+                &mut bound,
+                Some(&mut polls),
+                &counters,
+                &events,
+                &tx,
+            );
+        }
+        handle_datagram(
+            &polled_datagram(99, 41_099),
+            t0,
+            &mut bound,
+            Some(&mut polls),
+            &counters,
+            &events,
+            &tx,
+        );
+        assert_eq!(counters.status().full, 1);
+        assert_eq!(polls.due(t0), BTreeSet::from([41_001]));
+        // A link's datagram (no polls) teaches nothing and still goes on.
+        assert!(handle_datagram(
+            &polled_datagram(1, 41_002),
+            t0 + Duration::from_secs(2),
+            &mut bound,
+            None,
+            &counters,
+            &events,
+            &tx
+        ));
+    }
+
+    #[test]
+    fn a_round_polls_each_due_port_once_and_counts_it() {
+        let device = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        device
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let port = device.local_addr().unwrap().port();
+        let poller = poll_socket().unwrap();
+        let counters = Counters::default();
+        let mut polls = Polls::default();
+        let t0 = Instant::now();
+        polls.heard(&key(DeviceKind::Lufs, 1), Some(port), t0);
+        polls.heard(&key(DeviceKind::Lufs, 2), Some(port), t0);
+        poll_round(&poller, &mut polls, t0, &counters);
+        let mut buf = [0u8; 64];
+        let n = device.recv(&mut buf).unwrap();
+        assert_eq!(&buf[..n], wire::poll_datagram().as_slice());
+        let status = counters.status();
+        assert_eq!(
+            (status.polled, status.poll_failed, status.polling),
+            (1, 0, 1)
+        );
+        poll_round(
+            &poller,
+            &mut polls,
+            t0 + Duration::from_millis(1000),
+            &counters,
+        );
+        let status = counters.status();
+        assert_eq!((status.polled, status.polling), (1, 0), "both keys lost");
+        counters.polled(2, 3, 4);
+        let status = counters.status();
+        assert_eq!(
+            (status.polled, status.poll_failed, status.polling),
+            (3, 3, 4)
+        );
     }
 }
