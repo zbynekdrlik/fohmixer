@@ -11,6 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_lufs_device as cl  # noqa: E402
+import lufs_dsp_check  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 LUFS, METER = cl.DEVICES
@@ -24,8 +25,6 @@ class TreeCase(unittest.TestCase):
         files = [cl.WIRE]
         for device in cl.DEVICES:
             files += [device.maxpat, device.version_txt]
-            if device.genexpr is not None:
-                files.append(device.genexpr)
         for rel in files:
             (self.root / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(REPO / rel, self.root / rel)
@@ -346,23 +345,30 @@ class TreeTests(TreeCase):
         )
 
     def test_the_output_is_silence_and_nothing_else_feeds_plugout(self) -> None:
-        # The input straight through (the probe's pass-through), or the gen~.
-        for source in (["obj-plugin", 0], ["obj-gen", 2]):
+        # The input straight through (the probe's pass-through), or the
+        # LUFS device's filtered signal or sum (#264: no gen~ any more).
+        for device, source in (
+            (METER, ["obj-plugin", 0]),
+            (LUFS, ["obj-hp-l", 0]),
+            (LUFS, ["obj-sum", 0]),
+        ):
             self.restore(LUFS)
-            patch = self.patcher()
+            self.restore(METER)
+            patch = self.patcher(device)
             patch["patcher"]["lines"].append(
                 {"patchline": {"source": source, "destination": ["obj-plugout", 1]}}
             )
-            self.save(patch)
+            self.save(patch, device)
             errors = self.errors()
             self.assertEqual(
                 errors,
                 [
-                    f"{LUFS.maxpat.as_posix()}: plugout~ must take silence only (a sig~ 0 "
+                    f"{device.maxpat.as_posix()}: plugout~ must take silence only (a sig~ 0 "
                     f"nothing feeds; the device sits in a parallel chain), it takes "
                     f"['{source[0]}']"
                 ],
             )
+        self.restore(METER)
         # A sig~ with another value, or one the input feeds.
         self.restore(LUFS)
         patch = self.patcher(METER)
@@ -865,20 +871,84 @@ class TreeTests(TreeCase):
             self.errors(),
         )
 
-    def test_the_meter_patch_needs_no_gen(self) -> None:
+    def test_no_patch_holds_a_gen(self) -> None:
+        # #264: a gen~ runs a clock of its own and posts from the audio thread.
+        for device in cl.DEVICES:
+            patch = self.patcher(device)
+            self.assertEqual(
+                [b for b in cl.boxes(patch["patcher"]) if lufs_dsp_check.is_gen(b)], []
+            )
+        self.assertFalse((REPO / cl.LUFS_FOLDER / "fohmixer_lufs.genexpr").exists())
+        for text in ("gen~", "mc.gen~", "gen~ @title x"):
+            for device in cl.DEVICES:
+                self.restore(LUFS)
+                self.restore(METER)
+                patch = self.patcher(device)
+                self.node(patch, "obj-x-gen", text)
+                self.save(patch, device)
+                self.assertEqual(
+                    self.errors(),
+                    [
+                        f"{device.maxpat.as_posix()}: obj-x-gen ('{text}') is a gen~ (#264: a "
+                        "gen~ runs a clock of its own and posts from Live's audio thread)"
+                    ],
+                )
+            self.restore(METER)
+        # A gen~ inside a subpatcher, and a bare codebox, too.
         patch = self.patcher(METER)
-        self.assertEqual([b for b in cl.boxes(patch["patcher"]) if cl.words(b)[:1] == ["gen~"]], [])
-        self.assertEqual(self.errors(), [])
-        # The LUFS patch does.
-        patch = self.patcher()
-        self.box(patch, "gen~")["text"] = "mc.gen~"
-        self.save(patch)
-        self.assertTrue(any("exactly one gen~" in e for e in self.errors()))
+        patch["patcher"]["boxes"].append(
+            {
+                "box": {
+                    "id": "obj-x-sub",
+                    "maxclass": "newobj",
+                    "text": "p sub",
+                    "numinlets": 0,
+                    "numoutlets": 0,
+                    "patcher": {
+                        "boxes": [
+                            {"box": {"id": "obj-x-inner", "maxclass": "newobj", "text": "gen~"}},
+                            {"box": {"id": "obj-x-code", "maxclass": "codebox"}},
+                        ],
+                        "lines": [],
+                    },
+                }
+            }
+        )
+        self.save(patch, METER)
+        errors = self.errors()
+        self.assertEqual(len(errors), 2, errors)
+        self.assertTrue(all("is a gen~" in e for e in errors), errors)
+        self.assertTrue(any("obj-x-inner" in e for e in errors), errors)
+        self.assertTrue(any("obj-x-code" in e for e in errors), errors)
 
-    def test_the_embedded_code_must_equal_the_genexpr(self) -> None:
-        self.edit(LUFS.genexpr, "out1 = 0;", "out1 = in1;")
-        self.assertEqual(
-            self.errors(), [f"{LUFS.maxpat.as_posix()}: the gen~ code differs from its .genexpr"]
+    def test_a_send_pack_is_one_with_its_address(self) -> None:
+        def box(text: str, maxclass: str = "newobj") -> dict:
+            return {"maxclass": maxclass, "text": text}
+
+        self.assertTrue(cl.is_send_pack(box("pack /fohmixer/lufs 2 0 v1.0.0 - 0")))
+        self.assertTrue(cl.is_send_pack(box("pack")))
+        self.assertTrue(cl.is_send_pack(box("pack 0 x")))
+        self.assertFalse(cl.is_send_pack(box("pack 0. 0. 0. 0. 0.")))
+        self.assertFalse(cl.is_send_pack(box("pack 1. -2. 1 .5 0")))
+        self.assertFalse(cl.is_send_pack(box("pack /fohmixer/lufs", "message")))
+        self.assertFalse(cl.is_send_pack(box("pak /fohmixer/lufs")))
+
+    def test_an_audio_line_carries_no_message(self) -> None:
+        self.assertTrue(cl.is_signal({"outlettype": ["signal", ""]}, 0))
+        self.assertTrue(cl.is_signal({"outlettype": ["multichannelsignal"]}, 0))
+        self.assertFalse(cl.is_signal({"outlettype": ["signal", ""]}, 1))
+        self.assertFalse(cl.is_signal({"outlettype": ["signal"]}, 1))
+        self.assertFalse(cl.is_signal({}, 0))
+        # The walk still crosses every message line: a deferlow on the send
+        # path is named.
+        patch = self.patcher(LUFS)
+        self.node(patch, "obj-x-defer", "deferlow", inlets=1)
+        self.line(patch, ["obj-x-defer", 0], ["obj-clip-v", 0])
+        self.save(patch)
+        self.assertIn(
+            f"{LUFS.maxpat.as_posix()}: obj-x-defer ('deferlow') is on the send path (the "
+            "pull runs in the main thread: no deferlow)",
+            self.errors(),
         )
 
     def test_an_absolute_path_fails(self) -> None:

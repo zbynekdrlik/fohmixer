@@ -52,8 +52,15 @@ for each patch:
   follows the audio);
 - every patch line joins two boxes of the patch within their outlets and
   inlets;
-- the LUFS device only: one `gen~` with one codebox whose code equals
-  `fohmixer_lufs.genexpr` (no file dependencies);
+- no `gen~` (nor any other gen object or codebox) in either patch (#264:
+  a `gen~` runs a clock of its own, which Max for Live services in Live's
+  audio thread, and each tick posts from there);
+- the LUFS device only, its DSP in plain MSP objects (`lufs_dsp_check`,
+  the DECIDED of 25.11.2026): per channel two `biquad~` (the shelf, then
+  the RLB high-pass) with their coefficients from `expr` boxes fed by
+  `dspstate~`'s rate, squared and summed; the 3 s and 400 ms means in
+  `average~`; the Voice gate `>=~`; every box and line of the chain, and
+  the `expr` texts equal to the module's reference formulas;
 - the LUFS device only, the pull (#264, `pull_errors`; the DECIDED of
   25.11.2026: no message may start in Live's audio thread): both
   `snapshot~ 0` (their own clocks off: a `bang` reads them in the thread
@@ -117,13 +124,14 @@ class Device:
     folder: Path
     maxpat: Path
     address: str
-    genexpr: Path | None
     send_ms: int
     clock: str
     send_from: str
     # The hub polls it and it answers in Max's main thread (#264); else it
     # sends on its audio object's own clock through a deferlow.
     pulled: bool = False
+    # Its K-weighted chain in plain MSP objects (#264, `lufs_dsp_check`).
+    kweighted: bool = False
 
     @property
     def version_txt(self) -> Path:
@@ -138,18 +146,17 @@ DEVICES = (
         LUFS_FOLDER,
         LUFS_FOLDER / "FohMixer LUFS.maxpat",
         "/fohmixer/lufs",
-        LUFS_FOLDER / "fohmixer_lufs.genexpr",
         0,
         "snapshot~",
         "obj-clip-v",
         pulled=True,
+        kweighted=True,
     ),
     Device(
         "FohMixer Meter",
         METER_FOLDER,
         METER_FOLDER / "FohMixer Meter.maxpat",
         "/fohmixer/meter",
-        None,
         33,
         "peakamp~",
         "obj-clip-r",
@@ -225,7 +232,6 @@ def silence_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
 def patch_errors(
     where: str,
     maxpat_text: str,
-    code: str | None,
     version: str,
     address: str,
     port: int,
@@ -233,10 +239,11 @@ def patch_errors(
     clock: str,
     send_from: str,
     poll: Poll | None = None,
+    kweighted: bool = False,
 ) -> list[str]:
-    """The problems of one device's patch (`code`: its gen~ code, none for
-    no gen~; `poll`: the polled form's constants for a pulled device, none
-    for one that sends on its audio clock)."""
+    """The problems of one device's patch (`poll`: the polled form's
+    constants for a pulled device, none for one that sends on its audio
+    clock; `kweighted`: its K-weighted chain is checked, `lufs_dsp_check`)."""
     pulled = poll is not None
     errors: list[str] = []
     if ABSOLUTE_PATH.search(maxpat_text):
@@ -255,21 +262,16 @@ def patch_errors(
     ]
     errors += line_errors(where, patcher)
     errors += silence_errors(where, patcher, every)
-    if code is not None:
-        gens = [b for b in every if words(b)[:1] == ["gen~"]]
-        if len(gens) != 1 or not isinstance(gens[0].get("patcher"), dict):
-            errors.append(f"{where}: needs exactly one gen~ with its patcher embedded")
-        else:
-            codeboxes = [b for b in boxes(gens[0]["patcher"]) if b.get("maxclass") == "codebox"]
-            if len(codeboxes) != 1:
-                errors.append(f"{where}: the gen~ needs exactly one codebox")
-            elif codeboxes[0].get("code") != code:
-                errors.append(f"{where}: the gen~ code differs from its .genexpr")
+    import lufs_dsp_check  # noqa: PLC0415 (it imports this module)
+
+    errors += lufs_dsp_check.gen_errors(where, every)
+    if kweighted:
+        errors += lufs_dsp_check.dsp_errors(where, patcher, every)
     sends = [words(b) for b in every if words(b)[:1] == ["udpsend"]]
     if sends != [["udpsend", "127.0.0.1", str(port)]]:
         errors.append(f"{where}: needs exactly one 'udpsend 127.0.0.1 {port}', has {sends}")
     errors += send_errors(where, patcher, every, send_ms, clock, send_from, pulled)
-    packs = [words(b) for b in every if words(b)[:1] == ["pack"]]
+    packs = [words(b) for b in every if is_send_pack(b)]
     args = PACK_ARGS + int(pulled)
     if len(packs) != 1 or len(packs[0]) != args + 1:
         errors.append(f"{where}: needs exactly one pack of {args} arguments, has {packs}")
@@ -288,7 +290,7 @@ def patch_errors(
     messages = {str(b.get("text", "")) for b in every if b.get("maxclass") == "message"}
     errors += [f"{where}: no '{path}' message" for path in IDENTITY if path not in messages]
     if len(packs) == 1:
-        sink = next(b.get("id") for b in every if words(b)[:1] == ["pack"])
+        sink = next(b.get("id") for b in every if is_send_pack(b))
         errors += identity_errors(where, patcher, every, sink, pulled)
         errors += slot_errors(where, patcher, every, sink, send_from)
         if poll is not None:
@@ -327,6 +329,19 @@ def slot_errors(
     return errors
 
 
+def is_send_pack(box: dict) -> bool:
+    """The datagram's `pack` (its address and identity among its
+    arguments); a `pack` of numbers alone builds a list inside the patch
+    (the LUFS device's filter coefficients, #264)."""
+    found = words(box)
+    if box.get("maxclass") == "message" or found[:1] != ["pack"]:
+        return False
+    return not found[1:] or not all(NUMBER.fullmatch(word) for word in found[1:])
+
+
+NUMBER = re.compile(r"-?(\d+\.?\d*|\.\d+)")
+
+
 def feeds(patcher: dict, box: str, inlet: int) -> list[list]:
     """The sources (box id, outlet) of the lines into `box`'s `inlet`."""
     return sorted(
@@ -355,7 +370,7 @@ def send_errors(
     triggers = [words(b) for b in every if b.get("id") == SEND_TRIGGER]
     if triggers != [SEND_TRIGGER_WORDS]:
         errors.append(f"{where}: {SEND_TRIGGER} must be 't b f', has {triggers}")
-    packs = [b.get("id") for b in every if words(b)[:1] == ["pack"]]
+    packs = [b.get("id") for b in every if is_send_pack(b)]
     if len(packs) == 1 and feeds(patcher, packs[0], 0) != [[SEND_TRIGGER, 0]]:
         errors.append(
             f"{where}: the pack must be banged by {SEND_TRIGGER} alone (no metro), "
@@ -380,7 +395,7 @@ def direct_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
     `PostMessageW` from the thread that runs it, and the pull already runs
     in Max's main thread."""
     errors = []
-    packs = [b.get("id") for b in every if words(b)[:1] == ["pack"]]
+    packs = [b.get("id") for b in every if is_send_pack(b)]
     sends = [b.get("id") for b in every if words(b)[:1] == ["udpsend"]]
     if len(packs) == 1 and len(sends) == 1 and feeds(patcher, sends[0], 0) != [[packs[0], 0]]:
         errors.append(
@@ -406,7 +421,7 @@ def defer_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
     defers = [words(b) for b in every if b.get("id") == SEND_DEFER]
     if defers != [SEND_DEFER_WORDS]:
         errors.append(f"{where}: {SEND_DEFER} must be 'deferlow', has {defers}")
-    packs = [b.get("id") for b in every if words(b)[:1] == ["pack"]]
+    packs = [b.get("id") for b in every if is_send_pack(b)]
     if len(packs) == 1 and feeds(patcher, SEND_DEFER, 0) != [[packs[0], 0]]:
         errors.append(
             f"{where}: {SEND_DEFER} must be fed by the pack alone, "
@@ -510,6 +525,15 @@ def hot_inlets(box: dict) -> tuple[int, ...] | None:
     return HOT.get(kind(box))
 
 
+def is_signal(box: dict, outlet: int) -> bool:
+    """An outlet that carries audio: its `outlettype` says `signal` (an
+    outlet with no declared type is walked, the safe side)."""
+    types = box.get("outlettype")
+    if isinstance(types, list) and outlet < len(types):
+        return types[outlet] in ("signal", "multichannelsignal")
+    return False
+
+
 def upstream(
     patcher: dict,
     ids: dict,
@@ -534,10 +558,15 @@ def upstream(
             if dst[0] != box or (inlet is not None and dst[1] != inlet):
                 continue
             src = line["source"][0]
+            source = ids.get(src, {})
+            if is_signal(source, line["source"][1]):
+                # An audio line carries no message: nothing upstream of it
+                # runs in the thread of what it feeds (#264: the filters'
+                # coefficients are set at DSP start and at load).
+                continue
             if src in seen:
                 continue
             seen.add(src)
-            source = ids.get(src, {})
             if kind(source) in stop and not clock_off(source):
                 reached.append(src)
                 continue
@@ -917,15 +946,11 @@ ACTIVE_OBSERVER = "obj-active-observer"
 
 
 def device_errors(root: Path, device: Device, port: int, poll: Poll | None = None) -> list[str]:
-    code = None
-    if device.genexpr is not None:
-        code = (root / device.genexpr).read_text(encoding="utf-8")
     version = (root / device.version_txt).read_text(encoding="utf-8").strip()
     text = (root / device.maxpat).read_text(encoding="utf-8")
     return patch_errors(
         device.maxpat.as_posix(),
         text,
-        code,
         version,
         device.address,
         port,
@@ -933,6 +958,7 @@ def device_errors(root: Path, device: Device, port: int, poll: Poll | None = Non
         device.clock,
         device.send_from,
         poll if device.pulled else None,
+        device.kweighted,
     )
 
 
@@ -958,7 +984,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"::error::{error}")
     if errors:
         return 1
-    print("FohMixer LUFS and Meter: the patches, their gen~ code, port and version agree")
+    print("FohMixer LUFS and Meter: the patches, the LUFS DSP chain, port and version agree")
     return 0
 
 
