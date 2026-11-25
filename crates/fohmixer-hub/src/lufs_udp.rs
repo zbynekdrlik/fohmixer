@@ -262,8 +262,15 @@ pub fn poll_round(
             failed += 1;
         }
     }
-    let count = u64::try_from(ports.len()).unwrap_or(u64::MAX);
-    counters.polled(count - failed, failed, count);
+    let (sent, failed, polling) = round_counts(ports.len(), failed);
+    counters.polled(sent, failed, polling);
+}
+
+/// A round's counts: the polls sent, failed and the ports polled, of
+/// `ports` ports with `failed` sends refused.
+pub fn round_counts(ports: usize, failed: u64) -> (u64, u64, u64) {
+    let ports = u64::try_from(ports).unwrap_or(u64::MAX);
+    (ports.saturating_sub(failed), failed, ports)
 }
 
 /// One datagram's way: parsed, bounded, counted, to the router when taken.
@@ -650,6 +657,7 @@ mod tests {
         polls.heard(&key(DeviceKind::Lufs, 1), None, t0);
         assert!(polls.is_empty(), "a pushed-form reading names no port");
         polls.heard(&key(DeviceKind::Lufs, 1), Some(41_000), t0);
+        assert!(!polls.is_empty());
         polls.heard(&key(DeviceKind::Lufs, 2), Some(41_000), t0 + ms(300));
         polls.heard(&key(DeviceKind::Meter, 3), Some(42_000), t0);
         assert_eq!(polls.len(), 3);
@@ -780,11 +788,32 @@ mod tests {
         );
         let status = counters.status();
         assert_eq!((status.polled, status.polling), (1, 0), "both keys lost");
+        // A send the socket refuses (port 0) is counted failed, the good
+        // one sent: two ports polled.
+        polls.heard(
+            &key(DeviceKind::Lufs, 3),
+            Some(port),
+            t0 + Duration::from_secs(2),
+        );
+        polls.heard(
+            &key(DeviceKind::Lufs, 4),
+            Some(0),
+            t0 + Duration::from_secs(2),
+        );
+        poll_round(&poller, &mut polls, t0 + Duration::from_secs(2), &counters);
+        let status = counters.status();
+        assert_eq!(
+            (status.polled, status.poll_failed, status.polling),
+            (2, 1, 2)
+        );
+        assert_eq!(round_counts(3, 1), (2, 1, 3));
+        assert_eq!(round_counts(2, 0), (2, 0, 2));
+        assert_eq!(round_counts(0, 0), (0, 0, 0));
         counters.polled(2, 3, 4);
         let status = counters.status();
         assert_eq!(
             (status.polled, status.poll_failed, status.polling),
-            (3, 3, 4)
+            (4, 4, 4)
         );
     }
 }

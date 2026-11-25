@@ -2207,7 +2207,7 @@
 				"box": {
 					"id": "obj-poll-receive",
 					"maxclass": "newobj",
-					"text": "udpreceive 40000",
+					"text": "udpreceive 39999",
 					"numinlets": 1,
 					"numoutlets": 1,
 					"outlettype": [

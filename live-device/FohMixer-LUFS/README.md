@@ -153,9 +153,10 @@ a message in the audio thread:
   them in the thread that sends it;
 - `obj-poll-receive` (`udpreceive`) takes the hub's poll,
   `/fohmixer/lufs/poll` with no argument, every 200 ms (`route` → the
-  gate's right inlet); the port is drawn once at load (`random 10000` →
-  `+ 40000`, the load's first step) into the `udpreceive` (`port N`) and the
-  `pack`'s last slot, so the hub learns it from the datagram;
+  gate's right inlet); it is created on 39999, below the range the hub
+  polls, and the port is drawn once at load (`random 10000` → `+ 40000`, the
+  load's first step) into the `udpreceive` (`port N`) and the `pack`'s last
+  slot, so the hub learns it from the datagram;
 - `obj-pull-gate` (`gate`) passes a bang only while the device is on: a
   `live.observer` on `this_device` `is_active` (its `live.path`'s left
   outlet straight into the observer's right inlet, as in probe B3; through
@@ -177,10 +178,24 @@ polled-form datagram named the poll each 200 ms from a socket of its own
 (`127.0.0.1`), as long as that key is heard; a key lost (1 s, the LUFS
 rule's stale window, five polls) drops its port. `/api/status`
 `lufs.listener` counts `polled` (polls sent), `poll_failed` and `polling`
-(the ports polled now). Known limit: two devices that draw the same port
+(the ports polled now). After a hub restart a device's readings come back
+at its next 10 s re-read (the hub learns the port from that datagram).
+
+**Not yet proved on the PC:** that `udpreceive` outputs its messages in
+Max's main thread. Probe B3 proved the pull for a `live.observer`'s output
+only; the design (the DECIDED of 25.11) takes the network object's output
+as the main thread's too. dasio's stack trace with the new device answers
+it (no `PostMessageW` stack on a Live audio thread naming `udpreceive`,
+`snapshot~`, `number` or `gen~`). If it posts, the next step is a design
+decision on #264, never a quiet `deferlow`: the check refuses one on the
+send path.
+
+Known limit: two devices that draw the same port
 (1 in 10 000 per pair) share one socket; Max's `udpreceive` cannot say a
 bind failed, so one of them may go stale: delete it and load it again
-(a new draw).
+(a new draw). Max's `udpreceive` may listen on every interface, so a
+datagram from the LAN with the poll's address could ask for a reading; it
+only makes the device send its reading to the local hub.
 
 The hub binds `127.0.0.1` only. Another port than 39110 (the hub's
 `[lufs] port`) means the devices rebuilt with `--port` (below): a device
