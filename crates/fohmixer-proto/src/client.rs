@@ -1895,8 +1895,8 @@ pub struct LufsHistoryStatus {
 }
 
 /// The UDP listener: its address (none: off or not bound), its bind error,
-/// and the datagrams taken, refused (by reason), dropped by a key's bound
-/// and refused for a full key table.
+/// the datagrams taken, refused (by reason), dropped by a key's bound
+/// and refused for a full key table, and its polls (#264).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LufsListenerStatus {
     #[serde(default)]
@@ -1911,6 +1911,15 @@ pub struct LufsListenerStatus {
     pub dropped: u64,
     #[serde(default)]
     pub full: u64,
+    /// The polls sent to the devices (#264: each a datagram to a polled
+    /// device's port) and the ones the socket refused.
+    #[serde(default)]
+    pub polled: u64,
+    #[serde(default)]
+    pub poll_failed: u64,
+    /// The ports polled now (one per polled device).
+    #[serde(default)]
+    pub polling: u64,
 }
 
 /// One device the hub hears (a key): its kind (`lufs`, `meter`), Max id,

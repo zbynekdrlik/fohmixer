@@ -19,6 +19,7 @@ fn golden() -> Reading {
         parents: names(["LUFS IN", "CORE Effects", "Vox 1", "FOH Band"]),
         first: -253,
         second: -248,
+        port: None,
     }
 }
 
@@ -30,6 +31,7 @@ fn meter() -> Reading {
         parents: names(["Vox 2", "FOH Band", NO_PARENT, NO_PARENT]),
         first: 120,
         second: -700,
+        port: None,
     }
 }
 
@@ -145,18 +147,105 @@ fn another_address_is_refused() {
 
 #[test]
 fn float_values_are_refused_by_tags() {
-    for tags in [",iisssssff", ",iissss", ",iisssssiii", "iisssssii"] {
+    for tags in [
+        ",iisssssff",
+        ",iissss",
+        ",iisssssiiii",
+        ",iisssssiif",
+        "iisssssii",
+    ] {
         let datagram = raw(LUFS_ADDRESS, tags, [1, 7], &PARTS, [-253, -248]);
         assert_eq!(parse(&datagram), Err(WireError::Tags), "{tags}");
     }
 }
 
 #[test]
-fn wire_version_2_is_refused() {
-    for version in [2, 0, -1] {
+fn each_form_takes_its_own_wire_version_only() {
+    // The pushed form (nine fields) is version 1 only.
+    for version in [2, 0, -1, 3] {
         let datagram = raw(LUFS_ADDRESS, TYPE_TAGS, [version, 7], &PARTS, [-253, -248]);
         assert_eq!(parse(&datagram), Err(WireError::Version), "{version}");
     }
+    // The polled form (#264, the port as a tenth field) is version 2 only.
+    for version in [1, 0, -1, 3] {
+        let mut datagram = raw(
+            LUFS_ADDRESS,
+            POLLED_TYPE_TAGS,
+            [version, 7],
+            &PARTS,
+            [-253, -248],
+        );
+        datagram.extend_from_slice(&41_234_i32.to_be_bytes());
+        assert_eq!(parse(&datagram), Err(WireError::Version), "{version}");
+    }
+}
+
+fn polled() -> Reading {
+    Reading {
+        kind: DeviceKind::Lufs,
+        device: 7,
+        version: "v1.19.0".into(),
+        parents: names(["LUFS IN", "CORE Effects", "Vox 1", "FOH Band"]),
+        first: -253,
+        second: -248,
+        port: Some(41_234),
+    }
+}
+
+#[test]
+fn the_polled_form_carries_the_devices_port() {
+    // #264: the hand-built polled datagram, the golden one plus its port.
+    let mut datagram = raw(LUFS_ADDRESS, POLLED_TYPE_TAGS, [2, 7], &PARTS, [-253, -248]);
+    datagram.extend_from_slice(&41_234_i32.to_be_bytes());
+    assert_eq!(datagram.len(), 100);
+    assert_eq!(parse(&datagram), Ok(polled()));
+    assert_eq!(encode(&polled()), datagram);
+    // The pushed form still parses, with no port (a device of before
+    // 1.58.0 during the rollout, FohMixer Meter).
+    assert_eq!(parse(&hex(GOLDEN_HEX)).map(|r| r.port), Ok(None));
+    assert_eq!(parse(&encode(&meter())), Ok(meter()));
+}
+
+#[test]
+fn a_poll_port_outside_the_drawn_range_is_out_of_range() {
+    for port in [0, 39_999, 50_000, 65_535, 65_536, -1, 39_110] {
+        let mut datagram = encode(&polled());
+        let at = datagram.len() - 4;
+        datagram[at..].copy_from_slice(&i32::to_be_bytes(port));
+        assert_eq!(parse(&datagram), Err(WireError::Range), "{port}");
+    }
+    for port in [40_000, 49_999, 45_000] {
+        let mut datagram = encode(&polled());
+        let at = datagram.len() - 4;
+        datagram[at..].copy_from_slice(&i32::to_be_bytes(port));
+        let want = u16::try_from(port).ok();
+        assert_eq!(parse(&datagram).map(|r| r.port), Ok(want), "{port}");
+    }
+    assert_eq!(poll_port(40_000), Ok(40_000));
+    assert_eq!(poll_port(49_999), Ok(49_999));
+    assert_eq!(poll_port(39_999), Err(WireError::Range));
+    assert_eq!(poll_port(50_000), Err(WireError::Range));
+}
+
+#[test]
+fn a_polled_datagram_cut_or_with_more_is_refused() {
+    let datagram = encode(&polled());
+    for end in 0..datagram.len() {
+        assert!(parse(&datagram[..end]).is_err(), "a prefix of {end} bytes");
+    }
+    let mut longer = datagram.clone();
+    longer.extend_from_slice(&[0, 0, 0, 0]);
+    assert_eq!(parse(&longer), Err(WireError::Trailing));
+}
+
+#[test]
+fn the_poll_is_an_osc_message_with_no_argument() {
+    let poll = poll_datagram();
+    assert_eq!(poll, b"/fohmixer/lufs/poll\0,\0\0\0".to_vec());
+    assert_eq!(poll.len() % 4, 0);
+    let (address, rest) = osc_string(&poll).unwrap();
+    assert_eq!(address, POLL_ADDRESS);
+    assert_eq!(osc_string(rest), Ok((",", &[][..])));
 }
 
 #[test]
@@ -294,6 +383,11 @@ fn every_reason_has_its_word() {
 fn the_constants() {
     assert_eq!(DEFAULT_PORT, 39110);
     assert_eq!(WIRE_VERSION, 1);
+    assert_eq!(POLLED_WIRE_VERSION, 2);
+    assert_eq!(POLLED_TYPE_TAGS, ",iisssssiii");
+    assert_eq!((POLL_PORT_MIN, POLL_PORT_SPAN), (40_000, 10_000));
+    assert_eq!(POLL_ADDRESS, "/fohmixer/lufs/poll");
+    assert_eq!(POLL_EVERY_MS, 200);
     assert_eq!(MAX_DATAGRAM, 512);
     assert_eq!(DeviceKind::Lufs.address(), "/fohmixer/lufs");
     assert_eq!(DeviceKind::Meter.address(), "/fohmixer/meter");

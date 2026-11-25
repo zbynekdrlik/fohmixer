@@ -877,6 +877,9 @@ fn api_bodies_round_trip() {
                 refused: std::collections::BTreeMap::from([("tags".to_string(), 2)]),
                 dropped: 1,
                 full: 0,
+                polled: 25,
+                poll_failed: 1,
+                polling: 2,
             },
             devices: vec![LufsDeviceStatus {
                 kind: "lufs".into(),
@@ -2052,6 +2055,10 @@ fn an_older_hubs_status_reads_with_no_lufs() {
         serde_json::from_value(json!({"addr": "127.0.0.1:39110", "taken": 3})).unwrap();
     assert_eq!(listener.addr.as_deref(), Some("127.0.0.1:39110"));
     assert_eq!((listener.taken, listener.dropped), (3, 0));
+    assert_eq!(
+        (listener.polled, listener.poll_failed, listener.polling),
+        (0, 0, 0)
+    );
 }
 
 #[test]
