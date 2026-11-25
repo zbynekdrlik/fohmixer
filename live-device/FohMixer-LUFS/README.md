@@ -5,8 +5,9 @@ on the same PC over UDP (spec `docs/superpowers/specs/2026-10-26-lufs-design.md`
 §3.3, §3.4, §4.2, §4.4):
 
 - **`FohMixer LUFS`** (this folder) measures BS.1770-4 loudness on a stereo
-  input and sends, 5×/s (every 200 ms: the readings are a 3 s window shown
-  as integers, the owner's ruling of 27.10):
+  input and answers the hub's poll, 5×/s (every 200 ms: the readings are a
+  3 s window shown as integers, the owner's ruling of 27.10; since #264 the
+  hub asks, below):
   - `S`, the 3 s short-term loudness, no gate;
   - `V`, the loudness of the voiced 100 ms sub-blocks among the last 30 (a
     sub-block is voiced when its 400 ms momentary loudness is at least
@@ -33,16 +34,22 @@ small; the meter's face its L and R. All display only (`flonum` with
 ## What they send
 
 One OSC message per reading to `127.0.0.1:39110` (Max's `udpsend`): address
-`/fohmixer/lufs` or `/fohmixer/meter`, type tags `,iisssssii`:
+`/fohmixer/lufs` or `/fohmixer/meter`, type tags `,iisssssii` (the meter,
+wire version 1) or `,iisssssiii` (the LUFS device since #264, wire version
+2: one more field, its poll port):
 
 | # | type | value |
 |---|---|---|
-| 1 | `i` | the wire version, `1` |
+| 1 | `i` | the wire version, `1` (meter) or `2` (LUFS) |
 | 2 | `i` | the device's Max id (`live.path this_device`, per Live process) |
 | 3 | `s` | `v<version.txt>` |
 | 4–7 | `s` | the names of the device's first four canonical parents, nearest first, `-` past the top |
 | 8 | `i` | `S`, or the L peak, in tenths (LUFS: −700…0; dBFS: −700…120) |
 | 9 | `i` | `V`, or the R peak, in tenths |
+| 10 | `i` | LUFS only: the port it takes the hub's poll on, 40000–49999 |
+
+The hub still reads wire version 1 from a LUFS device (one from before
+1.58.0 during the rollout): it then only listens, as before.
 
 The parents name the device's place: on a track `[track, set, -, -]`, in a
 rack's chain `[chain, rack, track, set]`; the hub takes the last named one as
@@ -122,15 +129,58 @@ set:
 
 The whole
 message is one `pack` (its slots cold, the identity cached in them), banged
-by `obj-send-trigger` (`t b f`) each time the last value comes out of its
-audio object's own clock (`snapshot~ 200` for the LUFS device, `peakamp~ 33`
-for the meter): those output only while Live's DSP runs the device, so a
-device switched off (or its chain) sends nothing and the hub sees it go
-stale; no `metro` drives the send (the review of PR 2: one kept sending a
-frozen value). The hub gets one datagram per reading. The `pack` goes to
-`udpsend` through `obj-send-defer` (`deferlow`, #240): the audio object's
-clock runs on Max's scheduler, which Max for Live runs inside Live's audio
-thread, and the socket write leaves it for the low-priority queue.
+by `obj-send-trigger` (`t b f`) each time the last value comes out.
+
+**The meter** sends on its audio object's own clock (`peakamp~ 33`): it
+outputs only while Live's DSP runs the device, so a device switched off (or
+its chain) sends nothing and the hub sees it go stale; no `metro` drives the
+send (the review of PR 2: one kept sending a frozen value). The `pack` goes
+to `udpsend` through `obj-send-defer` (`deferlow`, #240): the clock runs on
+Max's scheduler, which Max for Live runs inside Live's audio thread, and the
+socket write leaves it for the low-priority queue.
+
+**The LUFS device is pulled by the hub (#264, the DECIDED of 25.11.2026).**
+That `deferlow` hand-over is a `PostMessageW` from Live's audio thread, and
+it waits on the desktop's window lock while a GUI thread holds it: a missed
+audio period, a click on the PA (dasio's kernel traces of 25.11, the stack
+`PostMessageW <- maxplug <- gen~.mxe64`). The probes of that day: a `qmetro`
+pull still posts (`metro.mxe64`), the send without `deferlow` still posts
+from `gen~` and from the face's number boxes, and only a reading pulled from
+Max's main thread posts nothing (probe B3). So nothing in the device starts
+a message in the audio thread:
+
+- both readers are `snapshot~ 0` (no clock of their own); a `bang` reads
+  them in the thread that sends it;
+- `obj-poll-receive` (`udpreceive`) takes the hub's poll,
+  `/fohmixer/lufs/poll` with no argument, every 200 ms (`route` → the
+  gate's right inlet); the port is drawn once at load (`random 10000` →
+  `+ 40000`, the load's first step) into the `udpreceive` (`port N`) and the
+  `pack`'s last slot, so the hub learns it from the datagram;
+- `obj-pull-gate` (`gate`) passes a bang only while the device is on: a
+  `live.observer` on `this_device` `is_active` (its `live.path`'s left
+  outlet straight into the observer's right inlet, as in probe B3; through
+  a `route id` the id never came, B2) sets its left inlet; `is_active` is
+  false when the device or a rack around it is off, so a switched-off
+  device answers nothing and the hub sees it go stale (its port polled for
+  one stale window more, then dropped). Device On turning 1 sends one
+  datagram at once (`t i i` → `sel 1`), so the hub finds it again;
+- the gate opens to `obj-pull` (`t b b`: the short-term first, then the
+  voice) → `* 10.` → `round` → `clip` → the `pack` → `udpsend`, with no
+  `deferlow`; the face's `Short-term` and `Voice` are fed from the same
+  readers, so they too redraw in the main thread only;
+- one datagram goes at load (the load's last step, after the identity) and
+  at each 10 s re-read (the tick's last outlet), so the hub learns a new
+  device and its port.
+
+**The hub** (`crates/fohmixer-hub/src/lufs_udp.rs`) sends every port a
+polled-form datagram named the poll each 200 ms from a socket of its own
+(`127.0.0.1`), as long as that key is heard; a key lost (1 s, the LUFS
+rule's stale window, five polls) drops its port. `/api/status`
+`lufs.listener` counts `polled` (polls sent), `poll_failed` and `polling`
+(the ports polled now). Known limit: two devices that draw the same port
+(1 in 10 000 per pair) share one socket; Max's `udpreceive` cannot say a
+bind failed, so one of them may go stale: delete it and load it again
+(a new draw).
 
 The hub binds `127.0.0.1` only. Another port than 39110 (the hub's
 `[lufs] port`) means the devices rebuilt with `--port` (below): a device
@@ -140,13 +190,17 @@ cannot read the hub's config.
 
 | File | What it is |
 |---|---|
-| `FohMixer LUFS.maxpat` | The LUFS device: `sig~ 0.` → `plugout~`; `plugin~` → `gen~` (its code embedded) → `snapshot~ 200` ×2 → `* 10.` → `round` → `clip` → the `pack`'s two values, `V` through `t b f`, which bangs the `pack`; the identity; `deferlow` → `udpsend`. |
+| `FohMixer LUFS.maxpat` | The LUFS device: `sig~ 0.` → `plugout~`; `plugin~` → `gen~` (its code embedded) → `snapshot~ 0` ×2, banged by the hub's poll through the `is_active` gate → `* 10.` → `round` → `clip` → the `pack`'s two values, `V` through `t b f`, which bangs the `pack`; the identity; the poll port; `udpsend` (no `deferlow`). |
 | `fohmixer_lufs.genexpr` | The readable copy of the gen~'s code. |
 | `../FohMixer-Meter/FohMixer Meter.maxpat` | The meter device: `sig~ 0.` → `plugout~`; `peakamp~ 33` per channel → `atodb` → tenths → the `pack`, `R` through `t b f`, which bangs it; the identity; `udpsend`. |
 | `version.txt`, `../FohMixer-Meter/version.txt` | The workspace version (`scripts/check_version.py` keeps both equal to it); each face and each `pack` carry `v<version>`. |
 | `build_amxd.py` | Writes either device's `.amxd` from its patcher. |
 
-`scripts/check_lufs_device.py` (CI) fails, for either patch, on a parameter
+`scripts/check_lufs_device.py` (CI) fails, for the LUFS patch, on any
+`deferlow` on the send path, on a `snapshot~`/`peakamp~` with its own clock
+on, on a clock (`metro`, `qmetro`, `delay`, ...) but the identity's driving a
+reading, on a face object fed from an audio clock, and on any change to the
+pull's boxes and lines (`pull_errors`); for either patch, on a parameter
 object, on anything but silence into `plugout~`, on a `udpsend` other than
 one `udpsend 127.0.0.1 <DEFAULT_PORT>` (the hub's, read from
 `crates/fohmixer-proto/src/lufs/wire.rs`), on a `pack` with another address
@@ -176,7 +230,10 @@ author's file paths, which hold the Windows user name.
    `<User Library>\Presets\Audio Effects\Max Audio Effect\` (only when they
    differ), where Live's browser lists them. Open each in Live's Max editor
    once: no Max error, the face shows its readings and `v<version>`, and a
-   receiver on the port gets one datagram per reading.
+   receiver on the port gets one datagram per reading (the LUFS device's
+   only while the hub polls it: `/api/status` `lufs.listener.polling`
+   counts it, `polled` grows by 5 a second per device). A changed `.amxd`
+   is held while a Live runs it: replace it with both Lives closed.
 3. Place them through the LOM, never by a GUI drag (the owner's ruling of
    27.10): select the track, load the User Library's browser item with
    `browser load_item` (it appends the device to the selected track's chain),

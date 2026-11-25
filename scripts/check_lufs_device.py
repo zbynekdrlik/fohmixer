@@ -12,10 +12,10 @@ for each patch:
   in a rack's parallel chain, never in series, so a failing device can never
   cut the sound and the signal is never doubled);
 - one `udpsend 127.0.0.1 <port>`, the port equal to the hub's default
-  (`DEFAULT_PORT` in `crates/fohmixer-proto/src/lufs/wire.rs`), fed by
-  `obj-send-defer` (`deferlow`) alone, which the pack alone feeds (#240:
-  the audio side's clock runs in Live's audio thread, the socket write
-  leaves it);
+  (`DEFAULT_PORT` in `crates/fohmixer-proto/src/lufs/wire.rs`); the meter's
+  fed by `obj-send-defer` (`deferlow`) alone, which the pack alone feeds
+  (#240: the audio side's clock runs in Live's audio thread, the socket
+  write leaves it), the LUFS device's by the pack alone (the pull, below);
 - the threads (`thread_errors`, #240): no timed box reaches a network
   object's hot inlet without a `deferlow` or `qmetro` between;
 - the send follows the audio (the review of PR 2: a `metro` kept sending a
@@ -54,6 +54,20 @@ for each patch:
   inlets;
 - the LUFS device only: one `gen~` with one codebox whose code equals
   `fohmixer_lufs.genexpr` (no file dependencies);
+- the LUFS device only, the pull (#264, `pull_errors`; the DECIDED of
+  25.11.2026: no message may start in Live's audio thread): both
+  `snapshot~ 0` (their own clocks off: a `bang` reads them in the thread
+  that sends it), banged by `obj-pull` (`t b b`, short-term first) behind
+  `obj-pull-gate` (`gate`, opened by a `live.observer` on `this_device`
+  `is_active`: a device switched off answers nothing), which only the hub's
+  poll (`udpreceive` -> `route <POLL_ADDRESS>`), the load's last outlet,
+  the 10 s re-read's last outlet and the observer turning 1 open; the port
+  drawn once at load (`random <POLL_PORT_SPAN>` -> `+ <POLL_PORT_MIN>`) into
+  the `udpreceive` and the pack's last slot; the pack straight into the
+  `udpsend` (no `deferlow` on the send path); no `snapshot~` or `peakamp~`
+  with its own clock on, no clock but the identity's driving a reading, and
+  no face object fed from an audio clock (probe C of 25.11: number boxes
+  fed from the scheduler post from the audio thread too);
 - no absolute file path.
 
 Exit 0 when all hold, else 1 with one `::error::` line per problem.
@@ -71,13 +85,23 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 WIRE = Path("crates") / "fohmixer-proto" / "src" / "lufs" / "wire.rs"
 PORT_LINE = re.compile(r"^pub const DEFAULT_PORT: u16 = (\d+);$", re.MULTILINE)
+# The polled form's constants (#264), read from the same module.
+POLL_LINES = {
+    "min": re.compile(r"^pub const POLL_PORT_MIN: u16 = ([\d_]+);$", re.MULTILINE),
+    "span": re.compile(r"^pub const POLL_PORT_SPAN: u16 = ([\d_]+);$", re.MULTILINE),
+    "address": re.compile(r'^pub const POLL_ADDRESS: &str = "([^"]+)";$', re.MULTILINE),
+}
 # A drive letter path (raw or JSON-escaped), a UNC path, a Unix home.
 ABSOLUTE_PATH = re.compile(r"\b[A-Za-z]:(?:\\\\|\\|/)|\\\\\\\\|/(?:Users|home)/")
 PARENTS = 4
 IDENTITY = tuple("path this_device" + " canonical_parent" * level for level in range(PARENTS + 1))
-# The pack's arguments: address, wire version, id, version, 4 parents, 2 values.
+# The pack's arguments: address, wire version, id, version, 4 parents, 2
+# values; the polled form (#264) adds the poll port.
 PACK_ARGS = 10
+PACK_WIRE = 2
 PACK_VERSION = 3
+WIRE_PUSHED = "1"
+WIRE_POLLED = "2"
 # The trigger that bangs the pack (one datagram per value of the audio
 # side's clock) and hands the last value on first.
 SEND_TRIGGER = "obj-send-trigger"
@@ -99,6 +123,9 @@ class Device:
     send_ms: int
     clock: str
     send_from: str
+    # The hub polls it and it answers in Max's main thread (#264); else it
+    # sends on its audio object's own clock through a deferlow.
+    pulled: bool = False
 
     @property
     def version_txt(self) -> Path:
@@ -114,9 +141,10 @@ DEVICES = (
         LUFS_FOLDER / "FohMixer LUFS.maxpat",
         "/fohmixer/lufs",
         LUFS_FOLDER / "fohmixer_lufs.genexpr",
-        200,
+        0,
         "snapshot~",
         "obj-clip-v",
+        pulled=True,
     ),
     Device(
         "FohMixer Meter",
@@ -149,6 +177,27 @@ def words(box: dict) -> list[str]:
 def default_port(wire_text: str) -> int | None:
     match = PORT_LINE.search(wire_text)
     return int(match[1]) if match else None
+
+
+@dataclass(frozen=True)
+class Poll:
+    """The polled form's constants (#264): the poll ports a device draws
+    from (`min`, `span` of them) and the poll's OSC address."""
+
+    min: int
+    span: int
+    address: str
+
+
+def poll_constants(wire_text: str) -> Poll | None:
+    found = {name: line.search(wire_text) for name, line in POLL_LINES.items()}
+    if any(match is None for match in found.values()):
+        return None
+    return Poll(
+        int(found["min"][1].replace("_", "")),
+        int(found["span"][1].replace("_", "")),
+        found["address"][1],
+    )
 
 
 def is_parameter(box: dict) -> bool:
@@ -206,8 +255,12 @@ def patch_errors(
     send_ms: int,
     clock: str,
     send_from: str,
+    poll: Poll | None = None,
 ) -> list[str]:
-    """The problems of one device's patch (`code`: its gen~ code, none for no gen~)."""
+    """The problems of one device's patch (`code`: its gen~ code, none for
+    no gen~; `poll`: the polled form's constants for a pulled device, none
+    for one that sends on its audio clock)."""
+    pulled = poll is not None
     errors: list[str] = []
     if ABSOLUTE_PATH.search(maxpat_text):
         errors.append(f"{where} holds an absolute file path")
@@ -238,11 +291,17 @@ def patch_errors(
     sends = [words(b) for b in every if words(b)[:1] == ["udpsend"]]
     if sends != [["udpsend", "127.0.0.1", str(port)]]:
         errors.append(f"{where}: needs exactly one 'udpsend 127.0.0.1 {port}', has {sends}")
-    errors += send_errors(where, patcher, every, send_ms, clock, send_from)
+    errors += send_errors(where, patcher, every, send_ms, clock, send_from, pulled)
     packs = [words(b) for b in every if words(b)[:1] == ["pack"]]
-    if len(packs) != 1 or len(packs[0]) != PACK_ARGS + 1:
-        errors.append(f"{where}: needs exactly one pack of {PACK_ARGS} arguments, has {packs}")
+    args = PACK_ARGS + int(pulled)
+    if len(packs) != 1 or len(packs[0]) != args + 1:
+        errors.append(f"{where}: needs exactly one pack of {args} arguments, has {packs}")
     else:
+        wire = WIRE_POLLED if pulled else WIRE_PUSHED
+        if packs[0][PACK_WIRE] != wire:
+            errors.append(
+                f"{where}: the pack sends wire version {packs[0][PACK_WIRE]}, expected {wire}"
+            )
         if packs[0][1] != address:
             errors.append(f"{where}: the pack sends to {packs[0][1]}, expected {address}")
         if packs[0][1 + PACK_VERSION] != f"v{version}":
@@ -253,8 +312,10 @@ def patch_errors(
     errors += [f"{where}: no '{path}' message" for path in IDENTITY if path not in messages]
     if len(packs) == 1:
         sink = next(b.get("id") for b in every if words(b)[:1] == ["pack"])
-        errors += identity_errors(where, patcher, every, sink)
+        errors += identity_errors(where, patcher, every, sink, pulled)
         errors += slot_errors(where, patcher, every, sink, send_from)
+        if poll is not None:
+            errors += pull_errors(where, patcher, every, sink, poll)
     errors += [
         f"{where}: {b.get('id')} ('{b.get('text')}') runs on a clock (the device has none "
         "but the identity's)"
@@ -297,7 +358,13 @@ def feeds(patcher: dict, box: str, inlet: int) -> list[list]:
 
 
 def send_errors(
-    where: str, patcher: dict, every: list[dict], send_ms: int, clock: str, send_from: str
+    where: str,
+    patcher: dict,
+    every: list[dict],
+    send_ms: int,
+    clock: str,
+    send_from: str,
+    pulled: bool = False,
 ) -> list[str]:
     """The send's clock is the audio side's: the pack banged only by the
     trigger, the trigger fed only by `send_from`, every `clock` box at
@@ -320,8 +387,36 @@ def send_errors(
             f"{where}: {SEND_TRIGGER} must be fed by {send_from} alone, "
             f"has {feeds(patcher, SEND_TRIGGER, 0)}"
         )
-    errors += defer_errors(where, patcher, every)
+    errors += (
+        direct_errors(where, patcher, every) if pulled else defer_errors(where, patcher, every)
+    )
     errors += thread_errors(where, patcher, every)
+    return errors
+
+
+def direct_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
+    """A pulled device's send (#264): the pack straight into the udpsend,
+    and no `deferlow` (or `defer`) anywhere on the send path, from the
+    pull's gate down to the socket: in Live each such hand-over is a
+    `PostMessageW` from the thread that runs it, and the pull already runs
+    in Max's main thread."""
+    errors = []
+    packs = [b.get("id") for b in every if words(b)[:1] == ["pack"]]
+    sends = [b.get("id") for b in every if words(b)[:1] == ["udpsend"]]
+    if len(packs) == 1 and len(sends) == 1 and feeds(patcher, sends[0], 0) != [[packs[0], 0]]:
+        errors.append(
+            f"{where}: the udpsend must be fed by the pack alone (no deferlow), "
+            f"has {feeds(patcher, sends[0], 0)}"
+        )
+    ids = {b.get("id"): b for b in every}
+    for send in sends:
+        for src in upstream(
+            patcher, ids, [(send, 0)], hot_inlets, ("deferlow", "defer"), ends=("gate",)
+        ):
+            errors.append(
+                f"{where}: {src} ('{ids[src].get('text')}') is on the send path "
+                "(the pull runs in the main thread: no deferlow)"
+            )
     return errors
 
 
@@ -411,6 +506,14 @@ LEFT_HOT = (
     "udpsend",
 )
 HOT = {"gate": (1,), "jit.net.send": (0, 1)}
+# The audio side's readers: with an interval of 0 their own clock is off,
+# and they output only when banged, in the banging thread (#264).
+AUDIO_READERS = ("snapshot~", "peakamp~")
+
+
+def clock_off(box: dict) -> bool:
+    """An audio reader whose own clock is off (`snapshot~ 0`): no timed box."""
+    return kind(box) in AUDIO_READERS and words(box)[1:] == ["0"]
 
 
 def kind(box: dict) -> str:
@@ -456,7 +559,7 @@ def upstream(
                 continue
             seen.add(src)
             source = ids.get(src, {})
-            if kind(source) in stop:
+            if kind(source) in stop and not clock_off(source):
                 reached.append(src)
                 continue
             if kind(source) in ends:
@@ -545,11 +648,27 @@ def is_identity_clock(box: dict) -> bool:
     return box.get("id") == ID_CLOCK and words(box) == ID_CLOCK_WORDS
 
 
-def identity_boxes() -> dict[str, list[str]]:
+# A pulled device's load and 10 s tick have more outlets (#264): the load
+# draws the poll port first (its rightmost outlet) and, after the parents,
+# sets the `is_active` observer's property and path, then sends one
+# datagram (its leftmost); the tick sends one after the parents.
+LOAD_EXTRA = 3
+TICK_EXTRA = 1
+
+
+def load_offset(pulled: bool) -> int:
+    return LOAD_EXTRA if pulled else 0
+
+
+def tick_offset(pulled: bool) -> int:
+    return TICK_EXTRA if pulled else 0
+
+
+def identity_boxes(pulled: bool = False) -> dict[str, list[str]]:
     """The identity's boxes (id: words)."""
     found = {
         ID_DEFER: ["deferlow"],
-        ID_LOAD: ["t", *["b"] * (PARENTS + 2)],
+        ID_LOAD: ["t", *["b"] * (PARENTS + 2 + load_offset(pulled) + int(pulled))],
         ID_PROPERTY: ["property", "name"],
         "obj-id-path": IDENTITY[0].split(),
         "obj-id-live-path": ["live.path"],
@@ -559,7 +678,7 @@ def identity_boxes() -> dict[str, list[str]]:
         ID_CLOCK_DEFER: ["deferlow"],
         ID_CLOCK_START: ["1"],
         ID_CLOCK: ID_CLOCK_WORDS,
-        ID_TICK: ["t", *["b"] * PARENTS],
+        ID_TICK: ["t", *["b"] * (PARENTS + tick_offset(pulled))],
     }
     for level in range(1, PARENTS + 1):
         name = f"obj-parent{level}"
@@ -589,13 +708,16 @@ def identity_boxes() -> dict[str, list[str]]:
     return found
 
 
-def identity_wiring(sink: str) -> dict[tuple[str, int], list[tuple[str, int]]]:
+def identity_wiring(
+    sink: str, pulled: bool = False
+) -> dict[tuple[str, int], list[tuple[str, int]]]:
     """Each guarded inlet of the identity and the only sources it takes."""
+    load, tick = load_offset(pulled), tick_offset(pulled)
     found: dict[tuple[str, int], list[tuple[str, int]]] = {
         (ID_DEFER, 0): [("obj-thisdevice", 0)],
         (ID_LOAD, 0): [(ID_DEFER, 0)],
-        (ID_PROPERTY, 0): [(ID_LOAD, PARENTS + 1)],
-        ("obj-id-path", 0): [(ID_LOAD, PARENTS)],
+        (ID_PROPERTY, 0): [(ID_LOAD, load + PARENTS + 1)],
+        ("obj-id-path", 0): [(ID_LOAD, load + PARENTS)],
         ("obj-id-live-path", 0): [("obj-id-path", 0)],
         ("obj-id-route", 0): [("obj-id-live-path", 0)],
         (ID_OFFSET, 0): [("obj-thisdevice", 0)],
@@ -614,7 +736,10 @@ def identity_wiring(sink: str) -> dict[tuple[str, int], list[tuple[str, int]]]:
         observed = level in OBSERVED
         reads = [(f"{name}-sel", 1)] + ([(f"{name}-changed", 0)] if observed else [])
         found |= {
-            (f"{name}-path", 0): [(ID_LOAD, PARENTS - level), (ID_TICK, PARENTS - level)],
+            (f"{name}-path", 0): [
+                (ID_LOAD, load + PARENTS - level),
+                (ID_TICK, tick + PARENTS - level),
+            ],
             (f"{name}-live-path", 0): [(f"{name}-path", 0)],
             (f"{name}-route-id", 0): [
                 (f"{name}-live-path", FOLLOWS_OBJECT),
@@ -645,16 +770,18 @@ def identity_wiring(sink: str) -> dict[tuple[str, int], list[tuple[str, int]]]:
     return found
 
 
-def identity_errors(where: str, patcher: dict, every: list[dict], sink: str) -> list[str]:
+def identity_errors(
+    where: str, patcher: dict, every: list[dict], sink: str, pulled: bool = False
+) -> list[str]:
     """The identity read at load, on a change and by its own 10 s clock,
     never by another clock, its values from `live.object`."""
     ids = {b.get("id"): b for b in every}
     errors = [
         f"{where}: {box} must be '{' '.join(want)}', has {words(ids.get(box, {}))}"
-        for box, want in identity_boxes().items()
+        for box, want in identity_boxes(pulled).items()
         if words(ids.get(box, {})) != want
     ]
-    for (box, inlet), sources in identity_wiring(sink).items():
+    for (box, inlet), sources in identity_wiring(sink, pulled).items():
         fed = feeds(patcher, box, inlet)
         want = sorted([list(s) for s in sources])
         if fed != want:
@@ -677,31 +804,34 @@ def identity_errors(where: str, patcher: dict, every: list[dict], sink: str) -> 
         for b in every
         if b.get("id") == f"obj-parent{PARENTS}-observer"
     ]
-    errors += value_errors(where, patcher, every, sink)
-    errors += clock_errors(where, patcher, every)
+    errors += value_errors(where, patcher, every, sink, pulled)
+    errors += clock_errors(where, patcher, every, pulled)
     errors += lom_clock_errors(where, patcher, every)
     return errors
 
 
-def clock_outputs() -> dict[str, list[list]]:
+def clock_outputs(pulled: bool = False) -> dict[str, list[list]]:
     """Each box of the identity's clock and the only lines out of it
-    ([its outlet, the destination box, its inlet])."""
+    ([its outlet, the destination box, its inlet]); a pulled device's tick
+    also opens the pull once (its leftmost outlet, after the parents)."""
     chain = [ID_OFFSET, ID_OFFSET_DELAY, ID_CLOCK_DEFER, ID_CLOCK_START, ID_CLOCK, ID_TICK]
     found = {chain[i]: [[0, chain[i + 1], 0]] for i in range(len(chain) - 1)}
+    tick = tick_offset(pulled)
     found[ID_TICK] = sorted(
-        [PARENTS - level, f"obj-parent{level}-path", 0] for level in range(1, PARENTS + 1)
+        [[tick + PARENTS - level, f"obj-parent{level}-path", 0] for level in range(1, PARENTS + 1)]
+        + ([[0, PULL_GATE, 1]] if pulled else [])
     )
     return found
 
 
-def clock_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
+def clock_errors(where: str, patcher: dict, every: list[dict], pulled: bool = False) -> list[str]:
     """The identity's clock is exempt from `lom_clock_errors`, so it may
     drive nothing but the parents' paths (the review of the 10 s re-read:
     a LOM read fed from the clock or the tick passed every other check):
     each of its boxes once, the lines out of each exactly
     `clock_outputs`."""
     errors = []
-    for box, want in clock_outputs().items():
+    for box, want in clock_outputs(pulled).items():
         count = sum(1 for b in every if b.get("id") == box)
         if count != 1:
             errors.append(f"{where}: {box} must be one box, has {count}")
@@ -728,7 +858,9 @@ def value_inlets(box: dict) -> tuple[int, ...] | None:
     return None
 
 
-def value_errors(where: str, patcher: dict, every: list[dict], sink: str) -> list[str]:
+def value_errors(
+    where: str, patcher: dict, every: list[dict], sink: str, pulled: bool = False
+) -> list[str]:
     """Each parent slot's value comes from `live.object` `get name` ->
     `route name` -> `zl reg` -> `tosymbol` (the path the PC proved), never
     from an observer's output: no `live.observer` reaches a slot through
@@ -757,6 +889,9 @@ def value_errors(where: str, patcher: dict, every: list[dict], sink: str) -> lis
         ]
     for observer in every:
         if kind(observer) != "live.observer":
+            continue
+        if pulled and observer.get("id") == ACTIVE_OBSERVER:
+            # Device On's observer: its one line is pinned by `pull_wiring`.
             continue
         out = sorted(
             item["patchline"]["destination"]
@@ -795,7 +930,172 @@ def lom_clock_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
     return errors
 
 
-def device_errors(root: Path, device: Device, port: int) -> list[str]:
+# The pull (#264, the DECIDED of 25.11.2026, built on probe B3): the hub
+# polls the device on a port it draws at load; each poll, the load's and the
+# 10 s re-read's last outlet, and Device On turning 1 open the gate's right
+# inlet; the gate (its left inlet `is_active`, observed) passes the bang to
+# `t b b`, which bangs both `snapshot~ 0` (short-term first), so the
+# reading, the face and the send run in Max's main thread.
+PULL_GATE = "obj-pull-gate"
+PULL = "obj-pull"
+POLL_RECEIVE = "obj-poll-receive"
+POLL_ROUTE = "obj-poll-route"
+POLL_DRAW = "obj-poll-draw"
+POLL_OFFSET = "obj-poll-offset"
+POLL_PORT = "obj-poll-port"
+POLL_SET = "obj-poll-set"
+ACTIVE_PROPERTY = "obj-active-property"
+ACTIVE_PATH = "obj-active-path"
+ACTIVE_LIVE_PATH = "obj-active-live-path"
+ACTIVE_OBSERVER = "obj-active-observer"
+ACTIVE_T = "obj-active-t"
+ACTIVE_SEL = "obj-active-sel"
+# The face: its presentation boxes.
+FACE_KINDS = ("comment",)
+
+
+def pull_boxes(poll: Poll) -> dict[str, list[str]]:
+    """The pull's boxes (id: words)."""
+    return {
+        PULL_GATE: ["gate"],
+        PULL: ["t", "b", "b"],
+        POLL_RECEIVE: ["udpreceive", str(poll.min)],
+        POLL_ROUTE: ["route", poll.address],
+        POLL_DRAW: ["random", str(poll.span)],
+        POLL_OFFSET: ["+", str(poll.min)],
+        POLL_PORT: ["t", "i", "i"],
+        POLL_SET: ["prepend", "port"],
+        ACTIVE_PROPERTY: ["property", "is_active"],
+        ACTIVE_PATH: IDENTITY[0].split(),
+        ACTIVE_LIVE_PATH: ["live.path"],
+        ACTIVE_OBSERVER: ["live.observer"],
+        ACTIVE_T: ["t", "i", "i"],
+        ACTIVE_SEL: ["sel", "1"],
+        "obj-snap-s": ["snapshot~", "0"],
+        "obj-snap-v": ["snapshot~", "0"],
+    }
+
+
+def pull_wiring(sink: str) -> dict[tuple[str, int], list[tuple[str, int]]]:
+    """Each inlet of the pull and the only sources it takes."""
+    top = PARENTS + 2 + LOAD_EXTRA
+    return {
+        (PULL_GATE, 0): [(ACTIVE_T, 1)],
+        (PULL_GATE, 1): [(POLL_ROUTE, 0), (ID_LOAD, 0), (ID_TICK, 0), (ACTIVE_SEL, 0)],
+        (PULL, 0): [(PULL_GATE, 0)],
+        ("obj-snap-s", 1): [],
+        ("obj-snap-v", 1): [],
+        (POLL_RECEIVE, 0): [(POLL_SET, 0)],
+        (POLL_ROUTE, 0): [(POLL_RECEIVE, 0)],
+        (POLL_ROUTE, 1): [],
+        (POLL_DRAW, 0): [(ID_LOAD, top)],
+        (POLL_DRAW, 1): [],
+        (POLL_OFFSET, 0): [(POLL_DRAW, 0)],
+        (POLL_OFFSET, 1): [],
+        (POLL_PORT, 0): [(POLL_OFFSET, 0)],
+        (POLL_SET, 0): [(POLL_PORT, 1)],
+        (sink, PACK_ARGS): [(POLL_PORT, 0)],
+        (ACTIVE_PROPERTY, 0): [(ID_LOAD, 2)],
+        (ACTIVE_PATH, 0): [(ID_LOAD, 1)],
+        (ACTIVE_LIVE_PATH, 0): [(ACTIVE_PATH, 0)],
+        (ACTIVE_OBSERVER, 0): [(ACTIVE_PROPERTY, 0)],
+        (ACTIVE_OBSERVER, 1): [(ACTIVE_LIVE_PATH, 0)],
+        (ACTIVE_T, 0): [(ACTIVE_OBSERVER, 0)],
+        (ACTIVE_SEL, 0): [(ACTIVE_T, 0)],
+        (ACTIVE_SEL, 1): [],
+    }
+
+
+def outputs(patcher: dict, box: str) -> list[list]:
+    """The lines out of `box`: [its outlet, the destination box, its inlet]."""
+    return sorted(
+        [line["source"][1], *line["destination"]]
+        for line in (item.get("patchline", {}) for item in patcher.get("lines", []))
+        if line.get("source", [None])[0] == box
+    )
+
+
+def pull_outputs() -> dict[str, list[list]]:
+    """The pull's boxes whose every line out is pinned (the rest feed the
+    readings and the pack, which their own checks pin)."""
+    return {
+        PULL_GATE: [[0, PULL, 0]],
+        PULL: [[0, "obj-snap-v", 0], [1, "obj-snap-s", 0]],
+        POLL_RECEIVE: [[0, POLL_ROUTE, 0]],
+        POLL_ROUTE: [[0, PULL_GATE, 1]],
+        POLL_DRAW: [[0, POLL_OFFSET, 0]],
+        POLL_OFFSET: [[0, POLL_PORT, 0]],
+        POLL_SET: [[0, POLL_RECEIVE, 0]],
+        ACTIVE_PROPERTY: [[0, ACTIVE_OBSERVER, 0]],
+        ACTIVE_PATH: [[0, ACTIVE_LIVE_PATH, 0]],
+        ACTIVE_LIVE_PATH: [[0, ACTIVE_OBSERVER, 1]],
+        ACTIVE_OBSERVER: [[0, ACTIVE_T, 0]],
+        ACTIVE_T: [[0, ACTIVE_SEL, 0], [1, PULL_GATE, 0]],
+        ACTIVE_SEL: [[0, PULL_GATE, 1]],
+    }
+
+
+def clocks_reaching(patcher: dict, ids: dict, starts: list[tuple[str, int | None]]) -> list[str]:
+    """The clocks upstream of `starts` through any inlet: every timed box
+    (an audio reader with its own clock on, a `metro`, a `delay`, ...) and
+    every `qmetro`, but the identity's own 10 s clock (its tick sends one
+    datagram after the re-read, in the main thread) and a reader whose clock
+    is off."""
+    return [
+        src
+        for src in upstream(patcher, ids, starts, lambda _: None, (*TIMED, "qmetro"), ends=())
+        if not is_identity_clock(ids[src])
+    ]
+
+
+def pull_errors(where: str, patcher: dict, every: list[dict], sink: str, poll: Poll) -> list[str]:
+    """The pull (#264): its boxes and lines, no audio clock anywhere on
+    a reading or the face, one `udpreceive`."""
+    ids = {b.get("id"): b for b in every}
+    errors = [
+        f"{where}: {box} must be '{' '.join(want)}', has {words(ids.get(box, {}))}"
+        for box, want in pull_boxes(poll).items()
+        if words(ids.get(box, {})) != want
+    ]
+    for (box, inlet), sources in pull_wiring(sink).items():
+        fed = feeds(patcher, box, inlet)
+        want = sorted([list(s) for s in sources])
+        if fed != want:
+            errors.append(f"{where}: {box}:{inlet} takes {want} alone, has {fed}")
+    for box, want in pull_outputs().items():
+        out = outputs(patcher, box)
+        if out != want:
+            errors.append(f"{where}: {box} outputs into {want} alone, has {out}")
+    receives = [b.get("id") for b in every if kind(b) == "udpreceive"]
+    if receives != [POLL_RECEIVE]:
+        errors.append(f"{where}: needs exactly one udpreceive, {POLL_RECEIVE}, has {receives}")
+    for reader in every:
+        if kind(reader) in AUDIO_READERS and not clock_off(reader):
+            errors.append(
+                f"{where}: {reader.get('id')} ('{reader.get('text')}') runs its own clock "
+                "(the device is pulled: its readers are 'snapshot~ 0')"
+            )
+    for reader in every:
+        if kind(reader) not in AUDIO_READERS:
+            continue
+        for src in clocks_reaching(patcher, ids, [(reader.get("id"), None)]):
+            errors.append(
+                f"{where}: {src} ('{ids[src].get('text')}') drives the reading "
+                f"{reader.get('id')} (only the hub's poll, the load and the re-read do)"
+            )
+    for face in every:
+        if face.get("presentation") != 1 or face.get("maxclass") in FACE_KINDS:
+            continue
+        for src in clocks_reaching(patcher, ids, [(face.get("id"), None)]):
+            errors.append(
+                f"{where}: the face's {face.get('id')} is fed from {src} "
+                f"('{ids[src].get('text')}'), an audio clock (a redraw from the "
+                "audio thread posts too)"
+            )
+    return errors
+
+
+def device_errors(root: Path, device: Device, port: int, poll: Poll | None = None) -> list[str]:
     code = None
     if device.genexpr is not None:
         code = (root / device.genexpr).read_text(encoding="utf-8")
@@ -811,14 +1111,19 @@ def device_errors(root: Path, device: Device, port: int) -> list[str]:
         device.send_ms,
         device.clock,
         device.send_from,
+        poll if device.pulled else None,
     )
 
 
 def check(root: Path) -> list[str]:
-    port = default_port((root / WIRE).read_text(encoding="utf-8"))
+    wire_text = (root / WIRE).read_text(encoding="utf-8")
+    port = default_port(wire_text)
     if port is None:
         return [f"{WIRE.as_posix()}: no 'pub const DEFAULT_PORT: u16 = <port>;' line"]
-    return [error for device in DEVICES for error in device_errors(root, device, port)]
+    poll = poll_constants(wire_text)
+    if poll is None:
+        return [f"{WIRE.as_posix()}: no POLL_PORT_MIN, POLL_PORT_SPAN or POLL_ADDRESS line"]
+    return [error for device in DEVICES for error in device_errors(root, device, port, poll)]
 
 
 def main(argv: list[str] | None = None) -> int:
