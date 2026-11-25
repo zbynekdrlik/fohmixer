@@ -9,9 +9,11 @@ on the same PC over UDP (spec `docs/superpowers/specs/2026-10-26-lufs-design.md`
   3 s window shown as integers, the owner's ruling of 27.10; since #264 the
   hub asks, below):
   - `S`, the 3 s short-term loudness, no gate;
-  - `V`, the loudness of the voiced 100 ms sub-blocks among the last 30 (a
-    sub-block is voiced when its 400 ms momentary loudness is at least
-    −40 LUFS), valid with at least 10 of them, else −70.
+  - `V`, the loudness of the voiced part of the last 3 s (an instant is
+    voiced when its 400 ms momentary loudness is at least −40 LUFS), valid
+    when at least a third of the 3 s is voiced (the block form's 10 of 30
+    sub-blocks), else −70. Since #264 the gate is continuous (below), not
+    per 100 ms sub-block.
 - **`FohMixer Meter`** (`../FohMixer-Meter/`) sends its L and R peak levels
   over each 33 ms, 30×/s. It goes last in an armed track's chain (in a rack,
   below); the hub turns its levels into the track's post-fader meter.
@@ -149,11 +151,17 @@ from `gen~` and from the face's number boxes, and only a reading pulled from
 Max's main thread posts nothing (probe B3). So nothing in the device starts
 a message in the audio thread:
 
-- both readers are `snapshot~ 0` (no clock of their own); a `bang` reads
-  them in the thread that sends it;
-- `obj-poll-receive` (`udpreceive`) takes the hub's poll,
+- the three readers are `snapshot~ 0` (no clock of their own); a `bang`
+  reads them in the thread that sends it;
+- `obj-poll-receive` (`udpreceive 39999 @defer 1`) takes the hub's poll,
   `/fohmixer/lufs/poll` with no argument, every 200 ms (`route` → the
-  gate's right inlet); it is created on 39999, below the range the hub
+  gate's right inlet). `@defer 1`: Max's reference says "messages are sent
+  out on the low-priority queue instead of the scheduler thread.
+  Especially in Max for Live, this can reduce the chances of audio glitches
+  and dropouts"; without it v1.58.0 delivered the poll on the scheduler,
+  i.e. in Live's audio thread (dasio's trace of 25.11 20:01Z: 5 stacks
+  `udpreceive -> snapshot~ -> number -> PostMessageW`). It is created on
+  39999, below the range the hub
   polls, and the port is drawn once at load (`random 10000` → `+ 40000`, the
   load's first step) into the `udpreceive` (`port N`) and the `pack`'s last
   slot, so the hub learns it from the datagram;
@@ -165,10 +173,12 @@ a message in the audio thread:
   device answers nothing and the hub sees it go stale (its port polled for
   one stale window more, then dropped). Device On turning 1 sends one
   datagram at once (`t i i` → `sel 1`), so the hub finds it again;
-- the gate opens to `obj-pull` (`t b b`: the short-term first, then the
-  voice) → `* 10.` → `round` → `clip` → the `pack` → `udpsend`, with no
-  `deferlow`; the face's `Short-term` and `Voice` are fed from the same
-  readers, so they too redraw in the main thread only;
+- the gate opens to `obj-pull` (`t b b b`: the short-term first, then the
+  voiced share into the Voice level's cold inlet, then the voiced mean) →
+  the level (`expr`, below) → `* 10.` → `round` → `clip` → the `pack` →
+  `udpsend`, with no `deferlow`; the face's `Short-term` and `Voice` show
+  the clipped tenths (`* 0.1`), fed from the poll only, so they too redraw
+  in the main thread only;
 - one datagram goes at load (the load's last step, after the identity) and
   at each 10 s re-read (the tick's last outlet), so the hub learns a new
   device and its port.
@@ -181,15 +191,6 @@ rule's stale window, five polls) drops its port. `/api/status`
 (the ports polled now). After a hub restart a device's readings come back
 at its next 10 s re-read (the hub learns the port from that datagram).
 
-**Not yet proved on the PC:** that `udpreceive` outputs its messages in
-Max's main thread. Probe B3 proved the pull for a `live.observer`'s output
-only; the design (the DECIDED of 25.11) takes the network object's output
-as the main thread's too. dasio's stack trace with the new device answers
-it (no `PostMessageW` stack on a Live audio thread naming `udpreceive`,
-`snapshot~`, `number` or `gen~`). If it posts, the next step is a design
-decision on #264, never a quiet `deferlow`: the check refuses one on the
-send path.
-
 Known limit: two devices that draw the same port
 (1 in 10 000 per pair) share one socket; Max's `udpreceive` cannot say a
 bind failed, so one of them may go stale: delete it and load it again
@@ -201,12 +202,97 @@ The hub binds `127.0.0.1` only. Another port than 39110 (the hub's
 `[lufs] port`) means the devices rebuilt with `--port` (below): a device
 cannot read the hub's config.
 
+## The DSP without gen~ (#264, the DECIDED of 25.11.2026)
+
+Until 1.59 the measurement ran in one `gen~`. dasio's symbolized stacks of
+25.11 showed why it still posted after the pull: `plugrunner_process ->
+sched_setqueuethrottle -> gen~.mxe64+0xc442 -> qelem_set -> PostMessageW`,
+on a 4 Hz grid independent of the poll: the `gen~` runs a clock of its own,
+Max for Live services it inside Live's audio thread, and each tick wakes
+Max's main thread with a `PostMessageW`, which waits on the desktop's
+window lock (the v1.58.0 proof run looped master at start 8 on exactly
+that). Its code has no message outputs, so no change of the code removes
+it. So the device has no `gen~` (the check fails on any gen object,
+subpatchers included), and the same math runs in plain MSP objects, none
+with a clock of its own:
+
+| Step | Boxes |
+|---|---|
+| K-weighting, per channel: BS.1770's high shelf, then the RLB high-pass (b = 1, −2, 1) | `obj-plugin` L/R → `obj-shelf-l`/`-r` → `obj-hp-l`/`-r` (`biquad~`) |
+| Squared and summed over the channels | `obj-square-l`/`-r` (`*~`, the signal in both inlets) → `obj-sum` (`+~`) |
+| Short-term: the 3 s mean of the sum | `obj-avg-short` (`average~ 576000 bipolar`) → `obj-snap-s` |
+| The gate: the 400 ms mean ≥ the gate as a mean square, 10^((−40 + 0.691)/10) | `obj-avg-momentary` (`average~ 76800 bipolar`) → `obj-gate` (`>=~ 0.000117…`) |
+| The voiced share: the 3 s mean of the gate (0…1) | `obj-avg-share` → `obj-snap-g` |
+| The voiced mean: the 3 s mean of sum × gate | `obj-voiced` (`*~`) → `obj-avg-voiced` → `obj-snap-v` |
+| Short-term level: 10·log10(max(mean, 1e-30)) − 0.691 | `obj-level-s` (`expr`) → `* 10.` → `round 1.` → `clip -700 0` |
+| Voice level: the same of voiced mean ÷ share when the share ≥ 10/30, else −70 | `obj-level-v` (`expr`, the share in its cold inlet) → the same three |
+
+The coefficients and the windows are computed in Max messages, never on a
+clock: `obj-sr-state` (`dspstate~`) gives the sample rate when the audio
+starts (a rate change restarts it) and when banged, which the load does
+once from the identity's `deferlow` (`obj-id-defer`, the main thread); `t f
+f f f` → `expr tan(π f0 / sr)` per filter → one `expr` per coefficient,
+the analog-prototype formulas the gen~ code used (libebur128's form) →
+`pack` → the `biquad~`'s left inlet as one list, so the five change
+together (each filter's `t` fires right to left: the cold inlets first, the
+pack's hot inlet, b0 or the high-pass's bang, last; a test plays that
+order); the windows `expr int(3.0 sr + 0.5)` and `int(0.4 sr + 0.5)`
+into each `average~`. The texts are generated by
+`scripts/lufs_dsp_check.py` from its constants, which the check compares
+with the patch and a test evaluates against BS.1770's published 48 kHz
+coefficients (the test allows 1e-6; they agree to 1e-15) and the
+0.691 dB gain at 997 Hz (48 and 96 kHz). Every long number in an `expr` is glued to an operator (a lone
+number between spaces would become a float atom), commas inside calls are
+escaped (`\,`) and no expression starts with a unary minus.
+
+The continuous gate is close to the block form (a sub-block of 100 ms was
+voiced when its 400 ms momentary reached −40 LUFS; now every instant is),
+and Voice is fohmixer's own reading (§3.3); `S` is BS.1770's short-term,
+a plain 3 s mean, as before.
+
+What Max's reference says about the objects (docs.cycling74.com, read
+25.11.2026) and what it leaves open:
+
+- `biquad~`: `y[n] = a0*x[n] + a1*x[n-1] + a2*x[n-2] - b1*y[n-1] -
+  b2*y[n-2]`; a list of five into the left inlet sets a0 a1 a2 b1 b2 in
+  that order (so the shelf's list is BS.1770's b0 b1 b2 a1 a2, and the
+  high-pass's `1 -2 1 a1 a2`); inlets 2–6 take one coefficient each (left
+  empty: a signal there would override the list); `smooth` (on by
+  default) smooths coefficient changes.
+- `average~`: the first argument is the maximum interval in samples
+  (default 100, no upper limit stated), the second the mode; `bipolar`
+  averages the sample values (the plain mean we need; `rms` takes the root
+  and costs more); an `int` sets the interval. Not stated: that the
+  interval is bounded by the maximum, how it starts before a full window
+  has arrived (taken here as zeros, like the gen~'s rings), and its cost
+  per sample at a 576 000-sample window.
+- `dspstate~`: outputs automatically when the audio is turned on or off,
+  and on a bang; its second outlet is the sample rate; it outputs nothing
+  while the audio is off.
+- `snapshot~ 0`: "will only output data when it receives a bang message";
+  a bang reports the latest signal vector's sample at its `offset`.
+- `expr`: `tan`, `pow`, `log10`, `min`, `max`, `int` exist; no `pi`
+  constant (written out); its arithmetic precision is not stated.
+- `udpreceive`: `@defer 1`, quoted above.
+
+**Open for the PC** (only dasio's trace and the device on the PC settle
+these): master's `gen~` stacks go from ~10 per 20 s to 0 with both master
+LUFS devices on 1.60.0, and no `PostMessageW` stack on a Live audio thread
+names `udpreceive`, `snapshot~`, `number`, `dspstate~` or `average~`
+(`@defer 1` takes the poll off the scheduler; `dspstate~` outputs only when
+the audio starts and at load); `dspstate~` gives the rate at load inside
+Live (else every coefficient stays 0 and both readings sit at −70); the
+four `average~` per device (3 × 576 000 + 76 800 samples, about 14 MB of
+doubles) cost little CPU in Live; `expr` computes in double precision (in
+single precision the high-pass's a1 = −1.990047 would carry ~1e-7, a
+negligible change below 40 Hz); the numbers against trueLevel (§9), as
+before.
+
 ## Files
 
 | File | What it is |
 |---|---|
-| `FohMixer LUFS.maxpat` | The LUFS device: `sig~ 0.` → `plugout~`; `plugin~` → `gen~` (its code embedded) → `snapshot~ 0` ×2, banged by the hub's poll through the `is_active` gate → `* 10.` → `round` → `clip` → the `pack`'s two values, `V` through `t b f`, which bangs the `pack`; the identity; the poll port; `udpsend` (no `deferlow`). |
-| `fohmixer_lufs.genexpr` | The readable copy of the gen~'s code. |
+| `FohMixer LUFS.maxpat` | The LUFS device: `sig~ 0.` → `plugout~`; `plugin~` → the K-weighting `biquad~` pairs → squared, summed → the `average~` readers (above) → `snapshot~ 0` ×3, banged by the hub's poll through the `is_active` gate → the levels (`expr`) → `* 10.` → `round` → `clip` → the `pack`'s two values, `V` through `t b f`, which bangs the `pack`; the coefficients from `dspstate~`; the identity; the poll port; `udpsend` (no `deferlow`). No `gen~` (#264). |
 | `../FohMixer-Meter/FohMixer Meter.maxpat` | The meter device: `sig~ 0.` → `plugout~`; `peakamp~ 33` per channel → `atodb` → tenths → the `pack`, `R` through `t b f`, which bangs it; the identity; `udpsend`. |
 | `version.txt`, `../FohMixer-Meter/version.txt` | The workspace version (`scripts/check_version.py` keeps both equal to it); each face and each `pack` carry `v<version>`. |
 | `build_amxd.py` | Writes either device's `.amxd` from its patcher. |
@@ -214,18 +300,22 @@ cannot read the hub's config.
 `scripts/check_lufs_device.py` (CI) fails, for the LUFS patch, on any
 `deferlow` on the send path, on a `snapshot~`/`peakamp~` with its own clock
 on, on a clock (`metro`, `qmetro`, `delay`, ...) but the identity's driving a
-reading, on a face object fed from an audio clock, and on any change to the
-pull's boxes and lines (`pull_errors`); for either patch, on a parameter
+reading, on a face object fed from an audio clock, on any change to the
+pull's boxes and lines (`pull_errors`, `scripts/lufs_pull_check.py`), and on
+any change to the DSP chain's boxes, lines or `expr` texts
+(`dsp_errors`, `scripts/lufs_dsp_check.py`); for either patch, on a gen
+object or codebox anywhere (`gen_errors`), on a parameter
 object, on anything but silence into `plugout~`, on a `udpsend` other than
 one `udpsend 127.0.0.1 <DEFAULT_PORT>` (the hub's, read from
 `crates/fohmixer-proto/src/lufs/wire.rs`), on a `pack` with another address
 or version, on a missing identity message, on an identity read on a clock
 or a name slot fed by anything but `live.object` → `route name` → `zl reg`
 → `tosymbol` (an observer's output reaching it), on a line past a box's ports, on a
-face whose version is not `version.txt`, on an absolute file path, and for
-the LUFS patch when its embedded code differs from the `.genexpr`. A change to
-the DSP is made in the `.genexpr` and copied into the patcher's codebox (or
-made in Max's codebox and copied back).
+face whose version is not `version.txt`, and on an absolute file path. A
+change to the DSP's math is made in `scripts/lufs_dsp_check.py` (its
+constants and `EXPRS`) and copied into the patch's `expr` boxes; the check
+names every box that differs. The audio lines (an outlet typed `signal`)
+carry no message, so the thread checks do not walk through them.
 
 ## Building the devices
 

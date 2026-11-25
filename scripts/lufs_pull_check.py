@@ -4,10 +4,12 @@ The DECIDED of 25.11.2026 (built on probe B3): nothing in the device starts a
 message in Live's audio thread. The hub polls the device on a port it draws
 at load; each poll, the load's and the 10 s re-read's last outlet, and Device
 On turning 1 open the gate's right inlet; the gate (its left inlet
-`is_active`, observed) passes the bang to `t b b`, which bangs both
-`snapshot~ 0` (short-term first), so the reading, the face and the send run
-in Max's main thread. This module pins those boxes and lines and fails on an
-audio clock anywhere on a reading or the face; the wire module's constants
+`is_active`, observed) passes the bang to `t b b b`, which bangs the three
+`snapshot~ 0` (short-term first, the voiced mean last), so the reading,
+the face and the send run in Max's main thread (`udpreceive @defer 1`
+hands the poll to the low-priority queue). This module pins those boxes
+and lines and fails on an audio clock anywhere on a reading or the face;
+the wire module's constants
 (the port range, the poll's address) come from
 `crates/fohmixer-proto/src/lufs/wire.rs`.
 """
@@ -69,7 +71,7 @@ def poll_constants(wire_text: str) -> Poll | None:
 # polls the device on a port it draws at load; each poll, the load's and the
 # 10 s re-read's last outlet, and Device On turning 1 open the gate's right
 # inlet; the gate (its left inlet `is_active`, observed) passes the bang to
-# `t b b`, which bangs both `snapshot~ 0` (short-term first), so the
+# `t b b b`, which bangs the three `snapshot~ 0` (short-term first), so the
 # reading, the face and the send run in Max's main thread.
 PULL = "obj-pull"
 POLL_RECEIVE = "obj-poll-receive"
@@ -91,10 +93,10 @@ def pull_boxes(poll: Poll) -> dict[str, list[str]]:
     """The pull's boxes (id: words)."""
     return {
         PULL_GATE: ["gate"],
-        PULL: ["t", "b", "b"],
+        PULL: ["t", "b", "b", "b"],
         # Bound below the range until the load draws its port: the hub
         # never polls it, so no poll reaches a device still loading.
-        POLL_RECEIVE: ["udpreceive", str(poll.min - 1)],
+        POLL_RECEIVE: ["udpreceive", str(poll.min - 1), "@defer", "1"],
         POLL_ROUTE: ["route", poll.address],
         POLL_DRAW: ["random", str(poll.span)],
         POLL_OFFSET: ["+", str(poll.min)],
@@ -108,6 +110,7 @@ def pull_boxes(poll: Poll) -> dict[str, list[str]]:
         ACTIVE_SEL: ["sel", "1"],
         "obj-snap-s": ["snapshot~", "0"],
         "obj-snap-v": ["snapshot~", "0"],
+        "obj-snap-g": ["snapshot~", "0"],
     }
 
 
@@ -120,6 +123,7 @@ def pull_wiring(sink: str) -> dict[tuple[str, int], list[tuple[str, int]]]:
         (PULL, 0): [(PULL_GATE, 0)],
         ("obj-snap-s", 1): [],
         ("obj-snap-v", 1): [],
+        ("obj-snap-g", 1): [],
         (POLL_RECEIVE, 0): [(POLL_SET, 0)],
         (POLL_ROUTE, 0): [(POLL_RECEIVE, 0)],
         (POLL_ROUTE, 1): [],
@@ -155,7 +159,7 @@ def pull_outputs() -> dict[str, list[list]]:
     readings and the pack, which their own checks pin)."""
     return {
         PULL_GATE: [[0, PULL, 0]],
-        PULL: [[0, "obj-snap-v", 0], [1, "obj-snap-s", 0]],
+        PULL: [[0, "obj-snap-v", 0], [1, "obj-snap-g", 0], [2, "obj-snap-s", 0]],
         POLL_RECEIVE: [[0, POLL_ROUTE, 0]],
         POLL_ROUTE: [[0, PULL_GATE, 1]],
         POLL_DRAW: [[0, POLL_OFFSET, 0]],

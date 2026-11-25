@@ -208,8 +208,32 @@ class PullTests(TreeCase):
         errors = self.errors()
         self.assertIn(f"{where}: {lp.POLL_OFFSET} must be '+ 41000', has ['+', '40000']", errors)
         self.assertIn(
-            f"{where}: {lp.POLL_RECEIVE} must be 'udpreceive 40999', has ['udpreceive', '39999']",
+            f"{where}: {lp.POLL_RECEIVE} must be 'udpreceive 40999 @defer 1', has "
+            "['udpreceive', '39999', '@defer', '1']",
             errors,
+        )
+        shutil.copyfile(REPO / cl.WIRE, self.root / cl.WIRE)
+        # #264: the poll leaves the udpreceive on the low-priority queue
+        # (`@defer 1`), never on the scheduler (Live's audio thread).
+        for text in ("udpreceive 39999", "udpreceive 39999 @defer 0"):
+            self.restore(LUFS)
+            patch = self.patcher(LUFS)
+            next(b for b in cl.boxes(patch["patcher"]) if b.get("id") == lp.POLL_RECEIVE)[
+                "text"
+            ] = text
+            self.save(patch, LUFS)
+            self.assertEqual(
+                self.errors(),
+                [
+                    f"{where}: {lp.POLL_RECEIVE} must be 'udpreceive 39999 @defer 1', has "
+                    f"{text.split()}"
+                ],
+            )
+        self.restore(LUFS)
+        self.edit(
+            cl.WIRE,
+            "pub const POLL_PORT_MIN: u16 = 40_000;",
+            "pub const POLL_PORT_MIN: u16 = 41_000;",
         )
         self.edit(cl.WIRE, "pub const POLL_PORT_MIN: u16 = 41_000;", "pub const POLL_MIN: u16 = 1;")
         self.assertEqual(
