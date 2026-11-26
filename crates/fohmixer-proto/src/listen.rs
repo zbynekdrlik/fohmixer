@@ -1,10 +1,11 @@
 //! Listen (#210): a track's sound, before its fader, in the browser.
 //!
 //! A silent Max for Live device, `FohMixer Listen`, sits in a parallel rack
-//! chain of each listenable track (`live-device/FohMixer-Listen/`). It tells
-//! the hub where it is once a second ([`wire`]'s announce, UDP), asks the
-//! hub every 250 ms whether it is selected ([`wire`]'s select, HTTP), and
-//! while it is it streams the track's
+//! chain of each listenable track (`live-device/FohMixer-Listen/`). It holds
+//! no clock (#264): the hub polls it every 250 ms on a port of its own,
+//! the poll saying whether it is selected, and it answers with where it is
+//! ([`wire`]'s announce, UDP); while it is selected each of the hub's
+//! frame polls (every 20 ms) has it stream the track's
 //! samples to the hub over TCP as Jitter matrices ([`jitnet`]). The hub
 //! cuts them into 20 ms frames at 48 kHz ([`frames`]), encodes Opus and
 //! sends one packet per frame on `/ws/audio` ([`AudioClientMsg`],
@@ -101,9 +102,28 @@ pub struct ListenStatus {
     /// The Opus packets sent to the pages' sockets' channel.
     #[serde(default)]
     pub packets: u64,
-    /// The devices' select questions answered (`GET /api/listen/select`).
+    /// The polls sent to the devices heard (#264: `/fohmixer/listen/poll`,
+    /// each with its select).
     #[serde(default)]
-    pub selects: u64,
+    pub polls: u64,
+    /// The frame polls sent to the device selected (#264).
+    #[serde(default)]
+    pub frame_polls: u64,
+    /// The polls and frame polls the socket refused.
+    #[serde(default)]
+    pub poll_failed: u64,
+    /// The start sweep's polls sent, and refused (#264).
+    #[serde(default)]
+    pub swept: u64,
+    #[serde(default)]
+    pub sweep_failed: u64,
+    /// The address the polls go out from.
+    #[serde(default)]
+    pub poll_from: Option<String>,
+    /// The ports two or more devices heard now name (#264: they drew one;
+    /// a device there hears another's polls, and one of them stays mute).
+    #[serde(default)]
+    pub shared_ports: u64,
     /// Everything refused, by reason (datagrams, chunks, connections).
     #[serde(default)]
     pub refused: BTreeMap<String, u64>,
@@ -118,6 +138,9 @@ pub struct ListenDeviceStatus {
     pub set: String,
     pub sample_rate: i32,
     pub sending: bool,
+    /// The port it takes the hub's polls on (#264).
+    #[serde(default)]
+    pub port: u16,
     /// Since its last announce.
     pub age_ms: u64,
 }

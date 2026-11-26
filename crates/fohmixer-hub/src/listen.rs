@@ -1,10 +1,12 @@
 //! Listen (#210): a track's sound, before its fader, to the pages as Opus.
 //!
-//! The `FohMixer Listen` devices announce themselves over UDP
-//! (`listen/udp.rs`), each asks the hub every 250 ms whether it is the one
-//! on the track a page listens to (`GET /api/listen/select`,
-//! `routes/listen.rs`, [`Listen::select`]: one UDP select port for every
-//! device reached only one of them on the PC), that device streams its
+//! The `FohMixer Listen` devices hold no clock (#264): the hub polls each
+//! one it heard every 250 ms on the port it names (`listen/poll.rs`,
+//! [`Listen::polls`]: the poll says whether it is the one on the track a
+//! page listens to; a port of its own per device, since one UDP select
+//! port reached only one device on the PC, #210), each answers with its
+//! announce (`listen/udp.rs`), and the hub's frame polls
+//! ([`Listen::frame_port`], every 20 ms) have that device stream its
 //! samples over TCP (`listen/stream.rs`: Jitter chunks, 20 ms frames, Opus)
 //! and every listening socket (`listen/session.rs`, `/ws/audio`) gets the
 //! packets from one `broadcast` channel. One track at a time on a hub, the
@@ -30,6 +32,7 @@
 //! [`rack::leave_switch`]) with their own tests.
 
 pub mod encoder;
+pub mod poll;
 pub mod rack;
 pub mod session;
 pub mod stream;
@@ -103,6 +106,30 @@ pub fn choose(devices: &BTreeMap<i32, Heard>, set: &str, track: &str, now: Insta
     }
 }
 
+/// The polls of `polls` (each device's port and select), one a port, on
+/// when any device of the port is on; in port order.
+pub fn one_poll_a_port(polls: impl IntoIterator<Item = (u16, bool)>) -> Vec<(u16, bool)> {
+    let mut ports: BTreeMap<u16, bool> = BTreeMap::new();
+    for (port, on) in polls {
+        let told = ports.entry(port).or_insert(false);
+        if on {
+            *told = true;
+        }
+    }
+    ports.into_iter().collect()
+}
+
+/// How many ports of `ports` (each fresh device's) two or more devices
+/// name (#264): a device there hears the polls of another.
+pub fn shared_ports(ports: impl IntoIterator<Item = u16>) -> u64 {
+    let mut counts: BTreeMap<u16, u64> = BTreeMap::new();
+    for port in ports {
+        *counts.entry(port).or_insert(0) += 1;
+    }
+    let shared = counts.values().filter(|n| **n > 1).count();
+    u64::try_from(shared).unwrap_or(u64::MAX)
+}
+
 /// The track listened to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
@@ -154,13 +181,46 @@ struct State {
 pub struct Counters {
     pub frames: AtomicU64,
     pub packets: AtomicU64,
-    pub selects: AtomicU64,
     pub connections: AtomicUsize,
+    /// The polls (#264): sent, frame polls sent, refused by the socket.
+    polls: AtomicU64,
+    frame_polls: AtomicU64,
+    poll_failed: AtomicU64,
+    /// The start sweep's polls: sent, refused.
+    swept: AtomicU64,
+    sweep_failed: AtomicU64,
     refused: Mutex<BTreeMap<String, u64>>,
     bound: Mutex<(Option<String>, Option<String>)>,
+    poll_from: Mutex<Option<String>>,
 }
 
 impl Counters {
+    /// A round's polls: `sent` went, `failed` the socket refused.
+    pub fn polled(&self, sent: u64, failed: u64) {
+        self.polls.fetch_add(sent, Ordering::Relaxed);
+        self.poll_failed.fetch_add(failed, Ordering::Relaxed);
+    }
+
+    /// A frame round's polls.
+    pub fn frame_polled(&self, sent: u64, failed: u64) {
+        self.frame_polls.fetch_add(sent, Ordering::Relaxed);
+        self.poll_failed.fetch_add(failed, Ordering::Relaxed);
+    }
+
+    /// The start sweep's polls.
+    pub fn swept(&self, sent: u64, failed: u64) {
+        self.swept.fetch_add(sent, Ordering::Relaxed);
+        self.sweep_failed.fetch_add(failed, Ordering::Relaxed);
+    }
+
+    /// The address the polls go out from.
+    pub fn set_poll_from(&self, addr: Option<String>) {
+        *self
+            .poll_from
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = addr;
+    }
+
     /// One thing refused for `reason`.
     pub fn refuse(&self, reason: &str) {
         let mut refused = self.refused.lock().unwrap_or_else(PoisonError::into_inner);
@@ -400,11 +460,40 @@ impl Listen {
         })
     }
 
-    /// A device's question at `now`: is it the one to stream
-    /// ([`Listen::accepts`])? Counted (`selects`).
-    pub fn select(&self, device: i32, now: Instant) -> bool {
-        self.counters.selects.fetch_add(1, Ordering::Relaxed);
-        self.accepts(device, now)
+    /// The polls due at `now` (#264): each fresh device's port once, in
+    /// port order, with its select ([`Listen::accepts`]: on for the
+    /// target's one device only). A port two devices name (they drew one,
+    /// and Max cannot report a failed bind) gets one poll, on when either
+    /// is the target's ([`one_poll_a_port`]).
+    pub fn polls(&self, now: Instant) -> Vec<(u16, bool)> {
+        let state = self.state();
+        let chosen = state
+            .target
+            .as_ref()
+            .map(|t| choose(&state.devices, &t.set, &t.track, now));
+        one_poll_a_port(
+            state
+                .devices
+                .values()
+                .filter(|h| fresh(h.at, now))
+                .map(|h| {
+                    (
+                        h.announce.port,
+                        chosen == Some(Choice::Device(h.announce.device)),
+                    )
+                }),
+        )
+    }
+
+    /// The port of the device selected at `now`, which the frame polls
+    /// drive (#264); none while nobody listens or no one device is found.
+    pub fn frame_port(&self, now: Instant) -> Option<u16> {
+        let state = self.state();
+        let target = state.target.as_ref()?;
+        match choose(&state.devices, &target.set, &target.track, now) {
+            Choice::Device(id) => state.devices.get(&id).map(|h| h.announce.port),
+            Choice::NoDevice | Choice::TwoDevices => None,
+        }
     }
 
     /// A packet to every listening socket, with the turn it is sent in.
@@ -439,6 +528,7 @@ impl Listen {
                     set: set.to_string(),
                     sample_rate: h.announce.sample_rate,
                     sending: h.announce.sending,
+                    port: h.announce.port,
                     age_ms: u64::try_from(now.saturating_duration_since(h.at).as_millis())
                         .unwrap_or(u64::MAX),
                 }
@@ -467,7 +557,24 @@ impl Listen {
             connections: self.counters.connections.load(Ordering::Relaxed),
             frames: self.counters.frames.load(Ordering::Relaxed),
             packets: self.counters.packets.load(Ordering::Relaxed),
-            selects: self.counters.selects.load(Ordering::Relaxed),
+            polls: self.counters.polls.load(Ordering::Relaxed),
+            frame_polls: self.counters.frame_polls.load(Ordering::Relaxed),
+            poll_failed: self.counters.poll_failed.load(Ordering::Relaxed),
+            swept: self.counters.swept.load(Ordering::Relaxed),
+            sweep_failed: self.counters.sweep_failed.load(Ordering::Relaxed),
+            poll_from: self
+                .counters
+                .poll_from
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone(),
+            shared_ports: shared_ports(
+                state
+                    .devices
+                    .values()
+                    .filter(|h| fresh(h.at, now))
+                    .map(|h| h.announce.port),
+            ),
             refused: self.counters.refused(),
         }
     }
@@ -508,24 +615,29 @@ pub fn bind_with(
 }
 
 /// Starts Listen (inside a tokio runtime): its state and tasks, the rack
-/// switches' among them (through `lom`, #238). A port that cannot be bound
-/// is one `listen` record with its error and an error line, shown in
+/// switches' (through `lom`, #238) and the polls' (#264, with the start
+/// sweep over `cfg.sweep`) among them. A port that cannot be bound is one
+/// `listen` record with its error and an error line, shown in
 /// `/api/status`; the hub runs on, every page told `no_source`, and no rack
 /// is switched.
 pub fn spawn(
-    port: u16,
+    cfg: &crate::config::ListenCfg,
     events: EventLog,
     sets: SetNames,
     lom: rack::Lom,
 ) -> (Arc<Listen>, Vec<tokio::task::JoinHandle<()>>) {
+    let port = cfg.port;
     let wanted = udp::bind_addr(port).to_string();
-    let started = bind(port).and_then(|(tcp, socket)| {
+    // Every socket before any task: a failed bind leaves no task behind.
+    let bound = bind(port).and_then(|(tcp, socket)| Ok((tcp, socket, poll::socket()?)));
+    let started = bound.and_then(|(tcp, socket, poller)| {
         let addr = tcp.local_addr()?.to_string();
         let (racks, jobs) = tokio::sync::mpsc::unbounded_channel();
         let listen = Listen::with_racks(events.clone(), Arc::clone(&sets), Some(racks));
         let tasks = vec![
             stream::spawn(tcp, Arc::clone(&listen))?,
             udp::spawn(socket, Arc::clone(&listen))?,
+            poll::spawn(poller, Arc::clone(&listen), cfg.sweep.clone()),
             tokio::spawn(rack::run(jobs, lom, events.clone())),
         ];
         Ok((listen, addr, tasks))

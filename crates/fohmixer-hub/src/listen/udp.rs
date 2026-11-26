@@ -2,9 +2,9 @@
 //! `127.0.0.1:<[listen] port>` (no config widens the address). Each
 //! announce is parsed (`fohmixer_proto::listen::wire::parse_announce`,
 //! pure) and kept; a refused one is only counted (`/api/status`
-//! `listen.refused`, `announce_<reason>`). The hub sends the devices
-//! nothing here: each asks whether it is selected over HTTP
-//! (`routes/listen.rs`).
+//! `listen.refused`, `announce_<reason>`). An announce answers the hub's
+//! poll (#264, `listen/poll.rs`, from a socket of its own): this socket
+//! only reads.
 
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
@@ -81,6 +81,7 @@ mod tests {
             parents: parents_in(None, "Vox 1", "FOH Band"),
             sample_rate: 48_000,
             sending: false,
+            port: 40_000,
         })
     }
 

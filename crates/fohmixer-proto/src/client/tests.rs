@@ -967,6 +967,7 @@ fn api_bodies_round_trip() {
                 set: "FOH Band".into(),
                 sample_rate: 48_000,
                 sending: true,
+                port: 40_007,
                 age_ms: 120,
             }],
             target: Some(crate::listen::ListenTargetStatus {
@@ -980,7 +981,13 @@ fn api_bodies_round_trip() {
             connections: 1,
             frames: 50,
             packets: 50,
-            selects: 3,
+            polls: 12,
+            frame_polls: 150,
+            poll_failed: 1,
+            swept: 10_000,
+            sweep_failed: 2,
+            poll_from: Some("127.0.0.1:51000".into()),
+            shared_ports: 1,
             refused: [("not_selected".to_string(), 4)].into(),
         },
         claps: crate::claps::ClapsStatus {
@@ -1037,6 +1044,15 @@ fn api_bodies_round_trip() {
     assert_eq!(json["listen"]["target"]["device"], 9);
     assert_eq!(json["listen"]["devices"][0]["track"], "Vox 1");
     assert_eq!(json["listen"]["refused"]["not_selected"], 4);
+    // #264: the hub's polls, and each device's poll port.
+    assert_eq!(json["listen"]["polls"], 12);
+    assert_eq!(json["listen"]["frame_polls"], 150);
+    assert_eq!(json["listen"]["poll_failed"], 1);
+    assert_eq!(json["listen"]["swept"], 10_000);
+    assert_eq!(json["listen"]["sweep_failed"], 2);
+    assert_eq!(json["listen"]["poll_from"], "127.0.0.1:51000");
+    assert_eq!(json["listen"]["devices"][0]["port"], 40_007);
+    assert_eq!(json["listen"]["shared_ports"], 1);
     let mut older = json.clone();
     older.as_object_mut().unwrap().remove("listen");
     assert_eq!(

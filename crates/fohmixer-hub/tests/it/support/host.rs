@@ -64,9 +64,8 @@ impl Host {
     }
 
     /// A host of `site` whose Listen devices (#210) announce and stream to
-    /// the hub's `listen_port`; they ask the hub whether they are selected
-    /// once a test tells them its HTTP port (`listendev("listenhub <port>")`:
-    /// a test hub has its port only after the host started).
+    /// the hub's `listen_port`; each answers the hub's polls on a port of
+    /// its own (#264).
     pub fn start_listen(instance: &str, site: &Path, listen_port: u16) -> Self {
         Self::start_args(
             instance,
@@ -288,7 +287,7 @@ impl Host {
     }
 
     /// A Listen device line (#210): `listendev …`, `tone …`, `streamed …`
-    /// or `listenhub <port>`; the answer's number (-1: a bad line, no such
+    /// or `listenrack …`; the answer's number (-1: a bad line, no such
     /// track or device).
     pub fn listendev(&mut self, line: &str) -> i64 {
         self.maxdev(line)

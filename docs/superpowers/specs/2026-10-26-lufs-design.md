@@ -201,6 +201,7 @@ Outcome: option (a) is out; the localhost path (§4.4) is built.
 - **Bounded:** at most twice the nominal rate is taken from one key (10 datagrams/s for `/lufs`, 60/s for `/meter`), the rest dropped and counted; at most 64 keys are kept (a new key past that is dropped and counted). A refused datagram is counted by its reason.
 - **Stale:** a LUFS key with no datagram for **1000 ms** (5 sends missed) is gone: its strip shows nothing (`none`) and the hub logs it lost. A meter key is gone after **500 ms**, and its strip's meter keys go back to Live's values (§3.4).
 - **Offline:** an instance's disconnect drops its matches; its strips show nothing.
+- **The Listen device shares the poll's range (#264, its step; `.claude/rules/listen.md`):** `FohMixer Listen` (#210) is pulled the same way since 1.60.4 and holds no clock either: it draws its poll port from the same 40000–49999 range at load, the hub's Listen side polls it every 250 ms (`/fohmixer/listen/poll <on>`: the select pushed, answered with its announce, wire version 2 with the port last) and sends the selected device `/fohmixer/listen/frame` every 20 ms (each bangs its `jit.catch~ @mode 1`, so the stream needs no `qmetro`), and sweeps the range once at its start with its own poll. Each device's `route` drops another kind's poll, so the two sweeps cross harmlessly; two devices of any kind drawing one port lose one of them (Max cannot report a failed bind).
 - Never writes anything to Live; the confirmation is a read.
 
 ### 4.5 Probe P2 on the PC (before the hub combines the armed tracks' levels)
