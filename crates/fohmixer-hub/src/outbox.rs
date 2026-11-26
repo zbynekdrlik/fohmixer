@@ -1513,6 +1513,84 @@ mod tests {
     }
 
     #[test]
+    fn a_meter_that_falls_within_a_period_reaches_its_last_value_a_period_later() {
+        // #276: a track's sound stops, Live's meter falls to 0 within one
+        // period and then stays still (no push follows). The period's peak
+        // goes, then the last value, never the peak for good.
+        let outbox = Outbox::new();
+        let t = Instant::now();
+        outbox.pace_meters(every(250), t);
+        for level in [json!(0.6), json!(0.3), json!(0)] {
+            outbox.value(meter("Kick", level));
+        }
+        assert_eq!(
+            taken(&outbox, at(t, 250)),
+            vec![values(vec![meter("Kick", json!(0.6))])],
+            "the period's peak first"
+        );
+        let next = at(t, 500);
+        assert_eq!(outbox.lock().wake(at(t, 250)), Wake::At(next));
+        assert_eq!(taken(&outbox, next - Duration::from_nanos(1)), vec![]);
+        assert_eq!(outbox.lock().wake(next), Wake::Now);
+        assert_eq!(
+            taken(&outbox, next),
+            vec![values(vec![meter("Kick", json!(0))])],
+            "then where Live stands"
+        );
+        assert!(outbox.lock().is_empty(), "nothing more");
+        assert_eq!(outbox.lock().wake(at(t, 5000)), Wake::Woken);
+        // The kept latest counts as a value of the next period: a louder one
+        // there wins, a quieter one is the next latest.
+        for level in [json!(0.8), json!(0.1)] {
+            outbox.value(meter("Kick", level));
+        }
+        assert_eq!(
+            taken(&outbox, at(t, 750)),
+            vec![values(vec![meter("Kick", json!(0.8))])]
+        );
+        outbox.value(meter("Kick", json!(0.5)));
+        assert_eq!(
+            taken(&outbox, at(t, 1000)),
+            vec![values(vec![meter("Kick", json!(0.5))])],
+            "the latest 0.1 met a louder 0.5"
+        );
+        assert!(outbox.lock().is_empty());
+    }
+
+    #[test]
+    fn a_waking_page_gets_its_meters_last_values_not_their_peaks() {
+        // #276: a paused page (a locked iPad) wakes after its tracks fell
+        // silent: the meter shows where Live is, not the pause's peak.
+        let outbox = Outbox::new();
+        let t = Instant::now();
+        outbox.pace_meters(Pace::Paused, t);
+        for level in [json!(0.9), json!(0.4), json!(0)] {
+            outbox.value(meter("Kick", level));
+        }
+        outbox.value(meter("Snare", json!(0.7)));
+        outbox.pace_meters(Pace::Full, at(t, 5000));
+        assert_eq!(
+            taken(&outbox, at(t, 5000)),
+            vec![values(vec![
+                meter("Kick", json!(0)),
+                meter("Snare", json!(0.7))
+            ])]
+        );
+        assert!(outbox.lock().is_empty());
+        // So does a paced one that wakes within its period.
+        outbox.pace_meters(every(250), at(t, 6000));
+        for level in [json!(0.9), json!(0.2)] {
+            outbox.value(meter("Kick", level));
+        }
+        outbox.pace_meters(Pace::Full, at(t, 6100));
+        assert_eq!(
+            taken(&outbox, at(t, 6100)),
+            vec![values(vec![meter("Kick", json!(0.2))])]
+        );
+        assert!(outbox.lock().is_empty());
+    }
+
+    #[test]
     fn a_replacing_item_takes_a_held_meters_place_whatever_its_level() {
         // #151: a meter key's source changing (the armed track's meter
         // device) never lets the other source's louder number win once.
