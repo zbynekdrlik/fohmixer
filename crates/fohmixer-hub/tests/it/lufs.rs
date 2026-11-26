@@ -52,6 +52,7 @@ async fn hub(dir: &Path, hosts: &[&Host], port: u16) -> TestHub {
     config.instances = hosts.iter().map(|h| h.cfg()).collect();
     config.layout_poll_ms = 100;
     config.lufs.port = port;
+    config.lufs.sweep = false;
     let hub = TestHub::start_config(config).await;
     hub.status_until(SECS_5, |s| s.instances.iter().all(|i| i.online))
         .await;

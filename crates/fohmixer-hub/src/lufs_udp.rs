@@ -593,7 +593,7 @@ mod tests {
         let (events, _records) = EventLog::channel(16);
         let tap = crate::link::server::tap();
         let mut heard = tap.subscribe();
-        let (addr, task) = spawn(0, tx, counters, events, Some(tap.clone())).unwrap();
+        let (addr, task) = spawn(0, tx, counters, events, Some(tap.clone()), false).unwrap();
         let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         sender.send_to(&datagram(4), addr).unwrap();
         sender.send_to(b"junk", addr).unwrap();
@@ -740,6 +740,66 @@ mod tests {
         assert_eq!(poll_every(DeviceKind::Meter), Duration::from_millis(33));
         assert_eq!(poll_every(DeviceKind::Lufs), Duration::from_millis(200));
         assert_eq!(POLLED_KINDS, [DeviceKind::Lufs, DeviceKind::Meter]);
+    }
+
+    #[test]
+    fn the_sweep_covers_the_ports_a_device_draws_from() {
+        // #264, the DECIDED of 26.11: the patches' `random 10000` + `40000`.
+        assert_eq!(
+            sweep_ports(),
+            wire::POLL_PORT_MIN..wire::POLL_PORT_MIN + wire::POLL_PORT_SPAN
+        );
+        assert_eq!(sweep_ports().len(), 10_000);
+    }
+
+    #[test]
+    fn a_sweep_sends_each_port_the_meters_poll_once_and_counts_it_apart() {
+        // A meter already running (a hub restarted under a running Live)
+        // answers the sweep's poll and is learned; the sweep's sends count
+        // apart from the rounds' polls. Port 0 stands for a refused send.
+        let device = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        device
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let port = device.local_addr().unwrap().port();
+        let poller = poll_socket().unwrap();
+        let counters = Counters::default();
+        let mut ports = vec![0, port];
+        ports.sort_unstable();
+        assert_eq!(sweep_over(&poller, ports, &counters), (1, 1));
+        let mut buf = [0u8; 64];
+        let (n, from) = device.recv_from(&mut buf).unwrap();
+        assert_eq!(&buf[..n], wire::poll_datagram(DeviceKind::Meter).as_slice());
+        assert_eq!(from, poller.local_addr().unwrap());
+        let status = counters.status();
+        assert_eq!((status.swept, status.sweep_failed), (1, 1));
+        assert_eq!((status.polled, status.poll_failed), (0, 0));
+        counters.swept(2, 3);
+        let status = counters.status();
+        assert_eq!((status.swept, status.sweep_failed), (3, 4));
+    }
+
+    #[test]
+    fn a_send_reset_by_an_earlier_ports_answer_is_tried_once_more() {
+        // Windows reports an earlier datagram's ICMP port unreachable on the
+        // socket's next send (WSAECONNRESET): that send went nowhere, so it
+        // is tried again; any other refusal is a failed send.
+        assert!(send_again(io::ErrorKind::ConnectionReset));
+        assert!(!send_again(io::ErrorKind::WouldBlock));
+        assert!(!send_again(io::ErrorKind::ConnectionRefused));
+        assert!(!send_again(io::ErrorKind::InvalidInput));
+    }
+
+    #[tokio::test]
+    async fn the_poll_socket_is_named_in_the_status() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let counters = Arc::new(Counters::default());
+        let (events, _records) = EventLog::channel(16);
+        let (_, task) = spawn(0, tx, Arc::clone(&counters), events, None, false).unwrap();
+        let from = counters.status().poll_from.expect("the poll socket");
+        assert!(from.starts_with("127.0.0.1:"), "{from}");
+        assert_eq!(counters.status().swept, 0, "no sweep asked");
+        task.abort();
     }
 
     #[tokio::test]

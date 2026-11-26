@@ -1897,14 +1897,32 @@ mod tests {
     fn lufs_port_defaults_to_39110() {
         assert_eq!(Config::parse("", &data()).unwrap().lufs.port, 39110);
         assert_eq!(Config::parse("[lufs]\n", &data()).unwrap().lufs.port, 39110);
-        assert_eq!(Config::defaults(&data()).lufs, LufsCfg { port: 39110 });
+        assert_eq!(
+            Config::defaults(&data()).lufs,
+            LufsCfg {
+                port: 39110,
+                sweep: true
+            }
+        );
         assert_eq!(
             Config::parse("[lufs]\nport = 39120\n", &data())
                 .unwrap()
-                .lufs
-                .port,
-            39120
+                .lufs,
+            LufsCfg {
+                port: 39120,
+                sweep: true
+            }
         );
+    }
+
+    #[test]
+    fn the_start_sweep_is_always_on_and_no_config_key() {
+        // #264, the DECIDED of 26.11: every hub sweeps the meters' ports at
+        // its start; only a test turns it off (a sweep reaches every socket
+        // in the range, other tests' too).
+        assert!(Config::parse("[lufs]\n", &data()).unwrap().lufs.sweep);
+        let refused = Config::parse("[lufs]\nsweep = false\n", &data()).unwrap_err();
+        assert!(refused.to_string().contains("sweep"), "{refused}");
     }
 
     #[test]
