@@ -50,7 +50,13 @@ thread naming `peakamp~`, `number`, `udpreceive` or `deferlow` from the
 meter); the hub's `lufs.listener.polled` growing by
 about 30 a second per meter.
 
-**Known limit (a question on #264):** a meter sends only when polled, so
-after a hub restart with Live left running the hub does not learn the
-meters' ports again until each device is reloaded (the LUFS device's 10 s
-clock still announces it).
+**A hub restarted under a running Live** (the DECIDED of 26.11 on #264): a
+meter sends only when polled (and at its load, and when Device On turns 1),
+so the hub, at its start, sends `/fohmixer/meter/poll` once to every port
+of the range the device draws from (40000–49999) on 127.0.0.1; every
+running meter answers and is learned within the first poll.
+`/api/status` `lufs.listener.swept` / `sweep_failed` count those sends (one
+info line too). A LUFS device on a swept port drops the meter's address at
+its `route`; a foreign program in the range sees one unknown OSC datagram
+once. On the PC: after a hub restart, `lufs.listener.polling` counts every
+meter again within a second.

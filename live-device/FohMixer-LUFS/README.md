@@ -192,8 +192,11 @@ polled-form datagram named the poll each 200 ms from a socket of its own
 (`127.0.0.1`), as long as that key is heard; a key lost (1 s, the LUFS
 rule's stale window, five polls) drops its port. `/api/status`
 `lufs.listener` counts `polled` (polls sent), `poll_failed` and `polling`
-(the ports polled now). After a hub restart a device's readings come back
-at its next 10 s re-read (the hub learns the port from that datagram).
+(the ports polled now). After a hub restart a LUFS device's readings come
+back at its next 10 s re-read (the hub learns the port from that datagram);
+a meter's at once, from the hub's start sweep (#264: the meter's poll once
+to every port of the range, `swept` / `sweep_failed`,
+`../FohMixer-Meter/README.md`).
 
 Known limit: two devices that draw the same port
 (1 in 10 000 per pair) share one socket; Max's `udpreceive` cannot say a
