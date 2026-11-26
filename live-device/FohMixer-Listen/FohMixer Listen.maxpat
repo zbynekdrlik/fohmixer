@@ -312,7 +312,7 @@
 				"box": {
 					"id": "obj-hello",
 					"maxclass": "newobj",
-					"text": "pack fohmixer_listen 2 0 v1.60.4 0",
+					"text": "pack fohmixer_listen 2 0 v1.60.5 0",
 					"numinlets": 5,
 					"numoutlets": 1,
 					"outlettype": [
@@ -348,7 +348,7 @@
 				"box": {
 					"id": "obj-announce",
 					"maxclass": "newobj",
-					"text": "pack /fohmixer/listen 2 0 v1.60.4 - - - - 0 0 0",
+					"text": "pack /fohmixer/listen 2 0 v1.60.5 - - - - 0 0 0",
 					"numinlets": 11,
 					"numoutlets": 1,
 					"outlettype": [
@@ -440,7 +440,7 @@
 						60.0,
 						18.0
 					],
-					"text": "v1.60.4",
+					"text": "v1.60.5",
 					"varname": "version"
 				}
 			},

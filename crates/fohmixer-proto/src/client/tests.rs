@@ -1013,9 +1013,26 @@ fn api_bodies_round_trip() {
             sent: 120,
             polls: 9,
         },
+        stream_proof: StreamProofStatus {
+            automation: false,
+            read_only: true,
+        },
     };
     let json = serde_json::to_value(&status).unwrap();
     assert_eq!(json["link"]["listen"], "10.0.0.5:39201");
+    // #274: which tokens the stream proof takes, the defaults for an older hub.
+    assert_eq!(
+        json["stream_proof"],
+        json!({"automation": false, "read_only": true})
+    );
+    let mut no_tokens = json.clone();
+    no_tokens.as_object_mut().unwrap().remove("stream_proof");
+    assert_eq!(
+        serde_json::from_value::<HubStatus>(no_tokens)
+            .unwrap()
+            .stream_proof,
+        StreamProofStatus::default()
+    );
     // #220: claps, the defaults for an older hub.
     assert_eq!(json["claps"]["state"], "clip");
     assert_eq!(
@@ -2219,6 +2236,7 @@ fn an_older_hubs_status_reads_with_default_sectors() {
         link: None,
         listen: crate::listen::ListenStatus::default(),
         claps: crate::claps::ClapsStatus::default(),
+        stream_proof: StreamProofStatus::default(),
     };
     let mut json = serde_json::to_value(&status).unwrap();
     assert!(json.get("link").is_none(), "no [link]: no field");

@@ -58,7 +58,7 @@ impl Gate {
             Gate::Token => error_response(
                 StatusCode::UNAUTHORIZED,
                 "UNAUTHORIZED",
-                "Send the automation token as Authorization: Bearer <token>",
+                "Send the automation token (on the stream proof also its read-only token) as Authorization: Bearer <token>",
             ),
         }
     }

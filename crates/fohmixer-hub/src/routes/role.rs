@@ -169,6 +169,8 @@ pub fn status_for(role: Role, status: HubStatus) -> HubStatus {
             link: None,
             listen: Default::default(),
             claps: Default::default(),
+            // Whether a token is set, never a value: the MBC sees it too.
+            stream_proof: status.stream_proof,
         },
     }
 }
