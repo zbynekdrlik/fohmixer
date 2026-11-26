@@ -12,7 +12,11 @@
 //! 2. per track `name`, `mute`, `is_foldable`, `group_track` and the
 //!    `display_name` of `<track> output_routing_type` /
 //!    `output_routing_channel`; per return its `name`, `mute` and output;
-//!    the main track's output. A track whose name is not the one the list
+//!    the main track's output; and, when the list named exactly one track
+//!    [`STREAM_TRACK`], that track's `<track> input_routing_type`
+//!    `display_name` (its name is read in the same request, so the input is
+//!    that track's; none read when the list named it never or twice, which
+//!    the decision fails on anyway). A track whose name is not the one the list
 //!    gave was moved meanwhile: the walk fails (never a fact paired with
 //!    another track). `group_track` answers the group as an object whose
 //!    `$ref` is the listed group's (the script's id is Live's pointer), so
@@ -40,7 +44,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use fohmixer_proto::roles::MBC_INSTANCE;
-use fohmixer_proto::stream_proof::{Answer, Output, Return, SENDS_ONLY, Set, Track, decide};
+use fohmixer_proto::stream_proof::{
+    Answer, Output, Return, SENDS_ONLY, STREAM_TRACK, Set, Track, decide,
+};
 use serde_json::{Value, json};
 
 use crate::eq::walk::{answered, get, items, refused};
@@ -111,7 +117,27 @@ fn output_commands(path: &str) -> [Value; 2] {
     ]
 }
 
-/// Step 2's commands: every track's, every return's, the main track's.
+/// The index of the one listed track named [`STREAM_TRACK`] (none: no
+/// such track, or two).
+fn stream_listed(tracks: &[Listed]) -> Option<usize> {
+    let mut found = tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.name == STREAM_TRACK)
+        .map(|(i, _)| i);
+    match (found.next(), found.next()) {
+        (Some(i), None) => Some(i),
+        _ => None,
+    }
+}
+
+/// The `get_prop` of a track's input routing type.
+fn input_command(path: &str) -> Value {
+    get(&format!("{path} input_routing_type"), "display_name")
+}
+
+/// Step 2's commands: every track's, every return's, the main track's, the
+/// stream track's input.
 fn fact_commands(tracks: &[Listed], returns: &[Listed]) -> Vec<Value> {
     let mut commands = Vec::new();
     for t in tracks {
@@ -128,6 +154,9 @@ fn fact_commands(tracks: &[Listed], returns: &[Listed]) -> Vec<Value> {
         commands.extend(output_commands(&r.path));
     }
     commands.extend(output_commands(MAIN));
+    if let Some(i) = stream_listed(tracks) {
+        commands.push(input_command(&tracks[i].path));
+    }
     commands
 }
 
@@ -187,6 +216,7 @@ fn facts(slots: &[Value], tracks: &[Listed], returns: &[Listed]) -> Result<Set, 
         tracks: Vec::new(),
         returns: Vec::new(),
         main: Output::default(),
+        stream_input: None,
     };
     for (i, t) in tracks.iter().enumerate() {
         let at = i * TRACK_READS;
@@ -213,7 +243,12 @@ fn facts(slots: &[Value], tracks: &[Listed], returns: &[Listed]) -> Result<Set, 
             output: output(slots, at + 2, &r.path)?,
         });
     }
-    set.main = output(slots, base + returns.len() * RETURN_READS, MAIN)?;
+    let main_at = base + returns.len() * RETURN_READS;
+    set.main = output(slots, main_at, MAIN)?;
+    if let Some(i) = stream_listed(tracks) {
+        let what = format!("{} input_routing_type", tracks[i].path);
+        set.stream_input = Some(text(slots, main_at + 2, &what)?);
+    }
     Ok(set)
 }
 
