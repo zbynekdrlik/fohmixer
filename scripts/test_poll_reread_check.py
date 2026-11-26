@@ -41,7 +41,8 @@ class RereadTests(TreeCase):
             # poll already sends the new parents.
             self.assertIn([outlet, rr.ID_COUNT, 0], lp.outputs(patcher, lp.PULL))
             self.assertEqual(
-                cl.feeds(patcher, rr.ID_COUNT, 0), sorted([[rr.ID_OFFSET_SET, 0], [lp.PULL, outlet]])
+                cl.feeds(patcher, rr.ID_COUNT, 0),
+                sorted([[rr.ID_OFFSET_SET, 0], [lp.PULL, outlet]]),
             )
             for level in range(1, cl.PARENTS + 1):
                 self.assertEqual(
@@ -113,9 +114,7 @@ class RereadTests(TreeCase):
                 patch = self.patcher(device)
                 next(b for b in cl.boxes(patch["patcher"]) if b.get("id") == box)["text"] = text
                 self.save(patch, device)
-                self.assertIn(
-                    f"{where}: {box} must be '{want}', has {text.split()}", self.errors()
-                )
+                self.assertIn(f"{where}: {box} must be '{want}', has {text.split()}", self.errors())
                 self.restore(device)
         self.assertEqual(self.errors(), [])
 

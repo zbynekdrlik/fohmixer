@@ -2,9 +2,10 @@
 
 The DECIDED of 25.11.2026 (built on probe B3): nothing in the device starts a
 message in Live's audio thread. The hub polls the device on a port it draws
-at load; each poll, the load's and the 10 s re-read's last outlet, and Device
-On turning 1 open the gate's right inlet; the gate (its left inlet
-`is_active`, observed) passes the bang to `t b b b`, which bangs the three
+at load; each poll, the load's last outlet and Device On turning 1 open the
+gate's right inlet; the gate (its left inlet `is_active`, observed) passes
+the bang to `t b b b b`, which first counts the poll for the identity's
+re-read (`poll_reread_check`: every 50th poll), then bangs the three
 `snapshot~ 0` (short-term first, the voiced mean last), so the reading,
 the face and the send run in Max's main thread (`udpreceive @defer 1`
 hands the poll to the low-priority queue). This module pins those boxes
@@ -25,7 +26,6 @@ from check_lufs_device import (
     ACTIVE_OBSERVER,
     AUDIO_READERS,
     ID_LOAD,
-    ID_TICK,
     IDENTITY,
     LOAD_EXTRA,
     PACK_ARGS,
@@ -34,7 +34,6 @@ from check_lufs_device import (
     TIMED,
     clock_off,
     feeds,
-    is_identity_clock,
     kind,
     upstream,
     words,
@@ -90,11 +89,12 @@ def lufs_shape(poll: Poll, sink: str) -> Shape:
 
 
 # The pull (#264, the DECIDED of 25.11.2026, built on probe B3): the hub
-# polls the device on a port it draws at load; each poll, the load's and the
-# 10 s re-read's last outlet, and Device On turning 1 open the gate's right
-# inlet; the gate (its left inlet `is_active`, observed) passes the bang to
-# `t b b b`, which bangs the three `snapshot~ 0` (short-term first), so the
-# reading, the face and the send run in Max's main thread.
+# polls the device on a port it draws at load; each poll, the load's last
+# outlet and Device On turning 1 open the gate's right inlet; the gate (its
+# left inlet `is_active`, observed) passes the bang to `t b b b b`, which
+# counts the poll for the re-read, then bangs the three `snapshot~ 0`
+# (short-term first), so the reading, the face and the send run in Max's
+# main thread.
 PULL = "obj-pull"
 POLL_RECEIVE = "obj-poll-receive"
 POLL_ROUTE = "obj-poll-route"
@@ -115,7 +115,7 @@ def pull_boxes(poll: Poll) -> dict[str, list[str]]:
     """The pull's boxes (id: words)."""
     return {
         PULL_GATE: ["gate"],
-        PULL: ["t", "b", "b", "b"],
+        PULL: ["t", "b", "b", "b", "b"],
         # Bound below the range until the load draws its port: the hub
         # never polls it, so no poll reaches a device still loading.
         POLL_RECEIVE: ["udpreceive", str(poll.min - 1), "@defer", "1"],
@@ -141,7 +141,7 @@ def pull_wiring(sink: str) -> dict[tuple[str, int], list[tuple[str, int]]]:
     top = PARENTS + 2 + LOAD_EXTRA
     return {
         (PULL_GATE, 0): [(ACTIVE_T, 1)],
-        (PULL_GATE, 1): [(POLL_ROUTE, 0), (ID_LOAD, 0), (ID_TICK, 0), (ACTIVE_SEL, 0)],
+        (PULL_GATE, 1): [(POLL_ROUTE, 0), (ID_LOAD, 0), (ACTIVE_SEL, 0)],
         (PULL, 0): [(PULL_GATE, 0)],
         ("obj-snap-s", 1): [],
         ("obj-snap-v", 1): [],
@@ -181,7 +181,12 @@ def pull_outputs() -> dict[str, list[list]]:
     readings and the pack, which their own checks pin)."""
     return {
         PULL_GATE: [[0, PULL, 0]],
-        PULL: [[0, "obj-snap-v", 0], [1, "obj-snap-g", 0], [2, "obj-snap-s", 0]],
+        PULL: [
+            [0, "obj-snap-v", 0],
+            [1, "obj-snap-g", 0],
+            [2, "obj-snap-s", 0],
+            [3, "obj-id-count", 0],
+        ],
         POLL_RECEIVE: [[0, POLL_ROUTE, 0]],
         POLL_ROUTE: [[0, PULL_GATE, 1]],
         POLL_DRAW: [[0, POLL_OFFSET, 0]],
@@ -199,14 +204,9 @@ def pull_outputs() -> dict[str, list[list]]:
 def clocks_reaching(patcher: dict, ids: dict, starts: list[tuple[str, int | None]]) -> list[str]:
     """The clocks upstream of `starts` through any inlet: every timed box
     (an audio reader with its own clock on, a `metro`, a `delay`, ...) and
-    every `qmetro`, but the identity's own 10 s clock (its tick sends one
-    datagram after the re-read, in the main thread) and a reader whose clock
-    is off."""
-    return [
-        src
-        for src in upstream(patcher, ids, starts, lambda _: None, (*TIMED, "qmetro"), ends=())
-        if not is_identity_clock(ids[src])
-    ]
+    every `qmetro`, but a reader whose clock is off (a pulled device holds
+    no other clock, `poll_reread_check`)."""
+    return upstream(patcher, ids, starts, lambda _: None, (*TIMED, "qmetro"), ends=())
 
 
 def pull_errors(where: str, patcher: dict, every: list[dict], shape: Shape) -> list[str]:

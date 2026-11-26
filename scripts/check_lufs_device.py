@@ -31,22 +31,17 @@ for each patch:
   (`identity_errors`, #240: `live.path`'s path-following outlet and a
   `live.observer` on the `name` of parents 1 to 3 each trigger a read, each
   parent's `route id` takes both `live.path` outlets, the left at every
-  `path` message as before #240, the middle on a follow; the set is read at
-  load, on its follow and by the clock; the PC proof's attempt 2 showed
-  the follow misses a move into a chain, so the identity's own clock sends
-  the four parents' `path` messages again every 10 s: `random 10000` drawn
-  at load -> `delay` -> `deferlow` -> `1` -> `qmetro 10000` -> `t b b b b`,
-  each device at its own offset, on the low-priority queue, each of its
-  boxes once and its lines in and out exactly these (`clock_errors`); no
-  other timed box upstream of any LOM object, a faster clock included),
-  each name from `live.object` `get name` -> `route name` -> `zl reg` ->
-  `tosymbol` into the pack's cold inlets, never from an
-  observer's output (`value_errors`: the FINDING of 2026-11-17, an
-  observer's output kept a name with a space in quotes and read the set as
-  `-`, so no device matched);
-- no `metro` or `qmetro` but the LUFS device's identity's `qmetro 10000`;
-  the meter holds none, nor any `deferlow` (`meter_pull_check`: its load
-  comes straight from `live.thisdevice`, its re-read rides the poll);
+  `path` message, the middle on a follow; the follow misses a move into a
+  chain, so the four parents' `path` messages go again every 10 s: since
+  #264 on the poll path, every Nth poll, the load straight from
+  `live.thisdevice`, `poll_reread_check`; no timed box upstream of any LOM
+  object), each name from `live.object` `get name` -> `route name` -> `zl
+  reg` -> `tosymbol` into the pack's cold inlets, never from an observer's
+  output (`value_errors`: the FINDING of 2026-11-17, an observer's output
+  kept a name with a space in quotes and read the set as `-`);
+- no `deferlow`, `defer`, `metro`, `qmetro`, `delay`, `del` or `pipe` in
+  either device (`poll_reread_check.still_errors`; the pushed identity's
+  10 s clock, `clock_errors`, is the Listen device's);
 - every patch line joins two boxes of the patch within their outlets and
   inlets;
 - no `gen~` (nor any other gen object or codebox) in either patch (#264:
@@ -62,16 +57,15 @@ for each patch:
   the meter's in `meter_pull_check`; the DECIDED of 25.11.2026: no
   message may start in Live's audio thread): the readers (their own
   clocks off: a `bang` reads them in the thread that sends it), banged by
-  `obj-pull` (`t b b b`; the meter's counts the re-read first) behind
+  `obj-pull` (its rightmost outlet counts the re-read first) behind
   `obj-pull-gate` (`gate`, opened by a `live.observer` on `this_device`
   `is_active`: a device switched off answers nothing), which only the hub's
   poll (`udpreceive` -> `route <kind's POLL_ADDRESS>`), the load's last
-  outlet, the LUFS device's 10 s re-read's last outlet and the observer
-  turning 1 open; the port
+  outlet and the observer turning 1 open; the port
   drawn once at load (`random <POLL_PORT_SPAN>` -> `+ <POLL_PORT_MIN>`) into
   the `udpreceive` and the pack's last slot; the pack straight into the
   `udpsend` (no `deferlow` on the send path); no `snapshot~` or `peakamp~`
-  with its own clock on, no clock but the identity's driving a reading, and
+  with its own clock on, no clock driving a reading, and
   no face object fed from an audio clock (probe C of 25.11: number boxes
   fed from the scheduler post from the audio thread too);
 - no absolute file path.
@@ -112,6 +106,15 @@ SEND_TRIGGER_WORDS = ["t", "b", "f"]
 
 
 @dataclass(frozen=True)
+class Reread:
+    """Its re-read every `polls`-th poll, counted by the pull's outlet
+    `outlet` (#264, `poll_reread_check`)."""
+
+    polls: int
+    outlet: int
+
+
+@dataclass(frozen=True)
 class Device:
     """One device's source files and what its patch must say."""
 
@@ -128,8 +131,8 @@ class Device:
     # Its K-weighted chain in plain MSP objects (#264, `lufs_dsp_check`).
     kweighted: bool = False
     # Its re-read rides the poll, its load is not deferred, and it holds no
-    # clock and no deferlow (#264, the meter: `meter_pull_check`).
-    on_poll: bool = False
+    # clock and no deferlow (#264, `poll_reread_check`).
+    reread: Reread | None = None
 
     @property
     def version_txt(self) -> Path:
@@ -148,6 +151,7 @@ DEVICES = (
         "snapshot~",
         "obj-clip-v",
         kweighted=True,
+        reread=Reread(50, 3),  # polled every 200 ms
     ),
     Device(
         "FohMixer Meter",
@@ -157,7 +161,7 @@ DEVICES = (
         None,
         "peakamp~",
         "obj-clip-r",
-        on_poll=True,
+        reread=Reread(300, 2),  # polled every 33 ms
     ),
 )
 
@@ -238,11 +242,13 @@ def patch_errors(
     send_from: str,
     poll: Poll,
     kweighted: bool = False,
-    on_poll: bool = False,
+    reread: Reread | None = None,
 ) -> list[str]:
     """The problems of one device's patch (`poll`: the polled form's
     constants; `kweighted`: its K-weighted chain is checked,
-    `lufs_dsp_check`; `on_poll`: the meter's shape, `meter_pull_check`)."""
+    `lufs_dsp_check`; `reread`: its re-read on the poll path,
+    `poll_reread_check`; a `peakamp~` device has the meter's pull,
+    `meter_pull_check`)."""
     errors: list[str] = []
     if ABSOLUTE_PATH.search(maxpat_text):
         errors.append(f"{where} holds an absolute file path")
@@ -289,11 +295,14 @@ def patch_errors(
     errors += [f"{where}: no '{path}' message" for path in IDENTITY if path not in messages]
     if len(packs) == 1:
         sink = next(b.get("id") for b in every if is_send_pack(b))
-        errors += identity_errors(where, patcher, every, sink, True, on_poll)
+        errors += identity_errors(where, patcher, every, sink, True, reread)
         errors += slot_errors(where, patcher, every, sink, send_from)
         import lufs_pull_check  # noqa: PLC0415 (it imports this module)
 
-        shape = (meter().meter_shape if on_poll else lufs_pull_check.lufs_shape)(poll, sink)
+        import meter_pull_check  # noqa: PLC0415 (it imports this module)
+
+        shapes = {"snapshot~": lufs_pull_check.lufs_shape, "peakamp~": meter_pull_check.meter_shape}
+        shape = shapes[clock](poll, sink)
         errors += lufs_pull_check.pull_errors(where, patcher, every, shape)
     errors += [
         f"{where}: {b.get('id')} ('{b.get('text')}') runs on a clock (the device has none "
@@ -301,7 +310,7 @@ def patch_errors(
         for b in every
         if kind(b) in ("metro", "qmetro") and not is_identity_clock(b)
     ]
-    errors += meter().still_errors(where, every) if on_poll else []
+    errors += rereads().still_errors(where, every) if reread else []
     shown = [b.get("text") for b in every if b.get("varname") == "version"]
     if shown != [f"v{version}"]:
         errors.append(f"{where}: its face shows {shown}, expected ['v{version}'] (version.txt)")
@@ -604,15 +613,11 @@ def thread_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
 # takes either outlet.
 #
 # The follow misses a move into another chain (the PC proof's attempt 2 on
-# #240: a moved device kept its old parents for over 30 s), so the identity
-# has one clock of its own (the DECIDED of 2026-11-17): `live.thisdevice`
-# -> `random 10000` (an offset drawn once at load, so devices loaded
-# together read at different instants) -> `delay` (its left inlet takes the
-# offset as its time) -> `deferlow` -> `1` -> `qmetro 10000` (the
-# low-priority queue) -> `t b b b b`, which sends the four parents' `path`
-# messages again in the load's order: each `live.path` resolves its path
-# anew, its left outlet gives the id, and the same read follows. It is the
-# only clock allowed upstream of a LOM object, at exactly 10 s.
+# #240), so the four parents' `path` messages go again every 10 s: in the
+# pushed shape (the Listen device's) from the identity's own clock,
+# `random 10000` -> `delay` -> `deferlow` -> `1` -> `qmetro 10000` -> `t b b
+# b b`, the only clock allowed upstream of a LOM object; in a pulled device
+# on the poll path (#264, `poll_reread_check`).
 ID_LOAD = "obj-id-load"
 ID_DEFER = "obj-id-defer"
 ID_PROPERTY = "obj-id-property"
@@ -653,19 +658,17 @@ def tick_offset(pulled: bool) -> int:
     return TICK_EXTRA if pulled else 0
 
 
-def meter():
-    """`meter_pull_check` (it imports this module): the meter's load and
-    re-read on the poll path (#264), in place of the deferred load and the
-    10 s clock."""
-    import meter_pull_check  # noqa: PLC0415
+def rereads():
+    """`poll_reread_check` (it imports this module)."""
+    import poll_reread_check  # noqa: PLC0415
 
-    return meter_pull_check
+    return poll_reread_check
 
 
-def identity_boxes(pulled: bool = False, on_poll: bool = False) -> dict[str, list[str]]:
+def identity_boxes(pulled: bool = False, reread: Reread | None = None) -> dict[str, list[str]]:
     """The identity's boxes (id: words)."""
-    if on_poll:
-        return meter().identity_boxes(identity_boxes(pulled))
+    if reread:
+        return rereads().identity_boxes(identity_boxes(pulled), reread)
     found = {
         ID_DEFER: ["deferlow"],
         ID_LOAD: ["t", *["b"] * (PARENTS + 2 + load_offset(pulled) + int(pulled))],
@@ -709,11 +712,12 @@ def identity_boxes(pulled: bool = False, on_poll: bool = False) -> dict[str, lis
 
 
 def identity_wiring(
-    sink: str, pulled: bool = False, on_poll: bool = False
+    sink: str, pulled: bool = False, reread: Reread | None = None
 ) -> dict[tuple[str, int], list[tuple[str, int]]]:
     """Each guarded inlet of the identity and the only sources it takes."""
-    if on_poll:
-        return meter().identity_wiring(identity_wiring(sink, pulled), load_offset(pulled))
+    if reread:
+        base = identity_wiring(sink, pulled)
+        return rereads().identity_wiring(base, load_offset(pulled), reread)
     load, tick = load_offset(pulled), tick_offset(pulled)
     found: dict[tuple[str, int], list[tuple[str, int]]] = {
         (ID_DEFER, 0): [("obj-thisdevice", 0)],
@@ -778,17 +782,17 @@ def identity_errors(
     every: list[dict],
     sink: str,
     pulled: bool = False,
-    on_poll: bool = False,
+    reread: Reread | None = None,
 ) -> list[str]:
     """The identity read at load, on a change and by its own 10 s clock,
     never by another clock, its values from `live.object`."""
     ids = {b.get("id"): b for b in every}
     errors = [
         f"{where}: {box} must be '{' '.join(want)}', has {words(ids.get(box, {}))}"
-        for box, want in identity_boxes(pulled, on_poll).items()
+        for box, want in identity_boxes(pulled, reread).items()
         if words(ids.get(box, {})) != want
     ]
-    for (box, inlet), sources in identity_wiring(sink, pulled, on_poll).items():
+    for (box, inlet), sources in identity_wiring(sink, pulled, reread).items():
         fed = feeds(patcher, box, inlet)
         want = sorted([list(s) for s in sources])
         if fed != want:
@@ -812,18 +816,18 @@ def identity_errors(
         if b.get("id") == f"obj-parent{PARENTS}-observer"
     ]
     errors += value_errors(where, patcher, every, sink, pulled)
-    errors += clock_errors(where, patcher, every, pulled, on_poll)
+    errors += clock_errors(where, patcher, every, pulled, reread)
     errors += lom_clock_errors(where, patcher, every)
     return errors
 
 
-def clock_outputs(pulled: bool = False, on_poll: bool = False) -> dict[str, list[list]]:
+def clock_outputs(pulled: bool = False, reread: Reread | None = None) -> dict[str, list[list]]:
     """Each box of the identity's clock and the only lines out of it
     ([its outlet, the destination box, its inlet]); a pulled device's tick
     also opens the pull once (its leftmost outlet, after the parents); the
-    meter's re-read on the poll path (`meter_pull_check.reread_outputs`)."""
-    if on_poll:
-        return meter().reread_outputs()
+    pulled device's re-read on the poll path (`poll_reread_check`)."""
+    if reread:
+        return rereads().reread_outputs()
     chain = [ID_OFFSET, ID_OFFSET_DELAY, ID_CLOCK_DEFER, ID_CLOCK_START, ID_CLOCK, ID_TICK]
     found = {chain[i]: [[0, chain[i + 1], 0]] for i in range(len(chain) - 1)}
     tick = tick_offset(pulled)
@@ -835,7 +839,11 @@ def clock_outputs(pulled: bool = False, on_poll: bool = False) -> dict[str, list
 
 
 def clock_errors(
-    where: str, patcher: dict, every: list[dict], pulled: bool = False, on_poll: bool = False
+    where: str,
+    patcher: dict,
+    every: list[dict],
+    pulled: bool = False,
+    reread: Reread | None = None,
 ) -> list[str]:
     """The identity's clock is exempt from `lom_clock_errors`, so it may
     drive nothing but the parents' paths (the review of the 10 s re-read:
@@ -843,7 +851,7 @@ def clock_errors(
     each of its boxes once, the lines out of each exactly
     `clock_outputs`."""
     errors = []
-    for box, want in clock_outputs(pulled, on_poll).items():
+    for box, want in clock_outputs(pulled, reread).items():
         count = sum(1 for b in every if b.get("id") == box)
         if count != 1:
             errors.append(f"{where}: {box} must be one box, has {count}")
@@ -963,7 +971,7 @@ def device_errors(root: Path, device: Device, port: int, poll: Poll | None = Non
         device.send_from,
         poll,
         device.kweighted,
-        device.on_poll,
+        device.reread,
     )
 
 

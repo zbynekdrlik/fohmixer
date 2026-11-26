@@ -176,9 +176,7 @@ class PullTests(TreeCase):
         patch = self.patcher(LUFS)
         self.line(patch, [cl.ID_TICK, 0], [cl.PULL_GATE, 1])
         self.save(patch, LUFS)
-        self.assertTrue(
-            any(f"{cl.PULL_GATE}:1 takes" in e for e in self.errors()), self.errors()
-        )
+        self.assertTrue(any(f"{cl.PULL_GATE}:1 takes" in e for e in self.errors()), self.errors())
         # Device On observed through route id (probe B2's id never came).
         self.restore(LUFS)
         patch = self.patcher(LUFS)

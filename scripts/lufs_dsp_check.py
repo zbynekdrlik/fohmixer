@@ -194,7 +194,7 @@ def dsp_wiring() -> dict[tuple[str, int], list[tuple[str, int]]]:
     """Each inlet of the chain and the only sources it takes."""
     found: dict[tuple[str, int], list[tuple[str, int]]] = {
         # The rate: at DSP start, and banged once at load (main thread).
-        ("obj-sr-state", 0): [("obj-id-defer", 0)],
+        ("obj-sr-state", 0): [("obj-thisdevice", 0)],
         ("obj-sr", 0): [("obj-sr-state", 1)],
         ("obj-shelf-k", 0): [("obj-sr", 3)],
         ("obj-hp-k", 0): [("obj-sr", 2)],
