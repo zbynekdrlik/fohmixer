@@ -30,8 +30,9 @@ fn every_api_route_has_a_role_decision() {
         route_role("/api/mbc/stream-proof"),
         Some(RouteAccess::Automation)
     );
-    // #210: a Listen device, loopback only, checked by the handler.
-    assert_eq!(route_role("/api/listen/select"), Some(RouteAccess::Device));
+    // #264: the Listen devices' select route is gone (the hub pushes the
+    // select in its poll): a request there is refused, no decision.
+    assert_eq!(route_role("/api/listen/select"), None);
 }
 
 #[test]
@@ -40,7 +41,6 @@ fn only_an_mbc_token_on_an_engineer_route_or_a_route_without_a_decision_is_refus
         assert!(!refused(Some(RouteAccess::Open), role), "{role:?}");
         assert!(!refused(Some(RouteAccess::AnyRole), role), "{role:?}");
         assert!(!refused(Some(RouteAccess::Automation), role), "{role:?}");
-        assert!(!refused(Some(RouteAccess::Device), role), "{role:?}");
         assert!(refused(None, role), "{role:?}");
     }
     assert!(refused(Some(RouteAccess::EngineerOnly), Some(Role::Mbc)));

@@ -1,6 +1,7 @@
 //! Listen end to end (#210): SimLive's `FohMixer Listen` devices announce
 //! themselves, a page's `/ws/audio` socket starts listening to a track, the
-//! hub selects that track's device, the device streams its tone as Jitter
+//! hub selects that track's device in its poll (#264) and drives its
+//! stream with its frame poll, the device streams its tone as Jitter
 //! matrices, and the page decodes the hub's Opus packets back to the tone;
 //! a second page shares the track, a page starting another track takes the
 //! hub's one track from them (`taken`), and when the last page leaves the
@@ -45,17 +46,22 @@ fn site() -> PathBuf {
     repo().join("sim").join("fixtures").join("test-site.json")
 }
 
-/// A hub over `host` with Listen on `port`; the host's devices are told the
-/// hub's HTTP port, where they ask whether they are selected.
+/// A hub over `host` with Listen on `port`; it learns the host's devices
+/// from their announces (each at its load) and polls them (#264).
 async fn hub(dir: &Path, host: &mut Host, port: u16) -> TestHub {
     let mut config = Config::defaults(dir);
     config.instances = vec![host.cfg()];
     config.layout_poll_ms = 100;
     config.lufs.port = 0;
     config.listen.port = port;
+    // No start sweep: it reaches every socket of the range, other tests'
+    // too (`listen_wire.rs` sweeps its own device's port only).
+    config.listen.sweep = None;
     let hub = TestHub::start_config(config).await;
-    let http = i64::from(hub.addr.port());
-    assert_eq!(host.listendev(&format!("listenhub {http}")), http);
+    // The devices were loaded before the hub: each announces once more, as
+    // at a load after the hub's start (the sweep's own test is
+    // `listen_wire.rs`'s).
+    assert!(host.listendev("listenload") >= 0);
     hub.status_until(SECS_10, |s| s.instances.iter().all(|i| i.online))
         .await;
     hub
@@ -671,37 +677,27 @@ fn the_newest_start_takes_the_track_from_the_pages_listening() {
     });
 }
 
-/// `GET /api/listen/select?device=<device>` with no token, as a device's
-/// `maxurl` asks it, plus `header` (a proxy's): the status code and the body.
-async fn select_of(hub: &TestHub, device: i32, header: Option<&str>) -> (u16, String) {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut stream = tokio::net::TcpStream::connect(hub.addr).await.unwrap();
-    let extra = header.map(|h| format!("{h}\r\n")).unwrap_or_default();
-    let request = format!(
-        "GET /api/listen/select?device={device} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n{extra}\r\n",
-        hub.addr
-    );
-    stream.write_all(request.as_bytes()).await.unwrap();
-    let mut bytes = Vec::new();
-    tokio::time::timeout(SECS_10, stream.read_to_end(&mut bytes))
-        .await
-        .expect("an answer within 10 s")
-        .unwrap();
-    let text = String::from_utf8_lossy(&bytes).to_string();
-    let code = text
-        .split_whitespace()
-        .nth(1)
-        .and_then(|c| c.parse().ok())
-        .unwrap_or_else(|| panic!("not an HTTP answer: {text}"));
-    let body = text.split_once("\r\n\r\n").map(|(_, b)| b.to_string());
-    (code, body.unwrap_or_default())
+/// The tracks whose device announces it is sending, in the hub's status.
+fn sending(status: &fohmixer_proto::client::HubStatus) -> Vec<String> {
+    let mut tracks: Vec<String> = status
+        .listen
+        .devices
+        .iter()
+        .filter(|d| d.sending)
+        .map(|d| d.track.clone())
+        .collect();
+    tracks.sort();
+    tracks
 }
 
 #[test]
-fn each_device_asks_the_hub_whether_it_is_selected() {
-    // #210's PC finding: every device of a Live shared one UDP select port
-    // and only one of them heard the hub. Each device now asks the hub
-    // itself (`maxurl`, every 250 ms), loopback only, with no token.
+fn each_device_is_told_in_its_own_poll_and_only_the_selected_one_streams() {
+    // #264: the hub pushes the select in its poll (`/fohmixer/listen/poll
+    // <on>` to each device's own port, the patch's `udpreceive @defer 1`)
+    // and drives the selected device's catch with its frame poll; the
+    // device has no clock of its own. #210's PC finding stays answered:
+    // each device has a port of its own, so both of a Live's devices hear
+    // the hub.
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -713,38 +709,33 @@ fn each_device_asks_the_hub_whether_it_is_selected() {
         let status = hub
             .status_until(SECS_10, |s| s.listen.devices.len() == 2)
             .await;
-        let id_of = |track: &str| {
-            status
-                .listen
-                .devices
-                .iter()
-                .find(|d| d.track == track)
-                .unwrap()
-                .device
-        };
-        let (vox, other) = (id_of(VOX), id_of(OTHER));
-        let off = (200, r#"{"on":false}"#.to_string());
-        let on = (200, r#"{"on":true}"#.to_string());
-        assert_eq!(select_of(&hub, vox, None).await, off, "nothing listened to");
+        assert!(sending(&status).is_empty(), "nothing listened to");
+        let ports: Vec<u16> = status.listen.devices.iter().map(|d| d.port).collect();
+        assert_ne!(ports[0], ports[1], "a port each");
 
         let mut a = audio(&hub).await;
         send(&mut a, start(VOX)).await;
         assert_eq!(told(&mut a).await["status"], "listening");
-        assert_eq!(select_of(&hub, vox, None).await, on);
-        assert_eq!(select_of(&hub, other, None).await, off);
-        // Through a proxy (the tunnel connects from 127.0.0.1): refused.
-        let (code, _) = select_of(&hub, vox, Some("X-Forwarded-For: 10.0.0.5")).await;
-        assert_eq!(code, 403);
+        hub.status_until(SECS_10, |s| sending(s) == [VOX]).await;
+        packets(&mut a, 5).await;
+        assert_eq!(host.listendev("streamed track 2"), 0, "never selected");
 
         // Another track: each device is told on its own.
         send(&mut a, start(OTHER)).await;
         assert_eq!(told(&mut a).await["status"], "listening");
-        assert_eq!(select_of(&hub, vox, None).await, off);
-        assert_eq!(select_of(&hub, other, None).await, on);
+        hub.status_until(SECS_10, |s| sending(s) == [OTHER]).await;
+        packets(&mut a, 5).await;
         drop(a);
-        hub.status_until(SECS_10, |s| s.listen.target.is_none())
+        let status = hub
+            .status_until(SECS_10, |s| {
+                s.listen.target.is_none() && sending(s).is_empty()
+            })
             .await;
-        assert_eq!(select_of(&hub, other, None).await, off);
+        assert!(status.listen.polls > 0 && status.listen.frame_polls > 0);
+        assert_eq!(status.listen.poll_failed, 0, "{:?}", status.listen);
+        let streamed = settled(&mut host, "streamed track 2").await;
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert_eq!(host.listendev("streamed track 2"), streamed, "stopped");
         hub.stop().await;
         host.stop();
     });

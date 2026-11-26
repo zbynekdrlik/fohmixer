@@ -6,61 +6,60 @@ the track. No parameters. Its output is silence: it goes in a rack of its own
 (an empty dry chain plus the device's chain), never in series, as the LUFS
 devices (`../FohMixer-LUFS/README.md`).
 
-- **Idle** (not selected): each second one announce datagram to the hub's
-  UDP `127.0.0.1:39111` (`/fohmixer/listen`: the device's listen id, its Max
-  id mixed with a random number drawn at load so the PC's two Lives never
-  share one, `v<version>`,
-  its four canonical parents' names, Live's sample rate, whether it streams).
-  The names are read at load, on a change and every 10 s (#240, the LUFS
-  devices' identity: `live.object` `get name` for each parent, read when its
-  path gives an id (both `live.path` outlets: the left at every `path`
-  message, the middle on a follow) and when a `live.observer` on its `name`
-  reports, the observer's output only a trigger; the set has no observer;
-  a `qmetro 10000` started
-  after a random offset drawn at load sends the parents' paths again, so a
-  move the follow misses is followed within 10 s; the format is proved only
-  on the PC, `../FohMixer-LUFS/README.md`); the
-  announce resends the stored ones each second (the hub forgets a device
-  after 3 s) and asks Live nothing.
-  `jit.catch~` keeps copying the signal into its own buffer; nothing is
-  banged out of it.
-- **Asking** (always): every 250 ms a `maxurl` request
-  `GET http://127.0.0.1:8480/api/listen/select?device=<id>` (the hub's HTTP
-  port, `parse_type json`); an answer whose `on` is true selects it, any
-  other answer stops it, and with no answer it stops 1 s after the last
-  `on`. Each device asks for itself: one UDP select port shared by every
-  device reached only one of them on the PC (#210). The poll is a
-  `qmetro 250` and the hold's end goes through a `deferlow` (#240): Max for
-  Live runs its scheduler inside Live's audio thread, so no request, and no
-  hello it leads to, starts there.
-- **Selected**: it sends its hello
-  (`fohmixer_listen 1 <id> v<version> <sample rate>`) through `jit.net.send`'s
-  right inlet, then a `qmetro 10` bangs `jit.catch~ 2 @mode 1 @framesize 960`,
-  whose matrices (2 planes of float32, 960 × k cells: whole 20 ms frames at
-  48 kHz) `jit.net.send` writes to the hub's TCP `127.0.0.1:39111`.
+**It holds no clock (#264, the lane's design in comment 7184226996 on
+#264).** Max for Live runs its scheduler inside Live's audio thread, and
+every clock's output, a `deferlow` or a `qmetro`'s hand-over to the
+low-priority queue, posts a window message from there, which can wait on the
+desktop's window lock: a click on the PA (dasio's stack probes). So nothing
+in the device runs on its own: no `metro`, `qmetro`, `delay`, `pipe` or
+`deferlow`. The hub drives it, as it drives the LUFS and Meter devices; every
+message arrives through `udpreceive @defer 1`, in Max's main thread.
 
-**Its clocks and Live's audio thread (#264).** The LUFS, Meter and Claps
-devices lost every scheduler clock and `deferlow` that posted from Live's
-audio thread (dasio's stack probes: each such post can wait on the desktop's
-window lock, a click on the PA). This device was left as it is in that step,
-because it runs only during a listen session: the `qmetro 10` that bangs
-`jit.catch~` is started by the hub's select and stopped by its end, and its
-rack is on only while someone listens to its track (#238: the hub switches
-the `Listen` rack's Device On with the listen, and the sets are saved with
-every `Listen` rack off). While its rack is on, its other clocks run too,
-selected or not: the select poll's `qmetro 250` (its `maxurl` request),
-the announce's `metro 1000` → `deferlow` → `udpsend`, the hold's `delay
-1000` → `deferlow`, and the identity's 10 s `qmetro 10000` (`delay` →
-`deferlow` start). Whether a device in a rack that is off still runs them
-(Max's scheduler may run on) is the open PC question of #238; moving them
-onto a poll was left out of #264's LUFS, Meter and Claps step and is noted
-on #264 for the main session's decision.
+- **Its port and its announce:** at load it draws its poll port (`random
+  10000` `+ 40000`, the LUFS devices' range) for its `udpreceive` and,
+  when its Device On is 1, sends one announce datagram to the hub's UDP `127.0.0.1:39111`
+  (`/fohmixer/listen`, wire version 2: the device's listen id, its Max id
+  mixed with a random number drawn at load so the PC's two Lives never share
+  one, `v<version>`, its four canonical parents' names, Live's sample rate,
+  whether it streams, its poll port). It announces again when its Device On
+  turns 1 (`is_active` observed: the hub switches the `Listen` rack on for a
+  listen, #238) and answers every poll of the hub. A device whose Device On
+  is 0 answers nothing (the gate, as the meter's).
+- **The poll** (`/fohmixer/listen/poll <on>`, every 250 ms from the hub to
+  each device it heard): the select pushed, never asked. 1 turns it on: the
+  hello (`fohmixer_listen 2 <id> v<version> <sample rate>`) through
+  `jit.net.send`'s right inlet, then the frame gate opens; 0 turns it off at
+  once. Each poll is answered with the announce (and, while on, the hello
+  again: the hub records only a change). The hub forgets a device unheard
+  for 3 s. A hub started under a running Live polls every port of the range
+  once (its start sweep). The names are the LUFS devices' identity
+  (`live.object` `get name` for each parent, read when its path gives an id
+  and when a `live.observer` on its `name` reports, the observer's output
+  only a trigger; the set has no observer; the format is proved only on the
+  PC, `../FohMixer-LUFS/README.md`), read at load, on a change and on every
+  40th poll (10 s), at a count drawn at load.
+- **The frame poll** (`/fohmixer/listen/frame`, every 20 ms from the hub to
+  the device selected): through the frame gate it bangs
+  `jit.catch~ 2 @mode 1 @framesize 960`, which hands out every whole 20 ms
+  frame caught since the bang before (2 planes of float32, 960 × k cells),
+  and `jit.net.send` writes the matrix to the hub's TCP `127.0.0.1:39111`.
+  A late or bunched poll only puts more frames in one matrix (the hub takes
+  up to 50). `jit.catch~` keeps copying the signal into its own buffer all
+  the while; nothing else is banged out of it.
+
+*History:* until #264 (1.60.4) the device asked the hub's HTTP route
+`GET /api/listen/select?device=<id>` with a `qmetro 250` → `maxurl`,
+stopped 1 s after its last `on` (`delay 1000` → `deferlow`), announced each
+second (`metro 1000` → `deferlow`), read its parents again on a `qmetro
+10000`, and a `qmetro 10` banged the catch while selected.
 
 The wire, the hub's side and the PC probe: `.claude/rules/listen.md` and the
-design comment on #210. `scripts/check_listen_device.py` (CI) holds the patch
-to it. Built like the other devices (never committed as `.amxd`):
+design comments on #210 and #264. `scripts/check_listen_device.py` (CI, with
+`scripts/listen_pull_check.py`) holds the patch to it and fails on any clock.
+Built like the other devices (never committed as `.amxd`):
 
     python3 live-device/FohMixer-LUFS/build_amxd.py --patch "live-device/FohMixer-Listen/FohMixer Listen.maxpat"
 
-`--port` (the `udpsend` and `jit.net.send` boxes) and `--hub-port` (the
-select poll's URL) rewrite its ports for another hub config. `version.txt` is the workspace version (`scripts/check_version.py`).
+`--port` (the `udpsend` and `jit.net.send` boxes) rewrites its port for
+another hub config. `version.txt` is the workspace version
+(`scripts/check_version.py`).

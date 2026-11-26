@@ -9,10 +9,16 @@ fn hex(text: &str) -> Vec<u8> {
 }
 
 /// Device 9, v1.50.0, in the chain `Listen` of the rack `Listen` on
-/// `Vox 1` in the set `FOH Band`, 48 kHz, streaming. `sim/listendev.py`
-/// pins the same bytes.
-pub const GOLDEN_ANNOUNCE_HEX: &str = "2f666f686d697865722f6c697374656e000000002c69697373737373696900000000000100000009\
-76312e35302e30004c697374656e00004c697374656e0000566f782031000000464f482042616e64000000000000bb8000000001";
+/// `Vox 1` in the set `FOH Band`, 48 kHz, streaming, polled on port 40007
+/// (wire version 2, #264). `sim/listendev.py` pins the same bytes.
+pub const GOLDEN_ANNOUNCE_HEX: &str = "2f666f686d697865722f6c697374656e000000002c69697373737373696969000000000200000009\
+76312e35302e30004c697374656e00004c697374656e0000566f782031000000464f482042616e64\
+000000000000bb800000000100009c47";
+/// The hub's poll saying on (#264); `sim/listendev.py` pins the same bytes.
+pub const GOLDEN_POLL_ON_HEX: &str =
+    "2f666f686d697865722f6c697374656e2f706f6c6c0000002c69000000000001";
+/// The hub's frame poll (#264); `sim/listendev.py` pins the same bytes.
+pub const GOLDEN_FRAME_HEX: &str = "2f666f686d697865722f6c697374656e2f6672616d6500002c000000";
 
 fn golden() -> Announce {
     Announce {
@@ -21,6 +27,7 @@ fn golden() -> Announce {
         parents: parents_in(Some(("Listen", "Listen")), "Vox 1", "FOH Band"),
         sample_rate: 48_000,
         sending: true,
+        port: 40_007,
     }
 }
 
@@ -70,7 +77,7 @@ fn a_bad_announce_is_refused_with_its_reason() {
     assert_eq!(parse_announce(&tags), Err(WireError::Tags));
     let wire_at = 20 + 12;
     let mut wire = good.clone();
-    wire[wire_at + 3] = 2;
+    wire[wire_at + 3] = 3;
     assert_eq!(parse_announce(&wire), Err(WireError::Version));
     assert_eq!(
         parse_announce(&good[..good.len() - 2]),
@@ -78,16 +85,36 @@ fn a_bad_announce_is_refused_with_its_reason() {
     );
     let n = good.len();
     let mut sending = good.clone();
-    sending[n - 1] = 2;
+    sending[n - 5] = 2;
     assert_eq!(parse_announce(&sending), Err(WireError::Range));
     let mut negative = good.clone();
-    negative[n - 1] = 0;
+    negative[n - 5] = 0;
     assert!(parse_announce(&negative).is_ok_and(|a| !a.sending));
-    negative[n - 8] = 0xff;
+    negative[n - 12] = 0xff;
     assert_eq!(parse_announce(&negative), Err(WireError::Range));
-    let mut rate_zero = good;
-    rate_zero[n - 8..n - 4].copy_from_slice(&[0, 0, 0, 0]);
+    let mut rate_zero = good.clone();
+    rate_zero[n - 12..n - 8].copy_from_slice(&[0, 0, 0, 0]);
     assert_eq!(parse_announce(&rate_zero).map(|a| a.sample_rate), Ok(0));
+    // The poll port (#264): within the LUFS devices' range, else Range.
+    for (port, ok) in [
+        (39_999i32, false),
+        (40_000, true),
+        (49_999, true),
+        (50_000, false),
+    ] {
+        let mut ported = good.clone();
+        ported[n - 4..].copy_from_slice(&port.to_be_bytes());
+        let want = if ok {
+            Ok(u16::try_from(port).unwrap())
+        } else {
+            Err(WireError::Range)
+        };
+        assert_eq!(parse_announce(&ported).map(|a| a.port), want, "{port}");
+    }
+    // The wire before #264 (version 1, no port) is refused.
+    let mut old = good;
+    old[wire_at + 3] = 1;
+    assert_eq!(parse_announce(&old), Err(WireError::Version));
     let lonely = Announce {
         parents: ["Vox 1", NO_PARENT, NO_PARENT, NO_PARENT].map(str::to_string),
         ..golden()
@@ -99,10 +126,17 @@ fn a_bad_announce_is_refused_with_its_reason() {
 }
 
 #[test]
-fn the_select_answer_is_the_patchs_compact_json() {
-    assert_eq!(select_body(true), r#"{"on":true}"#);
-    assert_eq!(select_body(false), r#"{"on":false}"#);
-    assert_eq!(SELECT_PATH, "/api/listen/select");
+fn the_hubs_polls_are_the_patchs_osc_messages() {
+    // #264: the select pushed in the poll (`route` hands the patch the
+    // int), the frame poll with no argument (`route` hands it a bang).
+    assert_eq!(poll_datagram(true), hex(GOLDEN_POLL_ON_HEX));
+    let mut off = hex(GOLDEN_POLL_ON_HEX);
+    let last = off.len() - 1;
+    off[last] = 0;
+    assert_eq!(poll_datagram(false), off);
+    assert_eq!(frame_datagram(), hex(GOLDEN_FRAME_HEX));
+    assert_eq!(POLL_ADDRESS, "/fohmixer/listen/poll");
+    assert_eq!(FRAME_ADDRESS, "/fohmixer/listen/frame");
 }
 
 #[test]
@@ -126,8 +160,9 @@ fn a_hello_reads_longs_or_whole_floats() {
     let mut word = hello_atoms(&h);
     word[0] = Atom::Sym("fohmixer_lufs".into());
     assert_eq!(parse_hello(&word), None);
+    assert_eq!(hello_atoms(&h)[1], Atom::Long(2), "the wire of #264");
     let mut wire = hello_atoms(&h);
-    wire[1] = Atom::Long(2);
+    wire[1] = Atom::Long(1);
     assert_eq!(parse_hello(&wire), None);
     let mut version = hello_atoms(&h);
     version[3] = Atom::Long(1);
@@ -141,9 +176,12 @@ fn a_hello_reads_longs_or_whole_floats() {
 #[test]
 fn the_timing_constants_hold() {
     assert_eq!(POLL_MS, 250);
-    assert_eq!(SELECT_HOLD_MS, 1000);
-    assert_eq!(ANNOUNCE_EVERY_MS, 1000);
+    assert_eq!(FRAME_POLL_MS, 20);
+    assert_eq!(REREAD_POLLS, 40);
+    assert_eq!(REREAD_POLLS * POLL_MS, 10_000, "the parents every 10 s");
     assert_eq!(FORGET_MS, 3000);
+    assert_eq!(WIRE_VERSION, 2);
+    assert_eq!(ANNOUNCE_TAGS, ",iisssssiii");
     assert_eq!(MAX_DATAGRAM, 512);
 }
 

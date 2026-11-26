@@ -594,7 +594,7 @@
 				"box": {
 					"id": "obj-hello",
 					"maxclass": "newobj",
-					"text": "pack /fohmixer/claps 1 v1.60.3 0",
+					"text": "pack /fohmixer/claps 1 v1.60.4 0",
 					"numinlets": 4,
 					"numoutlets": 1,
 					"outlettype": [
@@ -664,7 +664,7 @@
 						60.0,
 						18.0
 					],
-					"text": "v1.60.3",
+					"text": "v1.60.4",
 					"varname": "version"
 				}
 			},

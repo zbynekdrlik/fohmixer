@@ -2,7 +2,7 @@
 
     python3 sim/host.py --port P [--instance band] [--site sim/fixtures/test-site.json]
                         [--meters-hz 30] [--log-dir DIR] [--lufs-port P]
-                        [--listen-port P [--hub-port H]]
+                        [--listen-port P]
 
 The process's main thread is SimLive's single Live main thread: it runs the
 script's timer, its scheduled messages and the optional meter animation.
@@ -111,18 +111,14 @@ WebSocket server is bound. Control lines on stdin (never over the WebSocket):
                                 rack's Device On off, #238, so the device
                                 neither announces nor streams until the hub
                                 switches it on), or the newest one
-                                removed; it announces itself to
-                                ``--listen-port`` (UDP) once a second, asks
-                                the hub's HTTP port (``--hub-port`` or the
-                                ``listenhub`` line) every 250 ms whether it is
-                                selected and, while it is, streams to
-                                ``--listen-port`` (TCP);
+                                removed; it answers the hub's polls on a
+                                port of its own (#264: drawn from the LUFS
+                                devices' range) with its announce to
+                                ``--listen-port`` (UDP), and while the poll
+                                says on it streams to ``--listen-port``
+                                (TCP) at each of the hub's frame polls;
                                 prints ``LISTENDEV <devices on the track>``, or
                                 ``LISTENDEV -1``
-    listenhub <port>            the hub's HTTP port the Listen devices ask
-                                whether they are selected (a test's hub has
-                                its port only after the host started); prints
-                                ``LISTENHUB <port>`` or ``LISTENHUB -1``
     tone <track|return|master> <index> <hz>
                                 the newest Listen device there plays a sine of
                                 <hz> (0: silence); prints ``TONE <hz>`` or
@@ -131,6 +127,10 @@ WebSocket server is bound. Control lines on stdin (never over the WebSocket):
                                 prints ``STREAMED <samples per channel>`` the
                                 newest Listen device there streamed since it
                                 was added, or ``STREAMED -1``
+    listenload                  every Listen device Live runs announces itself
+                                once, as at its load (#264: a test's hub that
+                                starts after its host, its sweep off); prints
+                                ``LISTENLOAD <devices that announced>``
     listenrack <track|return|master> <index>
                                 prints ``LISTENRACK <0|1>``, the Device On of
                                 the newest Listen device's rack there (#238),
@@ -191,7 +191,6 @@ def parse_args(argv):
     parser.add_argument("--log-dir", default=None)
     parser.add_argument("--lufs-port", type=int, default=None)
     parser.add_argument("--listen-port", type=int, default=None)
-    parser.add_argument("--hub-port", type=int, default=None)
     return parser.parse_args(argv)
 
 
@@ -543,14 +542,13 @@ def maxdev_answer(main_thread, song, line, maxdevs):
 def listendev_answer(main_thread, song, line, listens):
     """A Listen device line's answer (#210), or None for another line."""
     words = line.split()
-    if not words or words[0] not in ("listendev", "tone", "streamed", "listenrack", "listenhub"):
+    if not words or words[0] not in ("listendev", "tone", "streamed", "listenrack", "listenload"):
         return None
     word = words[0].upper()
-    if words[0] == "listenhub":
-        port = listendev.hub_line(line)
-        if port is None or listens is None:
+    if words[0] == "listenload":
+        if len(words) != 1 or listens is None:
             return f"{word} -1"
-        return f"{word} {main_thread.call(lambda: listens.set_hub_port(port))}"
+        return f"{word} {main_thread.call(listens.reload)}"
     if words[0] == "listendev":
         parsed = listendev.device_line(line)
         control_of = listendev.device_control
@@ -688,7 +686,7 @@ def main(argv=None):
     song_clock.start()
     maxdevs = maxdev.MaxDevices(song, args.lufs_port)
     maxdevs.start()
-    listens = listendev.ListenDevices(song, args.listen_port, args.hub_port)
+    listens = listendev.ListenDevices(song, args.listen_port)
     listens.start()
 
     def on_stop():

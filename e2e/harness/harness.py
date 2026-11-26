@@ -703,11 +703,7 @@ class Host:
                 "--log-dir",
                 self.log_dir,
                 *(["--lufs-port", str(self.lufs_port)] if self.lufs_port else []),
-                *(
-                    ["--listen-port", str(self.listen[0]), "--hub-port", str(self.listen[1])]
-                    if self.listen
-                    else []
-                ),
+                *(["--listen-port", str(self.listen)] if self.listen else []),
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -851,7 +847,7 @@ class Harness:
             args.meters_hz,
             log_dir,
             args.lufs_port,
-            listen=(self.listen, args.http_port) if self.listen else None,
+            listen=self.listen,
         )
         self.hosts["master"] = Host(
             "master", args.master_port, args.meters_hz, log_dir, args.lufs_port
