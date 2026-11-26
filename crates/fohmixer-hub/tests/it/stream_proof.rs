@@ -2,8 +2,9 @@
 //! the automation token walks the `mbc` SimLive set (`sim/fixtures/
 //! mbc-stream-site.json`: the bus with HAND 1 sync, a muted group, a muted
 //! group holding a nested one, a Sends Only track, the stream track on the
-//! external output), answers the proof, serves it again inside its window,
-//! and the refusals: a wrong or missing token 401, an internet request 403,
+//! external output taking `No Input`), answers the proof, serves it again
+//! inside its window; a stream track with an input set is `ok: false`; and
+//! the refusals: a wrong or missing token 401, an internet request 403,
 //! a hub without a token 503; no `mbc`, or `mbc` offline, is `ok: false`.
 #![cfg(unix)]
 
@@ -68,7 +69,55 @@ async fn proof(addr: SocketAddr, bearer: Option<&str>, extra: &[(&str, &str)]) -
 /// The fixture's outputs.
 fn outputs() -> Value {
     json!({"bus": "ToStream 1s sync #", "bus_to": "OM STREAM", "stream": "OM STREAM",
-           "stream_to": {"type": "Ext. Out", "channel": "3/4 Final LR"}, "others": []})
+           "stream_to": {"type": "Ext. Out", "channel": "3/4 Final LR"},
+           "stream_input": "No Input", "others": []})
+}
+
+/// The fixture with the stream track's input set to `input`, written into
+/// `dir`.
+fn site_with_input(dir: &Path, input: &str) -> std::path::PathBuf {
+    let mut site: Value = serde_json::from_slice(&std::fs::read(site()).unwrap()).unwrap();
+    let stream = site["tracks"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|t| t["name"] == "OM STREAM")
+        .expect("the fixture's stream track");
+    stream["input"] = json!({"type": input});
+    let path = dir.join("mbc-stream-input.json");
+    std::fs::write(&path, serde_json::to_vec(&site).unwrap()).unwrap();
+    path
+}
+
+#[test]
+fn a_stream_track_taking_an_input_is_no_proof() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let sites = tempfile::tempdir().unwrap();
+        let host = Host::start_site("mbc", &site_with_input(sites.path(), "Ext. In"), 0, 0.0);
+        let dir = tempfile::tempdir().unwrap();
+        with_token(dir.path());
+        let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        hub.status_until(SECS_5, |s| s.instances[0].online).await;
+        let (code, answer) = proof(hub.addr, Some(TOKEN), &[]).await;
+        assert_eq!(code, 200, "{answer}");
+        assert_eq!(
+            answer,
+            json!({"ok": false, "ts": answer["ts"], "age_ms": 0, "hand1_sync_only": false,
+                   "reason": "OM STREAM takes its input from Ext. In, not No Input"})
+        );
+        let records = hub
+            .events_until(SECS_5, |r| r.iter().any(|r| r["ev"] == "stream_proof"))
+            .await;
+        let walk = records.iter().find(|r| r["ev"] == "stream_proof").unwrap();
+        assert_eq!(walk["ok"], json!(false));
+        assert_eq!(
+            walk["error"],
+            json!("OM STREAM takes its input from Ext. In, not No Input")
+        );
+        hub.stop().await;
+        host.stop();
+    });
 }
 
 #[test]

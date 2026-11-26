@@ -7,8 +7,16 @@
 //! The hub walks the set with `get_prop` only (`fohmixer-hub`
 //! `stream_proof.rs`) and hands [`decide`] what it read ([`Set`]); this
 //! module decides, pure. **Every doubt it can see makes the proof fail,
-//! never pass**; what the walk does not read (the stream track's own
-//! input, a cue output) it cannot see (#267).
+//! never pass**; what the walk does not read (the stream track's
+//! monitoring, a cue output) it cannot see (#267).
+//!
+//! **The stream track's input** ([`Set::stream_input`], the ruling of
+//! 25.11 on #267): OM STREAM must take [`NO_INPUT`]; any other input type
+//! (a track, an external input) could reach the stream output without
+//! showing in any track's routing, so it is an error naming it, and a proof
+//! carries it as [`Outputs::stream_input`]. The match is Live's English
+//! display text, exact: a Live in another UI language answers `ok: false`
+//! (the strict direction), never a false proof.
 //!
 //! **The routing graph.** Every track and return is a node; its output type
 //! ([`Output::kind`]) is its edge: [`GROUP`] goes to the group it sits in,
@@ -49,6 +57,8 @@ pub const BUS: &str = "ToStream 1s sync #";
 pub const STREAM_TRACK: &str = "OM STREAM";
 /// The one track that may be open for `hand1_sync_only`.
 pub const HAND1_SYNC: &str = "Hand1sync #";
+/// The only input type the stream track may take.
+pub const NO_INPUT: &str = "No Input";
 /// The output type of a track that feeds its sends only.
 pub const SENDS_ONLY: &str = "Sends Only";
 /// The output type of a track that goes to the group it sits in.
@@ -97,6 +107,9 @@ pub struct Set {
     pub returns: Vec<Return>,
     /// The main track's output.
     pub main: Output,
+    /// The stream track's input routing type (`display_name`), none when
+    /// the walk found no one track of its name to read it from.
+    pub stream_input: Option<String>,
 }
 
 /// A track routed to the stream track or to its output.
@@ -119,6 +132,8 @@ pub struct Outputs {
     pub stream: String,
     /// The stream track's output.
     pub stream_to: Output,
+    /// The stream track's input type ([`NO_INPUT`] for a proof).
+    pub stream_input: String,
     /// Every other track, return or the main track routed to the stream
     /// track or to the same output (none for the proof).
     pub others: Vec<Routed>,
@@ -186,10 +201,19 @@ impl Answer {
 
 /// The one track named `name`, or why not.
 fn the_one(tracks: &[Track], name: &str) -> Result<usize, String> {
-    let mut found = tracks
-        .iter()
+    the_one_of(tracks.iter().map(|t| t.name.as_str()), name)
+}
+
+/// The index of the one of `names` that is `name`, or why not (the hub's
+/// walk asks it of the track list's names).
+pub fn the_one_of<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+    name: &str,
+) -> Result<usize, String> {
+    let mut found = names
+        .into_iter()
         .enumerate()
-        .filter(|(_, t)| t.name == name)
+        .filter(|&(_, n)| n == name)
         .map(|(i, _)| i);
     match (found.next(), found.next()) {
         (Some(i), None) => Ok(i),
@@ -321,6 +345,15 @@ pub fn decide(set: &Set) -> Result<Proof, String> {
     if !set.tracks[bus].group {
         return Err(format!("{BUS} is no group"));
     }
+    let stream_input = match set.stream_input.as_deref() {
+        Some(NO_INPUT) => NO_INPUT.to_string(),
+        Some(other) => {
+            return Err(format!(
+                "{STREAM_TRACK} takes its input from {other}, not {NO_INPUT}"
+            ));
+        }
+        None => return Err(format!("{STREAM_TRACK}'s input was not read")),
+    };
     let graph = Graph { set };
     // Every node's output is read whole first: a doubt anywhere fails.
     for node in 0..graph.len() {
@@ -363,6 +396,7 @@ pub fn decide(set: &Set) -> Result<Proof, String> {
         bus_to: set.tracks[bus].output.kind.clone(),
         stream: STREAM_TRACK.to_string(),
         stream_to,
+        stream_input,
         others,
     };
     let hand1_sync_only = open == [HAND1_SYNC] && outputs.hold();

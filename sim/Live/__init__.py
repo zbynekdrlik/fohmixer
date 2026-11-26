@@ -710,7 +710,8 @@ def _arm(obj, value):
 class _RoutingTypeClass(_LiveObject):
     """A track's output routing type (#267): what Live shows in the output
     menu's first box (``Main``, ``Ext. Out``, a group or track name,
-    ``Sends Only``), read as ``display_name``."""
+    ``Sends Only``), read as ``display_name``; the input menu's first box
+    (``No Input``, ``Ext. In``, a track's name) is one too."""
 
     display_name = _Prop(readonly=True, observable=False)
 
@@ -759,6 +760,10 @@ class _TrackClass(_LiveObject):
     # read only (a fixture's `output` sets them).
     output_routing_type = _Prop(readonly=True, observable=False)
     output_routing_channel = _Prop(readonly=True, observable=False)
+    # The input routing type (#267: the proof reads the stream track's),
+    # read only as the output: a fixture's `input` sets it. A new audio
+    # track's is `Ext. In` in Live; a group takes no input (`No Input`).
+    input_routing_type = _Prop(readonly=True, observable=False)
     # Not fold_state: Live answers add_listener on it with "not observable"
     # (read on the PC, #58); a fold shows in Song.visible_tracks.
     # arrangement_clips (#140): observable on the PC's Live 12.4.6.
@@ -787,6 +792,7 @@ class _TrackClass(_LiveObject):
             mixer_device=mixer or _MixerDeviceClass(),
             output_routing_type=_RoutingTypeClass("Group" if group is not None else "Main"),
             output_routing_channel=_RoutingChannelClass(""),
+            input_routing_type=_RoutingTypeClass("No Input" if foldable else "Ext. In"),
         )
 
     @property

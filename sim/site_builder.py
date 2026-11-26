@@ -16,6 +16,8 @@ Fixture shape::
               "fold_state"?: 0|1 (groups),
               "output"?: {"type", "channel"?} (the output routing's display
                          names, #267; Main, or Group inside a group, by default),
+              "input"?: {"type"} (the input routing type's display name, #267;
+                        Ext. In by default, No Input for a group),
               "arrangement_clips"?: [{"name", "start_time", "end_time",
                                       "muted"? (#220)}...] (#140)}
     DEVICE = {"template": "plain"|"eq8"|"rack"|"plugin", "name", "class_name"?,
@@ -106,6 +108,8 @@ def _make_track(song, spec, group, return_names):
         track._v["output_routing_channel"] = Live.Track.RoutingChannel(
             spec["output"].get("channel", "")
         )
+    if "input" in spec:
+        track._v["input_routing_type"] = Live.Track.RoutingType(spec["input"]["type"])
     track._devices = [_make_device(d) for d in spec.get("devices", ())]
     track._arrangement_clips = sorted(
         (

@@ -61,6 +61,16 @@ class RoutingTest(unittest.TestCase):
         track = Live.Track.Track(song, "Solo")
         self.assertEqual(track.output_routing_type.display_name, "Main")
 
+    def test_a_fixture_input_sets_the_input_type_and_the_default_is_ext_in(self):
+        by_name = {t.name: t for t in self.song.tracks}
+        stream = by_name["OM STREAM"]
+        self.assertEqual(stream.input_routing_type.display_name, "No Input")
+        self.assertEqual(type(stream.input_routing_type).__name__, "RoutingType")
+        self.assertEqual(by_name["Room"].input_routing_type.display_name, "Ext. In")
+        self.assertEqual(by_name["Talk grp"].input_routing_type.display_name, "No Input")
+        with self.assertRaises(AttributeError):
+            stream.input_routing_type = None
+
     def test_the_routing_is_read_only_here(self):
         track = self.song.tracks[0]
         with self.assertRaises(AttributeError):

@@ -22,7 +22,11 @@
     {"name": "Quiet", "output": {"type": "Sends Only"}}
    ]
   },
-  {"name": "OM STREAM", "output": {"type": "Ext. Out", "channel": "3/4 Final LR"}},
+  {
+   "name": "OM STREAM",
+   "input": {"type": "No Input"},
+   "output": {"type": "Ext. Out", "channel": "3/4 Final LR"}
+  },
   {"name": "Room", "output": {"type": "Main"}}
  ],
  "returns": [],

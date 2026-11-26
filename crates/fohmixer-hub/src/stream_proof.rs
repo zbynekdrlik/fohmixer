@@ -17,8 +17,13 @@
 //!    another track). `group_track` answers the group as an object whose
 //!    `$ref` is the listed group's (the script's id is Live's pointer), so
 //!    the chain is followed by `$ref`, never by name;
-//! 3. the `name` (checked again) and `<track> mixer_device sends` (its
-//!    count) of each `Sends Only` track.
+//! 3. first, when the list named exactly one track [`STREAM_TRACK`], its
+//!    `name` (checked again) and `<track> input_routing_type`
+//!    `display_name`, the request's first two commands, so no chunk splits
+//!    them and the input is that track's (none read when the list named it
+//!    never or twice, which the decision fails on anyway); then the `name`
+//!    (checked again) and `<track> mixer_device sends` (its count) of each
+//!    `Sends Only` track.
 //!
 //! Any slot that fails fails the walk with the script's words
 //! (`<path> <prop>: <error>`), and so do a call (offline, a timeout), an
@@ -40,7 +45,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use fohmixer_proto::roles::MBC_INSTANCE;
-use fohmixer_proto::stream_proof::{Answer, Output, Return, SENDS_ONLY, Set, Track, decide};
+use fohmixer_proto::stream_proof::{
+    Answer, Output, Return, SENDS_ONLY, STREAM_TRACK, Set, Track, decide, the_one_of,
+};
 use serde_json::{Value, json};
 
 use crate::eq::walk::{answered, get, items, refused};
@@ -187,6 +194,7 @@ fn facts(slots: &[Value], tracks: &[Listed], returns: &[Listed]) -> Result<Set, 
         tracks: Vec::new(),
         returns: Vec::new(),
         main: Output::default(),
+        stream_input: None,
     };
     for (i, t) in tracks.iter().enumerate() {
         let at = i * TRACK_READS;
@@ -217,26 +225,49 @@ fn facts(slots: &[Value], tracks: &[Listed], returns: &[Listed]) -> Result<Set, 
     Ok(set)
 }
 
-/// The tracks of step 3 (each `Sends Only` one) and their commands: its
-/// name (a move meanwhile fails the walk) and its sends.
-fn sends_commands(set: &Set, tracks: &[Listed]) -> (Vec<usize>, Vec<Value>) {
-    let which: Vec<usize> = set
+/// Step 3's reads: the stream track's (none: the list named it never or
+/// twice), each `Sends Only` track's, and their commands.
+struct Step3 {
+    stream: Option<usize>,
+    sends: Vec<usize>,
+    commands: Vec<Value>,
+}
+
+/// The reads of step 3 (see the module's doc): the stream track's name and
+/// input first, then each `Sends Only` track's name and sends (a name that
+/// moved meanwhile fails the walk).
+fn step3(set: &Set, tracks: &[Listed]) -> Step3 {
+    let stream = the_one_of(tracks.iter().map(|t| t.name.as_str()), STREAM_TRACK).ok();
+    let mut commands: Vec<Value> = stream
+        .iter()
+        .flat_map(|&i| {
+            [
+                get(&tracks[i].path, "name"),
+                get(
+                    &format!("{} input_routing_type", tracks[i].path),
+                    "display_name",
+                ),
+            ]
+        })
+        .collect();
+    let sends: Vec<usize> = set
         .tracks
         .iter()
         .enumerate()
         .filter(|(_, t)| t.output.kind == SENDS_ONLY)
         .map(|(i, _)| i)
         .collect();
-    let commands = which
-        .iter()
-        .flat_map(|&i| {
-            [
-                get(&tracks[i].path, "name"),
-                get(&format!("{} mixer_device", tracks[i].path), "sends"),
-            ]
-        })
-        .collect();
-    (which, commands)
+    commands.extend(sends.iter().flat_map(|&i| {
+        [
+            get(&tracks[i].path, "name"),
+            get(&format!("{} mixer_device", tracks[i].path), "sends"),
+        ]
+    }));
+    Step3 {
+        stream,
+        sends,
+        commands,
+    }
 }
 
 /// A sends answer's count, or why it is none.
@@ -274,12 +305,19 @@ pub async fn walk(live: &LiveHandle) -> Result<Set, String> {
     let returns = listed(&first, 1, "live_set return_tracks")?;
     let slots = call(live, fact_commands(&tracks, &returns)).await?;
     let mut set = facts(&slots, &tracks, &returns)?;
-    let (which, commands) = sends_commands(&set, &tracks);
-    let slots = call(live, commands).await?;
-    for (n, &i) in which.iter().enumerate() {
-        same_name(&slots, 2 * n, &tracks[i])?;
+    let step = step3(&set, &tracks);
+    let slots = call(live, step.commands).await?;
+    let mut at = 0;
+    if let Some(i) = step.stream {
+        same_name(&slots, 0, &tracks[i])?;
+        let what = format!("{} input_routing_type", tracks[i].path);
+        set.stream_input = Some(text(&slots, 1, &what)?);
+        at = 2;
+    }
+    for (n, &i) in step.sends.iter().enumerate() {
+        same_name(&slots, at + 2 * n, &tracks[i])?;
         let what = format!("{} mixer_device sends", tracks[i].path);
-        set.tracks[i].sends = sends_count(&slots, 2 * n + 1, &what)?;
+        set.tracks[i].sends = sends_count(&slots, at + 2 * n + 1, &what)?;
     }
     Ok(set)
 }

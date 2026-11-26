@@ -65,6 +65,7 @@ fn mbc() -> Set {
         ],
         returns: Vec::new(),
         main: out(EXT, "1/2"),
+        stream_input: Some(NO_INPUT.to_string()),
     }
 }
 
@@ -80,10 +81,39 @@ fn the_mbc_set_carries_only_hand1_sync() {
             bus_to: STREAM_TRACK.into(),
             stream: STREAM_TRACK.into(),
             stream_to: out(EXT, STREAM_CH),
+            stream_input: NO_INPUT.into(),
             others: Vec::new(),
         }
     );
     assert!(proof.outputs.hold());
+}
+
+#[test]
+fn the_stream_track_must_take_no_input() {
+    assert_eq!(NO_INPUT, "No Input");
+    for input in ["Ext. In", "Resampling", HAND1_SYNC, "", "no input"] {
+        let mut set = mbc();
+        set.stream_input = Some(input.to_string());
+        assert_eq!(
+            decide(&set),
+            Err(format!(
+                "{STREAM_TRACK} takes its input from {input}, not No Input"
+            )),
+            "{input:?}"
+        );
+    }
+    let mut set = mbc();
+    set.stream_input = None;
+    assert_eq!(
+        decide(&set),
+        Err(format!("{STREAM_TRACK}'s input was not read"))
+    );
+    // A missing stream track is named as before, whatever its input.
+    set.tracks[7].name = "Elsewhere".into();
+    assert_eq!(
+        decide(&set),
+        Err(format!("no track is named {STREAM_TRACK}"))
+    );
 }
 
 #[test]
@@ -437,7 +467,8 @@ fn an_answer_carries_the_proof_or_the_reason() {
         serde_json::json!({"ok": true, "ts": 1_700, "age_ms": 0, "hand1_sync_only": true,
             "open": [HAND1_SYNC],
             "outputs": {"bus": BUS, "bus_to": STREAM_TRACK, "stream": STREAM_TRACK,
-                        "stream_to": {"type": EXT, "channel": STREAM_CH}, "others": []}})
+                        "stream_to": {"type": EXT, "channel": STREAM_CH},
+                        "stream_input": NO_INPUT, "others": []}})
     );
     let failed = Answer::of(Err("mbc is offline".into()), 9);
     assert_eq!(

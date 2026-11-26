@@ -38,7 +38,7 @@ WIRE_VERSION = 1
 NO_PARENT = "-"
 PARENTS = 4
 # The devices' version on the wire, ``v<version.txt>``.
-VERSION = "v1.60.0"
+VERSION = "v1.60.1"
 # Nominal rates: the LUFS device's 5 a second (the owner, 27.10), the
 # meter's `peakamp~ 33`; a device switched off goes silent, its key stale,
 # and SimLive's `lufs`/`level ... off` lines play that. SimLive pushes the
