@@ -11,6 +11,7 @@ fn every_word_reads_back_as_itself() {
         Word::Silent(false),
         Word::On(true),
         Word::On(false),
+        Word::Poll,
     ] {
         assert_eq!(parse(&encode(&word)), Ok(word));
     }
@@ -24,6 +25,20 @@ fn a_pattern_is_its_address_four_int_tags_and_four_big_endian_ints() {
         want.extend_from_slice(&v.to_be_bytes());
     }
     assert_eq!(bytes, want);
+}
+
+#[test]
+fn a_poll_is_its_address_and_no_argument() {
+    // #264: the hub polls the device; it answers with its hello in Max's
+    // main thread (`udpreceive @defer 1`), so it runs no clock of its own.
+    assert_eq!(POLL_ADDRESS, "/fohmixer/claps/poll");
+    assert_eq!(
+        encode(&Word::Poll),
+        b"/fohmixer/claps/poll\0\0\0\0,\0\0\0".to_vec()
+    );
+    let mut with_value = b"/fohmixer/claps/poll\0\0\0\0,i\0\0".to_vec();
+    with_value.extend_from_slice(&1i32.to_be_bytes());
+    assert_eq!(parse(&with_value), Err(WireError::Tags));
 }
 
 #[test]

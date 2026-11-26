@@ -424,7 +424,10 @@ async fn taps_choose_the_beats_and_live_claps_them_from_the_next_bar() {
     assert_eq!(status.sent, 8);
     router.claps_tick(Instant::now());
     assert_eq!(words(&socket, 4)[3], Word::On(true));
-    assert_eq!(router.claps_status(Instant::now()).sent, 12);
+    // #264: then the poll, which the device answers with its hello.
+    assert_eq!(words(&socket, 1), vec![Word::Poll]);
+    let status = router.claps_status(Instant::now());
+    assert_eq!((status.sent, status.polls), (12, 1));
 }
 
 #[tokio::test]
@@ -645,7 +648,11 @@ async fn the_devices_hello_is_recorded_when_new_and_its_silence_once() {
 }
 
 #[tokio::test]
-async fn nothing_goes_to_the_device_without_a_claps_track() {
+async fn only_the_poll_goes_to_the_device_without_a_claps_track() {
+    // #264: the device answers the hub's poll (it has no clock of its own),
+    // so the tick polls it with or without a +CLAPS track: `/api/status`
+    // shows a loaded device before its track is tagged. Its words go only
+    // to a device whose track the layout names.
     let dir = tempfile::tempdir().unwrap();
     let (router, _own, _rx) = offline_router(dir.path());
     let (mut router, socket) = device(router);
@@ -653,9 +660,11 @@ async fn nothing_goes_to_the_device_without_a_claps_track() {
         .set_read_timeout(Some(Duration::from_millis(200)))
         .unwrap();
     router.claps_tick(Instant::now());
+    assert_eq!(words(&socket, 1), vec![Word::Poll]);
     let mut buf = [0u8; 64];
-    assert!(socket.recv(&mut buf).is_err());
-    assert_eq!(router.claps_status(Instant::now()).sent, 0);
+    assert!(socket.recv(&mut buf).is_err(), "nothing but the poll");
+    let status = router.claps_status(Instant::now());
+    assert_eq!((status.sent, status.polls), (0, 1));
 }
 
 #[tokio::test]

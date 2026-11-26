@@ -833,10 +833,11 @@ mod tests {
     }
 
     #[test]
-    fn a_sweep_sends_each_port_the_meters_poll_once_and_counts_it_apart() {
-        // A meter already running (a hub restarted under a running Live)
-        // answers the sweep's poll and is learned; the sweep's sends count
-        // apart from the rounds' polls. Port 0 stands for a refused send.
+    fn a_sweep_sends_each_port_each_kinds_poll_once_and_counts_it_apart() {
+        // A device already running (a hub restarted under a running Live:
+        // since #264 both kinds send only when polled) answers its kind's
+        // sweep poll and is learned; the sweep's sends count apart from the
+        // rounds' polls. Port 0 stands for a refused send.
         let device = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         device
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -846,17 +847,19 @@ mod tests {
         let counters = Counters::default();
         let mut ports = vec![0, port];
         ports.sort_unstable();
-        assert_eq!(sweep(&poller, ports, &counters), (1, 1));
+        assert_eq!(sweep(&poller, ports, &counters), (2, 2));
         let mut buf = [0u8; 64];
-        let (n, from) = device.recv_from(&mut buf).unwrap();
-        assert_eq!(&buf[..n], wire::poll_datagram(DeviceKind::Meter).as_slice());
-        assert_eq!(from, poller.local_addr().unwrap());
+        for kind in POLLED_KINDS {
+            let (n, from) = device.recv_from(&mut buf).unwrap();
+            assert_eq!(&buf[..n], wire::poll_datagram(kind).as_slice());
+            assert_eq!(from, poller.local_addr().unwrap());
+        }
         let status = counters.status();
-        assert_eq!((status.swept, status.sweep_failed), (1, 1));
+        assert_eq!((status.swept, status.sweep_failed), (2, 2));
         assert_eq!((status.polled, status.poll_failed), (0, 0));
         counters.swept(2, 3);
         let status = counters.status();
-        assert_eq!((status.swept, status.sweep_failed), (3, 4));
+        assert_eq!((status.swept, status.sweep_failed), (4, 5));
     }
 
     #[test]

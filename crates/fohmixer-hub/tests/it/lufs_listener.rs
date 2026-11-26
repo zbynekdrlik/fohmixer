@@ -410,51 +410,99 @@ fn a_polled_meter_is_polled_30_times_a_second_and_dropped_once_lost() {
     });
 }
 
-#[test]
-fn a_meter_running_before_the_hub_started_is_learned_from_its_start_sweep() {
-    // #264, the DECIDED of 26.11: a hub restarted under a running Live
-    // sends every port of the devices' range the meter's poll once, so a
-    // meter that never announces itself again is learned all the same.
-    // The test sweeps only its own meter's port (the hub's default, the
-    // whole range, would reach other tests' sockets too: the config's
-    // `the_start_sweep_covers_the_devices_poll_ports_…` pins it).
+/// The datagrams `device` reads from `from` within `window`: the polls of
+/// `kind` (each answered with `answer`'s reading, to its hub port) and the
+/// other kind's (a real device's `route` drops them), counted apart.
+fn sweep_answers(
+    kind: DeviceKind,
+    device: &UdpSocket,
+    from: SocketAddr,
+    window: Duration,
+    answer: (&[u8], u16),
+) -> (usize, usize) {
+    let until = Instant::now() + window;
+    let mut buf = [0u8; 64];
+    let (mut own, mut other) = (0, 0);
+    while Instant::now() < until {
+        let Ok((n, sender)) = device.recv_from(&mut buf) else {
+            continue;
+        };
+        if sender != from {
+            continue;
+        }
+        if buf[..n] == *poll_datagram(kind).as_slice() {
+            own += 1;
+            device.send_to(answer.0, ("127.0.0.1", answer.1)).unwrap();
+        } else {
+            assert!(
+                [DeviceKind::Lufs, DeviceKind::Meter]
+                    .iter()
+                    .any(|k| buf[..n] == *poll_datagram(*k).as_slice()),
+                "only the hub's polls"
+            );
+            other += 1;
+        }
+    }
+    (own, other)
+}
+
+/// #264, the DECIDED of 26.11: a hub restarted under a running Live sends
+/// every port of the devices' range each kind's poll once, so a device of
+/// `kind` that never announces itself again (it sends only when polled) is
+/// learned all the same. The test sweeps only its own device's port (the
+/// hub's default, the whole range, would reach other tests' sockets too:
+/// the config's `the_start_sweep_covers_the_devices_poll_ports_…` pins it).
+fn a_device_running_before_the_hub_started_is_learned(kind: DeviceKind) {
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
         let port = free_port();
         let device = poll_socket();
         let at = device.local_addr().unwrap().port();
-        let reading = polled_of(DeviceKind::Meter, 11, at);
+        let reading = polled_of(kind, 11, at);
         let mut config = config(dir.path(), port);
         config.lufs.sweep = Some(at..at + 1);
         let hub = TestHub::start_config(config).await;
         let from = poller(&hub).await;
-        // The meter only answers: no datagram before the hub's poll.
-        let answered = tokio::task::block_in_place(|| {
-            polls_of(
-                DeviceKind::Meter,
+        // The device only answers: no datagram before the hub's poll.
+        let (answered, other) = tokio::task::block_in_place(|| {
+            sweep_answers(
+                kind,
                 &device,
                 from,
-                Duration::from_millis(1000),
-                Some((&reading, port)),
+                Duration::from_millis(2000),
+                (&reading, port),
             )
         });
         assert!(
-            answered >= 10,
+            answered >= 8,
             "the sweep's poll, then the rounds': {answered}"
         );
+        assert_eq!(other, 1, "the other kind's sweep poll, once");
         let status = hub
             .status_until(SECS_5, |s| s.lufs.listener.polling == 1)
             .await;
         let listener = &status.lufs.listener;
         assert_eq!(
             (listener.swept, listener.sweep_failed),
-            (1, 0),
+            (2, 0),
             "{listener:?}"
         );
         assert_eq!(status.lufs.devices.len(), 1);
         hub.stop().await;
     });
+}
+
+#[test]
+fn a_meter_running_before_the_hub_started_is_learned_from_its_start_sweep() {
+    a_device_running_before_the_hub_started_is_learned(DeviceKind::Meter);
+}
+
+#[test]
+fn a_lufs_device_running_before_the_hub_started_is_learned_from_its_start_sweep() {
+    // #264: since its 10 s clock rides the poll, a LUFS device sends only
+    // when polled too.
+    a_device_running_before_the_hub_started_is_learned(DeviceKind::Lufs);
 }
 
 #[test]

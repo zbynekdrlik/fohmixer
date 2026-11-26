@@ -129,7 +129,9 @@ fn a_page_taps_live_claps_the_beats_a_clip_silences_it_and_a_stop_ends_it() {
         assert_eq!(status.claps.signature.as_deref(), Some("4/4"));
         word_until(&device, "the pitches", |w| *w == Word::Notes(vec![52, 57])).await;
         word_until(&device, "nothing on", |w| *w == Word::On(false)).await;
-        // Its hello.
+        // Its hello, the answer to the hub's poll (#264: the device runs
+        // no clock of its own).
+        word_until(&device, "the poll", |w| *w == Word::Poll).await;
         let hello = Hello {
             version: "v9.9.9".into(),
             running: false,
