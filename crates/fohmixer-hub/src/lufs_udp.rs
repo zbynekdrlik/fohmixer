@@ -740,6 +740,22 @@ mod tests {
         assert_eq!(POLLED_KINDS, [DeviceKind::Lufs, DeviceKind::Meter]);
     }
 
+    #[tokio::test]
+    async fn a_rounds_clock_keeps_its_grid_after_a_late_tick() {
+        // #264's review: on Windows a timer wakes up to ~15.6 ms late; with
+        // `Delay` every late tick would push the next one out (33 ms then
+        // reads ~47 ms, about 21 polls a second). `Skip` keeps the grid
+        // (30 a second on average) and still never sends a burst.
+        for kind in POLLED_KINDS {
+            let clock = round_clock(kind);
+            assert_eq!(clock.period(), poll_every(kind));
+            assert_eq!(
+                clock.missed_tick_behavior(),
+                tokio::time::MissedTickBehavior::Skip
+            );
+        }
+    }
+
     #[test]
     fn a_clock_that_went_back_loses_no_key() {
         let t0 = Instant::now();
