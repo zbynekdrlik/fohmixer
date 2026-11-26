@@ -38,9 +38,12 @@ untouched (`midiin` straight into `midiout`). No parameters.
   `metro 1000` through a `deferlow` (#240), the `udpreceive` had no
   `@defer 1` and the face was fed from the beats: each of them posted from
   Live's audio thread (dasio's probes on #264).
-- **The one clock** is the beats' `metro 4n`: its MIDI out to Live posts
-  nothing. `scripts/check_claps_device.py` fails on any `deferlow`, `defer`
-  or `qmetro`, any other `metro`, a number box fed from a scheduler box and a
+- **Its two scheduler boxes** are the beats' `metro 4n` (its MIDI out to
+  Live posts nothing) and the watchdog's `delay 3000` (it feeds only cold
+  inlets and `change`'s `set 0`: it outputs nothing that posts); neither
+  reaches the face or the `udpsend`. `scripts/check_claps_device.py` fails
+  on any `deferlow`, `defer` or `qmetro`, any other `metro`, a number box
+  fed from a scheduler box, a timed box reaching the `udpsend` and a
   `udpreceive` without `@defer 1`.
 
 Every decision (the taps, the beats, the clip silence, 4/4 only) is the

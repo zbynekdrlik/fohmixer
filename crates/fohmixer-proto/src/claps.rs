@@ -18,7 +18,7 @@
 //! | [`PATTERN_ADDRESS`] | `,iiii` | beat 1 to 4 of the bar: 1 claps, 0 not |
 //! | [`SILENT_ADDRESS`] | `,i` | 1 while an active clip of the track covers the playhead |
 //! | [`ON_ADDRESS`] | `,i` | 1: play the pattern from the next bar on; 0: stop |
-//! | [`POLL_ADDRESS`] | `,` | answer with the hello (#264), every [`SEND_EVERY_MS`], with or without a Claps track |
+//! | [`POLL_ADDRESS`] | `,` | answer with the hello (#264), at the hub's claps tick (every [`SEND_EVERY_MS`]), with or without a Claps track |
 //!
 //! **To the hub**, UDP `127.0.0.1:<[claps] port>` ([`HUB_PORT`]), as the
 //! answer to each poll (#264: the device runs no clock of its own, its

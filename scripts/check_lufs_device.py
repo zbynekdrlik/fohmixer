@@ -107,8 +107,7 @@ SEND_TRIGGER_WORDS = ["t", "b", "f"]
 
 @dataclass(frozen=True)
 class Reread:
-    """Its re-read every `polls`-th poll, counted by the pull's outlet
-    `outlet` (#264, `poll_reread_check`)."""
+    """Re-read every `polls`-th poll, counted by the pull's `outlet` (#264)."""
 
     polls: int
     outlet: int
@@ -130,8 +129,7 @@ class Device:
     pulled: bool = True
     # Its K-weighted chain in plain MSP objects (#264, `lufs_dsp_check`).
     kweighted: bool = False
-    # Its re-read rides the poll, its load is not deferred, and it holds no
-    # clock and no deferlow (#264, `poll_reread_check`).
+    # Its re-read on the poll, no clock, no deferlow (#264, `poll_reread_check`).
     reread: Reread | None = None
 
     @property
@@ -299,10 +297,7 @@ def patch_errors(
         errors += slot_errors(where, patcher, every, sink, send_from)
         import lufs_pull_check  # noqa: PLC0415 (it imports this module)
 
-        import meter_pull_check  # noqa: PLC0415 (it imports this module)
-
-        shapes = {"snapshot~": lufs_pull_check.lufs_shape, "peakamp~": meter_pull_check.meter_shape}
-        shape = shapes[clock](poll, sink)
+        shape = lufs_pull_check.shape_for(clock, poll, sink)
         errors += lufs_pull_check.pull_errors(where, patcher, every, shape)
     errors += [
         f"{where}: {b.get('id')} ('{b.get('text')}') runs on a clock (the device has none "
@@ -613,13 +608,9 @@ def thread_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
 # load's and the 10 s re-read's), as the devices before #240 read it every
 # second for months on the PC; the middle answers the follow. Nothing else
 # takes either outlet.
-#
-# The follow misses a move into another chain (the PC proof's attempt 2 on
-# #240), so the four parents' `path` messages go again every 10 s: in the
-# pushed shape (the Listen device's) from the identity's own clock,
-# `random 10000` -> `delay` -> `deferlow` -> `1` -> `qmetro 10000` -> `t b b
-# b b`, the only clock allowed upstream of a LOM object; in a pulled device
-# on the poll path (#264, `poll_reread_check`).
+# The follow misses a move into a chain (#240), so the paths go again every
+# 10 s: here by the identity's own `qmetro 10000` (the Listen device's
+# pushed shape); a pulled device's re-read rides the poll (`poll_reread_check`).
 ID_LOAD = "obj-id-load"
 ID_DEFER = "obj-id-defer"
 ID_PROPERTY = "obj-id-property"

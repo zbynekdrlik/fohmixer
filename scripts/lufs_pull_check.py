@@ -88,6 +88,17 @@ def lufs_shape(poll: Poll, sink: str) -> Shape:
     return Shape(pull_boxes(poll), pull_wiring(sink), pull_outputs(), "'snapshot~ 0'")
 
 
+def shape_for(reader: str, poll: Poll, sink: str) -> Shape:
+    """The pull of the device whose readers are `reader` (its `Device.clock`):
+    the LUFS device's `snapshot~`, the meter's `peakamp~`."""
+    import meter_pull_check  # noqa: PLC0415 (it imports this module)
+
+    shapes = {"snapshot~": lufs_shape, "peakamp~": meter_pull_check.meter_shape}
+    if reader not in shapes:
+        raise ValueError(f"no pull shape for a device read by {reader!r}")
+    return shapes[reader](poll, sink)
+
+
 # The pull (#264, the DECIDED of 25.11.2026, built on probe B3): the hub
 # polls the device on a port it draws at load; each poll, the load's last
 # outlet and Device On turning 1 open the gate's right inlet; the gate (its

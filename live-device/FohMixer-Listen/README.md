@@ -53,7 +53,8 @@ the announce's `metro 1000` → `deferlow` → `udpsend`, the hold's `delay
 1000` → `deferlow`, and the identity's 10 s `qmetro 10000` (`delay` →
 `deferlow` start). Whether a device in a rack that is off still runs them
 (Max's scheduler may run on) is the open PC question of #238; moving them
-onto a poll is not part of #264's LUFS, Meter and Claps step.
+onto a poll was left out of #264's LUFS, Meter and Claps step and is noted
+on #264 for the main session's decision.
 
 The wire, the hub's side and the PC probe: `.claude/rules/listen.md` and the
 design comment on #210. `scripts/check_listen_device.py` (CI) holds the patch

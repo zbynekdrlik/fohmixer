@@ -474,9 +474,12 @@ fn a_device_running_before_the_hub_started_is_learned(kind: DeviceKind) {
                 (&reading, port),
             )
         });
+        // A third of the rounds' polls in the window at least (the meter's
+        // 33 ms, the LUFS device's 200 ms): the rounds follow the sweep.
+        let floor = 2000 / kind.poll_every_ms() / 3;
         assert!(
-            answered >= 8,
-            "the sweep's poll, then the rounds': {answered}"
+            answered >= usize::try_from(floor).unwrap(),
+            "the sweep's poll, then the rounds': {answered} < {floor}"
         );
         assert_eq!(other, 1, "the other kind's sweep poll, once");
         let status = hub

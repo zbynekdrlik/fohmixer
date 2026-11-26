@@ -32,7 +32,11 @@
 //! ([`sweep`], over `config::LufsCfg.sweep`) from the poll socket; every
 //! running device answers its own and is learned, its `route` dropping the
 //! other kind's; a foreign program in the range sees two unknown OSC
-//! datagrams once. Its sends count apart (`swept`, `sweep_failed`).
+//! datagrams once. Its sends count apart (`swept`, `sweep_failed`). A device
+//! has no announce of its own after its load: one whose key went stale (a
+//! Live main thread stalled past the stale window) comes back by answering
+//! the polls queued at its `udpreceive @defer 1` meanwhile, whose datagram
+//! names its port again (`Polls::heard`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
