@@ -112,8 +112,15 @@ impl TestHub {
         Self::start_config(config).await
     }
 
-    /// A hub of `config`.
-    pub async fn start_config(config: Config) -> Self {
+    /// A hub of `config`. A test hub never sweeps the Listen devices'
+    /// whole poll range (#264): the sweep reaches every socket there, its
+    /// own LUFS listener's ephemeral port and other tests' sockets too (a
+    /// `Config::defaults` hub keeps `[listen]` on); a test that wants the
+    /// sweep names its own range (`listen_wire.rs`).
+    pub async fn start_config(mut config: Config) -> Self {
+        if config.listen.sweep == fohmixer_hub::config::ListenCfg::default().sweep {
+            config.listen.sweep = None;
+        }
         let dir = config.data_dir.clone();
         let (ready_tx, ready_rx) = oneshot::channel();
         let (stop_tx, stop_rx) = oneshot::channel::<()>();
