@@ -32,7 +32,11 @@ owes as one float32 matrix of 2 planes and 960 x k cells, big-endian, as
 dropped (the patch's ``route``). The hub's latency answers are read and
 dropped. Everything runs on SimLive's main thread (one ``Live.Base.Timer``
 reading each device's socket, as the patch's ``udpreceive @defer 1`` hands
-a datagram to Max's main thread).
+a datagram to Max's main thread). Two liberties: a device whose rack is off
+drops the frame poll too (the patch's frame gate is not on Device On, but a
+device switched off catches no audio), and the hello goes once per
+connection (the patch sends it again with each announce while on; the hub
+records only a change).
 """
 
 import itertools

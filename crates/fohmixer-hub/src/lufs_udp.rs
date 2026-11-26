@@ -377,7 +377,7 @@ fn send_poll(poller: &std::net::UdpSocket, poll: &[u8], port: u16) -> bool {
         other => other,
     };
     if let Err(e) = &sent {
-        tracing::debug!(port, error = %e, "lufs: a poll could not be sent");
+        tracing::debug!(port, error = %e, "a device poll could not be sent");
     }
     sent.is_ok()
 }
@@ -402,7 +402,14 @@ pub fn round_counts(ports: usize, failed: u64) -> (u64, u64) {
 /// one out, and a missed tick is skipped (a stalled task never sends a
 /// burst of polls).
 fn round_clock(kind: DeviceKind) -> tokio::time::Interval {
-    let mut clock = tokio::time::interval(poll_every(kind));
+    grid_clock(poll_every(kind))
+}
+
+/// A clock of `every` on its grid: its first tick at once, a late tick
+/// never moves the next one out, a missed tick is skipped (the Listen
+/// polls' too, #264).
+pub(crate) fn grid_clock(every: Duration) -> tokio::time::Interval {
+    let mut clock = tokio::time::interval(every);
     clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     clock
 }

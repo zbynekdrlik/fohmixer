@@ -191,6 +191,28 @@ fn a_port_two_devices_name_is_counted_and_never_told_off_over_the_target() {
 }
 
 #[test]
+fn one_poll_a_port_is_on_when_any_device_there_is() {
+    assert_eq!(
+        one_poll_a_port([
+            (40_002, false),
+            (40_001, true),
+            (40_002, true),
+            (40_001, false)
+        ]),
+        vec![(40_001, true), (40_002, true)]
+    );
+    assert_eq!(
+        one_poll_a_port([(40_003, false), (40_003, false)]),
+        vec![(40_003, false)]
+    );
+    assert_eq!(
+        shared_ports([40_001, 40_002, 40_001, 40_003, 40_003, 40_003]),
+        2
+    );
+    assert_eq!(shared_ports([40_001, 40_002]), 0);
+}
+
+#[test]
 fn a_stale_device_is_forgotten_at_the_next_announce() {
     let (listen, _records) = listen();
     let t0 = Instant::now();

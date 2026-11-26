@@ -97,7 +97,7 @@ WIRING = (
     (("obj-halt", 0), (FRAME_GATE, 0)),
     ((FRAME_GATE, 0), ("obj-catch", 0)),
     (("obj-hello-gate", 0), ("obj-hello", 0)),
-    (("obj-thisdevice", 0), ("obj-session-random", 0)),
+    (("obj-id-load", 9), ("obj-session-random", 0)),
     (("obj-session-random", 0), ("obj-session-id", 1)),
     (("obj-id-route", 0), ("obj-session-id", 0)),
     (("obj-session-id", 0), ("obj-announce", 2)),
@@ -105,6 +105,11 @@ WIRING = (
 )
 # Inlets only the listen id may feed.
 SESSION_ONLY = (("obj-announce", 2), ("obj-hello", 2))
+# The listen id's random, drawn from the load's rightmost outlet: before the
+# load's `path this_device` reads the Max id into the `expr`'s hot inlet
+# (the review of #264's step: a fan out of `live.thisdevice` would leave
+# that order to the boxes' places, and two devices could share an id).
+RANDOM_FIRST = (("obj-session-random", 0), [["obj-id-load", 9]])
 
 
 def wiring_errors(where: str, patcher: dict, every: list[dict], reread: int) -> list[str]:
@@ -130,6 +135,10 @@ def wiring_errors(where: str, patcher: dict, every: list[dict], reread: int) -> 
         fed = lufs.feeds(patcher, box, inlet)
         if fed != [["obj-session-id", 0]]:
             errors.append(f"{where}: {box}:{inlet} takes the listen id alone, has {fed}")
+    (box, inlet), want = RANDOM_FIRST
+    fed = lufs.feeds(patcher, box, inlet)
+    if fed != want:
+        errors.append(f"{where}: {box}:{inlet} takes {want} alone, has {fed}")
     errors += lufs.identity_errors(
         where, patcher, every, "obj-announce", True, lufs.Reread(reread, REREAD_OUTLET)
     )

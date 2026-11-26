@@ -16,8 +16,8 @@ in the device runs on its own: no `metro`, `qmetro`, `delay`, `pipe` or
 message arrives through `udpreceive @defer 1`, in Max's main thread.
 
 - **Its port and its announce:** at load it draws its poll port (`random
-  10000` `+ 40000`, the LUFS devices' range) for its `udpreceive`, and
-  answers with one announce datagram to the hub's UDP `127.0.0.1:39111`
+  10000` `+ 40000`, the LUFS devices' range) for its `udpreceive` and,
+  when its Device On is 1, sends one announce datagram to the hub's UDP `127.0.0.1:39111`
   (`/fohmixer/listen`, wire version 2: the device's listen id, its Max id
   mixed with a random number drawn at load so the PC's two Lives never share
   one, `v<version>`, its four canonical parents' names, Live's sample rate,

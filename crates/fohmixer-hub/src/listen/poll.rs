@@ -34,19 +34,22 @@ use fohmixer_proto::listen::wire::{FRAME_POLL_MS, POLL_MS, frame_datagram, poll_
 use tokio::task::JoinHandle;
 
 use super::Listen;
-use crate::lufs_udp::{poll_socket, refused_sends, round_counts};
+use crate::lufs_udp::{grid_clock, poll_socket, refused_sends, round_counts};
 
-/// One round at `now`: each device heard gets its poll, on or off.
+/// One round at `now`: each device heard gets its poll, on or off (one a
+/// port, [`Listen::polls`]).
 pub fn poll_round(poller: &std::net::UdpSocket, listen: &Listen, now: Instant) {
     let polls = listen.polls(now);
-    let mut failed = 0;
-    for on in [true, false] {
-        let ports = polls
-            .iter()
-            .filter(|(_, o)| *o == on)
-            .map(|(port, _)| *port);
-        failed += refused_sends(poller, &poll_datagram(on), ports);
-    }
+    let failed: u64 = [true, false]
+        .into_iter()
+        .map(|on| {
+            let ports = polls
+                .iter()
+                .filter(|(_, o)| *o == on)
+                .map(|(port, _)| *port);
+            refused_sends(poller, &poll_datagram(on), ports)
+        })
+        .sum();
     let (sent, failed) = round_counts(polls.len(), failed);
     listen.counters.polled(sent, failed);
 }
@@ -76,29 +79,32 @@ pub fn sweep(poller: &std::net::UdpSocket, ports: Range<u16>, listen: &Listen) -
     (sent, failed)
 }
 
-/// A round's clock of `every_ms`: its first tick at once, then on its grid
-/// (`MissedTickBehavior::Skip`: Windows wakes a timer up to ~15.6 ms late,
-/// and a stalled task never sends a burst of polls).
+/// A round's clock of `every_ms` (the LUFS listener's, `grid_clock`: its
+/// first tick at once, then on its grid, `MissedTickBehavior::Skip`).
 pub fn clock(every_ms: u64) -> tokio::time::Interval {
-    let mut clock = tokio::time::interval(Duration::from_millis(every_ms));
-    clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    clock
+    grid_clock(Duration::from_millis(every_ms))
 }
 
-/// Starts the polls (inside a tokio runtime): the socket bound, its
-/// address in the counts, the sweep over `sweep` once, then the task.
+/// The polls' socket (`lufs_udp::poll_socket`: 127.0.0.1, any port,
+/// non-blocking), bound before any of Listen's tasks starts.
+pub fn socket() -> std::io::Result<std::net::UdpSocket> {
+    poll_socket()
+}
+
+/// Starts the polls on `poller` (inside a tokio runtime): its address in
+/// the counts, the sweep over `sweep_ports` once, then the task.
 pub fn spawn(
+    poller: std::net::UdpSocket,
     listen: Arc<Listen>,
     sweep_ports: Option<Range<u16>>,
-) -> std::io::Result<JoinHandle<()>> {
-    let poller = poll_socket()?;
+) -> JoinHandle<()> {
     listen
         .counters
         .set_poll_from(poller.local_addr().ok().map(|a| a.to_string()));
     if let Some(ports) = sweep_ports {
         sweep(&poller, ports, &listen);
     }
-    Ok(tokio::spawn(run(poller, listen)))
+    tokio::spawn(run(poller, listen))
 }
 
 async fn run(poller: std::net::UdpSocket, listen: Arc<Listen>) {

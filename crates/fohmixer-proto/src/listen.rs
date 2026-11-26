@@ -120,6 +120,10 @@ pub struct ListenStatus {
     /// The address the polls go out from.
     #[serde(default)]
     pub poll_from: Option<String>,
+    /// The ports two or more devices heard now name (#264: they drew one;
+    /// a device there hears another's polls, and one of them stays mute).
+    #[serde(default)]
+    pub shared_ports: u64,
     /// Everything refused, by reason (datagrams, chunks, connections).
     #[serde(default)]
     pub refused: BTreeMap<String, u64>,

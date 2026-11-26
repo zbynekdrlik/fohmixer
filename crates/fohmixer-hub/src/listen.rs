@@ -106,6 +106,30 @@ pub fn choose(devices: &BTreeMap<i32, Heard>, set: &str, track: &str, now: Insta
     }
 }
 
+/// The polls of `polls` (each device's port and select), one a port, on
+/// when any device of the port is on; in port order.
+pub fn one_poll_a_port(polls: impl IntoIterator<Item = (u16, bool)>) -> Vec<(u16, bool)> {
+    let mut ports: BTreeMap<u16, bool> = BTreeMap::new();
+    for (port, on) in polls {
+        let told = ports.entry(port).or_insert(false);
+        if on {
+            *told = true;
+        }
+    }
+    ports.into_iter().collect()
+}
+
+/// How many ports of `ports` (each fresh device's) two or more devices
+/// name (#264): a device there hears the polls of another.
+pub fn shared_ports(ports: impl IntoIterator<Item = u16>) -> u64 {
+    let mut counts: BTreeMap<u16, u64> = BTreeMap::new();
+    for port in ports {
+        *counts.entry(port).or_insert(0) += 1;
+    }
+    let shared = counts.values().filter(|n| **n > 1).count();
+    u64::try_from(shared).unwrap_or(u64::MAX)
+}
+
 /// The track listened to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
@@ -436,24 +460,29 @@ impl Listen {
         })
     }
 
-    /// The polls due at `now` (#264): each fresh device's port, in the
-    /// devices' order, with its select ([`Listen::accepts`]: on for the
-    /// target's one device only).
+    /// The polls due at `now` (#264): each fresh device's port once, in
+    /// port order, with its select ([`Listen::accepts`]: on for the
+    /// target's one device only). A port two devices name (they drew one,
+    /// and Max cannot report a failed bind) gets one poll, on when either
+    /// is the target's ([`one_poll_a_port`]).
     pub fn polls(&self, now: Instant) -> Vec<(u16, bool)> {
         let state = self.state();
         let chosen = state
             .target
             .as_ref()
             .map(|t| choose(&state.devices, &t.set, &t.track, now));
-        state
-            .devices
-            .values()
-            .filter(|h| fresh(h.at, now))
-            .map(|h| {
-                let on = chosen == Some(Choice::Device(h.announce.device));
-                (h.announce.port, on)
-            })
-            .collect()
+        one_poll_a_port(
+            state
+                .devices
+                .values()
+                .filter(|h| fresh(h.at, now))
+                .map(|h| {
+                    (
+                        h.announce.port,
+                        chosen == Some(Choice::Device(h.announce.device)),
+                    )
+                }),
+        )
     }
 
     /// The port of the device selected at `now`, which the frame polls
@@ -539,6 +568,13 @@ impl Listen {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .clone(),
+            shared_ports: shared_ports(
+                state
+                    .devices
+                    .values()
+                    .filter(|h| fresh(h.at, now))
+                    .map(|h| h.announce.port),
+            ),
             refused: self.counters.refused(),
         }
     }
@@ -592,14 +628,16 @@ pub fn spawn(
 ) -> (Arc<Listen>, Vec<tokio::task::JoinHandle<()>>) {
     let port = cfg.port;
     let wanted = udp::bind_addr(port).to_string();
-    let started = bind(port).and_then(|(tcp, socket)| {
+    // Every socket before any task: a failed bind leaves no task behind.
+    let bound = bind(port).and_then(|(tcp, socket)| Ok((tcp, socket, poll::socket()?)));
+    let started = bound.and_then(|(tcp, socket, poller)| {
         let addr = tcp.local_addr()?.to_string();
         let (racks, jobs) = tokio::sync::mpsc::unbounded_channel();
         let listen = Listen::with_racks(events.clone(), Arc::clone(&sets), Some(racks));
         let tasks = vec![
             stream::spawn(tcp, Arc::clone(&listen))?,
             udp::spawn(socket, Arc::clone(&listen))?,
-            poll::spawn(Arc::clone(&listen), cfg.sweep.clone())?,
+            poll::spawn(poller, Arc::clone(&listen), cfg.sweep.clone()),
             tokio::spawn(rack::run(jobs, lom, events.clone())),
         ];
         Ok((listen, addr, tasks))

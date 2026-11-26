@@ -133,7 +133,7 @@ fn the_round_clocks_keep_their_grid() {
 #[tokio::test]
 async fn the_task_polls_a_device_it_heard_and_names_its_socket() {
     let listen = listen();
-    let task = spawn(Arc::clone(&listen), None).unwrap();
+    let task = spawn(socket().unwrap(), Arc::clone(&listen), None);
     let (vox, vox_announce) = device(1, "Vox 1");
     listen.heard(vox_announce, Instant::now());
     let from = listen
