@@ -41,7 +41,7 @@ for each patch:
   kept a name with a space in quotes and read the set as `-`);
 - no `deferlow`, `defer`, `metro`, `qmetro`, `delay`, `del` or `pipe` in
   either device (`poll_reread_check.still_errors`; the pushed identity's
-  10 s clock, `clock_errors`, is the Listen device's);
+  10 s clock, `clock_errors`, no device's since #264);
 - every patch line joins two boxes of the patch within their outlets and
   inlets;
 - no `gen~` (nor any other gen object or codebox) in either patch (#264:
@@ -609,8 +609,8 @@ def thread_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
 # second for months on the PC; the middle answers the follow. Nothing else
 # takes either outlet.
 # The follow misses a move into a chain (#240), so the paths go again every
-# 10 s: here by the identity's own `qmetro 10000` (the Listen device's
-# pushed shape); a pulled device's re-read rides the poll (`poll_reread_check`).
+# 10 s: in the pushed shape by its own `qmetro 10000` (no device's since
+# #264); a pulled device's re-read rides the poll (`poll_reread_check`).
 ID_LOAD = "obj-id-load"
 ID_DEFER = "obj-id-defer"
 ID_PROPERTY = "obj-id-property"

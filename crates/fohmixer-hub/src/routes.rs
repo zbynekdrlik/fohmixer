@@ -33,7 +33,6 @@ use crate::auth::{Rejection, error_response};
 use crate::{Assets, Hub};
 
 pub mod automation_gate;
-pub mod listen;
 pub mod lufs;
 pub mod role;
 pub mod scene;
@@ -395,10 +394,6 @@ pub fn api_routes(hub: Hub) -> Router<Hub> {
             post(scene::post_scene).layer(DefaultBodyLimit::max(1_024)),
         )
         .route(stream_proof::PATH, get(stream_proof::get_stream_proof))
-        .route(
-            fohmixer_proto::listen::wire::SELECT_PATH,
-            get(listen::get_select),
-        )
         .route("/ws", get(crate::ws::ws_handler))
         .route("/ws/audio", get(crate::listen::session::ws_audio))
         .route_layer(axum::middleware::from_fn_with_state(hub, role_gate))
@@ -921,14 +916,6 @@ mod tests {
         let hub = crate::test_hub(dir.path());
         for path in API_PATHS {
             let response = get_as(&hub, Role::Engineer, path).await;
-            if *path == fohmixer_proto::listen::wire::SELECT_PATH {
-                // #210: its handler answers a device on this PC only; the
-                // tests' peer is a LAN one, so its own 403 proves the route.
-                assert_eq!(response.status(), StatusCode::FORBIDDEN);
-                let body = body_bytes(response).await;
-                assert!(String::from_utf8_lossy(&body).contains("LOOPBACK_ONLY"));
-                continue;
-            }
             assert_ne!(response.status(), StatusCode::NOT_FOUND, "{path}");
             assert_ne!(response.status(), StatusCode::FORBIDDEN, "{path}");
             // Not the SPA's index either.

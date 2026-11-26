@@ -242,8 +242,6 @@ pub struct HubInner {
     /// The MBC stream proofs (#267, `GET /api/mbc/stream-proof`): the last
     /// answer and the route's refusal ration.
     pub stream_proofs: stream_proof::StreamProofs,
-    /// The ration of the Listen select route's refusal lines (#210).
-    pub select_refusals: Mutex<ration::Ration>,
     /// Its window worker, awaited after the stop so its windows are handed
     /// back and its contact ended before the process ends.
     plugwin: Option<plugwin::Plugwin>,
@@ -743,8 +741,7 @@ impl Hub {
                     }
                 })
             });
-            let (listen, listen_tasks) =
-                listen::spawn(config.listen.port, events.clone(), sets, lom);
+            let (listen, listen_tasks) = listen::spawn(&config.listen, events.clone(), sets, lom);
             tasks.extend(listen_tasks);
             listen
         });
@@ -813,7 +810,6 @@ impl Hub {
             automation,
             scene_refusals: Mutex::new(ration::Ration::default()),
             stream_proofs: stream_proof::StreamProofs::default(),
-            select_refusals: Mutex::new(ration::Ration::default()),
             next_client: AtomicU64::new(1),
             tasks: Mutex::new(tasks),
         })))

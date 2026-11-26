@@ -71,7 +71,10 @@ fn a_frame_round_drives_the_one_selected_device_only() {
     listen.heard(vox_announce, now);
     listen.heard(other_announce, now);
     frame_round(&poller, &listen, now);
-    assert!(nothing(&vox) && nothing(&other), "nobody listens: no frame poll");
+    assert!(
+        nothing(&vox) && nothing(&other),
+        "nobody listens: no frame poll"
+    );
     let _lease = listen.start("band", "FOH Band", "Vox 2", 1, "10.0.0.5");
     frame_round(&poller, &listen, now);
     frame_round(&poller, &listen, now);
@@ -82,7 +85,10 @@ fn a_frame_round_drives_the_one_selected_device_only() {
     assert_eq!(read(&other), frame_datagram());
     assert!(nothing(&vox));
     let status = listen.status(now);
-    assert_eq!((status.frame_polls, status.polls, status.poll_failed), (2, 0, 0));
+    assert_eq!(
+        (status.frame_polls, status.polls, status.poll_failed),
+        (2, 0, 0)
+    );
 }
 
 #[test]
@@ -130,7 +136,10 @@ async fn the_task_polls_a_device_it_heard_and_names_its_socket() {
     let task = spawn(Arc::clone(&listen), None).unwrap();
     let (vox, vox_announce) = device(1, "Vox 1");
     listen.heard(vox_announce, Instant::now());
-    let from = listen.status(Instant::now()).poll_from.expect("the poll socket");
+    let from = listen
+        .status(Instant::now())
+        .poll_from
+        .expect("the poll socket");
     let read = tokio::task::spawn_blocking(move || {
         let mut buf = [0u8; 64];
         let (n, sender) = vox.recv_from(&mut buf).expect("a poll within 0.5 s");

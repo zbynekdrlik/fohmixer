@@ -41,7 +41,6 @@ fn only_an_mbc_token_on_an_engineer_route_or_a_route_without_a_decision_is_refus
         assert!(!refused(Some(RouteAccess::Open), role), "{role:?}");
         assert!(!refused(Some(RouteAccess::AnyRole), role), "{role:?}");
         assert!(!refused(Some(RouteAccess::Automation), role), "{role:?}");
-        assert!(!refused(Some(RouteAccess::Device), role), "{role:?}");
         assert!(refused(None, role), "{role:?}");
     }
     assert!(refused(Some(RouteAccess::EngineerOnly), Some(Role::Mbc)));

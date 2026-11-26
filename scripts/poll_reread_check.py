@@ -39,7 +39,7 @@ ID_COUNT = "obj-id-count"
 ID_EVERY = "obj-id-every"
 # What a pulled device never holds: a clock or a hand-over to another queue.
 STILL = ("deferlow", "defer", "metro", "qmetro", "delay", "del", "pipe")
-# The pushed identity's deferred load and 10 s clock (the Listen device's).
+# The pushed identity's deferred load and 10 s clock (no device's since #264).
 CLOCK_BOXES = (ID_DEFER, ID_OFFSET_DELAY, ID_CLOCK_DEFER, ID_CLOCK_START, ID_CLOCK)
 
 

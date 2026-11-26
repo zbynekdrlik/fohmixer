@@ -439,12 +439,18 @@ impl Default for LufsCfg {
 /// `[listen]` (#210): the port on 127.0.0.1 where the Listen devices send
 /// their announces (UDP) and their audio (TCP), fixed in the device's patch
 /// (another means the device rebuilt with `build_amxd.py --port`); `port =
-/// 0` turns Listen off. The devices ask whether they are selected on the
-/// hub's own HTTP port (`--hub-port`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+/// 0` turns Listen off. The hub polls each device on the port it names
+/// (#264, `listen/poll.rs`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(from = "ListenToml")]
 pub struct ListenCfg {
     pub port: u16,
+    /// The ports the start's sweep sends `/fohmixer/listen/poll 0` to
+    /// (#264, `listen::poll::sweep`): the devices' whole range, the LUFS
+    /// listener's ([`LufsCfg::sweep`]); no config key, only a test narrows
+    /// it or turns it off (`None`): a sweep reaches every socket in its
+    /// range, other tests' too.
+    pub sweep: Option<std::ops::Range<u16>>,
 }
 
 /// `[listen]` as written: `select_port`, the UDP select port of the
@@ -461,7 +467,10 @@ struct ListenToml {
 
 impl From<ListenToml> for ListenCfg {
     fn from(toml: ListenToml) -> Self {
-        Self { port: toml.port }
+        Self {
+            port: toml.port,
+            sweep: default_sweep(),
+        }
     }
 }
 
@@ -473,6 +482,7 @@ impl Default for ListenCfg {
     fn default() -> Self {
         Self {
             port: default_listen_port(),
+            sweep: default_sweep(),
         }
     }
 }

@@ -109,8 +109,15 @@ fn listeners_share_a_track_and_the_last_one_ends_it() {
     listen.heard(announce(5, "Vox 1", "FOH Band"), t0);
     listen.heard(announce(6, "Vox 2", "FOH Band"), t0);
     assert!(!listen.accepts(5, t0), "nobody listens");
-    assert_eq!(listen.polls(t0), vec![(port_of(5), false), (port_of(6), false)]);
-    assert_eq!(listen.frame_port(t0), None, "no frames while nobody listens");
+    assert_eq!(
+        listen.polls(t0),
+        vec![(port_of(5), false), (port_of(6), false)]
+    );
+    assert_eq!(
+        listen.frame_port(t0),
+        None,
+        "no frames while nobody listens"
+    );
     let a = listen.start("band", "FOH Band", "Vox 1", 1, "10.0.0.5");
     let b = listen.start("band", "FOH Band", "Vox 1", 2, "10.0.0.6");
     assert_eq!((a.turn(), b.turn()), (1, 1), "a join keeps the turn");
@@ -120,7 +127,10 @@ fn listeners_share_a_track_and_the_last_one_ends_it() {
     let target = status.target.unwrap();
     assert_eq!((target.listeners, target.device), (2, Some(5)));
     // #264: each device is told in its own poll; frames go to the one.
-    assert_eq!(listen.polls(t0), vec![(port_of(5), true), (port_of(6), false)]);
+    assert_eq!(
+        listen.polls(t0),
+        vec![(port_of(5), true), (port_of(6), false)]
+    );
     assert_eq!(listen.frame_port(t0), Some(port_of(5)));
     drop(a);
     assert!(listen.accepts(5, t0), "one listener left");
@@ -156,7 +166,11 @@ fn a_stale_device_is_forgotten_at_the_next_announce() {
     listen.heard(announce(1, "Vox 1", "FOH Band"), t0);
     let later = t0 + Duration::from_millis(3000);
     assert!(listen.status(later).devices.is_empty(), "not shown");
-    assert_eq!(listen.polls(later), vec![], "#264: a stale device is not polled");
+    assert_eq!(
+        listen.polls(later),
+        vec![],
+        "#264: a stale device is not polled"
+    );
     let just = t0 + Duration::from_millis(2999);
     assert_eq!(listen.polls(just), vec![(port_of(1), false)]);
     listen.heard(announce(2, "Vox 2", "FOH Band"), later);
@@ -267,7 +281,8 @@ async fn a_port_taken_is_recorded_and_shown() {
     let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = taken.local_addr().unwrap().port();
     let (events, records) = EventLog::channel(16);
-    let (listen, tasks) = spawn(port, events, no_sets(), no_lom());
+    let cfg = |port| crate::config::ListenCfg { port, sweep: None };
+    let (listen, tasks) = spawn(&cfg(port), events, no_sets(), no_lom());
     assert!(tasks.is_empty());
     let status = listen.status(Instant::now());
     assert_eq!(status.addr, None);
@@ -276,8 +291,12 @@ async fn a_port_taken_is_recorded_and_shown() {
     assert_eq!(record["what"], "listening");
     assert!(record["error"].is_string());
     let (events, records) = EventLog::channel(16);
-    let (listen, tasks) = spawn(0, events, no_sets(), no_lom());
-    assert_eq!(tasks.len(), 3, "the stream, the announces and the racks");
+    let (listen, tasks) = spawn(&cfg(0), events, no_sets(), no_lom());
+    assert_eq!(
+        tasks.len(),
+        4,
+        "the stream, the announces, the polls (#264) and the racks"
+    );
     let addr = listen.status(Instant::now()).addr.unwrap();
     assert!(addr.starts_with("127.0.0.1:"), "{addr}");
     assert_eq!(records.try_recv().unwrap()["addr"], addr.as_str());
@@ -374,7 +393,10 @@ fn a_set_loaded_while_listening_is_followed() {
     *set.lock().unwrap() = Some("Other Set".to_string());
     assert!(listen.accepts(9, t0) && !listen.accepts(5, t0));
     assert_eq!(listen.frame_port(t0), Some(port_of(9)));
-    assert_eq!(listen.polls(t0), vec![(port_of(5), false), (port_of(9), true)]);
+    assert_eq!(
+        listen.polls(t0),
+        vec![(port_of(5), false), (port_of(9), true)]
+    );
     assert_eq!(listen.status(t0).target.unwrap().set, "Other Set");
     // An instance whose set is unknown for a moment keeps the last one.
     *set.lock().unwrap() = None;

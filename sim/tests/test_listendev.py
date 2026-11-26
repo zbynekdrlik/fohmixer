@@ -30,7 +30,9 @@ def _site():
 
 
 def _osc(address, tags=",", *ints):
-    return listendev._string(address) + listendev._string(tags) + struct.pack(f">{len(ints)}i", *ints)
+    return (
+        listendev._string(address) + listendev._string(tags) + struct.pack(f">{len(ints)}i", *ints)
+    )
 
 
 class EncodeTest(unittest.TestCase):
@@ -42,11 +44,15 @@ class EncodeTest(unittest.TestCase):
 
     def test_the_hubs_polls_as_the_rust_wire_pins_them(self):
         # #264: crates/fohmixer-proto/src/listen/wire/tests.rs's goldens.
-        self.assertEqual(listendev.parse_poll(bytes.fromhex(listendev.GOLDEN_POLL_ON_HEX)), ("poll", True))
+        self.assertEqual(
+            listendev.parse_poll(bytes.fromhex(listendev.GOLDEN_POLL_ON_HEX)), ("poll", True)
+        )
         off = bytearray.fromhex(listendev.GOLDEN_POLL_ON_HEX)
         off[-1] = 0
         self.assertEqual(listendev.parse_poll(bytes(off)), ("poll", False))
-        self.assertEqual(listendev.parse_poll(bytes.fromhex(listendev.GOLDEN_FRAME_HEX)), ("frame", None))
+        self.assertEqual(
+            listendev.parse_poll(bytes.fromhex(listendev.GOLDEN_FRAME_HEX)), ("frame", None)
+        )
 
     def test_anything_else_is_no_poll(self):
         # The patch's `route` drops another kind's poll (the LUFS listener's
@@ -60,7 +66,9 @@ class EncodeTest(unittest.TestCase):
             b"",
         ):
             self.assertIsNone(listendev.parse_poll(data), data)
-        self.assertEqual(listendev.parse_poll(_osc("/fohmixer/listen/poll", ",i", 2)), ("poll", False))
+        self.assertEqual(
+            listendev.parse_poll(_osc("/fohmixer/listen/poll", ",i", 2)), ("poll", False)
+        )
 
     def test_the_wire_and_the_range(self):
         self.assertEqual((listendev.WIRE_VERSION, listendev.ANNOUNCE_TAGS), (2, ",iisssssiii"))
@@ -138,9 +146,13 @@ class StreamTest(unittest.TestCase):
             self.devs.tick()
             time.sleep(0.005)
 
-    def until(self, check):
-        """Ticks (10 ms of the fake clock each) until ``check`` holds."""
+    def until(self, check, send=None):
+        """Ticks (10 ms of the fake clock each) until ``check`` holds;
+        ``send`` before each (the hub's frame polls come every 20 ms)."""
         for _ in range(200):
+            if send is not None:
+                send()
+                time.sleep(0.002)
             self.devs.tick()
             if check():
                 return
@@ -151,7 +163,11 @@ class StreamTest(unittest.TestCase):
     def test_a_device_announces_its_port_at_load_and_answers_each_poll(self):
         track = self.song.tracks[1]
         device = self.devs.add(track, rack=True)
-        self.assertTrue(listendev.POLL_PORT_MIN <= device.port < listendev.POLL_PORT_MIN + listendev.POLL_PORT_SPAN)
+        self.assertTrue(
+            listendev.POLL_PORT_MIN
+            <= device.port
+            < listendev.POLL_PORT_MIN + listendev.POLL_PORT_SPAN
+        )
         announce = self.announce()
         self.assertTrue(announce.startswith(b"/fohmixer/listen\0"))
         self.assertIn(track.name.encode(), announce)
@@ -179,8 +195,7 @@ class StreamTest(unittest.TestCase):
         # No frame poll: nothing streams, whatever the time (no own clock).
         self.tick(1.0)
         self.assertEqual(device.streamed, 0)
-        self.frame(device)
-        self.until(lambda: device.streamed > 0)
+        self.until(lambda: device.streamed > 0, lambda: self.frame(device))
         self.assertEqual(device.streamed % listendev.FRAME, 0)
         got = b""
         while b"JMTX" not in got:
@@ -225,8 +240,7 @@ class StreamTest(unittest.TestCase):
         self.poll(device, True)
         self.until(lambda: device.conn is not None)
         conn, _ = self.hub_tcp.accept()
-        self.frame(device)
-        self.until(lambda: device.streamed > 0)
+        self.until(lambda: device.streamed > 0, lambda: self.frame(device))
         # Off again: the next frame poll streams nothing, though still on.
         device.rack.parameters[0].value = 0.0
         before = device.streamed
@@ -369,6 +383,14 @@ class LineTest(unittest.TestCase):
             ("streamed track x", "STREAMED"),
         ):
             self.assertEqual(self.line(text), f"{word} -1", text)
+
+    def test_listenload_announces_every_device_live_runs(self):
+        self.assertEqual(self.line("listendev track 1 add rack"), "LISTENDEV 1")
+        self.assertEqual(self.line("listendev track 2 add rack off"), "LISTENDEV 1")
+        self.assertEqual(self.line("listenload"), "LISTENLOAD 1")
+        self.assertEqual(self.line("listenload x"), "LISTENLOAD -1")
+        none = host.control(self.mt, self.song, "listenload", {}, None, None)
+        self.assertEqual(none, "LISTENLOAD -1")
 
     def test_the_hub_port_line_is_gone(self):
         # #264: the devices no longer ask the hub's HTTP port.

@@ -58,6 +58,10 @@ async fn hub(dir: &Path, host: &mut Host, port: u16) -> TestHub {
     // too (`listen_wire.rs` sweeps its own device's port only).
     config.listen.sweep = None;
     let hub = TestHub::start_config(config).await;
+    // The devices were loaded before the hub: each announces once more, as
+    // at a load after the hub's start (the sweep's own test is
+    // `listen_wire.rs`'s).
+    assert!(host.listendev("listenload") >= 0);
     hub.status_until(SECS_10, |s| s.instances.iter().all(|i| i.online))
         .await;
     hub

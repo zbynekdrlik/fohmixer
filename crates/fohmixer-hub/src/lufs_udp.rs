@@ -294,7 +294,7 @@ fn udp_socket(addr: SocketAddrV4) -> io::Result<tokio::net::UdpSocket> {
 
 /// The polls' socket: `127.0.0.1`, any port, non-blocking (a send that
 /// would block is a failed poll, never a wait in the listener's task).
-fn poll_socket() -> io::Result<std::net::UdpSocket> {
+pub(crate) fn poll_socket() -> io::Result<std::net::UdpSocket> {
     let socket = std::net::UdpSocket::bind(bind_addr(0))?;
     socket.set_nonblocking(true)?;
     Ok(socket)
@@ -356,7 +356,7 @@ pub fn sweep(
 }
 
 /// Sends `poll` to each of `ports`: how many sends the socket refused.
-fn refused_sends(
+pub(crate) fn refused_sends(
     poller: &std::net::UdpSocket,
     poll: &[u8],
     ports: impl IntoIterator<Item = u16>,

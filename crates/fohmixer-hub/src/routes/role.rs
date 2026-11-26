@@ -12,7 +12,6 @@ use axum::{
     response::Response,
 };
 use fohmixer_proto::client::{HubStatus, LayoutStatus};
-use fohmixer_proto::listen::wire::SELECT_PATH;
 use fohmixer_proto::roles::{MBC_INSTANCE, Role};
 
 use crate::Hub;
@@ -30,9 +29,6 @@ pub enum RouteAccess {
     /// No login: the handler checks the automation token itself (#207,
     /// `POST /api/scene`; #267, `GET /api/mbc/stream-proof`).
     Automation,
-    /// No login: a Listen device on this PC (#210, `GET
-    /// /api/listen/select`); the handler takes loopback peers only.
-    Device,
 }
 
 /// Every path [`api_routes`] registers, each with its decision in
@@ -51,7 +47,6 @@ pub const API_PATHS: &[&str] = &[
     "/api/lufs/days",
     "/api/scene",
     "/api/mbc/stream-proof",
-    SELECT_PATH,
     "/ws",
     "/ws/audio",
 ];
@@ -71,7 +66,6 @@ pub fn route_role(path: &str) -> Option<RouteAccess> {
             Some(RouteAccess::EngineerOnly)
         }
         "/api/scene" | "/api/mbc/stream-proof" => Some(RouteAccess::Automation),
-        SELECT_PATH => Some(RouteAccess::Device),
         _ => None,
     }
 }
@@ -81,12 +75,7 @@ pub fn route_role(path: &str) -> Option<RouteAccess> {
 pub fn refused(access: Option<RouteAccess>, role: Option<Role>) -> bool {
     match access {
         None => true,
-        Some(
-            RouteAccess::Open
-            | RouteAccess::AnyRole
-            | RouteAccess::Automation
-            | RouteAccess::Device,
-        ) => false,
+        Some(RouteAccess::Open | RouteAccess::AnyRole | RouteAccess::Automation) => false,
         Some(RouteAccess::EngineerOnly) => role == Some(Role::Mbc),
     }
 }

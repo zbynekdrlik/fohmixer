@@ -238,23 +238,32 @@ fn a_device_heard_is_polled_with_its_select_and_forgotten_once_silent() {
         let from = poller(&hub).await;
         let device = poll_socket();
         let at = device.local_addr().unwrap().port();
-        device.send_to(&announce(5, at), ("127.0.0.1", port)).unwrap();
+        device
+            .send_to(&announce(5, at), ("127.0.0.1", port))
+            .unwrap();
         let status = hub
             .status_until(SECS_10, |s| s.listen.devices.len() == 1)
             .await;
         assert_eq!(status.listen.devices[0].port, at);
-        let polls = tokio::task::block_in_place(|| {
-            read_within(&device, from, Duration::from_millis(1000))
-        });
-        assert!((3..=5).contains(&polls.len()), "4 a second: {}", polls.len());
-        assert!(polls.iter().all(|p| *p == poll_datagram(false)), "{polls:?}");
+        let polls =
+            tokio::task::block_in_place(|| read_within(&device, from, Duration::from_millis(1000)));
+        assert!(
+            (3..=5).contains(&polls.len()),
+            "4 a second: {}",
+            polls.len()
+        );
+        assert!(
+            polls.iter().all(|p| *p == poll_datagram(false)),
+            "{polls:?}"
+        );
         // Unanswered, the device is forgotten within 3 s; then no poll.
         hub.status_until(SECS_10, |s| s.listen.devices.is_empty())
             .await;
-        let after = tokio::task::block_in_place(|| {
-            read_within(&device, from, Duration::from_millis(600))
-        });
-        assert!(after.len() <= 1, "{after:?}");
+        // The polls of the 3 s before wait in the socket: read them first.
+        tokio::task::block_in_place(|| read_within(&device, from, Duration::from_millis(300)));
+        let after =
+            tokio::task::block_in_place(|| read_within(&device, from, Duration::from_millis(600)));
+        assert!(after.is_empty(), "{after:?}");
         let status = hub.status().await;
         assert!(status.listen.polls >= 3, "{:?}", status.listen);
         assert_eq!(status.listen.frame_polls, 0, "nobody listened");
@@ -278,9 +287,8 @@ fn a_hub_sweeps_its_range_once_with_off_at_its_start() {
         config.listen.sweep = Some(at..at + 1);
         let hub = TestHub::start_config(config).await;
         let from = poller(&hub).await;
-        let swept = tokio::task::block_in_place(|| {
-            read_within(&device, from, Duration::from_millis(500))
-        });
+        let swept =
+            tokio::task::block_in_place(|| read_within(&device, from, Duration::from_millis(500)));
         assert_eq!(swept, vec![poll_datagram(false)], "one poll, off");
         let status = hub.status().await;
         assert_eq!((status.listen.swept, status.listen.sweep_failed), (1, 0));

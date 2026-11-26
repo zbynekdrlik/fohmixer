@@ -9,43 +9,39 @@ LUFS devices' do (``maxdev.py``).
 
 A rack's ``Device On`` (its ``parameters 0``, on unless added ``off``, as the
 PC's sets are saved since #238) is honoured: a device in a rack that is off
-neither announces nor streams (Live runs nothing of a device switched off),
-and the hub switches the rack on only while a page listens to its track.
+answers nothing and streams nothing (the patch's poll gate is its
+``is_active``), and the hub switches the rack on only while a page listens
+to its track; when it turns on the device announces itself at once, off.
 
 What it plays: a sine at its ``tone`` (Hz; 0 is silence), the left channel
 at amplitude ``LEFT`` and the right at ``RIGHT``, the phase counted from the
 device's stream start, so a test can decode the hub's Opus and find the tone.
 
 The wire is the real device's (``crates/fohmixer-proto/src/listen/wire.rs``,
-``listen/jitnet.rs``): an OSC announce to the hub's UDP port once a second;
-every ``POLL_S`` each device asks the hub's HTTP port whether it is selected
-(``GET /api/listen/select?device=<id>``, as the patch's ``maxurl`` does: one
-UDP select port for every device reached only one of them on the PC, #210),
-and an answer whose JSON ``on`` is true (the patch's ``dict.unpack on:`` into
-``sel 1``) selects it for ``SELECT_HOLD_S``, an ``on`` of any other value
-stops it at once, and an answer without ``on`` (an error answer, a body that
-is no JSON) or a failed request is no answer: the hold ends it; while
-selected it connects to the hub's TCP port, sends its hello as a Jitter
-message chunk, then every tick the whole 960-sample frames it owes as one
-float32 matrix of 2 planes and 960 x k cells, big-endian, as ``jit.catch~
-@mode 1`` and ``jit.net.send`` would. The hub's latency answers are read and
-dropped. The streams run on SimLive's main thread (one ``Live.Base.Timer``,
-``TICK_MS`` as the patch's ``qmetro 10``); the polls on a thread of their
-own (a Max ``maxurl`` request does not hold the patch either), whose answers
-the next tick takes. The hub's HTTP port is ``--hub-port`` or, once a test's
-hub has one, the ``listenhub <port>`` line.
+``listen/jitnet.rs``), version 2 (#264: the device holds no clock). At its
+add it binds its poll socket on a port of the LUFS devices' range
+(``POLL_PORT_MIN``, ``POLL_PORT_SPAN``; SimLive draws again when a port is
+taken, the real patch cannot tell) and announces itself to the hub's UDP
+port once, naming that port. Each of the hub's polls
+(``/fohmixer/listen/poll <on>``) sets it on or off and is answered with its
+announce; on, it connects to the hub's TCP port and sends its hello as a
+Jitter message chunk; each of the hub's frame polls
+(``/fohmixer/listen/frame``) while on sends the whole 960-sample frames it
+owes as one float32 matrix of 2 planes and 960 x k cells, big-endian, as
+``jit.catch~ @mode 1`` and ``jit.net.send`` would. Another kind's poll is
+dropped (the patch's ``route``). The hub's latency answers are read and
+dropped. Everything runs on SimLive's main thread (one ``Live.Base.Timer``
+reading each device's socket, as the patch's ``udpreceive @defer 1`` hands
+a datagram to Max's main thread).
 """
 
 import itertools
-import json
 import math
+import random
 import socket
 import struct
 import sys
-import threading
 import time
-import urllib.error
-import urllib.request
 
 import Live
 import maxdev
@@ -53,23 +49,27 @@ import maxdev
 NAME = "FohMixer Listen"
 CLASS_NAME = "MxDeviceAudioEffect"
 ANNOUNCE_ADDRESS = "/fohmixer/listen"
-ANNOUNCE_TAGS = ",iisssssii"
-SELECT_PATH = "/api/listen/select"
+ANNOUNCE_TAGS = ",iisssssiii"
+POLL_ADDRESS = "/fohmixer/listen/poll"
+FRAME_ADDRESS = "/fohmixer/listen/frame"
 HELLO_WORD = "fohmixer_listen"
-WIRE_VERSION = 1
+WIRE_VERSION = 2
 NO_PARENT = "-"
+# The poll ports a device draws from (the LUFS devices' range,
+# crates/fohmixer-proto/src/lufs/wire.rs POLL_PORT_MIN / POLL_PORT_SPAN).
+POLL_PORT_MIN = 40000
+POLL_PORT_SPAN = 10000
+# How often SimLive draws again for a port taken.
+BIND_TRIES = 64
 # The devices' version on the wire, one place for every device.
 VERSION = maxdev.VERSION
 RATE = 48000
 FRAME = 960
 LEFT = 0.5
 RIGHT = 0.25
-TICK_MS = 10.0
-ANNOUNCE_S = 1.0
-POLL_S = 0.25
-SELECT_HOLD_S = 1.0
-POLL_TIMEOUT_S = 1.0
-# At most 50 frames in one tick (a stall never floods): the hub takes a
+# SimLive's main-thread tick (ms): how often the devices' sockets are read.
+TICK_MS = 5.0
+# At most 50 frames in one matrix (a stall never floods): the hub takes a
 # matrix of at most 50 frames (jitnet::MAX_DATA: 0.5 s at 96 kHz), as
 # jit.catch~ caught them.
 MAX_FRAMES = 50
@@ -84,12 +84,15 @@ MATRIX_HEADER = 288
 FLOAT32 = 2
 MAX_DIMS = 32
 # Device 9, v1.50.0, in the chain Listen of the rack Listen on Vox 1 in the
-# set FOH Band, 48 kHz, streaming: the Rust wire's GOLDEN_ANNOUNCE_HEX.
+# set FOH Band, 48 kHz, streaming, polled on 40007: the Rust wire's
+# GOLDEN_ANNOUNCE_HEX, GOLDEN_POLL_ON_HEX and GOLDEN_FRAME_HEX.
 GOLDEN_ANNOUNCE_HEX = (
-    "2f666f686d697865722f6c697374656e000000002c69697373737373696900000000000100000009"
+    "2f666f686d697865722f6c697374656e000000002c69697373737373696969000000000200000009"
     "76312e35302e30004c697374656e00004c697374656e0000566f782031000000464f482042616e64"
-    "000000000000bb8000000001"
+    "000000000000bb800000000100009c47"
 )
+GOLDEN_POLL_ON_HEX = "2f666f686d697865722f6c697374656e2f706f6c6c0000002c69000000000001"
+GOLDEN_FRAME_HEX = "2f666f686d697865722f6c697374656e2f6672616d6500002c000000"
 
 
 def _string(text):
@@ -97,49 +100,55 @@ def _string(text):
     return data + b"\0" * (4 - len(data) % 4)
 
 
-def encode_announce(device, version, parents, rate, sending):
+def encode_announce(device, version, parents, rate, sending, port):
     """The announce datagram (``parents``: four names, nearest first)."""
     out = _string(ANNOUNCE_ADDRESS) + _string(ANNOUNCE_TAGS)
     out += struct.pack(">ii", WIRE_VERSION, device)
     out += _string(version)
     for parent in parents:
         out += _string(parent)
-    return out + struct.pack(">ii", rate, 1 if sending else 0)
+    return out + struct.pack(">iii", rate, 1 if sending else 0, port)
 
 
-def select_url(hub_port, device):
-    """The URL a device asks whether it is selected."""
-    return f"http://127.0.0.1:{hub_port}{SELECT_PATH}?device={device}"
+def encode_poll(on):
+    """The hub's poll (the tests' hub)."""
+    return _string(POLL_ADDRESS) + _string(",i") + struct.pack(">i", 1 if on else 0)
 
 
-def answers_on(body):
-    """What an answer's body says, as the patch reads it: True for a JSON
-    object whose ``on`` is true, False for one whose ``on`` is anything else,
-    None (no answer) without ``on``."""
-    try:
-        answer = json.loads(body)
-    except ValueError:
+def encode_frame():
+    """The hub's frame poll (the tests' hub)."""
+    return _string(FRAME_ADDRESS) + _string(",")
+
+
+def parse_poll(data):
+    """What a datagram is to the device, as its patch's ``route`` and ``sel
+    1`` read it: ``("poll", on)`` (on only for 1), ``("frame", None)``, or
+    None for anything else (another kind's poll, a malformed one)."""
+    if data == encode_frame():
+        return "frame", None
+    head = _string(POLL_ADDRESS) + _string(",i")
+    if len(data) != len(head) + 4 or not data.startswith(head):
         return None
-    if not isinstance(answer, dict) or "on" not in answer:
-        return None
-    return answer["on"] is True
+    return "poll", struct.unpack(">i", data[len(head) :])[0] == 1
 
 
-# No proxy from the environment: the hub is on loopback.
-_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-
-
-def ask(hub_port, device):
-    """One device's question: ``answers_on`` of the answer (an error answer's
-    body too, as ``maxurl`` hands it on), None for a failed request; and the
-    failure's words, or None."""
-    try:
-        with _OPENER.open(select_url(hub_port, device), timeout=POLL_TIMEOUT_S) as response:
-            return answers_on(response.read(256)), None
-    except urllib.error.HTTPError as error:
-        return answers_on(error.read(256)), str(error)
-    except (OSError, ValueError) as error:
-        return None, str(error)
+def bind_poll_socket(draw=None):
+    """A non-blocking UDP socket on 127.0.0.1 at a port ``draw()`` gives
+    (default: random in the range), drawn again while one is taken; the
+    last error after ``BIND_TRIES``."""
+    draw = draw or (lambda: POLL_PORT_MIN + random.randrange(POLL_PORT_SPAN))
+    error = None
+    for _ in range(BIND_TRIES):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.bind(("127.0.0.1", draw()))
+        except OSError as taken:
+            sock.close()
+            error = taken
+            continue
+        sock.setblocking(False)
+        return sock
+    raise error
 
 
 def encode_message(atoms):
@@ -171,8 +180,8 @@ def _log(text):
 
 
 class ListenDevice:
-    """One device: its Max id, the Live device, where it sits, its tone and
-    its stream."""
+    """One device: its Max id, the Live device, where it sits, its tone, its
+    poll socket and its stream."""
 
     def __init__(self, device_id, device, track, rack=None, chain=None, rate=RATE):
         self.id = device_id
@@ -182,19 +191,19 @@ class ListenDevice:
         self.rack = rack
         self.chain = chain
         self.tone = 0.0
-        self.selected_until = None
+        self.on = False
+        self.was_active = False
         self.started = None
         self.sent = 0
         self.streamed = 0
         self.conn = None
+        self.socket = None
+        self.port = 0
 
     def parents(self, song):
         if self.chain is not None:
             return [self.chain.name, self.rack.name, self.track.name, song.name]
         return [self.track.name, song.name, NO_PARENT, NO_PARENT]
-
-    def sending(self, now):
-        return self.selected_until is not None and now < self.selected_until
 
     def active(self):
         """Whether Live runs it: no rack, or its rack's ``Device On`` on."""
@@ -219,6 +228,12 @@ class ListenDevice:
             self.conn.close()
             self.conn = None
 
+    def close_all(self):
+        self.close()
+        if self.socket is not None:
+            self.socket.close()
+            self.socket = None
+
 
 def track_of(song, where, index):
     if where == "master":
@@ -230,75 +245,31 @@ def track_of(song, where, index):
 class ListenDevices:
     """The host's Listen devices (main thread only)."""
 
-    def __init__(self, song, port=None, hub_port=None, clock=time.monotonic, polls=True):
+    def __init__(self, song, port=None, clock=time.monotonic):
         self._song = song
         self._port = port
-        self.hub_port = hub_port
         self._clock = clock
-        self._polls = polls
         self._ids = itertools.count(1)
         self.devices = []
         self._announce = None
         self._timer = None
-        self._announced = None
-        # The poll thread's view of the devices (a tuple, replaced whole) and
-        # its answers for the next tick (under the lock).
-        self._polled = ()
-        self._answers = {}
-        self._lock = threading.Lock()
-        self._halt = threading.Event()
-        self._poller = None
-        self._failing = False
 
     def start(self):
-        """Opens the socket, starts the timer and the polls (a host with a
+        """Opens the announce socket and starts the timer (a host with a
         Listen port)."""
         if self._port is None:
             return
         self._announce = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._timer = Live.Base.Timer(callback=self.tick, interval=TICK_MS, repeat=True)
         self._timer.start()
-        if self._polls:
-            self._poller = threading.Thread(target=self._poll_loop, daemon=True)
-            self._poller.start()
 
     def stop(self):
-        self._halt.set()
-        if self._poller is not None:
-            # Bounded: one question in flight ends within its timeout.
-            self._poller.join(POLL_TIMEOUT_S + POLL_S)
         if self._timer is not None:
             self._timer.stop()
         for device in self.devices:
-            device.close()
+            device.close_all()
         if self._announce is not None:
             self._announce.close()
-
-    def set_hub_port(self, port):
-        """The hub's HTTP port, once it is known (the ``listenhub`` line)."""
-        self.hub_port = port
-        return port
-
-    def _poll_loop(self):
-        while not self._halt.wait(POLL_S):
-            self.poll_once()
-
-    def poll_once(self):
-        """Asks the hub once for every device (the poll thread, or a test)."""
-        port = self.hub_port
-        if port is None:
-            return
-        for device_id in self._polled:
-            on, error = ask(port, device_id)
-            if error is not None and not self._failing:
-                _log(f"the hub's select route does not answer: {error}")
-            elif error is None and self._failing:
-                _log("the hub's select route answers again")
-            self._failing = error is not None
-            if on is None:
-                continue
-            with self._lock:
-                self._answers[device_id] = on
 
     def on(self, track):
         return [d for d in self.devices if d.track is track]
@@ -318,8 +289,13 @@ class ListenDevices:
             track._devices.append(device)
             placed = ListenDevice(next(self._ids), device, track, rate=rate)
         track._fire("devices")
+        placed.socket = bind_poll_socket()
+        placed.port = placed.socket.getsockname()[1]
         self.devices.append(placed)
-        self._polled = tuple(d.id for d in self.devices)
+        # Its load: one announce while Live runs it.
+        placed.was_active = placed.active()
+        if placed.was_active:
+            self._send_announce(placed)
         return placed
 
     def remove(self, track):
@@ -327,54 +303,99 @@ class ListenDevices:
         if not placed:
             return False
         last = placed[-1]
-        last.close()
+        last.close_all()
         self.devices.remove(last)
-        self._polled = tuple(d.id for d in self.devices)
         top = last.rack if last.rack is not None else last.device
         track.delete_device(track._devices.index(top))
         return True
 
+    def reload(self):
+        """Every device Live runs announces itself once, as at its load
+        (the ``listenload`` line: a test's hub starts after its host, and
+        its sweep is off); how many announced."""
+        running = [d for d in self.devices if d.active()]
+        for device in running:
+            self._send_announce(device)
+        return len(running)
+
     def tick(self):
-        """Takes the polls' answers, announces each second, streams what is
-        owed."""
+        """Reads each device's poll socket and answers what came."""
         now = self._clock()
-        self._take_answers(now)
-        if self._announced is None or now - self._announced >= ANNOUNCE_S:
-            self._announced = now
-            for device in self.devices:
-                if device.active():
-                    self._send_announce(device, now)
         for device in self.devices:
-            if device.active() and device.sending(now):
-                self._stream(device, now)
-            else:
-                device.started = None
+            active = device.active()
+            if active and not device.was_active:
+                # Device On turned 1: the patch's `is_active` observer bangs
+                # the pull, whose int is 0 for a bang.
+                self._set_on(device, False, now)
+                self._send_announce(device)
+            device.was_active = active
+            for data in self._datagrams(device):
+                self._take(device, parse_poll(data), active, now)
 
-    def _take_answers(self, now):
-        with self._lock:
-            answers, self._answers = self._answers, {}
-        for device in self.devices:
-            if device.id in answers:
-                device.selected_until = now + SELECT_HOLD_S if answers[device.id] else None
-
-    def _send_announce(self, device, now):
-        data = encode_announce(
-            device.id, VERSION, device.parents(self._song), device.rate, device.sending(now)
-        )
-        self._announce.sendto(data, ("127.0.0.1", self._port))
-
-    def _stream(self, device, now):
-        if device.conn is None:
+    def _datagrams(self, device):
+        if device.socket is None:
+            return []
+        out = []
+        while True:
             try:
-                device.conn = socket.create_connection(("127.0.0.1", self._port), timeout=1.0)
+                out.append(device.socket.recv(512))
+            except BlockingIOError:
+                return out
             except OSError as error:
-                _log(f"device {device.id} cannot connect: {error}")
-                return
-            hello = encode_message([HELLO_WORD, WIRE_VERSION, device.id, VERSION, device.rate])
-            device.conn.sendall(hello)
-        if device.started is None:
+                # An ICMP reset of an announce the hub's port refused.
+                _log(f"device {device.id}'s poll socket: {error}")
+                return out
+
+    def _take(self, device, parsed, active, now):
+        if parsed is None or not active:
+            return
+        kind, on = parsed
+        if kind == "frame":
+            if device.on:
+                self._stream(device, now)
+            return
+        self._set_on(device, on, now)
+        self._send_announce(device)
+
+    def _set_on(self, device, on, now):
+        """On: it connects and sends its hello, and its frames count from
+        now (``jit.catch~`` catches all the while; the first frame poll
+        takes what it caught since)."""
+        if on and not device.on:
+            device.on = True
             device.started = now
             device.sent = 0
+            self._connect(device)
+        elif not on and device.on:
+            device.on = False
+            device.started = None
+
+    def _send_announce(self, device):
+        if self._announce is None:
+            return
+        data = encode_announce(
+            device.id, VERSION, device.parents(self._song), device.rate, device.on, device.port
+        )
+        try:
+            self._announce.sendto(data, ("127.0.0.1", self._port))
+        except OSError as error:
+            _log(f"device {device.id} cannot announce: {error}")
+
+    def _connect(self, device):
+        if device.conn is not None or self._port is None:
+            return
+        try:
+            device.conn = socket.create_connection(("127.0.0.1", self._port), timeout=1.0)
+        except OSError as error:
+            _log(f"device {device.id} cannot connect: {error}")
+            return
+        hello = encode_message([HELLO_WORD, WIRE_VERSION, device.id, VERSION, device.rate])
+        device.conn.sendall(hello)
+
+    def _stream(self, device, now):
+        self._connect(device)
+        if device.conn is None:
+            return
         frames = device.owed(now)
         if frames:
             data = encode_matrix(device.samples(frames), FRAME, frames, now * 1000.0)
@@ -431,15 +452,6 @@ def device_line(line):
         if not MIN_RATE <= rate <= MAX_RATE:
             return None
     return words[1], int(words[2]), words[3] == "add", rack, rate, on
-
-
-def hub_line(line):
-    """A ``listenhub <port>`` line's port (1 to 65535), or None."""
-    words = line.split()
-    if len(words) != 2 or not words[1].isdigit():
-        return None
-    port = int(words[1])
-    return port if 0 < port < 65536 else None
 
 
 def tone_line(line):
