@@ -275,7 +275,7 @@ class TreeTests(TreeCase):
         pack = self.box(patch, "pack")
         pack["text"] = pack["text"] + " 0"
         self.save(patch, METER)
-        self.assertTrue(any("one pack of 10 arguments" in e for e in self.errors()))
+        self.assertTrue(any("one pack of 11 arguments" in e for e in self.errors()))
 
     def test_the_pack_sends_the_version(self) -> None:
         patch = self.patcher(METER)
@@ -719,7 +719,9 @@ class TreeTests(TreeCase):
         )
 
     def test_every_identity_line_is_held(self) -> None:
-        for (box, inlet), sources in cl.identity_wiring("obj-pack").items():
+        for (box, inlet), sources in cl.identity_wiring(
+            "obj-pack", METER.pulled, METER.on_poll
+        ).items():
             for src in sources:
                 patch = self.patcher(METER)
                 patch["patcher"]["lines"] = [

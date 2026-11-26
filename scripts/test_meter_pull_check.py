@@ -51,7 +51,11 @@ class MeterPullTests(TreeCase):
     def test_a_peakamp_with_an_interval_fails(self) -> None:
         # The old `peakamp~ 33` ran a clock on Max's scheduler, inside
         # Live's audio thread: each output and the faces' redraw posted.
-        self.edit(METER.maxpat, '"peakamp~"', '"peakamp~ 33"')
+        patch = self.patcher(METER)
+        for b in cl.boxes(patch["patcher"]):
+            if b.get("text") == "peakamp~":
+                b["text"] = "peakamp~ 33"
+        self.save(patch, METER)
         errors = self.errors()
         self.assertIn(
             f"{WHERE}: obj-peak-l ('peakamp~ 33') runs its own clock (the device is pulled: "
@@ -63,8 +67,9 @@ class MeterPullTests(TreeCase):
             "clock (a redraw from the audio thread posts too)",
             errors,
         )
+        # R's value bangs the pack (L only fills its cold slot).
         self.assertIn(
-            f"{WHERE}: obj-peak-l ('peakamp~ 33') reaches the udpsend obj-udpsend on the "
+            f"{WHERE}: obj-peak-r ('peakamp~ 33') reaches the udpsend obj-udpsend on the "
             "audio thread (a deferlow or a qmetro goes between)",
             errors,
         )
@@ -139,14 +144,14 @@ class MeterPullTests(TreeCase):
             # The counter banged by something but the pull.
             (
                 [["obj-thisdevice", 0], [mp.ID_COUNT, 0]],
-                f"{mp.ID_COUNT}:0 takes [['{lp.PULL}', 2], ['{mp.ID_OFFSET_SET}', 0]] alone, "
-                f"has [['{lp.PULL}', 2], ['{mp.ID_OFFSET_SET}', 0], ['obj-thisdevice', 0]]",
+                f"{mp.ID_COUNT}:0 takes [['{mp.ID_OFFSET_SET}', 0], ['{lp.PULL}', 2]] alone, "
+                f"has [['{mp.ID_OFFSET_SET}', 0], ['{lp.PULL}', 2], ['obj-thisdevice', 0]]",
             ),
             # The tick banged by the load too.
             (
                 [[cl.ID_LOAD, 0], [cl.ID_TICK, 0]],
                 f"{cl.ID_TICK}:0 takes [['{mp.ID_EVERY}', 0]] alone, "
-                f"has [['{cl.ID_LOAD}', 0], ['{mp.ID_EVERY}', 0]]",
+                f"has [['{mp.ID_EVERY}', 0], ['{cl.ID_LOAD}', 0]]",
             ),
             # The counter's range set from elsewhere.
             (
