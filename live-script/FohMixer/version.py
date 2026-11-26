@@ -4,4 +4,4 @@
 reports it to the hub on connect from S2 on (spec §2.2).
 """
 
-VERSION = "1.60.3"
+VERSION = "1.60.4"
