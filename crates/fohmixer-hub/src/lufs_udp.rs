@@ -28,7 +28,7 @@
 //! when polled (its load and Device On turning 1 aside), so a hub restarted
 //! under a running Live would never learn its port. At its start the hub
 //! sends the meter's poll once to every port of the devices' range
-//! ([`sweep`], [`sweep_ports`]) from the poll socket; every running meter
+//! ([`sweep`], over `config::LufsCfg.sweep`) from the poll socket; every running meter
 //! answers and is learned. A LUFS device on a swept port drops the meter's
 //! address at its `route`; a foreign program in the range sees one unknown
 //! OSC datagram once. Its sends count apart (`swept`, `sweep_failed`).
@@ -251,7 +251,7 @@ pub fn spawn(
     counters: Arc<Counters>,
     events: EventLog,
     tap: Option<Tap>,
-    sweep_ports: bool,
+    sweep_ports: Option<std::ops::Range<u16>>,
 ) -> io::Result<(SocketAddr, JoinHandle<()>)> {
     let wanted = bind_addr(port);
     let bound = udp_socket(wanted).and_then(|socket| Ok((socket, poll_socket()?)));
@@ -273,8 +273,8 @@ pub fn spawn(
     events.record("lufs", listen_fields(&addr.to_string(), None));
     counters.set_addr(Some(addr.to_string()), None);
     counters.set_poll_from(poller.local_addr().ok().map(|a| a.to_string()));
-    if sweep_ports {
-        sweep(&poller, &counters);
+    if let Some(ports) = sweep_ports {
+        sweep(&poller, ports, &counters);
     }
     let task = tokio::spawn(listen(socket, poller, tx, counters, events, tap));
     Ok((addr, task))
@@ -320,30 +320,13 @@ pub fn poll_round(
     counters.polled(sent, failed, polling);
 }
 
-/// The ports a device draws its poll port from (the patches' `random
-/// POLL_PORT_SPAN` + `POLL_PORT_MIN`, `scripts/lufs_pull_check.py` keeps
-/// them equal): the start's sweep covers each once.
-pub fn sweep_ports() -> std::ops::Range<u16> {
-    wire::POLL_PORT_MIN..wire::POLL_PORT_MIN + wire::POLL_PORT_SPAN
-}
-
 /// The start's sweep (#264, the DECIDED of 26.11): the meter's poll once to
-/// every port of [`sweep_ports`], so a meter running from before the hub's
-/// start (a hub restarted under a running Live: the meter sends only when
-/// polled) answers and is learned. Non-blocking: a refused send is counted,
-/// never waited for. Its counts, sent and failed.
-pub fn sweep(poller: &std::net::UdpSocket, counters: &Counters) -> (u64, u64) {
-    let (sent, failed) = sweep_over(poller, sweep_ports(), counters);
-    tracing::info!(
-        sent,
-        failed,
-        "lufs: polled every meter port once at start (a meter running from before answers)"
-    );
-    (sent, failed)
-}
-
-/// The meter's poll once to each of `ports`, counted as the sweep's.
-pub fn sweep_over(
+/// each of `ports` (the hub's: `config::LufsCfg.sweep`, the devices' whole
+/// range), so a meter running from before the hub's start (a hub restarted
+/// under a running Live: the meter sends only when polled) answers and is
+/// learned. Non-blocking: a refused send is counted, never waited for. Its
+/// counts, sent and failed, also on one info line.
+pub fn sweep(
     poller: &std::net::UdpSocket,
     ports: impl IntoIterator<Item = u16>,
     counters: &Counters,
@@ -353,6 +336,11 @@ pub fn sweep_over(
     let failed = refused_sends(poller, &poll, ports.iter().copied());
     let (sent, failed) = round_counts(ports.len(), failed);
     counters.swept(sent, failed);
+    tracing::info!(
+        sent,
+        failed,
+        "lufs: polled every meter port once at start (a meter running from before answers)"
+    );
     (sent, failed)
 }
 

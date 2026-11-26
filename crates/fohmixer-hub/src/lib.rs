@@ -720,7 +720,7 @@ impl Hub {
                 Arc::clone(&lufs),
                 events.clone(),
                 link_tap,
-                config.lufs.sweep,
+                config.lufs.sweep.clone(),
             )
         {
             tasks.push(task);

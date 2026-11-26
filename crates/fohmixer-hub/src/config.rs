@@ -402,31 +402,36 @@ pub enum EqBackend {
 /// and meter devices send their readings (fixed in the devices' patches:
 /// another port means the devices rebuilt with `build_amxd.py --port`);
 /// `0` turns the listener off.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LufsCfg {
     #[serde(default = "default_lufs_port")]
     pub port: u16,
-    /// The start's sweep of the meters' poll ports (#264, `lufs_udp::sweep`):
-    /// always on, no config key; only a test turns it off (a sweep reaches
-    /// every socket in the range, other tests' too).
-    #[serde(skip, default = "sweeps")]
-    pub sweep: bool,
+    /// The ports the start's sweep sends the meter's poll to (#264,
+    /// `lufs_udp::sweep`): the devices' whole range, no config key; only a
+    /// test narrows it or turns it off (`None`): a sweep reaches every
+    /// socket in its range, other tests' too.
+    #[serde(skip, default = "default_sweep")]
+    pub sweep: Option<std::ops::Range<u16>>,
 }
 
 fn default_lufs_port() -> u16 {
     fohmixer_proto::lufs::wire::DEFAULT_PORT
 }
 
-fn sweeps() -> bool {
-    true
+/// The ports a device draws its poll port from (the patches' `random
+/// POLL_PORT_SPAN` + `POLL_PORT_MIN`, `scripts/lufs_pull_check.py` keeps them
+/// equal).
+fn default_sweep() -> Option<std::ops::Range<u16>> {
+    use fohmixer_proto::lufs::wire::{POLL_PORT_MIN, POLL_PORT_SPAN};
+    Some(POLL_PORT_MIN..POLL_PORT_MIN + POLL_PORT_SPAN)
 }
 
 impl Default for LufsCfg {
     fn default() -> Self {
         Self {
             port: default_lufs_port(),
-            sweep: sweeps(),
+            sweep: default_sweep(),
         }
     }
 }
