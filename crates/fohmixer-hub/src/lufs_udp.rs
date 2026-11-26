@@ -13,14 +13,16 @@
 //!
 //! **The polls (#264):** a device of the polled form names the port it
 //! listens on (`Reading.port`); the same task sends each such port
-//! [`wire::poll_datagram`] every [`wire::POLL_EVERY_MS`] from a socket of
-//! its own (bound to `127.0.0.1`, never read: an ICMP reset from a port that
-//! closed lands there, not in the listener's receive), and the device
-//! answers each with one reading, pulled in Max's main thread. A port is
-//! polled while its key is heard ([`Polls`]): a key lost
-//! (`rules::lufs::is_stale`, 1 s for a LUFS key) drops it, so a device
-//! switched off (it answers nothing) or gone is polled for one stale window
-//! at most, and a device moved (a new key, the same port) is polled once.
+//! [`wire::poll_datagram`] of its key's kind at that kind's rate
+//! ([`poll_every`]: a LUFS device every 200 ms, a meter every 33 ms, one
+//! round per kind, [`POLLED_KINDS`]) from a socket of its own (bound to
+//! `127.0.0.1`, never read: an ICMP reset from a port that closed lands
+//! there, not in the listener's receive), and the device answers each with
+//! one reading, pulled in Max's main thread. A port is polled while its key
+//! is heard ([`Polls`]): a key lost (`rules::lufs::is_stale`, 1 s for a
+//! LUFS key, 0.5 s for a meter key) drops it, so a device switched off (it
+//! answers nothing) or gone is polled for one stale window at most, and a
+//! device moved (a new key, the same port) is polled once per round.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -30,7 +32,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use fohmixer_proto::client::LufsListenerStatus;
-use fohmixer_proto::lufs::wire::{self, MAX_DATAGRAM};
+use fohmixer_proto::lufs::wire::{self, DeviceKind, MAX_DATAGRAM};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -137,11 +139,21 @@ impl Polls {
         }
     }
 
-    /// The ports to poll at `now`, each once: the lost keys are dropped
-    /// first.
-    pub fn due(&mut self, now: Instant) -> BTreeSet<u16> {
+    /// The ports of `kind`'s keys to poll at `now`, each once: the lost
+    /// keys of every kind are dropped first.
+    pub fn due(&mut self, now: Instant, kind: DeviceKind) -> BTreeSet<u16> {
         self.keys.retain(|key, (_, heard)| !lost(key, *heard, now));
-        self.keys.values().map(|(port, _)| *port).collect()
+        self.keys
+            .iter()
+            .filter(|(key, _)| key.kind == kind)
+            .map(|(_, (port, _))| *port)
+            .collect()
+    }
+
+    /// The ports polled now, of every kind, each once.
+    pub fn ports(&self) -> usize {
+        let ports: BTreeSet<u16> = self.keys.values().map(|(port, _)| *port).collect();
+        ports.len()
     }
 
     /// The keys polled.
@@ -246,15 +258,25 @@ fn poll_socket() -> io::Result<std::net::UdpSocket> {
     Ok(socket)
 }
 
-/// Sends one poll to each port due at `now` from `poller`, counted.
+/// The kinds the hub polls, each in a round of its own.
+pub const POLLED_KINDS: [DeviceKind; 2] = [DeviceKind::Lufs, DeviceKind::Meter];
+
+/// How often a kind's round runs ([`DeviceKind::poll_every_ms`]).
+pub fn poll_every(kind: DeviceKind) -> Duration {
+    Duration::from_millis(kind.poll_every_ms())
+}
+
+/// Sends one poll of `kind` to each of its ports due at `now` from
+/// `poller`, counted; the ports polled now are every kind's.
 pub fn poll_round(
     poller: &std::net::UdpSocket,
     polls: &mut Polls,
+    kind: DeviceKind,
     now: Instant,
     counters: &Counters,
 ) {
-    let ports = polls.due(now);
-    let poll = wire::poll_datagram();
+    let ports = polls.due(now, kind);
+    let poll = wire::poll_datagram(kind);
     let mut failed = 0;
     for port in &ports {
         if let Err(e) = poller.send_to(&poll, poll_addr(*port)) {
@@ -262,15 +284,24 @@ pub fn poll_round(
             failed += 1;
         }
     }
-    let (sent, failed, polling) = round_counts(ports.len(), failed);
+    let (sent, failed) = round_counts(ports.len(), failed);
+    let polling = u64::try_from(polls.ports()).unwrap_or(u64::MAX);
     counters.polled(sent, failed, polling);
 }
 
-/// A round's counts: the polls sent, failed and the ports polled, of
-/// `ports` ports with `failed` sends refused.
-pub fn round_counts(ports: usize, failed: u64) -> (u64, u64, u64) {
+/// A round's counts: the polls sent and failed, of `ports` ports with
+/// `failed` sends refused.
+pub fn round_counts(ports: usize, failed: u64) -> (u64, u64) {
     let ports = u64::try_from(ports).unwrap_or(u64::MAX);
-    (ports.saturating_sub(failed), failed, ports)
+    (ports.saturating_sub(failed), failed)
+}
+
+/// A kind's round clock: its first tick at once, a late tick delayed (a
+/// stalled task never sends a burst of polls).
+fn round_clock(kind: DeviceKind) -> tokio::time::Interval {
+    let mut clock = tokio::time::interval(poll_every(kind));
+    clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    clock
 }
 
 /// One datagram's way: parsed, bounded, counted, to the router when taken.
@@ -395,13 +426,18 @@ async fn listen(
     let mut bound = Bound::new();
     let mut polls = Polls::default();
     let mut swept = Instant::now();
-    let mut poll_clock = tokio::time::interval(Duration::from_millis(wire::POLL_EVERY_MS));
-    poll_clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let [lufs, meter] = POLLED_KINDS;
+    let mut lufs_clock = round_clock(lufs);
+    let mut meter_clock = round_clock(meter);
     loop {
         let received = tokio::select! {
             received = socket.recv(&mut buf) => received,
-            _ = poll_clock.tick() => {
-                poll_round(&poller, &mut polls, Instant::now(), &counters);
+            _ = lufs_clock.tick() => {
+                poll_round(&poller, &mut polls, lufs, Instant::now(), &counters);
+                continue;
+            }
+            _ = meter_clock.tick() => {
+                poll_round(&poller, &mut polls, meter, Instant::now(), &counters);
                 continue;
             }
         };

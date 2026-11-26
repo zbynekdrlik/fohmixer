@@ -12,20 +12,16 @@ for each patch:
   in a rack's parallel chain, never in series, so a failing device can never
   cut the sound and the signal is never doubled);
 - one `udpsend 127.0.0.1 <port>`, the port equal to the hub's default
-  (`DEFAULT_PORT` in `crates/fohmixer-proto/src/lufs/wire.rs`); the meter's
-  fed by `obj-send-defer` (`deferlow`) alone, which the pack alone feeds
-  (#240: the audio side's clock runs in Live's audio thread, the socket
-  write leaves it), the LUFS device's by the pack alone (the pull, below);
+  (`DEFAULT_PORT` in `crates/fohmixer-proto/src/lufs/wire.rs`), fed by the
+  pack alone (both devices are pulled since #264, below);
 - the threads (`thread_errors`, #240): no timed box reaches a network
   object's hot inlet without a `deferlow` or `qmetro` between;
-- the send follows the audio (the review of PR 2: a `metro` kept sending a
-  frozen value with the device's DSP off, so its key never went stale):
+- the send follows the reading (the review of PR 2: a `metro` kept sending
+  a frozen value with the device's DSP off, so its key never went stale):
   the pack's bang comes only from `obj-send-trigger` (`t b f`), fed only by
-  the last value's chain (`send_from`), whose clock is the audio object's
-  own interval: every `snapshot~` of the LUFS device is `snapshot~ 200` (5
-  datagrams a second: the owner's ruling of 27.10, the readings are a 3 s
-  window shown as integers) and every `peakamp~` of the meter
-  `peakamp~ 33` (~30 a second); they output only while the DSP runs;
+  the last value's chain (`send_from`); the readers run no clock of their
+  own (`snapshot~ 0`, the meter's `peakamp~` with no interval) and are
+  banged by the hub's poll (#264);
 - one `pack` whose first argument is the device's OSC address and whose
   version argument is `v<version.txt>`, which the face shows too, each of
   its slots from its one source (`slot_errors`: the device's id, the two
@@ -48,8 +44,9 @@ for each patch:
   observer's output (`value_errors`: the FINDING of 2026-11-17, an
   observer's output kept a name with a space in quotes and read the set as
   `-`, so no device matched);
-- no `metro` or `qmetro` but the identity's `qmetro 10000` (the send
-  follows the audio);
+- no `metro` or `qmetro` but the LUFS device's identity's `qmetro 10000`;
+  the meter holds none, nor any `deferlow` (`meter_pull_check`: its load
+  comes straight from `live.thisdevice`, its re-read rides the poll);
 - every patch line joins two boxes of the patch within their outlets and
   inlets;
 - no `gen~` (nor any other gen object or codebox) in either patch (#264:
@@ -61,14 +58,16 @@ for each patch:
   `dspstate~`'s rate, squared and summed; the 3 s and 400 ms means in
   `average~`; the Voice gate `>=~`; every box and line of the chain, and
   the `expr` texts equal to the module's reference formulas;
-- the LUFS device only, the pull (#264, `pull_errors`; the DECIDED of
-  25.11.2026: no message may start in Live's audio thread): both
-  `snapshot~ 0` (their own clocks off: a `bang` reads them in the thread
-  that sends it), banged by `obj-pull` (`t b b`, short-term first) behind
+- both devices, the pull (#264, `pull_errors` with each device's `Shape`,
+  the meter's in `meter_pull_check`; the DECIDED of 25.11.2026: no
+  message may start in Live's audio thread): the readers (their own
+  clocks off: a `bang` reads them in the thread that sends it), banged by
+  `obj-pull` (`t b b b`; the meter's counts the re-read first) behind
   `obj-pull-gate` (`gate`, opened by a `live.observer` on `this_device`
   `is_active`: a device switched off answers nothing), which only the hub's
-  poll (`udpreceive` -> `route <POLL_ADDRESS>`), the load's last outlet,
-  the 10 s re-read's last outlet and the observer turning 1 open; the port
+  poll (`udpreceive` -> `route <kind's POLL_ADDRESS>`), the load's last
+  outlet, the LUFS device's 10 s re-read's last outlet and the observer
+  turning 1 open; the port
   drawn once at load (`random <POLL_PORT_SPAN>` -> `+ <POLL_PORT_MIN>`) into
   the `udpreceive` and the pack's last slot; the pack straight into the
   `udpsend` (no `deferlow` on the send path); no `snapshot~` or `peakamp~`
@@ -105,15 +104,11 @@ IDENTITY = tuple("path this_device" + " canonical_parent" * level for level in r
 PACK_ARGS = 10
 PACK_WIRE = 2
 PACK_VERSION = 3
-WIRE_PUSHED = "1"
 WIRE_POLLED = "2"
-# The trigger that bangs the pack (one datagram per value of the audio
-# side's clock) and hands the last value on first.
+# The trigger that bangs the pack (one datagram per reading) and hands the
+# last value on first.
 SEND_TRIGGER = "obj-send-trigger"
 SEND_TRIGGER_WORDS = ["t", "b", "f"]
-# The deferlow between the pack and the udpsend (#240).
-SEND_DEFER = "obj-send-defer"
-SEND_DEFER_WORDS = ["deferlow"]
 
 
 @dataclass(frozen=True)
@@ -124,14 +119,17 @@ class Device:
     folder: Path
     maxpat: Path
     address: str
-    send_ms: int
+    # Its readers' interval argument (None: none at all).
+    send_ms: int | None
     clock: str
     send_from: str
-    # The hub polls it and it answers in Max's main thread (#264); else it
-    # sends on its audio object's own clock through a deferlow.
-    pulled: bool = False
+    # The hub polls it and it answers in Max's main thread (#264).
+    pulled: bool = True
     # Its K-weighted chain in plain MSP objects (#264, `lufs_dsp_check`).
     kweighted: bool = False
+    # Its re-read rides the poll, its load is not deferred, and it holds no
+    # clock and no deferlow (#264, the meter: `meter_pull_check`).
+    on_poll: bool = False
 
     @property
     def version_txt(self) -> Path:
@@ -149,7 +147,6 @@ DEVICES = (
         0,
         "snapshot~",
         "obj-clip-v",
-        pulled=True,
         kweighted=True,
     ),
     Device(
@@ -157,9 +154,10 @@ DEVICES = (
         METER_FOLDER,
         METER_FOLDER / "FohMixer Meter.maxpat",
         "/fohmixer/meter",
-        33,
+        None,
         "peakamp~",
         "obj-clip-r",
+        on_poll=True,
     ),
 )
 
@@ -235,16 +233,16 @@ def patch_errors(
     version: str,
     address: str,
     port: int,
-    send_ms: int,
+    send_ms: int | None,
     clock: str,
     send_from: str,
-    poll: Poll | None = None,
+    poll: Poll,
     kweighted: bool = False,
+    on_poll: bool = False,
 ) -> list[str]:
     """The problems of one device's patch (`poll`: the polled form's
-    constants for a pulled device, none for one that sends on its audio
-    clock; `kweighted`: its K-weighted chain is checked, `lufs_dsp_check`)."""
-    pulled = poll is not None
+    constants; `kweighted`: its K-weighted chain is checked,
+    `lufs_dsp_check`; `on_poll`: the meter's shape, `meter_pull_check`)."""
     errors: list[str] = []
     if ABSOLUTE_PATH.search(maxpat_text):
         errors.append(f"{where} holds an absolute file path")
@@ -270,16 +268,16 @@ def patch_errors(
     sends = [words(b) for b in every if words(b)[:1] == ["udpsend"]]
     if sends != [["udpsend", "127.0.0.1", str(port)]]:
         errors.append(f"{where}: needs exactly one 'udpsend 127.0.0.1 {port}', has {sends}")
-    errors += send_errors(where, patcher, every, send_ms, clock, send_from, pulled)
+    errors += send_errors(where, patcher, every, send_ms, clock, send_from)
     packs = [words(b) for b in every if is_send_pack(b)]
-    args = PACK_ARGS + int(pulled)
+    args = PACK_ARGS + 1
     if len(packs) != 1 or len(packs[0]) != args + 1:
         errors.append(f"{where}: needs exactly one pack of {args} arguments, has {packs}")
     else:
-        wire = WIRE_POLLED if pulled else WIRE_PUSHED
-        if packs[0][PACK_WIRE] != wire:
+        if packs[0][PACK_WIRE] != WIRE_POLLED:
             errors.append(
-                f"{where}: the pack sends wire version {packs[0][PACK_WIRE]}, expected {wire}"
+                f"{where}: the pack sends wire version {packs[0][PACK_WIRE]}, "
+                f"expected {WIRE_POLLED}"
             )
         if packs[0][1] != address:
             errors.append(f"{where}: the pack sends to {packs[0][1]}, expected {address}")
@@ -291,18 +289,19 @@ def patch_errors(
     errors += [f"{where}: no '{path}' message" for path in IDENTITY if path not in messages]
     if len(packs) == 1:
         sink = next(b.get("id") for b in every if is_send_pack(b))
-        errors += identity_errors(where, patcher, every, sink, pulled)
+        errors += identity_errors(where, patcher, every, sink, True, on_poll)
         errors += slot_errors(where, patcher, every, sink, send_from)
-        if poll is not None:
-            import lufs_pull_check  # noqa: PLC0415 (it imports this module)
+        import lufs_pull_check  # noqa: PLC0415 (it imports this module)
 
-            errors += lufs_pull_check.pull_errors(where, patcher, every, sink, poll)
+        shape = (meter().meter_shape if on_poll else lufs_pull_check.lufs_shape)(poll, sink)
+        errors += lufs_pull_check.pull_errors(where, patcher, every, shape)
     errors += [
         f"{where}: {b.get('id')} ('{b.get('text')}') runs on a clock (the device has none "
         "but the identity's)"
         for b in every
         if kind(b) in ("metro", "qmetro") and not is_identity_clock(b)
     ]
+    errors += meter().still_errors(where, every) if on_poll else []
     shown = [b.get("text") for b in every if b.get("varname") == "version"]
     if shown != [f"v{version}"]:
         errors.append(f"{where}: its face shows {shown}, expected ['v{version}'] (version.txt)")
@@ -355,18 +354,18 @@ def send_errors(
     where: str,
     patcher: dict,
     every: list[dict],
-    send_ms: int,
+    send_ms: int | None,
     clock: str,
     send_from: str,
-    pulled: bool = False,
 ) -> list[str]:
-    """The send's clock is the audio side's: the pack banged only by the
-    trigger, the trigger fed only by `send_from`, every `clock` box at
-    `send_ms`."""
+    """The send follows the reading: the pack banged only by the trigger,
+    the trigger fed only by `send_from`, every `clock` box with the
+    interval `send_ms` (None: no argument)."""
     errors = []
     clocks = [words(b) for b in every if words(b)[:1] == [clock]]
-    if not clocks or any(c != [clock, str(send_ms)] for c in clocks):
-        errors.append(f"{where}: every {clock} must be '{clock} {send_ms}', has {clocks}")
+    want = [clock] if send_ms is None else [clock, str(send_ms)]
+    if not clocks or any(c != want for c in clocks):
+        errors.append(f"{where}: every {clock} must be '{' '.join(want)}', has {clocks}")
     triggers = [words(b) for b in every if b.get("id") == SEND_TRIGGER]
     if triggers != [SEND_TRIGGER_WORDS]:
         errors.append(f"{where}: {SEND_TRIGGER} must be 't b f', has {triggers}")
@@ -381,9 +380,7 @@ def send_errors(
             f"{where}: {SEND_TRIGGER} must be fed by {send_from} alone, "
             f"has {feeds(patcher, SEND_TRIGGER, 0)}"
         )
-    errors += (
-        direct_errors(where, patcher, every) if pulled else defer_errors(where, patcher, every)
-    )
+    errors += direct_errors(where, patcher, every)
     errors += thread_errors(where, patcher, every)
     return errors
 
@@ -411,28 +408,6 @@ def direct_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
                 f"{where}: {src} ('{ids[src].get('text')}') is on the send path "
                 "(the pull runs in the main thread: no deferlow)"
             )
-    return errors
-
-
-def defer_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
-    """The pack -> `deferlow` -> udpsend chain (#240): the send leaves the
-    audio thread before the socket write."""
-    errors = []
-    defers = [words(b) for b in every if b.get("id") == SEND_DEFER]
-    if defers != [SEND_DEFER_WORDS]:
-        errors.append(f"{where}: {SEND_DEFER} must be 'deferlow', has {defers}")
-    packs = [b.get("id") for b in every if is_send_pack(b)]
-    if len(packs) == 1 and feeds(patcher, SEND_DEFER, 0) != [[packs[0], 0]]:
-        errors.append(
-            f"{where}: {SEND_DEFER} must be fed by the pack alone, "
-            f"has {feeds(patcher, SEND_DEFER, 0)}"
-        )
-    sends = [b.get("id") for b in every if words(b)[:1] == ["udpsend"]]
-    if len(sends) == 1 and feeds(patcher, sends[0], 0) != [[SEND_DEFER, 0]]:
-        errors.append(
-            f"{where}: the udpsend must be fed by {SEND_DEFER} alone, "
-            f"has {feeds(patcher, sends[0], 0)}"
-        )
     return errors
 
 
@@ -506,8 +481,13 @@ AUDIO_READERS = ("snapshot~", "peakamp~")
 
 
 def clock_off(box: dict) -> bool:
-    """An audio reader whose own clock is off (`snapshot~ 0`): no timed box."""
-    return kind(box) in AUDIO_READERS and words(box)[1:] == ["0"]
+    """An audio reader whose own clock is off (`snapshot~ 0`, and
+    `peakamp~` with no interval, #264: it outputs only when banged): no
+    timed box."""
+    rest = words(box)[1:]
+    return kind(box) in AUDIO_READERS and (
+        rest == ["0"] or (kind(box) == "peakamp~" and rest == [])
+    )
 
 
 def kind(box: dict) -> str:
@@ -673,8 +653,19 @@ def tick_offset(pulled: bool) -> int:
     return TICK_EXTRA if pulled else 0
 
 
-def identity_boxes(pulled: bool = False) -> dict[str, list[str]]:
+def meter():
+    """`meter_pull_check` (it imports this module): the meter's load and
+    re-read on the poll path (#264), in place of the deferred load and the
+    10 s clock."""
+    import meter_pull_check  # noqa: PLC0415
+
+    return meter_pull_check
+
+
+def identity_boxes(pulled: bool = False, on_poll: bool = False) -> dict[str, list[str]]:
     """The identity's boxes (id: words)."""
+    if on_poll:
+        return meter().identity_boxes(identity_boxes(pulled))
     found = {
         ID_DEFER: ["deferlow"],
         ID_LOAD: ["t", *["b"] * (PARENTS + 2 + load_offset(pulled) + int(pulled))],
@@ -718,9 +709,11 @@ def identity_boxes(pulled: bool = False) -> dict[str, list[str]]:
 
 
 def identity_wiring(
-    sink: str, pulled: bool = False
+    sink: str, pulled: bool = False, on_poll: bool = False
 ) -> dict[tuple[str, int], list[tuple[str, int]]]:
     """Each guarded inlet of the identity and the only sources it takes."""
+    if on_poll:
+        return meter().identity_wiring(identity_wiring(sink, pulled), load_offset(pulled))
     load, tick = load_offset(pulled), tick_offset(pulled)
     found: dict[tuple[str, int], list[tuple[str, int]]] = {
         (ID_DEFER, 0): [("obj-thisdevice", 0)],
@@ -780,17 +773,22 @@ def identity_wiring(
 
 
 def identity_errors(
-    where: str, patcher: dict, every: list[dict], sink: str, pulled: bool = False
+    where: str,
+    patcher: dict,
+    every: list[dict],
+    sink: str,
+    pulled: bool = False,
+    on_poll: bool = False,
 ) -> list[str]:
     """The identity read at load, on a change and by its own 10 s clock,
     never by another clock, its values from `live.object`."""
     ids = {b.get("id"): b for b in every}
     errors = [
         f"{where}: {box} must be '{' '.join(want)}', has {words(ids.get(box, {}))}"
-        for box, want in identity_boxes(pulled).items()
+        for box, want in identity_boxes(pulled, on_poll).items()
         if words(ids.get(box, {})) != want
     ]
-    for (box, inlet), sources in identity_wiring(sink, pulled).items():
+    for (box, inlet), sources in identity_wiring(sink, pulled, on_poll).items():
         fed = feeds(patcher, box, inlet)
         want = sorted([list(s) for s in sources])
         if fed != want:
@@ -814,15 +812,18 @@ def identity_errors(
         if b.get("id") == f"obj-parent{PARENTS}-observer"
     ]
     errors += value_errors(where, patcher, every, sink, pulled)
-    errors += clock_errors(where, patcher, every, pulled)
+    errors += clock_errors(where, patcher, every, pulled, on_poll)
     errors += lom_clock_errors(where, patcher, every)
     return errors
 
 
-def clock_outputs(pulled: bool = False) -> dict[str, list[list]]:
+def clock_outputs(pulled: bool = False, on_poll: bool = False) -> dict[str, list[list]]:
     """Each box of the identity's clock and the only lines out of it
     ([its outlet, the destination box, its inlet]); a pulled device's tick
-    also opens the pull once (its leftmost outlet, after the parents)."""
+    also opens the pull once (its leftmost outlet, after the parents); the
+    meter's re-read on the poll path (`meter_pull_check.reread_outputs`)."""
+    if on_poll:
+        return meter().reread_outputs()
     chain = [ID_OFFSET, ID_OFFSET_DELAY, ID_CLOCK_DEFER, ID_CLOCK_START, ID_CLOCK, ID_TICK]
     found = {chain[i]: [[0, chain[i + 1], 0]] for i in range(len(chain) - 1)}
     tick = tick_offset(pulled)
@@ -833,14 +834,16 @@ def clock_outputs(pulled: bool = False) -> dict[str, list[list]]:
     return found
 
 
-def clock_errors(where: str, patcher: dict, every: list[dict], pulled: bool = False) -> list[str]:
+def clock_errors(
+    where: str, patcher: dict, every: list[dict], pulled: bool = False, on_poll: bool = False
+) -> list[str]:
     """The identity's clock is exempt from `lom_clock_errors`, so it may
     drive nothing but the parents' paths (the review of the 10 s re-read:
     a LOM read fed from the clock or the tick passed every other check):
     each of its boxes once, the lines out of each exactly
     `clock_outputs`."""
     errors = []
-    for box, want in clock_outputs(pulled).items():
+    for box, want in clock_outputs(pulled, on_poll).items():
         count = sum(1 for b in every if b.get("id") == box)
         if count != 1:
             errors.append(f"{where}: {box} must be one box, has {count}")
@@ -958,8 +961,9 @@ def device_errors(root: Path, device: Device, port: int, poll: Poll | None = Non
         device.send_ms,
         device.clock,
         device.send_from,
-        poll if device.pulled else None,
+        poll,
         device.kweighted,
+        device.on_poll,
     )
 
 
@@ -972,7 +976,8 @@ def check(root: Path) -> list[str]:
 
     poll = lufs_pull_check.poll_constants(wire_text)
     if poll is None:
-        return [f"{WIRE.as_posix()}: no POLL_PORT_MIN, POLL_PORT_SPAN or POLL_ADDRESS line"]
+        names = "POLL_PORT_MIN, POLL_PORT_SPAN, LUFS_POLL_ADDRESS or METER_POLL_ADDRESS"
+        return [f"{WIRE.as_posix()}: no {names} line"]
     return [error for device in DEVICES for error in device_errors(root, device, port, poll)]
 
 
