@@ -327,7 +327,14 @@ fn the_read_only_token_reads_the_proof_and_nothing_else() {
         with_token(dir.path());
         with_read_only(dir.path());
         let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
-        hub.status_until(SECS_5, |s| s.instances[0].online).await;
+        let status = hub.status_until(SECS_5, |s| s.instances[0].online).await;
+        assert_eq!(
+            (
+                status.stream_proof.automation,
+                status.stream_proof.read_only
+            ),
+            (true, true)
+        );
         let (code, answer) = proof(hub.addr, Some(READ_ONLY), &[]).await;
         assert_eq!(code, 200, "{answer}");
         assert_eq!(answer["ok"], json!(true), "{answer}");
@@ -350,7 +357,14 @@ fn the_read_only_token_reads_the_proof_and_nothing_else() {
         let dir = tempfile::tempdir().unwrap();
         with_read_only(dir.path());
         let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
-        hub.status_until(SECS_5, |s| s.instances[0].online).await;
+        let status = hub.status_until(SECS_5, |s| s.instances[0].online).await;
+        assert_eq!(
+            (
+                status.stream_proof.automation,
+                status.stream_proof.read_only
+            ),
+            (false, true)
+        );
         let (code, answer) = proof(hub.addr, Some(READ_ONLY), &[]).await;
         assert_eq!((code, &answer["ok"]), (200, &json!(true)), "{answer}");
         let (code, _) = proof(hub.addr, Some(TOKEN), &[]).await;

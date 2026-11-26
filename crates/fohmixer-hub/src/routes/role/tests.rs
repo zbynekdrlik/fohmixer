@@ -61,6 +61,7 @@ fn the_mbc_status_holds_its_live_set_only() {
         "stage_aut": {"on": true, "writes": 3}, "clients": 4,
         "scenes": {"on": true, "strips": 3, "unknown": 1, "known": 4, "last": "intro",
                    "glides": 2, "writes": 9},
+        "stream_proof": {"automation": true, "read_only": true},
     }))
     .unwrap();
     for name in ["band", "mbc", "master"] {
@@ -96,6 +97,14 @@ fn the_mbc_status_holds_its_live_set_only() {
             last: None,
             glides: 0,
             writes: 0,
+        }
+    );
+    // #274: which tokens the stream proof takes are set, never a value.
+    assert_eq!(
+        mbc.stream_proof,
+        fohmixer_proto::client::StreamProofStatus {
+            automation: true,
+            read_only: true,
         }
     );
 }

@@ -1740,6 +1740,18 @@ pub struct HubStatus {
     /// device is told and was heard; the defaults in an older hub's answer.
     #[serde(default)]
     pub claps: crate::claps::ClapsStatus,
+    /// Which tokens `GET /api/mbc/stream-proof` takes are set (#274); the
+    /// defaults in an older hub's answer.
+    #[serde(default)]
+    pub stream_proof: StreamProofStatus,
+}
+
+/// `/api/status` `stream_proof` (#274): whether the automation token (#207)
+/// and the stream proof's read-only token are set, never a value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamProofStatus {
+    pub automation: bool,
+    pub read_only: bool,
 }
 
 /// `/api/status` `link` (#184): the instance link a hub serves: where it

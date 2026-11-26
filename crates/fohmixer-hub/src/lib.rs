@@ -506,6 +506,10 @@ impl HubInner {
                 .map(|l| l.status(std::time::Instant::now()))
                 .unwrap_or_default(),
             claps: router.claps,
+            stream_proof: fohmixer_proto::client::StreamProofStatus {
+                automation: self.automation.is_some(),
+                read_only: self.stream_proof_token.is_some(),
+            },
         }
     }
 }
