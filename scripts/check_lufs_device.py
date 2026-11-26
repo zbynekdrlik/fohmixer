@@ -478,6 +478,8 @@ LEFT_HOT = (
     "metro",
     "qmetro",
     "change",
+    "i",
+    "int",
     "live.object",
     "makenote",
     "maxurl",

@@ -66,7 +66,7 @@
 				"box": {
 					"id": "obj-udpreceive",
 					"maxclass": "newobj",
-					"text": "udpreceive 39114",
+					"text": "udpreceive 39114 @defer 1",
 					"numinlets": 1,
 					"numoutlets": 1,
 					"outlettype": [
@@ -84,10 +84,11 @@
 				"box": {
 					"id": "obj-route",
 					"maxclass": "newobj",
-					"text": "route /fohmixer/claps/notes /fohmixer/claps/pattern /fohmixer/claps/silent /fohmixer/claps/on",
+					"text": "route /fohmixer/claps/notes /fohmixer/claps/pattern /fohmixer/claps/silent /fohmixer/claps/on /fohmixer/claps/poll",
 					"numinlets": 1,
-					"numoutlets": 5,
+					"numoutlets": 6,
 					"outlettype": [
+						"",
 						"",
 						"",
 						"",
@@ -97,7 +98,7 @@
 					"patching_rect": [
 						200.0,
 						70.0,
-						560.0,
+						680.0,
 						22.0
 					]
 				}
@@ -591,24 +592,6 @@
 			},
 			{
 				"box": {
-					"id": "obj-hello-metro",
-					"maxclass": "newobj",
-					"text": "metro 1000",
-					"numinlets": 2,
-					"numoutlets": 1,
-					"outlettype": [
-						"bang"
-					],
-					"patching_rect": [
-						760.0,
-						230.0,
-						80.0,
-						22.0
-					]
-				}
-			},
-			{
-				"box": {
 					"id": "obj-hello",
 					"maxclass": "newobj",
 					"text": "pack /fohmixer/claps 1 v1.60.3 0",
@@ -736,18 +719,37 @@
 			},
 			{
 				"box": {
-					"id": "obj-send-defer",
+					"id": "obj-poll",
 					"maxclass": "newobj",
-					"text": "deferlow",
+					"text": "t b b",
 					"numinlets": 1,
-					"numoutlets": 1,
+					"numoutlets": 2,
 					"outlettype": [
-						""
+						"bang",
+						"bang"
 					],
 					"patching_rect": [
 						760.0,
-						450.0,
-						58.0,
+						230.0,
+						50.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-running",
+					"maxclass": "newobj",
+					"text": "i",
+					"numinlets": 2,
+					"numoutlets": 1,
+					"outlettype": [
+						"int"
+					],
+					"patching_rect": [
+						840.0,
+						230.0,
+						40.0,
 						22.0
 					]
 				}
@@ -858,18 +860,6 @@
 					],
 					"destination": [
 						"obj-stop",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-udpreceive",
-						0
-					],
-					"destination": [
-						"obj-heard",
 						0
 					]
 				}
@@ -1225,30 +1215,6 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-start",
-						0
-					],
-					"destination": [
-						"obj-hello-metro",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-hello-metro",
-						0
-					],
-					"destination": [
-						"obj-hello",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
 						"obj-run",
 						0
 					],
@@ -1273,11 +1239,11 @@
 			{
 				"patchline": {
 					"source": [
-						"obj-run",
-						0
+						"obj-route",
+						3
 					],
 					"destination": [
-						"obj-clapping",
+						"obj-heard",
 						0
 					]
 				}
@@ -1285,7 +1251,67 @@
 			{
 				"patchline": {
 					"source": [
+						"obj-route",
+						4
+					],
+					"destination": [
+						"obj-poll",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-poll",
+						1
+					],
+					"destination": [
+						"obj-running",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-poll",
+						0
+					],
+					"destination": [
+						"obj-hello",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-run",
+						0
+					],
+					"destination": [
+						"obj-running",
+						1
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
 						"obj-stop",
+						0
+					],
+					"destination": [
+						"obj-running",
+						1
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-running",
 						0
 					],
 					"destination": [
@@ -1298,18 +1324,6 @@
 				"patchline": {
 					"source": [
 						"obj-hello",
-						0
-					],
-					"destination": [
-						"obj-send-defer",
-						0
-					]
-				}
-			},
-			{
-				"patchline": {
-					"source": [
-						"obj-send-defer",
 						0
 					],
 					"destination": [
