@@ -654,7 +654,11 @@ impl Hub {
             token
         };
         let automation = read_token(automation::AUTOMATION);
-        let stream_proof_token = read_token(automation::STREAM_PROOF);
+        let (stream_proof_token, same) =
+            automation::read_only_apart(automation.as_ref(), read_token(automation::STREAM_PROOF));
+        if let Some(same) = same {
+            tracing::warn!("{same}");
+        }
         let mut router = router::Router::new(
             live.clone(),
             hub_state,

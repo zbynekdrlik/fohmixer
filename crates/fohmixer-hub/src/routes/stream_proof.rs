@@ -102,6 +102,16 @@ mod tests {
         assert_eq!(takes([Some(&a), Some(&b)], Some(&b_text)), (true, true));
         assert_eq!(takes([Some(&a), Some(&b)], Some(&c_text)), (true, false));
         assert_eq!(takes([Some(&a), Some(&b)], None), (true, false));
+        // The read-only token passes the token checks only on the LAN.
+        let (set, ok) = takes([None, Some(&b)], Some(&b_text));
+        assert_eq!(
+            automation_gate::gate(access::Origin::Internet, set, ok),
+            Err(Gate::Internet)
+        );
+        assert_eq!(
+            automation_gate::gate(access::Origin::Local, set, ok),
+            Ok(())
+        );
     }
 
     #[test]

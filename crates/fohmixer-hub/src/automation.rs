@@ -172,9 +172,52 @@ pub fn usable(
     }
 }
 
-/// The whole `fohmixer-hub <kind's command>`.
+/// The two kinds, so each is checked against the other.
+pub const KINDS: [Kind; 2] = [AUTOMATION, STREAM_PROOF];
+
+/// Why `token`, about to be stored as `kind`, is refused: it equals the
+/// token stored as `other` (the read-only token would then write scenes).
+/// An `other` that cannot be read is no match (the hub says so at its start).
+pub fn same_as_other(
+    kind: Kind,
+    other: Kind,
+    stored: Option<&AutomationToken>,
+    token: &AutomationToken,
+) -> Option<String> {
+    (kind != other && stored == Some(token))
+        .then(|| format!("{} equals {}: set another", kind.what, other.what))
+}
+
+/// The read-only token a hub runs with beside `automation`, and the warn
+/// line when the two are equal (it is dropped: a reader of the proof never
+/// gets the scenes' writes).
+pub fn read_only_apart(
+    automation: Option<&AutomationToken>,
+    read_only: Option<AutomationToken>,
+) -> (Option<AutomationToken>, Option<String>) {
+    match read_only {
+        Some(token) if automation == Some(&token) => (
+            None,
+            Some(format!(
+                "{} equals {}, the hub takes it for nothing: set another with `fohmixer-hub {}`",
+                STREAM_PROOF.what, AUTOMATION.what, STREAM_PROOF.command
+            )),
+        ),
+        other => (other, None),
+    }
+}
+
+/// The whole `fohmixer-hub <kind's command>`: a token equal to the other
+/// kind's stored one is refused (exit 2), nothing stored.
 pub fn run(kind: Kind, data_dir: &Path, input: impl BufRead) -> Result<(), ProvisionError> {
     let token = read_token(kind, input)?;
+    let secrets_dir = data_dir.join(SECRETS_DIR);
+    for other in KINDS {
+        let stored = load(other, &secrets_dir).ok().flatten();
+        if let Some(problem) = same_as_other(kind, other, stored.as_ref(), &token) {
+            return Err(ProvisionError::Invalid(problem));
+        }
+    }
     store(kind, data_dir, &token)?;
     Ok(())
 }
@@ -280,5 +323,101 @@ mod tests {
         );
         let (token, warning) = usable(AUTOMATION, Ok(AutomationToken::of(GOOD)));
         assert!(token.is_some() && warning.is_none());
+    }
+
+    #[test]
+    fn the_read_only_tokens_words_name_its_own_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let secrets = dir.path().join(SECRETS_DIR);
+        std::fs::create_dir_all(&secrets).unwrap();
+        crate::sealed::write(&token_path(STREAM_PROOF, &secrets), b"short").unwrap();
+        assert!(
+            load(AUTOMATION, &secrets).unwrap().is_none(),
+            "its own file"
+        );
+        let err = load(STREAM_PROOF, &secrets).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("does not hold the stream proof token: set it again with `fohmixer-hub stream-proof set-token`"),
+            "{err}"
+        );
+        let (token, warning) = usable(STREAM_PROOF, Err(err));
+        assert!(token.is_none());
+        assert!(warning.unwrap().starts_with(
+            "the stream proof token cannot be read, the stream proof takes the automation token only: "
+        ));
+        let refused = read_token(STREAM_PROOF, "short\n".as_bytes());
+        assert!(
+            matches!(refused, Err(ProvisionError::Invalid(ref m)) if m == "the stream proof token is 32 to 256 characters"),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn a_token_equal_to_the_other_kinds_is_refused_and_nothing_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let secrets = dir.path().join(SECRETS_DIR);
+        run(AUTOMATION, dir.path(), format!("{GOOD}\n").as_bytes()).unwrap();
+        let refused = run(STREAM_PROOF, dir.path(), format!("{GOOD}\n").as_bytes());
+        assert!(
+            matches!(refused, Err(ProvisionError::Invalid(ref m))
+                if m == "the stream proof token equals the automation token: set another"),
+            "{refused:?}"
+        );
+        assert_eq!(load(STREAM_PROOF, &secrets).unwrap(), None);
+        // Another value is taken; then the automation token cannot be set to it.
+        let other = "x".repeat(32);
+        run(STREAM_PROOF, dir.path(), format!("{other}\n").as_bytes()).unwrap();
+        assert_eq!(
+            load(STREAM_PROOF, &secrets).unwrap(),
+            AutomationToken::of(&other)
+        );
+        let refused = run(AUTOMATION, dir.path(), format!("{other}\n").as_bytes());
+        assert!(
+            matches!(refused, Err(ProvisionError::Invalid(ref m))
+                if m == "the automation token equals the stream proof token: set another"),
+            "{refused:?}"
+        );
+        assert_eq!(
+            load(AUTOMATION, &secrets).unwrap(),
+            AutomationToken::of(GOOD)
+        );
+        // A kind set again to its own value is no clash.
+        run(AUTOMATION, dir.path(), format!("{GOOD}\n").as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn same_as_other_needs_another_kind_and_an_equal_stored_token() {
+        let a = AutomationToken::of(GOOD).unwrap();
+        let b = AutomationToken::of(&"y".repeat(32)).unwrap();
+        assert_eq!(same_as_other(AUTOMATION, AUTOMATION, Some(&a), &a), None);
+        assert_eq!(same_as_other(AUTOMATION, STREAM_PROOF, Some(&b), &a), None);
+        assert_eq!(same_as_other(AUTOMATION, STREAM_PROOF, None, &a), None);
+        assert_eq!(
+            same_as_other(AUTOMATION, STREAM_PROOF, Some(&a), &a).as_deref(),
+            Some("the automation token equals the stream proof token: set another")
+        );
+        assert_eq!(KINDS, [AUTOMATION, STREAM_PROOF]);
+    }
+
+    #[test]
+    fn a_read_only_token_equal_to_the_automation_token_is_dropped_at_the_start() {
+        let a = AutomationToken::of(GOOD).unwrap();
+        let b = AutomationToken::of(&"y".repeat(32)).unwrap();
+        assert_eq!(
+            read_only_apart(Some(&a), Some(b.clone())),
+            (Some(b.clone()), None)
+        );
+        assert_eq!(read_only_apart(None, Some(b.clone())), (Some(b), None));
+        assert_eq!(read_only_apart(Some(&a), None), (None, None));
+        let (token, warning) = read_only_apart(Some(&a), Some(a.clone()));
+        assert_eq!(token, None);
+        assert_eq!(
+            warning.as_deref(),
+            Some(
+                "the stream proof token equals the automation token, the hub takes it for nothing: \
+                 set another with `fohmixer-hub stream-proof set-token`"
+            )
+        );
     }
 }
