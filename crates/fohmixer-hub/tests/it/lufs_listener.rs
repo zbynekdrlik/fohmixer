@@ -27,8 +27,8 @@ fn config(dir: &Path, port: u16) -> Config {
     config.instances.clear();
     config.lufs.port = port;
     // #264: the start's sweep reaches every socket in the poll range, other
-    // tests' too: only the sweep's own test turns it on.
-    config.lufs.sweep = false;
+    // tests' too: off here; the sweep's own test sweeps its meter's port only.
+    config.lufs.sweep = None;
     config
 }
 
@@ -415,6 +415,9 @@ fn a_meter_running_before_the_hub_started_is_learned_from_its_start_sweep() {
     // #264, the DECIDED of 26.11: a hub restarted under a running Live
     // sends every port of the devices' range the meter's poll once, so a
     // meter that never announces itself again is learned all the same.
+    // The test sweeps only its own meter's port (the hub's default, the
+    // whole range, would reach other tests' sockets too: the config's
+    // `the_start_sweep_covers_the_devices_poll_ports_…` pins it).
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
@@ -423,7 +426,7 @@ fn a_meter_running_before_the_hub_started_is_learned_from_its_start_sweep() {
         let at = device.local_addr().unwrap().port();
         let reading = polled_of(DeviceKind::Meter, 11, at);
         let mut config = config(dir.path(), port);
-        config.lufs.sweep = true;
+        config.lufs.sweep = Some(at..at + 1);
         let hub = TestHub::start_config(config).await;
         let from = poller(&hub).await;
         // The meter only answers: no datagram before the hub's poll.
@@ -444,9 +447,11 @@ fn a_meter_running_before_the_hub_started_is_learned_from_its_start_sweep() {
             .status_until(SECS_5, |s| s.lufs.listener.polling == 1)
             .await;
         let listener = &status.lufs.listener;
-        let span = u64::from(POLL_PORT_SPAN);
-        assert_eq!(listener.swept + listener.sweep_failed, span, "{listener:?}");
-        assert!(listener.swept >= 1, "{listener:?}");
+        assert_eq!(
+            (listener.swept, listener.sweep_failed),
+            (1, 0),
+            "{listener:?}"
+        );
         assert_eq!(status.lufs.devices.len(), 1);
         hub.stop().await;
     });

@@ -1911,7 +1911,7 @@ mod tests {
             Config::defaults(&data()).lufs,
             LufsCfg {
                 port: 39110,
-                sweep: true
+                sweep: Some(40_000..50_000)
             }
         );
         assert_eq!(
@@ -1920,17 +1920,26 @@ mod tests {
                 .lufs,
             LufsCfg {
                 port: 39120,
-                sweep: true
+                sweep: Some(40_000..50_000)
             }
         );
     }
 
     #[test]
-    fn the_start_sweep_is_always_on_and_no_config_key() {
-        // #264, the DECIDED of 26.11: every hub sweeps the meters' ports at
-        // its start; only a test turns it off (a sweep reaches every socket
-        // in the range, other tests' too).
-        assert!(Config::parse("[lufs]\n", &data()).unwrap().lufs.sweep);
+    fn the_start_sweep_covers_the_devices_poll_ports_and_is_no_config_key() {
+        // #264, the DECIDED of 26.11: every hub sweeps the ports a device
+        // draws its poll port from (the patches' `random 10000` + `40000`);
+        // only a test narrows it or turns it off (a sweep reaches every
+        // socket in its range, other tests' too).
+        let range = fohmixer_proto::lufs::wire::POLL_PORT_MIN
+            ..fohmixer_proto::lufs::wire::POLL_PORT_MIN
+                + fohmixer_proto::lufs::wire::POLL_PORT_SPAN;
+        assert_eq!(range, 40_000..50_000);
+        assert_eq!(default_sweep(), Some(range.clone()));
+        assert_eq!(
+            Config::parse("[lufs]\n", &data()).unwrap().lufs.sweep,
+            Some(range)
+        );
         let refused = Config::parse("[lufs]\nsweep = false\n", &data()).unwrap_err();
         assert!(refused.to_string().contains("sweep"), "{refused}");
     }

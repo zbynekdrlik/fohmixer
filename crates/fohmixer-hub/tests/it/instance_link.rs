@@ -49,7 +49,7 @@ async fn mbc_hub(
     config.instances = vec![mbc.cfg()];
     config.layout_poll_ms = 100;
     config.lufs.port = lufs_port;
-    config.lufs.sweep = false;
+    config.lufs.sweep = None;
     config.link = Some(LinkCfg {
         listen,
         instance: "mbc".to_string(),

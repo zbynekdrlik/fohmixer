@@ -695,7 +695,7 @@ mod tests {
         let (events, _records) = EventLog::channel(16);
         let tap = crate::link::server::tap();
         let mut heard = tap.subscribe();
-        let (addr, task) = spawn(0, tx, counters, events, Some(tap.clone()), false).unwrap();
+        let (addr, task) = spawn(0, tx, counters, events, Some(tap.clone()), None).unwrap();
         let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         sender.send_to(&datagram(4), addr).unwrap();
         sender.send_to(b"junk", addr).unwrap();
@@ -845,16 +845,6 @@ mod tests {
     }
 
     #[test]
-    fn the_sweep_covers_the_ports_a_device_draws_from() {
-        // #264, the DECIDED of 26.11: the patches' `random 10000` + `40000`.
-        assert_eq!(
-            sweep_ports(),
-            wire::POLL_PORT_MIN..wire::POLL_PORT_MIN + wire::POLL_PORT_SPAN
-        );
-        assert_eq!(sweep_ports().len(), 10_000);
-    }
-
-    #[test]
     fn a_sweep_sends_each_port_the_meters_poll_once_and_counts_it_apart() {
         // A meter already running (a hub restarted under a running Live)
         // answers the sweep's poll and is learned; the sweep's sends count
@@ -868,7 +858,7 @@ mod tests {
         let counters = Counters::default();
         let mut ports = vec![0, port];
         ports.sort_unstable();
-        assert_eq!(sweep_over(&poller, ports, &counters), (1, 1));
+        assert_eq!(sweep(&poller, ports, &counters), (1, 1));
         let mut buf = [0u8; 64];
         let (n, from) = device.recv_from(&mut buf).unwrap();
         assert_eq!(&buf[..n], wire::poll_datagram(DeviceKind::Meter).as_slice());
@@ -897,7 +887,7 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         let counters = Arc::new(Counters::default());
         let (events, _records) = EventLog::channel(16);
-        let (_, task) = spawn(0, tx, Arc::clone(&counters), events, None, false).unwrap();
+        let (_, task) = spawn(0, tx, Arc::clone(&counters), events, None, None).unwrap();
         let from = counters.status().poll_from.expect("the poll socket");
         assert!(from.starts_with("127.0.0.1:"), "{from}");
         assert_eq!(counters.status().swept, 0, "no sweep asked");
