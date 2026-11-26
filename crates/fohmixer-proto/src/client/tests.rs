@@ -1004,6 +1004,7 @@ fn api_bodies_round_trip() {
             clips_error: None,
             signature: Some("4/4".into()),
             sent: 120,
+            polls: 9,
         },
     };
     let json = serde_json::to_value(&status).unwrap();
@@ -1015,6 +1016,17 @@ fn api_bodies_round_trip() {
         json!([false, true, false, true])
     );
     assert_eq!(json["claps"]["device"]["version"], "v1.52.0");
+    assert_eq!(json["claps"]["polls"], 9);
+    let mut no_polls = json.clone();
+    no_polls["claps"].as_object_mut().unwrap().remove("polls");
+    assert_eq!(
+        serde_json::from_value::<HubStatus>(no_polls)
+            .unwrap()
+            .claps
+            .polls,
+        0,
+        "#264: an older hub's claps has no polls"
+    );
     let mut no_claps = json.clone();
     no_claps.as_object_mut().unwrap().remove("claps");
     assert_eq!(

@@ -33,7 +33,7 @@ class PullTests(TreeCase):
         self.assertEqual(cl.feeds(patch["patcher"], "obj-udpsend", 0), [["obj-pack", 0]])
         self.assertEqual(
             cl.feeds(patch["patcher"], cl.PULL_GATE, 1),
-            sorted([[lp.POLL_ROUTE, 0], [cl.ID_LOAD, 0], [cl.ID_TICK, 0], [lp.ACTIVE_SEL, 0]]),
+            sorted([[lp.POLL_ROUTE, 0], [cl.ID_LOAD, 0], [lp.ACTIVE_SEL, 0]]),
         )
         # The meter is pulled too since its step of #264, with its own
         # poll's address (test_meter_pull_check.py).
@@ -171,14 +171,12 @@ class PullTests(TreeCase):
             f"has [['{lp.POLL_ROUTE}', 0], ['{cl.PULL_GATE}', 0]]",
             errors,
         )
-        # The 10 s tick no longer sends.
+        # The re-read's tick rides a poll (#264): it opens no pull of its own.
         self.restore(LUFS)
         patch = self.patcher(LUFS)
-        self.drop_lines(patch, src=[cl.ID_TICK, 0])
+        self.line(patch, [cl.ID_TICK, 0], [cl.PULL_GATE, 1])
         self.save(patch, LUFS)
-        self.assertTrue(
-            any(f"{cl.ID_TICK} outputs into" in e for e in self.errors()), self.errors()
-        )
+        self.assertTrue(any(f"{cl.PULL_GATE}:1 takes" in e for e in self.errors()), self.errors())
         # Device On observed through route id (probe B2's id never came).
         self.restore(LUFS)
         patch = self.patcher(LUFS)

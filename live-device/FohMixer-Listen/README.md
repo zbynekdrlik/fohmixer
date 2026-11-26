@@ -39,6 +39,23 @@ devices (`../FohMixer-LUFS/README.md`).
   whose matrices (2 planes of float32, 960 × k cells: whole 20 ms frames at
   48 kHz) `jit.net.send` writes to the hub's TCP `127.0.0.1:39111`.
 
+**Its clocks and Live's audio thread (#264).** The LUFS, Meter and Claps
+devices lost every scheduler clock and `deferlow` that posted from Live's
+audio thread (dasio's stack probes: each such post can wait on the desktop's
+window lock, a click on the PA). This device was left as it is in that step,
+because it runs only during a listen session: the `qmetro 10` that bangs
+`jit.catch~` is started by the hub's select and stopped by its end, and its
+rack is on only while someone listens to its track (#238: the hub switches
+the `Listen` rack's Device On with the listen, and the sets are saved with
+every `Listen` rack off). While its rack is on, its other clocks run too,
+selected or not: the select poll's `qmetro 250` (its `maxurl` request),
+the announce's `metro 1000` → `deferlow` → `udpsend`, the hold's `delay
+1000` → `deferlow`, and the identity's 10 s `qmetro 10000` (`delay` →
+`deferlow` start). Whether a device in a rack that is off still runs them
+(Max's scheduler may run on) is the open PC question of #238; moving them
+onto a poll was left out of #264's LUFS, Meter and Claps step and is noted
+on #264 for the main session's decision.
+
 The wire, the hub's side and the PC probe: `.claude/rules/listen.md` and the
 design comment on #210. `scripts/check_listen_device.py` (CI) holds the patch
 to it. Built like the other devices (never committed as `.amxd`):

@@ -68,7 +68,7 @@ jobs:
           ruff --version
           ruff check .
       - name: ruff format (script, SimLive, import tool, live probe, forensics timeline, E2E harness, Cloudflare script, LUFS, Listen and Claps devices)
-        run: ruff format --check live-script sim tools e2e/harness scripts/cloudflare live-device scripts/check_lufs_device.py scripts/test_check_lufs_device.py scripts/lufs_pull_check.py scripts/test_lufs_pull_check.py scripts/meter_pull_check.py scripts/test_meter_pull_check.py scripts/lufs_dsp_check.py scripts/test_lufs_dsp_check.py scripts/check_listen_device.py scripts/test_check_listen_device.py scripts/check_claps_device.py scripts/test_check_claps_device.py
+        run: ruff format --check live-script sim tools e2e/harness scripts/cloudflare live-device scripts/check_lufs_device.py scripts/test_check_lufs_device.py scripts/lufs_pull_check.py scripts/test_lufs_pull_check.py scripts/meter_pull_check.py scripts/test_meter_pull_check.py scripts/poll_reread_check.py scripts/test_poll_reread_check.py scripts/lufs_dsp_check.py scripts/test_lufs_dsp_check.py scripts/check_listen_device.py scripts/test_check_listen_device.py scripts/check_claps_device.py scripts/test_check_claps_device.py
       - name: Test dependencies (websockets test client only; the script itself is stdlib-only)
         run: python -m pip install --quiet -r requirements-dev.txt
       # Each test step runs after a failed one too (the job still fails): one

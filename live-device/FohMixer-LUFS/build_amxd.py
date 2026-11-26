@@ -142,7 +142,10 @@ def with_ports(
             raise ValueError("only the Listen device takes a hub port")
         device_port = DEVICE_PORT if device_port is None else device_port
         _check(device_port)
-        return _swap(patch, f"udpreceive {DEVICE_PORT}", f"udpreceive {device_port}")
+        defer = "@defer 1"
+        return _swap(
+            patch, f"udpreceive {DEVICE_PORT} {defer}", f"udpreceive {device_port} {defer}"
+        )
     if not listen:
         if hub_port is not None:
             raise ValueError("only the Listen device takes a hub port")

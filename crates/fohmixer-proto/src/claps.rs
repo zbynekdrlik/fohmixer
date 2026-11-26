@@ -18,10 +18,13 @@
 //! | [`PATTERN_ADDRESS`] | `,iiii` | beat 1 to 4 of the bar: 1 claps, 0 not |
 //! | [`SILENT_ADDRESS`] | `,i` | 1 while an active clip of the track covers the playhead |
 //! | [`ON_ADDRESS`] | `,i` | 1: play the pattern from the next bar on; 0: stop |
+//! | [`POLL_ADDRESS`] | `,` | answer with the hello (#264), at the hub's claps tick (every [`SEND_EVERY_MS`]), with or without a Claps track |
 //!
-//! **To the hub**, UDP `127.0.0.1:<[claps] port>` ([`HUB_PORT`]), every
-//! [`HELLO_EVERY_MS`]: [`HELLO_ADDRESS`], [`HELLO_TAGS`]: the wire version
-//! ([`WIRE_VERSION`]), `v<version.txt>` and 1 while it claps.
+//! **To the hub**, UDP `127.0.0.1:<[claps] port>` ([`HUB_PORT`]), as the
+//! answer to each poll (#264: the device runs no clock of its own, its
+//! `udpreceive @defer 1` answers in Live's main thread): [`HELLO_ADDRESS`],
+//! [`HELLO_TAGS`]: the wire version ([`WIRE_VERSION`]), `v<version.txt>`
+//! and 1 while it claps.
 //!
 //! Pure: no I/O, slices only.
 
@@ -47,12 +50,12 @@ pub const ON_ADDRESS: &str = "/fohmixer/claps/on";
 pub const SILENT_ADDRESS: &str = "/fohmixer/claps/silent";
 /// The pitches' address.
 pub const NOTES_ADDRESS: &str = "/fohmixer/claps/notes";
+/// The poll's address (#264): no argument; the device answers its hello.
+pub const POLL_ADDRESS: &str = "/fohmixer/claps/poll";
 /// The longest datagram taken.
 pub const MAX_DATAGRAM: usize = 256;
-/// How often the hub sends the device its whole state.
+/// How often the hub sends the device its whole state and its poll.
 pub const SEND_EVERY_MS: u64 = 1000;
-/// The device's hello period.
-pub const HELLO_EVERY_MS: u64 = 1000;
 /// A device unheard this long is shown gone.
 pub const FORGET_MS: u64 = 3000;
 /// The beats of a bar (4/4 only).
@@ -152,9 +155,12 @@ pub struct ClapsStatus {
     /// Live's time signature as heard (`4/4`).
     #[serde(default)]
     pub signature: Option<String>,
-    /// The datagrams sent to the device.
+    /// The datagrams sent to the device (its words; the polls apart).
     #[serde(default)]
     pub sent: u64,
+    /// The polls sent to the device (#264).
+    #[serde(default)]
+    pub polls: u64,
 }
 
 /// One word to the device.
@@ -164,6 +170,8 @@ pub enum Word {
     Pattern(Pattern),
     Silent(bool),
     On(bool),
+    /// The poll (#264): the device answers with its hello.
+    Poll,
 }
 
 /// The device's hello.
@@ -183,6 +191,7 @@ pub fn encode(word: &Word) -> Vec<u8> {
         ),
         Word::Silent(silent) => (SILENT_ADDRESS, vec![i32::from(*silent)]),
         Word::On(on) => (ON_ADDRESS, vec![i32::from(*on)]),
+        Word::Poll => (POLL_ADDRESS, Vec::new()),
     };
     let mut out = Vec::with_capacity(64);
     push_string(&mut out, address);
@@ -246,7 +255,10 @@ pub fn parse(datagram: &[u8]) -> Result<Word, WireError> {
         }
         (SILENT_ADDRESS, &[v]) => Ok(Word::Silent(flag(v)?)),
         (ON_ADDRESS, &[v]) => Ok(Word::On(flag(v)?)),
-        (NOTES_ADDRESS | PATTERN_ADDRESS | SILENT_ADDRESS | ON_ADDRESS, _) => Err(WireError::Tags),
+        (POLL_ADDRESS, &[]) => Ok(Word::Poll),
+        (NOTES_ADDRESS | PATTERN_ADDRESS | SILENT_ADDRESS | ON_ADDRESS | POLL_ADDRESS, _) => {
+            Err(WireError::Tags)
+        }
         _ => Err(WireError::Address),
     }
 }
