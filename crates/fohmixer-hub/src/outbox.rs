@@ -52,12 +52,15 @@
 //! An idle page's meters (#51, its `idle` message, [`Outbox::pace_meters`])
 //! wait in a map of their own, per key the louder number (a peak shorter
 //! than the period still reaches the page; a value that is not a number
-//! replaces the one waiting), and join the batch's one `values` message once
-//! per period ([`Pace::Every`]); a hidden page's ([`Pace::Paused`]) wait
-//! until it wakes. Waking (full rate) puts every waiting meter with the
-//! values at once. Every other value, reply, ack and frame goes as before,
-//! and an instance going offline or a subscription left drops its waiting
-//! meters as it drops its values.
+//! replaces the one waiting) and the latest ([`Held`]), and join the batch's
+//! one `values` message once per period ([`Pace::Every`]): the louder, then,
+//! when the latest differs, the latest one period later, so a meter that
+//! falls within a period and then stands still (Live pushes nothing more)
+//! reaches where Live is (#276); a hidden page's ([`Pace::Paused`]) wait
+//! until it wakes. Waking (full rate) puts every waiting meter's latest
+//! with the values at once. Every other value, reply, ack and frame goes as
+//! before, and an instance going offline or a subscription left drops its
+//! waiting meters as it drops its values.
 
 pub mod flow;
 
@@ -100,8 +103,8 @@ struct Inner {
     /// The frames' round trips since the last `rate` record (PR I).
     trips: Trips,
     /// The page's meter values held back while it is idle (#51): per key
-    /// the louder number.
-    meters: BTreeMap<String, ValueItem>,
+    /// the louder number and the latest (#276).
+    meters: BTreeMap<String, Held>,
     /// How the page's meter values go (#51): at once, paced or paused.
     pace: Pace,
     /// When the held meters go next while paced (#51).
@@ -201,17 +204,18 @@ impl Inner {
     }
 
     /// A subscription's latest item; while the page is idle a meter's is
-    /// held back with the one already held, the louder kept (#51).
+    /// held back with the one already held, the louder kept (#51) and the
+    /// latest when it differs (#276, [`Held`]).
     fn put_value(&mut self, item: ValueItem) {
         if self.pace == Pace::Full || !is_meter_key(&item.sub) {
             self.values.insert(item.sub.clone(), item);
             return;
         }
-        let kept = match self.meters.remove(&item.sub) {
-            Some(held) => louder(held, item),
-            None => item,
+        let held = match self.meters.remove(&item.sub) {
+            Some(held) => held.with(item),
+            None => Held::new(item),
         };
-        self.meters.insert(kept.sub.clone(), kept);
+        self.meters.insert(held.kept.sub.clone(), held);
     }
 
     /// A subscription's item that replaces what is held for its key, never
@@ -222,17 +226,20 @@ impl Inner {
         if self.pace == Pace::Full || !is_meter_key(&item.sub) {
             self.values.insert(item.sub.clone(), item);
         } else {
-            self.meters.insert(item.sub.clone(), item);
+            self.meters.insert(item.sub.clone(), Held::new(item));
         }
     }
 
     /// The page's meter pace from `now` on (#51): full rate puts every held
-    /// meter with the values (they go at once); a pace starts its first
+    /// meter's latest with the values (they go at once: the page shows
+    /// where Live is, never the pause's peak, #276); a pace starts its first
     /// period, unless one runs already; a pause holds them.
     fn pace_meters(&mut self, pace: Pace, now: Instant) {
         match pace {
             Pace::Full => {
-                self.values.append(&mut self.meters);
+                for (key, held) in std::mem::take(&mut self.meters) {
+                    self.values.insert(key, held.latest());
+                }
                 self.lufs.append(&mut self.lufs_held);
                 self.meters_at = None;
             }
@@ -256,11 +263,17 @@ impl Inner {
         }
     }
 
-    /// Puts the held meters with the values when they are due at `now`
-    /// (#51); the next release is one period later.
+    /// Puts the held meters' louder numbers with the values when they are
+    /// due at `now` (#51); a latest that differs stays held as the next
+    /// period's first item (#276); the next release is one period later.
     fn release_meters(&mut self, now: Instant) {
         if let (Wake::Now, Pace::Every(period)) = (self.meters_wake(now), self.pace) {
-            self.values.append(&mut self.meters);
+            for (key, held) in std::mem::take(&mut self.meters) {
+                if let Some(last) = held.last {
+                    self.meters.insert(key.clone(), Held::new(last));
+                }
+                self.values.insert(key, held.kept);
+            }
             self.lufs.append(&mut self.lufs_held);
             self.meters_at = Some(now + period);
         }
@@ -350,6 +363,38 @@ fn sooner(a: Wake, b: Wake) -> Wake {
         (Wake::At(x), Wake::At(y)) => Wake::At(x.min(y)),
         (Wake::At(at), Wake::Woken) | (Wake::Woken, Wake::At(at)) => Wake::At(at),
         (Wake::Woken, Wake::Woken) => Wake::Woken,
+    }
+}
+
+/// A paced meter key's held items (#51, #276): the louder number of the
+/// period (`kept`, what its release sends) and, when it differs, the latest
+/// (`last`, sent one period later or at the wake): a meter that falls
+/// within a period and then stands still must not show its peak for good.
+#[derive(Debug, Clone, PartialEq)]
+struct Held {
+    kept: ValueItem,
+    last: Option<ValueItem>,
+}
+
+impl Held {
+    fn new(item: ValueItem) -> Self {
+        Self {
+            kept: item,
+            last: None,
+        }
+    }
+
+    /// The held items with a newer one: the louder kept, the newer the
+    /// latest unless it is the one kept.
+    fn with(self, new: ValueItem) -> Self {
+        let kept = louder(self.kept, new.clone());
+        let last = (kept != new).then_some(new);
+        Self { kept, last }
+    }
+
+    /// The newest item held.
+    fn latest(self) -> ValueItem {
+        self.last.unwrap_or(self.kept)
     }
 }
 
@@ -1510,6 +1555,84 @@ mod tests {
             taken(&outbox, at(t, 1250)),
             vec![values(vec![meter("Kick", Value::Null)])]
         );
+    }
+
+    #[test]
+    fn a_meter_that_falls_within_a_period_reaches_its_last_value_a_period_later() {
+        // #276: a track's sound stops, Live's meter falls to 0 within one
+        // period and then stays still (no push follows). The period's peak
+        // goes, then the last value, never the peak for good.
+        let outbox = Outbox::new();
+        let t = Instant::now();
+        outbox.pace_meters(every(250), t);
+        for level in [json!(0.6), json!(0.3), json!(0)] {
+            outbox.value(meter("Kick", level));
+        }
+        assert_eq!(
+            taken(&outbox, at(t, 250)),
+            vec![values(vec![meter("Kick", json!(0.6))])],
+            "the period's peak first"
+        );
+        let next = at(t, 500);
+        assert_eq!(outbox.lock().wake(at(t, 250)), Wake::At(next));
+        assert_eq!(taken(&outbox, next - Duration::from_nanos(1)), vec![]);
+        assert_eq!(outbox.lock().wake(next), Wake::Now);
+        assert_eq!(
+            taken(&outbox, next),
+            vec![values(vec![meter("Kick", json!(0))])],
+            "then where Live stands"
+        );
+        assert!(outbox.lock().is_empty(), "nothing more");
+        assert_eq!(outbox.lock().wake(at(t, 5000)), Wake::Woken);
+        // The kept latest counts as a value of the next period: a louder one
+        // there wins, a quieter one is the next latest.
+        for level in [json!(0.8), json!(0.1)] {
+            outbox.value(meter("Kick", level));
+        }
+        assert_eq!(
+            taken(&outbox, at(t, 750)),
+            vec![values(vec![meter("Kick", json!(0.8))])]
+        );
+        outbox.value(meter("Kick", json!(0.5)));
+        assert_eq!(
+            taken(&outbox, at(t, 1000)),
+            vec![values(vec![meter("Kick", json!(0.5))])],
+            "the latest 0.1 met a louder 0.5"
+        );
+        assert!(outbox.lock().is_empty());
+    }
+
+    #[test]
+    fn a_waking_page_gets_its_meters_last_values_not_their_peaks() {
+        // #276: a paused page (a locked iPad) wakes after its tracks fell
+        // silent: the meter shows where Live is, not the pause's peak.
+        let outbox = Outbox::new();
+        let t = Instant::now();
+        outbox.pace_meters(Pace::Paused, t);
+        for level in [json!(0.9), json!(0.4), json!(0)] {
+            outbox.value(meter("Kick", level));
+        }
+        outbox.value(meter("Snare", json!(0.7)));
+        outbox.pace_meters(Pace::Full, at(t, 5000));
+        assert_eq!(
+            taken(&outbox, at(t, 5000)),
+            vec![values(vec![
+                meter("Kick", json!(0)),
+                meter("Snare", json!(0.7))
+            ])]
+        );
+        assert!(outbox.lock().is_empty());
+        // So does a paced one that wakes within its period.
+        outbox.pace_meters(every(250), at(t, 6000));
+        for level in [json!(0.9), json!(0.2)] {
+            outbox.value(meter("Kick", level));
+        }
+        outbox.pace_meters(Pace::Full, at(t, 6100));
+        assert_eq!(
+            taken(&outbox, at(t, 6100)),
+            vec![values(vec![meter("Kick", json!(0.2))])]
+        );
+        assert!(outbox.lock().is_empty());
     }
 
     #[test]

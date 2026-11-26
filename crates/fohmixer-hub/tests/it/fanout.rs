@@ -1122,3 +1122,89 @@ fn a_hidden_page_gets_no_meter_until_it_wakes_and_every_other_value_at_once() {
         host.stop();
     });
 }
+
+#[test]
+fn a_paced_pages_meter_falls_to_live_when_the_sound_stops_within_a_period() {
+    // #276: on an idle page (paced meters) a track's meter stayed high
+    // after its sound stopped: Live's meter fell to 0 inside one period, the
+    // hub kept the period's louder number, and Live pushed nothing after.
+    let _serial = serial();
+    runtime().block_on(async {
+        let mut host = Host::start("band");
+        let dir = tempfile::tempdir().unwrap();
+        let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        let mut awake = hub.client().await;
+        let mut idle = hub.client().await;
+        awake
+            .instance_state("band", true, Some(false), SECS_3)
+            .await;
+        idle.instance_state("band", true, Some(false), SECS_3).await;
+        let meter = awake
+            .sub_key("band", HAND1, "output_meter_level", false)
+            .await;
+        awake.value_of(&meter, SECS_3).await;
+        assert_eq!(
+            idle.sub_key("band", HAND1, "output_meter_level", false)
+                .await,
+            meter
+        );
+        // Idle at the longest period, so the fall surely lands in one.
+        idle.send(&ClientMsg::Idle {
+            on: true,
+            meter_ms: Some(2000),
+        })
+        .await;
+        idle.send(&ClientMsg::Ping {
+            n: 1,
+            t: 1.0,
+            rtt: None,
+            rtt_n: None,
+        })
+        .await;
+        idle.wait(SECS_3, |m| {
+            matches!(m, ServerMsg::Pong { n: 1, .. }).then_some(())
+        })
+        .await;
+        idle.clear();
+        let paced = Instant::now();
+        // The sound stops: Live's meter falls and then stands still.
+        assert_eq!(host.meter("Hand1 #", 0.7), 1);
+        awake
+            .value_until(&meter, SECS_3, |i| i.value == Some(json!(0.7)))
+            .await;
+        assert_eq!(host.meter("Hand1 #", 0.0), 1);
+        awake
+            .value_until(&meter, SECS_3, |i| i.value == Some(json!(0.0)))
+            .await;
+        assert!(
+            paced.elapsed() < Duration::from_millis(1500),
+            "the fall within the first period: {:?}",
+            paced.elapsed()
+        );
+        // Two periods and a bit: the peak, then where Live is.
+        let meter_of = |m: &ServerMsg| match m {
+            ServerMsg::Values { items } => items.iter().find(|i| i.sub == meter).cloned(),
+            _ => None,
+        };
+        // Collected until the 0 comes (6 s bounds a loaded runner), then half
+        // a second more: nothing follows it.
+        let deadline = paced + Duration::from_secs(6);
+        let mut seen = Vec::new();
+        while let Some(item) = idle
+            .gets(deadline.saturating_duration_since(Instant::now()), meter_of)
+            .await
+        {
+            let fell = item.value == Some(json!(0.0));
+            seen.push(item.value);
+            if fell {
+                break;
+            }
+        }
+        if let Some(item) = idle.gets(Duration::from_millis(500), meter_of).await {
+            seen.push(item.value);
+        }
+        assert_eq!(seen, vec![Some(json!(0.7)), Some(json!(0.0))]);
+        hub.stop().await;
+        host.stop();
+    });
+}
