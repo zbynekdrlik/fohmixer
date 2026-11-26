@@ -21,8 +21,9 @@
 //!   `clap_beat` and `clap_stop` go to the rule as they are.
 //! - The device (`FohMixer Claps`) is told the rule's words over UDP at
 //!   every change and again every `SEND_EVERY_MS` (`RouterMsg::ClapsTick`),
-//!   while there is a Claps track; its hello comes as `RouterMsg::ClapsHello`
-//!   (`claps_udp.rs`).
+//!   while there is a Claps track; each tick also polls it, with or without
+//!   a Claps track (#264: the device runs no clock, it answers the poll with
+//!   its hello, `RouterMsg::ClapsHello`, `claps_udp.rs`).
 //! - Every page gets `ServerMsg::Claps` at attach and on a change of the
 //!   phase, the pattern, the tempo or a playhead off the pages' ring
 //!   ([`ring_off`]).
@@ -33,7 +34,7 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::time::Instant;
 
 use fohmixer_proto::claps::{
-    ClapsDevice, ClapsState, ClapsStatus, ClapsWords, FORGET_MS, Hello, encode, words_of,
+    ClapsDevice, ClapsState, ClapsStatus, ClapsWords, FORGET_MS, Hello, Word, encode, words_of,
 };
 use fohmixer_proto::client::{ServerMsg, ValueItem};
 use fohmixer_proto::layout::ClapsTrack;
@@ -253,6 +254,8 @@ pub(super) struct ClapsIo {
     pub sent: Option<ClapsWords>,
     pub sender: Option<(UdpSocket, SocketAddr)>,
     pub datagrams: u64,
+    /// The polls sent (#264).
+    pub polls: u64,
     /// The device's last hello and when.
     pub device: Option<(Hello, Instant)>,
     pub taps: u64,
@@ -732,9 +735,11 @@ impl Router {
     }
 
     /// The tick: the device gets its words again (a reloaded one takes the
-    /// state back), and a device unheard for `FORGET_MS` is said gone once.
+    /// state back), then the poll its hello answers (#264), and a device
+    /// unheard for `FORGET_MS` is said gone once.
     pub(super) fn claps_tick(&mut self, now: Instant) {
         self.claps_send(true);
+        self.claps_poll();
         let gone = self.claps.device.as_ref().is_some_and(|(_, at)| {
             now.saturating_duration_since(*at).as_millis() >= u128::from(FORGET_MS)
         });
@@ -743,6 +748,19 @@ impl Router {
                 json!({"step": "device", "gone": true, "version": hello.version}),
                 None,
             );
+        }
+    }
+
+    /// The poll (#264): sent with or without a Claps track, so a loaded
+    /// device shows in `/api/status` before its track is tagged; nothing
+    /// without a socket.
+    fn claps_poll(&mut self) {
+        let Some((socket, to)) = &self.claps.sender else {
+            return;
+        };
+        match socket.send_to(&encode(&Word::Poll), to) {
+            Ok(_) => self.claps.polls += 1,
+            Err(e) => tracing::debug!(error = %e, "claps: a poll to the device failed"),
         }
     }
 
@@ -799,6 +817,7 @@ impl Router {
             clips_error: self.claps.clips_error.clone(),
             signature: signature_text(self.claps.numerator, self.claps.denominator),
             sent: self.claps.datagrams,
+            polls: self.claps.polls,
         }
     }
 }

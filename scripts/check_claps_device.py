@@ -9,11 +9,12 @@ the face's version, no absolute path. Its own, box by box (`BOXES`,
 
 - MIDI passes through untouched: `midiin` into `midiout` and nowhere else,
   `midiout` fed by nothing else;
-- the hub's words: one `udpreceive <DEVICE_PORT>` into one `route` of the
-  four addresses (`notes`, `pattern`, `silent`, `on`), the pitches into a
-  `zl reg`, the pattern into a `zl lookup`, `silent` into the clap gate's
-  third inlet, `on` through `change` and `sel 1 0`: 1 arms, 0 stops (the
-  arm and the running state cleared);
+- the hub's words: one `udpreceive <DEVICE_PORT> @defer 1` (#264: it
+  outputs in Live's main thread) into one `route` of the five addresses
+  (`notes`, `pattern`, `silent`, `on`, `poll`), the pitches into a `zl
+  reg`, the pattern into a `zl lookup`, `silent` into the clap gate's third
+  inlet, `on` through `change` and `sel 1 0`: 1 arms, 0 stops (the arm and
+  the running state cleared);
 - Live's beats: a `metro 4n @quantize 4n` on Live's transport (silent while
   it stops), `transport`'s beats and units made the bar's beat 0 to 3 (a
   tick a hair before a beat counts as that beat), beat 0 turns an armed
@@ -22,16 +23,22 @@ the face's version, no absolute path. Its own, box by box (`BOXES`,
   pitches through `iter` into `makenote 100 150` (velocity 100, 150 ms: half
   a beat at 200 bpm; a length in ms, so a note-off is never frozen by a stop
   of Live's transport) into `noteout`;
-- the watchdog: every word from the hub restarts a `delay <FORGET_MS>`;
-  when it runs out (the hub is gone: it sends every second) the device
-  stops and its `change` forgets the switch (`set 0`), so the hub's next
-  `on 1` arms it again;
-- the hello: one `udpsend 127.0.0.1 <HUB_PORT>` fed by one
-  `pack /fohmixer/claps 1 v<version> 0` each second through a `deferlow`
-  (#240: the beats stay timed, the socket write leaves Live's audio
-  thread), its last inlet the running state;
+- the watchdog: every `on` word from the hub (sent with its whole state
+  every second while it has a +CLAPS track) restarts a `delay
+  <FORGET_MS>`; when it runs out (the hub is gone) the device stops and its
+  `change` forgets the switch (`set 0`), so the hub's next `on 1` arms it
+  again (a poll alone never keeps a device clapping);
+- the hello (#264): the hub's `poll` -> `t b b`: the running state kept in
+  an `i` (its cold inlet from the arm and the stop) shown on the face, then
+  one `pack /fohmixer/claps 1 v<version> 0` (its last inlet the running
+  state) straight into one `udpsend 127.0.0.1 <HUB_PORT>`, all in the main
+  thread call of the poll;
 - the threads (`check_lufs_device.thread_errors`, #240): no timed box
-  reaches the `udpsend` without a `deferlow` or `qmetro` between.
+  reaches the `udpsend`; no `deferlow`, `defer`, `qmetro` and no `metro`
+  but the beats' (`still_errors`: the hello's `metro 1000` and its
+  `deferlow` posted from Live's audio thread); the face fed from no
+  scheduler box through hot inlets (`face_errors`: a redraw from the audio
+  thread posts); every `udpreceive` with `@defer 1` (`defer_errors`).
 
 The ports and the watchdog's time are read from
 `crates/fohmixer-proto/src/claps.rs`. Exit 0 when
@@ -54,7 +61,7 @@ FOLDER = Path("live-device") / "FohMixer-Claps"
 MAXPAT = FOLDER / "FohMixer Claps.maxpat"
 VERSION_TXT = FOLDER / "version.txt"
 CLAPS_RS = Path("crates") / "fohmixer-proto" / "src" / "claps.rs"
-ADDRESSES = ["notes", "pattern", "silent", "on"]
+ADDRESSES = ["notes", "pattern", "silent", "on", "poll"]
 BOXES = {
     "obj-midiin": ["midiin"],
     "obj-midiout": ["midiout"],
@@ -82,11 +89,13 @@ BOXES = {
     "obj-iter": ["iter"],
     "obj-makenote": ["makenote", "100", "150"],
     "obj-heard": ["t", "b"],
+    "obj-poll": ["t", "b", "b"],
+    "obj-running": ["i"],
     "obj-forget": ["set", "0"],
     "obj-noteout": ["noteout"],
-    "obj-hello-metro": ["metro", "1000"],
-    "obj-send-defer": ["deferlow"],
 }
+# The beats' metro, the device's one clock (MIDI to Live posts nothing).
+BEATS = "obj-beats"
 WIRING = (
     (("obj-midiin", 0), ("obj-midiout", 0)),
     (("obj-udpreceive", 0), ("obj-route", 0)),
@@ -101,9 +110,9 @@ WIRING = (
     (("obj-stop", 0), ("obj-armed", 1)),
     (("obj-stop", 0), ("obj-hit", 1)),
     (("obj-stop", 0), ("obj-hello", 3)),
+    (("obj-stop", 0), ("obj-running", 1)),
     (("obj-thisdevice", 0), ("obj-start", 0)),
     (("obj-start", 0), ("obj-beats", 0)),
-    (("obj-start", 0), ("obj-hello-metro", 0)),
     (("obj-beats", 0), ("obj-transport", 0)),
     (("obj-transport", 2), ("obj-beat", 1)),
     (("obj-transport", 1), ("obj-beat", 0)),
@@ -117,6 +126,7 @@ WIRING = (
     (("obj-disarm", 0), ("obj-armed", 1)),
     (("obj-run", 0), ("obj-hit", 1)),
     (("obj-run", 0), ("obj-hello", 3)),
+    (("obj-run", 0), ("obj-running", 1)),
     (("obj-beat-t", 0), ("obj-lookup", 0)),
     (("obj-lookup", 0), ("obj-hit", 0)),
     (("obj-hit", 0), ("obj-hit-sel", 0)),
@@ -125,10 +135,12 @@ WIRING = (
     (("obj-iter", 0), ("obj-makenote", 0)),
     (("obj-makenote", 0), ("obj-noteout", 0)),
     (("obj-makenote", 1), ("obj-noteout", 1)),
-    (("obj-hello-metro", 0), ("obj-hello", 0)),
-    (("obj-hello", 0), ("obj-send-defer", 0)),
-    (("obj-send-defer", 0), ("obj-udpsend", 0)),
-    (("obj-udpreceive", 0), ("obj-heard", 0)),
+    (("obj-route", 4), ("obj-poll", 0)),
+    (("obj-poll", 1), ("obj-running", 0)),
+    (("obj-running", 0), ("obj-clapping", 0)),
+    (("obj-poll", 0), ("obj-hello", 0)),
+    (("obj-hello", 0), ("obj-udpsend", 0)),
+    (("obj-route", 3), ("obj-heard", 0)),
     (("obj-heard", 0), ("obj-watchdog", 0)),
     (("obj-watchdog", 0), ("obj-stop", 0)),
     (("obj-watchdog", 0), ("obj-forget", 0)),
@@ -142,9 +154,16 @@ ONLY = {
     ("obj-hit", 1): [["obj-run", 0], ["obj-stop", 0]],
     ("obj-armed", 0): [["obj-bar", 0]],
     ("obj-beats", 0): [["obj-start", 0]],
-    ("obj-udpsend", 0): [["obj-send-defer", 0]],
-    ("obj-send-defer", 0): [["obj-hello", 0]],
+    ("obj-udpsend", 0): [["obj-hello", 0]],
+    ("obj-hello", 0): [["obj-poll", 0]],
+    ("obj-poll", 0): [["obj-route", 4]],
+    ("obj-running", 0): [["obj-poll", 1]],
+    ("obj-running", 1): [["obj-run", 0], ["obj-stop", 0]],
+    ("obj-clapping", 0): [["obj-running", 0]],
+    ("obj-heard", 0): [["obj-route", 3]],
 }
+# What the device never holds (#264): a hand-over to Live's main thread.
+STILL = ("deferlow", "defer", "qmetro")
 # Kinds the patch holds exactly once.
 SINGLE = ("midiin", "midiout", "udpreceive", "udpsend", "transport", "noteout", "makenote")
 
@@ -190,7 +209,7 @@ def patch_errors(where: str, text: str, version: str, numbers: dict[str, int]) -
     ids = {b.get("id"): b for b in every}
     wanted = {
         **BOXES,
-        "obj-udpreceive": ["udpreceive", str(numbers["device"])],
+        "obj-udpreceive": ["udpreceive", str(numbers["device"]), "@defer", "1"],
         "obj-udpsend": ["udpsend", "127.0.0.1", str(numbers["hub"])],
         "obj-hello": ["pack", "/fohmixer/claps", "1", f"v{version}", "0"],
         "obj-watchdog": ["delay", str(numbers["forget"])],
@@ -226,10 +245,48 @@ def patch_errors(where: str, text: str, version: str, numbers: dict[str, int]) -
         if count != 1:
             errors.append(f"{where}: needs exactly one {kind}, has {count}")
     errors += lufs.thread_errors(where, patcher, every)
+    errors += still_errors(where, every)
+    errors += face_errors(where, patcher, every)
+    errors += defer_errors(where, every)
     shown = [b.get("text") for b in every if b.get("varname") == "version"]
     if shown != [f"v{version}"]:
         errors.append(f"{where}: its face shows {shown}, expected ['v{version}'] (version.txt)")
     return errors
+
+
+def still_errors(where: str, every: list[dict]) -> list[str]:
+    """No hand-over and no clock but the beats' (#264)."""
+    return [
+        f"{where}: {b.get('id')} ('{b.get('text')}') has no place in the Claps device (its "
+        "hello answers the hub's poll in Live's main thread; its one clock is the beats' metro)"
+        for b in every
+        if lufs.kind(b) in STILL or (lufs.kind(b) == "metro" and b.get("id") != BEATS)
+    ]
+
+
+def face_errors(where: str, patcher: dict, every: list[dict]) -> list[str]:
+    """No number box fed from a scheduler box through hot inlets (#264: its
+    redraw would post from Live's audio thread)."""
+    ids = {b.get("id"): b for b in every}
+    return [
+        f"{where}: the face's {face.get('id')} is fed from {src} ('{ids[src].get('text')}'), "
+        "a scheduler box (a redraw from Live's audio thread posts)"
+        for face in every
+        if face.get("maxclass") in ("number", "flonum")
+        for src in lufs.upstream(
+            patcher, ids, [(face.get("id"), None)], lufs.hot_inlets, lufs.TIMED, ends=()
+        )
+    ]
+
+
+def defer_errors(where: str, every: list[dict]) -> list[str]:
+    """Every `udpreceive` outputs in Live's main thread (#264)."""
+    return [
+        f"{where}: {b.get('id')} ('{b.get('text')}') outputs on the network thread "
+        "(the device takes the hub's words in Live's main thread: @defer 1)"
+        for b in every
+        if lufs.kind(b) == "udpreceive" and lufs.words(b)[-2:] != ["@defer", "1"]
+    ]
 
 
 def check(root: Path) -> list[str]:

@@ -61,7 +61,8 @@ rack's chain `[chain, rack, track, set]`; the hub takes the last named one as
 the set and the one before it as the track (`fohmixer_proto::lufs::wire`).
 Max's `live.path` gives no absolute path (`getpath` echoes the path it was
 given), so the device reads its id and each parent's `name` instead: at
-load on Max's low-priority thread (`deferlow`), on a change, and every 10 s
+load (straight from `live.thisdevice` since #264; a `deferlow` before),
+on a change, and every 10 s
 (#240; the old read every second cost every device 9 LOM calls a second):
 each parent's `live.path` (both outlets into its `route id`: the left
 answers every `path` message, the load's and the 10 s re-read's, as the
@@ -82,25 +83,31 @@ like every parent, it takes its id from both of its `live.path`'s outlets.
 The follow does not cover every move: on the PC a device moved from its
 track into a rack's chain kept announcing its track and set for over 30 s
 (the PC proof's attempt 2 on #240). So each device sends its four parents'
-`path` messages again every 10 s (the DECIDED of 2026-11-17):
-`live.thisdevice` → `random 10000` (an offset drawn once at load) → `delay`
-→ `deferlow` → `1` → `qmetro 10000` → `t b b b b` → the paths, parent 1
-first and the set last, as at the load. Each `live.path` resolves its path
-anew, its left outlet gives the id, and the same `live.object` read
-follows, so a move is followed within
-10 s, on the low-priority queue, and the devices loaded together with a set
-read at their own instants. It is the only clock of the identity
-(`check_lufs_device.py` pins its boxes and every line into and out of
-them, and names any other clock, a faster one included). Per tick and
+`path` messages again every 10 s (the DECIDED of 2026-11-17). Since #264
+(the meter's step, then the LUFS device's) the re-read rides the hub's
+poll, with no clock: `live.thisdevice` → `random 50` (the meter's `random
+300`) → `prepend set` → `counter 0 49` (`counter 0 299`), banged first by
+each poll (the pull's rightmost outlet) → `sel 0` → `t b b b b` → the
+paths, parent 1 first and the set last, as at the load: every 50th poll at
+200 ms (the meter's 300th at 33 ms, 9.9 s), each device from its own place
+in the count, and before that poll's readings, so its datagram already
+names the new parents. Each `live.path` resolves its path anew, its left
+outlet gives the id, and the same `live.object` read follows, so a move is
+followed within 10 s, in Max's main thread, and the devices loaded together
+with a set read at their own instants. (Until #264 it was `random 10000` →
+`delay` → `deferlow` → `1` → `qmetro 10000`; the Listen device keeps that
+clock.) `scripts/poll_reread_check.py` pins the re-read's boxes and every
+line into and out of them, and names any other clock. Per tick and
 device: 4 `live.path` resolves, then for each parent an id from the left
 outlet and possibly one from the middle, each setting the `live.object`
 (and the observer of parents 1 to 3, which may report once more) and
 reading `get name`: at most 8 ids, 6 observer sets and 14 `get name`, the
 same name read again: at most about 30 LOM calls every 10 s against the
-old 90 (5 paths and 4 names each second), a third or less. A `Listen`
-device in a rack that is off may keep
-this clock too (Max's scheduler may run on), so the PC's A/B includes the
-idle racks.
+old 90 (5 paths and 4 names each second), a third or less. A pulled
+device that is off (it, or a rack around it) answers no poll, so it
+re-reads nothing until Device On turns 1 again (a datagram at once, and the
+hub polls it again); a `Listen` device in a rack that is off may keep its
+clock (Max's scheduler may run on).
 
 **The identity's format is proved only on the PC** (CI checks which boxes
 are wired to which, never what Max outputs; `scripts/check_lufs_device.py`
@@ -141,7 +148,8 @@ by `obj-send-trigger` (`t b f`) each time the last value comes out.
 with its own address, it bangs two interval-less `peakamp~` in Max's main
 thread and sends straight into `udpsend`; its load is not deferred and its
 10 s re-read rides the poll (every 300th), so the meter holds no
-`deferlow`, `metro` or `qmetro`. *History:* until then it sent on its own
+`deferlow`, `metro`, `qmetro` or `delay`; the LUFS device neither since
+1.60.3 (below). *History:* until then it sent on its own
 `peakamp~ 33` clock, the `pack` through a `deferlow` (#240), both from
 Live's audio thread.
 
@@ -177,26 +185,34 @@ a message in the audio thread:
   device answers nothing and the hub sees it go stale (its port polled for
   one stale window more, then dropped). Device On turning 1 sends one
   datagram at once (`t i i` → `sel 1`), so the hub finds it again;
-- the gate opens to `obj-pull` (`t b b b`: the short-term first, then the
-  voiced share into the Voice level's cold inlet, then the voiced mean) →
+- the gate opens to `obj-pull` (`t b b b b`: the re-read's count first,
+  above, then the short-term, then the voiced share into the Voice level's
+  cold inlet, then the voiced mean) →
   the level (`expr`, below) → `* 10.` → `round` → `clip` → the `pack` →
   `udpsend`, with no `deferlow`; the face's `Short-term` and `Voice` show
   the clipped tenths (`* 0.1`), fed from the poll only, so they too redraw
   in the main thread only;
-- one datagram goes at load (the load's last step, after the identity) and
-  at each 10 s re-read (the tick's last outlet), so the hub learns a new
-  device and its port.
+- one datagram goes at load (the load's last step, after the identity), so
+  the hub learns a new device and its port; after that the device sends
+  only when polled (and when Device On turns 1): until 1.60.3 the 10 s
+  re-read's tick sent one too, from its `qmetro`;
+- nothing in the device runs a clock or hands a message over (#264, 1.60.3:
+  the identity's `qmetro 10000`, its `delay` and the two `deferlow`s went;
+  `live.thisdevice` bangs the load and `dspstate~` directly):
+  `scripts/poll_reread_check.py` fails on any `deferlow`, `defer`,
+  `metro`, `qmetro`, `delay`, `del` or `pipe` in either pulled device.
 
 **The hub** (`crates/fohmixer-hub/src/lufs_udp.rs`) sends every port a
 polled-form datagram named the poll each 200 ms from a socket of its own
 (`127.0.0.1`), as long as that key is heard; a key lost (1 s, the LUFS
 rule's stale window, five polls) drops its port. `/api/status`
 `lufs.listener` counts `polled` (polls sent), `poll_failed` and `polling`
-(the ports polled now). After a hub restart a LUFS device's readings come
-back at its next 10 s re-read (the hub learns the port from that datagram);
-a meter's at once, from the hub's start sweep (#264: the meter's poll once
-to every port of the range, `swept` / `sweep_failed`,
-`../FohMixer-Meter/README.md`).
+(the ports polled now). After a hub restart every device's readings come
+back at once, from the hub's start sweep (#264: each kind's poll once to
+every port of the range, the LUFS device's then the meter's; each device
+answers its own address and its `route` drops the other's; `swept` /
+`sweep_failed` count both, `../FohMixer-Meter/README.md`). Until 1.60.3 a
+LUFS device came back at its next 10 s re-read's datagram.
 
 Known limit: two devices that draw the same port
 (1 in 10 000 per pair) share one socket; Max's `udpreceive` cannot say a
@@ -237,7 +253,7 @@ with a clock of its own:
 The coefficients and the windows are computed in Max messages, never on a
 clock: `obj-sr-state` (`dspstate~`) gives the sample rate when the audio
 starts (a rate change restarts it) and when banged, which the load does
-once from the identity's `deferlow` (`obj-id-defer`, the main thread); `t f
+once from `live.thisdevice` (since #264; the identity's `deferlow` before); `t f
 f f f` → `expr tan(π f0 / sr)` per filter → one `expr` per coefficient,
 the analog-prototype formulas the gen~ code used (libebur128's form) →
 `pack` → the `biquad~`'s left inlet as one list, so the five change
@@ -299,14 +315,14 @@ before.
 
 | File | What it is |
 |---|---|
-| `FohMixer LUFS.maxpat` | The LUFS device: `sig~ 0.` → `plugout~`; `plugin~` → the K-weighting `biquad~` pairs → squared, summed → the `average~` readers (above) → `snapshot~ 0` ×3, banged by the hub's poll through the `is_active` gate → the levels (`expr`) → `* 10.` → `round` → `clip` → the `pack`'s two values, `V` through `t b f`, which bangs the `pack`; the coefficients from `dspstate~`; the identity; the poll port; `udpsend` (no `deferlow`). No `gen~` (#264). |
+| `FohMixer LUFS.maxpat` | The LUFS device: `sig~ 0.` → `plugout~`; `plugin~` → the K-weighting `biquad~` pairs → squared, summed → the `average~` readers (above) → `snapshot~ 0` ×3, banged by the hub's poll through the `is_active` gate → the levels (`expr`) → `* 10.` → `round` → `clip` → the `pack`'s two values, `V` through `t b f`, which bangs the `pack`; the coefficients from `dspstate~`; the identity, re-read on every 50th poll; the poll port; `udpsend` (no `deferlow`). No `gen~` (#264). |
 | `../FohMixer-Meter/FohMixer Meter.maxpat` | The meter device: `sig~ 0.` → `plugout~`; `peakamp~` (no interval) per channel, banged by the hub's poll through the `is_active` gate → `atodb` → tenths → the `pack`, `R` through `t b f`, which bangs it; the identity, re-read on every 300th poll; the poll port; `udpsend` (no `deferlow`). |
 | `version.txt`, `../FohMixer-Meter/version.txt` | The workspace version (`scripts/check_version.py` keeps both equal to it); each face and each `pack` carry `v<version>`. |
 | `build_amxd.py` | Writes either device's `.amxd` from its patcher. |
 
 `scripts/check_lufs_device.py` (CI) fails, for the LUFS patch, on any
 `deferlow` on the send path, on a `snapshot~`/`peakamp~` with its own clock
-on, on a clock (`metro`, `qmetro`, `delay`, ...) but the identity's driving a
+on, on any `deferlow`, `metro`, `qmetro` or `delay` at all (`poll_reread_check`), on a clock driving a
 reading, on a face object fed from an audio clock, on any change to the
 pull's boxes and lines (`pull_errors`, `scripts/lufs_pull_check.py`), and on
 any change to the DSP chain's boxes, lines or `expr` texts

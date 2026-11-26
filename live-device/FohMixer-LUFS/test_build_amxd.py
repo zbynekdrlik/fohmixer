@@ -146,7 +146,7 @@ class AmxdTests(unittest.TestCase):
         built = ba.with_ports(patch, 40003, device_port=40004)
         swaps = [
             (b'"udpsend 127.0.0.1 39113"', b'"udpsend 127.0.0.1 40003"'),
-            (b'"udpreceive 39114"', b'"udpreceive 40004"'),
+            (b'"udpreceive 39114 @defer 1"', b'"udpreceive 40004 @defer 1"'),
         ]
         back = built
         for old, new in swaps:
