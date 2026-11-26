@@ -272,6 +272,29 @@ fn a_device_heard_is_polled_with_its_select_and_forgotten_once_silent() {
 }
 
 #[test]
+fn a_test_hub_never_sweeps_the_whole_range() {
+    // CI of 3d700f04: a `Config::defaults` hub keeps `[listen]` on, and its
+    // start sweep reached its own LUFS listener's ephemeral port (in the
+    // range on Linux and Windows): the LUFS tests counted two refused
+    // datagrams (`address`). `TestHub::start_config` drops the default
+    // range; a test names its own (below).
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::defaults(dir.path());
+        config.instances.clear();
+        config.lufs.port = 0;
+        config.listen.port = free_port();
+        let hub = TestHub::start_config(config).await;
+        let status = hub
+            .status_until(SECS_10, |s| s.listen.poll_from.is_some())
+            .await;
+        assert_eq!((status.listen.swept, status.listen.sweep_failed), (0, 0));
+        hub.stop().await;
+    });
+}
+
+#[test]
 fn a_hub_sweeps_its_range_once_with_off_at_its_start() {
     // #264: a device running from before the hub's start (no announce of
     // its own after its load) answers the start sweep's poll.
