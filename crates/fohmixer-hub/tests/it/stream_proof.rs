@@ -335,18 +335,15 @@ fn the_read_only_token_reads_the_proof_and_nothing_else() {
         let (code, answer) = proof(hub.addr, Some(TOKEN), &[]).await;
         assert_eq!((code, &answer["ok"]), (200, &json!(true)), "{answer}");
         refused_elsewhere(hub.addr, 401).await;
-        // LAN only, as the automation token.
+        // LAN only, as the automation token (a test hub has no `[access]`:
+        // the Access check refuses the internet path before the handler).
         let (code, answer) = proof(
             hub.addr,
             Some(READ_ONLY),
             &[("cf-connecting-ip", "203.0.113.9")],
         )
         .await;
-        assert_eq!(
-            (code, &answer["code"]),
-            (403, &json!("LAN_ONLY")),
-            "{answer}"
-        );
+        assert_eq!(code, 403, "{answer}");
         hub.stop().await;
         // The read-only token alone: the proof is read, the scenes stay
         // off (503, no automation token), the rest 401.
