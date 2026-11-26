@@ -25,7 +25,7 @@ const PATH: &str = "/api/mbc/stream-proof";
 /// The automation token stored as the CLI stores it.
 fn with_token(dir: &Path) {
     let token = fohmixer_hub::automation::AutomationToken::of(TOKEN).unwrap();
-    fohmixer_hub::automation::store(dir, &token).unwrap();
+    fohmixer_hub::automation::store(fohmixer_hub::automation::AUTOMATION, dir, &token).unwrap();
 }
 
 fn site() -> std::path::PathBuf {

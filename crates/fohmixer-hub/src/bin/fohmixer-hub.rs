@@ -162,7 +162,11 @@ fn link_secret_command() -> ExitCode {
 /// start.
 fn automation_command() -> ExitCode {
     let stdin = std::io::stdin();
-    match fohmixer_hub::automation::run(&data_dir(), stdin.lock()) {
+    match fohmixer_hub::automation::run(
+        fohmixer_hub::automation::AUTOMATION,
+        &data_dir(),
+        stdin.lock(),
+    ) {
         Ok(()) => {
             eprintln!(
                 "fohmixer-hub: stored the automation token (sealed); restart the hub to take it"

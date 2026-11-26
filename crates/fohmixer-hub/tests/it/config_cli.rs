@@ -345,6 +345,10 @@ fn automation_set_token_exits_2_on_a_short_token_and_stores_a_good_one_sealed() 
     );
     assert!(!stderr.contains(&good), "never printed");
     assert!(out.stdout.is_empty());
-    let stored = fohmixer_hub::automation::load(&dir.path().join("secrets")).unwrap();
+    let stored = fohmixer_hub::automation::load(
+        fohmixer_hub::automation::AUTOMATION,
+        &dir.path().join("secrets"),
+    )
+    .unwrap();
     assert_eq!(stored, fohmixer_hub::automation::AutomationToken::of(&good));
 }

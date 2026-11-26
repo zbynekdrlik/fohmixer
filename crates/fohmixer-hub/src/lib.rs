@@ -636,9 +636,13 @@ impl Hub {
         );
         // The automation token (#207): read at the start; a token that
         // cannot be read never stops the hub, it takes no scene.
-        let (automation, warning) = automation::usable(automation::load(
-            &config.data_dir.join(secrets::SECRETS_DIR),
-        ));
+        let (automation, warning) = automation::usable(
+            automation::AUTOMATION,
+            automation::load(
+                automation::AUTOMATION,
+                &config.data_dir.join(secrets::SECRETS_DIR),
+            ),
+        );
         if let Some(warning) = warning {
             tracing::warn!("{warning}");
         }
