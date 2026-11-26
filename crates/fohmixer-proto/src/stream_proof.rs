@@ -14,7 +14,9 @@
 //! 25.11 on #267): OM STREAM must take [`NO_INPUT`]; any other input type
 //! (a track, an external input) could reach the stream output without
 //! showing in any track's routing, so it is an error naming it, and a proof
-//! carries it as [`Outputs::stream_input`].
+//! carries it as [`Outputs::stream_input`]. The match is Live's English
+//! display text, exact: a Live in another UI language answers `ok: false`
+//! (the strict direction), never a false proof.
 //!
 //! **The routing graph.** Every track and return is a node; its output type
 //! ([`Output::kind`]) is its edge: [`GROUP`] goes to the group it sits in,
@@ -199,10 +201,19 @@ impl Answer {
 
 /// The one track named `name`, or why not.
 fn the_one(tracks: &[Track], name: &str) -> Result<usize, String> {
-    let mut found = tracks
-        .iter()
+    the_one_of(tracks.iter().map(|t| t.name.as_str()), name)
+}
+
+/// The index of the one of `names` that is `name`, or why not (the hub's
+/// walk asks it of the track list's names).
+pub fn the_one_of<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+    name: &str,
+) -> Result<usize, String> {
+    let mut found = names
+        .into_iter()
         .enumerate()
-        .filter(|(_, t)| t.name == name)
+        .filter(|&(_, n)| n == name)
         .map(|(i, _)| i);
     match (found.next(), found.next()) {
         (Some(i), None) => Ok(i),

@@ -47,9 +47,9 @@ struct Fake {
     stray_group: bool,
     /// One slot answered as given: target, prop, the slot.
     slot_as: Option<(String, String, Value)>,
-    /// The track-name reads after the facts' request answer this (a move
-    /// between step 2 and step 3).
-    late_name: Option<String>,
+    /// The name read of track `.0` after the facts' request answers `.1`
+    /// (a move between step 2 and step 3).
+    late_name: Option<(usize, String)>,
 }
 
 /// The MBC set's shape (invented names besides the constants).
@@ -189,9 +189,9 @@ fn drive(
                         slots.pop();
                     }
                     if n == 1
-                        && let Some(name) = fake.late_name.take()
+                        && let Some(late) = fake.late_name.take()
                     {
-                        fake.renamed = Some((4, name));
+                        fake.renamed = Some(late);
                     }
                     asked.answer(slots);
                 }
@@ -227,11 +227,11 @@ async fn a_walk_reads_the_set_and_the_proof_holds() {
     assert_eq!(set.tracks[5].output.channel, "3/4 Final LR");
     assert_eq!(set.main.channel, "1/2");
     assert_eq!(set.stream_input.as_deref(), Some("No Input"));
-    // Three requests: the lists, the facts (6 per track, the main track's
-    // 2 and the stream track's input), the one Sends Only track's name and
-    // sends.
+    // Three requests: the lists, the facts (6 per track and the main
+    // track's 2), the stream track's name and input and the one Sends Only
+    // track's name and sends.
     assert_eq!(calls.load(Ordering::SeqCst), 3);
-    assert_eq!(*sizes.lock().unwrap(), vec![2, 7 * 6 + 3, 2]);
+    assert_eq!(*sizes.lock().unwrap(), vec![2, 7 * 6 + 2, 4]);
     let proof = decide(&set).unwrap();
     assert_eq!(proof.open, vec![HAND1_SYNC]);
     assert!(proof.hand1_sync_only);
@@ -257,7 +257,7 @@ async fn returns_and_sends_are_read_and_a_sends_only_track_reaches_the_bus_throu
     assert_eq!(set.returns[1].output.channel, "5/6");
     assert_eq!(set.main.channel, "1/2");
     assert_eq!(set.tracks[4].sends, 1);
-    assert_eq!(*sizes.lock().unwrap(), vec![2, 7 * 6 + 2 * 4 + 3, 2]);
+    assert_eq!(*sizes.lock().unwrap(), vec![2, 7 * 6 + 2 * 4 + 2, 4]);
     assert_eq!(
         decide(&set).unwrap().open,
         vec![HAND1_SYNC, "Quiet", "A-Reverb"]
@@ -275,18 +275,25 @@ async fn a_large_set_is_read_in_requests_of_at_most_a_chunk() {
     assert_eq!(set.tracks.len(), 47);
     assert_eq!(
         *sizes.lock().unwrap(),
-        vec![2, CHUNK, 47 * 6 + 3 - CHUNK, 2]
+        vec![2, CHUNK, 47 * 6 + 2 - CHUNK, 4]
     );
     assert!(decide(&set).unwrap().hand1_sync_only);
 }
 
 #[tokio::test]
-async fn a_set_with_no_sends_only_track_asks_no_third_request() {
+async fn a_set_with_no_sends_only_track_reads_only_the_stream_tracks_name_and_input_third() {
     let mut fake = mbc();
     fake.tracks[4].out.0 = "Group".into();
     let (handle, _, sizes) = live(fake);
     walk(&handle).await.unwrap();
-    assert_eq!(*sizes.lock().unwrap(), vec![2, 7 * 6 + 3]);
+    assert_eq!(*sizes.lock().unwrap(), vec![2, 7 * 6 + 2, 2]);
+    // No stream track and no Sends Only track: no third request.
+    let mut fake = mbc();
+    fake.tracks[4].out.0 = "Group".into();
+    fake.tracks[5].name = "Elsewhere".into();
+    let (handle, _, sizes) = live(fake);
+    walk(&handle).await.unwrap();
+    assert_eq!(*sizes.lock().unwrap(), vec![2, 7 * 6 + 2]);
 }
 
 #[tokio::test]
@@ -557,8 +564,8 @@ async fn an_answer_that_is_no_list_or_short_or_without_refs_fails_the_walk() {
         walk(&handle).await,
         Err(format!(
             "Live answered {} of {} reads",
-            7 * 6 + 2,
-            7 * 6 + 3
+            7 * 6 + 1,
+            7 * 6 + 2
         ))
     );
 }
@@ -577,7 +584,7 @@ async fn a_group_without_a_ref_or_a_move_before_the_sends_fails_the_walk() {
         Err("live_set tracks 1 group_track: a group that is not in the track list".into())
     );
     let mut fake = mbc();
-    fake.late_name = Some("Elsewhere".into());
+    fake.late_name = Some((4, "Elsewhere".into()));
     let (handle, _, _) = live(fake);
     assert_eq!(
         walk(&handle).await,
@@ -641,5 +648,61 @@ async fn no_stream_track_or_two_read_no_input() {
     assert_eq!(
         decide(&set),
         Err(format!("two tracks are named {STREAM_TRACK}"))
+    );
+}
+
+#[tokio::test]
+async fn the_stream_track_moved_before_its_input_read_fails_the_walk() {
+    // Step 3 reads the name again with the input: never another track's.
+    let mut fake = mbc();
+    fake.late_name = Some((5, "Moved".into()));
+    let (handle, _, _) = live(fake);
+    assert_eq!(
+        walk(&handle).await,
+        Err(format!(
+            "the tracks changed during the read: live_set tracks 5 is now \"Moved\", was \"{STREAM_TRACK}\""
+        ))
+    );
+    // In a set past one chunk the name and the input still go together, in
+    // step 3's own request (its first two commands).
+    let mut fake = mbc();
+    for i in 0..40 {
+        fake.tracks.push(ft(&format!("Extra {i}"), None, "Main"));
+    }
+    fake.late_name = Some((5, "Moved".into()));
+    let (handle, _, _) = live(fake);
+    assert!(
+        walk(&handle)
+            .await
+            .unwrap_err()
+            .starts_with("the tracks changed during the read: live_set tracks 5 ")
+    );
+}
+
+#[tokio::test]
+async fn every_sends_only_track_is_read_after_the_stream_tracks_pair() {
+    let mut fake = mbc();
+    fake.tracks[4].sends = 1;
+    let mut second = ft("Quiet 2", None, "Sends Only");
+    second.sends = 2;
+    fake.tracks.push(second);
+    fake.returns.push(ft("A-Reverb", None, "Main"));
+    fake.returns.push(ft("B-Delay", None, "Main"));
+    let (handle, _, sizes) = live(fake);
+    let set = walk(&handle).await.unwrap();
+    assert_eq!(set.stream_input.as_deref(), Some("No Input"));
+    assert_eq!((set.tracks[4].sends, set.tracks[7].sends), (1, 2));
+    assert_eq!(
+        *sizes.lock().unwrap(),
+        vec![2, 8 * 6 + 2 * 4 + 2, 2 + 2 * 2]
+    );
+    // The second one moved meanwhile: its own name check fails the walk.
+    let mut fake = mbc();
+    fake.tracks.push(ft("Quiet 2", None, "Sends Only"));
+    fake.late_name = Some((7, "Moved".into()));
+    let (handle, _, _) = live(fake);
+    assert_eq!(
+        walk(&handle).await,
+        Err("the tracks changed during the read: live_set tracks 7 is now \"Moved\", was \"Quiet 2\"".into())
     );
 }
