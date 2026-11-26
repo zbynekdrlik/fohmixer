@@ -225,8 +225,13 @@ fn poll_socket() -> UdpSocket {
 
 /// The polled form of [`datagram`], naming `port`.
 fn polled(device: i32, port: u16) -> Vec<u8> {
+    polled_of(DeviceKind::Lufs, device, port)
+}
+
+/// A polled-form reading of `kind`, naming `port`.
+fn polled_of(kind: DeviceKind, device: i32, port: u16) -> Vec<u8> {
     encode(&Reading {
-        kind: DeviceKind::Lufs,
+        kind,
         device,
         version: "v1.58.0".to_string(),
         parents: ["Vox 1", "FOH Band", "-", "-"].map(str::to_string),
@@ -236,9 +241,20 @@ fn polled(device: i32, port: u16) -> Vec<u8> {
     })
 }
 
-/// The polls `device` reads within `window` (each must be the hub's poll),
-/// answering each with `answer` when there is one.
+/// The polls `device` reads within `window` (each must be the hub's LUFS
+/// poll), answering each with `answer` when there is one.
 fn polls_within(device: &UdpSocket, window: Duration, answer: Option<(&[u8], u16)>) -> usize {
+    polls_of(DeviceKind::Lufs, device, window, answer)
+}
+
+/// The polls `device` reads within `window` (each must be the hub's poll
+/// of `kind`), answering each with `answer` when there is one.
+fn polls_of(
+    kind: DeviceKind,
+    device: &UdpSocket,
+    window: Duration,
+    answer: Option<(&[u8], u16)>,
+) -> usize {
     let until = Instant::now() + window;
     let mut buf = [0u8; 64];
     let mut got = 0;
@@ -246,7 +262,11 @@ fn polls_within(device: &UdpSocket, window: Duration, answer: Option<(&[u8], u16
         let Ok(n) = device.recv(&mut buf) else {
             continue;
         };
-        assert_eq!(&buf[..n], poll_datagram().as_slice(), "only the hub's poll");
+        assert_eq!(
+            &buf[..n],
+            poll_datagram(kind).as_slice(),
+            "only the hub's poll"
+        );
         got += 1;
         if let Some((reading, hub)) = answer {
             device.send_to(reading, ("127.0.0.1", hub)).unwrap();
@@ -298,6 +318,56 @@ fn a_polled_device_is_polled_while_it_answers_and_dropped_once_lost() {
             .status_until(SECS_5, |s| s.lufs.listener.polling == 0)
             .await;
         assert_eq!(status.lufs.listener.polling, 0);
+        hub.stop().await;
+    });
+}
+
+#[test]
+fn a_polled_meter_is_polled_30_times_a_second_and_dropped_once_lost() {
+    // #264: the meter answers the hub's poll as the LUFS device does, at
+    // its own rate (every 33 ms) and with its own poll's address.
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let port = free_port();
+        let hub = TestHub::start_config(config(dir.path(), port)).await;
+        let device = poll_socket();
+        let at = device.local_addr().unwrap().port();
+        let reading = polled_of(DeviceKind::Meter, 9, at);
+        device.send_to(&reading, ("127.0.0.1", port)).unwrap();
+        let answered = tokio::task::block_in_place(|| {
+            polls_of(
+                DeviceKind::Meter,
+                &device,
+                Duration::from_millis(1000),
+                Some((&reading, port)),
+            )
+        });
+        assert!(
+            (15..=36).contains(&answered),
+            "about 30 a second: {answered}"
+        );
+        let status = hub
+            .status_until(SECS_5, |s| s.lufs.listener.polling == 1)
+            .await;
+        assert_eq!(status.lufs.listener.poll_failed, 0);
+        // Switched off: the meter key is lost after 0.5 s, its port dropped.
+        let unanswered = tokio::task::block_in_place(|| {
+            polls_of(
+                DeviceKind::Meter,
+                &device,
+                Duration::from_millis(1000),
+                None,
+            )
+        });
+        assert!(
+            (1..=18).contains(&unanswered),
+            "one stale window: {unanswered}"
+        );
+        let after = tokio::task::block_in_place(|| {
+            polls_of(DeviceKind::Meter, &device, Duration::from_millis(400), None)
+        });
+        assert_eq!(after, 0, "a lost key's port is polled no more");
         hub.stop().await;
     });
 }

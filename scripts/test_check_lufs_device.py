@@ -135,25 +135,25 @@ class TreeTests(TreeCase):
         self.assertTrue(any("exactly one 'udpsend" in e for e in self.errors()))
 
     def test_the_audio_clock_sets_each_devices_rate(self) -> None:
-        # The owner's ruling of 27.10: the meter sends every 33 ms on its
-        # audio object's own interval. The LUFS device's readers run no
-        # clock since #264 (`snapshot~ 0`): the hub polls it every 200 ms.
-        self.assertEqual([d.send_ms for d in cl.DEVICES], [0, 33])
-        self.assertEqual([d.pulled for d in cl.DEVICES], [True, False])
+        # #264: neither device's readers run a clock of their own; the hub
+        # polls the LUFS device every 200 ms (`snapshot~ 0`) and the meter
+        # every 33 ms (`peakamp~` with no interval: the peak since the last
+        # bang).
+        self.assertEqual([d.send_ms for d in cl.DEVICES], [0, None])
+        self.assertEqual([d.pulled for d in cl.DEVICES], [True, True])
+        self.assertEqual([d.on_poll for d in cl.DEVICES], [False, True])
         self.assertEqual([d.clock for d in cl.DEVICES], ["snapshot~", "peakamp~"])
-        for device, old, wrong in (
-            (LUFS, '"snapshot~ 0"', "snapshot~ 200"),
-            (METER, '"peakamp~ 33"', "peakamp~ 200"),
+        for device, old, wrong, want in (
+            (LUFS, '"snapshot~ 0"', "snapshot~ 200", "'snapshot~ 0'"),
+            (METER, '"peakamp~"', "peakamp~ 33", "'peakamp~'"),
         ):
             self.edit(device.maxpat, old, f'"{wrong}"')
             errors = self.errors()
             self.assertTrue(
-                any(
-                    f"every {device.clock} must be '{device.clock} {device.send_ms}'" in e
-                    for e in errors
-                ),
+                any(f"every {device.clock} must be {want}" in e for e in errors),
                 errors,
             )
+            self.assertTrue(any(f"('{wrong}') runs its own clock" in e for e in errors), errors)
             self.restore(device)
         self.assertEqual(self.errors(), [])
 
@@ -183,62 +183,6 @@ class TreeTests(TreeCase):
                     for e in errors
                 ),
                 errors,
-            )
-            self.restore(device)
-
-    def test_the_send_leaves_the_audio_thread_through_a_deferlow(self) -> None:
-        # #240: the meter's audio clock (peakamp~) runs in Live's audio
-        # thread; the socket write goes through obj-send-defer. (The LUFS
-        # device has no deferlow since #264: its own tests below.)
-        for device in (METER,):
-            patch = self.patcher(device)
-            patch["patcher"]["lines"] = [
-                ln
-                for ln in patch["patcher"]["lines"]
-                if ln["patchline"]["destination"] != ["obj-udpsend", 0]
-            ]
-            patch["patcher"]["lines"].append(
-                {"patchline": {"source": ["obj-pack", 0], "destination": ["obj-udpsend", 0]}}
-            )
-            self.save(patch, device)
-            errors = self.errors()
-            where = device.maxpat.as_posix()
-            self.assertIn(
-                f"{where}: the udpsend must be fed by obj-send-defer alone, has [['obj-pack', 0]]",
-                errors,
-            )
-            self.assertTrue(
-                any(
-                    f"('{device.clock} {device.send_ms}') reaches the udpsend obj-udpsend "
-                    "on the audio thread" in e
-                    for e in errors
-                ),
-                errors,
-            )
-            self.restore(device)
-        self.assertEqual(self.errors(), [])
-
-    def test_the_deferlow_is_fed_by_the_pack_alone(self) -> None:
-        for device in (METER,):
-            patch = self.patcher(device)
-            self.box(patch, "deferlow")
-            for b in cl.boxes(patch["patcher"]):
-                if b.get("id") == cl.SEND_DEFER:
-                    b["text"] = "defer"
-            patch["patcher"]["lines"].append(
-                {
-                    "patchline": {
-                        "source": ["obj-send-trigger", 0],
-                        "destination": ["obj-send-defer", 0],
-                    }
-                }
-            )
-            self.save(patch, device)
-            errors = self.errors()
-            where = device.maxpat.as_posix()
-            self.assertIn(f"{where}: obj-send-defer must be 'deferlow', has [['defer']]", errors)
-            self.assertTrue(
-                any("obj-send-defer must be fed by the pack alone" in e for e in errors), errors
             )
             self.restore(device)
 
@@ -436,7 +380,7 @@ class TreeTests(TreeCase):
     def test_the_identity_is_never_read_by_another_clock(self) -> None:
         # #240: a `metro 1000` re-read every name each second (9 LOM calls
         # per device) on Live's main thread.
-        for device in cl.DEVICES:
+        for device in (LUFS,):
             patch = self.patcher(device)
             self.node(patch, "obj-id-metro", "metro 1000")
             self.line(patch, ["obj-thisdevice", 0], ["obj-id-metro", 0])
@@ -468,7 +412,7 @@ class TreeTests(TreeCase):
         # into a chain for over 30 s. The DECIDED: the four parents' paths
         # again every 10 s, from a qmetro (the low-priority queue) started
         # after a random offset drawn at load.
-        for device in cl.DEVICES:
+        for device in (LUFS,):
             where = device.maxpat.as_posix()
             patch = self.patcher(device)
             ids = {b.get("id"): cl.words(b) for b in cl.boxes(patch["patcher"])}
@@ -512,7 +456,7 @@ class TreeTests(TreeCase):
     def test_the_identity_clock_drives_the_parents_paths_alone(self) -> None:
         # The review of the 10 s re-read: the clock is exempt from
         # lom_clock_errors, so a LOM read fed from it passed every check.
-        for device in cl.DEVICES:
+        for device in (LUFS,):
             where = device.maxpat.as_posix()
             tick = cl.clock_outputs(device.pulled)[cl.ID_TICK]
             if device.pulled:
@@ -571,7 +515,7 @@ class TreeTests(TreeCase):
                 "has [['obj-id-clock', 0], ['obj-id-load', 0]]",
             ),
         )
-        for device in cl.DEVICES:
+        for device in (LUFS,):
             where = device.maxpat.as_posix()
             for (src, dst), want in cases:
                 patch = self.patcher(device)

@@ -661,21 +661,47 @@ mod tests {
         polls.heard(&key(DeviceKind::Lufs, 2), Some(41_000), t0 + ms(300));
         polls.heard(&key(DeviceKind::Meter, 3), Some(42_000), t0);
         assert_eq!(polls.len(), 3);
+        assert_eq!(polls.ports(), 2, "a port shared by two keys counts once");
         assert_eq!(
-            polls.due(t0 + ms(499)),
-            BTreeSet::from([41_000, 42_000]),
+            polls.due(t0 + ms(499), DeviceKind::Lufs),
+            BTreeSet::from([41_000]),
             "a port shared by two keys (a device moved) is polled once"
         );
-        assert_eq!(polls.due(t0 + ms(500)), BTreeSet::from([41_000]));
+        assert_eq!(
+            polls.due(t0 + ms(499), DeviceKind::Meter),
+            BTreeSet::from([42_000]),
+            "each kind's round polls its own keys only"
+        );
+        assert!(polls.due(t0 + ms(500), DeviceKind::Meter).is_empty());
         assert_eq!(polls.len(), 2, "the meter key lost at 500 ms");
-        assert_eq!(polls.due(t0 + ms(999)), BTreeSet::from([41_000]));
-        assert_eq!(polls.due(t0 + ms(1000)), BTreeSet::from([41_000]));
+        assert_eq!(polls.ports(), 1);
+        assert_eq!(
+            polls.due(t0 + ms(999), DeviceKind::Lufs),
+            BTreeSet::from([41_000])
+        );
+        assert_eq!(
+            polls.due(t0 + ms(1000), DeviceKind::Lufs),
+            BTreeSet::from([41_000])
+        );
         assert_eq!(polls.len(), 1, "key 1 lost at 1000 ms, key 2 heard later");
         // Heard again: kept another window.
         polls.heard(&key(DeviceKind::Lufs, 2), Some(41_000), t0 + ms(1200));
-        assert_eq!(polls.due(t0 + ms(2199)), BTreeSet::from([41_000]));
-        assert!(polls.due(t0 + ms(2200)).is_empty());
+        assert_eq!(
+            polls.due(t0 + ms(2199), DeviceKind::Lufs),
+            BTreeSet::from([41_000])
+        );
+        // A round of the other kind drops the lost keys too.
+        assert!(polls.due(t0 + ms(2200), DeviceKind::Meter).is_empty());
         assert!(polls.is_empty());
+        assert_eq!(polls.ports(), 0);
+    }
+
+    #[test]
+    fn each_kind_is_polled_at_its_own_rate() {
+        // #264: the meter every 33 ms (30 a second), LUFS every 200 ms.
+        assert_eq!(poll_every(DeviceKind::Meter), Duration::from_millis(33));
+        assert_eq!(poll_every(DeviceKind::Lufs), Duration::from_millis(200));
+        assert_eq!(POLLED_KINDS, [DeviceKind::Lufs, DeviceKind::Meter]);
     }
 
     #[test]
@@ -708,7 +734,7 @@ mod tests {
             &events,
             &tx
         ));
-        assert_eq!(polls.due(t0), BTreeSet::from([41_001]));
+        assert_eq!(polls.due(t0, DeviceKind::Lufs), BTreeSet::from([41_001]));
         // Over its bound (dropped, still kept): the port stays known.
         for _ in 0..12 {
             handle_datagram(
@@ -745,7 +771,7 @@ mod tests {
             &tx,
         );
         assert_eq!(counters.status().full, 1);
-        assert_eq!(polls.due(t0), BTreeSet::from([41_001]));
+        assert_eq!(polls.due(t0, DeviceKind::Lufs), BTreeSet::from([41_001]));
         // A link's datagram (no polls) teaches nothing and still goes on.
         assert!(handle_datagram(
             &polled_datagram(1, 41_002),
@@ -759,35 +785,48 @@ mod tests {
     }
 
     #[test]
-    fn a_round_polls_each_due_port_once_and_counts_it() {
+    fn a_round_polls_each_due_port_of_its_kind_once_and_counts_it() {
         let device = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         device
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
         let port = device.local_addr().unwrap().port();
+        let meter = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        meter
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let meter_port = meter.local_addr().unwrap().port();
         let poller = poll_socket().unwrap();
         let counters = Counters::default();
         let mut polls = Polls::default();
         let t0 = Instant::now();
         polls.heard(&key(DeviceKind::Lufs, 1), Some(port), t0);
         polls.heard(&key(DeviceKind::Lufs, 2), Some(port), t0);
-        poll_round(&poller, &mut polls, t0, &counters);
+        polls.heard(&key(DeviceKind::Meter, 5), Some(meter_port), t0);
+        poll_round(&poller, &mut polls, DeviceKind::Lufs, t0, &counters);
         let mut buf = [0u8; 64];
         let n = device.recv(&mut buf).unwrap();
-        assert_eq!(&buf[..n], wire::poll_datagram().as_slice());
+        assert_eq!(&buf[..n], wire::poll_datagram(DeviceKind::Lufs).as_slice());
         let status = counters.status();
         assert_eq!(
             (status.polled, status.poll_failed, status.polling),
-            (1, 0, 1)
+            (1, 0, 2),
+            "one LUFS poll sent; both kinds' ports polled now"
         );
+        // The meter's round: its own poll, to its own port only.
+        poll_round(&poller, &mut polls, DeviceKind::Meter, t0, &counters);
+        let n = meter.recv(&mut buf).unwrap();
+        assert_eq!(&buf[..n], wire::poll_datagram(DeviceKind::Meter).as_slice());
+        assert_eq!(counters.status().polled, 2);
         poll_round(
             &poller,
             &mut polls,
+            DeviceKind::Lufs,
             t0 + Duration::from_millis(1000),
             &counters,
         );
         let status = counters.status();
-        assert_eq!((status.polled, status.polling), (1, 0), "both keys lost");
+        assert_eq!((status.polled, status.polling), (2, 0), "every key lost");
         // A send the socket refuses (port 0) is counted failed, the good
         // one sent: two ports polled.
         polls.heard(
@@ -800,20 +839,26 @@ mod tests {
             Some(0),
             t0 + Duration::from_secs(2),
         );
-        poll_round(&poller, &mut polls, t0 + Duration::from_secs(2), &counters);
+        poll_round(
+            &poller,
+            &mut polls,
+            DeviceKind::Lufs,
+            t0 + Duration::from_secs(2),
+            &counters,
+        );
         let status = counters.status();
         assert_eq!(
             (status.polled, status.poll_failed, status.polling),
-            (2, 1, 2)
+            (3, 1, 2)
         );
-        assert_eq!(round_counts(3, 1), (2, 1, 3));
-        assert_eq!(round_counts(2, 0), (2, 0, 2));
-        assert_eq!(round_counts(0, 0), (0, 0, 0));
+        assert_eq!(round_counts(3, 1), (2, 1));
+        assert_eq!(round_counts(2, 0), (2, 0));
+        assert_eq!(round_counts(0, 0), (0, 0));
         counters.polled(2, 3, 4);
         let status = counters.status();
         assert_eq!(
             (status.polled, status.poll_failed, status.polling),
-            (4, 4, 4)
+            (5, 4, 4)
         );
     }
 }
