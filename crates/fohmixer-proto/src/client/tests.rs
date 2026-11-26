@@ -987,6 +987,7 @@ fn api_bodies_round_trip() {
             swept: 10_000,
             sweep_failed: 2,
             poll_from: Some("127.0.0.1:51000".into()),
+            shared_ports: 1,
             refused: [("not_selected".to_string(), 4)].into(),
         },
         claps: crate::claps::ClapsStatus {
@@ -1051,6 +1052,7 @@ fn api_bodies_round_trip() {
     assert_eq!(json["listen"]["sweep_failed"], 2);
     assert_eq!(json["listen"]["poll_from"], "127.0.0.1:51000");
     assert_eq!(json["listen"]["devices"][0]["port"], 40_007);
+    assert_eq!(json["listen"]["shared_ports"], 1);
     let mut older = json.clone();
     older.as_object_mut().unwrap().remove("listen");
     assert_eq!(

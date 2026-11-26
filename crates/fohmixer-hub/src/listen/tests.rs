@@ -160,6 +160,37 @@ fn listeners_share_a_track_and_the_last_one_ends_it() {
 }
 
 #[test]
+fn a_port_two_devices_name_is_counted_and_never_told_off_over_the_target() {
+    // The review of #264's Listen step: two devices that drew one poll port
+    // (Max cannot report a failed bind) would hear the target's on and the
+    // other's off on one socket; the port gets the on alone, and the status
+    // counts it.
+    let (listen, _records) = listen();
+    let t0 = Instant::now();
+    let shared = Announce {
+        port: port_of(5),
+        ..announce(6, "Vox 2", "FOH Band")
+    };
+    listen.heard(announce(5, "Vox 1", "FOH Band"), t0);
+    listen.heard(shared, t0);
+    listen.heard(announce(7, "Vox 3", "FOH Band"), t0);
+    assert_eq!(listen.status(t0).shared_ports, 1);
+    assert_eq!(
+        listen.polls(t0),
+        vec![(port_of(5), false), (port_of(7), false)],
+        "one poll a port"
+    );
+    let _lease = listen.start("band", "FOH Band", "Vox 1", 1, "10.0.0.5");
+    assert_eq!(
+        listen.polls(t0),
+        vec![(port_of(5), true), (port_of(7), false)]
+    );
+    let later = t0 + Duration::from_millis(3000);
+    listen.heard(announce(7, "Vox 3", "FOH Band"), later);
+    assert_eq!(listen.status(later).shared_ports, 0, "the stale ones go");
+}
+
+#[test]
 fn a_stale_device_is_forgotten_at_the_next_announce() {
     let (listen, _records) = listen();
     let t0 = Instant::now();

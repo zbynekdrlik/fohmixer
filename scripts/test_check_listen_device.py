@@ -254,6 +254,23 @@ class ListenDeviceTests(unittest.TestCase):
             found,
         )
 
+    def test_the_session_random_is_drawn_before_the_device_id_is_read(self) -> None:
+        # The review of #264's Listen step: the load's `t` draws the listen
+        # id's random from its rightmost outlet, before its `path
+        # this_device` reads the Max id into the `expr`'s hot inlet; a fan
+        # out of `live.thisdevice` would leave the order to the boxes'
+        # places (the PC's two Lives could then share an id).
+        def fanned(p: dict) -> None:
+            for ln in p["lines"]:
+                if ln["patchline"]["destination"] == ["obj-session-random", 0]:
+                    ln["patchline"]["source"] = ["obj-thisdevice", 0]
+
+        found = errors(edited(fanned))
+        self.assertIn(
+            "p: obj-session-random:0 takes [['obj-id-load', 9]] alone, has [['obj-thisdevice', 0]]",
+            found,
+        )
+
     def test_only_the_listen_id_names_the_device(self) -> None:
         found = errors(edited(line("obj-id-route", 0, "obj-announce", 2)))
         self.assertTrue(any("obj-announce:2 takes the listen id alone" in e for e in found), found)
