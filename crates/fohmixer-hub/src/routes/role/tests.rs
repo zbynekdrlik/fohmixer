@@ -30,8 +30,9 @@ fn every_api_route_has_a_role_decision() {
         route_role("/api/mbc/stream-proof"),
         Some(RouteAccess::Automation)
     );
-    // #210: a Listen device, loopback only, checked by the handler.
-    assert_eq!(route_role("/api/listen/select"), Some(RouteAccess::Device));
+    // #264: the Listen devices' select route is gone (the hub pushes the
+    // select in its poll): a request there is refused, no decision.
+    assert_eq!(route_role("/api/listen/select"), None);
 }
 
 #[test]

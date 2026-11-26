@@ -30,6 +30,7 @@
 //! [`rack::leave_switch`]) with their own tests.
 
 pub mod encoder;
+pub mod poll;
 pub mod rack;
 pub mod session;
 pub mod stream;

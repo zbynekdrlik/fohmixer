@@ -1951,7 +1951,10 @@ mod tests {
 
     #[test]
     fn listen_port_defaults_to_39111_and_an_old_select_port_is_ignored() {
-        let defaults = ListenCfg { port: 39111 };
+        let defaults = ListenCfg {
+            port: 39111,
+            sweep: default_sweep(),
+        };
         assert_eq!(Config::parse("", &data()).unwrap().listen, defaults);
         assert_eq!(
             Config::parse("[listen]\n", &data()).unwrap().listen,
@@ -1962,16 +1965,25 @@ mod tests {
             Config::parse("[listen]\nport = 0\n", &data())
                 .unwrap()
                 .listen,
-            ListenCfg { port: 0 }
+            ListenCfg {
+                port: 0,
+                sweep: default_sweep(),
+            }
         );
         // A config installed before the devices asked over HTTP (#210).
         assert_eq!(
             Config::parse("[listen]\nport = 39120\nselect_port = 39112\n", &data())
                 .unwrap()
                 .listen,
-            ListenCfg { port: 39120 }
+            ListenCfg {
+                port: 39120,
+                sweep: default_sweep(),
+            }
         );
         assert!(Config::parse("[listen]\nhost = \"0.0.0.0\"\n", &data()).is_err());
+        // #264: the start sweep's range is no config key (the devices'
+        // whole range, as the LUFS listener's; only a test narrows it).
+        assert!(Config::parse("[listen]\nsweep = false\n", &data()).is_err());
     }
 
     #[test]

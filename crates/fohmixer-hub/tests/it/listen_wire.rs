@@ -1,19 +1,23 @@
 //! Listen's device side without SimLive (#210): bound to 127.0.0.1 only,
 //! an announce kept, junk and every stream a device may not send counted by
 //! reason, at most 64 audio connections, `/ws/audio` refused without a
-//! token and when Listen is off. Host-free: it also runs in the `windows`
+//! token and when Listen is off; the hub's polls of a device it heard and
+//! its start sweep (#264). Host-free: it also runs in the `windows`
 //! job (the hub's platform, its libopus build).
 
 use std::io::{Read, Write};
-use std::net::{TcpStream, UdpSocket};
+use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::path::Path;
 use std::time::Duration;
 
-use crate::support::{TestHub, http, runtime, serial};
+use crate::support::{TestHub, runtime, serial};
 use fohmixer_hub::config::Config;
 use fohmixer_proto::client::HubStatus;
 use fohmixer_proto::listen::jitnet::{Order, encode_matrix, encode_message};
-use fohmixer_proto::listen::wire::{Announce, Hello, encode_announce, hello_atoms, parents_in};
+use fohmixer_proto::listen::wire::{
+    Announce, Hello, encode_announce, hello_atoms, parents_in, poll_datagram,
+};
+use fohmixer_proto::lufs::wire::{POLL_PORT_MIN, POLL_PORT_SPAN};
 
 const SECS_10: Duration = Duration::from_secs(10);
 
@@ -35,6 +39,9 @@ async fn hub(dir: &Path, port: u16) -> TestHub {
     config.instances.clear();
     config.lufs.port = 0;
     config.listen.port = port;
+    // #264: no start sweep (it reaches every socket of the range, other
+    // tests' too); its own test narrows it.
+    config.listen.sweep = None;
     TestHub::start_config(config).await
 }
 
@@ -78,6 +85,7 @@ fn a_device_side_that_may_not_stream_is_counted_by_its_reason() {
             parents: parents_in(None, "Vox 1", "FOH Band"),
             sample_rate: 48_000,
             sending: false,
+            port: 40_000,
         });
         let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
         udp.send_to(&announce, ("127.0.0.1", port)).unwrap();
@@ -169,34 +177,114 @@ fn the_audio_socket_needs_a_token_and_listen_on() {
     });
 }
 
+/// A device's poll socket (#264): bound on 127.0.0.1 at the first free
+/// port of the range a device draws from, as the real one listens there.
+fn poll_socket() -> UdpSocket {
+    let socket = (POLL_PORT_MIN..POLL_PORT_MIN + POLL_PORT_SPAN)
+        .find_map(|port| UdpSocket::bind(("127.0.0.1", port)).ok())
+        .expect("a free poll port");
+    socket
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+    socket
+}
+
+/// A device's announce naming its poll port.
+fn announce(device: i32, port: u16) -> Vec<u8> {
+    encode_announce(&Announce {
+        device,
+        version: "v1.60.4".into(),
+        parents: parents_in(None, "Vox 1", "FOH Band"),
+        sample_rate: 48_000,
+        sending: false,
+        port,
+    })
+}
+
+/// The address the hub sends its polls from (#264: `listen.poll_from`).
+async fn poller(hub: &TestHub) -> SocketAddr {
+    let status = hub
+        .status_until(SECS_10, |s| s.listen.poll_from.is_some())
+        .await;
+    status.listen.poll_from.unwrap().parse().unwrap()
+}
+
+/// The datagrams `device` reads from `from` within `window`.
+fn read_within(device: &UdpSocket, from: SocketAddr, window: Duration) -> Vec<Vec<u8>> {
+    let until = std::time::Instant::now() + window;
+    let mut buf = [0u8; 64];
+    let mut got = Vec::new();
+    while std::time::Instant::now() < until {
+        if let Ok((n, sender)) = device.recv_from(&mut buf)
+            && sender == from
+        {
+            got.push(buf[..n].to_vec());
+        }
+    }
+    got
+}
+
 #[test]
-fn the_select_route_wants_a_device_id_and_listen_on() {
-    // #210: a device asks `GET /api/listen/select?device=<id>` with no
-    // token; the route answers it off with no page listening.
+fn a_device_heard_is_polled_with_its_select_and_forgotten_once_silent() {
+    // #264: the hub pushes the select in its poll (no HTTP question): a
+    // device it heard gets `/fohmixer/listen/poll 0` every 250 ms while
+    // nobody listens, and no frame poll; once it stops answering it is
+    // forgotten (3 s) and polled no more.
     let _serial = serial();
     runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
-        let on = hub(dir.path(), free_port()).await;
-        let (code, body) = http(on.addr, "GET", "/api/listen/select?device=5", None, None).await;
-        assert_eq!((code, body), (200, serde_json::json!({"on": false})));
-        for path in ["/api/listen/select", "/api/listen/select?device=x"] {
-            let (code, body) = http(on.addr, "GET", path, None, None).await;
-            assert_eq!(
-                (code, &body["code"]),
-                (400, &serde_json::json!("BAD_DEVICE"))
-            );
-        }
-        let status = on.status().await;
-        assert_eq!(status.listen.selects, 1, "only a question answered counts");
-        on.stop().await;
+        let hub = hub(dir.path(), free_port()).await;
+        let port = port_of(&hub.status().await);
+        let from = poller(&hub).await;
+        let device = poll_socket();
+        let at = device.local_addr().unwrap().port();
+        device.send_to(&announce(5, at), ("127.0.0.1", port)).unwrap();
+        let status = hub
+            .status_until(SECS_10, |s| s.listen.devices.len() == 1)
+            .await;
+        assert_eq!(status.listen.devices[0].port, at);
+        let polls = tokio::task::block_in_place(|| {
+            read_within(&device, from, Duration::from_millis(1000))
+        });
+        assert!((3..=5).contains(&polls.len()), "4 a second: {}", polls.len());
+        assert!(polls.iter().all(|p| *p == poll_datagram(false)), "{polls:?}");
+        // Unanswered, the device is forgotten within 3 s; then no poll.
+        hub.status_until(SECS_10, |s| s.listen.devices.is_empty())
+            .await;
+        let after = tokio::task::block_in_place(|| {
+            read_within(&device, from, Duration::from_millis(600))
+        });
+        assert!(after.len() <= 1, "{after:?}");
+        let status = hub.status().await;
+        assert!(status.listen.polls >= 3, "{:?}", status.listen);
+        assert_eq!(status.listen.frame_polls, 0, "nobody listened");
+        hub.stop().await;
+    });
+}
+
+#[test]
+fn a_hub_sweeps_its_range_once_with_off_at_its_start() {
+    // #264: a device running from before the hub's start (no announce of
+    // its own after its load) answers the start sweep's poll.
+    let _serial = serial();
+    runtime().block_on(async {
         let dir = tempfile::tempdir().unwrap();
-        let off = hub(dir.path(), 0).await;
-        let (code, body) = http(off.addr, "GET", "/api/listen/select?device=5", None, None).await;
-        assert_eq!(
-            (code, &body["code"]),
-            (503, &serde_json::json!("LISTEN_OFF"))
-        );
-        off.stop().await;
+        let device = poll_socket();
+        let at = device.local_addr().unwrap().port();
+        let mut config = Config::defaults(dir.path());
+        config.instances.clear();
+        config.lufs.port = 0;
+        config.listen.port = free_port();
+        config.listen.sweep = Some(at..at + 1);
+        let hub = TestHub::start_config(config).await;
+        let from = poller(&hub).await;
+        let swept = tokio::task::block_in_place(|| {
+            read_within(&device, from, Duration::from_millis(500))
+        });
+        assert_eq!(swept, vec![poll_datagram(false)], "one poll, off");
+        let status = hub.status().await;
+        assert_eq!((status.listen.swept, status.listen.sweep_failed), (1, 0));
+        hub.stop().await;
     });
 }
 
