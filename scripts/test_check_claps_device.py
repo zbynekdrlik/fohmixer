@@ -78,23 +78,83 @@ class ClapsDeviceTests(unittest.TestCase):
         self.assertTrue(any("obj-watchdog:0 -> obj-stop:0 is missing" in e for e in found), found)
         self.assertTrue(any("obj-watchdog:0 -> obj-forget:0 is missing" in e for e in found), found)
 
-    def test_the_hello_leaves_the_audio_thread_through_a_deferlow(self) -> None:
-        # #240: the hello's metro runs in Live's audio thread.
+    def test_the_hello_answers_the_hubs_poll_in_the_main_thread(self) -> None:
+        # #264: the hello's `metro 1000` and its `deferlow` posted from Live's
+        # audio thread; the hub polls the device and `udpreceive @defer 1`
+        # hands the poll to Live's main thread, where the hello goes.
+        patcher = json.loads(TEXT)["patcher"]
+        self.assertEqual(box(patcher, "obj-udpreceive")["text"], "udpreceive 39114 @defer 1")
+        self.assertEqual(box(patcher, "obj-route")["text"].split()[-1], "/fohmixer/claps/poll")
+        ids = {b["box"]["id"] for b in patcher["boxes"]}
+        self.assertNotIn("obj-hello-metro", ids)
+        self.assertNotIn("obj-send-defer", ids)
+        self.assertEqual(cc.lufs.feeds(patcher, "obj-udpsend", 0), [["obj-hello", 0]])
+        self.assertEqual(cc.lufs.feeds(patcher, "obj-hello", 0), [["obj-poll", 0]])
+        self.assertEqual(cc.lufs.feeds(patcher, "obj-poll", 0), [["obj-route", 4]])
+        # The watchdog hears the hub's switch, sent with its whole state: a
+        # poll alone (with no +CLAPS track) never keeps a device clapping.
+        self.assertEqual(cc.lufs.feeds(patcher, "obj-heard", 0), [["obj-route", 3]])
+
         def direct(p: dict) -> None:
-            p["lines"] = [
-                ln for ln in p["lines"] if ln["patchline"]["destination"] != ["obj-udpsend", 0]
-            ]
-            add_line(p, ["obj-hello", 0], ["obj-udpsend", 0])
+            add_line(p, ["obj-beats", 0], ["obj-hello", 0])
 
         found = errors(edited(direct))
-        self.assertIn(
-            "p: obj-hello-metro ('metro 1000') reaches the udpsend obj-udpsend on the audio "
-            "thread (a deferlow or a qmetro goes between)",
+        self.assertTrue(
+            any(
+                e.startswith("p: obj-beats")
+                and "reaches the udpsend obj-udpsend on the audio thread" in e
+                for e in found
+            ),
             found,
         )
         self.assertIn(
-            "p: obj-udpsend:0 takes [['obj-send-defer', 0]] alone, has [['obj-hello', 0]]",
+            "p: obj-hello:0 takes [['obj-poll', 0]] alone, has [['obj-beats', 0], ['obj-poll', 0]]",
             found,
+        )
+
+    def test_a_udpreceive_without_defer_is_named(self) -> None:
+        def immediate(p: dict) -> None:
+            box(p, "obj-udpreceive")["text"] = "udpreceive 39114"
+
+        self.assertIn(
+            "p: obj-udpreceive ('udpreceive 39114') outputs on the network thread "
+            "(the device takes the hub's words in Live's main thread: @defer 1)",
+            errors(edited(immediate)),
+        )
+
+    def test_no_deferlow_qmetro_or_second_metro(self) -> None:
+        # #264: the beats' `metro 4n` (MIDI to Live, which posts nothing)
+        # is the device's one clock.
+        for text in ("deferlow", "defer", "qmetro 250", "metro 1000"):
+
+            def add(p: dict, text: str = text) -> None:
+                p["boxes"].append(
+                    {"box": {"id": "obj-x", "maxclass": "newobj", "text": text, "numinlets": 1}}
+                )
+
+            self.assertIn(
+                f"p: obj-x ('{text}') has no place in the Claps device (its hello answers "
+                "the hub's poll in Live's main thread; its one clock is the beats' metro)",
+                errors(edited(add)),
+            )
+
+    def test_the_face_is_fed_from_the_poll_alone(self) -> None:
+        # #264: a number box fed from the scheduler redraws from the audio
+        # thread (a post); the running state is kept cold, the poll shows it.
+        patcher = json.loads(TEXT)["patcher"]
+        self.assertEqual(cc.lufs.feeds(patcher, "obj-clapping", 0), [["obj-running", 0]])
+        self.assertEqual(cc.lufs.feeds(patcher, "obj-running", 0), [["obj-poll", 1]])
+        self.assertEqual(
+            cc.lufs.feeds(patcher, "obj-running", 1), [["obj-run", 0], ["obj-stop", 0]]
+        )
+
+        def redraw(p: dict) -> None:
+            add_line(p, ["obj-run", 0], ["obj-clapping", 0])
+
+        self.assertIn(
+            "p: the face's obj-clapping is fed from obj-transport ('transport'), a scheduler "
+            "box (a redraw from Live's audio thread posts)",
+            errors(edited(redraw)),
         )
 
     def test_a_missing_line_is_named(self) -> None:
