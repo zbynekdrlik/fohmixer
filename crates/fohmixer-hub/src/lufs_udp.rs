@@ -296,11 +296,13 @@ pub fn round_counts(ports: usize, failed: u64) -> (u64, u64) {
     (ports.saturating_sub(failed), failed)
 }
 
-/// A kind's round clock: its first tick at once, a late tick delayed (a
-/// stalled task never sends a burst of polls).
+/// A kind's round clock: its first tick at once, then on its grid: a late
+/// tick (Windows wakes a timer up to ~15.6 ms late) never moves the next
+/// one out, and a missed tick is skipped (a stalled task never sends a
+/// burst of polls).
 fn round_clock(kind: DeviceKind) -> tokio::time::Interval {
     let mut clock = tokio::time::interval(poll_every(kind));
-    clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     clock
 }
 
