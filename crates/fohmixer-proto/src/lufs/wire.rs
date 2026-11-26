@@ -15,13 +15,16 @@
 //!
 //! **Two forms (#264).** Wire version [`WIRE_VERSION`] (tags [`TYPE_TAGS`],
 //! nine fields) is the pushed form: the device sends on its audio object's
-//! own clock (FohMixer Meter, and a LUFS device from before 1.58.0 during
-//! the rollout). Wire version [`POLLED_WIRE_VERSION`] (tags
-//! [`POLLED_TYPE_TAGS`]) adds the port the device listens on, in
-//! [`POLL_PORT_MIN`]..[`POLL_PORT_MIN`] + [`POLL_PORT_SPAN`]: the hub sends
-//! [`poll_datagram`] there every [`POLL_EVERY_MS`] and the device answers
-//! each poll with one reading, pulled in Max's main thread, so no message
-//! starts in Live's audio thread (FohMixer LUFS since 1.58.0).
+//! own clock (a device from before its pull, during the rollout: a LUFS
+//! device before 1.58.0, a meter before its step of #264). Wire version
+//! [`POLLED_WIRE_VERSION`] (tags [`POLLED_TYPE_TAGS`]) adds the port the
+//! device listens on, in [`POLL_PORT_MIN`]..[`POLL_PORT_MIN`] +
+//! [`POLL_PORT_SPAN`]: the hub sends [`poll_datagram`] of the device's kind
+//! there every [`DeviceKind::poll_every_ms`] ([`LUFS_POLL_EVERY_MS`],
+//! [`METER_POLL_EVERY_MS`]) and the device answers each poll with one
+//! reading, pulled in Max's main thread, so no message starts in Live's
+//! audio thread (FohMixer LUFS since 1.58.0, FohMixer Meter since its step
+//! of #264).
 //!
 //! Max's `live.path` gives no absolute path of a device (its `getpath`
 //! echoes the path it was given: #151's probe of 27.10), so the device names
@@ -48,10 +51,16 @@ pub const POLLED_TYPE_TAGS: &str = ",iisssssiii";
 pub const POLL_PORT_MIN: u16 = 40_000;
 /// How many poll ports a device draws from.
 pub const POLL_PORT_SPAN: u16 = 10_000;
-/// The hub's poll: an OSC message with no argument.
-pub const POLL_ADDRESS: &str = "/fohmixer/lufs/poll";
-/// How often the hub polls each device it knows the port of.
-pub const POLL_EVERY_MS: u64 = 200;
+/// The hub's poll of a LUFS device: an OSC message with no argument.
+pub const LUFS_POLL_ADDRESS: &str = "/fohmixer/lufs/poll";
+/// The hub's poll of a meter device (#264), the same shape.
+pub const METER_POLL_ADDRESS: &str = "/fohmixer/meter/poll";
+/// How often the hub polls each LUFS device it knows the port of (5 a
+/// second: the readings are a 3 s window shown as integers).
+pub const LUFS_POLL_EVERY_MS: u64 = 200;
+/// How often the hub polls each meter device it knows the port of (#264:
+/// 30 a second, the rate of the meter's `peakamp~ 33` before its pull).
+pub const METER_POLL_EVERY_MS: u64 = 33;
 /// The longest datagram the hub takes.
 pub const MAX_DATAGRAM: usize = 512;
 /// The LUFS device's address.
@@ -102,6 +111,22 @@ impl DeviceKind {
         match self {
             DeviceKind::Lufs => LUFS_TOP_TENTHS,
             DeviceKind::Meter => METER_TOP_TENTHS,
+        }
+    }
+
+    /// The address of the hub's poll of it (#264).
+    pub fn poll_address(self) -> &'static str {
+        match self {
+            DeviceKind::Lufs => LUFS_POLL_ADDRESS,
+            DeviceKind::Meter => METER_POLL_ADDRESS,
+        }
+    }
+
+    /// How often the hub polls it, in ms (#264).
+    pub fn poll_every_ms(self) -> u64 {
+        match self {
+            DeviceKind::Lufs => LUFS_POLL_EVERY_MS,
+            DeviceKind::Meter => METER_POLL_EVERY_MS,
         }
     }
 }
@@ -320,11 +345,11 @@ pub fn encode(r: &Reading) -> Vec<u8> {
     out
 }
 
-/// The hub's poll ([`POLL_ADDRESS`], type tags `,`): the device answers it
-/// with one reading.
-pub fn poll_datagram() -> Vec<u8> {
+/// The hub's poll of a device of `kind` ([`DeviceKind::poll_address`],
+/// type tags `,`): the device answers it with one reading.
+pub fn poll_datagram(kind: DeviceKind) -> Vec<u8> {
     let mut out = Vec::with_capacity(32);
-    push_string(&mut out, POLL_ADDRESS);
+    push_string(&mut out, kind.poll_address());
     push_string(&mut out, ",");
     out
 }

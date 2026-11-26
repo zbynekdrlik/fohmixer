@@ -880,6 +880,9 @@ fn api_bodies_round_trip() {
                 polled: 25,
                 poll_failed: 1,
                 polling: 2,
+                poll_from: Some("127.0.0.1:51234".into()),
+                swept: 9_998,
+                sweep_failed: 2,
             },
             devices: vec![LufsDeviceStatus {
                 kind: "lufs".into(),
@@ -2059,6 +2062,9 @@ fn an_older_hubs_status_reads_with_no_lufs() {
         (listener.polled, listener.poll_failed, listener.polling),
         (0, 0, 0)
     );
+    // #264: the poll socket's address and the start's sweep.
+    assert_eq!(listener.poll_from, None);
+    assert_eq!((listener.swept, listener.sweep_failed), (0, 0));
 }
 
 #[test]

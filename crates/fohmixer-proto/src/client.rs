@@ -1920,6 +1920,15 @@ pub struct LufsListenerStatus {
     /// The ports polled now (one per polled device).
     #[serde(default)]
     pub polling: u64,
+    /// The address the polls go out from (#264; none: not bound).
+    #[serde(default)]
+    pub poll_from: Option<String>,
+    /// The start's sweep (#264): the meter's poll sent once to every port
+    /// of the devices' range, and the sends the socket refused.
+    #[serde(default)]
+    pub swept: u64,
+    #[serde(default)]
+    pub sweep_failed: u64,
 }
 
 /// One device the hub hears (a key): its kind (`lufs`, `meter`), Max id,

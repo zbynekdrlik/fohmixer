@@ -14,9 +14,11 @@ on the same PC over UDP (spec `docs/superpowers/specs/2026-10-26-lufs-design.md`
     when at least a third of the 3 s is voiced (the block form's 10 of 30
     sub-blocks), else −70. Since #264 the gate is continuous (below), not
     per 100 ms sub-block.
-- **`FohMixer Meter`** (`../FohMixer-Meter/`) sends its L and R peak levels
-  over each 33 ms, 30×/s. It goes last in an armed track's chain (in a rack,
-  below); the hub turns its levels into the track's post-fader meter.
+- **`FohMixer Meter`** (`../FohMixer-Meter/`) answers the hub's poll with
+  its L and R peak levels since the previous poll, 30×/s (every 33 ms;
+  pulled since its step of #264, `../FohMixer-Meter/README.md`). It goes
+  last in an armed track's chain (in a rack, below); the hub turns its
+  levels into the track's post-fader meter.
 
 Both output silence (`plugout~` takes a `sig~ 0.` and nothing else) and are
 ALWAYS placed in a parallel chain of an Audio Effect Rack, never in series
@@ -36,22 +38,23 @@ small; the meter's face its L and R. All display only (`flonum` with
 ## What they send
 
 One OSC message per reading to `127.0.0.1:39110` (Max's `udpsend`): address
-`/fohmixer/lufs` or `/fohmixer/meter`, type tags `,iisssssii` (the meter,
-wire version 1) or `,iisssssiii` (the LUFS device since #264, wire version
-2: one more field, its poll port):
+`/fohmixer/lufs` or `/fohmixer/meter`, type tags `,iisssssiii` (both
+devices since #264, wire version 2: the pushed form's `,iisssssii` and one
+more field, its poll port):
 
 | # | type | value |
 |---|---|---|
-| 1 | `i` | the wire version, `1` (meter) or `2` (LUFS) |
+| 1 | `i` | the wire version, `2` (`1` before the pull) |
 | 2 | `i` | the device's Max id (`live.path this_device`, per Live process) |
 | 3 | `s` | `v<version.txt>` |
 | 4–7 | `s` | the names of the device's first four canonical parents, nearest first, `-` past the top |
 | 8 | `i` | `S`, or the L peak, in tenths (LUFS: −700…0; dBFS: −700…120) |
 | 9 | `i` | `V`, or the R peak, in tenths |
-| 10 | `i` | LUFS only: the port it takes the hub's poll on, 40000–49999 |
+| 10 | `i` | the port it takes the hub's poll on, 40000–49999 |
 
-The hub still reads wire version 1 from a LUFS device (one from before
-1.58.0 during the rollout): it then only listens, as before.
+The hub still reads wire version 1 (a device from before its pull during
+the rollout: LUFS before 1.58.0, a meter before its step of #264): it then
+only listens, as before.
 
 The parents name the device's place: on a track `[track, set, -, -]`, in a
 rack's chain `[chain, rack, track, set]`; the hub takes the last named one as
@@ -133,13 +136,14 @@ The whole
 message is one `pack` (its slots cold, the identity cached in them), banged
 by `obj-send-trigger` (`t b f`) each time the last value comes out.
 
-**The meter** sends on its audio object's own clock (`peakamp~ 33`): it
-outputs only while Live's DSP runs the device, so a device switched off (or
-its chain) sends nothing and the hub sees it go stale; no `metro` drives the
-send (the review of PR 2: one kept sending a frozen value). The `pack` goes
-to `udpsend` through `obj-send-defer` (`deferlow`, #240): the clock runs on
-Max's scheduler, which Max for Live runs inside Live's audio thread, and the
-socket write leaves it for the low-priority queue.
+**The meter** is pulled too since its step of #264 (the design of
+26.11.2026, `../FohMixer-Meter/README.md`): the hub polls it every 33 ms
+with its own address, it bangs two interval-less `peakamp~` in Max's main
+thread and sends straight into `udpsend`; its load is not deferred and its
+10 s re-read rides the poll (every 300th), so the meter holds no
+`deferlow`, `metro` or `qmetro`. *History:* until then it sent on its own
+`peakamp~ 33` clock, the `pack` through a `deferlow` (#240), both from
+Live's audio thread.
 
 **The LUFS device is pulled by the hub (#264, the DECIDED of 25.11.2026).**
 That `deferlow` hand-over is a `PostMessageW` from Live's audio thread, and
@@ -188,8 +192,11 @@ polled-form datagram named the poll each 200 ms from a socket of its own
 (`127.0.0.1`), as long as that key is heard; a key lost (1 s, the LUFS
 rule's stale window, five polls) drops its port. `/api/status`
 `lufs.listener` counts `polled` (polls sent), `poll_failed` and `polling`
-(the ports polled now). After a hub restart a device's readings come back
-at its next 10 s re-read (the hub learns the port from that datagram).
+(the ports polled now). After a hub restart a LUFS device's readings come
+back at its next 10 s re-read (the hub learns the port from that datagram);
+a meter's at once, from the hub's start sweep (#264: the meter's poll once
+to every port of the range, `swept` / `sweep_failed`,
+`../FohMixer-Meter/README.md`).
 
 Known limit: two devices that draw the same port
 (1 in 10 000 per pair) share one socket; Max's `udpreceive` cannot say a
@@ -293,7 +300,7 @@ before.
 | File | What it is |
 |---|---|
 | `FohMixer LUFS.maxpat` | The LUFS device: `sig~ 0.` → `plugout~`; `plugin~` → the K-weighting `biquad~` pairs → squared, summed → the `average~` readers (above) → `snapshot~ 0` ×3, banged by the hub's poll through the `is_active` gate → the levels (`expr`) → `* 10.` → `round` → `clip` → the `pack`'s two values, `V` through `t b f`, which bangs the `pack`; the coefficients from `dspstate~`; the identity; the poll port; `udpsend` (no `deferlow`). No `gen~` (#264). |
-| `../FohMixer-Meter/FohMixer Meter.maxpat` | The meter device: `sig~ 0.` → `plugout~`; `peakamp~ 33` per channel → `atodb` → tenths → the `pack`, `R` through `t b f`, which bangs it; the identity; `udpsend`. |
+| `../FohMixer-Meter/FohMixer Meter.maxpat` | The meter device: `sig~ 0.` → `plugout~`; `peakamp~` (no interval) per channel, banged by the hub's poll through the `is_active` gate → `atodb` → tenths → the `pack`, `R` through `t b f`, which bangs it; the identity, re-read on every 300th poll; the poll port; `udpsend` (no `deferlow`). |
 | `version.txt`, `../FohMixer-Meter/version.txt` | The workspace version (`scripts/check_version.py` keeps both equal to it); each face and each `pack` carry `v<version>`. |
 | `build_amxd.py` | Writes either device's `.amxd` from its patcher. |
 
