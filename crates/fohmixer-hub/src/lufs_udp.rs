@@ -23,6 +23,15 @@
 //! LUFS key, 0.5 s for a meter key) drops it, so a device switched off (it
 //! answers nothing) or gone is polled for one stale window at most, and a
 //! device moved (a new key, the same port) is polled once per round.
+//!
+//! **The start's sweep (#264, the DECIDED of 26.11):** a meter sends only
+//! when polled (its load and Device On turning 1 aside), so a hub restarted
+//! under a running Live would never learn its port. At its start the hub
+//! sends the meter's poll once to every port of the devices' range
+//! ([`sweep`], [`sweep_ports`]) from the poll socket; every running meter
+//! answers and is learned. A LUFS device on a swept port drops the meter's
+//! address at its `route`; a foreign program in the range sees one unknown
+//! OSC datagram once. Its sends count apart (`swept`, `sweep_failed`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -59,9 +68,12 @@ pub struct Counters {
     polled: AtomicU64,
     poll_failed: AtomicU64,
     polling: AtomicU64,
+    swept: AtomicU64,
+    sweep_failed: AtomicU64,
     refused: Mutex<BTreeMap<String, u64>>,
     addr: Mutex<Option<String>>,
     error: Mutex<Option<String>>,
+    poll_from: Mutex<Option<String>>,
 }
 
 impl Counters {
@@ -87,6 +99,19 @@ impl Counters {
         self.polled.fetch_add(sent, Ordering::Relaxed);
         self.poll_failed.fetch_add(failed, Ordering::Relaxed);
         self.polling.store(ports, Ordering::Relaxed);
+    }
+
+    /// The start's sweep (#264): `sent` polls went, `failed` did not.
+    pub fn swept(&self, sent: u64, failed: u64) {
+        self.swept.fetch_add(sent, Ordering::Relaxed);
+        self.sweep_failed.fetch_add(failed, Ordering::Relaxed);
+    }
+
+    fn set_poll_from(&self, from: Option<String>) {
+        *self
+            .poll_from
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = from;
     }
 
     fn set_addr(&self, addr: Option<String>, error: Option<String>) {
@@ -118,6 +143,13 @@ impl Counters {
             polled: self.polled.load(Ordering::Relaxed),
             poll_failed: self.poll_failed.load(Ordering::Relaxed),
             polling: self.polling.load(Ordering::Relaxed),
+            poll_from: self
+                .poll_from
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone(),
+            swept: self.swept.load(Ordering::Relaxed),
+            sweep_failed: self.sweep_failed.load(Ordering::Relaxed),
         }
     }
 }
@@ -219,6 +251,7 @@ pub fn spawn(
     counters: Arc<Counters>,
     events: EventLog,
     tap: Option<Tap>,
+    sweep_ports: bool,
 ) -> io::Result<(SocketAddr, JoinHandle<()>)> {
     let wanted = bind_addr(port);
     let bound = udp_socket(wanted).and_then(|socket| Ok((socket, poll_socket()?)));
@@ -239,6 +272,10 @@ pub fn spawn(
     tracing::info!(addr = %addr, "lufs: listening for the LUFS devices");
     events.record("lufs", listen_fields(&addr.to_string(), None));
     counters.set_addr(Some(addr.to_string()), None);
+    counters.set_poll_from(poller.local_addr().ok().map(|a| a.to_string()));
+    if sweep_ports {
+        sweep(&poller, &counters);
+    }
     let task = tokio::spawn(listen(socket, poller, tx, counters, events, tap));
     Ok((addr, task))
 }
@@ -277,16 +314,81 @@ pub fn poll_round(
 ) {
     let ports = polls.due(now, kind);
     let poll = wire::poll_datagram(kind);
-    let mut failed = 0;
-    for port in &ports {
-        if let Err(e) = poller.send_to(&poll, poll_addr(*port)) {
-            tracing::debug!(port, error = %e, "lufs: a poll could not be sent");
-            failed += 1;
-        }
-    }
+    let failed = refused_sends(poller, &poll, ports.iter().copied());
     let (sent, failed) = round_counts(ports.len(), failed);
     let polling = u64::try_from(polls.ports()).unwrap_or(u64::MAX);
     counters.polled(sent, failed, polling);
+}
+
+/// The ports a device draws its poll port from (the patches' `random
+/// POLL_PORT_SPAN` + `POLL_PORT_MIN`, `scripts/lufs_pull_check.py` keeps
+/// them equal): the start's sweep covers each once.
+pub fn sweep_ports() -> std::ops::Range<u16> {
+    wire::POLL_PORT_MIN..wire::POLL_PORT_MIN + wire::POLL_PORT_SPAN
+}
+
+/// The start's sweep (#264, the DECIDED of 26.11): the meter's poll once to
+/// every port of [`sweep_ports`], so a meter running from before the hub's
+/// start (a hub restarted under a running Live: the meter sends only when
+/// polled) answers and is learned. Non-blocking: a refused send is counted,
+/// never waited for. Its counts, sent and failed.
+pub fn sweep(poller: &std::net::UdpSocket, counters: &Counters) -> (u64, u64) {
+    let (sent, failed) = sweep_over(poller, sweep_ports(), counters);
+    tracing::info!(
+        sent,
+        failed,
+        "lufs: polled every meter port once at start (a meter running from before answers)"
+    );
+    (sent, failed)
+}
+
+/// The meter's poll once to each of `ports`, counted as the sweep's.
+pub fn sweep_over(
+    poller: &std::net::UdpSocket,
+    ports: impl IntoIterator<Item = u16>,
+    counters: &Counters,
+) -> (u64, u64) {
+    let poll = wire::poll_datagram(DeviceKind::Meter);
+    let ports: Vec<u16> = ports.into_iter().collect();
+    let failed = refused_sends(poller, &poll, ports.iter().copied());
+    let (sent, failed) = round_counts(ports.len(), failed);
+    counters.swept(sent, failed);
+    (sent, failed)
+}
+
+/// Sends `poll` to each of `ports`: how many sends the socket refused.
+fn refused_sends(
+    poller: &std::net::UdpSocket,
+    poll: &[u8],
+    ports: impl IntoIterator<Item = u16>,
+) -> u64 {
+    let refused = ports
+        .into_iter()
+        .filter(|port| !send_poll(poller, poll, *port))
+        .count();
+    u64::try_from(refused).unwrap_or(u64::MAX)
+}
+
+/// One poll to `port`: whether it went. A send refused for an earlier
+/// datagram's answer ([`send_again`]) is tried once more.
+fn send_poll(poller: &std::net::UdpSocket, poll: &[u8], port: u16) -> bool {
+    let first = poller.send_to(poll, poll_addr(port));
+    let sent = match first {
+        Err(e) if send_again(e.kind()) => poller.send_to(poll, poll_addr(port)),
+        other => other,
+    };
+    if let Err(e) = &sent {
+        tracing::debug!(port, error = %e, "lufs: a poll could not be sent");
+    }
+    sent.is_ok()
+}
+
+/// Whether a send refused with `kind` is tried once more: Windows reports an
+/// earlier datagram's ICMP port unreachable on the socket's next send
+/// (WSAECONNRESET), and that send went nowhere (the sweep sends to every
+/// closed port of the range).
+pub fn send_again(kind: io::ErrorKind) -> bool {
+    kind == io::ErrorKind::ConnectionReset
 }
 
 /// A round's counts: the polls sent and failed, of `ports` ports with

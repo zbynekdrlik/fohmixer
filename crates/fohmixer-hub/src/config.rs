@@ -407,16 +407,26 @@ pub enum EqBackend {
 pub struct LufsCfg {
     #[serde(default = "default_lufs_port")]
     pub port: u16,
+    /// The start's sweep of the meters' poll ports (#264, `lufs_udp::sweep`):
+    /// always on, no config key; only a test turns it off (a sweep reaches
+    /// every socket in the range, other tests' too).
+    #[serde(skip, default = "sweeps")]
+    pub sweep: bool,
 }
 
 fn default_lufs_port() -> u16 {
     fohmixer_proto::lufs::wire::DEFAULT_PORT
 }
 
+fn sweeps() -> bool {
+    true
+}
+
 impl Default for LufsCfg {
     fn default() -> Self {
         Self {
             port: default_lufs_port(),
+            sweep: sweeps(),
         }
     }
 }
