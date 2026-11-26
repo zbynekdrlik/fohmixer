@@ -39,9 +39,10 @@ the band Live). It now works as the LUFS device does since 1.58.0:
   each device from its own place in the count, and before that poll's
   reading, so its datagram already names the new parents;
 - nothing in the device runs a clock or hands a message over: no
-  `deferlow`, `defer`, `metro` or `qmetro` (`scripts/meter_pull_check.py`
-  fails on any, on a `peakamp~` with an interval and on a `udpreceive`
-  without `@defer 1`).
+  `deferlow`, `defer`, `metro`, `qmetro` or `delay`
+  (`scripts/poll_reread_check.py` fails on any, in the LUFS device too
+  since 1.60.3; `scripts/meter_pull_check.py` on a `peakamp~` with an
+  interval and on a `udpreceive` without `@defer 1`).
 
 **Open for the PC:** that `live.thisdevice`'s load bang comes in Max's main
 thread (it is one message at load either way, not one per 33 ms); dasio's
@@ -52,11 +53,13 @@ about 30 a second per meter.
 
 **A hub restarted under a running Live** (the DECIDED of 26.11 on #264): a
 meter sends only when polled (and at its load, and when Device On turns 1),
-so the hub, at its start, sends `/fohmixer/meter/poll` once to every port
-of the range the device draws from (40000–49999) on 127.0.0.1; every
-running meter answers and is learned within the first poll.
-`/api/status` `lufs.listener.swept` / `sweep_failed` count those sends (one
-info line too). A LUFS device on a swept port drops the meter's address at
-its `route`; a foreign program in the range sees one unknown OSC datagram
-once. On the PC: after a hub restart, `lufs.listener.polling` counts every
-meter again within a second.
+and since 1.60.3 so does a LUFS device (its 10 s re-read rides the poll
+too), so the hub, at its start, sends `/fohmixer/lufs/poll` and then
+`/fohmixer/meter/poll` once to every port of the range the devices draw
+from (40000–49999) on 127.0.0.1; every running device answers its own
+address and is learned within its first poll, its `route` dropping the
+other kind's. `/api/status` `lufs.listener.swept` / `sweep_failed` count
+those sends, both kinds together (one info line too); a foreign program in
+the range sees two unknown OSC datagrams once. On the PC: after a hub
+restart, `lufs.listener.polling` counts every LUFS device and meter again
+within a second.
