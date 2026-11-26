@@ -1,13 +1,14 @@
 //! `GET /api/mbc/stream-proof` (#267): camera-box's stream-test guard asks,
 //! before each test, whether the MBC stream mix carries only HAND 1 sync,
-//! with the automation token (#207) as `Authorization: Bearer <token>`. The
-//! answer is `fohmixer_proto::stream_proof::Answer` (the walk and its
+//! with the automation token (#207) or the stream proof's read-only token
+//! (#274: `fohmixer-hub stream-proof set-token`; it opens this route only)
+//! as `Authorization: Bearer <token>`. The answer is `fohmixer_proto::stream_proof::Answer` (the walk and its
 //! cache: `crate::stream_proof`); it is 200 whatever the proof says, also
 //! `ok: false` (camera-box then stays strict).
 //!
 //! The checks are the automation gate's (`automation_gate::gate`, as
 //! `POST /api/scene`'s): an internet request 403 (`LAN_ONLY`), a hub
-//! without a token 503 (`NO_AUTOMATION`), a missing or wrong token 401
+//! with neither token 503 (`NO_AUTOMATION`), a missing or wrong token 401
 //! (`UNAUTHORIZED`; the PIN's session token is no automation token). Every
 //! refusal is one `stream_proof` record with `refused` and one warn line,
 //! at most [`REFUSED_LINES`] per `ration::GAP` (`automation_gate::note`).
@@ -26,6 +27,7 @@ use super::automation_gate::{self, Gate, Refusal};
 use crate::Hub;
 use crate::access;
 use crate::auth::bearer;
+use crate::automation::AutomationToken;
 
 /// The route's path.
 pub const PATH: &str = "/api/mbc/stream-proof";
@@ -40,6 +42,14 @@ pub fn refused_line(refused: Gate, peer: &str, skipped: u64) -> String {
     )
 }
 
+/// Whether any of the route's `tokens` is set, and whether `presented` is
+/// one of them: the automation token (#207) or the read-only one (#274).
+pub fn takes(tokens: [Option<&AutomationToken>; 2], presented: Option<&str>) -> (bool, bool) {
+    let set = tokens.iter().any(Option::is_some);
+    let ok = tokens.iter().flatten().any(|t| t.accepts(presented));
+    (set, ok)
+}
+
 /// `GET /api/mbc/stream-proof`.
 pub async fn get_stream_proof(
     State(hub): State<Hub>,
@@ -49,9 +59,9 @@ pub async fn get_stream_proof(
     let origin = access::classify(Some(peer), &headers);
     let source = crate::client_report::source(origin);
     let peer_ip = peer.ip().to_string();
-    let token = hub.automation.as_ref();
-    let ok = token.is_some_and(|t| t.accepts(bearer(&headers)));
-    if let Err(refused) = automation_gate::gate(origin, token.is_some(), ok) {
+    let tokens = [hub.automation.as_ref(), hub.stream_proof_token.as_ref()];
+    let (set, ok) = takes(tokens, bearer(&headers));
+    if let Err(refused) = automation_gate::gate(origin, set, ok) {
         automation_gate::note(
             &hub.stream_proofs.refusals,
             REFUSED_LINES,
@@ -77,6 +87,22 @@ pub async fn get_stream_proof(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn either_token_opens_the_route_and_none_set_is_no_token() {
+        let a = AutomationToken::of(&"a".repeat(32)).unwrap();
+        let b = AutomationToken::of(&"b".repeat(32)).unwrap();
+        let (a_text, b_text, c_text) = ("a".repeat(32), "b".repeat(32), "c".repeat(32));
+        assert_eq!(takes([None, None], Some(&a_text)), (false, false));
+        assert_eq!(takes([Some(&a), None], Some(&a_text)), (true, true));
+        assert_eq!(takes([Some(&a), None], Some(&b_text)), (true, false));
+        assert_eq!(takes([None, Some(&b)], Some(&b_text)), (true, true));
+        assert_eq!(takes([None, Some(&b)], Some(&a_text)), (true, false));
+        assert_eq!(takes([Some(&a), Some(&b)], Some(&a_text)), (true, true));
+        assert_eq!(takes([Some(&a), Some(&b)], Some(&b_text)), (true, true));
+        assert_eq!(takes([Some(&a), Some(&b)], Some(&c_text)), (true, false));
+        assert_eq!(takes([Some(&a), Some(&b)], None), (true, false));
+    }
 
     #[test]
     fn a_refusal_line_names_why_and_the_peer() {

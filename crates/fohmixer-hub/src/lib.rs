@@ -237,6 +237,10 @@ pub struct HubInner {
     /// The automation token of `POST /api/scene` (#207); none: the hub
     /// takes no scene.
     pub automation: Option<automation::AutomationToken>,
+    /// The stream proof's read-only token (#274): it opens `GET
+    /// /api/mbc/stream-proof` only; none: that route takes the automation
+    /// token alone.
+    pub stream_proof_token: Option<automation::AutomationToken>,
     /// The ration of the scene requests' refusal lines and records.
     pub scene_refusals: Mutex<ration::Ration>,
     /// The MBC stream proofs (#267, `GET /api/mbc/stream-proof`): the last
@@ -634,18 +638,19 @@ impl Hub {
             policy = %revision,
             "hub started"
         );
-        // The automation token (#207): read at the start; a token that
-        // cannot be read never stops the hub, it takes no scene.
-        let (automation, warning) = automation::usable(
-            automation::AUTOMATION,
-            automation::load(
-                automation::AUTOMATION,
-                &config.data_dir.join(secrets::SECRETS_DIR),
-            ),
-        );
-        if let Some(warning) = warning {
-            tracing::warn!("{warning}");
-        }
+        // The automation token (#207) and the stream proof's read-only
+        // token (#274): read at the start; a token that cannot be read
+        // never stops the hub, it runs without it.
+        let secrets_dir = config.data_dir.join(secrets::SECRETS_DIR);
+        let read_token = |kind| {
+            let (token, warning) = automation::usable(kind, automation::load(kind, &secrets_dir));
+            if let Some(warning) = warning {
+                tracing::warn!("{warning}");
+            }
+            token
+        };
+        let automation = read_token(automation::AUTOMATION);
+        let stream_proof_token = read_token(automation::STREAM_PROOF);
         let mut router = router::Router::new(
             live.clone(),
             hub_state,
@@ -812,6 +817,7 @@ impl Hub {
             live,
             router: router_tx,
             automation,
+            stream_proof_token,
             scene_refusals: Mutex::new(ration::Ration::default()),
             stream_proofs: stream_proof::StreamProofs::default(),
             next_client: AtomicU64::new(1),
