@@ -24,14 +24,15 @@
 //! answers nothing) or gone is polled for one stale window at most, and a
 //! device moved (a new key, the same port) is polled once per round.
 //!
-//! **The start's sweep (#264, the DECIDED of 26.11):** a meter sends only
-//! when polled (its load and Device On turning 1 aside), so a hub restarted
-//! under a running Live would never learn its port. At its start the hub
-//! sends the meter's poll once to every port of the devices' range
-//! ([`sweep`], over `config::LufsCfg.sweep`) from the poll socket; every running meter
-//! answers and is learned. A LUFS device on a swept port drops the meter's
-//! address at its `route`; a foreign program in the range sees one unknown
-//! OSC datagram once. Its sends count apart (`swept`, `sweep_failed`).
+//! **The start's sweep (#264, the DECIDED of 26.11):** a device of either
+//! kind sends only when polled (its load and Device On turning 1 aside;
+//! the LUFS device since its 10 s re-read rides the poll), so a hub
+//! restarted under a running Live would never learn its port. At its start
+//! the hub sends each kind's poll once to every port of the devices' range
+//! ([`sweep`], over `config::LufsCfg.sweep`) from the poll socket; every
+//! running device answers its own and is learned, its `route` dropping the
+//! other kind's; a foreign program in the range sees two unknown OSC
+//! datagrams once. Its sends count apart (`swept`, `sweep_failed`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -320,26 +321,32 @@ pub fn poll_round(
     counters.polled(sent, failed, polling);
 }
 
-/// The start's sweep (#264, the DECIDED of 26.11): the meter's poll once to
-/// each of `ports` (the hub's: `config::LufsCfg.sweep`, the devices' whole
-/// range), so a meter running from before the hub's start (a hub restarted
-/// under a running Live: the meter sends only when polled) answers and is
-/// learned. Non-blocking: a refused send is counted, never waited for. Its
-/// counts, sent and failed, also on one info line.
+/// The start's sweep (#264, the DECIDED of 26.11): each kind's poll
+/// ([`POLLED_KINDS`]) once to each of `ports` (the hub's:
+/// `config::LufsCfg.sweep`, the devices' whole range), so a device running
+/// from before the hub's start (a hub restarted under a running Live: both
+/// kinds send only when polled) answers and is learned. Non-blocking: a
+/// refused send is counted, never waited for. Its counts, sent and failed,
+/// also on one info line.
 pub fn sweep(
     poller: &std::net::UdpSocket,
     ports: impl IntoIterator<Item = u16>,
     counters: &Counters,
 ) -> (u64, u64) {
-    let poll = wire::poll_datagram(DeviceKind::Meter);
     let ports: Vec<u16> = ports.into_iter().collect();
-    let failed = refused_sends(poller, &poll, ports.iter().copied());
-    let (sent, failed) = round_counts(ports.len(), failed);
+    let (mut sent, mut failed) = (0, 0);
+    for kind in POLLED_KINDS {
+        let poll = wire::poll_datagram(kind);
+        let refused = refused_sends(poller, &poll, ports.iter().copied());
+        let (kind_sent, kind_failed) = round_counts(ports.len(), refused);
+        sent += kind_sent;
+        failed += kind_failed;
+    }
     counters.swept(sent, failed);
     tracing::info!(
         sent,
         failed,
-        "lufs: polled every meter port once at start (a meter running from before answers)"
+        "lufs: polled every device port once at start, each kind (a device running from before answers)"
     );
     (sent, failed)
 }
