@@ -13,14 +13,25 @@
 //!
 //! **The polls (#264):** a device of the polled form names the port it
 //! listens on (`Reading.port`); the same task sends each such port
-//! [`wire::poll_datagram`] every [`wire::POLL_EVERY_MS`] from a socket of
-//! its own (bound to `127.0.0.1`, never read: an ICMP reset from a port that
-//! closed lands there, not in the listener's receive), and the device
-//! answers each with one reading, pulled in Max's main thread. A port is
-//! polled while its key is heard ([`Polls`]): a key lost
-//! (`rules::lufs::is_stale`, 1 s for a LUFS key) drops it, so a device
-//! switched off (it answers nothing) or gone is polled for one stale window
-//! at most, and a device moved (a new key, the same port) is polled once.
+//! [`wire::poll_datagram`] of its key's kind at that kind's rate
+//! ([`poll_every`]: a LUFS device every 200 ms, a meter every 33 ms, one
+//! round per kind, [`POLLED_KINDS`]) from a socket of its own (bound to
+//! `127.0.0.1`, never read: an ICMP reset from a port that closed lands
+//! there, not in the listener's receive), and the device answers each with
+//! one reading, pulled in Max's main thread. A port is polled while its key
+//! is heard ([`Polls`]): a key lost (`rules::lufs::is_stale`, 1 s for a
+//! LUFS key, 0.5 s for a meter key) drops it, so a device switched off (it
+//! answers nothing) or gone is polled for one stale window at most, and a
+//! device moved (a new key, the same port) is polled once per round.
+//!
+//! **The start's sweep (#264, the DECIDED of 26.11):** a meter sends only
+//! when polled (its load and Device On turning 1 aside), so a hub restarted
+//! under a running Live would never learn its port. At its start the hub
+//! sends the meter's poll once to every port of the devices' range
+//! ([`sweep`], over `config::LufsCfg.sweep`) from the poll socket; every running meter
+//! answers and is learned. A LUFS device on a swept port drops the meter's
+//! address at its `route`; a foreign program in the range sees one unknown
+//! OSC datagram once. Its sends count apart (`swept`, `sweep_failed`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -30,7 +41,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use fohmixer_proto::client::LufsListenerStatus;
-use fohmixer_proto::lufs::wire::{self, MAX_DATAGRAM};
+use fohmixer_proto::lufs::wire::{self, DeviceKind, MAX_DATAGRAM};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -57,9 +68,12 @@ pub struct Counters {
     polled: AtomicU64,
     poll_failed: AtomicU64,
     polling: AtomicU64,
+    swept: AtomicU64,
+    sweep_failed: AtomicU64,
     refused: Mutex<BTreeMap<String, u64>>,
     addr: Mutex<Option<String>>,
     error: Mutex<Option<String>>,
+    poll_from: Mutex<Option<String>>,
 }
 
 impl Counters {
@@ -85,6 +99,19 @@ impl Counters {
         self.polled.fetch_add(sent, Ordering::Relaxed);
         self.poll_failed.fetch_add(failed, Ordering::Relaxed);
         self.polling.store(ports, Ordering::Relaxed);
+    }
+
+    /// The start's sweep (#264): `sent` polls went, `failed` did not.
+    pub fn swept(&self, sent: u64, failed: u64) {
+        self.swept.fetch_add(sent, Ordering::Relaxed);
+        self.sweep_failed.fetch_add(failed, Ordering::Relaxed);
+    }
+
+    fn set_poll_from(&self, from: Option<String>) {
+        *self
+            .poll_from
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = from;
     }
 
     fn set_addr(&self, addr: Option<String>, error: Option<String>) {
@@ -116,6 +143,13 @@ impl Counters {
             polled: self.polled.load(Ordering::Relaxed),
             poll_failed: self.poll_failed.load(Ordering::Relaxed),
             polling: self.polling.load(Ordering::Relaxed),
+            poll_from: self
+                .poll_from
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone(),
+            swept: self.swept.load(Ordering::Relaxed),
+            sweep_failed: self.sweep_failed.load(Ordering::Relaxed),
         }
     }
 }
@@ -137,11 +171,21 @@ impl Polls {
         }
     }
 
-    /// The ports to poll at `now`, each once: the lost keys are dropped
-    /// first.
-    pub fn due(&mut self, now: Instant) -> BTreeSet<u16> {
+    /// The ports of `kind`'s keys to poll at `now`, each once: the lost
+    /// keys of every kind are dropped first.
+    pub fn due(&mut self, now: Instant, kind: DeviceKind) -> BTreeSet<u16> {
         self.keys.retain(|key, (_, heard)| !lost(key, *heard, now));
-        self.keys.values().map(|(port, _)| *port).collect()
+        self.keys
+            .iter()
+            .filter(|(key, _)| key.kind == kind)
+            .map(|(_, (port, _))| *port)
+            .collect()
+    }
+
+    /// The ports polled now, of every kind, each once.
+    pub fn ports(&self) -> usize {
+        let ports: BTreeSet<u16> = self.keys.values().map(|(port, _)| *port).collect();
+        ports.len()
     }
 
     /// The keys polled.
@@ -207,6 +251,7 @@ pub fn spawn(
     counters: Arc<Counters>,
     events: EventLog,
     tap: Option<Tap>,
+    sweep_ports: Option<std::ops::Range<u16>>,
 ) -> io::Result<(SocketAddr, JoinHandle<()>)> {
     let wanted = bind_addr(port);
     let bound = udp_socket(wanted).and_then(|socket| Ok((socket, poll_socket()?)));
@@ -227,6 +272,10 @@ pub fn spawn(
     tracing::info!(addr = %addr, "lufs: listening for the LUFS devices");
     events.record("lufs", listen_fields(&addr.to_string(), None));
     counters.set_addr(Some(addr.to_string()), None);
+    counters.set_poll_from(poller.local_addr().ok().map(|a| a.to_string()));
+    if let Some(ports) = sweep_ports {
+        sweep(&poller, ports, &counters);
+    }
     let task = tokio::spawn(listen(socket, poller, tx, counters, events, tap));
     Ok((addr, task))
 }
@@ -246,31 +295,105 @@ fn poll_socket() -> io::Result<std::net::UdpSocket> {
     Ok(socket)
 }
 
-/// Sends one poll to each port due at `now` from `poller`, counted.
+/// The kinds the hub polls, each in a round of its own.
+pub const POLLED_KINDS: [DeviceKind; 2] = [DeviceKind::Lufs, DeviceKind::Meter];
+
+/// How often a kind's round runs ([`DeviceKind::poll_every_ms`]).
+pub fn poll_every(kind: DeviceKind) -> Duration {
+    Duration::from_millis(kind.poll_every_ms())
+}
+
+/// Sends one poll of `kind` to each of its ports due at `now` from
+/// `poller`, counted; the ports polled now are every kind's.
 pub fn poll_round(
     poller: &std::net::UdpSocket,
     polls: &mut Polls,
+    kind: DeviceKind,
     now: Instant,
     counters: &Counters,
 ) {
-    let ports = polls.due(now);
-    let poll = wire::poll_datagram();
-    let mut failed = 0;
-    for port in &ports {
-        if let Err(e) = poller.send_to(&poll, poll_addr(*port)) {
-            tracing::debug!(port, error = %e, "lufs: a poll could not be sent");
-            failed += 1;
-        }
-    }
-    let (sent, failed, polling) = round_counts(ports.len(), failed);
+    let ports = polls.due(now, kind);
+    let poll = wire::poll_datagram(kind);
+    let failed = refused_sends(poller, &poll, ports.iter().copied());
+    let (sent, failed) = round_counts(ports.len(), failed);
+    let polling = u64::try_from(polls.ports()).unwrap_or(u64::MAX);
     counters.polled(sent, failed, polling);
 }
 
-/// A round's counts: the polls sent, failed and the ports polled, of
-/// `ports` ports with `failed` sends refused.
-pub fn round_counts(ports: usize, failed: u64) -> (u64, u64, u64) {
+/// The start's sweep (#264, the DECIDED of 26.11): the meter's poll once to
+/// each of `ports` (the hub's: `config::LufsCfg.sweep`, the devices' whole
+/// range), so a meter running from before the hub's start (a hub restarted
+/// under a running Live: the meter sends only when polled) answers and is
+/// learned. Non-blocking: a refused send is counted, never waited for. Its
+/// counts, sent and failed, also on one info line.
+pub fn sweep(
+    poller: &std::net::UdpSocket,
+    ports: impl IntoIterator<Item = u16>,
+    counters: &Counters,
+) -> (u64, u64) {
+    let poll = wire::poll_datagram(DeviceKind::Meter);
+    let ports: Vec<u16> = ports.into_iter().collect();
+    let failed = refused_sends(poller, &poll, ports.iter().copied());
+    let (sent, failed) = round_counts(ports.len(), failed);
+    counters.swept(sent, failed);
+    tracing::info!(
+        sent,
+        failed,
+        "lufs: polled every meter port once at start (a meter running from before answers)"
+    );
+    (sent, failed)
+}
+
+/// Sends `poll` to each of `ports`: how many sends the socket refused.
+fn refused_sends(
+    poller: &std::net::UdpSocket,
+    poll: &[u8],
+    ports: impl IntoIterator<Item = u16>,
+) -> u64 {
+    let refused = ports
+        .into_iter()
+        .filter(|port| !send_poll(poller, poll, *port))
+        .count();
+    u64::try_from(refused).unwrap_or(u64::MAX)
+}
+
+/// One poll to `port`: whether it went. A send refused for an earlier
+/// datagram's answer ([`send_again`]) is tried once more.
+fn send_poll(poller: &std::net::UdpSocket, poll: &[u8], port: u16) -> bool {
+    let first = poller.send_to(poll, poll_addr(port));
+    let sent = match first {
+        Err(e) if send_again(e.kind()) => poller.send_to(poll, poll_addr(port)),
+        other => other,
+    };
+    if let Err(e) = &sent {
+        tracing::debug!(port, error = %e, "lufs: a poll could not be sent");
+    }
+    sent.is_ok()
+}
+
+/// Whether a send refused with `kind` is tried once more: Windows reports an
+/// earlier datagram's ICMP port unreachable on the socket's next send
+/// (WSAECONNRESET), and that send went nowhere (the sweep sends to every
+/// closed port of the range).
+pub fn send_again(kind: io::ErrorKind) -> bool {
+    kind == io::ErrorKind::ConnectionReset
+}
+
+/// A round's counts: the polls sent and failed, of `ports` ports with
+/// `failed` sends refused.
+pub fn round_counts(ports: usize, failed: u64) -> (u64, u64) {
     let ports = u64::try_from(ports).unwrap_or(u64::MAX);
-    (ports.saturating_sub(failed), failed, ports)
+    (ports.saturating_sub(failed), failed)
+}
+
+/// A kind's round clock: its first tick at once, then on its grid: a late
+/// tick (Windows wakes a timer up to ~15.6 ms late) never moves the next
+/// one out, and a missed tick is skipped (a stalled task never sends a
+/// burst of polls).
+fn round_clock(kind: DeviceKind) -> tokio::time::Interval {
+    let mut clock = tokio::time::interval(poll_every(kind));
+    clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    clock
 }
 
 /// One datagram's way: parsed, bounded, counted, to the router when taken.
@@ -395,13 +518,18 @@ async fn listen(
     let mut bound = Bound::new();
     let mut polls = Polls::default();
     let mut swept = Instant::now();
-    let mut poll_clock = tokio::time::interval(Duration::from_millis(wire::POLL_EVERY_MS));
-    poll_clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let [lufs, meter] = POLLED_KINDS;
+    let mut lufs_clock = round_clock(lufs);
+    let mut meter_clock = round_clock(meter);
     loop {
         let received = tokio::select! {
             received = socket.recv(&mut buf) => received,
-            _ = poll_clock.tick() => {
-                poll_round(&poller, &mut polls, Instant::now(), &counters);
+            _ = lufs_clock.tick() => {
+                poll_round(&poller, &mut polls, lufs, Instant::now(), &counters);
+                continue;
+            }
+            _ = meter_clock.tick() => {
+                poll_round(&poller, &mut polls, meter, Instant::now(), &counters);
                 continue;
             }
         };
@@ -555,7 +683,7 @@ mod tests {
         let (events, _records) = EventLog::channel(16);
         let tap = crate::link::server::tap();
         let mut heard = tap.subscribe();
-        let (addr, task) = spawn(0, tx, counters, events, Some(tap.clone())).unwrap();
+        let (addr, task) = spawn(0, tx, counters, events, Some(tap.clone()), None).unwrap();
         let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         sender.send_to(&datagram(4), addr).unwrap();
         sender.send_to(b"junk", addr).unwrap();
@@ -661,21 +789,113 @@ mod tests {
         polls.heard(&key(DeviceKind::Lufs, 2), Some(41_000), t0 + ms(300));
         polls.heard(&key(DeviceKind::Meter, 3), Some(42_000), t0);
         assert_eq!(polls.len(), 3);
+        assert_eq!(polls.ports(), 2, "a port shared by two keys counts once");
         assert_eq!(
-            polls.due(t0 + ms(499)),
-            BTreeSet::from([41_000, 42_000]),
+            polls.due(t0 + ms(499), DeviceKind::Lufs),
+            BTreeSet::from([41_000]),
             "a port shared by two keys (a device moved) is polled once"
         );
-        assert_eq!(polls.due(t0 + ms(500)), BTreeSet::from([41_000]));
+        assert_eq!(
+            polls.due(t0 + ms(499), DeviceKind::Meter),
+            BTreeSet::from([42_000]),
+            "each kind's round polls its own keys only"
+        );
+        assert!(polls.due(t0 + ms(500), DeviceKind::Meter).is_empty());
         assert_eq!(polls.len(), 2, "the meter key lost at 500 ms");
-        assert_eq!(polls.due(t0 + ms(999)), BTreeSet::from([41_000]));
-        assert_eq!(polls.due(t0 + ms(1000)), BTreeSet::from([41_000]));
+        assert_eq!(polls.ports(), 1);
+        assert_eq!(
+            polls.due(t0 + ms(999), DeviceKind::Lufs),
+            BTreeSet::from([41_000])
+        );
+        assert_eq!(
+            polls.due(t0 + ms(1000), DeviceKind::Lufs),
+            BTreeSet::from([41_000])
+        );
         assert_eq!(polls.len(), 1, "key 1 lost at 1000 ms, key 2 heard later");
         // Heard again: kept another window.
         polls.heard(&key(DeviceKind::Lufs, 2), Some(41_000), t0 + ms(1200));
-        assert_eq!(polls.due(t0 + ms(2199)), BTreeSet::from([41_000]));
-        assert!(polls.due(t0 + ms(2200)).is_empty());
+        assert_eq!(
+            polls.due(t0 + ms(2199), DeviceKind::Lufs),
+            BTreeSet::from([41_000])
+        );
+        // A round of the other kind drops the lost keys too.
+        assert!(polls.due(t0 + ms(2200), DeviceKind::Meter).is_empty());
         assert!(polls.is_empty());
+        assert_eq!(polls.ports(), 0);
+    }
+
+    #[test]
+    fn each_kind_is_polled_at_its_own_rate() {
+        // #264: the meter every 33 ms (30 a second), LUFS every 200 ms.
+        assert_eq!(poll_every(DeviceKind::Meter), Duration::from_millis(33));
+        assert_eq!(poll_every(DeviceKind::Lufs), Duration::from_millis(200));
+        assert_eq!(POLLED_KINDS, [DeviceKind::Lufs, DeviceKind::Meter]);
+    }
+
+    #[test]
+    fn a_sweep_sends_each_port_the_meters_poll_once_and_counts_it_apart() {
+        // A meter already running (a hub restarted under a running Live)
+        // answers the sweep's poll and is learned; the sweep's sends count
+        // apart from the rounds' polls. Port 0 stands for a refused send.
+        let device = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        device
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let port = device.local_addr().unwrap().port();
+        let poller = poll_socket().unwrap();
+        let counters = Counters::default();
+        let mut ports = vec![0, port];
+        ports.sort_unstable();
+        assert_eq!(sweep(&poller, ports, &counters), (1, 1));
+        let mut buf = [0u8; 64];
+        let (n, from) = device.recv_from(&mut buf).unwrap();
+        assert_eq!(&buf[..n], wire::poll_datagram(DeviceKind::Meter).as_slice());
+        assert_eq!(from, poller.local_addr().unwrap());
+        let status = counters.status();
+        assert_eq!((status.swept, status.sweep_failed), (1, 1));
+        assert_eq!((status.polled, status.poll_failed), (0, 0));
+        counters.swept(2, 3);
+        let status = counters.status();
+        assert_eq!((status.swept, status.sweep_failed), (3, 4));
+    }
+
+    #[test]
+    fn a_send_reset_by_an_earlier_ports_answer_is_tried_once_more() {
+        // Windows reports an earlier datagram's ICMP port unreachable on the
+        // socket's next send (WSAECONNRESET): that send went nowhere, so it
+        // is tried again; any other refusal is a failed send.
+        assert!(send_again(io::ErrorKind::ConnectionReset));
+        assert!(!send_again(io::ErrorKind::WouldBlock));
+        assert!(!send_again(io::ErrorKind::ConnectionRefused));
+        assert!(!send_again(io::ErrorKind::InvalidInput));
+    }
+
+    #[tokio::test]
+    async fn the_poll_socket_is_named_in_the_status() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let counters = Arc::new(Counters::default());
+        let (events, _records) = EventLog::channel(16);
+        let (_, task) = spawn(0, tx, Arc::clone(&counters), events, None, None).unwrap();
+        let from = counters.status().poll_from.expect("the poll socket");
+        assert!(from.starts_with("127.0.0.1:"), "{from}");
+        assert_eq!(counters.status().swept, 0, "no sweep asked");
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_rounds_clock_keeps_its_grid_after_a_late_tick() {
+        // #264's review: on Windows a timer wakes up to ~15.6 ms late; with
+        // `Delay` every late tick would push the next one out (33 ms then
+        // reads ~47 ms, about 21 polls a second). `Skip` keeps the grid
+        // (30 a second on average) and still never sends a burst.
+        for kind in POLLED_KINDS {
+            let clock = round_clock(kind);
+            assert_eq!(clock.period(), poll_every(kind));
+            assert_eq!(
+                clock.missed_tick_behavior(),
+                tokio::time::MissedTickBehavior::Skip
+            );
+        }
     }
 
     #[test]
@@ -708,7 +928,7 @@ mod tests {
             &events,
             &tx
         ));
-        assert_eq!(polls.due(t0), BTreeSet::from([41_001]));
+        assert_eq!(polls.due(t0, DeviceKind::Lufs), BTreeSet::from([41_001]));
         // Over its bound (dropped, still kept): the port stays known.
         for _ in 0..12 {
             handle_datagram(
@@ -745,7 +965,7 @@ mod tests {
             &tx,
         );
         assert_eq!(counters.status().full, 1);
-        assert_eq!(polls.due(t0), BTreeSet::from([41_001]));
+        assert_eq!(polls.due(t0, DeviceKind::Lufs), BTreeSet::from([41_001]));
         // A link's datagram (no polls) teaches nothing and still goes on.
         assert!(handle_datagram(
             &polled_datagram(1, 41_002),
@@ -759,35 +979,48 @@ mod tests {
     }
 
     #[test]
-    fn a_round_polls_each_due_port_once_and_counts_it() {
+    fn a_round_polls_each_due_port_of_its_kind_once_and_counts_it() {
         let device = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         device
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
         let port = device.local_addr().unwrap().port();
+        let meter = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        meter
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let meter_port = meter.local_addr().unwrap().port();
         let poller = poll_socket().unwrap();
         let counters = Counters::default();
         let mut polls = Polls::default();
         let t0 = Instant::now();
         polls.heard(&key(DeviceKind::Lufs, 1), Some(port), t0);
         polls.heard(&key(DeviceKind::Lufs, 2), Some(port), t0);
-        poll_round(&poller, &mut polls, t0, &counters);
+        polls.heard(&key(DeviceKind::Meter, 5), Some(meter_port), t0);
+        poll_round(&poller, &mut polls, DeviceKind::Lufs, t0, &counters);
         let mut buf = [0u8; 64];
         let n = device.recv(&mut buf).unwrap();
-        assert_eq!(&buf[..n], wire::poll_datagram().as_slice());
+        assert_eq!(&buf[..n], wire::poll_datagram(DeviceKind::Lufs).as_slice());
         let status = counters.status();
         assert_eq!(
             (status.polled, status.poll_failed, status.polling),
-            (1, 0, 1)
+            (1, 0, 2),
+            "one LUFS poll sent; both kinds' ports polled now"
         );
+        // The meter's round: its own poll, to its own port only.
+        poll_round(&poller, &mut polls, DeviceKind::Meter, t0, &counters);
+        let n = meter.recv(&mut buf).unwrap();
+        assert_eq!(&buf[..n], wire::poll_datagram(DeviceKind::Meter).as_slice());
+        assert_eq!(counters.status().polled, 2);
         poll_round(
             &poller,
             &mut polls,
+            DeviceKind::Lufs,
             t0 + Duration::from_millis(1000),
             &counters,
         );
         let status = counters.status();
-        assert_eq!((status.polled, status.polling), (1, 0), "both keys lost");
+        assert_eq!((status.polled, status.polling), (2, 0), "every key lost");
         // A send the socket refuses (port 0) is counted failed, the good
         // one sent: two ports polled.
         polls.heard(
@@ -800,20 +1033,26 @@ mod tests {
             Some(0),
             t0 + Duration::from_secs(2),
         );
-        poll_round(&poller, &mut polls, t0 + Duration::from_secs(2), &counters);
+        poll_round(
+            &poller,
+            &mut polls,
+            DeviceKind::Lufs,
+            t0 + Duration::from_secs(2),
+            &counters,
+        );
         let status = counters.status();
         assert_eq!(
             (status.polled, status.poll_failed, status.polling),
-            (2, 1, 2)
+            (3, 1, 2)
         );
-        assert_eq!(round_counts(3, 1), (2, 1, 3));
-        assert_eq!(round_counts(2, 0), (2, 0, 2));
-        assert_eq!(round_counts(0, 0), (0, 0, 0));
+        assert_eq!(round_counts(3, 1), (2, 1));
+        assert_eq!(round_counts(2, 0), (2, 0));
+        assert_eq!(round_counts(0, 0), (0, 0));
         counters.polled(2, 3, 4);
         let status = counters.status();
         assert_eq!(
             (status.polled, status.poll_failed, status.polling),
-            (4, 4, 4)
+            (5, 4, 4)
         );
     }
 }

@@ -402,21 +402,36 @@ pub enum EqBackend {
 /// and meter devices send their readings (fixed in the devices' patches:
 /// another port means the devices rebuilt with `build_amxd.py --port`);
 /// `0` turns the listener off.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LufsCfg {
     #[serde(default = "default_lufs_port")]
     pub port: u16,
+    /// The ports the start's sweep sends the meter's poll to (#264,
+    /// `lufs_udp::sweep`): the devices' whole range, no config key; only a
+    /// test narrows it or turns it off (`None`): a sweep reaches every
+    /// socket in its range, other tests' too.
+    #[serde(skip, default = "default_sweep")]
+    pub sweep: Option<std::ops::Range<u16>>,
 }
 
 fn default_lufs_port() -> u16 {
     fohmixer_proto::lufs::wire::DEFAULT_PORT
 }
 
+/// The ports a device draws its poll port from (the patches' `random
+/// POLL_PORT_SPAN` + `POLL_PORT_MIN`, `scripts/lufs_pull_check.py` keeps them
+/// equal).
+fn default_sweep() -> Option<std::ops::Range<u16>> {
+    use fohmixer_proto::lufs::wire::{POLL_PORT_MIN, POLL_PORT_SPAN};
+    Some(POLL_PORT_MIN..POLL_PORT_MIN + POLL_PORT_SPAN)
+}
+
 impl Default for LufsCfg {
     fn default() -> Self {
         Self {
             port: default_lufs_port(),
+            sweep: default_sweep(),
         }
     }
 }
@@ -1897,14 +1912,41 @@ mod tests {
     fn lufs_port_defaults_to_39110() {
         assert_eq!(Config::parse("", &data()).unwrap().lufs.port, 39110);
         assert_eq!(Config::parse("[lufs]\n", &data()).unwrap().lufs.port, 39110);
-        assert_eq!(Config::defaults(&data()).lufs, LufsCfg { port: 39110 });
+        assert_eq!(
+            Config::defaults(&data()).lufs,
+            LufsCfg {
+                port: 39110,
+                sweep: Some(40_000..50_000)
+            }
+        );
         assert_eq!(
             Config::parse("[lufs]\nport = 39120\n", &data())
                 .unwrap()
-                .lufs
-                .port,
-            39120
+                .lufs,
+            LufsCfg {
+                port: 39120,
+                sweep: Some(40_000..50_000)
+            }
         );
+    }
+
+    #[test]
+    fn the_start_sweep_covers_the_devices_poll_ports_and_is_no_config_key() {
+        // #264, the DECIDED of 26.11: every hub sweeps the ports a device
+        // draws its poll port from (the patches' `random 10000` + `40000`);
+        // only a test narrows it or turns it off (a sweep reaches every
+        // socket in its range, other tests' too).
+        let range = fohmixer_proto::lufs::wire::POLL_PORT_MIN
+            ..fohmixer_proto::lufs::wire::POLL_PORT_MIN
+                + fohmixer_proto::lufs::wire::POLL_PORT_SPAN;
+        assert_eq!(range, 40_000..50_000);
+        assert_eq!(default_sweep(), Some(range.clone()));
+        assert_eq!(
+            Config::parse("[lufs]\n", &data()).unwrap().lufs.sweep,
+            Some(range)
+        );
+        let refused = Config::parse("[lufs]\nsweep = false\n", &data()).unwrap_err();
+        assert!(refused.to_string().contains("sweep"), "{refused}");
     }
 
     #[test]

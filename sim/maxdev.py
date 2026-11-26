@@ -38,13 +38,14 @@ WIRE_VERSION = 1
 NO_PARENT = "-"
 PARENTS = 4
 # The devices' version on the wire, ``v<version.txt>``.
-VERSION = "v1.60.1"
+VERSION = "v1.60.2"
 # Nominal rates: the LUFS device's 5 a second (the owner, 27.10), the
 # meter's `peakamp~ 33`; a device switched off goes silent, its key stale,
 # and SimLive's `lufs`/`level ... off` lines play that. SimLive pushes the
-# wire version 1 form for both; the real LUFS device answers the hub's
-# poll since 1.58.0 (#264, the polled form; the hub takes both), whose path
-# `crates/fohmixer-hub/tests/it/lufs_listener.rs` covers.
+# wire version 1 form for both; the real devices answer the hub's poll
+# (#264, the polled form: LUFS since 1.58.0, the meter since its step; the
+# hub takes both), whose path `crates/fohmixer-hub/tests/it/lufs_listener.rs`
+# covers.
 RATES = {LUFS: 5.0, METER: 30.0}
 # The rack a device placed with ``rack`` sits in, and its two chains.
 RACK_NAME = "LUFS"

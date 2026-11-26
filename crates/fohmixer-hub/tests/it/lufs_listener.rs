@@ -3,7 +3,7 @@
 //! flood held to the key's bound, port 0 off, a taken port an error the hub
 //! runs on with. Host-free (no SimLive): it also runs in the `windows` job.
 
-use std::net::UdpSocket;
+use std::net::{SocketAddr, UdpSocket};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -26,6 +26,9 @@ fn config(dir: &Path, port: u16) -> Config {
     let mut config = Config::defaults(dir);
     config.instances.clear();
     config.lufs.port = port;
+    // #264: the start's sweep reaches every socket in the poll range, other
+    // tests' too: off here; the sweep's own test sweeps its meter's port only.
+    config.lufs.sweep = None;
     config
 }
 
@@ -225,8 +228,13 @@ fn poll_socket() -> UdpSocket {
 
 /// The polled form of [`datagram`], naming `port`.
 fn polled(device: i32, port: u16) -> Vec<u8> {
+    polled_of(DeviceKind::Lufs, device, port)
+}
+
+/// A polled-form reading of `kind`, naming `port`.
+fn polled_of(kind: DeviceKind, device: i32, port: u16) -> Vec<u8> {
     encode(&Reading {
-        kind: DeviceKind::Lufs,
+        kind,
         device,
         version: "v1.58.0".to_string(),
         parents: ["Vox 1", "FOH Band", "-", "-"].map(str::to_string),
@@ -236,17 +244,51 @@ fn polled(device: i32, port: u16) -> Vec<u8> {
     })
 }
 
-/// The polls `device` reads within `window` (each must be the hub's poll),
-/// answering each with `answer` when there is one.
-fn polls_within(device: &UdpSocket, window: Duration, answer: Option<(&[u8], u16)>) -> usize {
+/// The address the hub sends its polls from (#264: `lufs.listener.poll_from`);
+/// a datagram from anywhere else is another test hub's start sweep.
+async fn poller(hub: &TestHub) -> SocketAddr {
+    let status = hub
+        .status_until(SECS_5, |s| s.lufs.listener.poll_from.is_some())
+        .await;
+    let from = status.lufs.listener.poll_from.expect("the poll socket");
+    from.parse().expect("an address")
+}
+
+/// The polls `device` reads from `from` within `window` (each must be the
+/// hub's LUFS poll), answering each with `answer` when there is one.
+fn polls_within(
+    device: &UdpSocket,
+    from: SocketAddr,
+    window: Duration,
+    answer: Option<(&[u8], u16)>,
+) -> usize {
+    polls_of(DeviceKind::Lufs, device, from, window, answer)
+}
+
+/// The polls `device` reads from `from` within `window` (each must be the
+/// hub's poll of `kind`), answering each with `answer` when there is one.
+fn polls_of(
+    kind: DeviceKind,
+    device: &UdpSocket,
+    from: SocketAddr,
+    window: Duration,
+    answer: Option<(&[u8], u16)>,
+) -> usize {
     let until = Instant::now() + window;
     let mut buf = [0u8; 64];
     let mut got = 0;
     while Instant::now() < until {
-        let Ok(n) = device.recv(&mut buf) else {
+        let Ok((n, sender)) = device.recv_from(&mut buf) else {
             continue;
         };
-        assert_eq!(&buf[..n], poll_datagram().as_slice(), "only the hub's poll");
+        if sender != from {
+            continue;
+        }
+        assert_eq!(
+            &buf[..n],
+            poll_datagram(kind).as_slice(),
+            "only the hub's poll"
+        );
         got += 1;
         if let Some((reading, hub)) = answer {
             device.send_to(reading, ("127.0.0.1", hub)).unwrap();
@@ -262,6 +304,7 @@ fn a_polled_device_is_polled_while_it_answers_and_dropped_once_lost() {
         let dir = tempfile::tempdir().unwrap();
         let port = free_port();
         let hub = TestHub::start_config(config(dir.path(), port)).await;
+        let from = poller(&hub).await;
         let device = poll_socket();
         let at = device.local_addr().unwrap().port();
         let reading = polled(3, at);
@@ -269,7 +312,12 @@ fn a_polled_device_is_polled_while_it_answers_and_dropped_once_lost() {
         // 200 ms; each answer keeps the key, so the polls go on.
         device.send_to(&reading, ("127.0.0.1", port)).unwrap();
         let answered = tokio::task::block_in_place(|| {
-            polls_within(&device, Duration::from_millis(2000), Some((&reading, port)))
+            polls_within(
+                &device,
+                from,
+                Duration::from_millis(2000),
+                Some((&reading, port)),
+            )
         });
         assert!((7..=12).contains(&answered), "about 5 a second: {answered}");
         let status = hub
@@ -285,19 +333,126 @@ fn a_polled_device_is_polled_while_it_answers_and_dropped_once_lost() {
         // Switched off: it answers nothing. The key is lost after 1 s and
         // its port dropped: at most a stale window of polls, then none.
         let unanswered = tokio::task::block_in_place(|| {
-            polls_within(&device, Duration::from_millis(1500), None)
+            polls_within(&device, from, Duration::from_millis(1500), None)
         });
         assert!(
             (1..=6).contains(&unanswered),
             "one stale window: {unanswered}"
         );
-        let after =
-            tokio::task::block_in_place(|| polls_within(&device, Duration::from_millis(600), None));
+        let after = tokio::task::block_in_place(|| {
+            polls_within(&device, from, Duration::from_millis(600), None)
+        });
         assert_eq!(after, 0, "a lost key's port is polled no more");
         let status = hub
             .status_until(SECS_5, |s| s.lufs.listener.polling == 0)
             .await;
         assert_eq!(status.lufs.listener.polling, 0);
+        hub.stop().await;
+    });
+}
+
+#[test]
+fn a_polled_meter_is_polled_30_times_a_second_and_dropped_once_lost() {
+    // #264: the meter answers the hub's poll as the LUFS device does, at
+    // its own rate (every 33 ms) and with its own poll's address.
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let port = free_port();
+        let hub = TestHub::start_config(config(dir.path(), port)).await;
+        let from = poller(&hub).await;
+        let device = poll_socket();
+        let at = device.local_addr().unwrap().port();
+        let reading = polled_of(DeviceKind::Meter, 9, at);
+        device.send_to(&reading, ("127.0.0.1", port)).unwrap();
+        let answered = tokio::task::block_in_place(|| {
+            polls_of(
+                DeviceKind::Meter,
+                &device,
+                from,
+                Duration::from_millis(1000),
+                Some((&reading, port)),
+            )
+        });
+        assert!(
+            (15..=36).contains(&answered),
+            "about 30 a second: {answered}"
+        );
+        let status = hub
+            .status_until(SECS_5, |s| s.lufs.listener.polling == 1)
+            .await;
+        assert_eq!(status.lufs.listener.poll_failed, 0);
+        // Switched off: the meter key is lost after 0.5 s, its port dropped.
+        let unanswered = tokio::task::block_in_place(|| {
+            polls_of(
+                DeviceKind::Meter,
+                &device,
+                from,
+                Duration::from_millis(1000),
+                None,
+            )
+        });
+        assert!(
+            (1..=18).contains(&unanswered),
+            "one stale window: {unanswered}"
+        );
+        let after = tokio::task::block_in_place(|| {
+            polls_of(
+                DeviceKind::Meter,
+                &device,
+                from,
+                Duration::from_millis(400),
+                None,
+            )
+        });
+        assert_eq!(after, 0, "a lost key's port is polled no more");
+        hub.stop().await;
+    });
+}
+
+#[test]
+fn a_meter_running_before_the_hub_started_is_learned_from_its_start_sweep() {
+    // #264, the DECIDED of 26.11: a hub restarted under a running Live
+    // sends every port of the devices' range the meter's poll once, so a
+    // meter that never announces itself again is learned all the same.
+    // The test sweeps only its own meter's port (the hub's default, the
+    // whole range, would reach other tests' sockets too: the config's
+    // `the_start_sweep_covers_the_devices_poll_ports_…` pins it).
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let port = free_port();
+        let device = poll_socket();
+        let at = device.local_addr().unwrap().port();
+        let reading = polled_of(DeviceKind::Meter, 11, at);
+        let mut config = config(dir.path(), port);
+        config.lufs.sweep = Some(at..at + 1);
+        let hub = TestHub::start_config(config).await;
+        let from = poller(&hub).await;
+        // The meter only answers: no datagram before the hub's poll.
+        let answered = tokio::task::block_in_place(|| {
+            polls_of(
+                DeviceKind::Meter,
+                &device,
+                from,
+                Duration::from_millis(1000),
+                Some((&reading, port)),
+            )
+        });
+        assert!(
+            answered >= 10,
+            "the sweep's poll, then the rounds': {answered}"
+        );
+        let status = hub
+            .status_until(SECS_5, |s| s.lufs.listener.polling == 1)
+            .await;
+        let listener = &status.lufs.listener;
+        assert_eq!(
+            (listener.swept, listener.sweep_failed),
+            (1, 0),
+            "{listener:?}"
+        );
+        assert_eq!(status.lufs.devices.len(), 1);
         hub.stop().await;
     });
 }

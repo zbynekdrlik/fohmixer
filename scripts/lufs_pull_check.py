@@ -10,8 +10,10 @@ the face and the send run in Max's main thread (`udpreceive @defer 1`
 hands the poll to the low-priority queue). This module pins those boxes
 and lines and fails on an audio clock anywhere on a reading or the face;
 the wire module's constants
-(the port range, the poll's address) come from
-`crates/fohmixer-proto/src/lufs/wire.rs`.
+(the port range, each kind's poll address) come from
+`crates/fohmixer-proto/src/lufs/wire.rs`. FohMixer Meter is pulled the same
+way since its step of #264; its own boxes and lines are a `Shape` of
+`meter_pull_check.py`, checked by the same `pull_errors`.
 """
 
 from __future__ import annotations
@@ -42,18 +44,20 @@ from check_lufs_device import (
 POLL_LINES = {
     "min": re.compile(r"^pub const POLL_PORT_MIN: u16 = ([\d_]+);$", re.MULTILINE),
     "span": re.compile(r"^pub const POLL_PORT_SPAN: u16 = ([\d_]+);$", re.MULTILINE),
-    "address": re.compile(r'^pub const POLL_ADDRESS: &str = "([^"]+)";$', re.MULTILINE),
+    "address": re.compile(r'^pub const LUFS_POLL_ADDRESS: &str = "([^"]+)";$', re.MULTILINE),
+    "meter": re.compile(r'^pub const METER_POLL_ADDRESS: &str = "([^"]+)";$', re.MULTILINE),
 }
 
 
 @dataclass(frozen=True)
 class Poll:
     """The polled form's constants (#264): the poll ports a device draws
-    from (`min`, `span` of them) and the poll's OSC address."""
+    from (`min`, `span` of them) and each kind's poll address."""
 
     min: int
     span: int
     address: str
+    meter_address: str
 
 
 def poll_constants(wire_text: str) -> Poll | None:
@@ -64,7 +68,25 @@ def poll_constants(wire_text: str) -> Poll | None:
         int(found["min"][1].replace("_", "")),
         int(found["span"][1].replace("_", "")),
         found["address"][1],
+        found["meter"][1],
     )
+
+
+@dataclass(frozen=True)
+class Shape:
+    """One pulled device's pull: its boxes (id: words), each guarded inlet
+    and the only sources it takes, each box whose every line out is
+    pinned, and its readers' words for the message."""
+
+    boxes: dict[str, list[str]]
+    wiring: dict[tuple[str, int], list[tuple[str, int]]]
+    outputs: dict[str, list[list]]
+    readers: str
+
+
+def lufs_shape(poll: Poll, sink: str) -> Shape:
+    """The LUFS device's pull."""
+    return Shape(pull_boxes(poll), pull_wiring(sink), pull_outputs(), "'snapshot~ 0'")
 
 
 # The pull (#264, the DECIDED of 25.11.2026, built on probe B3): the hub
@@ -187,21 +209,21 @@ def clocks_reaching(patcher: dict, ids: dict, starts: list[tuple[str, int | None
     ]
 
 
-def pull_errors(where: str, patcher: dict, every: list[dict], sink: str, poll: Poll) -> list[str]:
+def pull_errors(where: str, patcher: dict, every: list[dict], shape: Shape) -> list[str]:
     """The pull (#264): its boxes and lines, no audio clock anywhere on
     a reading or the face, one `udpreceive`."""
     ids = {b.get("id"): b for b in every}
     errors = [
         f"{where}: {box} must be '{' '.join(want)}', has {words(ids.get(box, {}))}"
-        for box, want in pull_boxes(poll).items()
+        for box, want in shape.boxes.items()
         if words(ids.get(box, {})) != want
     ]
-    for (box, inlet), sources in pull_wiring(sink).items():
+    for (box, inlet), sources in shape.wiring.items():
         fed = feeds(patcher, box, inlet)
         want = sorted([list(s) for s in sources])
         if fed != want:
             errors.append(f"{where}: {box}:{inlet} takes {want} alone, has {fed}")
-    for box, want in pull_outputs().items():
+    for box, want in shape.outputs.items():
         out = outputs(patcher, box)
         if out != want:
             errors.append(f"{where}: {box} outputs into {want} alone, has {out}")
@@ -212,7 +234,7 @@ def pull_errors(where: str, patcher: dict, every: list[dict], sink: str, poll: P
         if kind(reader) in AUDIO_READERS and not clock_off(reader):
             errors.append(
                 f"{where}: {reader.get('id')} ('{reader.get('text')}') runs its own clock "
-                "(the device is pulled: its readers are 'snapshot~ 0')"
+                f"(the device is pulled: its readers are {shape.readers})"
             )
     for reader in every:
         if kind(reader) not in AUDIO_READERS:

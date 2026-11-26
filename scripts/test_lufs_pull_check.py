@@ -18,7 +18,7 @@ class PullTests(TreeCase):
     def test_the_lufs_device_is_pulled_by_the_hubs_poll(self) -> None:
         wire = (REPO / cl.WIRE).read_text(encoding="utf-8")
         poll = lp.poll_constants(wire)
-        self.assertEqual(poll, lp.Poll(40000, 10000, "/fohmixer/lufs/poll"))
+        self.assertEqual(poll, lp.Poll(40000, 10000, "/fohmixer/lufs/poll", "/fohmixer/meter/poll"))
         patch = self.patcher(LUFS)
         ids = {b.get("id"): cl.words(b) for b in cl.boxes(patch["patcher"])}
         self.assertEqual(ids["obj-snap-s"], ["snapshot~", "0"])
@@ -35,10 +35,12 @@ class PullTests(TreeCase):
             cl.feeds(patch["patcher"], cl.PULL_GATE, 1),
             sorted([[lp.POLL_ROUTE, 0], [cl.ID_LOAD, 0], [cl.ID_TICK, 0], [lp.ACTIVE_SEL, 0]]),
         )
-        # The meter keeps its audio clock and its deferlow (a later step).
+        # The meter is pulled too since its step of #264, with its own
+        # poll's address (test_meter_pull_check.py).
         meter = {b.get("id"): cl.words(b) for b in cl.boxes(self.patcher(METER)["patcher"])}
-        self.assertEqual(meter["obj-send-defer"], ["deferlow"])
-        self.assertEqual(meter["obj-pack"][2], "1")
+        self.assertNotIn("obj-send-defer", meter)
+        self.assertEqual(meter["obj-pack"][2], "2")
+        self.assertEqual(meter[lp.POLL_ROUTE], ["route", "/fohmixer/meter/poll"])
 
     def test_a_deferlow_on_the_lufs_send_path_fails(self) -> None:
         where = LUFS.maxpat.as_posix()
@@ -238,7 +240,10 @@ class PullTests(TreeCase):
         self.edit(cl.WIRE, "pub const POLL_PORT_MIN: u16 = 41_000;", "pub const POLL_MIN: u16 = 1;")
         self.assertEqual(
             self.errors(),
-            [f"{cl.WIRE.as_posix()}: no POLL_PORT_MIN, POLL_PORT_SPAN or POLL_ADDRESS line"],
+            [
+                f"{cl.WIRE.as_posix()}: no POLL_PORT_MIN, POLL_PORT_SPAN, LUFS_POLL_ADDRESS "
+                "or METER_POLL_ADDRESS line"
+            ],
         )
         shutil.copyfile(REPO / cl.WIRE, self.root / cl.WIRE)
         # The port's slot fed by anything but the draw, a second udpreceive.
@@ -265,23 +270,31 @@ class PullTests(TreeCase):
             f"{LUFS.maxpat.as_posix()}: the pack sends wire version 1, expected 2", self.errors()
         )
         self.restore(LUFS)
-        self.edit(METER.maxpat, '"pack /fohmixer/meter 1 ', '"pack /fohmixer/meter 2 ')
+        self.edit(METER.maxpat, '"pack /fohmixer/meter 2 ', '"pack /fohmixer/meter 1 ')
         self.assertIn(
-            f"{METER.maxpat.as_posix()}: the pack sends wire version 2, expected 1", self.errors()
+            f"{METER.maxpat.as_posix()}: the pack sends wire version 1, expected 2", self.errors()
         )
         self.restore(METER)
-        # The LUFS pack has its port slot, the meter's none.
-        self.edit(LUFS.maxpat, ' -700 -700 0"', ' -700 -700"')
-        self.assertTrue(
-            any("needs exactly one pack of 11 arguments" in e for e in self.errors()),
-            self.errors(),
-        )
-        self.restore(LUFS)
+        # Each pack has its port slot (#264: both devices are pulled).
+        for device in cl.DEVICES:
+            self.edit(device.maxpat, ' -700 -700 0"', ' -700 -700"')
+            self.assertTrue(
+                any(
+                    f"{device.maxpat.as_posix()}: needs exactly one pack of 11 arguments" in e
+                    for e in self.errors()
+                ),
+                self.errors(),
+            )
+            self.restore(device)
         self.assertEqual(self.errors(), [])
 
     def test_a_reader_with_its_clock_off_is_no_timed_box(self) -> None:
         self.assertTrue(cl.clock_off({"maxclass": "newobj", "text": "snapshot~ 0"}))
         self.assertTrue(cl.clock_off({"maxclass": "newobj", "text": "peakamp~ 0"}))
+        # #264: `peakamp~` with no interval outputs only when banged (the
+        # meter's readers).
+        self.assertTrue(cl.clock_off({"maxclass": "newobj", "text": "peakamp~"}))
+        self.assertFalse(cl.clock_off({"maxclass": "newobj", "text": "peakamp~ 33"}))
         self.assertFalse(cl.clock_off({"maxclass": "newobj", "text": "snapshot~ 200"}))
         self.assertFalse(cl.clock_off({"maxclass": "newobj", "text": "snapshot~"}))
         self.assertFalse(cl.clock_off({"maxclass": "newobj", "text": "metro 0"}))

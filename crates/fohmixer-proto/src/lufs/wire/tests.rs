@@ -240,12 +240,36 @@ fn a_polled_datagram_cut_or_with_more_is_refused() {
 
 #[test]
 fn the_poll_is_an_osc_message_with_no_argument() {
-    let poll = poll_datagram();
-    assert_eq!(poll, b"/fohmixer/lufs/poll\0,\0\0\0".to_vec());
-    assert_eq!(poll.len() % 4, 0);
-    let (address, rest) = osc_string(&poll).unwrap();
-    assert_eq!(address, POLL_ADDRESS);
-    assert_eq!(osc_string(rest), Ok((",", &[][..])));
+    // #264: each kind its own address (the meter's since its pull).
+    let lufs = poll_datagram(DeviceKind::Lufs);
+    assert_eq!(lufs, b"/fohmixer/lufs/poll\0,\0\0\0".to_vec());
+    let meter = poll_datagram(DeviceKind::Meter);
+    assert_eq!(meter, b"/fohmixer/meter/poll\0\0\0\0,\0\0\0".to_vec());
+    for (kind, poll) in [(DeviceKind::Lufs, &lufs), (DeviceKind::Meter, &meter)] {
+        assert_eq!(poll.len() % 4, 0);
+        let (address, rest) = osc_string(poll).unwrap();
+        assert_eq!(address, kind.poll_address());
+        assert_eq!(osc_string(rest), Ok((",", &[][..])));
+    }
+}
+
+#[test]
+fn a_meters_polled_form_carries_its_port() {
+    // #264: the meter answers the hub's poll in the polled form too.
+    let reading = Reading {
+        kind: DeviceKind::Meter,
+        device: 12,
+        version: "v1.61.0".into(),
+        parents: names(["Meter", "LUFS", "Vox 2", "FOH Band"]),
+        first: 120,
+        second: -700,
+        port: Some(45_678),
+    };
+    let datagram = encode(&reading);
+    assert_eq!(&datagram[..16], b"/fohmixer/meter\0");
+    assert_eq!(parse(&datagram), Ok(reading));
+    // The pushed form of a meter from before its pull still parses.
+    assert_eq!(parse(&encode(&meter())).map(|r| r.port), Ok(None));
 }
 
 #[test]
@@ -386,8 +410,14 @@ fn the_constants() {
     assert_eq!(POLLED_WIRE_VERSION, 2);
     assert_eq!(POLLED_TYPE_TAGS, ",iisssssiii");
     assert_eq!((POLL_PORT_MIN, POLL_PORT_SPAN), (40_000, 10_000));
-    assert_eq!(POLL_ADDRESS, "/fohmixer/lufs/poll");
-    assert_eq!(POLL_EVERY_MS, 200);
+    assert_eq!(LUFS_POLL_ADDRESS, "/fohmixer/lufs/poll");
+    assert_eq!(METER_POLL_ADDRESS, "/fohmixer/meter/poll");
+    assert_eq!(DeviceKind::Lufs.poll_address(), LUFS_POLL_ADDRESS);
+    assert_eq!(DeviceKind::Meter.poll_address(), METER_POLL_ADDRESS);
+    // #264: LUFS 5 a second, the meter 30 a second (its faces' old rate).
+    assert_eq!((LUFS_POLL_EVERY_MS, METER_POLL_EVERY_MS), (200, 33));
+    assert_eq!(DeviceKind::Lufs.poll_every_ms(), 200);
+    assert_eq!(DeviceKind::Meter.poll_every_ms(), 33);
     assert_eq!(MAX_DATAGRAM, 512);
     assert_eq!(DeviceKind::Lufs.address(), "/fohmixer/lufs");
     assert_eq!(DeviceKind::Meter.address(), "/fohmixer/meter");
