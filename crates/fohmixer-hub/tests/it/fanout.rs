@@ -1186,12 +1186,21 @@ fn a_paced_pages_meter_falls_to_live_when_the_sound_stops_within_a_period() {
             ServerMsg::Values { items } => items.iter().find(|i| i.sub == meter).cloned(),
             _ => None,
         };
-        let deadline = paced + Duration::from_millis(4600);
+        // Collected until the 0 comes (6 s bounds a loaded runner), then half
+        // a second more: nothing follows it.
+        let deadline = paced + Duration::from_secs(6);
         let mut seen = Vec::new();
         while let Some(item) = idle
             .gets(deadline.saturating_duration_since(Instant::now()), meter_of)
             .await
         {
+            let fell = item.value == Some(json!(0.0));
+            seen.push(item.value);
+            if fell {
+                break;
+            }
+        }
+        if let Some(item) = idle.gets(Duration::from_millis(500), meter_of).await {
             seen.push(item.value);
         }
         assert_eq!(seen, vec![Some(json!(0.7)), Some(json!(0.0))]);

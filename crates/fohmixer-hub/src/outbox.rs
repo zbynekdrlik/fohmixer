@@ -58,9 +58,9 @@
 //! falls within a period and then stands still (Live pushes nothing more)
 //! reaches where Live is (#276); a hidden page's ([`Pace::Paused`]) wait
 //! until it wakes. Waking (full rate) puts every waiting meter's latest
-//! with the values at once. Every other value, reply, ack and frame goes as before,
-//! and an instance going offline or a subscription left drops its waiting
-//! meters as it drops its values.
+//! with the values at once. Every other value, reply, ack and frame goes as
+//! before, and an instance going offline or a subscription left drops its
+//! waiting meters as it drops its values.
 
 pub mod flow;
 
@@ -204,7 +204,8 @@ impl Inner {
     }
 
     /// A subscription's latest item; while the page is idle a meter's is
-    /// held back with the one already held, the louder kept (#51).
+    /// held back with the one already held, the louder kept (#51) and the
+    /// latest when it differs (#276, [`Held`]).
     fn put_value(&mut self, item: ValueItem) {
         if self.pace == Pace::Full || !is_meter_key(&item.sub) {
             self.values.insert(item.sub.clone(), item);
