@@ -260,3 +260,106 @@ fn a_hub_without_a_token_serves_no_proof_and_an_offline_mbc_is_no_proof() {
         hub.stop().await;
     });
 }
+
+/// An invented read-only token (#274; the CLI's shape, another value).
+const READ_ONLY: &str = "test-stream-proof-token-0123456789abcdef";
+
+/// The stream proof's read-only token stored as its CLI stores it.
+fn with_read_only(dir: &Path) {
+    let token = fohmixer_hub::automation::AutomationToken::of(READ_ONLY).unwrap();
+    fohmixer_hub::automation::store(fohmixer_hub::automation::STREAM_PROOF, dir, &token).unwrap();
+}
+
+/// The status code of `head` (a request head with its `Connection`, without
+/// `Host` and its end) sent with `body`.
+async fn code_of(addr: SocketAddr, head: &str, body: &str) -> u16 {
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let request = format!(
+        "{head}Host: {addr}\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut bytes = vec![0u8; 4096];
+    let n = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut bytes))
+        .await
+        .expect("an answer within 10 s")
+        .unwrap();
+    let text = String::from_utf8_lossy(&bytes[..n]);
+    text.split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .unwrap_or_else(|| panic!("not an HTTP answer: {text}"))
+}
+
+/// What the read-only token opens besides the proof: nothing (`scene`: the
+/// scene route's answer, 401 with an automation token set, 503 without).
+async fn refused_elsewhere(addr: SocketAddr, scene: u16) {
+    let bearer = format!("Authorization: Bearer {READ_ONLY}\r\n");
+    let scene_head = format!(
+        "POST /api/scene HTTP/1.1\r\nConnection: close\r\nContent-Type: application/json\r\n{bearer}"
+    );
+    assert_eq!(
+        code_of(addr, &scene_head, r#"{"scene":"Talk"}"#).await,
+        scene,
+        "POST /api/scene"
+    );
+    for path in ["/api/status", "/api/layout", "/api/songmap?instance=mbc"] {
+        let head = format!("GET {path} HTTP/1.1\r\nConnection: close\r\n{bearer}");
+        assert_eq!(code_of(addr, &head, "").await, 401, "{path}");
+    }
+    for path in ["/ws", "/ws/audio"] {
+        let head = format!(
+            "GET {path}?token={READ_ONLY} HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\
+             Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n{bearer}"
+        );
+        assert_eq!(code_of(addr, &head, "").await, 401, "{path}");
+    }
+}
+
+#[test]
+fn the_read_only_token_reads_the_proof_and_nothing_else() {
+    let _serial = serial();
+    runtime().block_on(async {
+        let host = Host::start_site("mbc", &site(), 0, 0.0);
+        // Both tokens set: each reads the proof; the read-only one opens
+        // nothing else (the scene 401, as a wrong token).
+        let dir = tempfile::tempdir().unwrap();
+        with_token(dir.path());
+        with_read_only(dir.path());
+        let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        hub.status_until(SECS_5, |s| s.instances[0].online).await;
+        let (code, answer) = proof(hub.addr, Some(READ_ONLY), &[]).await;
+        assert_eq!(code, 200, "{answer}");
+        assert_eq!(answer["ok"], json!(true), "{answer}");
+        assert_eq!(answer["hand1_sync_only"], json!(true));
+        let (code, answer) = proof(hub.addr, Some(TOKEN), &[]).await;
+        assert_eq!((code, &answer["ok"]), (200, &json!(true)), "{answer}");
+        refused_elsewhere(hub.addr, 401).await;
+        // LAN only, as the automation token.
+        let (code, answer) = proof(
+            hub.addr,
+            Some(READ_ONLY),
+            &[("cf-connecting-ip", "203.0.113.9")],
+        )
+        .await;
+        assert_eq!(
+            (code, &answer["code"]),
+            (403, &json!("LAN_ONLY")),
+            "{answer}"
+        );
+        hub.stop().await;
+        // The read-only token alone: the proof is read, the scenes stay
+        // off (503, no automation token), the rest 401.
+        let dir = tempfile::tempdir().unwrap();
+        with_read_only(dir.path());
+        let hub = TestHub::start(vec![host.cfg()], dir.path()).await;
+        hub.status_until(SECS_5, |s| s.instances[0].online).await;
+        let (code, answer) = proof(hub.addr, Some(READ_ONLY), &[]).await;
+        assert_eq!((code, &answer["ok"]), (200, &json!(true)), "{answer}");
+        let (code, _) = proof(hub.addr, Some(TOKEN), &[]).await;
+        assert_eq!(code, 401, "the automation token is not this hub's");
+        refused_elsewhere(hub.addr, 503).await;
+        hub.stop().await;
+        host.stop();
+    });
+}

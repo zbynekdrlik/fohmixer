@@ -352,3 +352,53 @@ fn automation_set_token_exits_2_on_a_short_token_and_stores_a_good_one_sealed() 
     .unwrap();
     assert_eq!(stored, fohmixer_hub::automation::AutomationToken::of(&good));
 }
+
+#[test]
+fn stream_proof_set_token_exits_2_on_a_bad_token_and_stores_a_good_one_sealed_apart() {
+    use std::io::Write;
+    let run = |dir: &std::path::Path, stdin: &str| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_fohmixer-hub"))
+            .args(["stream-proof", "set-token"])
+            .env("FOHMIXER_DATA", dir)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn fohmixer-hub");
+        let _ = child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(stdin.as_bytes());
+        child.wait_with_output().expect("wait for fohmixer-hub")
+    };
+    let dir = tempfile::tempdir().unwrap();
+    // Built at run time (never a secret-shaped literal).
+    let out = run(dir.path(), &format!("{} c\n", "a".repeat(31)));
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("the stream proof token is visible ASCII, no space"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!dir.path().join("secrets").exists(), "nothing stored");
+    let good = "c".repeat(40);
+    let out = run(dir.path(), &format!("{good}\n"));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("stored the stream proof token (sealed)"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains(&good), "never printed");
+    assert!(out.stdout.is_empty());
+    let secrets = dir.path().join("secrets");
+    let stored =
+        fohmixer_hub::automation::load(fohmixer_hub::automation::STREAM_PROOF, &secrets).unwrap();
+    assert_eq!(stored, fohmixer_hub::automation::AutomationToken::of(&good));
+    // Its own file: no automation token was set.
+    let automation =
+        fohmixer_hub::automation::load(fohmixer_hub::automation::AUTOMATION, &secrets).unwrap();
+    assert_eq!(automation, None);
+}
