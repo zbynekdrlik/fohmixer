@@ -27,6 +27,7 @@
 //! `%LOCALAPPDATA%\fohmixer\logs\fohmixer-tray.log.<date>` ([`logs`]).
 
 pub mod args;
+pub mod front;
 pub mod links;
 pub mod logs;
 pub mod poll;
