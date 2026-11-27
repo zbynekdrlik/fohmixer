@@ -66,13 +66,16 @@ impl Watch {
 
 /// Whether a window titled `title` in the process `image` is a Live whose
 /// set has loaded: Live's main window names its set (`MBC - Ableton Live 12
-/// Suite`, `MBC* - …` with unsaved changes); its start screen does not.
+/// Suite`, `MBC* - …` with unsaved changes); its start screen does not, and
+/// its empty default set (`Untitled - …`, shown behind a recovery question
+/// or before the Startup entry's set opens) is no loaded set either.
 pub fn is_loaded_live(title: &str, image: &str) -> bool {
     let file = image.rsplit(['\\', '/']).next().unwrap_or("");
     let lower = file.to_ascii_lowercase();
     lower.starts_with("ableton live")
         && lower.ends_with(".exe")
         && title.contains(" - Ableton Live")
+        && !title.starts_with("Untitled")
 }
 
 #[cfg(test)]
@@ -86,7 +89,7 @@ mod tests {
         assert!(is_loaded_live("MBC - Ableton Live 12 Suite", LIVE));
         assert!(is_loaded_live("MBC* - Ableton Live 12 Suite", LIVE));
         assert!(is_loaded_live(
-            "Untitled - Ableton Live 12 Suite",
+            "MBC - Ableton Live 12 Suite",
             LIVE.to_uppercase().as_str()
         ));
     }
@@ -101,6 +104,13 @@ mod tests {
             r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
         ));
         assert!(!is_loaded_live("MBC - Ableton Live 12 Suite", ""));
+        assert!(!is_loaded_live(
+            "MBC - Ableton Live 12 Suite",
+            r"C:\Users\x\Desktop\Ableton Live 12 Suite.lnk"
+        ));
+        // The empty default set before the Startup entry's set opens.
+        assert!(!is_loaded_live("Untitled - Ableton Live 12 Suite", LIVE));
+        assert!(!is_loaded_live("Untitled* - Ableton Live 12 Suite", LIVE));
     }
 
     #[test]

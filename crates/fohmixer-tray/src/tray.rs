@@ -325,19 +325,19 @@ fn app_window(program: &str, page: Option<&str>) -> Option<HWND> {
     })
 }
 
-/// The visible top-level windows.
-fn visible_windows() -> Vec<HWND> {
+/// The visible top-level windows; none when they cannot be listed.
+fn visible_windows() -> Option<Vec<HWND>> {
     let mut list: Vec<HWND> = Vec::new();
     // SAFETY: `collect` writes only into `list`, which outlives the call.
     if let Err(e) =
         unsafe { EnumWindows(Some(collect), LPARAM(&mut list as *mut Vec<HWND> as isize)) }
     {
         tracing::warn!(error = %e, "EnumWindows failed: no window seen");
-        return Vec::new();
+        return None;
     }
     // SAFETY: a plain query of a handle EnumWindows gave.
     list.retain(|&window| unsafe { IsWindowVisible(window) }.as_bool());
-    list
+    Some(list)
 }
 
 /// Keeps the app window in front at logon (#280, [`front::Watch`]): a
@@ -353,7 +353,14 @@ fn spawn_front(command: Vec<String>) {
             let mut watch = Watch::default();
             loop {
                 let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-                let lives: Vec<HWND> = visible_windows()
+                // A failed listing is no look: it must not read as "Live not
+                // loaded" (a tray restarted under a running Live would then
+                // take the foreground).
+                let Some(windows) = visible_windows() else {
+                    thread::sleep(std::time::Duration::from_millis(front::EVERY_MS));
+                    continue;
+                };
+                let lives: Vec<HWND> = windows
                     .into_iter()
                     .filter(|&w| front::is_loaded_live(&title_of(w), &image_of(w)))
                     .collect();
@@ -388,14 +395,28 @@ fn bring_front(command: &[String], lives: &[HWND]) {
     if focus(window, "front") {
         return;
     }
+    let mut minimized = 0;
     for &live in lives {
-        // SAFETY: a plain call on a window handle (a closed one only fails).
+        // SAFETY: plain calls on a window handle (a closed one only fails).
+        // ShowWindow's result is the earlier visibility, so the outcome is
+        // read back with IsIconic.
         let _ = unsafe { ShowWindow(live, SW_MINIMIZE) };
+        if unsafe { IsIconic(live) }.as_bool() {
+            minimized += 1;
+        }
     }
-    tracing::info!(
-        lives = lives.len(),
-        "front: Live minimized so the app window shows"
-    );
+    if minimized == lives.len() {
+        tracing::info!(
+            lives = lives.len(),
+            "front: Live minimized so the app window shows"
+        );
+    } else {
+        tracing::warn!(
+            lives = lives.len(),
+            minimized,
+            "front: Windows did not minimize every Live window"
+        );
+    }
 }
 
 /// EnumWindows' callback (the hub's `plugwin/win.rs` `collect`, mirrored).
