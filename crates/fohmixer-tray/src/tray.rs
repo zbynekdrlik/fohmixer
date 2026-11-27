@@ -271,7 +271,7 @@ fn open_app(app: &AppHandle, links: &Links, started: &Mutex<Option<Instant>>, la
         open(app, &links.open, label);
         return;
     };
-    let window = app_window(&command[0]);
+    let window = app_window(&command[0], view::app_page(command));
     let mut last = started.lock().unwrap_or_else(PoisonError::into_inner);
     let since = (*last).map(|t| u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX));
     match (view::open_step(window.is_some(), since), window) {
@@ -281,15 +281,19 @@ fn open_app(app: &AppHandle, links: &Links, started: &Mutex<Option<Instant>>, la
             "{label}: the app window started moments ago does not show yet; nothing started again"
         ),
         _ => {
-            *last = Some(Instant::now());
-            start(command, label);
+            // Only a start that ran holds the next ones back (a wrong
+            // program says its error at every click).
+            if start(command, label) {
+                *last = Some(Instant::now());
+            }
         }
     }
 }
 
 /// The first visible top-level window that is the app window
-/// ([`view::is_app_window`]: the page's title, in a process of `program`).
-fn app_window(program: &str) -> Option<HWND> {
+/// ([`view::is_app_window`]: the page's title, or the one an app window of
+/// `page` shows without it, in a process of `program`).
+fn app_window(program: &str, page: Option<&str>) -> Option<HWND> {
     let mut list: Vec<HWND> = Vec::new();
     // SAFETY: `collect` writes only into `list`, which outlives the call.
     if let Err(e) =
@@ -301,10 +305,11 @@ fn app_window(program: &str) -> Option<HWND> {
     list.into_iter().find(|&window| {
         // SAFETY: plain queries of a handle EnumWindows gave.
         unsafe { IsWindowVisible(window) }.as_bool()
-            && view::is_app_window(&title_of(window), &image_of(window), program)
+            && view::is_app_window(&title_of(window), &image_of(window), program, page)
     })
 }
 
+/// EnumWindows' callback (the hub's `plugwin/win.rs` `collect`, mirrored).
 unsafe extern "system" fn collect(window: HWND, data: LPARAM) -> BOOL {
     // SAFETY: `data` is the `Vec<HWND>` `app_window` lent for the call.
     let list = unsafe { &mut *(data.0 as *mut Vec<HWND>) };
@@ -352,11 +357,14 @@ fn image_of(window: HWND) -> String {
 /// The app window to the front, restored first when minimized (a maximized
 /// window keeps its size).
 fn focus(window: HWND, label: &str) {
-    // SAFETY: plain calls on a window handle (a closed one only fails).
+    // SAFETY: a plain query of a window handle (a closed one reads false).
     let minimized = unsafe { IsIconic(window) }.as_bool();
     if minimized {
+        // SAFETY: a plain call on a window handle (a closed one only fails).
         let _ = unsafe { ShowWindow(window, SW_RESTORE) };
     }
+    // SAFETY: as above. The tray takes the foreground right of the click or
+    // the menu choice the user just made.
     let front = unsafe { SetForegroundWindow(window) }.as_bool();
     if front {
         tracing::info!(
@@ -371,8 +379,9 @@ fn focus(window: HWND, label: &str) {
     }
 }
 
-/// Starts the app command (no shell; the program, then its arguments).
-fn start(command: &[String], label: &str) {
+/// Starts the app command (no shell; the program, then its arguments);
+/// whether it started.
+fn start(command: &[String], label: &str) -> bool {
     let spawned = std::process::Command::new(&command[0])
         .args(&command[1..])
         .stdin(Stdio::null())
@@ -380,12 +389,18 @@ fn start(command: &[String], label: &str) {
         .stderr(Stdio::null())
         .spawn();
     match spawned {
-        Ok(child) => tracing::info!(
-            ?command,
-            pid = child.id(),
-            "{label}: no app window open, the app started"
-        ),
-        Err(e) => tracing::error!(?command, error = %e, "{label}: the app did not start"),
+        Ok(child) => {
+            tracing::info!(
+                ?command,
+                pid = child.id(),
+                "{label}: no app window open, the app started"
+            );
+            true
+        }
+        Err(e) => {
+            tracing::error!(?command, error = %e, "{label}: the app did not start");
+            false
+        }
     }
 }
 

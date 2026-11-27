@@ -576,16 +576,13 @@ pub struct TrayCfg {
 }
 
 impl TrayCfg {
-    /// A program and no empty word (the tray's `links::app_command` says the
-    /// same).
+    /// A program and no empty word (`fohmixer_proto::tray::app_problem`, the
+    /// tray's check too).
     fn validate(&self) -> anyhow::Result<()> {
-        if self.app.is_empty() {
-            bail!("[tray] app names no program");
+        match fohmixer_proto::tray::app_problem(&self.app) {
+            Some(problem) => bail!("{problem}"),
+            None => Ok(()),
         }
-        if self.app.iter().any(String::is_empty) {
-            bail!("[tray] app holds an empty word");
-        }
-        Ok(())
     }
 }
 

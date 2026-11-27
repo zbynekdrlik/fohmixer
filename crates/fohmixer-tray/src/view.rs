@@ -78,12 +78,38 @@ pub fn file_name(path: &str) -> &str {
     path.rsplit(['\\', '/']).next().unwrap_or(path)
 }
 
+/// The page an app command opens: the value of its `--app=` word (a
+/// Chromium app window), `None` without one.
+pub fn app_page(app: &[String]) -> Option<&str> {
+    app.iter()
+        .find_map(|word| word.strip_prefix("--app="))
+        .filter(|page| !page.is_empty())
+}
+
+/// Whether `title` is what an app window of `page` shows while it has no
+/// page title (#280, the review round): the page still loading shows its
+/// address (`localhost:8480/`, with or without its scheme), the browser's
+/// error page while the hub does not answer its host (`localhost`). A tab
+/// window adds ` - <browser>` to any title, so a title with ` - ` is none.
+pub fn titled_by_page(title: &str, page: &str) -> bool {
+    let address = page.split_once("://").map_or(page, |(_, rest)| rest);
+    let host = address.split([':', '/']).next().unwrap_or(address);
+    let bare = address.trim_end_matches('/');
+    !host.is_empty()
+        && !title.contains(" - ")
+        && (title == host
+            || title.starts_with(bare)
+            || title.starts_with(page.trim_end_matches('/')))
+}
+
 /// Whether a visible top-level window is the app window (#280): its title is
-/// exactly the page's, and its process's image has the file name of the
-/// app's program (case aside, as Windows names files).
-pub fn is_app_window(title: &str, image: &str, program: &str) -> bool {
+/// the page's (or, with `page`, the one an app window of that page shows
+/// before or without it, [`titled_by_page`]), and its process's image has
+/// the file name of the app's program (case aside, as Windows names files).
+pub fn is_app_window(title: &str, image: &str, program: &str, page: Option<&str>) -> bool {
     let name = file_name(image);
-    title == APP_TITLE && !name.is_empty() && name.eq_ignore_ascii_case(file_name(program))
+    let titled = title == APP_TITLE || page.is_some_and(|page| titled_by_page(title, page));
+    titled && !name.is_empty() && name.eq_ignore_ascii_case(file_name(program))
 }
 
 /// What Open does with an app command (#280).
@@ -364,12 +390,13 @@ mod tests {
     #[test]
     fn the_app_window_is_the_pages_title_in_the_apps_program() {
         let brave = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe";
-        assert!(is_app_window("fohmixer", brave, brave));
+        assert!(is_app_window("fohmixer", brave, brave, PAGE));
         // Windows names files without case; the program may be named bare.
         assert!(is_app_window(
             "fohmixer",
             r"C:\PROGRAM FILES\BRAVE\BRAVE.EXE",
-            "brave.exe"
+            "brave.exe",
+            PAGE
         ));
     }
 
@@ -377,14 +404,76 @@ mod tests {
     fn a_tab_another_page_or_another_program_is_no_app_window() {
         let brave = r"C:\Brave\brave.exe";
         // A tab window adds the browser's name.
-        assert!(!is_app_window("fohmixer - Brave", brave, brave));
-        assert!(!is_app_window("Fohmixer tags", brave, brave));
-        assert!(!is_app_window("", brave, brave));
-        assert!(!is_app_window("Fohmixer", brave, brave));
-        assert!(!is_app_window("fohmixer", r"C:\Edge\msedge.exe", brave));
+        assert!(!is_app_window("fohmixer - Brave", brave, brave, PAGE));
+        assert!(!is_app_window("Fohmixer tags", brave, brave, PAGE));
+        assert!(!is_app_window("", brave, brave, PAGE));
+        assert!(!is_app_window("Fohmixer", brave, brave, PAGE));
+        assert!(!is_app_window(
+            "fohmixer",
+            r"C:\Edge\msedge.exe",
+            brave,
+            PAGE
+        ));
         // An image that could not be read names no program.
-        assert!(!is_app_window("fohmixer", "", brave));
-        assert!(!is_app_window("fohmixer", r"C:\dir\", r"C:\other\"));
+        assert!(!is_app_window("fohmixer", "", brave, PAGE));
+        assert!(!is_app_window("fohmixer", r"C:\dir\", r"C:\other\", PAGE));
+    }
+
+    /// The page the MBC install's app command opens.
+    const PAGE: Option<&str> = Some("http://localhost:8480/");
+
+    fn words(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn the_app_page_is_the_app_words_value() {
+        let app = words(&[
+            r"C:\Brave\brave.exe",
+            "--profile-directory=Profile 1",
+            "--app=http://localhost:8480/",
+            "--start-maximized",
+        ]);
+        assert_eq!(app_page(&app), Some("http://localhost:8480/"));
+        assert_eq!(app_page(&words(&["brave.exe", "--new-window"])), None);
+        assert_eq!(app_page(&words(&["brave.exe", "--app="])), None);
+        assert_eq!(app_page(&[]), None);
+    }
+
+    #[test]
+    fn an_app_window_without_its_page_title_is_still_the_app_window() {
+        // The review round: the hub down (the error page names the host) or
+        // the page loading (its address) must not start a second window.
+        let brave = r"C:\Brave\brave.exe";
+        for title in [
+            "localhost",
+            "localhost:8480/",
+            "localhost:8480",
+            "localhost:8480/#main",
+            "http://localhost:8480/",
+        ] {
+            assert!(is_app_window(title, brave, brave, PAGE), "{title}");
+        }
+        // Without a page only the page's own title counts.
+        assert!(!is_app_window("localhost", brave, brave, None));
+        assert!(is_app_window("fohmixer", brave, brave, None));
+    }
+
+    #[test]
+    fn a_tab_or_another_address_is_not_titled_by_the_page() {
+        let page = "http://localhost:8480/";
+        assert!(!titled_by_page("localhost - Brave", page));
+        assert!(!titled_by_page("localhost:8480/ - Brave", page));
+        assert!(!titled_by_page("example.org", page));
+        assert!(!titled_by_page("local", page));
+        assert!(!titled_by_page("", page));
+        assert!(!titled_by_page("localhost:9000/", page));
+        // A page without a host names nothing.
+        assert!(!titled_by_page("", "http://"));
+        assert!(!titled_by_page("x", "http://"));
+        // A page given without a scheme.
+        assert!(titled_by_page("localhost", "localhost:8480/"));
+        assert!(titled_by_page("localhost:8480/", "localhost:8480"));
     }
 
     #[test]

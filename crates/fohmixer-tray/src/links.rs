@@ -128,13 +128,10 @@ impl Links {
 /// The app window's command as `[tray] app` gives it (#280): a program and
 /// no empty word (the hub's config check refuses the same).
 pub fn app_command(app: Vec<String>) -> Result<Vec<String>, String> {
-    if app.is_empty() {
-        return Err("[tray] app names no program".to_string());
+    match fohmixer_proto::tray::app_problem(&app) {
+        Some(problem) => Err(problem.to_string()),
+        None => Ok(app),
     }
-    if app.iter().any(String::is_empty) {
-        return Err("[tray] app holds an empty word".to_string());
-    }
-    Ok(app)
 }
 
 /// Whether the instances are the local MBC Live alone (the MBC install's

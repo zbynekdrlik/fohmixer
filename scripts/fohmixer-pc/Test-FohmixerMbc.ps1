@@ -195,8 +195,12 @@ $m3b = Invoke-Ps $install (Get-MbcArgs @{ AppProfile = 'Work' })
 Assert ($m3b.code -eq 0) "mbc-install-3b-another-profile-exits-0 ($($m3b.out))"
 Assert ([IO.File]::ReadAllText((Join-Path $dataM 'fohmixer-hub.toml')).Contains("'--profile-directory=Work'")) 'mbc-install-3b-tray-names-the-profile'
 Assert ($m3b.out.Contains('Startup shortcut MBC mixer.lnk (changed: True)')) 'mbc-install-3b-rewrites-the-startup-shortcut'
-$res = Invoke-Ps $install (Get-InstallArgs @{ DataDir = $noneM; AppProfile = 'Work' })
-Assert ($res.code -ne 0 -and $res.out -like '*MBC PC*' -and -not (Test-Path -LiteralPath (Join-Path $noneM 'fohmixer-hub.toml'))) 'foh-install-refuses-AppProfile'
+foreach ($o in @(@{ AppProfile = 'Work' }, @{ AppBrowser = $brave }, @{ StartupFolder = $startupM })) {
+    $what = @($o.Keys)[0]
+    $o['DataDir'] = $noneM
+    $res = Invoke-Ps $install (Get-InstallArgs $o)
+    Assert ($res.code -ne 0 -and $res.out -like '*MBC PC*' -and -not (Test-Path -LiteralPath (Join-Path $noneM 'fohmixer-hub.toml'))) "foh-install-refuses-$what"
+}
 
 # ---- install M4: the FOH install's link (-MbcLink): written, kept by an update, the PC's own tables kept ----
 $tomlR = Join-Path $dataR 'fohmixer-hub.toml'
