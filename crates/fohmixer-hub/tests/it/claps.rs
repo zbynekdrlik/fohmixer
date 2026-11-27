@@ -2,17 +2,17 @@
 //! whose `Claps #` track carries the `+CLAPS` Tuner and two arrangement
 //! clips (one active, one deactivated); the device is the test's own UDP
 //! socket on the hub's `[claps] device_port`, which sends the hub its hello.
-//! A page taps while Live plays: the device gets the tapped beats and its
+//! A page taps while Live plays: the device gets the taps' pattern and its
 //! switch once a bar passed with no tap; a jump into the active clip
 //! silences it; a 1 s hold's stop switches it off; another time signature
 //! is told to the pages.
 #![cfg(unix)]
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use fohmixer_hub::config::Config;
+use fohmixer_hub::rules::claps::pattern_of;
 use fohmixer_proto::claps::{ClapsPhase, ClapsState, Hello, Word, encode_hello, parse};
 use fohmixer_proto::client::{ClientMsg, ServerMsg};
 use serde_json::{Value, json};
@@ -160,14 +160,16 @@ fn a_page_taps_live_claps_the_beats_a_clip_silences_it_and_a_stop_ends_it() {
                     == 2
             })
             .await;
-        let beats: BTreeSet<usize> = taps
+        let positions: Vec<f64> = taps
             .iter()
             .filter(|e| e["ev"] == "claps" && e["step"] == "tap")
-            .map(|e| e["beat"].as_u64().unwrap() as usize - 1)
+            .map(|e| e["pos"].as_f64().unwrap())
             .collect();
-        assert!(!beats.is_empty());
-        // A bar (2 s) with no tap: the pattern and the switch.
-        let want: [bool; 4] = std::array::from_fn(|i| beats.contains(&i));
+        assert_eq!(positions.len(), 2);
+        // A bar (2 s) with no tap: the taps judged together (#278) are the
+        // pattern, then the switch.
+        let want = pattern_of(&positions);
+        assert!(want.contains(&true), "{positions:?}");
         word_until(&device, "the tapped pattern", |w| *w == Word::Pattern(want)).await;
         word_until(&device, "on", |w| *w == Word::On(true)).await;
         let on = state_until(&mut a, |s| {

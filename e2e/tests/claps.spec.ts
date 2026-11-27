@@ -22,8 +22,9 @@ import {
 // its beat dots removed by #260's v3): SimLive's band track 0 (Hand1 #) tagged
 // `"CLAPS" +G:CLAPS +CLAPS` is the Claps strip, shown in a CLAPS group the test
 // adds to the FOH page. Its left column, above SEL: the calm state line and
-// TAP. A tap acts on its lift (the hub snaps it to Live's beat), a bar with no
-// tap gives the pattern to the device from the next bar, TAP flashes at each
+// TAP. A tap acts on its lift (the hub places it on Live's playhead), a bar
+// with no tap gives the taps' pattern (judged together, #278) to the device
+// from the next bar, TAP flashes at each
 // clap, a 1 s hold of TAP stops everything. The device itself is the hub's
 // UDP peer (nothing listens in the E2E); the page reads the hub's `claps`.
 
@@ -42,6 +43,33 @@ function withClapsGroup(): any {
 /** The Claps strip. */
 const clapsStrip = (page: Page): Locator =>
   page.locator('.slot[data-group="claps"] [data-testid="strip"]').and(page.locator('[data-label="CLAPS"]'));
+
+/** The pattern the hub makes of a tapping's positions (beats, in order), its
+ * rule `rules::claps::pattern_of` spelled out (#278): the period from the
+ * median forward interval (below 1.4 beats every beat, below 3 a beat in
+ * two, else one a bar), the phase from the circular mean of the positions
+ * modulo the period less the eye's 0.15 beat, snapped; no interval: the
+ * last tap's own beat. */
+function tappedPattern(taps: number[]): boolean[] {
+  const gaps = taps.slice(1).map((t, i) => t - taps[i]).filter((g) => g > 0).sort((a, b) => a - b);
+  if (gaps.length === 0) {
+    const beat = ((Math.round(taps[taps.length - 1]) % 4) + 4) % 4;
+    return [0, 1, 2, 3].map((i) => i === beat);
+  }
+  const mid = Math.floor(gaps.length / 2);
+  const median = gaps.length % 2 === 1 ? gaps[mid] : (gaps[mid - 1] + gaps[mid]) / 2;
+  const period = median < 1.4 ? 1 : median < 3 ? 2 : 4;
+  let sin = 0;
+  let cos = 0;
+  for (const t of taps) {
+    const angle = (2 * Math.PI * (((t % period) + period) % period)) / period;
+    sin += Math.sin(angle);
+    cos += Math.cos(angle);
+  }
+  const mean = (Math.atan2(sin, cos) * period) / (2 * Math.PI);
+  const phase = ((Math.round(mean - 0.15) % period) + period) % period;
+  return [0, 1, 2, 3].map((i) => i % period === phase);
+}
 
 /** The times (page ms) TAP turned `data-hit` true within `ms`, recorded in
  * the page: a flash lasts a quarter of a beat, too short for a poll. */
@@ -228,10 +256,12 @@ test.describe("Claps from the surface", () => {
       (t: any[]) => t.length === 2,
       "two taps recorded",
     );
-    const beats = new Set(taps.map((t: any) => t.beat - 1));
+    // The taps judged together are the pattern (#278).
+    const want = tappedPattern(taps.map((t: any) => t.pos));
+    const beats = new Set([0, 1, 2, 3].filter((i) => want[i]));
     // A bar with no tap: the pattern goes to the device, from the next bar.
     const on = await clapsUntil((c) => c.words.on === true, "the device switched on");
-    expect(on.words.pattern).toEqual([0, 1, 2, 3].map((i) => beats.has(i)));
+    expect(on.words.pattern).toEqual(want);
     await expect(line).toHaveText(/^(NEXT BAR|CLAPS)$/);
     await expect(line).toHaveText("CLAPS", { timeout: 6_000 });
     // TAP flashes at each clap: the pattern's beats over 4 s at 120 bpm
