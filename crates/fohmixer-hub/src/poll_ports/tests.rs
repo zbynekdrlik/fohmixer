@@ -1,4 +1,5 @@
 use super::*;
+use fohmixer_proto::lufs::wire::DeviceKind;
 
 const P: u16 = 41_234;
 const Q: u16 = 45_678;
@@ -66,15 +67,21 @@ fn the_older_key_answering_after_a_newer_one_named_its_port_is_shared() {
     assert_eq!(ports.ports(), 2);
 }
 
+/// Keys of one device in the tests: the same letter, either case (`a` and
+/// `A` stand for one device before and after a rename in Live).
+fn one_device(a: &char, b: &char) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
 #[test]
-fn a_key_that_replaces_another_on_its_port_is_no_share() {
-    // A device moved or renamed in Live answers with a new key on the same
-    // port; the old key is never heard again.
+fn a_key_that_replaces_another_of_its_device_on_its_port_is_no_share() {
+    // A device moved or renamed in Live answers with a new key (its kind
+    // and Max id kept) on the same port; the old key is never heard again.
     let t0 = Instant::now();
-    let mut ports = PollPorts::default();
+    let mut ports = PollPorts::with_same(one_device);
     heard(&mut ports, 'a', P, t0);
-    for n in 1..10 {
-        assert_eq!(heard(&mut ports, 'b', P, t0 + ms(33 * n)), quiet());
+    for n in 1..60 {
+        assert_eq!(heard(&mut ports, 'A', P, t0 + ms(33 * n)), quiet(), "{n}");
     }
     // Two keys that named the port at the same time: no order, no share.
     let mut ports = PollPorts::default();
@@ -85,23 +92,171 @@ fn a_key_that_replaces_another_on_its_port_is_no_share() {
 }
 
 #[test]
-fn a_newer_key_no_longer_kept_is_no_share() {
+fn a_key_that_went_stale_while_another_device_answers_on_its_port_is_shared() {
+    // The design's second trigger (review of #264): the deaf key's window
+    // ended before the other one was heard again, or its announce came in
+    // before the first binder's (out of bind order): the one that answers
+    // hears, the stale one is deaf.
     let t0 = Instant::now();
     let mut ports = PollPorts::default();
     heard(&mut ports, 'a', P, t0);
     heard(&mut ports, 'b', P, t0 + ms(10));
     assert_eq!(
-        heard(&mut ports, 'a', P, t0 + ms(510)),
-        quiet(),
+        heard(&mut ports, 'a', P, t0 + ms(510)).shared,
+        Some(Shared {
+            port: P,
+            hearing: 'a',
+            deaf: 'b',
+        }),
         "the newer key's window ended at 510 ms"
     );
+    // Out of bind order: the deaf one's announce came first.
+    let mut ports = PollPorts::default();
+    heard(&mut ports, 'b', P, t0);
     assert_eq!(
-        heard(&mut ports, 'a', P, t0 + ms(509))
+        heard(&mut ports, 'a', P, t0 + ms(5)),
+        quiet(),
+        "b still kept"
+    );
+    assert_eq!(heard(&mut ports, 'a', P, t0 + ms(499)), quiet());
+    assert_eq!(
+        heard(&mut ports, 'a', P, t0 + ms(500))
             .shared
             .map(|s| s.deaf),
-        Some('b'),
-        "a clock read late still judges by its own now"
+        Some('b')
     );
+}
+
+#[test]
+fn a_remembered_key_is_moved_for_again_each_window_until_it_is_forgotten() {
+    // A move that did not take (a device from before the move, a datagram
+    // lost): the port is moved again each window while the deaf key is
+    // remembered, 15 s after it was last heard.
+    let t0 = Instant::now();
+    let mut ports = PollPorts::default();
+    heard(&mut ports, 'a', P, t0);
+    heard(&mut ports, 'b', P, t0 + ms(10));
+    let mut moves = Vec::new();
+    for n in 1..=1000 {
+        let now = t0 + ms(33 * n);
+        ports.forget(now, kept_at(now));
+        if heard(&mut ports, 'a', P, now).shared.is_some() {
+            moves.push(33 * n);
+        }
+    }
+    assert_eq!(
+        moves,
+        vec![33, 5049, 10_065],
+        "then b is forgotten at 15 010 ms"
+    );
+    assert!(remembered(t0, t0 + ms(14_999)));
+    assert!(!remembered(t0, t0 + ms(15_000)));
+    assert!(remembered(t0 + ms(5), t0), "a clock that went back");
+    assert_eq!(REMEMBER_MS, 15_000);
+}
+
+#[test]
+fn three_keys_on_a_port_are_moved_one_window_apart_until_one_is_left() {
+    let t0 = Instant::now();
+    let mut ports = PollPorts::default();
+    heard(&mut ports, 'a', P, t0);
+    heard(&mut ports, 'b', P, t0 + ms(10));
+    heard(&mut ports, 'c', P, t0 + ms(20));
+    assert!(heard(&mut ports, 'a', P, t0 + ms(30)).shared.is_some());
+    assert_eq!(heard(&mut ports, 'a', Q, t0 + ms(40)).from, Some(P));
+    // b binds first now and hears; c still deaf: moved one window on.
+    assert_eq!(heard(&mut ports, 'b', P, t0 + ms(400)), quiet());
+    assert_eq!(
+        heard(&mut ports, 'b', P, t0 + ms(5030)).shared,
+        Some(Shared {
+            port: P,
+            hearing: 'b',
+            deaf: 'c',
+        })
+    );
+}
+
+fn lufs_key(kind: DeviceKind, device: i32, track: &str) -> PortKey {
+    PortKey::Lufs(Key {
+        kind,
+        device,
+        parents: [track, "FOH Band", "-", "-"].map(str::to_string),
+    })
+}
+
+#[test]
+fn a_meter_and_a_listen_device_on_one_port_are_one_tables_share() {
+    // The kinds share the range (review of #264): a meter that binds first
+    // and a Listen device of the other Live on its port. The LUFS side
+    // takes the move (the meter hears), the Listen side has none, and the
+    // port is polled on for both sides meanwhile.
+    let table = PortTable::default();
+    let t0 = Instant::now();
+    let meter = lufs_key(DeviceKind::Meter, 3, "Vox 1");
+    assert_eq!(table.heard(meter.clone(), P, t0), None);
+    assert_eq!(table.heard(PortKey::Listen(9), P, t0 + ms(10)), None);
+    table.heard(meter.clone(), P, t0 + ms(33));
+    assert!(
+        table.take(|k| !k.is_lufs()).is_empty(),
+        "Listen hears nothing"
+    );
+    assert_eq!(
+        table.take(PortKey::is_lufs),
+        vec![Shared {
+            port: P,
+            hearing: meter.clone(),
+            deaf: PortKey::Listen(9),
+        }]
+    );
+    assert!(table.take(PortKey::is_lufs).is_empty(), "taken once");
+    assert_eq!(table.heard(meter, Q, t0 + ms(66)), Some(P));
+    let later = t0 + ms(4000);
+    assert_eq!(
+        table.due(later, |k| !k.is_lufs()),
+        BTreeSet::from([P]),
+        "the Listen device's port polled on past its 3 s"
+    );
+    assert_eq!(table.due(later, PortKey::is_lufs), BTreeSet::from([P]));
+    assert_eq!(table.len_of(|_| true), 0, "both stale at 4 s");
+    assert_eq!(table.ports_of(|_| true), 0);
+}
+
+#[test]
+fn a_keys_window_is_its_kinds_and_one_device_is_its_kind_and_id() {
+    let t0 = Instant::now();
+    let meter = lufs_key(DeviceKind::Meter, 3, "Vox 1");
+    let lufs = lufs_key(DeviceKind::Lufs, 3, "Vox 1");
+    assert!(meter.kept(t0, t0 + ms(499)));
+    assert!(!meter.kept(t0, t0 + ms(500)));
+    assert!(lufs.kept(t0, t0 + ms(999)));
+    assert!(!lufs.kept(t0, t0 + ms(1000)));
+    assert!(PortKey::Listen(1).kept(t0, t0 + ms(2999)));
+    assert!(!PortKey::Listen(1).kept(t0, t0 + ms(3000)));
+    assert!(meter.kept(t0 + ms(5), t0), "a clock that went back");
+    let renamed = lufs_key(DeviceKind::Meter, 3, "Vox 9");
+    assert!(PortKey::same_device(&meter, &renamed));
+    assert!(!PortKey::same_device(&meter, &lufs), "another kind");
+    assert!(!PortKey::same_device(
+        &meter,
+        &lufs_key(DeviceKind::Meter, 4, "Vox 1")
+    ));
+    assert!(PortKey::same_device(
+        &PortKey::Listen(2),
+        &PortKey::Listen(2)
+    ));
+    assert!(!PortKey::same_device(
+        &PortKey::Listen(2),
+        &PortKey::Listen(3)
+    ));
+    assert!(!PortKey::same_device(&PortKey::Listen(3), &meter));
+    assert!(meter.is_lufs() && !PortKey::Listen(3).is_lufs());
+    // A rename on the port is no share in the hub's table.
+    let table = PortTable::default();
+    table.heard(meter.clone(), P, t0);
+    for n in 1..40 {
+        table.heard(renamed.clone(), P, t0 + ms(33 * n));
+    }
+    assert!(table.take(|_| true).is_empty());
 }
 
 #[test]

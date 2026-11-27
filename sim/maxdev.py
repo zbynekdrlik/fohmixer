@@ -149,9 +149,11 @@ class PollPorts:
     """The polled devices' ports, with Windows' delivery on a shared one
     (#264, measured on the FOH PC): one real socket per port and the
     devices on it in bind order; a datagram reaches the first only, and
-    when it leaves the next one hears. A drawn port another program holds
-    is drawn again (SimLive's only liberty); a port the test names that
-    another program holds raises."""
+    when it leaves the next one hears. Two devices on one port here stand
+    for devices of TWO Lives (two processes, two sockets); inside one real
+    Live both share Max's socket and both hear, which SimLive does not
+    play. A drawn port another program holds is drawn again (SimLive's only
+    liberty); a port the test names that another program holds raises."""
 
     def __init__(self, draw=draw_port):
         self._draw = draw
