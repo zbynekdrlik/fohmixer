@@ -566,6 +566,29 @@ pub struct AutotuneCfg {
     pub engage_delay_ms: u64,
 }
 
+/// `[tray]` (#280): the command the tray's Open runs when no app window is
+/// open (`app`: the program, then its arguments; the MBC install writes a
+/// Brave app window on the local hub). The hub runs nothing of it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrayCfg {
+    pub app: Vec<String>,
+}
+
+impl TrayCfg {
+    /// A program and no empty word (the tray's `links::app_command` says the
+    /// same).
+    fn validate(&self) -> anyhow::Result<()> {
+        if self.app.is_empty() {
+            bail!("[tray] app names no program");
+        }
+        if self.app.iter().any(String::is_empty) {
+            bail!("[tray] app holds an empty word");
+        }
+        Ok(())
+    }
+}
+
 /// `[eq]` (#71 PR E): the Pro-Q 4 screen's backend, and how the Windows
 /// backend grabs an editor (#215).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -783,6 +806,10 @@ pub struct Config {
     /// The instance link this hub serves (#184, `[link]`); none: no link.
     #[serde(default)]
     pub link: Option<LinkCfg>,
+    /// The tray's app window (#280, `[tray]`); read by the tray only, checked
+    /// here. None: the tray opens the default browser.
+    #[serde(default)]
+    pub tray: Option<TrayCfg>,
     /// The data folder (where the file was read from).
     #[serde(skip)]
     pub data_dir: PathBuf,
@@ -811,6 +838,7 @@ impl Config {
             claps: ClapsCfg::default(),
             autotune: AutotuneCfg::default(),
             link: None,
+            tray: None,
             data_dir: data_dir.to_path_buf(),
         }
     }
@@ -888,6 +916,9 @@ impl Config {
             link::validate_listen(cfg, &self.instances)?;
         }
         self.validate_companion()?;
+        if let Some(tray) = &self.tray {
+            tray.validate()?;
+        }
         self.claps.validate()?;
         if self.autotune.engage_delay_ms > MAX_ENGAGE_DELAY_MS {
             bail!(

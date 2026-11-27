@@ -105,7 +105,10 @@ impl Links {
     pub fn parse(text: &str) -> Result<Self, String> {
         let toml: HubToml = toml::from_str(text).map_err(|e| e.to_string())?;
         let tls = toml.tls.as_ref().map(|t| (t.name.as_str(), t.port));
-        Ok(Self::new(toml.http_port, tls))
+        let mut links = Self::new(toml.http_port, tls);
+        links.app = toml.tray.map(|t| app_command(t.app)).transpose()?;
+        links.mbc_only = toml.instances.as_deref().is_some_and(mbc_alone);
+        Ok(links)
     }
 
     /// The links of the hub whose data folder is `data_dir`: its config file,
@@ -125,7 +128,22 @@ impl Links {
 /// The app window's command as `[tray] app` gives it (#280): a program and
 /// no empty word (the hub's config check refuses the same).
 pub fn app_command(app: Vec<String>) -> Result<Vec<String>, String> {
+    if app.is_empty() {
+        return Err("[tray] app names no program".to_string());
+    }
+    if app.iter().any(String::is_empty) {
+        return Err("[tray] app holds an empty word".to_string());
+    }
     Ok(app)
+}
+
+/// Whether the instances are the local MBC Live alone (the MBC install's
+/// hub; the FOH hub reaches the MBC Live through a link, beside its own).
+fn mbc_alone(instances: &[InstanceToml]) -> bool {
+    !instances.is_empty()
+        && instances
+            .iter()
+            .all(|i| i.name == MBC_INSTANCE && i.link.is_none())
 }
 
 /// The public URL of remote access: `https://<name>/`, with `:<port>` when it

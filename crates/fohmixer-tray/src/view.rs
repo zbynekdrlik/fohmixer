@@ -61,8 +61,7 @@ pub const OPEN_FOHMIXER: &str = "Open fohmixer";
 
 /// The Open item's label: it names what it opens (#280).
 pub fn open_label(mbc_only: bool) -> &'static str {
-    let _ = mbc_only;
-    OPEN_FOHMIXER
+    if mbc_only { OPEN_MBC } else { OPEN_FOHMIXER }
 }
 
 /// The page's title (`crates/fohmixer-ui/index.html`), the title of its app
@@ -76,15 +75,15 @@ pub const START_GAP_MS: u64 = 15_000;
 /// The file name of a Windows (or any) path: what follows its last `\` or
 /// `/`.
 pub fn file_name(path: &str) -> &str {
-    path
+    path.rsplit(['\\', '/']).next().unwrap_or(path)
 }
 
 /// Whether a visible top-level window is the app window (#280): its title is
 /// exactly the page's, and its process's image has the file name of the
 /// app's program (case aside, as Windows names files).
 pub fn is_app_window(title: &str, image: &str, program: &str) -> bool {
-    let _ = (title, image, program);
-    false
+    let name = file_name(image);
+    title == APP_TITLE && !name.is_empty() && name.eq_ignore_ascii_case(file_name(program))
 }
 
 /// What Open does with an app command (#280).
@@ -102,8 +101,13 @@ pub enum OpenStep {
 /// Open's step: the app window when one is open, else a start, unless the
 /// tray started one less than [`START_GAP_MS`] ago.
 pub fn open_step(found: bool, since_start_ms: Option<u64>) -> OpenStep {
-    let _ = (found, since_start_ms);
-    OpenStep::Start
+    if found {
+        OpenStep::Focus
+    } else if since_start_ms.is_some_and(|ms| ms < START_GAP_MS) {
+        OpenStep::Wait
+    } else {
+        OpenStep::Start
+    }
 }
 
 /// `text` cut to at most `max` UTF-16 units, never inside a character.

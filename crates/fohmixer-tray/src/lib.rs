@@ -4,6 +4,12 @@
 //! browser), **Copy URL** (the public URL, when remote access is set up) and
 //! **Exit** (the tray only, never the hub).
 //!
+//! With `[tray] app` in the hub's config (#280, the MBC PC: a Brave app
+//! window on the local hub) Open never opens a browser tab: it brings the
+//! open app window (the page's title, in the app's program) to the front, or
+//! starts the command; on a hub that serves the MBC Live alone the item says
+//! **Open MBC mixer**.
+//!
 //! The tray runs no server and changes nothing in the hub: it reads the
 //! hub's config (`<data>\fohmixer-hub.toml`, [`links`]) and polls its public
 //! `GET /api/version` ([`poll`]); the instances and the layout need a login,

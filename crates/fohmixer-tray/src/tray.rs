@@ -5,7 +5,8 @@
 //! itself. Nothing here ends a process: Exit and `--exit` end this tray only.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::process::Stdio;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Instant;
 
@@ -14,11 +15,20 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, Tray
 use tauri::{AppHandle, RunEvent, Wry};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_opener::OpenerExt;
+use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
+use windows::Win32::System::Threading::{
+    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SW_RESTORE,
+    SetForegroundWindow, ShowWindow,
+};
+use windows::core::{BOOL, PWSTR};
 
 use crate::args::{self, Command};
 use crate::links::Links;
 use crate::poll::{self, HubState};
-use crate::view::{self, MenuAction};
+use crate::view::{self, MenuAction, OpenStep};
 
 /// This tray's version (the workspace's).
 const TRAY_VERSION: &str = fohmixer_proto::VERSION;
@@ -144,6 +154,8 @@ fn load_links(data_dir: &Path) -> Links {
         open = %links.open,
         version_url = %links.version,
         public = ?links.public,
+        app = ?links.app,
+        mbc_only = links.mbc_only,
         "the hub's links"
     );
     links
@@ -165,7 +177,8 @@ fn build_tray(
         false,
         None::<&str>,
     )?;
-    let open_item = MenuItem::with_id(app, view::OPEN, "Open fohmixer", true, None::<&str>)?;
+    let label = view::open_label(links.mbc_only);
+    let open_item = MenuItem::with_id(app, view::OPEN, label, true, None::<&str>)?;
     let manual_item = MenuItem::with_id(app, view::MANUAL, "Tag manual", true, None::<&str>)?;
     let (copy_label, copy_enabled) = view::copy_item(links.public.as_deref());
     let copy_item = MenuItem::with_id(app, view::COPY, copy_label, copy_enabled, None::<&str>)?;
@@ -192,7 +205,11 @@ fn build_tray(
     )?;
 
     let links = links.clone();
-    let open_url = links.open.clone();
+    let click_links = links.clone();
+    // When the tray last started the app window (#280), shared by the click
+    // and the menu item.
+    let started: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+    let click_started = Arc::clone(&started);
     // When a left click last opened fohmixer (a double click opens one tab).
     let opened: Mutex<Option<Instant>> = Mutex::new(None);
     let mut builder = TrayIconBuilder::with_id("main")
@@ -216,11 +233,11 @@ fn build_tray(
                 since,
             ) {
                 *last = Some(Instant::now());
-                open(tray.app_handle(), &open_url, "Open fohmixer");
+                open_app(tray.app_handle(), &click_links, &click_started, label);
             }
         })
         .on_menu_event(move |app, event| match view::action(event.id.as_ref()) {
-            Some(MenuAction::Open) => open(app, &links.open, "Open fohmixer"),
+            Some(MenuAction::Open) => open_app(app, &links, &started, label),
             Some(MenuAction::Manual) => open(app, &links.manual, "Tag manual"),
             Some(MenuAction::Copy) => match &links.public {
                 Some(url) => copy(app, url),
@@ -243,6 +260,133 @@ fn build_tray(
     let tray = builder.build(app)?;
     tracing::info!(copy_url = copy_enabled, "the tray icon is set up");
     Ok((tray, version_item))
+}
+
+/// The Open item and the left click (#280): with `[tray] app`, the app
+/// window brought to the front when it is open, else the command started
+/// (once per [`view::START_GAP_MS`] while its window does not show); without
+/// it, the hub's local URL in the default browser. `label` names the item.
+fn open_app(app: &AppHandle, links: &Links, started: &Mutex<Option<Instant>>, label: &str) {
+    let Some(command) = &links.app else {
+        open(app, &links.open, label);
+        return;
+    };
+    let window = app_window(&command[0]);
+    let mut last = started.lock().unwrap_or_else(PoisonError::into_inner);
+    let since = (*last).map(|t| u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX));
+    match (view::open_step(window.is_some(), since), window) {
+        (OpenStep::Focus, Some(window)) => focus(window, label),
+        (OpenStep::Wait, _) => tracing::info!(
+            since_start_ms = since,
+            "{label}: the app window started moments ago does not show yet; nothing started again"
+        ),
+        _ => {
+            *last = Some(Instant::now());
+            start(command, label);
+        }
+    }
+}
+
+/// The first visible top-level window that is the app window
+/// ([`view::is_app_window`]: the page's title, in a process of `program`).
+fn app_window(program: &str) -> Option<HWND> {
+    let mut list: Vec<HWND> = Vec::new();
+    // SAFETY: `collect` writes only into `list`, which outlives the call.
+    if let Err(e) =
+        unsafe { EnumWindows(Some(collect), LPARAM(&mut list as *mut Vec<HWND> as isize)) }
+    {
+        tracing::warn!(error = %e, "EnumWindows failed: no app window found");
+        return None;
+    }
+    list.into_iter().find(|&window| {
+        // SAFETY: plain queries of a handle EnumWindows gave.
+        unsafe { IsWindowVisible(window) }.as_bool()
+            && view::is_app_window(&title_of(window), &image_of(window), program)
+    })
+}
+
+unsafe extern "system" fn collect(window: HWND, data: LPARAM) -> BOOL {
+    // SAFETY: `data` is the `Vec<HWND>` `app_window` lent for the call.
+    let list = unsafe { &mut *(data.0 as *mut Vec<HWND>) };
+    list.push(window);
+    BOOL(1)
+}
+
+fn title_of(window: HWND) -> String {
+    let mut text = [0_u16; 256];
+    // SAFETY: the buffer is ours; the call writes at most its length.
+    let length = unsafe { GetWindowTextW(window, &mut text) };
+    String::from_utf16_lossy(&text[..usize::try_from(length).unwrap_or(0)])
+}
+
+/// The full path of the window's process image, `""` when it cannot be read
+/// (which matches no program).
+fn image_of(window: HWND) -> String {
+    let mut pid = 0_u32;
+    // SAFETY: `pid` outlives the call.
+    unsafe { GetWindowThreadProcessId(window, Some(&mut pid)) };
+    // SAFETY: a query-only handle, closed below.
+    let Ok(process) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) })
+    else {
+        return String::new();
+    };
+    let mut path = [0_u16; 1024];
+    let mut size = u32::try_from(path.len()).unwrap_or(0);
+    // SAFETY: the buffer and its size are ours; the call writes at most `size`.
+    let read = unsafe {
+        QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            PWSTR(path.as_mut_ptr()),
+            &mut size,
+        )
+    };
+    // SAFETY: the handle OpenProcess gave, closed once.
+    let _ = unsafe { CloseHandle(process) };
+    match read {
+        Ok(()) => String::from_utf16_lossy(&path[..usize::try_from(size).unwrap_or(0)]),
+        Err(_) => String::new(),
+    }
+}
+
+/// The app window to the front, restored first when minimized (a maximized
+/// window keeps its size).
+fn focus(window: HWND, label: &str) {
+    // SAFETY: plain calls on a window handle (a closed one only fails).
+    let minimized = unsafe { IsIconic(window) }.as_bool();
+    if minimized {
+        let _ = unsafe { ShowWindow(window, SW_RESTORE) };
+    }
+    let front = unsafe { SetForegroundWindow(window) }.as_bool();
+    if front {
+        tracing::info!(
+            minimized,
+            "{label}: the open app window brought to the front"
+        );
+    } else {
+        tracing::warn!(
+            minimized,
+            "{label}: the app window is open, Windows did not bring it to the front"
+        );
+    }
+}
+
+/// Starts the app command (no shell; the program, then its arguments).
+fn start(command: &[String], label: &str) {
+    let spawned = std::process::Command::new(&command[0])
+        .args(&command[1..])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    match spawned {
+        Ok(child) => tracing::info!(
+            ?command,
+            pid = child.id(),
+            "{label}: no app window open, the app started"
+        ),
+        Err(e) => tracing::error!(?command, error = %e, "{label}: the app did not start"),
+    }
 }
 
 /// Opens one of the hub's local pages in the default browser (`what` names
