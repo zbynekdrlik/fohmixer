@@ -470,10 +470,14 @@ fn the_eyes_lag_is_taken_off_before_the_phase_snaps() {
 fn the_median_interval_chooses_the_period_at_its_bounds() {
     // Below 1.4 beats every beat, from 1.4 a beat in two.
     assert_eq!(tapped(&[0.8, 2.19]), EVERY);
-    assert_eq!(tapped(&[0.8, 2.2]), ONE_AND_THREE);
+    // Exactly the bound (1.4 - 0.0 is 1.4 in f64, 2.2 - 0.8 is not).
+    assert_eq!(1.4 - 0.0, EVERY_BEAT_MAX);
+    assert_eq!(tapped(&[0.0, 1.4]), ONE_AND_THREE);
     // Below 3 beats a beat in two, from 3 one beat a bar.
     assert_eq!(tapped(&[2.0, 4.99]), ONE_AND_THREE);
+    assert_eq!(5.0 - 2.0, ONE_A_BAR_MIN);
     assert_eq!(tapped(&[2.0, 5.0]), [false, true, false, false]);
+    assert_eq!(TAP_LAG_BEATS, 0.15);
 }
 
 #[test]
@@ -482,6 +486,32 @@ fn the_period_is_the_median_interval_not_the_mean() {
     assert_eq!(tapped(&[0.0, 1.0, 2.0, 4.0, 6.0]), ONE_AND_THREE);
     // Intervals 1, 1, 1, 3.5: the median is 1 (the mean 1.6): every beat.
     assert_eq!(tapped(&[0.0, 1.0, 2.0, 3.0, 6.5]), EVERY);
+    // Intervals 1, 1, 1.7, 1.7: the median is the middle two's mean, 1.35
+    // (the upper middle alone would be 1.7): every beat.
+    assert_eq!(tapped(&[0.0, 1.0, 2.0, 3.7, 5.4]), EVERY);
+}
+
+#[test]
+fn the_median_of_an_even_count_is_its_middle_twos_mean() {
+    assert_eq!(median(&[]), None);
+    assert_eq!(median(&[2.0]), Some(2.0));
+    assert_eq!(median(&[8.0, 1.0, 4.0]), Some(4.0));
+    assert_eq!(median(&[8.0, 1.0, 4.0, 2.0]), Some(3.0));
+}
+
+#[test]
+fn a_tap_once_a_bar_is_a_tapping_of_its_own_while_live_plays() {
+    // Live's playhead reaches a bar after each tap before the next tap
+    // (late by the eye) comes: each tap ends its own tapping and is its own
+    // beat; the once-a-bar period serves only taps under a bar apart.
+    let mut claps = playing();
+    claps.tap(Some(2.2)).unwrap();
+    assert!(claps.position(6.2), "a bar with no tap ends it");
+    assert_eq!(claps.pattern(), [false, false, true, false]);
+    claps.tap(Some(6.35)).unwrap();
+    assert_eq!(claps.shown(), [false, false, true, false]);
+    assert!(claps.position(10.35));
+    assert_eq!(claps.pattern(), [false, false, true, false]);
 }
 
 #[test]

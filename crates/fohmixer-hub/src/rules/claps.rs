@@ -14,7 +14,9 @@
 //!   (below [`EVERY_BEAT_MAX`] every beat, below [`ONE_A_BAR_MIN`] a beat in
 //!   two, else one a bar), the phase from the circular mean of their
 //!   positions less the eye's lag [`TAP_LAG_BEATS`]; one tap alone is its
-//!   own snapped beat ([`beat_of`]). An engineer tapping by eye taps late
+//!   own snapped beat ([`beat_of`]). A tap once a bar while Live plays is a
+//!   tapping of its own (the bar after it passes before the next, late tap
+//!   comes), so one a bar serves taps 3 to 4 beats apart. An engineer tapping by eye taps late
 //!   and uneven, so a per-tap snap scattered over neighbouring beats. The
 //!   pattern goes to the device, switched on, which starts it at the next
 //!   bar (its own `@quantize`). A new tapping replaces the pattern.
@@ -88,7 +90,10 @@ pub fn period_of(median: f64) -> usize {
 
 /// The beat (0 to `period` − 1) the `taps` fall on together: the circular
 /// mean of their positions modulo the period, less [`TAP_LAG_BEATS`],
-/// snapped to the nearest whole beat.
+/// snapped to the nearest whole beat. Accepted (#278 review): taps spread
+/// evenly round the period (1.5 beats apart in a period of 2) cancel out
+/// and the phase is whatever the sums' rounding leaves; a clapper's steady
+/// taps never do that.
 pub fn phase_of(taps: &[f64], period: usize) -> usize {
     let span = period as f64;
     let (sin, cos) = taps.iter().fold((0.0, 0.0), |(sin, cos), &pos| {

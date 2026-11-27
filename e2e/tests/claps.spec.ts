@@ -51,9 +51,11 @@ const clapsStrip = (page: Page): Locator =>
  * modulo the period less the eye's 0.15 beat, snapped; no interval: the
  * last tap's own beat. */
 function tappedPattern(taps: number[]): boolean[] {
+  // Rust's `f64::round`: half away from zero (`Math.round` goes up).
+  const round = (x: number): number => Math.sign(x) * Math.round(Math.abs(x));
   const gaps = taps.slice(1).map((t, i) => t - taps[i]).filter((g) => g > 0).sort((a, b) => a - b);
   if (gaps.length === 0) {
-    const beat = ((Math.round(taps[taps.length - 1]) % 4) + 4) % 4;
+    const beat = ((round(taps[taps.length - 1]) % 4) + 4) % 4;
     return [0, 1, 2, 3].map((i) => i === beat);
   }
   const mid = Math.floor(gaps.length / 2);
@@ -67,7 +69,7 @@ function tappedPattern(taps: number[]): boolean[] {
     cos += Math.cos(angle);
   }
   const mean = (Math.atan2(sin, cos) * period) / (2 * Math.PI);
-  const phase = ((Math.round(mean - 0.15) % period) + period) % period;
+  const phase = ((round(mean - 0.15) % period) + period) % period;
   return [0, 1, 2, 3].map((i) => i % period === phase);
 }
 
