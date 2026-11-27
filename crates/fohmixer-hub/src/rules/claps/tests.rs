@@ -280,14 +280,20 @@ fn a_dot_set_while_off_starts_that_beat_from_the_next_bar() {
 }
 
 #[test]
-fn a_dot_while_tapping_switches_a_tap() {
+fn a_dot_while_tapping_ends_it_then_switches_that_beat() {
     let mut claps = playing();
     claps.tap(Some(1.0)).unwrap();
+    claps.tap(Some(1.0)).unwrap();
+    // The taps judged together are the pattern, armed from the next bar;
+    // the dot then switches its beat in it.
+    assert!(claps.toggle(1, true), "the tapping ended");
+    assert_eq!(claps.mode(), Mode::Armed { bar: None });
+    assert_eq!(claps.pattern(), [false, true, false, false]);
     assert!(claps.toggle(3, true));
     assert!(!claps.toggle(3, true));
     assert!(claps.toggle(1, false));
     assert_eq!(claps.shown(), [false, false, false, true]);
-    // A tapping whose taps were all cleared ends with nothing clapping.
+    // The last beat cleared stops.
     claps.toggle(3, false);
     claps.position(6.0);
     assert_eq!(claps.mode(), Mode::Off);
@@ -348,4 +354,168 @@ fn a_default_rule_claps_nothing() {
     assert_eq!(claps.mode(), Mode::Off);
     assert_eq!(claps.phase(false), ClapsPhase::Off);
     assert_eq!(claps.words(false, &[]), ClapsWords::default());
+}
+
+/// The pattern a tapping at `taps` (playhead positions, beats) gives once a
+/// bar passed with no tap (#278).
+fn tapped(taps: &[f64]) -> Pattern {
+    let mut claps = playing();
+    for &pos in taps {
+        claps.tap(Some(pos)).unwrap();
+    }
+    assert!(claps.position(taps.last().unwrap() + BAR), "{taps:?}");
+    claps.pattern()
+}
+
+/// Live's beats 1 and 3 of the bar (the device's `obj-beat` makes Live's
+/// 1-based beat 1 the pattern's index 0; a bar starts at a multiple of 4).
+const ONE_AND_THREE: Pattern = [true, false, true, false];
+/// Live's beats 2 and 4.
+const TWO_AND_FOUR: Pattern = [false, true, false, true];
+/// Every beat.
+const EVERY: Pattern = [true; BEATS];
+
+#[test]
+fn the_patterns_beats_are_lives_beats_of_the_bar() {
+    // Live's 1.1.1 is position 0, its beat 2 of the first bar 1.0, beat 1
+    // of the second 4.0: one tap on each is that beat alone.
+    assert_eq!(tapped(&[0.0]), [true, false, false, false]);
+    assert_eq!(tapped(&[1.0]), [false, true, false, false]);
+    assert_eq!(tapped(&[3.0]), [false, false, false, true]);
+    assert_eq!(tapped(&[4.0]), [true, false, false, false]);
+}
+
+#[test]
+fn the_owners_clean_taps_give_the_pattern_he_tapped() {
+    // His test runs (positions within ~0.1 of a beat).
+    assert_eq!(
+        tapped(&[91480.36, 91481.96, 91483.89, 91485.94]),
+        ONE_AND_THREE
+    );
+    assert_eq!(
+        tapped(&[91579.25, 91581.24, 91583.24, 91585.06]),
+        TWO_AND_FOUR
+    );
+    assert_eq!(
+        tapped(&[91512.19, 91513.03, 91514.01, 91515.01, 91516.06, 91517.08]),
+        EVERY
+    );
+    assert_eq!(
+        tapped(&[91176.05, 91177.83, 91179.85, 91181.95]),
+        ONE_AND_THREE
+    );
+}
+
+#[test]
+fn the_engineers_late_uneven_taps_give_one_pair_never_a_scatter() {
+    // 26.11's five runs, by eye: two beats apart, about half a beat off.
+    assert_eq!(
+        tapped(&[
+            80621.837, 80623.113, 80624.663, 80626.348, 80628.248, 80630.406
+        ]),
+        ONE_AND_THREE
+    );
+    assert_eq!(
+        tapped(&[
+            80654.429, 80655.659, 80657.521, 80659.518, 80661.500, 80663.394
+        ]),
+        TWO_AND_FOUR
+    );
+    assert_eq!(
+        tapped(&[80686.556, 80688.611, 80690.556, 80692.491, 80694.649]),
+        ONE_AND_THREE
+    );
+    assert_eq!(
+        tapped(&[
+            80722.559, 80724.460, 80726.519, 80728.530, 80730.549, 80732.578
+        ]),
+        ONE_AND_THREE
+    );
+    assert_eq!(
+        tapped(&[
+            80781.489, 80783.475, 80785.556, 80787.528, 80789.584, 80791.514
+        ]),
+        TWO_AND_FOUR
+    );
+    // 22.11's run.
+    assert_eq!(
+        tapped(&[91095.070, 91096.587, 91098.336, 91100.022]),
+        ONE_AND_THREE
+    );
+}
+
+#[test]
+fn late_and_jittered_taps_keep_their_period_and_phase() {
+    // Two beats apart on 2 and 4, 0.3 late with up to 0.2 of jitter.
+    assert_eq!(tapped(&[1.5, 3.1, 5.4, 7.2]), TWO_AND_FOUR);
+    // On 1 and 3 the same way.
+    assert_eq!(tapped(&[0.3, 2.5, 4.1, 6.4]), ONE_AND_THREE);
+    // Steady on 2 and 4, 0.6 late.
+    assert_eq!(tapped(&[1.6, 3.6, 5.6, 7.6]), TWO_AND_FOUR);
+    // A beat apart, jittered: every beat.
+    assert_eq!(tapped(&[10.1, 10.9, 12.2, 13.0, 13.9]), EVERY);
+    // Once a bar, on beat 3, late: that beat alone.
+    assert_eq!(tapped(&[2.2, 6.2, 10.3]), [false, false, true, false]);
+}
+
+#[test]
+fn the_eyes_lag_is_taken_off_before_the_phase_snaps() {
+    // 0.6 after beat 1: 0.45 once the 0.15 lag is off, so beat 1.
+    assert_eq!(tapped(&[0.6, 2.6, 4.6]), ONE_AND_THREE);
+    // 0.7 after it: 0.55, so beat 2.
+    assert_eq!(tapped(&[0.7, 2.7, 4.7]), TWO_AND_FOUR);
+}
+
+#[test]
+fn the_median_interval_chooses_the_period_at_its_bounds() {
+    // Below 1.4 beats every beat, from 1.4 a beat in two.
+    assert_eq!(tapped(&[0.8, 2.19]), EVERY);
+    // Exactly the bound (1.4 - 0.0 is 1.4 in f64, 2.2 - 0.8 is not).
+    assert_eq!(1.4 - 0.0, EVERY_BEAT_MAX);
+    assert_eq!(tapped(&[0.0, 1.4]), ONE_AND_THREE);
+    // Below 3 beats a beat in two, from 3 one beat a bar.
+    assert_eq!(tapped(&[2.0, 4.99]), ONE_AND_THREE);
+    assert_eq!(5.0 - 2.0, ONE_A_BAR_MIN);
+    assert_eq!(tapped(&[2.0, 5.0]), [false, true, false, false]);
+    assert_eq!(TAP_LAG_BEATS, 0.15);
+}
+
+#[test]
+fn the_period_is_the_median_interval_not_the_mean() {
+    // Intervals 1, 1, 2, 2: the median is 1.5, so a beat in two.
+    assert_eq!(tapped(&[0.0, 1.0, 2.0, 4.0, 6.0]), ONE_AND_THREE);
+    // Intervals 1, 1, 1, 3.5: the median is 1 (the mean 1.6): every beat.
+    assert_eq!(tapped(&[0.0, 1.0, 2.0, 3.0, 6.5]), EVERY);
+    // Intervals 1, 1, 1.7, 1.7: the median is the middle two's mean, 1.35
+    // (the upper middle alone would be 1.7): every beat.
+    assert_eq!(tapped(&[0.0, 1.0, 2.0, 3.7, 5.4]), EVERY);
+}
+
+#[test]
+fn the_median_of_an_even_count_is_its_middle_twos_mean() {
+    assert_eq!(median(&[]), None);
+    assert_eq!(median(&[2.0]), Some(2.0));
+    assert_eq!(median(&[8.0, 1.0, 4.0]), Some(4.0));
+    assert_eq!(median(&[8.0, 1.0, 4.0, 2.0]), Some(3.0));
+}
+
+#[test]
+fn a_tap_once_a_bar_is_a_tapping_of_its_own_while_live_plays() {
+    // Live's playhead reaches a bar after each tap before the next tap
+    // (late by the eye) comes: each tap ends its own tapping and is its own
+    // beat; the once-a-bar period serves only taps under a bar apart.
+    let mut claps = playing();
+    claps.tap(Some(2.2)).unwrap();
+    assert!(claps.position(6.2), "a bar with no tap ends it");
+    assert_eq!(claps.pattern(), [false, false, true, false]);
+    claps.tap(Some(6.35)).unwrap();
+    assert_eq!(claps.shown(), [false, false, true, false]);
+    assert!(claps.position(10.35));
+    assert_eq!(claps.pattern(), [false, false, true, false]);
+}
+
+#[test]
+fn taps_with_no_forward_interval_are_the_last_taps_beat() {
+    // Two taps at one position: no interval, so as one tap.
+    assert_eq!(tapped(&[4.0, 4.0]), [true, false, false, false]);
 }
