@@ -179,6 +179,28 @@ mod tests {
     }
 
     #[test]
+    fn another_program_in_a_version_folder_is_no_earlier_choice() {
+        let other = Entry {
+            key: "other".into(),
+            exe: r"C:\tools\1.0.0\other.exe".into(),
+            promoted: Some(0),
+        };
+        let entries = [other, entry("own", "1.60.9", None)];
+        assert_eq!(decide(&entries, OWN), Promote::Set("own".into()));
+    }
+
+    #[test]
+    fn the_same_version_in_another_folder_is_no_earlier_choice() {
+        let twin = Entry {
+            key: "twin".into(),
+            exe: r"D:\fohmixer\app\1.60.9\fohmixer-tray.exe".into(),
+            promoted: Some(0),
+        };
+        let entries = [twin, entry("own", "1.60.9", None)];
+        assert_eq!(decide(&entries, OWN), Promote::Set("own".into()));
+    }
+
+    #[test]
     fn version_of_reads_three_numbers_only() {
         assert_eq!(version_of(OWN), Some((1, 60, 9)));
         assert_eq!(version_of(r"C:\a\1.60\fohmixer-tray.exe"), None);
