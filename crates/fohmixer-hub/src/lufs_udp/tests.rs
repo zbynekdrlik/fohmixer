@@ -503,8 +503,13 @@ fn a_port_two_keys_name_gets_one_move_of_the_hearing_kind_and_is_polled_on() {
     // LUFS device is deaf (Windows gives the port's datagrams to its
     // first binder). The hub sends the port one meter move, the meter
     // takes another port, and the port is still polled for the LUFS
-    // device, which hears from then on.
-    let device = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    // device, which hears from then on. Its socket lies outside the
+    // devices' range (a start sweep of another test polls all of it).
+    let range = wire::POLL_PORT_MIN..wire::POLL_PORT_MIN + wire::POLL_PORT_SPAN;
+    let device = (0..64)
+        .map(|_| std::net::UdpSocket::bind("127.0.0.1:0").unwrap())
+        .find(|s| !range.contains(&s.local_addr().unwrap().port()))
+        .expect("a port outside the devices' range");
     device
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();

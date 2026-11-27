@@ -3,9 +3,17 @@ use crate::events::EventLog;
 use fohmixer_proto::listen::wire::{Announce, parents_in};
 
 /// A device's socket on 127.0.0.1 (any port: `heard` takes the announce as
-/// given, the range is the wire's check) and its announce on `track`.
+/// given, the range is the wire's check) and its announce on `track`. The
+/// port lies outside the devices' range: another test's (or process's)
+/// start sweep polls every port of it (#264, seen while a mutation run
+/// shared the box: a `nothing` check read a sweep's poll).
 fn device(id: i32, track: &str) -> (std::net::UdpSocket, Announce) {
-    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let range = fohmixer_proto::lufs::wire::POLL_PORT_MIN
+        ..fohmixer_proto::lufs::wire::POLL_PORT_MIN + fohmixer_proto::lufs::wire::POLL_PORT_SPAN;
+    let socket = (0..64)
+        .map(|_| std::net::UdpSocket::bind("127.0.0.1:0").unwrap())
+        .find(|s| !range.contains(&s.local_addr().unwrap().port()))
+        .expect("a port outside the devices' range");
     socket
         .set_read_timeout(Some(Duration::from_millis(500)))
         .unwrap();
