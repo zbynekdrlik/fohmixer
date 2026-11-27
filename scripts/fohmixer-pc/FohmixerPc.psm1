@@ -723,8 +723,10 @@ function Invoke-FohInstall {
     # the MBC PC instead: its hub runs as -MbcUser, its toml is
     # New-FohMbcHubToml's (the text from [tls] on kept as installed), its
     # FohMixer goes into Live's own -ScriptFolder (Install-FohMbcScript), its
-    # first layout is the bundle's MBC frame, and the link's port gets a
-    # firewall rule; the FOH parameters are not used.
+    # first layout is the bundle's MBC frame, the link's port gets a
+    # firewall rule, and the app window (#280, Get-FohMbcAppPlan: Brave in
+    # -AppProfile, -AppBrowser) goes into the toml's [tray] and the MBC
+    # user's Startup shortcut MBC mixer; the FOH parameters are not used.
     param(
         [Parameter(Mandatory)][string]$BundleZip,
         [ValidateSet('Foh', 'Mbc')][string]$Site = 'Foh',
@@ -734,6 +736,9 @@ function Invoke-FohInstall {
         [int]$MbcPort = 39103,
         [string]$LinkListen = '',
         [string]$ScriptFolder = '',
+        [string]$AppProfile = 'Profile 1',
+        [string]$AppBrowser = '',
+        [string]$StartupFolder = '',
         [AllowEmptyString()][string]$Linked = '',
         [Parameter(Mandatory)][string]$DataDir,
         [Parameter(Mandatory)][int]$HttpPort,
@@ -764,6 +769,8 @@ function Invoke-FohInstall {
         $checked = Test-FohMbcInstallArgs -MbcUser $MbcUser -HttpPort $HttpPort -MbcPort $MbcPort -LinkListen $LinkListen -ScriptFolder $ScriptFolder
         $ScriptFolder = $checked.scriptFolder
         $linkPort = $checked.linkPort
+        # The app window (#280): checked before any change.
+        $appPlan = Get-FohMbcAppPlan -AppBrowser $AppBrowser -AppProfile $AppProfile -HttpPort $HttpPort -MbcUser $MbcUser -StartupFolder $StartupFolder
     } else {
         $hubUser = $BandUser
         $accounts = @($BandUser, $MasterUser)
@@ -801,7 +808,7 @@ function Invoke-FohInstall {
             $installedToml = Join-Path $DataDir 'fohmixer-hub.toml'
             $kept = ''
             if (Test-Path -LiteralPath $installedToml -PathType Leaf) { $kept = Get-FohInstalledRemoteToml -Text ([IO.File]::ReadAllText($installedToml)) }
-            $tomlText = New-FohMbcHubToml -HttpPort $HttpPort -MbcPort $MbcPort -LinkListen $LinkListen -Remote $kept
+            $tomlText = New-FohMbcHubToml -HttpPort $HttpPort -MbcPort $MbcPort -LinkListen $LinkListen -Tray $appPlan.toml -Remote $kept
         } else {
             $tomlText = New-FohHubToml -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort -Linked $Linked -Eq $Eq -Companion $Companion -Presenter $Presenter -Claps $Claps -Remote $remoteToml
         }
@@ -872,6 +879,12 @@ function Invoke-FohInstall {
             }
             $copies += [pscustomobject]@{ instance = $u.instance; replaced = $r.replaced; config_written = $r.config_written; removed = $r.removed; devices = @($devices); devices_held = @($held) }
         }
+        # 5a. the MBC user's Startup shortcut of the app window (#280)
+        $startup = $null
+        if ($mbc) {
+            $startup = Set-FohAppShortcut -Folder $appPlan.startup -App $appPlan.app
+            Write-Host "fohmixer install: the MBC user's Startup shortcut $($script:AppShortcut) (changed: $startup)"
+        }
         # 5b. remote access (#17): the name on this PC, the shortcut, the tunnel token
         $remoteResult = $null
         if ($Remote) { $remoteResult = Install-FohRemoteFiles -Remote $Remote }
@@ -939,6 +952,6 @@ function Invoke-FohInstall {
     return [pscustomobject]@{
         version = $unpacked.version; app = $app.dir; app_changed = $app.changed; config_changed = $toml
         layout_changed = $layoutChanged; copies = $copies; hub = $answer; tray = $trayPid; remote = $remoteResult; companion = [bool]$Companion; presenter = [bool]$Presenter
-        eq = [bool]$Eq; claps = [bool]$Claps; site = $Site; linked = [bool]$Linked
+        eq = [bool]$Eq; claps = [bool]$Claps; site = $Site; linked = [bool]$Linked; startup = $startup
     }
 }

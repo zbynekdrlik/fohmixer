@@ -87,7 +87,14 @@ FohMixer goes into Live's built-in -ScriptFolder (it must hold Live's
 _Framework) with INSTANCE mbc, the port and LOG_DIR <DataDir>\logs, a copy
 it replaces kept under <DataDir>\script-backups\<UTC stamp>; a first install
 takes the bundle's mbc-frame.json as layout.json; the firewall rule
-fohmixer-hub-link opens the link's port. The FOH parameters are refused
+fohmixer-hub-link opens the link's port. The app window (#280): the toml's
+[tray] app and the MBC user's Startup shortcut "MBC mixer" (kept when it
+already runs the same) start Brave's app window on the local hub in the
+profile -AppProfile ("Profile 1"); Brave is found in its App Paths entry,
+Program Files or the MBC user's own install, or given with -AppBrowser;
+-StartupFolder when the Startup folder is not the default one. The tray's
+Open then brings that window to the front, never a browser tab, and its menu
+says Open MBC mixer. The FOH parameters are refused
 there, and the MBC ones on the FOH PC. Selecting FohMixer in a free
 control-surface slot of the MBC Live is a step in Live.
 The data folder gets a protected DACL: SYSTEM, Administrators and the hub's user.
@@ -129,6 +136,12 @@ param(
     [int]$MbcPort = 39103,
     # MBC: Live's built-in MIDI Remote Scripts folder (in Live's Resources).
     [string]$ScriptFolder = '',
+    # MBC (#280): the Brave profile of the app window (the one set up without
+    # the profile picker), Brave's brave.exe when it is not found by itself,
+    # and the MBC user's Startup folder when it is not the default one.
+    [string]$AppProfile = 'Profile 1',
+    [string]$AppBrowser = '',
+    [string]$StartupFolder = '',
     [string]$DataDir = (Join-Path $env:ProgramData 'fohmixer'),
     [int]$HttpPort = 8480,
     [int]$BandPort = 39101,
@@ -187,7 +200,7 @@ try {
     Import-Module (Join-Path $PSScriptRoot 'FohmixerPc.psm1') -Force
     # Each PC's own parameters (#184): the other PC's are refused, the needed ones asked for.
     $given = @($PSBoundParameters.Keys)
-    $mbcOnly = @('MbcUser', 'LinkListen', 'MbcPort', 'ScriptFolder')
+    $mbcOnly = @('MbcUser', 'LinkListen', 'MbcPort', 'ScriptFolder', 'AppProfile', 'AppBrowser', 'StartupFolder')
     $fohOnly = @('BandUser', 'MasterUser', 'BandPort', 'MasterPort', 'BandUserLibrary', 'MasterUserLibrary', 'BandAbletonPrefs',
         'MasterAbletonPrefs', 'MbcLink', 'PublicName', 'HttpsPort', 'AcmeEmail', 'AcmeDirectory', 'AccessTeam', 'AccessAud',
         'SetTunnelToken', 'CloudflaredExe', 'TunnelMetricsPort', 'TunnelDir', 'HostsFile', 'BandDesktop', 'AbleSetName',
@@ -198,7 +211,8 @@ try {
             if (-not $PSBoundParameters[$k]) { throw "-Site Mbc needs -$k" }
         }
         $result = Invoke-FohInstall -Site Mbc -BundleZip $BundleZip -MbcUser $MbcUser -DataDir $DataDir -HttpPort $HttpPort -BandPort $BandPort -MasterPort $MasterPort `
-            -MbcPort $MbcPort -LinkListen $LinkListen -ScriptFolder $ScriptFolder -Layout $Layout -NoTask:$NoTask
+            -MbcPort $MbcPort -LinkListen $LinkListen -ScriptFolder $ScriptFolder -Layout $Layout -NoTask:$NoTask `
+            -AppProfile $AppProfile -AppBrowser $AppBrowser -StartupFolder $StartupFolder
         ConvertTo-Json -InputObject $result -Depth 5
         exit 0
     }

@@ -1,7 +1,7 @@
 //! What the tray shows (decided here, carried out by the Windows glue): the
 //! tooltip and the menu's version line from the hub's state, the Copy URL
-//! item from the links, which menu item was chosen, and when a new state is
-//! worth a log line.
+//! item from the links, which menu item was chosen, when a new state is
+//! worth a log line, and how Open finds or starts the app window (#280).
 
 use crate::poll::HubState;
 
@@ -52,6 +52,99 @@ pub const OPEN_GAP_MS: u64 = 800;
 /// `since_open_ms` ago, under [`OPEN_GAP_MS`].
 pub fn click_opens(left: bool, released: bool, since_open_ms: Option<u64>) -> bool {
     left && released && since_open_ms.is_none_or(|ms| ms >= OPEN_GAP_MS)
+}
+
+/// The menu's Open item on a hub that serves the MBC Live alone (#280).
+pub const OPEN_MBC: &str = "Open MBC mixer";
+/// The menu's Open item elsewhere.
+pub const OPEN_FOHMIXER: &str = "Open fohmixer";
+
+/// The Open item's label: it names what it opens (#280).
+pub fn open_label(mbc_only: bool) -> &'static str {
+    if mbc_only { OPEN_MBC } else { OPEN_FOHMIXER }
+}
+
+/// The page's title (`crates/fohmixer-ui/index.html`), the title of its app
+/// window: a browser's tab window adds its own name to it.
+pub const APP_TITLE: &str = "fohmixer";
+
+/// How long after the tray started the app window it starts no second one
+/// while none shows yet (#280): a browser's first window takes seconds.
+pub const START_GAP_MS: u64 = 15_000;
+
+/// The file name of a Windows (or any) path: what follows its last `\` or
+/// `/`.
+pub fn file_name(path: &str) -> &str {
+    path.rsplit(['\\', '/']).next().unwrap_or(path)
+}
+
+/// The page an app command opens: the value of its `--app=` word (a
+/// Chromium app window), `None` without one.
+pub fn app_page(app: &[String]) -> Option<&str> {
+    app.iter()
+        .find_map(|word| word.strip_prefix("--app="))
+        .filter(|page| !page.is_empty())
+}
+
+/// Whether `title` is what an app window of `page` shows while it has no
+/// page title (#280, the review round): the page still loading shows its
+/// address (`localhost:8480/`, with or without its scheme), the browser's
+/// error page while the hub does not answer its host (`localhost`). A tab
+/// window adds ` - <browser>` to any title, so a title with ` - ` is none.
+/// Accepted: a window of the same program titled just the host on another
+/// page of it (none on the MBC PC: Brave runs only the app window there).
+pub fn titled_by_page(title: &str, page: &str) -> bool {
+    let address = page.split_once("://").map_or(page, |(_, rest)| rest);
+    let host = address.split([':', '/']).next().unwrap_or(address);
+    let bare = address.trim_end_matches('/');
+    !host.is_empty()
+        && !title.contains(" - ")
+        && (title == host
+            || shows_address(title, bare)
+            || shows_address(title, page.trim_end_matches('/')))
+}
+
+/// Whether `title` is `address`, alone or followed by its path, query or
+/// fragment (never another port that begins with it: `localhost:80` is not
+/// `localhost:8080`).
+fn shows_address(title: &str, address: &str) -> bool {
+    title
+        .strip_prefix(address)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['/', '?', '#']))
+}
+
+/// Whether a visible top-level window is the app window (#280): its title is
+/// the page's (or, with `page`, the one an app window of that page shows
+/// before or without it, [`titled_by_page`]), and its process's image has
+/// the file name of the app's program (case aside, as Windows names files).
+pub fn is_app_window(title: &str, image: &str, program: &str, page: Option<&str>) -> bool {
+    let name = file_name(image);
+    let titled = title == APP_TITLE || page.is_some_and(|page| titled_by_page(title, page));
+    titled && !name.is_empty() && name.eq_ignore_ascii_case(file_name(program))
+}
+
+/// What Open does with an app command (#280).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenStep {
+    /// Bring the open app window to the front (restored when minimized).
+    Focus,
+    /// Start the app command.
+    Start,
+    /// Nothing: the tray started it less than [`START_GAP_MS`] ago and its
+    /// window does not show yet.
+    Wait,
+}
+
+/// Open's step: the app window when one is open, else a start, unless the
+/// tray started one less than [`START_GAP_MS`] ago.
+pub fn open_step(found: bool, since_start_ms: Option<u64>) -> OpenStep {
+    if found {
+        OpenStep::Focus
+    } else if since_start_ms.is_some_and(|ms| ms < START_GAP_MS) {
+        OpenStep::Wait
+    } else {
+        OpenStep::Start
+    }
 }
 
 /// `text` cut to at most `max` UTF-16 units, never inside a character.
@@ -278,5 +371,146 @@ mod tests {
         assert!(!click_opens(true, true, Some(799)));
         assert!(click_opens(true, true, Some(800)));
         assert!(!click_opens(false, true, Some(800)));
+    }
+    #[test]
+    fn the_open_item_names_the_mbc_mixer_on_the_mbc_hub() {
+        assert_eq!(open_label(true), "Open MBC mixer");
+        assert_eq!(open_label(false), "Open fohmixer");
+    }
+
+    #[test]
+    fn the_app_title_is_the_pages_title() {
+        let page = include_str!("../../fohmixer-ui/index.html");
+        assert!(
+            page.contains(&format!("<title>{APP_TITLE}</title>")),
+            "index.html's title is no longer {APP_TITLE:?}"
+        );
+    }
+
+    #[test]
+    fn file_name_takes_what_follows_the_last_separator() {
+        assert_eq!(file_name(r"C:\Program Files\Brave\brave.exe"), "brave.exe");
+        assert_eq!(file_name("/usr/bin/brave"), "brave");
+        assert_eq!(file_name(r"C:\a/b\c.exe"), "c.exe");
+        assert_eq!(file_name(r"C:\a\b/c.exe"), "c.exe");
+        assert_eq!(file_name("brave.exe"), "brave.exe");
+        assert_eq!(file_name(r"C:\dir\"), "");
+        assert_eq!(file_name(""), "");
+    }
+
+    #[test]
+    fn the_app_window_is_the_pages_title_in_the_apps_program() {
+        let brave = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe";
+        assert!(is_app_window("fohmixer", brave, brave, PAGE));
+        // Windows names files without case; the program may be named bare.
+        assert!(is_app_window(
+            "fohmixer",
+            r"C:\PROGRAM FILES\BRAVE\BRAVE.EXE",
+            "brave.exe",
+            PAGE
+        ));
+    }
+
+    #[test]
+    fn a_tab_another_page_or_another_program_is_no_app_window() {
+        let brave = r"C:\Brave\brave.exe";
+        // A tab window adds the browser's name.
+        assert!(!is_app_window("fohmixer - Brave", brave, brave, PAGE));
+        assert!(!is_app_window("Fohmixer tags", brave, brave, PAGE));
+        assert!(!is_app_window("", brave, brave, PAGE));
+        assert!(!is_app_window("Fohmixer", brave, brave, PAGE));
+        assert!(!is_app_window(
+            "fohmixer",
+            r"C:\Edge\msedge.exe",
+            brave,
+            PAGE
+        ));
+        // An image that could not be read names no program.
+        assert!(!is_app_window("fohmixer", "", brave, PAGE));
+        assert!(!is_app_window("fohmixer", r"C:\dir\", r"C:\other\", PAGE));
+    }
+
+    /// The page the MBC install's app command opens.
+    const PAGE: Option<&str> = Some("http://localhost:8480/");
+
+    fn words(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn the_app_page_is_the_app_words_value() {
+        let app = words(&[
+            r"C:\Brave\brave.exe",
+            "--profile-directory=Profile 1",
+            "--app=http://localhost:8480/",
+            "--start-maximized",
+        ]);
+        assert_eq!(app_page(&app), Some("http://localhost:8480/"));
+        assert_eq!(app_page(&words(&["brave.exe", "--new-window"])), None);
+        assert_eq!(app_page(&words(&["brave.exe", "--app="])), None);
+        assert_eq!(app_page(&[]), None);
+    }
+
+    #[test]
+    fn an_app_window_without_its_page_title_is_still_the_app_window() {
+        // The review round: the hub down (the error page names the host) or
+        // the page loading (its address) must not start a second window.
+        let brave = r"C:\Brave\brave.exe";
+        for title in [
+            "localhost",
+            "localhost:8480/",
+            "localhost:8480",
+            "localhost:8480/#main",
+            "http://localhost:8480/",
+        ] {
+            assert!(is_app_window(title, brave, brave, PAGE), "{title}");
+        }
+        // Without a page only the page's own title counts.
+        assert!(!is_app_window("localhost", brave, brave, None));
+        assert!(is_app_window("fohmixer", brave, brave, None));
+    }
+
+    #[test]
+    fn a_tab_or_another_address_is_not_titled_by_the_page() {
+        let page = "http://localhost:8480/";
+        assert!(!titled_by_page("localhost - Brave", page));
+        assert!(!titled_by_page("localhost:8480/ - Brave", page));
+        assert!(!titled_by_page("example.org", page));
+        assert!(!titled_by_page("local", page));
+        assert!(!titled_by_page("", page));
+        assert!(!titled_by_page("localhost:9000/", page));
+        // A page without a host names nothing.
+        assert!(!titled_by_page("", "http://"));
+        assert!(!titled_by_page("x", "http://"));
+        // A page given without a scheme.
+        assert!(titled_by_page("localhost", "localhost:8480/"));
+        assert!(titled_by_page("localhost:8480/", "localhost:8480"));
+    }
+
+    #[test]
+    fn another_port_that_begins_with_the_pages_is_not_its_address() {
+        let page = "http://localhost:80/";
+        assert!(!titled_by_page("localhost:8080/", page));
+        assert!(!titled_by_page("http://localhost:8080/", page));
+        assert!(titled_by_page("localhost:80", page));
+        assert!(titled_by_page("localhost:80/x", page));
+        assert!(titled_by_page("localhost:80?a", page));
+        assert!(titled_by_page("localhost:80#a", page));
+        assert!(titled_by_page("http://localhost:80/", page));
+    }
+
+    #[test]
+    fn open_focuses_an_open_app_window_else_starts_one() {
+        assert_eq!(open_step(true, None), OpenStep::Focus);
+        assert_eq!(open_step(true, Some(0)), OpenStep::Focus);
+        assert_eq!(open_step(false, None), OpenStep::Start);
+    }
+
+    #[test]
+    fn a_start_waits_for_its_window_15_s_before_another() {
+        assert_eq!(START_GAP_MS, 15_000);
+        assert_eq!(open_step(false, Some(0)), OpenStep::Wait);
+        assert_eq!(open_step(false, Some(14_999)), OpenStep::Wait);
+        assert_eq!(open_step(false, Some(15_000)), OpenStep::Start);
     }
 }

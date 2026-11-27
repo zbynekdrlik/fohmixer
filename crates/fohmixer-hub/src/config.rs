@@ -566,6 +566,26 @@ pub struct AutotuneCfg {
     pub engage_delay_ms: u64,
 }
 
+/// `[tray]` (#280): the command the tray's Open runs when no app window is
+/// open (`app`: the program, then its arguments; the MBC install writes a
+/// Brave app window on the local hub). The hub runs nothing of it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrayCfg {
+    pub app: Vec<String>,
+}
+
+impl TrayCfg {
+    /// A program and no empty word (`fohmixer_proto::tray::app_problem`, the
+    /// tray's check too).
+    fn validate(&self) -> anyhow::Result<()> {
+        match fohmixer_proto::tray::app_problem(&self.app) {
+            Some(problem) => bail!("{problem}"),
+            None => Ok(()),
+        }
+    }
+}
+
 /// `[eq]` (#71 PR E): the Pro-Q 4 screen's backend, and how the Windows
 /// backend grabs an editor (#215).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -783,6 +803,10 @@ pub struct Config {
     /// The instance link this hub serves (#184, `[link]`); none: no link.
     #[serde(default)]
     pub link: Option<LinkCfg>,
+    /// The tray's app window (#280, `[tray]`); read by the tray only, checked
+    /// here. None: the tray opens the default browser.
+    #[serde(default)]
+    pub tray: Option<TrayCfg>,
     /// The data folder (where the file was read from).
     #[serde(skip)]
     pub data_dir: PathBuf,
@@ -811,6 +835,7 @@ impl Config {
             claps: ClapsCfg::default(),
             autotune: AutotuneCfg::default(),
             link: None,
+            tray: None,
             data_dir: data_dir.to_path_buf(),
         }
     }
@@ -888,6 +913,9 @@ impl Config {
             link::validate_listen(cfg, &self.instances)?;
         }
         self.validate_companion()?;
+        if let Some(tray) = &self.tray {
+            tray.validate()?;
+        }
         self.claps.validate()?;
         if self.autotune.engage_delay_ms > MAX_ENGAGE_DELAY_MS {
             bail!(
@@ -2085,6 +2113,24 @@ mod tests {
         assert!(refused("[autotune]\nengage_delay_ms = -1\n").contains("engage_delay_ms"));
         assert!(refused("[autotune]\ndelay = 1000\n").contains("unknown field"));
         assert!(refused("engage_delay_ms = 1000\n").contains("unknown field"));
+    }
+
+    /// `[tray] app` (#280): the tray's app window command, accepted and
+    /// checked here (the tray reads it); a program and no empty word.
+    #[test]
+    fn the_tray_table_takes_an_app_command() {
+        let text = "[tray]\napp = ['C:\\Brave\\brave.exe', '--profile-directory=Profile 1', \
+            '--app=http://localhost:8480/']\n";
+        assert!(Config::parse(text, &data()).is_ok());
+        assert!(Config::parse("[tray]\napp = ['brave.exe']\n", &data()).is_ok());
+        let refused = |text: &str| format!("{:#}", Config::parse(text, &data()).unwrap_err());
+        assert!(refused("[tray]\napp = []\n").contains("[tray] app names no program"));
+        assert!(refused("[tray]\napp = ['']\n").contains("[tray] app holds an empty word"));
+        assert!(
+            refused("[tray]\napp = ['a.exe', '']\n").contains("[tray] app holds an empty word")
+        );
+        assert!(refused("[tray]\n").contains("missing field `app`"));
+        assert!(refused("[tray]\napp = ['a.exe']\nlabel = 'x'\n").contains("unknown field"));
     }
 
     /// The scene read from Companion is gone (#207: Companion pushes the

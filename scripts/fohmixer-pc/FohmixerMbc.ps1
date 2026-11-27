@@ -14,6 +14,10 @@
 #   folder in Live's would be listed as a control surface).
 # - The FOH hub's linked instance (Get-FohLinkedToml, Resolve-FohMbcLink):
 #   written with -MbcLink, kept by an update without it.
+# - The MBC operator's app window (#280): the hub's [tray] app (the tray's
+#   Open brings that window to the front, else starts it; never a browser
+#   tab) and the MBC user's Startup shortcut "MBC mixer" with the same
+#   command (Brave's app window on the local hub, in -AppProfile).
 # No site value lives here: addresses, folders and accounts come as parameters.
 
 # The MBC Live's instance (fohmixer_proto::roles::MBC_INSTANCE).
@@ -22,6 +26,124 @@ $script:MbcInstance = 'mbc'
 $script:ScriptBackups = 'script-backups'
 # The firewall rule of the instance link's port.
 $script:LinkRule = 'fohmixer-hub-link'
+# The MBC user's Startup shortcut of the app window (#280).
+$script:AppShortcut = 'MBC mixer.lnk'
+# Brave below Program Files and a user's own AppData\Local.
+$script:BraveExe = 'BraveSoftware\Brave-Browser\Application\brave.exe'
+
+function Get-FohTrayApp {
+    # The MBC PC's app window command (#280): Brave's app window on the local
+    # hub (no Access sign-in, no internet), in the profile -AppProfile names
+    # (the one the owner set up: no profile picker), maximized.
+    param([Parameter(Mandatory)][string]$Browser, [Parameter(Mandatory)][string]$AppProfile, [Parameter(Mandatory)][int]$HttpPort)
+    return , @($Browser, ('--profile-directory=' + $AppProfile), ('--app=http://localhost:{0}/' -f $HttpPort), '--start-maximized')
+}
+
+function Get-FohTrayToml {
+    # The [tray] table (#280, CRLF lines): app as TOML literal strings, so a
+    # path's backslashes need no escaping. A word that is empty or holds a
+    # single quote or a control character is refused (the hub checks the
+    # rest: config check).
+    param([Parameter(Mandatory)][AllowEmptyCollection()][AllowEmptyString()][string[]]$App)
+    if ($App.Count -eq 0) { throw 'app command refused: no program' }
+    foreach ($w in $App) {
+        if (-not $w -or $w -match "['\x00-\x1f\x7f]") { throw "app command word refused: [$w]" }
+    }
+    $words = @($App | ForEach-Object { "'" + $_ + "'" }) -join ', '
+    return ("`r`n[tray]`r`napp = [" + $words + "]`r`n")
+}
+
+function Format-FohAppArgs {
+    # A shortcut's argument line of $Words: a word with a space (or an empty
+    # one) in double quotes, the rest as it is; a double quote is refused.
+    param([AllowEmptyCollection()][AllowEmptyString()][string[]]$Words = @())
+    $out = @()
+    foreach ($w in $Words) {
+        if ($w.Contains('"')) { throw "app command word refused (it holds a double quote): $w" }
+        if (-not $w -or $w.Contains(' ')) { $out += ('"' + $w + '"') } else { $out += $w }
+    }
+    return ($out -join ' ')
+}
+
+function Resolve-FohAppBrowser {
+    # The browser of the app window (#280): -AppBrowser when given, else
+    # Brave where Windows keeps it: its App Paths entry, Program Files (both
+    # views), the MBC user's own install. Refused before any change when
+    # that file does not exist.
+    param([AllowEmptyString()][string]$AppBrowser = '', [Parameter(Mandatory)][string]$MbcUser)
+    $candidates = @()
+    if ($AppBrowser) {
+        $candidates += $AppBrowser
+    } else {
+        foreach ($key in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\brave.exe',
+                'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\brave.exe')) {
+            if (Test-Path -LiteralPath $key) {
+                $value = (Get-Item -LiteralPath $key).GetValue('')
+                if ($value) { $candidates += ([string]$value).Trim('"') }
+            }
+        }
+        foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+            if ($root) { $candidates += (Join-Path $root $script:BraveExe) }
+        }
+        $candidates += (Join-Path $env:SystemDrive ("Users\$MbcUser\AppData\Local\" + $script:BraveExe))
+    }
+    foreach ($c in $candidates) {
+        if (Test-Path -LiteralPath $c -PathType Leaf) { return (Resolve-FohPath $c) }
+    }
+    if ($AppBrowser) { throw "-AppBrowser not found: $AppBrowser" }
+    throw 'Brave not found (App Paths, Program Files, the MBC user''s own install): pass its brave.exe with -AppBrowser'
+}
+
+function Resolve-FohStartupFolder {
+    # The MBC user's Startup folder (#280): -StartupFolder when given, else
+    # <SystemDrive>\Users\<MBC user>\...\Startup; refused before any change
+    # when it does not exist.
+    param([AllowEmptyString()][string]$StartupFolder = '', [Parameter(Mandatory)][string]$MbcUser)
+    if (-not $StartupFolder) {
+        $StartupFolder = Join-Path $env:SystemDrive "Users\$MbcUser\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"
+    }
+    if (-not (Test-Path -LiteralPath $StartupFolder -PathType Container)) {
+        throw "the MBC user's Startup folder not found: $StartupFolder (pass -StartupFolder)"
+    }
+    return (Resolve-FohPath $StartupFolder)
+}
+
+function Set-FohAppShortcut {
+    # The Startup shortcut "MBC mixer" (#280) in $Folder running $App (the
+    # program, then its arguments): kept when its target and arguments are
+    # these already, else written. Returns whether it was written.
+    param([Parameter(Mandatory)][string]$Folder, [Parameter(Mandatory)][string[]]$App)
+    $path = Join-Path $Folder $script:AppShortcut
+    $arguments = Format-FohAppArgs -Words @($App | Select-Object -Skip 1)
+    $shell = New-Object -ComObject WScript.Shell
+    try {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            $old = $shell.CreateShortcut($path)
+            if (($old.TargetPath -ieq $App[0]) -and ($old.Arguments -ceq $arguments)) { return $false }
+        }
+        $link = $shell.CreateShortcut($path)
+        $link.TargetPath = $App[0]
+        $link.Arguments = $arguments
+        $link.WorkingDirectory = Split-Path -Parent $App[0]
+        $link.Description = 'fohmixer: the MBC mixer app window (#280)'
+        $link.Save()
+        return $true
+    } finally {
+        $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
+    }
+}
+
+function Get-FohMbcAppPlan {
+    # The app window's plan of an MBC install (#280), checked before any
+    # change: the command, its [tray] table and the Startup folder.
+    param([AllowEmptyString()][string]$AppBrowser = '', [Parameter(Mandatory)][string]$AppProfile,
+          [Parameter(Mandatory)][int]$HttpPort, [Parameter(Mandatory)][string]$MbcUser, [AllowEmptyString()][string]$StartupFolder = '')
+    if (-not $AppProfile.Trim()) { throw '-AppProfile refused: empty' }
+    $app = Get-FohTrayApp -Browser (Resolve-FohAppBrowser -AppBrowser $AppBrowser -MbcUser $MbcUser) -AppProfile $AppProfile -HttpPort $HttpPort
+    $toml = Get-FohTrayToml -App $app
+    $null = Format-FohAppArgs -Words @($app | Select-Object -Skip 1)
+    return [pscustomobject]@{ app = $app; toml = $toml; startup = (Resolve-FohStartupFolder -StartupFolder $StartupFolder -MbcUser $MbcUser) }
+}
 
 function Get-FohLinkedToml {
     # The FOH hub's [[instances]] table of the MBC Live, reached through the
@@ -67,11 +189,12 @@ function Resolve-FohMbcLink {
 function New-FohMbcHubToml {
     # The MBC hub's fohmixer-hub.toml (#184): the HTTP port, the layout file,
     # the one instance `mbc` on its script's port and [link] (the instance
-    # link on -LinkListen, <LAN address>:<port>), then $Remote (the text from
-    # [tls] to the end as installed, Get-FohInstalledRemoteToml: tables
-    # written there by hand are kept).
+    # link on -LinkListen, <LAN address>:<port>), then $Tray (the [tray]
+    # table, #280, Get-FohTrayToml), then $Remote (the text from [tls] to the
+    # end as installed, Get-FohInstalledRemoteToml: tables written there by
+    # hand are kept).
     param([Parameter(Mandatory)][int]$HttpPort, [Parameter(Mandatory)][int]$MbcPort,
-          [Parameter(Mandatory)][string]$LinkListen, [AllowEmptyString()][string]$Remote = '')
+          [Parameter(Mandatory)][string]$LinkListen, [AllowEmptyString()][string]$Tray = '', [AllowEmptyString()][string]$Remote = '')
     if ($LinkListen -cnotmatch '\A[^\s"\\]+:[0-9]{1,5}\z') {
         throw "link address refused: [$LinkListen] (<MBC LAN address>:<port>)"
     }
@@ -87,7 +210,7 @@ function New-FohMbcHubToml {
         '[link]',
         ('listen = "{0}"' -f $LinkListen),
         ('instance = "{0}"' -f $script:MbcInstance))
-    return (($lines -join "`r`n") + "`r`n" + $Remote)
+    return (($lines -join "`r`n") + "`r`n" + $Tray + $Remote)
 }
 
 function Test-FohScriptFolder {

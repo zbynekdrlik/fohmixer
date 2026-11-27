@@ -35,6 +35,7 @@ pub mod sectors;
 pub mod songmap;
 pub mod stream_proof;
 pub mod strip_marks;
+pub mod tray;
 pub mod volume;
 
 /// Application version: the workspace's `[workspace.package].version`.
