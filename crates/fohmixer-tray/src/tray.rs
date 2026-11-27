@@ -27,11 +27,12 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, PostMessageW,
-    RegisterWindowMessageW, SW_RESTORE, SetForegroundWindow, ShowWindow,
+    RegisterWindowMessageW, SW_MINIMIZE, SW_RESTORE, SetForegroundWindow, ShowWindow,
 };
 use windows::core::{BOOL, HSTRING, PCWSTR, PWSTR, w};
 
 use crate::args::{self, Command};
+use crate::front::{self, Step, Watch};
 use crate::links::Links;
 use crate::poll::{self, HubState};
 use crate::promote::{self, Entry, Promote};
@@ -102,6 +103,9 @@ pub fn run() {
             match build_tray(&handle, &links, icon) {
                 Ok((tray, version_item)) => {
                     spawn_promote(tray.clone());
+                    if let Some(command) = links.app.clone() {
+                        spawn_front(command);
+                    }
                     spawn_poll(links.version.clone(), Some(tray), Some(version_item));
                 }
                 Err(e) => {
@@ -285,7 +289,9 @@ fn open_app(app: &AppHandle, links: &Links, started: &Mutex<Option<Instant>>, la
     let mut last = started.lock().unwrap_or_else(PoisonError::into_inner);
     let since = (*last).map(|t| u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX));
     match (view::open_step(window.is_some(), since), window) {
-        (OpenStep::Focus, Some(window)) => focus(window, label),
+        (OpenStep::Focus, Some(window)) => {
+            focus(window, label);
+        }
         (OpenStep::Wait, _) => tracing::info!(
             since_start_ms = since,
             "{label}: the app window started moments ago does not show yet; nothing started again"
@@ -317,6 +323,79 @@ fn app_window(program: &str, page: Option<&str>) -> Option<HWND> {
         unsafe { IsWindowVisible(window) }.as_bool()
             && view::is_app_window(&title_of(window), &image_of(window), program, page)
     })
+}
+
+/// The visible top-level windows.
+fn visible_windows() -> Vec<HWND> {
+    let mut list: Vec<HWND> = Vec::new();
+    // SAFETY: `collect` writes only into `list`, which outlives the call.
+    if let Err(e) =
+        unsafe { EnumWindows(Some(collect), LPARAM(&mut list as *mut Vec<HWND> as isize)) }
+    {
+        tracing::warn!(error = %e, "EnumWindows failed: no window seen");
+        return Vec::new();
+    }
+    // SAFETY: a plain query of a handle EnumWindows gave.
+    list.retain(|&window| unsafe { IsWindowVisible(window) }.as_bool());
+    list
+}
+
+/// Keeps the app window in front at logon (#280, [`front::Watch`]): a
+/// thread that looks at the windows each second and, once the MBC Live's set
+/// has loaded and settled, brings the app window forward; when Windows
+/// refuses (no recent input in this process), it minimizes the loaded Live
+/// window instead, so the app window under it shows.
+fn spawn_front(command: Vec<String>) {
+    let spawned = thread::Builder::new()
+        .name("app-front".into())
+        .spawn(move || {
+            let started = Instant::now();
+            let mut watch = Watch::default();
+            loop {
+                let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                let lives: Vec<HWND> = visible_windows()
+                    .into_iter()
+                    .filter(|&w| front::is_loaded_live(&title_of(w), &image_of(w)))
+                    .collect();
+                match watch.step(elapsed, !lives.is_empty()) {
+                    Step::Keep => thread::sleep(std::time::Duration::from_millis(front::EVERY_MS)),
+                    Step::Stop => {
+                        tracing::info!(
+                            elapsed_ms = elapsed,
+                            "front: the logon watch ends; the windows left as they are"
+                        );
+                        return;
+                    }
+                    Step::Front => {
+                        bring_front(&command, &lives);
+                        return;
+                    }
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        tracing::error!(error = %e, "front: the logon watch could not start");
+    }
+}
+
+/// The app window forward after Live's load; Live's windows minimized when
+/// Windows refuses the foreground.
+fn bring_front(command: &[String], lives: &[HWND]) {
+    let Some(window) = app_window(&command[0], view::app_page(command)) else {
+        tracing::warn!("front: Live's set loaded, but no app window is open; nothing done");
+        return;
+    };
+    if focus(window, "front") {
+        return;
+    }
+    for &live in lives {
+        // SAFETY: a plain call on a window handle (a closed one only fails).
+        let _ = unsafe { ShowWindow(live, SW_MINIMIZE) };
+    }
+    tracing::info!(
+        lives = lives.len(),
+        "front: Live minimized so the app window shows"
+    );
 }
 
 /// EnumWindows' callback (the hub's `plugwin/win.rs` `collect`, mirrored).
@@ -365,8 +444,8 @@ fn image_of(window: HWND) -> String {
 }
 
 /// The app window to the front, restored first when minimized (a maximized
-/// window keeps its size).
-fn focus(window: HWND, label: &str) {
+/// window keeps its size); whether Windows brought it forward.
+fn focus(window: HWND, label: &str) -> bool {
     // SAFETY: a plain query of a window handle (a closed one reads false).
     let minimized = unsafe { IsIconic(window) }.as_bool();
     if minimized {
@@ -387,6 +466,7 @@ fn focus(window: HWND, label: &str) {
             "{label}: the app window is open, Windows did not bring it to the front"
         );
     }
+    front
 }
 
 /// Starts the app command (no shell; the program, then its arguments);

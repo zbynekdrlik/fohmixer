@@ -40,8 +40,27 @@ impl Watch {
     /// One look at `elapsed_ms` after the tray's start: whether Live's set
     /// shows loaded now.
     pub fn step(&mut self, elapsed_ms: u64, live_loaded: bool) -> Step {
-        let _ = (elapsed_ms, live_loaded);
-        Step::Stop
+        if !live_loaded {
+            self.saw_unloaded = true;
+            self.loaded_at = None;
+            return if elapsed_ms >= WATCH_MS {
+                Step::Stop
+            } else {
+                Step::Keep
+            };
+        }
+        if !self.saw_unloaded {
+            return Step::Stop;
+        }
+        match self.loaded_at {
+            None if elapsed_ms >= WATCH_MS => Step::Stop,
+            None => {
+                self.loaded_at = Some(elapsed_ms);
+                Step::Keep
+            }
+            Some(at) if elapsed_ms.saturating_sub(at) >= SETTLE_MS => Step::Front,
+            Some(_) => Step::Keep,
+        }
     }
 }
 
@@ -49,8 +68,11 @@ impl Watch {
 /// set has loaded: Live's main window names its set (`MBC - Ableton Live 12
 /// Suite`, `MBC* - …` with unsaved changes); its start screen does not.
 pub fn is_loaded_live(title: &str, image: &str) -> bool {
-    let _ = (title, image);
-    false
+    let file = image.rsplit(['\\', '/']).next().unwrap_or("");
+    let lower = file.to_ascii_lowercase();
+    lower.starts_with("ableton live")
+        && lower.ends_with(".exe")
+        && title.contains(" - Ableton Live")
 }
 
 #[cfg(test)]
