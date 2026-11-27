@@ -15,19 +15,26 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, Tray
 use tauri::{AppHandle, RunEvent, Wry};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_opener::OpenerExt;
-use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS, HWND, LPARAM, WPARAM,
+};
+use windows::Win32::System::Registry::{
+    HKEY, HKEY_CURRENT_USER, KEY_READ, REG_DWORD, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegCloseKey,
+    RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, RegSetKeyValueW,
+};
 use windows::Win32::System::Threading::{
     OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SW_RESTORE,
-    SetForegroundWindow, ShowWindow,
+    EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, PostMessageW,
+    RegisterWindowMessageW, SW_RESTORE, SetForegroundWindow, ShowWindow,
 };
-use windows::core::{BOOL, PWSTR};
+use windows::core::{BOOL, HSTRING, PCWSTR, PWSTR, w};
 
 use crate::args::{self, Command};
 use crate::links::Links;
 use crate::poll::{self, HubState};
+use crate::promote::{self, Entry, Promote};
 use crate::view::{self, MenuAction, OpenStep};
 
 /// This tray's version (the workspace's).
@@ -93,7 +100,10 @@ pub fn run() {
             let handle = app.handle().clone();
             let icon = app.default_window_icon().cloned();
             match build_tray(&handle, &links, icon) {
-                Ok((tray, version_item)) => spawn_poll(links.version.clone(), Some(tray), Some(version_item)),
+                Ok((tray, version_item)) => {
+                    spawn_promote(tray.clone());
+                    spawn_poll(links.version.clone(), Some(tray), Some(version_item));
+                }
                 Err(e) => {
                     tracing::error!(error = %e, "the tray icon could not be set up; polling the hub for the log only");
                     spawn_poll(links.version.clone(), None, None);
@@ -469,4 +479,208 @@ fn show(tray: Option<&TrayIcon>, version_item: Option<&MenuItem<Wry>>, state: &H
     {
         tracing::warn!(error = %e, "the version line did not update");
     }
+}
+
+/// The key under `HKCU` that holds the notification-icon entries.
+const ICON_SETTINGS: &str = r"Control Panel\NotifyIconSettings";
+
+/// Keeps the icon shown after an update (#280): a thread that waits for this
+/// tray's entry, carries the shown choice to it ([`promote::decide`]) and
+/// adds the icon again so Explorer reads it.
+fn spawn_promote(tray: TrayIcon) {
+    let own = match std::env::current_exe() {
+        Ok(exe) => exe.display().to_string(),
+        Err(e) => {
+            tracing::warn!(error = %e, "icon: this tray's path is unknown; its shown choice is left to Windows");
+            return;
+        }
+    };
+    let spawned = thread::Builder::new()
+        .name("icon-promote".into())
+        .spawn(move || promote_icon(&tray, &own));
+    if let Err(e) = spawned {
+        tracing::error!(error = %e, "icon: the promote thread could not start");
+    }
+}
+
+/// Carries out [`promote::decide`] for the tray running from `own`.
+fn promote_icon(tray: &TrayIcon, own: &str) {
+    for _ in 0..promote::TRIES {
+        let entries = match icon_entries() {
+            Ok(entries) => entries,
+            Err(e) => {
+                tracing::warn!(error = %e, "icon: the notification-icon entries could not be read");
+                return;
+            }
+        };
+        match promote::decide(&entries, own) {
+            Promote::Wait => thread::sleep(promote::EVERY),
+            Promote::Leave => {
+                tracing::info!(
+                    exe = own,
+                    "icon: its entry keeps its shown choice; left as it is"
+                );
+                return;
+            }
+            Promote::Set(key) => {
+                match promote_entry(&key).and_then(|()| add_again(tray)) {
+                    Ok(()) => tracing::info!(
+                        exe = own,
+                        key,
+                        is_promoted = ?read_promoted(&key),
+                        "icon: shown in the taskbar, the icon added again"
+                    ),
+                    Err(e) => {
+                        tracing::warn!(exe = own, key, error = %e, "icon: could not be shown")
+                    }
+                }
+                return;
+            }
+        }
+    }
+    tracing::warn!(
+        exe = own,
+        "icon: Windows wrote no entry for this tray; its shown choice is left to Windows"
+    );
+}
+
+/// The notification-icon entries under `HKCU` (an entry without an
+/// `ExecutablePath` is left out).
+fn icon_entries() -> Result<Vec<Entry>, String> {
+    let mut root = HKEY::default();
+    let path = HSTRING::from(ICON_SETTINGS);
+    // SAFETY: `root` is written by the call; the path lives over it.
+    let opened = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, &path, None, KEY_READ, &mut root) };
+    if opened != ERROR_SUCCESS {
+        return Err(format!("open {ICON_SETTINGS}: {opened:?}"));
+    }
+    let mut entries = Vec::new();
+    let mut failed = None;
+    for index in 0.. {
+        let mut name = [0u16; 256];
+        let mut len = u32::try_from(name.len()).unwrap_or(u32::MAX);
+        // SAFETY: `name` holds `len` characters; the call writes at most that.
+        let read = unsafe {
+            RegEnumKeyExW(
+                root,
+                index,
+                Some(PWSTR(name.as_mut_ptr())),
+                &mut len,
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+        if read == ERROR_NO_MORE_ITEMS {
+            break;
+        }
+        if read != ERROR_SUCCESS {
+            failed = Some(format!("enumerate {ICON_SETTINGS}: {read:?}"));
+            break;
+        }
+        let key = String::from_utf16_lossy(&name[..len as usize]);
+        let sub = HSTRING::from(key.as_str());
+        if let Some(exe) = reg_string(root, &sub, w!("ExecutablePath")) {
+            let promoted = reg_dword(root, &sub, w!("IsPromoted"));
+            entries.push(Entry { key, exe, promoted });
+        }
+    }
+    // SAFETY: `root` was opened above.
+    let _ = unsafe { RegCloseKey(root) };
+    failed.map_or(Ok(entries), Err)
+}
+
+/// A string value of `sub` under `root`; none when missing.
+fn reg_string(root: HKEY, sub: &HSTRING, value: PCWSTR) -> Option<String> {
+    let mut size = 0u32;
+    // SAFETY: a size query, no buffer.
+    let asked =
+        unsafe { RegGetValueW(root, sub, value, RRF_RT_REG_SZ, None, None, Some(&mut size)) };
+    if asked != ERROR_SUCCESS || size < 2 {
+        return None;
+    }
+    let mut buf = vec![0u16; (size as usize).div_ceil(2)];
+    // SAFETY: `buf` holds `size` bytes.
+    let read = unsafe {
+        RegGetValueW(
+            root,
+            sub,
+            value,
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&mut size),
+        )
+    };
+    if read != ERROR_SUCCESS {
+        return None;
+    }
+    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    Some(String::from_utf16_lossy(&buf[..end]))
+}
+
+/// A DWORD value of `sub` under `root`; none when missing.
+fn reg_dword(root: HKEY, sub: &HSTRING, value: PCWSTR) -> Option<u32> {
+    let mut number = 0u32;
+    let mut size = 4u32;
+    // SAFETY: `number` holds the 4 bytes asked for.
+    let read = unsafe {
+        RegGetValueW(
+            root,
+            sub,
+            value,
+            RRF_RT_REG_DWORD,
+            None,
+            Some((&raw mut number).cast()),
+            Some(&mut size),
+        )
+    };
+    (read == ERROR_SUCCESS).then_some(number)
+}
+
+/// `IsPromoted` of the entry `key` as read back; none when missing.
+fn read_promoted(key: &str) -> Option<u32> {
+    let path = HSTRING::from(format!(r"{ICON_SETTINGS}\{key}"));
+    reg_dword(HKEY_CURRENT_USER, &path, w!("IsPromoted"))
+}
+
+/// Writes `IsPromoted` = 1 on the entry `key`.
+fn promote_entry(key: &str) -> Result<(), String> {
+    let path = HSTRING::from(format!(r"{ICON_SETTINGS}\{key}"));
+    let one: u32 = 1;
+    // SAFETY: the data is the 4 bytes of `one`.
+    let written = unsafe {
+        RegSetKeyValueW(
+            HKEY_CURRENT_USER,
+            &path,
+            w!("IsPromoted"),
+            REG_DWORD.0,
+            Some((&raw const one).cast()),
+            4,
+        )
+    };
+    if written == ERROR_SUCCESS {
+        Ok(())
+    } else {
+        Err(format!("write IsPromoted on {key}: {written:?}"))
+    }
+}
+
+/// Adds the icon again: the shell's `TaskbarCreated` message to the icon's
+/// own window, on which tray-icon removes and adds it (a state change alone
+/// does not make Explorer read `IsPromoted` again).
+fn add_again(tray: &TrayIcon) -> Result<(), String> {
+    let hwnd = tray
+        .with_inner_tray_icon(|inner| inner.window_handle() as isize)
+        .map_err(|e| format!("the icon's window: {e}"))?;
+    // SAFETY: a constant string.
+    let message = unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) };
+    if message == 0 {
+        return Err("RegisterWindowMessageW(TaskbarCreated) failed".to_string());
+    }
+    // SAFETY: the window belongs to this process's icon; posting needs no
+    // more than its handle.
+    unsafe { PostMessageW(Some(HWND(hwnd as *mut _)), message, WPARAM(0), LPARAM(0)) }
+        .map_err(|e| format!("post TaskbarCreated: {e}"))
 }

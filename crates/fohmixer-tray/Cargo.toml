@@ -36,9 +36,11 @@ tracing-appender = "0.2"
 # %LOCALAPPDATA% for the log folder.
 dirs = "6.0"
 # Open with an app command (#280): find the open app window (its title and
-# its process's image) and bring it to the front.
+# its process's image) and bring it to the front; the icon's shown choice in
+# `HKCU\Control Panel\NotifyIconSettings` (#280, `crate::promote`).
 windows = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
 ] }

@@ -30,6 +30,7 @@ pub mod args;
 pub mod links;
 pub mod logs;
 pub mod poll;
+pub mod promote;
 pub mod view;
 
 #[cfg(windows)]
