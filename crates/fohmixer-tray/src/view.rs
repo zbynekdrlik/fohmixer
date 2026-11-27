@@ -91,6 +91,8 @@ pub fn app_page(app: &[String]) -> Option<&str> {
 /// address (`localhost:8480/`, with or without its scheme), the browser's
 /// error page while the hub does not answer its host (`localhost`). A tab
 /// window adds ` - <browser>` to any title, so a title with ` - ` is none.
+/// Accepted: a window of the same program titled just the host on another
+/// page of it (none on the MBC PC: Brave runs only the app window there).
 pub fn titled_by_page(title: &str, page: &str) -> bool {
     let address = page.split_once("://").map_or(page, |(_, rest)| rest);
     let host = address.split([':', '/']).next().unwrap_or(address);
@@ -98,8 +100,17 @@ pub fn titled_by_page(title: &str, page: &str) -> bool {
     !host.is_empty()
         && !title.contains(" - ")
         && (title == host
-            || title.starts_with(bare)
-            || title.starts_with(page.trim_end_matches('/')))
+            || shows_address(title, bare)
+            || shows_address(title, page.trim_end_matches('/')))
+}
+
+/// Whether `title` is `address`, alone or followed by its path, query or
+/// fragment (never another port that begins with it: `localhost:80` is not
+/// `localhost:8080`).
+fn shows_address(title: &str, address: &str) -> bool {
+    title
+        .strip_prefix(address)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['/', '?', '#']))
 }
 
 /// Whether a visible top-level window is the app window (#280): its title is
@@ -474,6 +485,18 @@ mod tests {
         // A page given without a scheme.
         assert!(titled_by_page("localhost", "localhost:8480/"));
         assert!(titled_by_page("localhost:8480/", "localhost:8480"));
+    }
+
+    #[test]
+    fn another_port_that_begins_with_the_pages_is_not_its_address() {
+        let page = "http://localhost:80/";
+        assert!(!titled_by_page("localhost:8080/", page));
+        assert!(!titled_by_page("http://localhost:8080/", page));
+        assert!(titled_by_page("localhost:80", page));
+        assert!(titled_by_page("localhost:80/x", page));
+        assert!(titled_by_page("localhost:80?a", page));
+        assert!(titled_by_page("localhost:80#a", page));
+        assert!(titled_by_page("http://localhost:80/", page));
     }
 
     #[test]
