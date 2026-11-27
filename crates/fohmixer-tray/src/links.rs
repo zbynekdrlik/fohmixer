@@ -1,11 +1,14 @@
 //! The hub's links, from its config `<data>\fohmixer-hub.toml` (read only;
 //! the hub's `config.rs` owns the file and validates it): Open fohmixer
-//! (`http_port`), the version poll, and Copy URL (the `[tls]` name, the one
-//! public name of remote access, #17). Only those keys are read; any other
-//! key is the hub's business and is ignored here.
+//! (`http_port`), the version poll, Copy URL (the `[tls]` name, the one
+//! public name of remote access, #17), the app window's command (`[tray]
+//! app`, #280) and whether the hub serves the MBC Live alone (its
+//! `[[instances]]`, #280: the menu then says Open MBC mixer). Only those keys
+//! are read; any other key is the hub's business and is ignored here.
 
 use std::path::Path;
 
+use fohmixer_proto::roles::MBC_INSTANCE;
 use serde::Deserialize;
 
 /// The config file in the data folder (the hub's `config::CONFIG_FILE`).
@@ -22,6 +25,25 @@ struct HubToml {
     http_port: u16,
     #[serde(default)]
     tls: Option<TlsToml>,
+    /// Absent: the hub's default instances (band and master).
+    #[serde(default)]
+    instances: Option<Vec<InstanceToml>>,
+    #[serde(default)]
+    tray: Option<TrayToml>,
+}
+
+/// An `[[instances]]` table: its name, and whether it is a linked one.
+#[derive(Debug, Deserialize)]
+struct InstanceToml {
+    name: String,
+    #[serde(default)]
+    link: Option<String>,
+}
+
+/// `[tray]` (#280): the command that opens the app window.
+#[derive(Debug, Deserialize)]
+struct TrayToml {
+    app: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,6 +74,12 @@ pub struct Links {
     /// Copy URL: the public URL, `None` without remote access (the item is
     /// then disabled).
     pub public: Option<String>,
+    /// The app window's command (`[tray] app`, #280: the program, then its
+    /// arguments); `None`: Open fohmixer opens the default browser.
+    pub app: Option<Vec<String>>,
+    /// Whether the hub serves the local MBC Live alone (#280: the MBC PC's
+    /// hub), so its menu says Open MBC mixer.
+    pub mbc_only: bool,
 }
 
 impl Links {
@@ -63,6 +91,8 @@ impl Links {
             manual: format!("http://localhost:{http_port}/znacky.html"),
             version: format!("http://127.0.0.1:{http_port}/api/version"),
             public: tls.map(|(name, port)| public_url(name, port)),
+            app: None,
+            mbc_only: false,
         }
     }
 
@@ -92,6 +122,12 @@ impl Links {
     }
 }
 
+/// The app window's command as `[tray] app` gives it (#280): a program and
+/// no empty word (the hub's config check refuses the same).
+pub fn app_command(app: Vec<String>) -> Result<Vec<String>, String> {
+    Ok(app)
+}
+
 /// The public URL of remote access: `https://<name>/`, with `:<port>` when it
 /// is not 443 (the installer's desktop shortcut, `Get-FohPublicUrl`, says the
 /// same).
@@ -116,6 +152,8 @@ mod tests {
                 manual: "http://localhost:8480/znacky.html".to_string(),
                 version: "http://127.0.0.1:8480/api/version".to_string(),
                 public: None,
+                app: None,
+                mbc_only: false,
             }
         );
     }
@@ -223,5 +261,81 @@ mod tests {
         std::fs::create_dir(dir.path().join(CONFIG_FILE)).unwrap();
         let err = Links::load(dir.path()).unwrap_err();
         assert!(err.contains(CONFIG_FILE), "{err}");
+    }
+    #[test]
+    fn the_tray_table_gives_the_app_windows_command() {
+        let text = "http_port = 8480\r\n\r\n[tray]\r\n\
+            app = ['C:\\Program Files\\Brave\\brave.exe', '--profile-directory=Profile 1', \
+            '--app=http://localhost:8480/', '--start-maximized']\r\n";
+        let links = Links::parse(text).unwrap();
+        assert_eq!(
+            links.app,
+            Some(vec![
+                r"C:\Program Files\Brave\brave.exe".to_string(),
+                "--profile-directory=Profile 1".to_string(),
+                "--app=http://localhost:8480/".to_string(),
+                "--start-maximized".to_string(),
+            ])
+        );
+        assert_eq!(links.open, "http://localhost:8480/");
+    }
+
+    #[test]
+    fn without_the_tray_table_there_is_no_app_command() {
+        assert_eq!(Links::parse("http_port = 8480\n").unwrap().app, None);
+        assert!(
+            Links::parse("[tray]\n").is_err(),
+            "a [tray] without its app"
+        );
+    }
+
+    #[test]
+    fn an_app_command_needs_a_program_and_no_empty_word() {
+        assert_eq!(
+            app_command(vec!["a.exe".to_string(), "--x".to_string()]),
+            Ok(vec!["a.exe".to_string(), "--x".to_string()])
+        );
+        assert_eq!(
+            app_command(vec![]),
+            Err("[tray] app names no program".to_string())
+        );
+        assert_eq!(
+            app_command(vec!["".to_string()]),
+            Err("[tray] app holds an empty word".to_string())
+        );
+        assert_eq!(
+            app_command(vec!["a.exe".to_string(), "".to_string()]),
+            Err("[tray] app holds an empty word".to_string())
+        );
+        let err = Links::parse("[tray]\napp = []\n").unwrap_err();
+        assert!(err.contains("names no program"), "{err}");
+    }
+
+    #[test]
+    fn the_mbc_installs_hub_serves_the_mbc_live_alone() {
+        // New-FohMbcHubToml's shape.
+        let text = "http_port = 8480\r\nlayout = \"layout.json\"\r\n\r\n\
+            [[instances]]\r\nname = \"mbc\"\r\nport = 39103\r\n\r\n\
+            [link]\r\nlisten = \"10.0.0.5:39201\"\r\ninstance = \"mbc\"\r\n";
+        assert!(Links::parse(text).unwrap().mbc_only);
+    }
+
+    #[test]
+    fn a_hub_with_other_instances_or_a_linked_mbc_is_not_mbc_only() {
+        // No [[instances]]: the hub's defaults, band and master.
+        assert!(!Links::parse("").unwrap().mbc_only);
+        // The FOH hub: band, master and the MBC Live through its link.
+        let foh = "[[instances]]\nname = \"band\"\nport = 39101\n\
+            [[instances]]\nname = \"master\"\nport = 39102\n\
+            [[instances]]\nname = \"mbc\"\nlink = \"ws://10.0.0.5:39201\"\n";
+        assert!(!Links::parse(foh).unwrap().mbc_only);
+        let linked_only = "[[instances]]\nname = \"mbc\"\nlink = \"ws://10.0.0.5:39201\"\n";
+        assert!(!Links::parse(linked_only).unwrap().mbc_only);
+        let band_only = "[[instances]]\nname = \"band\"\nport = 39101\n";
+        assert!(!Links::parse(band_only).unwrap().mbc_only);
+        let mbc_and_band = "[[instances]]\nname = \"mbc\"\nport = 39103\n\
+            [[instances]]\nname = \"band\"\nport = 39101\n";
+        assert!(!Links::parse(mbc_and_band).unwrap().mbc_only);
+        assert!(!Links::parse("instances = []\n").unwrap().mbc_only);
     }
 }

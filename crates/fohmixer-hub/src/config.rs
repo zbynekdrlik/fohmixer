@@ -2087,6 +2087,24 @@ mod tests {
         assert!(refused("engage_delay_ms = 1000\n").contains("unknown field"));
     }
 
+    /// `[tray] app` (#280): the tray's app window command, accepted and
+    /// checked here (the tray reads it); a program and no empty word.
+    #[test]
+    fn the_tray_table_takes_an_app_command() {
+        let text = "[tray]\napp = ['C:\\Brave\\brave.exe', '--profile-directory=Profile 1', \
+            '--app=http://localhost:8480/']\n";
+        assert!(Config::parse(text, &data()).is_ok());
+        assert!(Config::parse("[tray]\napp = ['brave.exe']\n", &data()).is_ok());
+        let refused = |text: &str| format!("{:#}", Config::parse(text, &data()).unwrap_err());
+        assert!(refused("[tray]\napp = []\n").contains("[tray] app names no program"));
+        assert!(refused("[tray]\napp = ['']\n").contains("[tray] app holds an empty word"));
+        assert!(
+            refused("[tray]\napp = ['a.exe', '']\n").contains("[tray] app holds an empty word")
+        );
+        assert!(refused("[tray]\n").contains("missing field `app`"));
+        assert!(refused("[tray]\napp = ['a.exe']\nlabel = 'x'\n").contains("unknown field"));
+    }
+
     /// The scene read from Companion is gone (#207: Companion pushes the
     /// scene to `POST /api/scene`): its old `[scenes]` table is refused.
     #[test]
