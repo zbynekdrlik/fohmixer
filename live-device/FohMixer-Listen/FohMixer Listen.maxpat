@@ -1892,10 +1892,11 @@
 				"box": {
 					"id": "obj-poll-route",
 					"maxclass": "newobj",
-					"text": "route /fohmixer/listen/poll /fohmixer/listen/frame",
+					"text": "route /fohmixer/listen/poll /fohmixer/listen/frame /fohmixer/listen/move",
 					"numinlets": 2,
-					"numoutlets": 3,
+					"numoutlets": 4,
 					"outlettype": [
+						"",
 						"",
 						"",
 						""
@@ -1904,6 +1905,25 @@
 						200.0,
 						1000.0,
 						300.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-poll-move",
+					"maxclass": "newobj",
+					"text": "t b b",
+					"numinlets": 1,
+					"numoutlets": 2,
+					"outlettype": [
+						"bang",
+						"bang"
+					],
+					"patching_rect": [
+						360.0,
+						1000.0,
+						50.0,
 						22.0
 					]
 				}
@@ -4224,6 +4244,42 @@
 					"destination": [
 						"obj-id-tick",
 						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-poll-route",
+						2
+					],
+					"destination": [
+						"obj-poll-move",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-poll-move",
+						1
+					],
+					"destination": [
+						"obj-poll-draw",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-poll-move",
+						0
+					],
+					"destination": [
+						"obj-pull-gate",
+						1
 					]
 				}
 			}

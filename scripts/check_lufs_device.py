@@ -977,7 +977,10 @@ def check(root: Path) -> list[str]:
 
     poll = lufs_pull_check.poll_constants(wire_text)
     if poll is None:
-        names = "POLL_PORT_MIN, POLL_PORT_SPAN, LUFS_POLL_ADDRESS or METER_POLL_ADDRESS"
+        names = (
+            "POLL_PORT_MIN, POLL_PORT_SPAN, LUFS_POLL_ADDRESS, METER_POLL_ADDRESS, "
+            "LUFS_MOVE_ADDRESS or METER_MOVE_ADDRESS"
+        )
         return [f"{WIRE.as_posix()}: no {names} line"]
     return [error for device in DEVICES for error in device_errors(root, device, port, poll)]
 

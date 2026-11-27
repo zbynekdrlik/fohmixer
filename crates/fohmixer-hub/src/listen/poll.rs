@@ -30,7 +30,9 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use fohmixer_proto::listen::wire::{FRAME_POLL_MS, POLL_MS, frame_datagram, poll_datagram};
+use fohmixer_proto::listen::wire::{
+    FRAME_POLL_MS, POLL_MS, frame_datagram, move_datagram, poll_datagram,
+};
 use tokio::task::JoinHandle;
 
 use super::Listen;
@@ -39,6 +41,7 @@ use crate::lufs_udp::{grid_clock, poll_socket, refused_sends, round_counts};
 /// One round at `now`: each device heard gets its poll, on or off (one a
 /// port, [`Listen::polls`]).
 pub fn poll_round(poller: &std::net::UdpSocket, listen: &Listen, now: Instant) {
+    send_moves(poller, listen);
     let polls = listen.polls(now);
     let failed: u64 = [true, false]
         .into_iter()
@@ -55,6 +58,22 @@ pub fn poll_round(poller: &std::net::UdpSocket, listen: &Listen, now: Instant) {
 }
 
 /// One frame round at `now`: the device selected, if any, gets a frame poll.
+/// Sends each shared port found its move (#264), before the round's
+/// polls: one `listen` record `shared_port` (with `sent`) and one warn line
+/// each.
+pub fn send_moves(poller: &std::net::UdpSocket, listen: &Listen) {
+    for (port, mut fields) in listen.take_moves() {
+        let sent = refused_sends(poller, &move_datagram(), [port]) == 0;
+        tracing::warn!(
+            port,
+            sent,
+            "listen: two devices drew one poll port: moved the one that hears"
+        );
+        fields["sent"] = serde_json::json!(sent);
+        listen.events.record("listen", fields);
+    }
+}
+
 pub fn frame_round(poller: &std::net::UdpSocket, listen: &Listen, now: Instant) {
     let Some(port) = listen.frame_port(now) else {
         return;

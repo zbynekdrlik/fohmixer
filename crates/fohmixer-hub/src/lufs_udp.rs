@@ -37,6 +37,18 @@
 //! Live main thread stalled past the stale window) comes back by answering
 //! the polls queued at its `udpreceive @defer 1` meanwhile, whose datagram
 //! names its port again (`Polls::heard`).
+//!
+//! **A shared port (#264, the design comment 7228766032):** two devices
+//! can draw one poll port, and on the FOH PC Windows gives its datagrams to
+//! the first binder only, so the other one is deaf. `Polls` keeps each
+//! key's port through `poll_ports::PollPorts`: when a key that named a
+//! port first is heard after a newer key named it, the listener sends the
+//! port one [`wire::move_datagram`] of the hearing key's kind
+//! ([`send_moves`], at most once a port every `MOVE_EVERY_MS`), one `lufs`
+//! record `shared_port` (warn) with both keys, and polls the port on for
+//! both keys' kinds for that window; the device that hears draws another
+//! port, a `moved` record names it, and the deaf one answers on the old
+//! port from then on.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -53,6 +65,7 @@ use tokio::task::JoinHandle;
 
 use crate::events::EventLog;
 use crate::link::server::Tap;
+use crate::poll_ports::{PollPorts, Shared};
 use crate::router::RouterMsg;
 use crate::rules::lufs::bound::{Admit, Bound, Dropping, FORGET_MS, Key};
 use crate::rules::lufs::{is_stale, kind_word};
@@ -160,48 +173,108 @@ impl Counters {
 }
 
 /// The ports to poll (#264): each polled-form key's port and when the key
-/// was last heard. A key is kept only while the bound keeps it (at most
+/// was last heard (`poll_ports::PollPorts`), and the shared ports found
+/// and not yet moved. A key is kept only while the bound keeps it (at most
 /// `bound::MAX_KEYS`), and is dropped once lost.
 #[derive(Debug, Default)]
 pub struct Polls {
-    keys: BTreeMap<Key, (u16, Instant)>,
+    ports: PollPorts<Key>,
+    shared: Vec<Shared<Key>>,
 }
 
 impl Polls {
     /// A reading the bound kept (taken or dropped, never `Full`): its key's
-    /// port, heard at `now`. A pushed-form reading names none.
-    pub fn heard(&mut self, key: &Key, port: Option<u16>, now: Instant) {
-        if let Some(port) = port {
-            self.keys.insert(key.clone(), (port, now));
-        }
+    /// port, heard at `now`; the port it named before when it moved. A
+    /// pushed-form reading names none. A port found shared waits for
+    /// [`send_moves`].
+    pub fn heard(&mut self, key: &Key, port: Option<u16>, now: Instant) -> Option<u16> {
+        let port = port?;
+        let heard = self
+            .ports
+            .heard(key, port, now, |other, at| !lost(other, at, now));
+        self.shared.extend(heard.shared);
+        heard.from
     }
 
-    /// The ports of `kind`'s keys to poll at `now`, each once: the lost
-    /// keys of every kind are dropped first.
+    /// The shared ports found since the last call.
+    pub fn take_shared(&mut self) -> Vec<Shared<Key>> {
+        std::mem::take(&mut self.shared)
+    }
+
+    /// The ports of `kind`'s keys to poll at `now`, each once, and the ports
+    /// moved within the window for a key of `kind`: the lost keys of every
+    /// kind are dropped first.
     pub fn due(&mut self, now: Instant, kind: DeviceKind) -> BTreeSet<u16> {
-        self.keys.retain(|key, (_, heard)| !lost(key, *heard, now));
-        self.keys
-            .iter()
-            .filter(|(key, _)| key.kind == kind)
-            .map(|(_, (port, _))| *port)
-            .collect()
+        self.ports.forget(now, |key, heard| !lost(key, heard, now));
+        self.ports.due(now, |key| key.kind == kind)
     }
 
     /// The ports polled now, of every kind, each once.
     pub fn ports(&self) -> usize {
-        let ports: BTreeSet<u16> = self.keys.values().map(|(port, _)| *port).collect();
-        ports.len()
+        self.ports.ports()
     }
 
     /// The keys polled.
     pub fn len(&self) -> usize {
-        self.keys.len()
+        self.ports.len()
     }
 
     /// No key polled.
     pub fn is_empty(&self) -> bool {
-        self.keys.is_empty()
+        self.ports.is_empty()
     }
+}
+
+/// A key's fields in a record: its kind, device and parents.
+fn key_fields(key: &Key) -> Value {
+    json!({"kind": kind_word(key.kind), "device": key.device, "parents": key.parents})
+}
+
+/// The `lufs` record of a shared port's move (#264): the key moved (it
+/// answers there), the one that stays, the move's address and whether the
+/// socket took it. Warn class.
+pub fn shared_fields(shared: &Shared<Key>, sent: bool) -> Value {
+    json!({
+        "what": "shared_port",
+        "port": shared.port,
+        "moved": key_fields(&shared.hearing),
+        "stays": key_fields(&shared.deaf),
+        "move": shared.hearing.kind.move_address(),
+        "sent": sent,
+        "warn": true,
+    })
+}
+
+/// The `lufs` record of a key that names a new poll port (#264).
+pub fn moved_fields(key: &Key, from: u16, to: u16) -> Value {
+    json!({
+        "what": "moved",
+        "kind": kind_word(key.kind),
+        "device": key.device,
+        "parents": key.parents,
+        "from": from,
+        "to": to,
+    })
+}
+
+/// Sends each shared port found its move ([`wire::move_datagram`] of the
+/// hearing key's kind) from `poller`: one `shared_port` record and one warn
+/// line each. How many moves it handled.
+pub fn send_moves(poller: &std::net::UdpSocket, polls: &mut Polls, events: &EventLog) -> u64 {
+    let shared = polls.take_shared();
+    for share in &shared {
+        let datagram = wire::move_datagram(share.hearing.kind);
+        let sent = refused_sends(poller, &datagram, [share.port]) == 0;
+        tracing::warn!(
+            port = share.port,
+            moved = ?share.hearing.parents,
+            stays = ?share.deaf.parents,
+            sent,
+            "lufs: two devices drew one poll port: moved the one that hears"
+        );
+        events.record("lufs", shared_fields(share, sent));
+    }
+    u64::try_from(shared.len()).unwrap_or(u64::MAX)
 }
 
 /// Whether a key last heard at `heard` is lost at `now` (the LUFS rule's
@@ -439,8 +512,10 @@ pub fn handle_datagram(
     counters.admitted(admit);
     if admit != Admit::Full
         && let Some(polls) = polls
+        && let (Some(from), Some(to)) = (polls.heard(&key, reading.port, now), reading.port)
     {
-        polls.heard(&key, reading.port, now);
+        tracing::info!(device = key.device, parents = ?key.parents, from, to, "lufs: a device names a new poll port");
+        events.record("lufs", moved_fields(&key, from, to));
     }
     if let Some(change) = change {
         let fields = dropping_fields(&key, change);
@@ -578,6 +653,7 @@ async fn listen(
         ) {
             return;
         }
+        send_moves(&poller, &mut polls, &events);
         if sweep_due(swept, now) {
             swept = now;
             if let Some(cutoff) = now.checked_sub(Duration::from_millis(FORGET_MS)) {

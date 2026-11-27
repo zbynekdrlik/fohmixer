@@ -96,7 +96,9 @@ fn a_newer_key_no_longer_kept_is_no_share() {
         "the newer key's window ended at 510 ms"
     );
     assert_eq!(
-        heard(&mut ports, 'a', P, t0 + ms(509)).shared.map(|s| s.deaf),
+        heard(&mut ports, 'a', P, t0 + ms(509))
+            .shared
+            .map(|s| s.deaf),
         Some('b'),
         "a clock read late still judges by its own now"
     );

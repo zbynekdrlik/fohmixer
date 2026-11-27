@@ -96,6 +96,7 @@ pub mod pepper;
 pub mod pin_hash;
 pub mod pin_store;
 pub mod plugwin;
+pub mod poll_ports;
 pub mod presenter;
 pub mod provision;
 pub mod ration;

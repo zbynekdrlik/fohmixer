@@ -12,7 +12,9 @@ and Device On turning 1. Its own:
 
 - one `route` for both of the hub's datagrams: the poll (its `on` int)
   into the gate, the frame poll into the frame gate (`FRAME_GATE`, which
-  the select opens), whose bang alone drives `jit.catch~`;
+  the select opens), whose bang alone drives `jit.catch~`, and the hub's
+  move (#264) into `t b b`, the port draw then the gate, as the LUFS
+  device's;
 - the pull is `t b b b i`: the int first into the select's `sel 1` (a bang,
   the load's or Device On's, is 0: off), then the re-read's count
   (`poll_reread_check`, every `REREAD_POLLS`th poll), the sample rate
@@ -22,6 +24,7 @@ and Device On turning 1. Its own:
 from __future__ import annotations
 
 from lufs_pull_check import (
+    POLL_MOVE,
     POLL_ROUTE,
     PULL,
     PULL_GATE,
@@ -38,20 +41,20 @@ SELECT = "obj-poll-sel"
 SINK = "obj-announce"
 
 
-def listen_shape(poll: Poll, poll_address: str, frame_address: str) -> Shape:
+def listen_shape(poll: Poll, poll_address: str, frame_address: str, move_address: str) -> Shape:
     """The Listen device's pull: the LUFS device's poll, port and Device On
     boxes with its own route and a pull of four outlets."""
     boxes = {
         box: words for box, words in pull_boxes(poll).items() if not box.startswith("obj-snap-")
     }
     boxes |= {
-        POLL_ROUTE: ["route", poll_address, frame_address],
+        POLL_ROUTE: ["route", poll_address, frame_address, move_address],
         PULL: ["t", "b", "b", "b", "i"],
         FRAME_GATE: ["gate"],
     }
     wiring = {
         key: sources
-        for key, sources in pull_wiring(SINK).items()
+        for key, sources in pull_wiring(SINK, move_outlet=2).items()
         if not key[0].startswith("obj-snap-")
     }
     wiring |= {
@@ -61,7 +64,7 @@ def listen_shape(poll: Poll, poll_address: str, frame_address: str) -> Shape:
         (SELECT, 1): [],
     }
     outputs = pull_outputs() | {
-        POLL_ROUTE: [[0, PULL_GATE, 1], [1, FRAME_GATE, 1]],
+        POLL_ROUTE: [[0, PULL_GATE, 1], [1, FRAME_GATE, 1], [2, POLL_MOVE, 0]],
         PULL: [
             [0, SINK, 0],
             [0, "obj-hello-gate", 1],

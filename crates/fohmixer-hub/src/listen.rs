@@ -27,6 +27,14 @@
 //! the track leaves or a take moves the hub's one track away, so an idle
 //! device costs Live's audio thread nothing.
 //!
+//! A port two devices drew (#264, the design comment 7228766032: on the
+//! FOH PC only the first binder hears it) is found by
+//! `poll_ports::PollPorts` at [`Listen::heard`]; the next poll round sends
+//! it one `/fohmixer/listen/move` ([`Listen::take_moves`], at most once a
+//! port every `MOVE_EVERY_MS`) and polls it on for that window, so the
+//! device that stays is learned again; `listen` records `shared_port`
+//! (warn) and `moved`.
+//!
 //! This file is the shared state; its decisions are small pure functions
 //! ([`choose`], [`start_of`], [`rack::start_switches`],
 //! [`rack::leave_switch`]) with their own tests.
@@ -50,6 +58,7 @@ use serde_json::{Value, json};
 use tokio::sync::{broadcast, oneshot, watch};
 
 use crate::events::EventLog;
+use crate::poll_ports::PollPorts;
 
 /// The packets the channel keeps for a slow socket (1.28 s).
 pub const PACKETS: usize = 64;
@@ -174,6 +183,42 @@ struct State {
     devices: BTreeMap<i32, Heard>,
     target: Option<Target>,
     turn: i32,
+    /// The devices' poll ports (#264) and the shared ports to move, each
+    /// with its record's fields.
+    ports: PollPorts<i32>,
+    moves: Vec<(u16, Value)>,
+}
+
+/// A device's fields in a record: its id, track and set (empty when it is
+/// no longer kept).
+fn device_fields(devices: &BTreeMap<i32, Heard>, device: i32) -> Value {
+    let (track, set) = devices
+        .get(&device)
+        .and_then(|h| h.announce.track_and_set())
+        .unwrap_or(("", ""));
+    json!({"device": device, "track": track, "set": set})
+}
+
+/// The `listen` record of a shared port's move (#264), before its send:
+/// the device moved (it answers there) and the one that stays. Warn class.
+pub fn shared_fields(devices: &BTreeMap<i32, Heard>, port: u16, moved: i32, stays: i32) -> Value {
+    json!({
+        "what": "shared_port",
+        "port": port,
+        "moved": device_fields(devices, moved),
+        "stays": device_fields(devices, stays),
+        "move": fohmixer_proto::listen::wire::MOVE_ADDRESS,
+        "warn": true,
+    })
+}
+
+/// The `listen` record of a device that names a new poll port (#264).
+pub fn moved_fields(devices: &BTreeMap<i32, Heard>, device: i32, from: u16, to: u16) -> Value {
+    let mut fields = device_fields(devices, device);
+    fields["what"] = json!("moved");
+    fields["from"] = json!(from);
+    fields["to"] = json!(to);
+    fields
 }
 
 /// The counts `/api/status` shows.
@@ -447,9 +492,30 @@ impl Listen {
             self.counters.refuse("devices");
             return;
         }
-        state
-            .devices
-            .insert(announce.device, Heard { announce, at: now });
+        let (device, port) = (announce.device, announce.port);
+        state.devices.insert(device, Heard { announce, at: now });
+        let heard = state
+            .ports
+            .heard(&device, port, now, |_, at| fresh(at, now));
+        if let Some(from) = heard.from {
+            tracing::info!(
+                device,
+                from,
+                to = port,
+                "listen: a device names a new poll port"
+            );
+            let fields = moved_fields(&state.devices, device, from, port);
+            self.events.record("listen", fields);
+        }
+        if let Some(shared) = heard.shared {
+            let fields = shared_fields(&state.devices, port, shared.hearing, shared.deaf);
+            state.moves.push((port, fields));
+        }
+    }
+
+    /// The shared ports to move now, each with its record's fields (#264).
+    pub fn take_moves(&self) -> Vec<(u16, Value)> {
+        std::mem::take(&mut self.state().moves)
     }
 
     /// Whether `device`'s stream is the one listened to at `now`.
@@ -466,11 +532,15 @@ impl Listen {
     /// and Max cannot report a failed bind) gets one poll, on when either
     /// is the target's ([`one_poll_a_port`]).
     pub fn polls(&self, now: Instant) -> Vec<(u16, bool)> {
-        let state = self.state();
+        let mut state = self.state();
+        state.ports.forget(now, |_, at| fresh(at, now));
         let chosen = state
             .target
             .as_ref()
             .map(|t| choose(&state.devices, &t.set, &t.track, now));
+        // A port moved within its window is polled on, off (#264): the
+        // device that stays there hears once the other left.
+        let moved = state.ports.due(now, |_| true);
         one_poll_a_port(
             state
                 .devices
@@ -481,7 +551,8 @@ impl Listen {
                         h.announce.port,
                         chosen == Some(Choice::Device(h.announce.device)),
                     )
-                }),
+                })
+                .chain(moved.into_iter().map(|port| (port, false))),
         )
     }
 
