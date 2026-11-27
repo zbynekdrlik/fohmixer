@@ -527,7 +527,8 @@ fn promote_icon(tray: &TrayIcon, own: &str) {
                     Ok(()) => tracing::info!(
                         exe = own,
                         key,
-                        "icon: shown in the taskbar (IsPromoted 1), the icon added again"
+                        is_promoted = ?read_promoted(&key),
+                        "icon: shown in the taskbar, the icon added again"
                     ),
                     Err(e) => {
                         tracing::warn!(exe = own, key, error = %e, "icon: could not be shown")
@@ -636,6 +637,12 @@ fn reg_dword(root: HKEY, sub: &HSTRING, value: PCWSTR) -> Option<u32> {
         )
     };
     (read == ERROR_SUCCESS).then_some(number)
+}
+
+/// `IsPromoted` of the entry `key` as read back; none when missing.
+fn read_promoted(key: &str) -> Option<u32> {
+    let path = HSTRING::from(format!(r"{ICON_SETTINGS}\{key}"));
+    reg_dword(HKEY_CURRENT_USER, &path, w!("IsPromoted"))
 }
 
 /// Writes `IsPromoted` = 1 on the entry `key`.

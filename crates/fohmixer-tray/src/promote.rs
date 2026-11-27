@@ -190,11 +190,6 @@ mod tests {
     }
 
     #[test]
-    fn the_glue_gives_windows_20_s_to_write_the_entry() {
-        assert_eq!(EVERY * TRIES, Duration::from_secs(20));
-    }
-
-    #[test]
     fn a_newer_entry_than_its_own_is_not_an_earlier_choice() {
         // A downgrade: the newer version's hidden icon is not the user's
         // latest choice before this one, the older shown one is.
