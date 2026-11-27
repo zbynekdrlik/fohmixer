@@ -57,7 +57,6 @@ pub fn poll_round(poller: &std::net::UdpSocket, listen: &Listen, now: Instant) {
     listen.counters.polled(sent, failed);
 }
 
-/// One frame round at `now`: the device selected, if any, gets a frame poll.
 /// Sends each shared port found its move (#264), before the round's
 /// polls: one `listen` record `shared_port` (with `sent`) and one warn line
 /// each.
@@ -74,6 +73,7 @@ pub fn send_moves(poller: &std::net::UdpSocket, listen: &Listen) {
     }
 }
 
+/// One frame round at `now`: the device selected, if any, gets a frame poll.
 pub fn frame_round(poller: &std::net::UdpSocket, listen: &Listen, now: Instant) {
     let Some(port) = listen.frame_port(now) else {
         return;

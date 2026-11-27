@@ -176,6 +176,61 @@ fn three_keys_on_a_port_are_moved_one_window_apart_until_one_is_left() {
     );
 }
 
+#[test]
+fn a_key_that_moved_onto_another_devices_port_is_newer_there() {
+    // Its time on the port starts again: the device already there hears.
+    let t0 = Instant::now();
+    let mut ports = PollPorts::default();
+    heard(&mut ports, 'a', P, t0);
+    heard(&mut ports, 'c', Q, t0 + ms(10));
+    assert_eq!(heard(&mut ports, 'a', Q, t0 + ms(20)).from, Some(P));
+    assert_eq!(
+        heard(&mut ports, 'c', Q, t0 + ms(30)).shared,
+        Some(Shared {
+            port: Q,
+            hearing: 'c',
+            deaf: 'a',
+        })
+    );
+}
+
+#[test]
+fn a_key_heard_more_than_its_announce_is_never_taken_for_a_deaf_one() {
+    // The second review of #264: a first binder quiet for a moment (a
+    // stalled Live, Device On 0) while a newcomer announces, and a device
+    // that left and whose port a new device drew, were heard more than
+    // once: their staleness proves nothing.
+    let t0 = Instant::now();
+    let mut ports = PollPorts::default();
+    for n in 0..10 {
+        heard(&mut ports, 'a', P, t0 + ms(33 * n));
+    }
+    assert_eq!(
+        heard(&mut ports, 'b', P, t0 + ms(900)),
+        quiet(),
+        "the newcomer's announce: a quiet first binder"
+    );
+    assert_eq!(
+        heard(&mut ports, 'a', P, t0 + ms(1000)).shared,
+        Some(Shared {
+            port: P,
+            hearing: 'a',
+            deaf: 'b',
+        }),
+        "the first binder answers again: the newcomer is deaf"
+    );
+    // A device that left; a new one draws its port within the 15 s.
+    let mut ports = PollPorts::default();
+    for n in 0..10 {
+        heard(&mut ports, 'x', P, t0 + ms(33 * n));
+    }
+    for n in 0..30 {
+        let now = t0 + ms(2000 + 33 * n);
+        ports.forget(now, kept_at(now));
+        assert_eq!(heard(&mut ports, 'y', P, now), quiet(), "{n}");
+    }
+}
+
 fn lufs_key(kind: DeviceKind, device: i32, track: &str) -> PortKey {
     PortKey::Lufs(Key {
         kind,
@@ -250,6 +305,13 @@ fn a_keys_window_is_its_kinds_and_one_device_is_its_kind_and_id() {
     ));
     assert!(!PortKey::same_device(&PortKey::Listen(3), &meter));
     assert!(meter.is_lufs() && !PortKey::Listen(3).is_lufs());
+    // Two Lives count Max ids alike: the set tells their devices apart.
+    let other_live = PortKey::Lufs(Key {
+        kind: DeviceKind::Meter,
+        device: 3,
+        parents: ["Vox 1", "FOH Master", "-", "-"].map(str::to_string),
+    });
+    assert!(!PortKey::same_device(&meter, &other_live));
     // A rename on the port is no share in the hub's table.
     let table = PortTable::default();
     table.heard(meter.clone(), P, t0);

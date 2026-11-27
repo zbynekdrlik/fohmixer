@@ -17,15 +17,19 @@
 //! the one that hears there, and the port is shared with another key of
 //! another device when that other key is either (1) newer on the port and
 //! still kept (it named the port after this one and is deaf), or (2) no
-//! longer kept, remembered for [`REMEMBER_MS`] after it was last heard (it
-//! went stale while this one answers: its window ended before this one was
-//! heard again, its announce came in out of bind order, or an earlier move
-//! did not take). The hub moves the key that hears ([`Shared::hearing`]),
+//! longer kept and never heard after it named the port (a deaf device
+//! speaks only at its announce), remembered for [`REMEMBER_MS`] after it
+//! was last heard (it went stale while this one answers: its window ended
+//! before this one was heard again, its announce came in out of bind
+//! order, or an earlier move did not take). A key heard more than once
+//! there (a first binder quiet for a moment, a device that left and whose
+//! port a new one drew) is no deaf one. The hub moves the key that hears ([`Shared::hearing`]),
 //! at most once a port every [`MOVE_EVERY_MS`] ([`move_due`]), and polls
 //! the port on for the move's keys for that window ([`moving`]), so the
 //! deaf one, which hears once the other left, is learned again. A device
 //! moved or renamed in Live answers with a new key of the SAME device
-//! (kind and Max id, [`PortKey::same_device`]) on its old port: no share.
+//! (kind, Max id and Live set, [`PortKey::same_device`]) on its old
+//! port: no share.
 //! Two kept keys that named a port at the same time give no order: no
 //! share (inside one Live both devices share Max's socket and both hear: a
 //! move of the older one moves both, harmless).
@@ -36,7 +40,7 @@ use std::time::{Duration, Instant};
 
 use fohmixer_proto::listen::wire::{self as listen_wire, FORGET_MS};
 pub use fohmixer_proto::lufs::wire::MOVE_EVERY_MS;
-use fohmixer_proto::lufs::wire::{self as lufs_wire};
+use fohmixer_proto::lufs::wire::{self as lufs_wire, track_and_set};
 use serde_json::{Value, json};
 
 use crate::rules::lufs::bound::Key;
@@ -116,6 +120,15 @@ pub fn moving(at: Instant, now: Instant) -> bool {
     now.saturating_duration_since(at) < window()
 }
 
+/// Whether another key's `held` port names it deaf there although it is
+/// no longer `kept` (the design's second trigger): it was never heard
+/// after it named the port (a deaf device speaks only at its announce; a
+/// device that answered there and left, its port drawn again by a new
+/// one, or a first binder quiet for a moment, was heard more).
+fn deaf_stale(held: &Held, kept: bool) -> bool {
+    !kept && held.heard == held.since
+}
+
 /// Whether a key no longer kept, last heard at `heard`, is still
 /// remembered at `now`.
 pub fn remembered(heard: Instant, now: Instant) -> bool {
@@ -167,7 +180,7 @@ impl<K: Ord + Clone> PollPorts<K> {
                 *other != key
                     && !same(other, key)
                     && held.port == port
-                    && (!kept(other, held.heard) || held.since > since)
+                    && (deaf_stale(held, kept(other, held.heard)) || held.since > since)
             })
             .map(|(deaf, _)| deaf.clone());
         let shared = deaf
@@ -271,11 +284,16 @@ impl PortKey {
         }
     }
 
-    /// Whether two keys are of one device: the same kind and Max id (a
-    /// rename or a move in Live changes a LUFS key's parents, never these).
+    /// Whether two keys are of one device: the same kind, Max id and Live
+    /// set (a rename or a move in Live changes a LUFS key's parents, never
+    /// these; the set tells two Lives' devices of one Max id apart: the ids
+    /// count per Live process).
     pub fn same_device(a: &PortKey, b: &PortKey) -> bool {
+        let set = |key: &Key| track_and_set(&key.parents).map(|(_, set)| set.to_string());
         match (a, b) {
-            (PortKey::Lufs(a), PortKey::Lufs(b)) => a.kind == b.kind && a.device == b.device,
+            (PortKey::Lufs(a), PortKey::Lufs(b)) => {
+                a.kind == b.kind && a.device == b.device && set(a) == set(b)
+            }
             (PortKey::Listen(a), PortKey::Listen(b)) => a == b,
             _ => false,
         }

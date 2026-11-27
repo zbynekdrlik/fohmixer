@@ -69,7 +69,7 @@ use crate::link::server::Tap;
 use crate::poll_ports::{PortKey, PortTable, Shared};
 use crate::router::RouterMsg;
 use crate::rules::lufs::bound::{Admit, Bound, Dropping, FORGET_MS, Key};
-use crate::rules::lufs::{is_stale, kind_word};
+use crate::rules::lufs::kind_word;
 
 /// The reason a receive error is counted under.
 pub const RECV_ERROR: &str = "recv";
@@ -213,7 +213,7 @@ impl Polls {
         self.table.due(now, |key| of_kind(key, kind))
     }
 
-    /// The ports polled now, of every kind, each once.
+    /// The ports polled now for the LUFS and meter keys, each once.
     pub fn ports(&self) -> usize {
         self.table.ports_of(PortKey::is_lufs)
     }
@@ -273,13 +273,6 @@ pub fn send_moves(poller: &std::net::UdpSocket, polls: &mut Polls, events: &Even
         events.record("lufs", shared_fields(share, sent));
     }
     u64::try_from(shared.len()).unwrap_or(u64::MAX)
-}
-
-/// Whether a key last heard at `heard` is lost at `now` (the LUFS rule's
-/// stale window; a clock that went back is no loss).
-pub fn lost(key: &Key, heard: Instant, now: Instant) -> bool {
-    let ms = now.saturating_duration_since(heard).as_millis();
-    is_stale(key.kind, 0, u64::try_from(ms).unwrap_or(u64::MAX))
 }
 
 /// The address a poll goes to: the device's port on `127.0.0.1`.

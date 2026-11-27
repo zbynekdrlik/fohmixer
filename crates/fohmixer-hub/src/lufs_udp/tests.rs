@@ -332,12 +332,14 @@ async fn a_rounds_clock_keeps_its_grid_after_a_late_tick() {
 fn a_clock_that_went_back_loses_no_key() {
     let t0 = Instant::now();
     let ms = Duration::from_millis;
-    let lufs = key(DeviceKind::Lufs, 1);
-    assert!(!lost(&lufs, t0 + ms(5000), t0));
-    assert!(!lost(&lufs, t0, t0 + ms(999)));
-    assert!(lost(&lufs, t0, t0 + ms(1000)));
-    assert!(!lost(&key(DeviceKind::Meter, 1), t0, t0 + ms(499)));
-    assert!(lost(&key(DeviceKind::Meter, 1), t0, t0 + ms(500)));
+    // The LUFS rule's stale window, through the hub's port table (#264).
+    let lufs = PortKey::Lufs(key(DeviceKind::Lufs, 1));
+    let meter = PortKey::Lufs(key(DeviceKind::Meter, 1));
+    assert!(lufs.kept(t0 + ms(5000), t0));
+    assert!(lufs.kept(t0, t0 + ms(999)));
+    assert!(!lufs.kept(t0, t0 + ms(1000)));
+    assert!(meter.kept(t0, t0 + ms(499)));
+    assert!(!meter.kept(t0, t0 + ms(500)));
     assert_eq!(poll_addr(41_234).to_string(), "127.0.0.1:41234");
 }
 
