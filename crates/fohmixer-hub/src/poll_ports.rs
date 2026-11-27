@@ -8,31 +8,42 @@
 //! `udpreceive` binds with `SO_REUSEADDR`, so a second device that draws a
 //! taken port binds without an error; on the FOH PC Windows then gives the
 //! port's datagrams to its FIRST binder only (the PC's measurement of
-//! 27.11), so the device that loaded later announced once, at its load,
-//! and hears nothing more. The kinds share the range, so the table holds
+//! 27.11), so the device that loaded later announced at its load and
+//! hears nothing more. The kinds share the range, so the table holds
 //! every kind's keys ([`PortKey`]): a meter and a Listen device on one
 //! port are found as two meters are.
 //!
 //! **The decision (the design's two triggers):** a key heard on a port is
-//! the one that hears there, and the port is shared with another key of
-//! another device when that other key is either (1) newer on the port and
-//! still kept (it named the port after this one and is deaf), or (2) no
-//! longer kept and never heard after it named the port (a deaf device
-//! speaks only at its announce), remembered for [`REMEMBER_MS`] after it
-//! was last heard (it went stale while this one answers: its window ended
-//! before this one was heard again, its announce came in out of bind
-//! order, or an earlier move did not take). A key heard more than once
-//! there (a first binder quiet for a moment, a device that left and whose
-//! port a new one drew) is no deaf one. The hub moves the key that hears ([`Shared::hearing`]),
-//! at most once a port every [`MOVE_EVERY_MS`] ([`move_due`]), and polls
-//! the port on for the move's keys for that window ([`moving`]), so the
-//! deaf one, which hears once the other left, is learned again. A device
-//! moved or renamed in Live answers with a new key of the SAME device
-//! (kind, Max id and Live set, [`PortKey::same_device`]) on its old
-//! port: no share.
-//! Two kept keys that named a port at the same time give no order: no
-//! share (inside one Live both devices share Max's socket and both hear: a
-//! move of the older one moves both, harmless).
+//! the one that hears there, and the port is shared with another device's
+//! key on it that is either (1) still kept and newer there (it named the
+//! port after this one: deaf), or (2) no longer kept, remembered for
+//! [`REMEMBER_MS`] after it was last heard, and never seen ANSWER there
+//! (it went stale while this one answers: its window ended before this one
+//! was heard again, its announce came in out of bind order, or an earlier
+//! move did not take). A key answers when it is heard again on its port
+//! between [`BURST_MS`] and [`ANSWER_MS`] after its previous datagram, as
+//! a polled device is every 33-250 ms ([`answers`]): a deaf device speaks
+//! only at its load (the load's gate bang and Device On's observer: two
+//! datagrams within microseconds, a burst) and at a later Device On turning
+//! 1 (seconds apart), so a first binder quiet for a moment and a device
+//! that answered and left are no deaf one. The hub moves the key that
+//! hears ([`Shared::hearing`]), at most once a port every
+//! [`MOVE_EVERY_MS`] ([`move_due`]), and polls the port on for the move's
+//! keys for that window ([`moving`]), so the deaf one, which hears once the
+//! other left, is learned again. A device moved or renamed in Live answers
+//! with a new key of the SAME device (kind, Max id and Live set,
+//! [`PortKey::same_device`]) on its old port: no share. Two kept keys
+//! that named a port at the same time give no order: no share (inside one
+//! Live both devices share Max's socket and both hear: a move of the older
+//! one moves both, harmless).
+//!
+//! **Accepted (rare):** a first binder that never answered (its rack off
+//! before the first poll) while a newcomer announces after its window gets
+//! the newcomer moved (the move still lands at the first binder when the
+//! kinds agree); a deaf device that left, its port drawn by a new device
+//! within 15 s, moves the new one once for nothing; two Lives whose sets
+//! have one name and whose devices have one Max id count as one device; a
+//! device nested deeper than one rack names a rack as its set.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, PoisonError};
@@ -50,12 +61,14 @@ use crate::rules::lufs::{is_stale, kind_word};
 /// three move windows, so a move that did not take is sent twice more.
 pub const REMEMBER_MS: u64 = 3 * MOVE_EVERY_MS;
 
-/// A key's port, since when it names it, and when it was last heard.
+/// A key's port, since when it names it, when it was last heard, and
+/// whether it answered there ([`answers`]).
 #[derive(Debug, Clone, Copy)]
 struct Held {
     port: u16,
     since: Instant,
     heard: Instant,
+    answered: bool,
 }
 
 /// A move sent: when, and the two keys of its port.
@@ -120,13 +133,27 @@ pub fn moving(at: Instant, now: Instant) -> bool {
     now.saturating_duration_since(at) < window()
 }
 
-/// Whether another key's `held` port names it deaf there although it is
-/// no longer `kept` (the design's second trigger): it was never heard
-/// after it named the port (a deaf device speaks only at its announce; a
-/// device that answered there and left, its port drawn again by a new
-/// one, or a first binder quiet for a moment, was heard more).
-fn deaf_stale(held: &Held, kept: bool) -> bool {
-    !kept && held.heard == held.since
+/// Datagrams of one key closer than this are one burst (the load's two).
+pub const BURST_MS: u64 = 10;
+/// A key heard again within this is answering polls (every 33-250 ms).
+pub const ANSWER_MS: u64 = 1000;
+
+/// Whether a key heard at `before` and again at `now` answered there: a gap
+/// of [`BURST_MS`] or more and under [`ANSWER_MS`].
+pub fn answers(before: Instant, now: Instant) -> bool {
+    let gap = now.saturating_duration_since(before);
+    gap >= Duration::from_millis(BURST_MS) && gap < Duration::from_millis(ANSWER_MS)
+}
+
+/// Whether another key's `held` port names it deaf there for a key that
+/// names the port `since`: kept, it is newer there (the first trigger);
+/// no longer `kept`, it never answered there (the second).
+fn deaf(held: &Held, kept: bool, since: Instant) -> bool {
+    if kept {
+        held.since > since
+    } else {
+        !held.answered
+    }
 }
 
 /// Whether a key no longer kept, last heard at `heard`, is still
@@ -159,9 +186,9 @@ impl<K: Ord + Clone> PollPorts<K> {
         let before = self.keys.get(key).or(self.gone.get(key)).copied();
         self.gone.remove(key);
         let from = before.map(|h| h.port).filter(|old| *old != port);
-        let since = match before {
-            Some(h) if h.port == port => h.since,
-            _ => now,
+        let (since, answered) = match before {
+            Some(h) if h.port == port => (h.since, h.answered || answers(h.heard, now)),
+            _ => (now, false),
         };
         self.keys.insert(
             key.clone(),
@@ -169,6 +196,7 @@ impl<K: Ord + Clone> PollPorts<K> {
                 port,
                 since,
                 heard: now,
+                answered,
             },
         );
         let same = self.same;
@@ -180,7 +208,7 @@ impl<K: Ord + Clone> PollPorts<K> {
                 *other != key
                     && !same(other, key)
                     && held.port == port
-                    && (deaf_stale(held, kept(other, held.heard)) || held.since > since)
+                    && deaf(held, kept(other, held.heard), since)
             })
             .map(|(deaf, _)| deaf.clone());
         let shared = deaf

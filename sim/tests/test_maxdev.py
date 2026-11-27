@@ -276,7 +276,9 @@ class PolledTest(unittest.TestCase):
         port = self.free_port()
         device = self.devs.add(self.song.tracks[1], maxdev.METER, rack=True, polled=True, port=port)
         self.assertEqual(device.port, port)
-        self.assertEqual(_polled_port(self.reading()), port, "its load")
+        for _ in range(maxdev.LOAD_DATAGRAMS):
+            self.assertEqual(_polled_port(self.reading()), port, "its load")
+        self.assertEqual(maxdev.LOAD_DATAGRAMS, 2)
         self.assertTrue(self.devs.send(self.song.tracks[1], maxdev.METER, -120, -180))
         self.assertEqual(self.devs.sending(), 0, "it never pushes")
         self.send(maxdev.poll_datagram(maxdev.METER), port)
@@ -295,8 +297,8 @@ class PolledTest(unittest.TestCase):
         first = self.devs.add(self.song.tracks[1], maxdev.METER, rack=False, polled=True, port=port)
         second = self.devs.add(self.song.tracks[2], maxdev.LUFS, rack=False, polled=True, port=port)
         self.assertEqual(self.devs.ports.on(port), [first, second])
-        self.reading()
-        self.reading()
+        for _ in range(2 * maxdev.LOAD_DATAGRAMS):
+            self.reading()
         self.send(maxdev.poll_datagram(maxdev.LUFS), port)
         self.ticks()
         self.silent()

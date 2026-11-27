@@ -231,6 +231,73 @@ fn a_key_heard_more_than_its_announce_is_never_taken_for_a_deaf_one() {
     }
 }
 
+#[test]
+fn a_key_answers_when_heard_again_at_a_polls_pace_never_in_a_burst() {
+    // The third review of #264: a device sends two datagrams at its load
+    // (the load's gate bang and Device On's observer, microseconds apart)
+    // and one at each later Device On turning 1; a polled one answers
+    // every 33-250 ms.
+    let t0 = Instant::now();
+    assert!(!answers(t0, t0 + ms(9)));
+    assert!(answers(t0, t0 + ms(10)));
+    assert!(answers(t0, t0 + ms(999)));
+    assert!(!answers(t0, t0 + ms(1000)));
+    assert!(!answers(t0 + ms(5), t0), "a clock that went back");
+    assert_eq!((BURST_MS, ANSWER_MS), (10, 1000));
+    // A load's burst, then nothing: deaf once stale.
+    let mut ports = PollPorts::default();
+    for n in 0..20 {
+        heard(&mut ports, 'a', P, t0 + ms(33 * n));
+    }
+    heard(&mut ports, 'b', P, t0 + ms(700));
+    heard(&mut ports, 'b', P, t0 + Duration::from_micros(700_050));
+    assert_eq!(
+        heard(&mut ports, 'a', P, t0 + ms(1300))
+            .shared
+            .map(|s| s.deaf),
+        Some('b'),
+        "b's window ended at 1200 ms: its burst is no answer"
+    );
+    // A Device On turning 1 two seconds later: still no answer.
+    let mut ports = PollPorts::default();
+    for n in 0..80 {
+        heard(&mut ports, 'a', P, t0 + ms(33 * n));
+    }
+    heard(&mut ports, 'b', P, t0 + ms(100));
+    assert!(heard(&mut ports, 'a', P, t0 + ms(133)).shared.is_some());
+    heard(&mut ports, 'b', P, t0 + ms(2100));
+    assert_eq!(
+        heard(&mut ports, 'a', P, t0 + ms(5133))
+            .shared
+            .map(|s| s.deaf),
+        Some('b'),
+        "moved for again once its window ended"
+    );
+}
+
+#[test]
+fn a_newer_key_that_answered_and_left_is_no_share() {
+    // Inside one Live two devices on a port both hear and answer; the newer
+    // one is deleted: its stale key answered, so the older one is left.
+    let t0 = Instant::now();
+    let mut ports = PollPorts::default();
+    heard(&mut ports, 'a', P, t0);
+    heard(&mut ports, 'b', P, t0 + ms(10));
+    for n in 1..10 {
+        heard(&mut ports, 'b', P, t0 + ms(10 + 33 * n));
+    }
+    let mut shares = 0;
+    for n in 1..300 {
+        let now = t0 + ms(33 * n);
+        ports.forget(now, kept_at(now));
+        shares += usize::from(heard(&mut ports, 'a', P, now).shared.is_some());
+    }
+    assert_eq!(
+        shares, 1,
+        "only while b still answered (both hear: harmless)"
+    );
+}
+
 fn lufs_key(kind: DeviceKind, device: i32, track: &str) -> PortKey {
     PortKey::Lufs(Key {
         kind,

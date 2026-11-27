@@ -19,9 +19,10 @@ stall never sends more than a second's worth at once.
 
 A ``polled`` device (#264) is the real device's polled form instead: it
 binds a poll port of the devices' range (drawn, or one a test names),
-announces itself once (its load), answers each of the hub's polls of its
-kind with one reading naming its port (wire version 2) and, on the hub's
-move of its kind (``/fohmixer/<kind>/move``), draws another port and
+announces itself at its load (twice, as the patch: Device On's observer
+reports at the id and bangs the gate, then the load's own bang), answers
+each of the hub's polls of its kind with one reading naming its port (wire
+version 2) and, on the hub's move of its kind (``/fohmixer/<kind>/move``), draws another port and
 announces itself there; another kind's datagram is dropped (the patch's
 ``route``). Its port sits in ``PollPorts``, which plays what the FOH PC
 showed (the design comment 7228766032 on #264): Max's ``udpreceive`` binds
@@ -78,6 +79,9 @@ DRY_CHAIN = "Dry"
 DEVICE_CHAIN = "LUFS"
 # The senders' tick (ms) and the most one device sends in one tick.
 TICK_MS = 5.0
+# A polled device's datagrams at its load (the patch's gate: Device On's
+# `sel 1` at the observer's first report, then the load's own bang).
+LOAD_DATAGRAMS = 2
 # The most datagrams a polled port is read for in one tick.
 READS = 256
 # The golden datagram of crates/fohmixer-proto/src/lufs/wire.rs
@@ -335,7 +339,9 @@ class MaxDevices:
             except OSError:
                 self.remove(track, kind)
                 raise
-            self._send(placed.datagram(self._song))
+            # The load: Device On's observer bangs the gate, then the load.
+            for _ in range(LOAD_DATAGRAMS):
+                self._send(placed.datagram(self._song))
         return placed
 
     def remove(self, track, kind):
