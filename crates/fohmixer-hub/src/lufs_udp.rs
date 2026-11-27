@@ -1076,4 +1076,149 @@ mod tests {
             (5, 4, 4)
         );
     }
+
+    fn lufs_key(device: i32) -> Key {
+        Key {
+            kind: DeviceKind::Lufs,
+            device,
+            parents: ["Vox 2", "FOH Band", "-", "-"].map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_port_two_keys_name_gets_one_move_of_the_hearing_kind_and_is_polled_on() {
+        // #264 (the design comment 7228766032): a meter answers on its port
+        // after a LUFS device of the other Live named it at its load: the
+        // LUFS device is deaf (Windows gives the port's datagrams to its
+        // first binder). The hub sends the port one meter move, the meter
+        // takes another port, and the port is still polled for the LUFS
+        // device, which hears from then on.
+        let device = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        device
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let port = device.local_addr().unwrap().port();
+        let poller = poll_socket().unwrap();
+        let (events, records) = EventLog::channel(16);
+        let mut polls = Polls::default();
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let meter = key(DeviceKind::Meter, 1);
+        let lufs = lufs_key(2);
+        polls.heard(&meter, Some(port), t0);
+        polls.heard(&lufs, Some(port), t0 + ms(10));
+        assert_eq!(send_moves(&poller, &mut polls, &events), 0, "no share yet");
+        polls.heard(&meter, Some(port), t0 + ms(33));
+        assert_eq!(send_moves(&poller, &mut polls, &events), 1);
+        let mut buf = [0u8; 64];
+        let n = device.recv(&mut buf).unwrap();
+        assert_eq!(&buf[..n], wire::move_datagram(DeviceKind::Meter).as_slice());
+        let record = records.try_recv().expect("a shared_port record");
+        assert_eq!(record["ev"], "lufs");
+        assert_eq!(record["what"], "shared_port");
+        assert_eq!(record["port"], port);
+        assert_eq!(record["warn"], true);
+        assert_eq!(record["sent"], true);
+        assert_eq!(record["moved"]["kind"], "meter");
+        assert_eq!(record["moved"]["device"], 1);
+        assert_eq!(record["stays"]["kind"], "lufs");
+        assert_eq!(record["stays"]["device"], 2);
+        // Within the window: no second move.
+        polls.heard(&meter, Some(port), t0 + ms(66));
+        assert_eq!(send_moves(&poller, &mut polls, &events), 0);
+        // The meter names its new port: one moved record from the caller.
+        assert_eq!(polls.heard(&meter, Some(41_999), t0 + ms(99)), Some(port));
+        assert_eq!(polls.heard(&meter, Some(41_999), t0 + ms(132)), None);
+        // The LUFS device's window ends at 1010 ms, yet its port is polled
+        // in its kind's round until the move's window ends.
+        let late = t0 + ms(2000);
+        polls.heard(&meter, Some(41_999), late);
+        assert_eq!(
+            polls.due(late, DeviceKind::Lufs),
+            BTreeSet::from([port]),
+            "the port the LUFS device stays on"
+        );
+        assert_eq!(
+            polls.due(late, DeviceKind::Meter),
+            BTreeSet::from([port, 41_999])
+        );
+        assert!(polls.due(t0 + ms(5033), DeviceKind::Lufs).is_empty());
+    }
+
+    #[test]
+    fn a_move_the_socket_refuses_is_recorded_unsent() {
+        let poller = poll_socket().unwrap();
+        let (events, records) = EventLog::channel(16);
+        let mut polls = Polls::default();
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        // Port 0 stands for a refused send.
+        polls.heard(&key(DeviceKind::Lufs, 1), Some(0), t0);
+        polls.heard(&lufs_key(2), Some(0), t0 + ms(10));
+        polls.heard(&key(DeviceKind::Lufs, 1), Some(0), t0 + ms(200));
+        assert_eq!(send_moves(&poller, &mut polls, &events), 1);
+        let record = records.try_recv().unwrap();
+        assert_eq!(record["sent"], false);
+        assert_eq!(record["moved"]["kind"], "lufs");
+    }
+
+    #[test]
+    fn the_move_records_fields() {
+        let shared = Shared {
+            port: 41_234,
+            hearing: key(DeviceKind::Meter, 3),
+            deaf: lufs_key(4),
+        };
+        assert_eq!(
+            shared_fields(&shared, true),
+            json!({
+                "what": "shared_port",
+                "port": 41_234,
+                "moved": {"kind": "meter", "device": 3, "parents": ["Vox 1", "FOH Band", "-", "-"]},
+                "stays": {"kind": "lufs", "device": 4, "parents": ["Vox 2", "FOH Band", "-", "-"]},
+                "move": "/fohmixer/meter/move",
+                "sent": true,
+                "warn": true,
+            })
+        );
+        assert_eq!(
+            moved_fields(&key(DeviceKind::Lufs, 5), 41_234, 45_678),
+            json!({
+                "what": "moved",
+                "kind": "lufs",
+                "device": 5,
+                "parents": ["Vox 1", "FOH Band", "-", "-"],
+                "from": 41_234,
+                "to": 45_678,
+            })
+        );
+    }
+
+    #[test]
+    fn a_kept_datagram_on_a_new_port_is_one_moved_record() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let counters = Counters::default();
+        let (events, records) = EventLog::channel(16);
+        let mut bound = Bound::new();
+        let mut polls = Polls::default();
+        let t0 = Instant::now();
+        for (port, at) in [(41_001, 0), (41_001, 200), (41_002, 400)] {
+            handle_datagram(
+                &polled_datagram(1, port),
+                t0 + Duration::from_millis(at),
+                &mut bound,
+                Some(&mut polls),
+                &counters,
+                &events,
+                &tx,
+            );
+        }
+        let record = records.try_recv().expect("a moved record");
+        assert_eq!(record["what"], "moved");
+        assert_eq!(
+            (record["from"].clone(), record["to"].clone()),
+            (json!(41_001), json!(41_002))
+        );
+        assert!(records.try_recv().is_err(), "one record");
+    }
 }

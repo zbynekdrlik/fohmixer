@@ -170,3 +170,65 @@ fn a_refused_send_is_counted_failed() {
         (3, 5, 3, 7, 4)
     );
 }
+
+#[test]
+fn a_port_two_devices_name_gets_one_move_and_is_polled_for_the_one_that_stays() {
+    // #264 (the design comment 7228766032): a device answers on its port
+    // after another device named the same port at its load (that one is
+    // deaf: Windows gives the port's datagrams to its first binder). The
+    // round sends the port one move before its poll; the device that hears
+    // takes another port, and the old port is polled on for the other.
+    let (events, records) = EventLog::channel(16);
+    let listen = Listen::new(events, super::super::no_sets());
+    let poller = crate::lufs_udp::poll_socket().unwrap();
+    let (vox, vox_announce) = device(1, "Vox 1");
+    let port = vox_announce.port;
+    let deaf = Announce {
+        device: 2,
+        version: "v1.60.4".into(),
+        parents: parents_in(None, "Vox 2", "FOH Band"),
+        sample_rate: 48_000,
+        sending: false,
+        port,
+    };
+    let t0 = Instant::now();
+    let ms = Duration::from_millis;
+    listen.heard(vox_announce.clone(), t0);
+    listen.heard(deaf, t0 + ms(10));
+    poll_round(&poller, &listen, t0 + ms(10));
+    assert_eq!(read(&vox), poll_datagram(false), "no share yet: a poll");
+    listen.heard(vox_announce.clone(), t0 + ms(250));
+    poll_round(&poller, &listen, t0 + ms(250));
+    assert_eq!(read(&vox), move_datagram(), "the move first");
+    assert_eq!(read(&vox), poll_datagram(false), "then the port's one poll");
+    let record = records.try_recv().expect("a shared_port record");
+    assert_eq!(record["ev"], "listen");
+    assert_eq!(record["what"], "shared_port");
+    assert_eq!(record["port"], port);
+    assert_eq!(record["moved"]["device"], 1);
+    assert_eq!(record["stays"]["device"], 2);
+    assert_eq!(record["stays"]["track"], "Vox 2");
+    assert_eq!(record["sent"], true);
+    assert_eq!(record["warn"], true);
+    // The device that heard names its new port.
+    let (_moved_to, moved_announce) = device(1, "Vox 1");
+    let to = moved_announce.port;
+    listen.heard(moved_announce, t0 + ms(300));
+    let record = records.try_recv().expect("a moved record");
+    assert_eq!(record["what"], "moved");
+    assert_eq!(
+        (record["from"].clone(), record["to"].clone()),
+        (serde_json::json!(port), serde_json::json!(to))
+    );
+    poll_round(&poller, &listen, t0 + ms(500));
+    assert_eq!(read(&vox), poll_datagram(false), "the old port polled on");
+    assert!(nothing(&vox), "no second move within the window");
+    // Device 2 unheard past its 3 s, the old port still polled until the
+    // move's 5 s end.
+    poll_round(&poller, &listen, t0 + ms(4000));
+    vox.set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    assert_eq!(read(&vox), poll_datagram(false));
+    poll_round(&poller, &listen, t0 + ms(5250));
+    assert!(nothing(&vox), "the window ended");
+}

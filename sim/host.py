@@ -70,6 +70,7 @@ WebSocket server is bound. Control lines on stdin (never over the WebSocket):
                                 track or clip
 
     maxdev <lufs|meter> <track|return|master> <index> <add|remove> [rack]
+           [polled [<port>]]
                                 a Max for Live device (#151, ``sim/maxdev.py``):
                                 ``FohMixer LUFS`` or ``FohMixer Meter`` added at
                                 the end of the track's chain (with ``rack``,
@@ -81,7 +82,17 @@ WebSocket server is bound. Control lines on stdin (never over the WebSocket):
                                 two hosts collide on purpose; prints ``MAXDEV
                                 <devices of that kind on the track>``, or
                                 ``MAXDEV -1`` (no such track, nothing to remove,
-                                a bad line)
+                                a bad line); ``polled`` (#264): the polled form,
+                                on its own poll port (``<port>`` of 40000-49999,
+                                else drawn; another program's port named: -1),
+                                which it shares with the polled devices already
+                                there as Windows does (the first one hears)
+    polled <lufs|meter> <track|return|master> <index>
+    pollport <lufs|meter> <track|return|master> <index>
+                                the newest polled device of that kind there:
+                                the hub's polls it answered (``POLLED <n>``) or
+                                its poll port (``POLLPORT <port>``); -1 for no
+                                such track or polled device
     lufs <track|return|master> <index> <s_tenths> <v_tenths>
     lufs <track|return|master> <index> off
                                 the newest LUFS device there sends ``S`` and
@@ -525,9 +536,14 @@ def param(song, path, verb, value):
 def maxdev_answer(main_thread, song, line, maxdevs):
     """A Max device line's answer (#151), or None for another line."""
     words = line.split()
-    if not words or words[0] not in ("maxdev", "lufs", "level", "flood"):
+    if not words or words[0] not in ("maxdev", "lufs", "level", "flood", "polled", "pollport"):
         return None
     word = words[0].upper()
+    if words[0] in ("polled", "pollport"):
+        parsed = maxdev.polled_line(line)
+        if parsed is None or maxdevs is None:
+            return f"{word} -1"
+        return f"{word} {main_thread.call(lambda: maxdev.polled_control(maxdevs, song, parsed))}"
     if words[0] == "maxdev":
         parsed = maxdev.device_line(line)
         if parsed is None or maxdevs is None:

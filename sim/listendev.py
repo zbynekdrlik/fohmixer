@@ -28,8 +28,10 @@ announce; on, it connects to the hub's TCP port and sends its hello as a
 Jitter message chunk; each of the hub's frame polls
 (``/fohmixer/listen/frame``) while on sends the whole 960-sample frames it
 owes as one float32 matrix of 2 planes and 960 x k cells, big-endian, as
-``jit.catch~ @mode 1`` and ``jit.net.send`` would. Another kind's poll is
-dropped (the patch's ``route``). The hub's latency answers are read and
+``jit.catch~ @mode 1`` and ``jit.net.send`` would. The hub's move
+(``/fohmixer/listen/move``, #264: its port is shared) binds another port
+and announces itself there, off (the patch bangs its load's path, whose
+int is 0). Another kind's poll is dropped (the patch's ``route``). The hub's latency answers are read and
 dropped. Everything runs on SimLive's main thread (one ``Live.Base.Timer``
 reading each device's socket, as the patch's ``udpreceive @defer 1`` hands
 a datagram to Max's main thread). Two liberties: a device whose rack is off
@@ -56,6 +58,7 @@ ANNOUNCE_ADDRESS = "/fohmixer/listen"
 ANNOUNCE_TAGS = ",iisssssiii"
 POLL_ADDRESS = "/fohmixer/listen/poll"
 FRAME_ADDRESS = "/fohmixer/listen/frame"
+MOVE_ADDRESS = "/fohmixer/listen/move"
 HELLO_WORD = "fohmixer_listen"
 WIRE_VERSION = 2
 NO_PARENT = "-"
@@ -97,6 +100,8 @@ GOLDEN_ANNOUNCE_HEX = (
 )
 GOLDEN_POLL_ON_HEX = "2f666f686d697865722f6c697374656e2f706f6c6c0000002c69000000000001"
 GOLDEN_FRAME_HEX = "2f666f686d697865722f6c697374656e2f6672616d6500002c000000"
+# The hub's move (#264): the Rust wire's GOLDEN_MOVE_HEX.
+GOLDEN_MOVE_HEX = "2f666f686d697865722f6c697374656e2f6d6f76650000002c000000"
 
 
 def _string(text):
@@ -124,12 +129,20 @@ def encode_frame():
     return _string(FRAME_ADDRESS) + _string(",")
 
 
+def encode_move():
+    """The hub's move (the tests' hub)."""
+    return _string(MOVE_ADDRESS) + _string(",")
+
+
 def parse_poll(data):
     """What a datagram is to the device, as its patch's ``route`` and ``sel
-    1`` read it: ``("poll", on)`` (on only for 1), ``("frame", None)``, or
-    None for anything else (another kind's poll, a malformed one)."""
+    1`` read it: ``("poll", on)`` (on only for 1), ``("frame", None)``,
+    ``("move", None)``, or None for anything else (another kind's poll, a
+    malformed one)."""
     if data == encode_frame():
         return "frame", None
+    if data == encode_move():
+        return "move", None
     head = _string(POLL_ADDRESS) + _string(",i")
     if len(data) != len(head) + 4 or not data.startswith(head):
         return None
@@ -358,6 +371,11 @@ class ListenDevices:
             if device.on:
                 self._stream(device, now)
             return
+        if kind == "move":
+            device.socket.close()
+            device.socket = bind_poll_socket()
+            device.port = device.socket.getsockname()[1]
+            on = False
         self._set_on(device, on, now)
         self._send_announce(device)
 
