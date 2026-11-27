@@ -16,7 +16,12 @@
 #   data folder; a copy it replaces kept, dated, under the data folder; a
 #   folder that is not Live's refused;
 # - the layout: the bundle's MBC frame only when none is installed;
-# - the parameters of one site refused on the other.
+# - the parameters of one site refused on the other;
+# - the app window (#280): the [tray] table (literal strings, after [link],
+#   before the kept tables), checked by the hub; the shortcut's argument
+#   line; Brave and the Startup folder refused before any change when
+#   missing; the Startup shortcut "MBC mixer" written, kept by an install
+#   that changes nothing, rewritten for another profile.
 Set-StrictMode -Version Latest
 
 # ---- the linked instance's table (#184) ----
@@ -65,6 +70,46 @@ Assert ((Set-FohConfigText -Text $cfg -Instance 'mbc' -Port 39103 -LogDir 'C:\Pr
 Assert ((Set-FohConfigText -Text $cfg -Instance 'band' -Port 39101) -ceq $cfg) 'config-py-log-dir-untouched-without-one'
 Assert ((ErrorOf { Set-FohConfigText -Text $cfg -Instance 'mbc' -Port 1 -LogDir 'C:\a"b' }) -like '*log folder refused*') 'mbc-config-py-refuses-a-quote-in-the-log-dir'
 
+# ---- the app window (#280) ----
+$braveDir = Join-Path $base 'Brave Browser'
+New-Item -ItemType Directory -Force -Path $braveDir | Out-Null
+$brave = Join-Path $braveDir 'brave.exe'
+[IO.File]::WriteAllText($brave, '')
+$startupM = Join-Path $base 'mbc-startup'
+New-Item -ItemType Directory -Force -Path $startupM | Out-Null
+$wantApp = @($brave, '--profile-directory=Profile 1', '--app=http://localhost:18491/', '--start-maximized')
+$gotApp = Get-FohTrayApp -Browser $brave -AppProfile 'Profile 1' -HttpPort 18491
+Assert (($gotApp.Count -eq 4) -and (($gotApp -join '|') -ceq ($wantApp -join '|'))) 'mbc-tray-app-is-brave-app-window-on-the-local-hub'
+$wantTray = "`r`n[tray]`r`napp = ['$brave', '--profile-directory=Profile 1', '--app=http://localhost:18491/', '--start-maximized']`r`n"
+Assert ((Get-FohTrayToml -App $wantApp) -ceq $wantTray) 'mbc-tray-toml-literal-strings'
+foreach ($bad in @(@("C:\it's\brave.exe"), @('a.exe', ''), @("a.exe", "x`ty"))) {
+    Assert ((ErrorOf { Get-FohTrayToml -App $bad }) -like '*app command word refused*') "mbc-tray-toml-refuses-[$($bad -join ' ')]"
+}
+Assert ((ErrorOf { Get-FohTrayToml -App @() }) -like '*no program*') 'mbc-tray-toml-refuses-no-program'
+Assert ((Format-FohAppArgs -Words @('--profile-directory=Profile 1', '--app=http://localhost:8480/', '--start-maximized')) -ceq '"--profile-directory=Profile 1" --app=http://localhost:8480/ --start-maximized') 'mbc-app-args-quote-a-word-with-a-space'
+Assert ((Format-FohAppArgs -Words @()) -ceq '') 'mbc-app-args-none'
+Assert ((ErrorOf { Format-FohAppArgs -Words @('a"b') }) -like '*double quote*') 'mbc-app-args-refuse-a-double-quote'
+$gotMbcTray = New-FohMbcHubToml -HttpPort 18491 -MbcPort 39183 -LinkListen '10.0.0.5:39201' -Tray $wantTray -Remote "`r`n[tls]`r`nname = `"x`"`r`n"
+Assert ($gotMbcTray -ceq ($wantMbc + $wantTray + "`r`n[tls]`r`nname = `"x`"`r`n")) 'mbc-hub-toml-tray-after-link-before-the-kept-tables'
+Assert ((Test-FohHubToml -Exe $HubExe -Text ($wantMbc + $wantTray) -Dir $checkDir) -like '*: OK*') 'mbc-hub-toml-check-accepts-the-tray-table'
+Assert ((Resolve-FohAppBrowser -AppBrowser $brave -MbcUser 'mbc-user') -ceq $brave) 'mbc-app-browser-given'
+Assert ((ErrorOf { Resolve-FohAppBrowser -AppBrowser (Join-Path $base 'no-brave.exe') -MbcUser 'mbc-user' }) -like '*-AppBrowser not found*') 'mbc-app-browser-missing-refused'
+Assert ((Resolve-FohStartupFolder -StartupFolder $startupM -MbcUser 'mbc-user') -ceq $startupM) 'mbc-startup-folder-given'
+Assert ((ErrorOf { Resolve-FohStartupFolder -StartupFolder (Join-Path $base 'no-startup') -MbcUser 'mbc-user' }) -like '*Startup folder not found*') 'mbc-startup-folder-missing-refused'
+Assert ((ErrorOf { Get-FohMbcAppPlan -AppBrowser $brave -AppProfile ' ' -HttpPort 1 -MbcUser 'mbc-user' -StartupFolder $startupM }) -like '*-AppProfile refused*') 'mbc-app-profile-empty-refused'
+Assert ((ErrorOf { Get-FohMbcAppPlan -AppBrowser $brave -AppProfile 'P"1' -HttpPort 1 -MbcUser 'mbc-user' -StartupFolder $startupM }) -like '*double quote*') 'mbc-app-profile-with-a-quote-refused'
+# The shortcut: written, kept when the same, rewritten when it differs.
+$lnkDir = Join-Path $base 'lnk-test'
+New-Item -ItemType Directory -Force -Path $lnkDir | Out-Null
+Assert ((Set-FohAppShortcut -Folder $lnkDir -App $wantApp) -eq $true) 'mbc-app-shortcut-written'
+Assert ((Set-FohAppShortcut -Folder $lnkDir -App $wantApp) -eq $false) 'mbc-app-shortcut-kept-when-the-same'
+$shellT = New-Object -ComObject WScript.Shell
+$lnkT = $shellT.CreateShortcut((Join-Path $lnkDir 'MBC mixer.lnk'))
+Assert (($lnkT.TargetPath -ieq $brave) -and ($lnkT.Arguments -ceq '"--profile-directory=Profile 1" --app=http://localhost:18491/ --start-maximized')) "mbc-app-shortcut-runs-the-app-command ($($lnkT.Arguments))"
+$null = [Runtime.InteropServices.Marshal]::ReleaseComObject($shellT)
+$otherApp = Get-FohTrayApp -Browser $brave -AppProfile 'Profile 2' -HttpPort 18491
+Assert ((Set-FohAppShortcut -Folder $lnkDir -App $otherApp) -eq $true) 'mbc-app-shortcut-rewritten-for-another-profile'
+
 # ---- the bundle carries the MBC frame ----
 Assert ((Get-FohSha256 (Join-Path $b1.stage 'mbc-frame.json')) -ceq (Get-FohSha256 (Join-Path $here 'mbc-frame.json'))) 'mbc-bundle-holds-the-mbc-frame'
 
@@ -75,7 +120,7 @@ $dataM = Join-Path $base 'data-mbc'
 function Get-MbcArgs([hashtable]$Over = @{}) {
     $a = [ordered]@{
         Site = 'Mbc'; BundleZip = $b1.zip; MbcUser = 'mbc-user'; DataDir = $dataM; HttpPort = 18491
-        MbcPort = 39183; LinkListen = '10.0.0.5:39201'; ScriptFolder = $scripts
+        MbcPort = 39183; LinkListen = '10.0.0.5:39201'; ScriptFolder = $scripts; AppBrowser = $brave; StartupFolder = $startupM
     }
     foreach ($k in $Over.Keys) { if ($null -eq $Over[$k]) { $a.Remove($k) } else { $a[$k] = $Over[$k] } }
     $list = @()
@@ -98,7 +143,9 @@ foreach ($r in @(
         @{ over = @{ CompanionHost = 'companion.example.org' }; says = '*FOH PC*'; what = 'a-companion' },
         @{ over = @{ MbcPort = 18491 }; says = '*the ports must differ*'; what = 'the-script-on-the-http-port' },
         @{ over = @{ LinkListen = '10.0.0.5:18491' }; says = '*the ports must differ*'; what = 'the-link-on-the-http-port' },
-        @{ over = @{ LinkListen = '10.0.0.5:39183' }; says = '*the ports must differ*'; what = 'the-link-on-the-script-port' })) {
+        @{ over = @{ LinkListen = '10.0.0.5:39183' }; says = '*the ports must differ*'; what = 'the-link-on-the-script-port' },
+        @{ over = @{ AppBrowser = (Join-Path $base 'no-brave.exe') }; says = '*-AppBrowser not found*'; what = 'a-missing-browser' },
+        @{ over = @{ StartupFolder = (Join-Path $base 'no-startup') }; says = '*Startup folder not found*'; what = 'a-missing-startup-folder' })) {
     $o = $r.over.Clone()
     $o['DataDir'] = $noneM
     $res = Invoke-Ps $install (Get-MbcArgs $o)
@@ -108,7 +155,10 @@ foreach ($r in @(
 }
 $m1 = Invoke-Ps $install (Get-MbcArgs)
 Assert ($m1.code -eq 0) "mbc-install-1-exits-0 ($($m1.out))"
-Assert ([IO.File]::ReadAllText((Join-Path $dataM 'fohmixer-hub.toml')) -ceq $wantMbc) 'mbc-install-1-toml-one-instance-and-the-link'
+Assert ([IO.File]::ReadAllText((Join-Path $dataM 'fohmixer-hub.toml')) -ceq ($wantMbc + $wantTray)) 'mbc-install-1-toml-one-instance-the-link-and-the-tray'
+$lnkM = Join-Path $startupM 'MBC mixer.lnk'
+Assert (Test-Path -LiteralPath $lnkM -PathType Leaf) 'mbc-install-1-writes-the-startup-shortcut'
+Assert ($m1.out.Contains('Startup shortcut MBC mixer.lnk (changed: True)')) 'mbc-install-1-says-the-shortcut-changed'
 Assert ((Get-FohSha256 (Join-Path $dataM 'layout.json')) -ceq (Get-FohSha256 (Join-Path $here 'mbc-frame.json'))) 'mbc-install-1-layout-is-the-bundles-mbc-frame'
 $cfgM = [IO.File]::ReadAllText((Join-Path $copyM 'Config.py'))
 $logsM = (Join-Path $dataM 'logs').Replace('\', '/')
@@ -118,12 +168,13 @@ Assert (-not (Test-Path -LiteralPath (Join-Path $dataM 'script-backups'))) 'mbc-
 Assert (-not $m1.out.Contains('mbc-user')) 'mbc-install-1-never-prints-the-user-name'
 # Again: nothing written.
 $watchM = @{}
-foreach ($p in @((Join-Path $dataM 'fohmixer-hub.toml'), (Join-Path $dataM 'layout.json'), $copyM)) { $watchM[$p] = $old }
+foreach ($p in @((Join-Path $dataM 'fohmixer-hub.toml'), (Join-Path $dataM 'layout.json'), $copyM, $lnkM)) { $watchM[$p] = $old }
 Set-Stamps $watchM
 $m2 = Invoke-Ps $install (Get-MbcArgs)
 Assert ($m2.code -eq 0) 'mbc-install-2-again-exits-0'
 $newer = @(Get-ChangedFiles $watchM)
 Assert ($newer.Count -eq 0) "mbc-install-2-again-writes-nothing ($($newer -join ', '))"
+Assert ($m2.out.Contains('Startup shortcut MBC mixer.lnk (changed: False)')) 'mbc-install-2-keeps-the-startup-shortcut'
 # A layout in place is kept (the frame is the default only for a first install).
 $ownLayout = ([IO.File]::ReadAllText((Join-Path $dataM 'layout.json'))).Replace('"title": "MBC"', '"title": "MBC 2"')
 [IO.File]::WriteAllText((Join-Path $dataM 'layout.json'), $ownLayout)
@@ -138,6 +189,14 @@ Assert ($kept.Count -eq 1 -and $kept[0].Name -cmatch '^\d{8}-\d{6}\z') "mbc-inst
 Assert ([IO.File]::ReadAllText((Join-Path $kept[0].FullName 'FohMixer\version.py')) -ceq "VERSION = `"0.0.1`"`n") 'mbc-install-3-the-dated-copy-is-the-old-one'
 $inLive = @(Get-ChildItem -LiteralPath $scripts -Directory | ForEach-Object { $_.Name })
 Assert ($inLive.Count -eq 2 -and $inLive -ccontains '_Framework' -and $inLive -ccontains 'FohMixer') "mbc-install-3-leaves-nothing-else-in-lives-folder ($($inLive -join ', '))"
+
+# Another profile: the toml's [tray] and the shortcut follow it.
+$m3b = Invoke-Ps $install (Get-MbcArgs @{ AppProfile = 'Work' })
+Assert ($m3b.code -eq 0) "mbc-install-3b-another-profile-exits-0 ($($m3b.out))"
+Assert ([IO.File]::ReadAllText((Join-Path $dataM 'fohmixer-hub.toml')).Contains("'--profile-directory=Work'")) 'mbc-install-3b-tray-names-the-profile'
+Assert ($m3b.out.Contains('Startup shortcut MBC mixer.lnk (changed: True)')) 'mbc-install-3b-rewrites-the-startup-shortcut'
+$res = Invoke-Ps $install (Get-InstallArgs @{ DataDir = $noneM; AppProfile = 'Work' })
+Assert ($res.code -ne 0 -and $res.out -like '*MBC PC*' -and -not (Test-Path -LiteralPath (Join-Path $noneM 'fohmixer-hub.toml'))) 'foh-install-refuses-AppProfile'
 
 # ---- install M4: the FOH install's link (-MbcLink): written, kept by an update, the PC's own tables kept ----
 $tomlR = Join-Path $dataR 'fohmixer-hub.toml'
