@@ -37,6 +37,11 @@
 //! Live both devices share Max's socket and both hear: a move of the older
 //! one moves both, harmless).
 //!
+//! **A share from before the hub's start** names no key the hub heard: the
+//! OS's UDP table tells it ([`shared_by_processes`]), and its move
+//! ([`PollPorts::found`]) holds no keys, so the port is polled for every
+//! pick for the window (the design comment 7231753561).
+//!
 //! **Accepted (rare):** a first binder that never answered (its rack off
 //! before the first poll) while a newcomer announces after its window gets
 //! the newcomer moved (the move still lands at the first binder when the

@@ -50,6 +50,14 @@
 //! both keys' kinds for that window; the device that hears draws another
 //! port, a `moved` record names it, and the deaf one answers on the old
 //! port from then on.
+//!
+//! **A share from before the hub's start (#264, the design comment
+//! 7231753561):** the sweep reaches the first binder only, so the hub never
+//! hears the deaf device's key. On Windows the task reads the OS's UDP
+//! table (`udp_table`) over the swept range right after the sweep and every
+//! [`OS_TABLE_EVERY`]; a port two processes bind
+//! (`poll_ports::shared_by_processes`) gets every kind's move
+//! ([`os_moves`]) and is polled on for every kind for the move's window.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
