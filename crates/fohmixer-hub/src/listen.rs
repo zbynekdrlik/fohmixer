@@ -27,6 +27,16 @@
 //! the track leaves or a take moves the hub's one track away, so an idle
 //! device costs Live's audio thread nothing.
 //!
+//! A port two devices drew (#264, the design comment 7228766032: on the
+//! FOH PC only the first binder hears it) is found in the hub's one
+//! `poll_ports::PortTable` (shared with the LUFS devices' listener: the
+//! kinds share the range) at [`Listen::heard`]; where a Listen device
+//! hears, the next poll round sends the port one `/fohmixer/listen/move`
+//! ([`Listen::take_moves`], at most once a port every `MOVE_EVERY_MS`);
+//! a port moved for a Listen device is polled on for that window, so the
+//! device that stays is learned again; `listen` records `shared_port`
+//! (warn) and `moved`.
+//!
 //! This file is the shared state; its decisions are small pure functions
 //! ([`choose`], [`start_of`], [`rack::start_switches`],
 //! [`rack::leave_switch`]) with their own tests.
@@ -50,6 +60,7 @@ use serde_json::{Value, json};
 use tokio::sync::{broadcast, oneshot, watch};
 
 use crate::events::EventLog;
+use crate::poll_ports::{PortKey, PortTable};
 
 /// The packets the channel keeps for a slow socket (1.28 s).
 pub const PACKETS: usize = 64;
@@ -176,6 +187,51 @@ struct State {
     turn: i32,
 }
 
+/// A device's fields in a record: its id, track and set (empty when it is
+/// no longer kept).
+fn device_fields(devices: &BTreeMap<i32, Heard>, device: i32) -> Value {
+    let (track, set) = devices
+        .get(&device)
+        .and_then(|h| h.announce.track_and_set())
+        .unwrap_or(("", ""));
+    json!({"kind": "listen", "device": device, "track": track, "set": set})
+}
+
+/// A table key's fields: a Listen device's with its track and set, a LUFS
+/// or meter key's own.
+fn key_fields(devices: &BTreeMap<i32, Heard>, key: &PortKey) -> Value {
+    match key {
+        PortKey::Listen(device) => device_fields(devices, *device),
+        PortKey::Lufs(_) => key.fields(),
+    }
+}
+
+/// The `listen` record of a shared port's move (#264), before its send:
+/// the device moved (it answers there) and the one that stays (a Listen,
+/// LUFS or meter device). Warn class.
+pub fn shared_fields(
+    devices: &BTreeMap<i32, Heard>,
+    share: &crate::poll_ports::Shared<PortKey>,
+) -> Value {
+    json!({
+        "what": "shared_port",
+        "port": share.port,
+        "moved": key_fields(devices, &share.hearing),
+        "stays": key_fields(devices, &share.deaf),
+        "move": share.hearing.move_address(),
+        "warn": true,
+    })
+}
+
+/// The `listen` record of a device that names a new poll port (#264).
+pub fn moved_fields(devices: &BTreeMap<i32, Heard>, device: i32, from: u16, to: u16) -> Value {
+    let mut fields = device_fields(devices, device);
+    fields["what"] = json!("moved");
+    fields["from"] = json!(from);
+    fields["to"] = json!(to);
+    fields
+}
+
 /// The counts `/api/status` shows.
 #[derive(Debug, Default)]
 pub struct Counters {
@@ -279,6 +335,8 @@ pub struct Listen {
     /// The rack switches' queue (#238); none: nothing is switched (a hub
     /// whose Listen port could not be bound, the unit tests).
     racks: Option<rack::Racks>,
+    /// The hub's one table of the devices' poll ports (#264).
+    ports: Arc<PortTable>,
 }
 
 /// One socket's hold on the target of its turn: dropped, it leaves (a
@@ -317,6 +375,17 @@ impl Listen {
 
     /// Listen whose leases switch the tracks' racks through `racks`.
     pub fn with_racks(events: EventLog, sets: SetNames, racks: Option<rack::Racks>) -> Arc<Self> {
+        Self::with_table(events, sets, racks, Arc::default())
+    }
+
+    /// Listen on the hub's one port table (#264: shared with the LUFS
+    /// devices' listener).
+    pub fn with_table(
+        events: EventLog,
+        sets: SetNames,
+        racks: Option<rack::Racks>,
+        ports: Arc<PortTable>,
+    ) -> Arc<Self> {
         let (packets, _) = broadcast::channel(PACKETS);
         Arc::new(Self {
             state: Mutex::new(State::default()),
@@ -326,6 +395,7 @@ impl Listen {
             events,
             sets,
             racks,
+            ports,
         })
     }
 
@@ -447,9 +517,29 @@ impl Listen {
             self.counters.refuse("devices");
             return;
         }
-        state
-            .devices
-            .insert(announce.device, Heard { announce, at: now });
+        let (device, port) = (announce.device, announce.port);
+        state.devices.insert(device, Heard { announce, at: now });
+        if let Some(from) = self.ports.heard(PortKey::Listen(device), port, now) {
+            tracing::info!(
+                device,
+                from,
+                to = port,
+                "listen: a device names a new poll port"
+            );
+            let fields = moved_fields(&state.devices, device, from, port);
+            self.events.record("listen", fields);
+        }
+    }
+
+    /// The shared ports where a Listen device hears, to move now (#264),
+    /// each with its record's fields.
+    pub fn take_moves(&self) -> Vec<(u16, Value)> {
+        let state = self.state();
+        self.ports
+            .take(|key| !key.is_lufs())
+            .iter()
+            .map(|share| (share.port, shared_fields(&state.devices, share)))
+            .collect()
     }
 
     /// Whether `device`'s stream is the one listened to at `now`.
@@ -471,6 +561,9 @@ impl Listen {
             .target
             .as_ref()
             .map(|t| choose(&state.devices, &t.set, &t.track, now));
+        // A port moved within its window is polled on, off (#264): the
+        // device that stays there hears once the other left.
+        let moved = self.ports.due(now, |key| !key.is_lufs());
         one_poll_a_port(
             state
                 .devices
@@ -481,7 +574,8 @@ impl Listen {
                         h.announce.port,
                         chosen == Some(Choice::Device(h.announce.device)),
                     )
-                }),
+                })
+                .chain(moved.into_iter().map(|port| (port, false))),
         )
     }
 
@@ -626,6 +720,18 @@ pub fn spawn(
     sets: SetNames,
     lom: rack::Lom,
 ) -> (Arc<Listen>, Vec<tokio::task::JoinHandle<()>>) {
+    spawn_with(cfg, events, sets, lom, Arc::default())
+}
+
+/// [`spawn`] on the hub's one port table (#264: shared with the LUFS
+/// devices' listener).
+pub fn spawn_with(
+    cfg: &crate::config::ListenCfg,
+    events: EventLog,
+    sets: SetNames,
+    lom: rack::Lom,
+    ports: Arc<PortTable>,
+) -> (Arc<Listen>, Vec<tokio::task::JoinHandle<()>>) {
     let port = cfg.port;
     let wanted = udp::bind_addr(port).to_string();
     // Every socket before any task: a failed bind leaves no task behind.
@@ -633,7 +739,12 @@ pub fn spawn(
     let started = bound.and_then(|(tcp, socket, poller)| {
         let addr = tcp.local_addr()?.to_string();
         let (racks, jobs) = tokio::sync::mpsc::unbounded_channel();
-        let listen = Listen::with_racks(events.clone(), Arc::clone(&sets), Some(racks));
+        let listen = Listen::with_table(
+            events.clone(),
+            Arc::clone(&sets),
+            Some(racks),
+            Arc::clone(&ports),
+        );
         let tasks = vec![
             stream::spawn(tcp, Arc::clone(&listen))?,
             udp::spawn(socket, Arc::clone(&listen))?,
@@ -653,7 +764,7 @@ pub fn spawn(
             let error = e.to_string();
             tracing::error!(addr = %wanted, error = %error, "listen: cannot listen for the Listen devices; the hub runs on without Listen");
             events.record("listen", udp::listen_fields(&wanted, Some(&error)));
-            let listen = Listen::new(events, sets);
+            let listen = Listen::with_table(events, sets, None, ports);
             listen.counters.set_bound(None, Some(error));
             (listen, Vec::new())
         }

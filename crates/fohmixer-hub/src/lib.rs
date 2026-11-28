@@ -96,6 +96,7 @@ pub mod pepper;
 pub mod pin_hash;
 pub mod pin_store;
 pub mod plugwin;
+pub mod poll_ports;
 pub mod presenter;
 pub mod provision;
 pub mod ration;
@@ -728,14 +729,18 @@ impl Hub {
         };
         // The LUFS devices' listener (#151): 127.0.0.1 only; a port taken
         // is recorded and shown, and the hub runs on without it.
+        // The devices' poll ports (#264): one table for every kind (they
+        // draw from one range), so a shared port is found across them.
+        let poll_ports = Arc::new(poll_ports::PortTable::default());
         if config.lufs.port != 0
-            && let Ok((_, task)) = lufs_udp::spawn(
+            && let Ok((_, task)) = lufs_udp::spawn_with(
                 config.lufs.port,
                 router_tx.clone(),
                 Arc::clone(&lufs),
                 events.clone(),
                 link_tap,
                 config.lufs.sweep.clone(),
+                Arc::clone(&poll_ports),
             )
         {
             tasks.push(task);
@@ -758,7 +763,8 @@ impl Hub {
                     }
                 })
             });
-            let (listen, listen_tasks) = listen::spawn(&config.listen, events.clone(), sets, lom);
+            let (listen, listen_tasks) =
+                listen::spawn_with(&config.listen, events.clone(), sets, lom, poll_ports);
             tasks.extend(listen_tasks);
             listen
         });

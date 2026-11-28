@@ -57,7 +57,9 @@ class RereadTests(TreeCase):
             # The tick no longer opens the pull: it rides one.
             self.assertEqual(
                 cl.feeds(patcher, cl.PULL_GATE, 1),
-                sorted([[lp.POLL_ROUTE, 0], [cl.ID_LOAD, 0], [lp.ACTIVE_SEL, 0]]),
+                sorted(
+                    [[lp.POLL_ROUTE, 0], [cl.ID_LOAD, 0], [lp.ACTIVE_SEL, 0], [lp.POLL_MOVE, 0]]
+                ),
             )
             for gone in rr.CLOCK_BOXES:
                 self.assertNotIn(gone, ids, device.name)

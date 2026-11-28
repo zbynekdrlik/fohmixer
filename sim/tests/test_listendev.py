@@ -210,6 +210,25 @@ class StreamTest(unittest.TestCase):
         self.assertEqual(device.streamed, before)
         conn.close()
 
+    def test_the_hubs_move_takes_another_port_and_announces_it_off(self):
+        # #264: the move is the Rust wire's bytes; the device leaves its
+        # port, announces the new one, and is off (its load's bang).
+        self.assertEqual(listendev.encode_move(), bytes.fromhex(listendev.GOLDEN_MOVE_HEX))
+        self.assertEqual(listendev.parse_poll(listendev.encode_move()), ("move", None))
+        device = self.devs.add(self.song.tracks[1], rack=True)
+        self.announce()
+        self.poll(device, True)
+        self.until(lambda: device.on)
+        self.announce()
+        old = device.port
+        self.poller.sendto(listendev.encode_move(), ("127.0.0.1", old))
+        self.until(lambda: device.port != old)
+        self.assertEqual(self.announce()[-8:], struct.pack(">ii", 0, device.port))
+        self.assertFalse(device.on)
+        self.poll(device, False)
+        self.tick()
+        self.assertEqual(self.announce()[-4:], struct.pack(">i", device.port))
+
     def test_another_kinds_poll_is_dropped(self):
         device = self.devs.add(self.song.tracks[0], rack=False)
         self.announce()

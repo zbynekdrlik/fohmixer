@@ -31,6 +31,7 @@ mod live_client;
 mod lufs;
 mod lufs_history;
 mod lufs_listener;
+mod lufs_ports;
 mod markers;
 mod mute_alarms;
 mod mute_guards;

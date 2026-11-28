@@ -7,6 +7,12 @@ fn hex(text: &str) -> Vec<u8> {
         .collect()
 }
 
+/// The hub's move of a LUFS device (#264); `sim/maxdev.py` pins the same
+/// bytes.
+const GOLDEN_LUFS_MOVE_HEX: &str = "2f666f686d697865722f6c7566732f6d6f7665002c000000";
+/// The hub's move of a meter device (#264).
+const GOLDEN_METER_MOVE_HEX: &str = "2f666f686d697865722f6d657465722f6d6f7665000000002c000000";
+
 fn names(parents: [&str; PARENTS]) -> [String; PARENTS] {
     parents.map(str::to_string)
 }
@@ -251,6 +257,28 @@ fn the_poll_is_an_osc_message_with_no_argument() {
         assert_eq!(address, kind.poll_address());
         assert_eq!(osc_string(rest), Ok((",", &[][..])));
     }
+}
+
+#[test]
+fn the_move_is_an_osc_message_with_no_argument() {
+    // #264 (the design comment 7228766032): each kind its own address, so
+    // a device of the other kind on the port drops it in its `route`.
+    // `sim/maxdev.py` pins the same bytes.
+    let lufs = move_datagram(DeviceKind::Lufs);
+    assert_eq!(lufs, hex(GOLDEN_LUFS_MOVE_HEX));
+    assert_eq!(lufs, b"/fohmixer/lufs/move\0,\0\0\0".to_vec());
+    let meter = move_datagram(DeviceKind::Meter);
+    assert_eq!(meter, hex(GOLDEN_METER_MOVE_HEX));
+    for (kind, out) in [(DeviceKind::Lufs, &lufs), (DeviceKind::Meter, &meter)] {
+        let (address, rest) = osc_string(out).unwrap();
+        assert_eq!(address, kind.move_address());
+        assert_eq!(osc_string(rest), Ok((",", &[][..])));
+        assert_ne!(*out, poll_datagram(kind));
+    }
+    assert_eq!(LUFS_MOVE_ADDRESS, "/fohmixer/lufs/move");
+    assert_eq!(METER_MOVE_ADDRESS, "/fohmixer/meter/move");
+    // One move per port per 5 s.
+    assert_eq!(MOVE_EVERY_MS, 5000);
 }
 
 #[test]

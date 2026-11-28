@@ -15,6 +15,13 @@ the wire module's constants
 `crates/fohmixer-proto/src/lufs/wire.rs`. FohMixer Meter is pulled the same
 way since its step of #264; its own boxes and lines are a `Shape` of
 `meter_pull_check.py`, checked by the same `pull_errors`.
+
+The move (#264, the design comment 7228766032): two devices can draw one
+port, and on the FOH PC only the first binder hears it. The hub then sends
+the port the kind's move; the `route`'s second address bangs `t b b`
+(`POLL_MOVE`): the port draw first (the load's own `random` chain), then
+the gate's right inlet (the load's announce), all in Max's main thread, so
+the deaf device hears the port from then on.
 """
 
 from __future__ import annotations
@@ -45,18 +52,23 @@ POLL_LINES = {
     "span": re.compile(r"^pub const POLL_PORT_SPAN: u16 = ([\d_]+);$", re.MULTILINE),
     "address": re.compile(r'^pub const LUFS_POLL_ADDRESS: &str = "([^"]+)";$', re.MULTILINE),
     "meter": re.compile(r'^pub const METER_POLL_ADDRESS: &str = "([^"]+)";$', re.MULTILINE),
+    "move": re.compile(r'^pub const LUFS_MOVE_ADDRESS: &str = "([^"]+)";$', re.MULTILINE),
+    "meter_move": re.compile(r'^pub const METER_MOVE_ADDRESS: &str = "([^"]+)";$', re.MULTILINE),
 }
 
 
 @dataclass(frozen=True)
 class Poll:
     """The polled form's constants (#264): the poll ports a device draws
-    from (`min`, `span` of them) and each kind's poll address."""
+    from (`min`, `span` of them), each kind's poll address and each kind's
+    move address."""
 
     min: int
     span: int
     address: str
     meter_address: str
+    move_address: str
+    meter_move_address: str
 
 
 def poll_constants(wire_text: str) -> Poll | None:
@@ -68,6 +80,8 @@ def poll_constants(wire_text: str) -> Poll | None:
         int(found["span"][1].replace("_", "")),
         found["address"][1],
         found["meter"][1],
+        found["move"][1],
+        found["meter_move"][1],
     )
 
 
@@ -113,6 +127,8 @@ POLL_DRAW = "obj-poll-draw"
 POLL_OFFSET = "obj-poll-offset"
 POLL_PORT = "obj-poll-port"
 POLL_SET = "obj-poll-set"
+# The hub's move (#264): `t b b`, the port draw, then the gate.
+POLL_MOVE = "obj-poll-move"
 ACTIVE_PROPERTY = "obj-active-property"
 ACTIVE_PATH = "obj-active-path"
 ACTIVE_LIVE_PATH = "obj-active-live-path"
@@ -130,7 +146,8 @@ def pull_boxes(poll: Poll) -> dict[str, list[str]]:
         # Bound below the range until the load draws its port: the hub
         # never polls it, so no poll reaches a device still loading.
         POLL_RECEIVE: ["udpreceive", str(poll.min - 1), "@defer", "1"],
-        POLL_ROUTE: ["route", poll.address],
+        POLL_ROUTE: ["route", poll.address, poll.move_address],
+        POLL_MOVE: ["t", "b", "b"],
         POLL_DRAW: ["random", str(poll.span)],
         POLL_OFFSET: ["+", str(poll.min)],
         POLL_PORT: ["t", "i", "i"],
@@ -147,12 +164,14 @@ def pull_boxes(poll: Poll) -> dict[str, list[str]]:
     }
 
 
-def pull_wiring(sink: str) -> dict[tuple[str, int], list[tuple[str, int]]]:
-    """Each inlet of the pull and the only sources it takes."""
+def pull_wiring(sink: str, move_outlet: int = 1) -> dict[tuple[str, int], list[tuple[str, int]]]:
+    """Each inlet of the pull and the only sources it takes (the move from
+    the route's `move_outlet`)."""
     top = PARENTS + 2 + LOAD_EXTRA
     return {
         (PULL_GATE, 0): [(ACTIVE_T, 1)],
-        (PULL_GATE, 1): [(POLL_ROUTE, 0), (ID_LOAD, 0), (ACTIVE_SEL, 0)],
+        (PULL_GATE, 1): [(POLL_ROUTE, 0), (ID_LOAD, 0), (ACTIVE_SEL, 0), (POLL_MOVE, 0)],
+        (POLL_MOVE, 0): [(POLL_ROUTE, move_outlet)],
         (PULL, 0): [(PULL_GATE, 0)],
         ("obj-snap-s", 1): [],
         ("obj-snap-v", 1): [],
@@ -160,7 +179,7 @@ def pull_wiring(sink: str) -> dict[tuple[str, int], list[tuple[str, int]]]:
         (POLL_RECEIVE, 0): [(POLL_SET, 0)],
         (POLL_ROUTE, 0): [(POLL_RECEIVE, 0)],
         (POLL_ROUTE, 1): [],
-        (POLL_DRAW, 0): [(ID_LOAD, top)],
+        (POLL_DRAW, 0): [(ID_LOAD, top), (POLL_MOVE, 1)],
         (POLL_DRAW, 1): [],
         (POLL_OFFSET, 0): [(POLL_DRAW, 0)],
         (POLL_OFFSET, 1): [],
@@ -199,7 +218,8 @@ def pull_outputs() -> dict[str, list[list]]:
             [3, "obj-id-count", 0],
         ],
         POLL_RECEIVE: [[0, POLL_ROUTE, 0]],
-        POLL_ROUTE: [[0, PULL_GATE, 1]],
+        POLL_ROUTE: [[0, PULL_GATE, 1], [1, POLL_MOVE, 0]],
+        POLL_MOVE: [[0, PULL_GATE, 1], [1, POLL_DRAW, 0]],
         POLL_DRAW: [[0, POLL_OFFSET, 0]],
         POLL_OFFSET: [[0, POLL_PORT, 0]],
         POLL_SET: [[0, POLL_RECEIVE, 0]],

@@ -24,7 +24,11 @@ message arrives through `udpreceive @defer 1`, in Max's main thread.
   whether it streams, its poll port). It announces again when its Device On
   turns 1 (`is_active` observed: the hub switches the `Listen` rack on for a
   listen, #238) and answers every poll of the hub. A device whose Device On
-  is 0 answers nothing (the gate, as the meter's).
+  is 0 answers nothing (the gate, as the meter's). The hub's move
+  (`/fohmixer/listen/move`, #264: another device drew the same port, and
+  only the first binder hears it) draws the port again and announces it
+  through the load's own path (`t b b`: the draw, then the gate), so the
+  device is off until the hub's next poll.
 - **The poll** (`/fohmixer/listen/poll <on>`, every 250 ms from the hub to
   each device it heard): the select pushed, never asked. 1 turns it on: the
   hello (`fohmixer_listen 2 <id> v<version> <sample rate>`) through
