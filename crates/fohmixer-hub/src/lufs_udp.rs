@@ -275,6 +275,44 @@ pub fn send_moves(poller: &std::net::UdpSocket, polls: &mut Polls, events: &Even
     u64::try_from(shared.len()).unwrap_or(u64::MAX)
 }
 
+/// How often the hub reads the OS's UDP table (Windows), after its first
+/// read right after the start's sweep.
+pub const OS_TABLE_EVERY: Duration = Duration::from_secs(30);
+
+/// Every kind's move, address and datagram: a port the OS's table found
+/// shared names no key, so its first binder's kind is unknown, and a
+/// device's `route` drops the other kinds' moves.
+pub fn every_move() -> Vec<(&'static str, Vec<u8>)> {
+    Vec::new()
+}
+
+/// The `lufs` record of a port the OS's table found shared (#264): its
+/// port, the processes that bind it, the moves' addresses and whether the
+/// socket took them all. Warn class.
+pub fn os_shared_fields(port: u16, pids: usize, sent: bool) -> Value {
+    let _ = (port, pids, sent);
+    json!({})
+}
+
+/// The OS's UDP table read (`rows`, port and pid; Windows,
+/// `udp_table::rows`): each port of `range` two processes bind and no move
+/// of it within its window gets every kind's move ([`every_move`]) from
+/// `poller`, one `shared_port` record (`found: "os_table"`) and one warn
+/// line, and is polled on for the window for every kind, so the deaf device
+/// is learned. A read that failed is one warn line, nothing moved. How many
+/// ports it moved.
+pub fn os_moves(
+    poller: &std::net::UdpSocket,
+    polls: &mut Polls,
+    rows: io::Result<Vec<(u16, u32)>>,
+    range: &std::ops::Range<u16>,
+    now: Instant,
+    events: &EventLog,
+) -> u64 {
+    let _ = (poller, polls, rows, range, now, events);
+    0
+}
+
 /// The address a poll goes to: the device's port on `127.0.0.1`.
 pub fn poll_addr(port: u16) -> SocketAddrV4 {
     SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)

@@ -453,3 +453,79 @@ fn a_port_is_moved_again_only_after_its_window() {
         })
     );
 }
+
+#[test]
+fn a_port_in_the_range_two_processes_bind_is_shared_by_processes() {
+    // #264 (the design comment 7231753561): the OS's UDP table names every
+    // bound port and its process; a device port two Lives bound is the one
+    // the hub may never hear the deaf device on.
+    let range = 40_000..50_000;
+    let rows = [
+        (P, 10),
+        (P, 20),
+        (Q, 10),
+        (Q, 10),
+        (39_999, 10),
+        (39_999, 20),
+        (50_000, 10),
+        (50_000, 20),
+        (40_000, 30),
+        (40_000, 31),
+        (40_000, 32),
+        (49_999, 7),
+    ];
+    assert_eq!(
+        shared_by_processes(&rows, &range),
+        BTreeSet::from([40_000, P]),
+        "one process twice on a port is Max's one socket; outside the range is no device's"
+    );
+    assert!(shared_by_processes(&[], &range).is_empty());
+    assert!(shared_by_processes(&[(P, 1)], &range).is_empty());
+    assert_eq!(processes_on(&rows, P), 2);
+    assert_eq!(processes_on(&rows, Q), 1);
+    assert_eq!(processes_on(&rows, 40_000), 3);
+    assert_eq!(processes_on(&rows, 41_000), 0);
+}
+
+#[test]
+fn a_port_found_shared_is_moved_once_a_window_and_polled_for_every_key() {
+    // The OS table names no key: the port is polled on for the window for
+    // every kind, so the deaf device, whichever its kind, is learned.
+    let t0 = Instant::now();
+    let mut ports: PollPorts<char> = PollPorts::default();
+    assert!(ports.found(P, t0));
+    assert!(!ports.found(P, t0 + ms(4999)), "within the move's window");
+    assert!(ports.found(Q, t0 + ms(10)), "a port of its own");
+    assert_eq!(ports.due(t0 + ms(20), |_| false), BTreeSet::from([P, Q]));
+    assert_eq!(
+        ports.due(t0 + ms(4999), |k| *k == 'x'),
+        BTreeSet::from([P, Q])
+    );
+    ports.forget(t0 + ms(5005), kept_at(t0 + ms(5005)));
+    assert_eq!(ports.due(t0 + ms(5005), |_| true), BTreeSet::from([Q]));
+    assert!(ports.found(P, t0 + ms(5000)), "after the window");
+    // A move found by the keys holds the port's window too, both ways.
+    heard(&mut ports, 'a', Q + 1, t0);
+    heard(&mut ports, 'b', Q + 1, t0 + ms(10));
+    assert!(heard(&mut ports, 'a', Q + 1, t0 + ms(20)).shared.is_some());
+    assert!(!ports.found(Q + 1, t0 + ms(30)));
+    assert!(ports.found(Q + 2, t0));
+    heard(&mut ports, 'c', Q + 2, t0 + ms(40));
+    heard(&mut ports, 'd', Q + 2, t0 + ms(50));
+    assert!(heard(&mut ports, 'c', Q + 2, t0 + ms(80)).shared.is_none());
+}
+
+#[test]
+fn a_port_found_shared_is_polled_by_the_lufs_listener_and_listen() {
+    let table = PortTable::default();
+    let t0 = Instant::now();
+    assert!(table.found(P, t0));
+    assert!(!table.found(P, t0 + ms(1)));
+    assert_eq!(table.due(t0 + ms(2), PortKey::is_lufs), BTreeSet::from([P]));
+    assert_eq!(
+        table.due(t0 + ms(2), |key| !key.is_lufs()),
+        BTreeSet::from([P])
+    );
+    assert!(table.take(|_| true).is_empty(), "no keys' share to send");
+    assert!(table.due(t0 + ms(5000), |_| true).is_empty());
+}

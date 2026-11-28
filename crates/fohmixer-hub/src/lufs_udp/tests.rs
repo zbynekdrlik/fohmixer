@@ -637,3 +637,166 @@ fn a_kept_datagram_on_a_new_port_is_one_moved_record() {
     );
     assert!(records.try_recv().is_err(), "one record");
 }
+
+/// A device socket outside the devices' range (a start sweep of another
+/// test polls all of it), reading for 5 s.
+fn outside_device() -> std::net::UdpSocket {
+    let range = wire::POLL_PORT_MIN..wire::POLL_PORT_MIN + wire::POLL_PORT_SPAN;
+    let device = (0..64)
+        .map(|_| std::net::UdpSocket::bind("127.0.0.1:0").unwrap())
+        .find(|s| !range.contains(&s.local_addr().unwrap().port()))
+        .expect("a port outside the devices' range");
+    device
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    device
+}
+
+#[test]
+fn every_kinds_move_is_the_lufs_the_meter_and_the_listen_one() {
+    use fohmixer_proto::listen::wire as listen_wire;
+    assert_eq!(
+        every_move(),
+        vec![
+            (
+                wire::LUFS_MOVE_ADDRESS,
+                wire::move_datagram(DeviceKind::Lufs)
+            ),
+            (
+                wire::METER_MOVE_ADDRESS,
+                wire::move_datagram(DeviceKind::Meter)
+            ),
+            (listen_wire::MOVE_ADDRESS, listen_wire::move_datagram()),
+        ]
+    );
+    assert_eq!(OS_TABLE_EVERY, Duration::from_secs(30));
+}
+
+#[test]
+fn a_port_two_processes_bind_gets_every_kinds_move_and_is_polled_on() {
+    // #264 (the design comment 7231753561): a collision from before the
+    // hub's start: the sweep reached the first binder only, so the hub
+    // knows no key of the deaf device. The OS's table names the port bound
+    // by two Lives; the hub moves whichever device hears there and polls
+    // the port on for every kind, so the deaf one is learned.
+    let device = outside_device();
+    let port = device.local_addr().unwrap().port();
+    let range = port..port + 1;
+    let poller = poll_socket().unwrap();
+    let (events, records) = EventLog::channel(16);
+    let mut polls = Polls::default();
+    let t0 = Instant::now();
+    let ms = Duration::from_millis;
+    let rows = vec![
+        (port, 10),
+        (port, 20),
+        (port, 20),
+        (port + 1, 10),
+        (port + 1, 30),
+    ];
+    assert_eq!(
+        os_moves(&poller, &mut polls, Ok(rows.clone()), &range, t0, &events),
+        1
+    );
+    let mut buf = [0u8; 64];
+    for (_, datagram) in every_move() {
+        let n = device.recv(&mut buf).unwrap();
+        assert_eq!(&buf[..n], datagram.as_slice());
+    }
+    let record = records.try_recv().expect("a shared_port record");
+    assert_eq!(record["ev"], "lufs");
+    assert_eq!(record["what"], "shared_port");
+    assert_eq!(record["found"], "os_table");
+    assert_eq!(record["port"], port);
+    assert_eq!(record["pids"], 2);
+    assert_eq!(record["sent"], true);
+    assert_eq!(record["warn"], true);
+    assert!(
+        records.try_recv().is_err(),
+        "one record: the other port is outside the range"
+    );
+    for kind in POLLED_KINDS {
+        assert_eq!(polls.due(t0 + ms(4999), kind), BTreeSet::from([port]));
+    }
+    // Within the window nothing goes again; after it, a share still there
+    // is moved again.
+    assert_eq!(
+        os_moves(
+            &poller,
+            &mut polls,
+            Ok(rows.clone()),
+            &range,
+            t0 + ms(4999),
+            &events
+        ),
+        0
+    );
+    assert!(records.try_recv().is_err());
+    assert!(polls.due(t0 + ms(5000), DeviceKind::Lufs).is_empty());
+    assert_eq!(
+        os_moves(
+            &poller,
+            &mut polls,
+            Ok(rows),
+            &range,
+            t0 + ms(5000),
+            &events
+        ),
+        1
+    );
+    assert!(records.try_recv().is_ok());
+}
+
+#[test]
+fn a_table_that_could_not_be_read_moves_nothing() {
+    let poller = poll_socket().unwrap();
+    let (events, records) = EventLog::channel(16);
+    let mut polls = Polls::default();
+    let t0 = Instant::now();
+    let failed = Err(io::Error::other("the table"));
+    assert_eq!(
+        os_moves(&poller, &mut polls, failed, &(40_000..50_000), t0, &events),
+        0
+    );
+    assert!(records.try_recv().is_err());
+    assert!(polls.due(t0, DeviceKind::Lufs).is_empty());
+}
+
+#[test]
+fn an_os_found_move_the_socket_refuses_is_recorded_unsent() {
+    let poller = poll_socket().unwrap();
+    let (events, records) = EventLog::channel(16);
+    let mut polls = Polls::default();
+    // Port 0 stands for a refused send.
+    let rows = vec![(0, 1), (0, 2), (0, 3)];
+    assert_eq!(
+        os_moves(
+            &poller,
+            &mut polls,
+            Ok(rows),
+            &(0..1),
+            Instant::now(),
+            &events
+        ),
+        1
+    );
+    let record = records.try_recv().unwrap();
+    assert_eq!(record["sent"], false);
+    assert_eq!(record["pids"], 3);
+}
+
+#[test]
+fn the_os_found_records_fields() {
+    assert_eq!(
+        os_shared_fields(41_234, 2, true),
+        json!({
+            "what": "shared_port",
+            "found": "os_table",
+            "port": 41_234,
+            "pids": 2,
+            "moves": ["/fohmixer/lufs/move", "/fohmixer/meter/move", "/fohmixer/listen/move"],
+            "sent": true,
+            "warn": true,
+        })
+    );
+}

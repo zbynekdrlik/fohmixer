@@ -46,6 +46,7 @@
 //! device nested deeper than one rack names a rack as its set.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -162,6 +163,19 @@ pub fn remembered(heard: Instant, now: Instant) -> bool {
     now.saturating_duration_since(heard) < Duration::from_millis(REMEMBER_MS)
 }
 
+/// The ports in `range` (the devices') that two or more DIFFERENT
+/// processes bind, from the OS's UDP endpoint table's `rows` (port, pid).
+pub fn shared_by_processes(rows: &[(u16, u32)], range: &Range<u16>) -> BTreeSet<u16> {
+    let _ = (rows, range);
+    BTreeSet::new()
+}
+
+/// The different processes that bind `port` in `rows`.
+pub fn processes_on(rows: &[(u16, u32)], port: u16) -> usize {
+    let _ = (rows, port);
+    0
+}
+
 impl<K: Ord + Clone> PollPorts<K> {
     /// A table whose keys of one device are told by `same` (a new key of
     /// the same device on its port is no share).
@@ -257,6 +271,13 @@ impl<K: Ord + Clone> PollPorts<K> {
             .filter(|(_, moved)| moving(moved.at, now) && moved.keys.iter().any(&pick))
             .map(|(port, _)| *port);
         kept.chain(moved).collect()
+    }
+
+    /// A port found shared by the OS's table at `now`: whether a move is
+    /// due (no move of the port within its window).
+    pub fn found(&mut self, port: u16, now: Instant) -> bool {
+        let _ = (port, now);
+        false
     }
 
     /// The kept keys' ports `pick` takes, each once.
@@ -409,6 +430,12 @@ impl PortTable {
         let mut guard = self.lock();
         guard.0.forget(now, |key, heard| key.kept(heard, now));
         guard.0.due(now, pick)
+    }
+
+    /// A port found shared by the OS's table at `now`: whether a move is
+    /// due ([`PollPorts::found`]).
+    pub fn found(&self, port: u16, now: Instant) -> bool {
+        self.lock().0.found(port, now)
     }
 
     /// The kept keys' ports `pick` takes, each once.
