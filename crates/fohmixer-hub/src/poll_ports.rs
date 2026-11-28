@@ -37,6 +37,11 @@
 //! Live both devices share Max's socket and both hear: a move of the older
 //! one moves both, harmless).
 //!
+//! **A share from before the hub's start** names no key the hub heard: the
+//! OS's UDP table tells it ([`shared_by_processes`]), and its move
+//! ([`PollPorts::found`]) holds no keys, so the port is polled for every
+//! pick for the window (the design comment 7231753561).
+//!
 //! **Accepted (rare):** a first binder that never answered (its rack off
 //! before the first poll) while a newcomer announces after its window gets
 //! the newcomer moved (the move still lands at the first binder when the
@@ -46,6 +51,7 @@
 //! device nested deeper than one rack names a rack as its set.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -71,11 +77,12 @@ struct Held {
     answered: bool,
 }
 
-/// A move sent: when, and the two keys of its port.
+/// A move sent: when, and the two keys of its port; none for a port the
+/// OS's table found shared ([`PollPorts::found`]: polled for every key).
 #[derive(Debug, Clone)]
 struct Moved<K> {
     at: Instant,
-    keys: [K; 2],
+    keys: Option<[K; 2]>,
 }
 
 /// A port two keys name: the key that still answers on it (to move) and
@@ -162,6 +169,30 @@ pub fn remembered(heard: Instant, now: Instant) -> bool {
     now.saturating_duration_since(heard) < Duration::from_millis(REMEMBER_MS)
 }
 
+/// The ports in `range` (the devices') that two or more DIFFERENT
+/// processes bind, from the OS's UDP endpoint table's `rows` (port, pid).
+/// Inside one Live Max shares one socket per port, so one process twice on
+/// a port is no share; two Lives' devices on one port are.
+pub fn shared_by_processes(rows: &[(u16, u32)], range: &Range<u16>) -> BTreeSet<u16> {
+    let mut pids: BTreeMap<u16, BTreeSet<u32>> = BTreeMap::new();
+    for (port, pid) in rows.iter().filter(|(port, _)| range.contains(port)) {
+        pids.entry(*port).or_default().insert(*pid);
+    }
+    pids.into_iter()
+        .filter(|(_, pids)| pids.len() >= 2)
+        .map(|(port, _)| port)
+        .collect()
+}
+
+/// The different processes that bind `port` in `rows`.
+pub fn processes_on(rows: &[(u16, u32)], port: u16) -> usize {
+    rows.iter()
+        .filter(|(p, _)| *p == port)
+        .map(|(_, pid)| *pid)
+        .collect::<BTreeSet<u32>>()
+        .len()
+}
+
 impl<K: Ord + Clone> PollPorts<K> {
     /// A table whose keys of one device are told by `same` (a new key of
     /// the same device on its port is no share).
@@ -218,7 +249,7 @@ impl<K: Ord + Clone> PollPorts<K> {
                     port,
                     Moved {
                         at: now,
-                        keys: [key.clone(), deaf.clone()],
+                        keys: Some([key.clone(), deaf.clone()]),
                     },
                 );
                 Shared {
@@ -254,9 +285,33 @@ impl<K: Ord + Clone> PollPorts<K> {
         let moved = self
             .moves
             .iter()
-            .filter(|(_, moved)| moving(moved.at, now) && moved.keys.iter().any(&pick))
+            .filter(|(_, moved)| {
+                moving(moved.at, now)
+                    && moved
+                        .keys
+                        .as_ref()
+                        .is_none_or(|keys| keys.iter().any(&pick))
+            })
             .map(|(port, _)| *port);
         kept.chain(moved).collect()
+    }
+
+    /// A port found shared by the OS's table at `now`: whether a move is
+    /// due (no move of the port within its window). A due one is noted as a
+    /// move with no keys: [`PollPorts::due`] names it for every pick for the
+    /// window, so the deaf device, whichever its kind, is heard and learned.
+    pub fn found(&mut self, port: u16, now: Instant) -> bool {
+        let due = move_due(self.moves.get(&port).map(|m| m.at), now);
+        if due {
+            self.moves.insert(
+                port,
+                Moved {
+                    at: now,
+                    keys: None,
+                },
+            );
+        }
+        due
     }
 
     /// The kept keys' ports `pick` takes, each once.
@@ -409,6 +464,12 @@ impl PortTable {
         let mut guard = self.lock();
         guard.0.forget(now, |key, heard| key.kept(heard, now));
         guard.0.due(now, pick)
+    }
+
+    /// A port found shared by the OS's table at `now`: whether a move is
+    /// due ([`PollPorts::found`]).
+    pub fn found(&self, port: u16, now: Instant) -> bool {
+        self.lock().0.found(port, now)
     }
 
     /// The kept keys' ports `pick` takes, each once.

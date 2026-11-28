@@ -211,8 +211,8 @@ jobs:
         run: mkdir -p crates/fohmixer-ui/dist && echo placeholder > crates/fohmixer-ui/dist/index.html
       - name: Clippy (hub and tray, Windows-only code included)
         run: cargo clippy --locked -p fohmixer-hub -p fohmixer-tray --all-targets -- -D warnings
-      - name: Sealed-secret and window-backend tests (DPAPI; the PIN pepper, the Cloudflare token; the Pro-Q 4 screen's Win32 calls and its default backend, off on Windows)
-        run: cargo test --locked -p fohmixer-hub --lib -- "pepper::" "sealed::" "cf_token::" "automation::" "link::tests::the_secret_survives" "link::tests::a_bad_secret_stores" "plugwin::win::" "plugwin::wgc::" "plugwin::wgc_display::" "config::tests::eq_backend"
+      - name: Sealed-secret and window-backend tests (DPAPI; the PIN pepper, the Cloudflare token; the Pro-Q 4 screen's Win32 calls and its default backend, off on Windows; the UDP table's read, #264)
+        run: cargo test --locked -p fohmixer-hub --lib -- "pepper::" "sealed::" "cf_token::" "automation::" "link::tests::the_secret_survives" "link::tests::a_bad_secret_stores" "plugwin::win::" "plugwin::wgc::" "plugwin::wgc_display::" "config::tests::eq_backend" "udp_table::"
       - name: AbleSet's proxy and WebSocket tunnel tests, and the listeners' logged socket, on Windows (#90; real listeners, plain and TLS)
         run: cargo test --locked -p fohmixer-hub --lib -- "ableset::" "accept::"
       - name: Listen's Opus encoder and listeners on Windows (#210; libopus built from source by CMake, MSVC)
