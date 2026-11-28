@@ -191,6 +191,7 @@ impl Counters {
 pub struct Polls {
     table: Arc<PortTable>,
     os_range: Option<std::ops::Range<u16>>,
+    os_failing: bool,
 }
 
 /// Whether a table key is a LUFS or meter key of `kind`.
@@ -202,7 +203,16 @@ impl Polls {
     /// The polls of the hub's one table, the OS's table read over
     /// `os_range`.
     pub fn with_table(table: Arc<PortTable>, os_range: Option<std::ops::Range<u16>>) -> Self {
-        Self { table, os_range }
+        Self {
+            table,
+            os_range,
+            os_failing: false,
+        }
+    }
+
+    /// Whether the OS table's last read failed ([`read_change`]).
+    pub fn os_failing(&self) -> bool {
+        self.os_failing
     }
 
     /// A reading the bound kept (taken or dropped, never `Full`): its key's
@@ -324,6 +334,24 @@ pub fn os_shared_fields(port: u16, pids: usize, sent: bool) -> Value {
     })
 }
 
+/// A change of the OS table's read: its first failure (one warn line) and
+/// the first read after failures (one info line); a failure that goes on
+/// is a debug line only, so a read that keeps failing warns once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadChange {
+    Failed,
+    Back,
+}
+
+/// The read's change from `was_failing` to `failed` now.
+pub fn read_change(was_failing: bool, failed: bool) -> Option<ReadChange> {
+    match (was_failing, failed) {
+        (false, true) => Some(ReadChange::Failed),
+        (true, false) => Some(ReadChange::Back),
+        _ => None,
+    }
+}
+
 /// The OS's UDP table read (`rows`, port and pid; Windows,
 /// `udp_table::rows`): each port of `range` two processes bind and no move
 /// of it within its window gets every kind's move ([`every_move`]) from
@@ -339,10 +367,21 @@ pub fn os_moves(
     now: Instant,
     events: &EventLog,
 ) -> u64 {
+    let change = read_change(polls.os_failing, rows.is_err());
+    polls.os_failing = rows.is_err();
     let rows = match rows {
-        Ok(rows) => rows,
+        Ok(rows) => {
+            if change == Some(ReadChange::Back) {
+                tracing::info!("lufs: the UDP table reads again");
+            }
+            rows
+        }
         Err(e) => {
-            tracing::warn!(error = %e, "lufs: cannot read the UDP table: a poll port shared from before the hub's start stays unmoved");
+            if change == Some(ReadChange::Failed) {
+                tracing::warn!(error = %e, "lufs: cannot read the UDP table: a poll port shared from before the hub's start stays unmoved");
+            } else {
+                tracing::debug!(error = %e, "lufs: the UDP table still cannot be read");
+            }
             return 0;
         }
     };

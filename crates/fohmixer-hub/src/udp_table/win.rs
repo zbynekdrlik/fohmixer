@@ -67,3 +67,21 @@ pub fn rows() -> io::Result<Vec<(u16, u32)>> {
     }
     Err(io::Error::other("the UDP table grew at every read"))
 }
+
+#[cfg(test)]
+mod tests {
+    /// The real read (the `windows` CI job): a socket this test binds is a
+    /// row with its port and this process.
+    #[test]
+    fn a_bound_socket_is_a_row_of_its_port_and_process() {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = socket.local_addr().unwrap().port();
+        let rows = super::rows().unwrap();
+        assert!(
+            rows.contains(&(port, std::process::id())),
+            "port {port} of process {} in {} rows",
+            std::process::id(),
+            rows.len()
+        );
+    }
+}

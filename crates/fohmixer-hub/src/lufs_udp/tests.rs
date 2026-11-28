@@ -763,6 +763,45 @@ fn a_table_that_could_not_be_read_moves_nothing() {
 }
 
 #[test]
+fn a_read_that_keeps_failing_warns_once_and_its_return_is_one_info_line() {
+    // #264 review F3: a read every 30 s that fails for good is one warn.
+    assert_eq!(read_change(false, true), Some(ReadChange::Failed));
+    assert_eq!(read_change(true, false), Some(ReadChange::Back));
+    assert_eq!(read_change(true, true), None);
+    assert_eq!(read_change(false, false), None);
+    let poller = poll_socket().unwrap();
+    let (events, _records) = EventLog::channel(16);
+    let mut polls = Polls::default();
+    let t0 = Instant::now();
+    let range = 40_000..50_000;
+    let read = |rows: io::Result<Vec<(u16, u32)>>, polls: &mut Polls| {
+        crate::ws::tests::logged(|| {
+            os_moves(&poller, polls, rows, &range, t0, &events);
+        })
+    };
+    let first = read(Err(io::Error::other("the table")), &mut polls);
+    assert!(polls.os_failing());
+    assert!(
+        first.contains(" WARN ") && first.contains("cannot read the UDP table"),
+        "{first}"
+    );
+    let again = read(Err(io::Error::other("the table")), &mut polls);
+    assert!(polls.os_failing());
+    assert!(
+        !again.contains("UDP table"),
+        "a failure that goes on is a debug line only: {again}"
+    );
+    let back = read(Ok(Vec::new()), &mut polls);
+    assert!(!polls.os_failing());
+    assert!(
+        back.contains(" INFO ") && back.contains("reads again"),
+        "{back}"
+    );
+    let quiet = read(Ok(Vec::new()), &mut polls);
+    assert!(!quiet.contains("UDP table"), "{quiet}");
+}
+
+#[test]
 fn an_os_found_move_the_socket_refuses_is_recorded_unsent() {
     let poller = poll_socket().unwrap();
     let (events, records) = EventLog::channel(16);
