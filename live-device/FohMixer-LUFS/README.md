@@ -177,6 +177,19 @@ a message in the audio thread:
   polls, and the port is drawn once at load (`random 10000` → `+ 40000`, the
   load's first step) into the `udpreceive` (`port N`) and the `pack`'s last
   slot, so the hub learns it from the datagram;
+- the move (#264, the design comment 7228766032): two devices can draw one
+  port, and `udpreceive` binds it with `SO_REUSEADDR`, so on the FOH PC
+  only the first binder hears it. The hub then sends the port
+  `/fohmixer/lufs/move` (FohMixer Meter: `/fohmixer/meter/move`), no
+  argument, the `route`'s second address: `obj-poll-move` (`t b b`) bangs
+  the draw again (`random 10000`, the load's chain: a new port into the
+  `udpreceive` and the `pack`), then the gate's right inlet (one datagram
+  naming the new port), all in Max's main thread; the deaf device hears the
+  old port from then on. A device whose Device On is 0 moves but sends
+  nothing until Device On turns 1 (its own announce then). The hub also
+  moves a port for a device that went stale on it while another answers
+  there, and finds a Listen device and a meter on one port alike (one
+  table for every kind);
 - `obj-pull-gate` (`gate`) passes a bang only while the device is on: a
   `live.observer` on `this_device` `is_active` (its `live.path`'s left
   outlet straight into the observer's right inlet, as in probe B3; through

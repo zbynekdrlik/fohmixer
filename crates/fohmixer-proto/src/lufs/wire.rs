@@ -26,6 +26,15 @@
 //! audio thread (FohMixer LUFS since 1.58.0, FohMixer Meter since its step
 //! of #264).
 //!
+//! **The move (#264, the design comment 7228766032).** About 50 devices
+//! draw from one range, so two can draw one port; Max's `udpreceive` binds
+//! with `SO_REUSEADDR`, and on the FOH PC Windows gives such a port's
+//! datagrams to its FIRST binder only, so the device that loaded later is
+//! deaf. The hub then sends the port [`move_datagram`] of the hearing
+//! device's kind ([`DeviceKind::move_address`]), at most once a port every
+//! [`MOVE_EVERY_MS`]: the device draws another port (its load's draw) and
+//! answers on it, and the deaf one hears from then on.
+//!
 //! Max's `live.path` gives no absolute path of a device (its `getpath`
 //! echoes the path it was given: #151's probe of 27.10), so the device names
 //! its parents instead: on a track `[track, set, -, -]`, in a rack's chain
@@ -55,6 +64,14 @@ pub const POLL_PORT_SPAN: u16 = 10_000;
 pub const LUFS_POLL_ADDRESS: &str = "/fohmixer/lufs/poll";
 /// The hub's poll of a meter device (#264), the same shape.
 pub const METER_POLL_ADDRESS: &str = "/fohmixer/meter/poll";
+/// The hub's move of a LUFS device (#264): an OSC message with no
+/// argument; the device draws another poll port.
+pub const LUFS_MOVE_ADDRESS: &str = "/fohmixer/lufs/move";
+/// The hub's move of a meter device (#264), the same shape.
+pub const METER_MOVE_ADDRESS: &str = "/fohmixer/meter/move";
+/// The hub moves a port at most once in this window (#264), and polls it
+/// on for its devices meanwhile.
+pub const MOVE_EVERY_MS: u64 = 5000;
 /// How often the hub polls each LUFS device it knows the port of (5 a
 /// second: the readings are a 3 s window shown as integers).
 pub const LUFS_POLL_EVERY_MS: u64 = 200;
@@ -119,6 +136,14 @@ impl DeviceKind {
         match self {
             DeviceKind::Lufs => LUFS_POLL_ADDRESS,
             DeviceKind::Meter => METER_POLL_ADDRESS,
+        }
+    }
+
+    /// The address of the hub's move of it (#264).
+    pub fn move_address(self) -> &'static str {
+        match self {
+            DeviceKind::Lufs => LUFS_MOVE_ADDRESS,
+            DeviceKind::Meter => METER_MOVE_ADDRESS,
         }
     }
 
@@ -350,6 +375,15 @@ pub fn encode(r: &Reading) -> Vec<u8> {
 pub fn poll_datagram(kind: DeviceKind) -> Vec<u8> {
     let mut out = Vec::with_capacity(32);
     push_string(&mut out, kind.poll_address());
+    push_string(&mut out, ",");
+    out
+}
+
+/// The hub's move of a device of `kind` ([`DeviceKind::move_address`],
+/// type tags `,`, #264): the device that hears it draws another poll port.
+pub fn move_datagram(kind: DeviceKind) -> Vec<u8> {
+    let mut out = Vec::with_capacity(32);
+    push_string(&mut out, kind.move_address());
     push_string(&mut out, ",");
     out
 }

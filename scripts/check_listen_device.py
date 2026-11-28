@@ -247,8 +247,10 @@ def patch_errors(where: str, text: str, version: str, numbers: dict) -> list[str
         errors.append(f"{where}: the jit.net.send's right inlet takes the hello alone")
     if udpsend and announce and lufs.feeds(patcher, udpsend, 0) != [[announce, 0]]:
         errors.append(f"{where}: the udpsend takes the announce alone")
-    poll = lufs_pull_check.Poll(numbers["min"], numbers["span"], "", "")
-    shape = listen_pull_check.listen_shape(poll, numbers["poll"], numbers["frames"])
+    poll = lufs_pull_check.Poll(numbers["min"], numbers["span"], "", "", "", "")
+    shape = listen_pull_check.listen_shape(
+        poll, numbers["poll"], numbers["frames"], numbers["move"]
+    )
     errors += lufs_pull_check.pull_errors(where, patcher, every, shape)
     errors += wiring_errors(where, patcher, every, numbers["reread"])
     errors += poll_reread_check.still_errors(where, every)
@@ -273,6 +275,7 @@ def numbers_of(root: Path) -> dict | str:
         "reread": constant(wire, "REREAD_POLLS"),
         "poll": text_constant(wire, "POLL_ADDRESS"),
         "frames": text_constant(wire, "FRAME_ADDRESS"),
+        "move": text_constant(wire, "MOVE_ADDRESS"),
         "min": constant(lufs_wire, "POLL_PORT_MIN"),
         "span": constant(lufs_wire, "POLL_PORT_SPAN"),
     }

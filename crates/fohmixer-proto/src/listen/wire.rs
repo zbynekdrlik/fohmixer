@@ -31,7 +31,11 @@
 //! both in Max's main thread. A device unheard for [`FORGET_MS`] is
 //! forgotten, polled no more; its parents are read again every
 //! [`REREAD_POLLS`]th poll. Version 1 (#210: an announce each second, the
-//! select asked over HTTP) is refused.
+//! select asked over HTTP) is refused. A port two devices name, one still
+//! answering after the other named it, gets [`move_datagram`]
+//! (`/fohmixer/listen/move`, #264, as the LUFS devices'
+//! `lufs::wire::move_datagram`): the device that hears draws another port
+//! and announces it, off until the hub's next poll.
 //!
 //! **Hello**, the first message chunk on the device's TCP connection, sent
 //! again with each announce while it is on:
@@ -56,6 +60,8 @@ pub const ANNOUNCE_TAGS: &str = ",iisssssiii";
 pub const POLL_ADDRESS: &str = "/fohmixer/listen/poll";
 /// The hub's frame poll of the device it selected (#264).
 pub const FRAME_ADDRESS: &str = "/fohmixer/listen/frame";
+/// The hub's move of a device on a shared port (#264).
+pub const MOVE_ADDRESS: &str = "/fohmixer/listen/move";
 /// The hello's first word (its message's selector).
 pub const HELLO_WORD: &str = "fohmixer_listen";
 /// The longest datagram taken.
@@ -177,6 +183,15 @@ pub fn poll_datagram(on: bool) -> Vec<u8> {
 pub fn frame_datagram() -> Vec<u8> {
     let mut out = Vec::with_capacity(32);
     push_string(&mut out, FRAME_ADDRESS);
+    push_string(&mut out, ",");
+    out
+}
+
+/// The hub's move (#264): [`MOVE_ADDRESS`] with no argument (the patch's
+/// `route` hands it a bang into the port draw).
+pub fn move_datagram() -> Vec<u8> {
+    let mut out = Vec::with_capacity(32);
+    push_string(&mut out, MOVE_ADDRESS);
     push_string(&mut out, ",");
     out
 }

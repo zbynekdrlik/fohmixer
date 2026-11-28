@@ -21,6 +21,7 @@ NUMBERS = {
     "reread": 40,
     "poll": "/fohmixer/listen/poll",
     "frames": "/fohmixer/listen/frame",
+    "move": "/fohmixer/listen/move",
     "min": 40000,
     "span": 10000,
 }
@@ -90,6 +91,7 @@ class ListenDeviceTests(unittest.TestCase):
             ("reread", 7, "counter"),
             ("poll", "/x", "route"),
             ("frames", "/x", "route"),
+            ("move", "/x", "route"),
             ("min", 1, "udpreceive"),
             ("span", 1, "random"),
         ):
@@ -97,6 +99,31 @@ class ListenDeviceTests(unittest.TestCase):
             self.assertTrue(any(word in e for e in found), (name, found))
         found = errors(TEXT, numbers={**NUMBERS, "port": 1})
         self.assertTrue(any("udpsend 127.0.0.1 1" in e for e in found), found)
+
+    def test_the_hubs_move_draws_a_new_port_then_announces_it(self) -> None:
+        # #264 (the design comment 7228766032): the route's third address
+        # bangs `t b b`: the port draw first, then the gate's right inlet
+        # (the load's own announce), with no clock.
+        patcher = json.loads(TEXT)["patcher"]
+        self.assertEqual(
+            cl.lufs.words(box(patcher, "obj-poll-route")),
+            ["route", "/fohmixer/listen/poll", "/fohmixer/listen/frame", "/fohmixer/listen/move"],
+        )
+        self.assertEqual(cl.lufs.words(box(patcher, "obj-poll-move")), ["t", "b", "b"])
+
+        def unmoved(p: dict) -> None:
+            p["lines"] = [
+                ln for ln in p["lines"] if ln["patchline"]["source"] != ["obj-poll-move", 1]
+            ]
+
+        found = errors(edited(unmoved))
+        self.assertIn(
+            "p: obj-poll-move outputs into [[0, 'obj-pull-gate', 1], "
+            "[1, 'obj-poll-draw', 0]] alone, has [[0, 'obj-pull-gate', 1]]",
+            found,
+        )
+        found = errors(edited(line("obj-poll-route", 2, "obj-pull", 0)))
+        self.assertTrue(any("obj-poll-route outputs into" in e for e in found), found)
 
     def test_the_version_must_match(self) -> None:
         found = errors(TEXT, version="9.9.9")

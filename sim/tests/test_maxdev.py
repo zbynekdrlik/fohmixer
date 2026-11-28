@@ -204,6 +204,154 @@ class SenderTest(unittest.TestCase):
         self.assertFalse(self.devs.send(self.track, maxdev.METER, 0, 0))
 
 
+def _polled_port(data):
+    """The polled form's port (its last int), and that the tags say so."""
+    tags = data[data.index(b",") :]
+    if not tags.startswith(maxdev.POLLED_TAGS.encode() + b"\0"):
+        return None
+    return struct.unpack(">i", data[-4:])[0]
+
+
+class PolledTest(unittest.TestCase):
+    """#264: polled devices on real poll ports, ticked by hand; the test is
+    the hub (its readings port and a poll socket)."""
+
+    def setUp(self):
+        self.song = _site()
+        self.hub = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.addCleanup(self.hub.close)
+        self.hub.bind(("127.0.0.1", 0))
+        self.hub.settimeout(2.0)
+        self.poller = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.addCleanup(self.poller.close)
+        self.devs = maxdev.MaxDevices(self.song, self.hub.getsockname()[1], _Clock())
+        self.devs.start()
+        self.devs._timer.stop()
+        self.addCleanup(self.devs.stop)
+
+    def send(self, data, port):
+        self.poller.sendto(data, ("127.0.0.1", port))
+
+    def ticks(self):
+        for _ in range(5):
+            self.devs.tick()
+            time.sleep(0.005)
+
+    def reading(self):
+        return self.hub.recv(512)
+
+    def silent(self):
+        self.hub.settimeout(0.1)
+        try:
+            with self.assertRaises(socket.timeout):
+                self.hub.recv(512)
+        finally:
+            self.hub.settimeout(2.0)
+
+    def free_port(self):
+        """A port of the range nobody holds."""
+        for _ in range(64):
+            port = maxdev.draw_port()
+            probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                probe.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            finally:
+                probe.close()
+            return port
+        self.fail("no free port in the range")
+
+    def test_the_moves_are_the_rust_wires_bytes(self):
+        for kind in maxdev.KINDS:
+            self.assertEqual(
+                maxdev.move_datagram(kind), bytes.fromhex(maxdev.GOLDEN_MOVE_HEX[kind])
+            )
+            self.assertEqual(maxdev.routed(kind, maxdev.move_datagram(kind)), "move")
+            self.assertEqual(maxdev.routed(kind, maxdev.poll_datagram(kind)), "poll")
+        self.assertIsNone(maxdev.routed(maxdev.LUFS, maxdev.poll_datagram(maxdev.METER)))
+        self.assertIsNone(maxdev.routed(maxdev.METER, maxdev.move_datagram(maxdev.LUFS)))
+
+    def test_a_polled_device_announces_at_load_and_answers_its_kinds_polls(self):
+        port = self.free_port()
+        device = self.devs.add(self.song.tracks[1], maxdev.METER, rack=True, polled=True, port=port)
+        self.assertEqual(device.port, port)
+        for _ in range(maxdev.LOAD_DATAGRAMS):
+            self.assertEqual(_polled_port(self.reading()), port, "its load")
+        self.assertEqual(maxdev.LOAD_DATAGRAMS, 2)
+        self.assertTrue(self.devs.send(self.song.tracks[1], maxdev.METER, -120, -180))
+        self.assertEqual(self.devs.sending(), 0, "it never pushes")
+        self.send(maxdev.poll_datagram(maxdev.METER), port)
+        self.ticks()
+        data = self.reading()
+        self.assertEqual(_polled_port(data), port)
+        self.assertEqual(struct.unpack(">ii", data[-12:-4]), (-120, -180))
+        self.assertEqual(device.answered, 1)
+        self.send(maxdev.poll_datagram(maxdev.LUFS), port)
+        self.ticks()
+        self.silent()
+
+    def test_a_shared_port_reaches_its_first_device_until_the_move_takes_it_away(self):
+        # The FOH PC's delivery (the design comment 7228766032 on #264).
+        port = self.free_port()
+        first = self.devs.add(self.song.tracks[1], maxdev.METER, rack=False, polled=True, port=port)
+        second = self.devs.add(self.song.tracks[2], maxdev.LUFS, rack=False, polled=True, port=port)
+        self.assertEqual(self.devs.ports.on(port), [first, second])
+        for _ in range(2 * maxdev.LOAD_DATAGRAMS):
+            self.reading()
+        self.send(maxdev.poll_datagram(maxdev.LUFS), port)
+        self.ticks()
+        self.silent()
+        self.assertEqual(second.answered, 0, "the second binder is deaf")
+        # Another kind's move: the meter's route drops it.
+        self.send(maxdev.move_datagram(maxdev.LUFS), port)
+        self.ticks()
+        self.assertEqual(first.port, port)
+        self.send(maxdev.move_datagram(maxdev.METER), port)
+        self.ticks()
+        self.assertNotEqual(first.port, port)
+        self.assertEqual(_polled_port(self.reading()), first.port, "announced on its new port")
+        self.assertEqual(self.devs.ports.on(port), [second])
+        self.send(maxdev.poll_datagram(maxdev.LUFS), port)
+        self.ticks()
+        self.assertEqual(_polled_port(self.reading()), port)
+        self.assertEqual(second.answered, 1, "it hears once the first left")
+        self.devs.remove(self.song.tracks[2], maxdev.LUFS)
+        self.assertEqual(self.devs.ports.on(port), [])
+
+    def test_a_named_port_another_program_holds_adds_nothing(self):
+        holder = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.addCleanup(holder.close)
+        port = self.free_port()
+        holder.bind(("127.0.0.1", port))
+        line = f"maxdev meter track 1 add polled {port}"
+        answer = host.control(_Inline(), self.song, line, {}, self.devs)
+        self.assertEqual(answer, "MAXDEV -1")
+        self.assertEqual(self.devs.on(self.song.tracks[1], maxdev.METER), [])
+
+    def test_the_polled_lines(self):
+        def line(text):
+            return host.control(_Inline(), self.song, text, {}, self.devs)
+
+        port = self.free_port()
+        self.assertEqual(line(f"maxdev meter track 1 add rack polled {port}"), "MAXDEV 1")
+        self.assertEqual(line("maxdev meter track 1 add polled"), "MAXDEV 2")
+        self.assertEqual(line("maxdev lufs track 1 add"), "MAXDEV 1")
+        self.assertTrue(line("pollport meter track 1").startswith("POLLPORT 4"))
+        self.assertEqual(line("polled meter track 1"), "POLLED 0")
+        self.assertEqual(line("polled lufs track 1"), "POLLED -1", "a pushed device")
+        self.assertEqual(line("polled meter track 99"), "POLLED -1")
+        for text in (
+            "maxdev meter track 1 add polled 39999",
+            "maxdev meter track 1 add polled 50000",
+            "maxdev meter track 1 add polled rack",
+            "maxdev meter track 1 remove polled",
+        ):
+            self.assertEqual(line(text), "MAXDEV -1", text)
+        for text in ("polled meter", "polled gain track 1", "pollport meter bus 1"):
+            self.assertEqual(line(text).split()[-1], "-1", text)
+
+
 class RealSocketTest(unittest.TestCase):
     def test_sends_five_per_second(self):
         receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

@@ -18,14 +18,26 @@ class PullTests(TreeCase):
     def test_the_lufs_device_is_pulled_by_the_hubs_poll(self) -> None:
         wire = (REPO / cl.WIRE).read_text(encoding="utf-8")
         poll = lp.poll_constants(wire)
-        self.assertEqual(poll, lp.Poll(40000, 10000, "/fohmixer/lufs/poll", "/fohmixer/meter/poll"))
+        self.assertEqual(
+            poll,
+            lp.Poll(
+                40000,
+                10000,
+                "/fohmixer/lufs/poll",
+                "/fohmixer/meter/poll",
+                "/fohmixer/lufs/move",
+                "/fohmixer/meter/move",
+            ),
+        )
         patch = self.patcher(LUFS)
         ids = {b.get("id"): cl.words(b) for b in cl.boxes(patch["patcher"])}
         self.assertEqual(ids["obj-snap-s"], ["snapshot~", "0"])
         self.assertEqual(ids["obj-snap-v"], ["snapshot~", "0"])
         self.assertEqual(ids["obj-pack"][:3], ["pack", "/fohmixer/lufs", "2"])
         self.assertEqual(len(ids["obj-pack"]), cl.PACK_ARGS + 2)
-        self.assertEqual(ids[lp.POLL_ROUTE], ["route", "/fohmixer/lufs/poll"])
+        self.assertEqual(
+            ids[lp.POLL_ROUTE], ["route", "/fohmixer/lufs/poll", "/fohmixer/lufs/move"]
+        )
         self.assertEqual(ids[lp.POLL_DRAW], ["random", "10000"])
         self.assertEqual(ids[lp.POLL_OFFSET], ["+", "40000"])
         self.assertNotIn("obj-send-defer", ids)
@@ -33,14 +45,16 @@ class PullTests(TreeCase):
         self.assertEqual(cl.feeds(patch["patcher"], "obj-udpsend", 0), [["obj-pack", 0]])
         self.assertEqual(
             cl.feeds(patch["patcher"], cl.PULL_GATE, 1),
-            sorted([[lp.POLL_ROUTE, 0], [cl.ID_LOAD, 0], [lp.ACTIVE_SEL, 0]]),
+            sorted([[lp.POLL_ROUTE, 0], [cl.ID_LOAD, 0], [lp.ACTIVE_SEL, 0], [lp.POLL_MOVE, 0]]),
         )
         # The meter is pulled too since its step of #264, with its own
         # poll's address (test_meter_pull_check.py).
         meter = {b.get("id"): cl.words(b) for b in cl.boxes(self.patcher(METER)["patcher"])}
         self.assertNotIn("obj-send-defer", meter)
         self.assertEqual(meter["obj-pack"][2], "2")
-        self.assertEqual(meter[lp.POLL_ROUTE], ["route", "/fohmixer/meter/poll"])
+        self.assertEqual(
+            meter[lp.POLL_ROUTE], ["route", "/fohmixer/meter/poll", "/fohmixer/meter/move"]
+        )
 
     def test_a_deferlow_on_the_lufs_send_path_fails(self) -> None:
         where = LUFS.maxpat.as_posix()
@@ -239,8 +253,8 @@ class PullTests(TreeCase):
         self.assertEqual(
             self.errors(),
             [
-                f"{cl.WIRE.as_posix()}: no POLL_PORT_MIN, POLL_PORT_SPAN, LUFS_POLL_ADDRESS "
-                "or METER_POLL_ADDRESS line"
+                f"{cl.WIRE.as_posix()}: no POLL_PORT_MIN, POLL_PORT_SPAN, LUFS_POLL_ADDRESS, "
+                "METER_POLL_ADDRESS, LUFS_MOVE_ADDRESS or METER_MOVE_ADDRESS line"
             ],
         )
         shutil.copyfile(REPO / cl.WIRE, self.root / cl.WIRE)
@@ -260,6 +274,54 @@ class PullTests(TreeCase):
             errors,
         )
         self.restore(LUFS)
+        self.assertEqual(self.errors(), [])
+
+    def test_the_hubs_move_draws_a_new_port_then_answers_on_it(self) -> None:
+        # #264 (the design comment 7228766032): the hub's move reaches the
+        # device that still hears a port two devices drew; its `route`
+        # outlet bangs `t b b`: the port draw first (the load's own chain),
+        # then the gate's right inlet (the load's announce), in Max's main
+        # thread, with no clock.
+        for device, address in ((LUFS, "/fohmixer/lufs/move"), (METER, "/fohmixer/meter/move")):
+            where = device.maxpat.as_posix()
+            patch = self.patcher(device)["patcher"]
+            ids = {b.get("id"): cl.words(b) for b in cl.boxes(patch)}
+            self.assertEqual(ids[lp.POLL_ROUTE][2], address)
+            self.assertEqual(ids[lp.POLL_MOVE], ["t", "b", "b"])
+            self.assertEqual(lp.outputs(patch, lp.POLL_ROUTE)[1:], [[1, lp.POLL_MOVE, 0]])
+            self.assertEqual(
+                lp.outputs(patch, lp.POLL_MOVE), [[0, cl.PULL_GATE, 1], [1, lp.POLL_DRAW, 0]]
+            )
+            self.assertIn([lp.POLL_MOVE, 1], cl.feeds(patch, lp.POLL_DRAW, 0))
+            # The move into the gate alone: no new port.
+            patch = self.patcher(device)
+            self.drop_lines(patch, src=[lp.POLL_MOVE, 1])
+            self.save(patch, device)
+            self.assertIn(
+                f"{where}: {lp.POLL_MOVE} outputs into [[0, '{cl.PULL_GATE}', 1], "
+                f"[1, '{lp.POLL_DRAW}', 0]] alone, has [[0, '{cl.PULL_GATE}', 1]]",
+                self.errors(),
+            )
+            # A route without the move: the device stays on its port.
+            self.restore(device)
+            patch = self.patcher(device)
+            box = next(b for b in cl.boxes(patch["patcher"]) if b.get("id") == lp.POLL_ROUTE)
+            box["text"] = " ".join(cl.words(box)[:2])
+            self.save(patch, device)
+            self.assertTrue(
+                any(e.startswith(f"{where}: {lp.POLL_ROUTE} must be") for e in self.errors()),
+                self.errors(),
+            )
+            self.restore(device)
+        # The wire module names the address.
+        self.edit(cl.WIRE, '"/fohmixer/meter/move"', '"/fohmixer/meter/leave"')
+        self.assertIn(
+            f"{METER.maxpat.as_posix()}: {lp.POLL_ROUTE} must be "
+            "'route /fohmixer/meter/poll /fohmixer/meter/leave', has "
+            "['route', '/fohmixer/meter/poll', '/fohmixer/meter/move']",
+            self.errors(),
+        )
+        shutil.copyfile(REPO / cl.WIRE, self.root / cl.WIRE)
         self.assertEqual(self.errors(), [])
 
     def test_each_device_sends_its_own_wire_version(self) -> None:

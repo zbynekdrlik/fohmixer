@@ -31,11 +31,13 @@ class MeterPullTests(TreeCase):
         self.assertEqual(ids["obj-pack"][:3], ["pack", "/fohmixer/meter", "2"])
         self.assertEqual(len(ids["obj-pack"]), cl.PACK_ARGS + 2)
         self.assertEqual(ids[lp.POLL_RECEIVE], ["udpreceive", "39999", "@defer", "1"])
-        self.assertEqual(ids[lp.POLL_ROUTE], ["route", "/fohmixer/meter/poll"])
+        self.assertEqual(
+            ids[lp.POLL_ROUTE], ["route", "/fohmixer/meter/poll", "/fohmixer/meter/move"]
+        )
         self.assertEqual(cl.feeds(patcher, "obj-udpsend", 0), [["obj-pack", 0]])
         self.assertEqual(
             cl.feeds(patcher, cl.PULL_GATE, 1),
-            sorted([[lp.POLL_ROUTE, 0], [cl.ID_LOAD, 0], [lp.ACTIVE_SEL, 0]]),
+            sorted([[lp.POLL_ROUTE, 0], [cl.ID_LOAD, 0], [lp.ACTIVE_SEL, 0], [lp.POLL_MOVE, 0]]),
         )
         self.assertEqual(
             lp.outputs(patcher, lp.PULL),
@@ -93,8 +95,9 @@ class MeterPullTests(TreeCase):
         self.assertEqual(
             self.errors(),
             [
-                f"{WHERE}: {lp.POLL_ROUTE} must be 'route /fohmixer/meter/ask', has "
-                "['route', '/fohmixer/meter/poll']"
+                f"{WHERE}: {lp.POLL_ROUTE} must be 'route /fohmixer/meter/ask "
+                "/fohmixer/meter/move', has ['route', '/fohmixer/meter/poll', "
+                "'/fohmixer/meter/move']"
             ],
         )
         shutil.copyfile(REPO / cl.WIRE, self.root / cl.WIRE)

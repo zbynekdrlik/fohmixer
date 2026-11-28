@@ -532,3 +532,97 @@ fn a_pushed_form_device_is_never_polled() {
         hub.stop().await;
     });
 }
+
+/// A port free now on 127.0.0.1 for both UDP and TCP (Listen binds both).
+fn free_pair_port() -> u16 {
+    (0..64)
+        .find_map(|_| {
+            let udp = UdpSocket::bind("127.0.0.1:0").ok()?;
+            let port = udp.local_addr().ok()?.port();
+            std::net::TcpListener::bind(("127.0.0.1", port))
+                .ok()
+                .map(|_| port)
+        })
+        .expect("a port free for both UDP and TCP")
+}
+
+#[test]
+fn a_listen_device_on_a_meters_port_gets_the_meter_moved() {
+    // #264 (the review of the lane): the kinds draw from one range, so the
+    // hub keeps ONE table of their ports. A meter answers on its port; a
+    // Listen device of the other Live announces the same port (it is
+    // deaf); the hub sends the meter's move there and records the share.
+    use fohmixer_proto::listen::wire::{Announce, encode_announce, parents_in};
+    use fohmixer_proto::lufs::wire::move_datagram;
+    let _serial = serial();
+    runtime().block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let port = free_port();
+        let listen_port = free_pair_port();
+        let mut config = config(dir.path(), port);
+        config.listen.port = listen_port;
+        config.listen.sweep = None;
+        let hub = TestHub::start_config(config).await;
+        let from = poller(&hub).await;
+        let meter = poll_socket();
+        let at = meter.local_addr().unwrap().port();
+        let reading = polled_of(DeviceKind::Meter, 4, at);
+        meter.send_to(&reading, ("127.0.0.1", port)).unwrap();
+        let answered = tokio::task::block_in_place(|| {
+            polls_of(
+                DeviceKind::Meter,
+                &meter,
+                from,
+                Duration::from_millis(300),
+                Some((&reading, port)),
+            )
+        });
+        assert!(answered > 3, "the meter is polled: {answered}");
+        let deaf = Announce {
+            device: 9,
+            version: "v1.60.10".into(),
+            parents: parents_in(Some(("Listen", "Listen")), "Vox 2", "FOH Band"),
+            sample_rate: 48_000,
+            sending: false,
+            port: at,
+        };
+        sender()
+            .send_to(&encode_announce(&deaf), ("127.0.0.1", listen_port))
+            .unwrap();
+        // The meter answers on until the hub's move reaches it.
+        let moved = tokio::task::block_in_place(|| {
+            let until = Instant::now() + SECS_5;
+            let mut buf = [0u8; 64];
+            while Instant::now() < until {
+                let Ok((n, sender)) = meter.recv_from(&mut buf) else {
+                    continue;
+                };
+                if sender != from {
+                    continue;
+                }
+                if buf[..n] == move_datagram(DeviceKind::Meter)[..] {
+                    return true;
+                }
+                meter.send_to(&reading, ("127.0.0.1", port)).unwrap();
+            }
+            false
+        });
+        assert!(moved, "the meter's move came to its port");
+        let records = hub
+            .events_until(SECS_5, |r| {
+                r.iter()
+                    .any(|e| e["ev"] == "lufs" && e["what"] == "shared_port")
+            })
+            .await;
+        let share = records
+            .iter()
+            .find(|e| e["ev"] == "lufs" && e["what"] == "shared_port")
+            .unwrap();
+        assert_eq!(share["port"], at);
+        assert_eq!(share["moved"]["kind"], "meter");
+        assert_eq!(share["stays"]["kind"], "listen");
+        assert_eq!(share["stays"]["device"], 9);
+        assert_eq!(share["sent"], true);
+        hub.stop().await;
+    });
+}

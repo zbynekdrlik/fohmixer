@@ -19,6 +19,9 @@ pub const GOLDEN_POLL_ON_HEX: &str =
     "2f666f686d697865722f6c697374656e2f706f6c6c0000002c69000000000001";
 /// The hub's frame poll (#264); `sim/listendev.py` pins the same bytes.
 pub const GOLDEN_FRAME_HEX: &str = "2f666f686d697865722f6c697374656e2f6672616d6500002c000000";
+/// The hub's move (#264, the design comment 7228766032); `sim/listendev.py`
+/// pins the same bytes.
+pub const GOLDEN_MOVE_HEX: &str = "2f666f686d697865722f6c697374656e2f6d6f76650000002c000000";
 
 fn golden() -> Announce {
     Announce {
@@ -137,6 +140,9 @@ fn the_hubs_polls_are_the_patchs_osc_messages() {
     assert_eq!(frame_datagram(), hex(GOLDEN_FRAME_HEX));
     assert_eq!(POLL_ADDRESS, "/fohmixer/listen/poll");
     assert_eq!(FRAME_ADDRESS, "/fohmixer/listen/frame");
+    // The move (#264): no argument, its own address in the same `route`.
+    assert_eq!(move_datagram(), hex(GOLDEN_MOVE_HEX));
+    assert_eq!(MOVE_ADDRESS, "/fohmixer/listen/move");
 }
 
 #[test]

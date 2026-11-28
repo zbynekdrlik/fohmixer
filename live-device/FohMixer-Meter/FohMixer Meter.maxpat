@@ -87,7 +87,7 @@
 				"box": {
 					"id": "obj-pack",
 					"maxclass": "newobj",
-					"text": "pack /fohmixer/meter 2 0 v1.60.10 - - - - -700 -700 0",
+					"text": "pack /fohmixer/meter 2 0 v1.60.11 - - - - -700 -700 0",
 					"numinlets": 11,
 					"numoutlets": 1,
 					"outlettype": [
@@ -477,7 +477,7 @@
 						60.0,
 						18.0
 					],
-					"text": "v1.60.10",
+					"text": "v1.60.11",
 					"varname": "version"
 				}
 			},
@@ -1937,10 +1937,11 @@
 				"box": {
 					"id": "obj-poll-route",
 					"maxclass": "newobj",
-					"text": "route /fohmixer/meter/poll",
+					"text": "route /fohmixer/meter/poll /fohmixer/meter/move",
 					"numinlets": 2,
-					"numoutlets": 2,
+					"numoutlets": 3,
 					"outlettype": [
+						"",
 						"",
 						""
 					],
@@ -1948,6 +1949,25 @@
 						1150.0,
 						560.0,
 						140.0,
+						22.0
+					]
+				}
+			},
+			{
+				"box": {
+					"id": "obj-poll-move",
+					"maxclass": "newobj",
+					"text": "t b b",
+					"numinlets": 1,
+					"numoutlets": 2,
+					"outlettype": [
+						"bang",
+						"bang"
+					],
+					"patching_rect": [
+						1310.0,
+						560.0,
+						50.0,
 						22.0
 					]
 				}
@@ -4079,6 +4099,42 @@
 					"destination": [
 						"obj-peak-r",
 						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-poll-route",
+						1
+					],
+					"destination": [
+						"obj-poll-move",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-poll-move",
+						1
+					],
+					"destination": [
+						"obj-poll-draw",
+						0
+					]
+				}
+			},
+			{
+				"patchline": {
+					"source": [
+						"obj-poll-move",
+						0
+					],
+					"destination": [
+						"obj-pull-gate",
+						1
 					]
 				}
 			}

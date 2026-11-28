@@ -42,7 +42,7 @@ def meter_shape(poll: Poll, sink: str) -> Shape:
         box: words for box, words in pull_boxes(poll).items() if not box.startswith("obj-snap-")
     }
     boxes |= {
-        POLL_ROUTE: ["route", poll.meter_address],
+        POLL_ROUTE: ["route", poll.meter_address, poll.meter_move_address],
         PULL: ["t", "b", "b", "b"],
         PEAK_L: READER,
         PEAK_R: READER,
