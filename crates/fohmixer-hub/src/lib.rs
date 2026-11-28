@@ -115,6 +115,7 @@ pub mod stream_proof;
 pub(crate) mod test_keys;
 pub mod tls;
 pub mod tunnel;
+pub mod udp_table;
 pub mod ws;
 
 use access::AccessGate;

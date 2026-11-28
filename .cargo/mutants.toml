@@ -34,6 +34,11 @@ exclude_globs = [
   # decisions are the tested capture/display.rs (the monitors, the frames
   # a grab uses and holds, the editor's box in a monitor's frame).
   "crates/fohmixer-hub/src/plugwin/wgc_display.rs",
+  # The UDP table's read (#264, as dpapi.rs): Windows only; the `windows`
+  # job lints it. Its decisions are the tested udp_table.rs (`rows_of`,
+  # `port_of`), poll_ports.rs (`shared_by_processes`) and lufs_udp.rs
+  # (`os_moves`).
+  "crates/fohmixer-hub/src/udp_table/win.rs",
   # The tray's Windows-only Tauri glue (#39, as iemmixer excludes iem-tray):
   # not compiled on the Linux runners; the `windows` CI job builds and lints
   # it, and Test-Fohmixer.ps1 runs the exe (start, `--exit`, the log). Its

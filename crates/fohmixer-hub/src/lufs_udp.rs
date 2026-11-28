@@ -50,6 +50,14 @@
 //! both keys' kinds for that window; the device that hears draws another
 //! port, a `moved` record names it, and the deaf one answers on the old
 //! port from then on.
+//!
+//! **A share from before the hub's start (#264, the design comment
+//! 7231753561):** the sweep reaches the first binder only, so the hub never
+//! hears the deaf device's key. On Windows the task reads the OS's UDP
+//! table (`udp_table`) over the swept range right after the sweep and every
+//! [`OS_TABLE_EVERY`]; a port two processes bind
+//! (`poll_ports::shared_by_processes`) gets every kind's move
+//! ([`os_moves`]) and is polled on for every kind for the move's window.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -66,10 +74,11 @@ use tokio::task::JoinHandle;
 
 use crate::events::EventLog;
 use crate::link::server::Tap;
-use crate::poll_ports::{PortKey, PortTable, Shared};
+use crate::poll_ports::{PortKey, PortTable, Shared, processes_on, shared_by_processes};
 use crate::router::RouterMsg;
 use crate::rules::lufs::bound::{Admit, Bound, Dropping, FORGET_MS, Key};
 use crate::rules::lufs::kind_word;
+use fohmixer_proto::listen::wire as listen_wire;
 
 /// The reason a receive error is counted under.
 pub const RECV_ERROR: &str = "recv";
@@ -176,10 +185,13 @@ impl Counters {
 /// The ports to poll (#264): each polled-form key's port and when the key
 /// was last heard, in the hub's one `poll_ports::PortTable` (its own one
 /// in a test). A key is kept only while the bound keeps it (at most
-/// `bound::MAX_KEYS`), and is dropped once lost.
+/// `bound::MAX_KEYS`), and is dropped once lost. With `os_range` (the
+/// swept range) the OS's UDP table is read over it ([`os_moves`]).
 #[derive(Debug, Default)]
 pub struct Polls {
     table: Arc<PortTable>,
+    os_range: Option<std::ops::Range<u16>>,
+    os_failing: bool,
 }
 
 /// Whether a table key is a LUFS or meter key of `kind`.
@@ -188,9 +200,19 @@ fn of_kind(key: &PortKey, kind: DeviceKind) -> bool {
 }
 
 impl Polls {
-    /// The polls of the hub's one table.
-    pub fn with_table(table: Arc<PortTable>) -> Self {
-        Self { table }
+    /// The polls of the hub's one table, the OS's table read over
+    /// `os_range`.
+    pub fn with_table(table: Arc<PortTable>, os_range: Option<std::ops::Range<u16>>) -> Self {
+        Self {
+            table,
+            os_range,
+            os_failing: false,
+        }
+    }
+
+    /// Whether the OS table's last read failed ([`read_change`]).
+    pub fn os_failing(&self) -> bool {
+        self.os_failing
     }
 
     /// A reading the bound kept (taken or dropped, never `Full`): its key's
@@ -211,6 +233,12 @@ impl Polls {
     /// kind are dropped first.
     pub fn due(&mut self, now: Instant, kind: DeviceKind) -> BTreeSet<u16> {
         self.table.due(now, |key| of_kind(key, kind))
+    }
+
+    /// A port the OS's table found shared at `now`: whether its move is due
+    /// (`PortTable::found`; due, it is polled on for every kind).
+    pub fn found(&mut self, port: u16, now: Instant) -> bool {
+        self.table.found(port, now)
     }
 
     /// The ports polled now for the LUFS and meter keys, each once.
@@ -273,6 +301,127 @@ pub fn send_moves(poller: &std::net::UdpSocket, polls: &mut Polls, events: &Even
         events.record("lufs", shared_fields(share, sent));
     }
     u64::try_from(shared.len()).unwrap_or(u64::MAX)
+}
+
+/// How often the hub reads the OS's UDP table (Windows), after its first
+/// read right after the start's sweep.
+pub const OS_TABLE_EVERY: Duration = Duration::from_secs(30);
+
+/// Every kind's move, address and datagram: a port the OS's table found
+/// shared names no key, so its first binder's kind is unknown, and a
+/// device's `route` drops the other kinds' moves.
+pub fn every_move() -> Vec<(&'static str, Vec<u8>)> {
+    POLLED_KINDS
+        .into_iter()
+        .map(|kind| (kind.move_address(), wire::move_datagram(kind)))
+        .chain([(listen_wire::MOVE_ADDRESS, listen_wire::move_datagram())])
+        .collect()
+}
+
+/// The `lufs` record of a port the OS's table found shared (#264): its
+/// port, the processes that bind it, the moves' addresses and whether the
+/// socket took them all. Warn class.
+pub fn os_shared_fields(port: u16, pids: usize, sent: bool) -> Value {
+    let moves: Vec<&str> = every_move().into_iter().map(|(at, _)| at).collect();
+    json!({
+        "what": "shared_port",
+        "found": "os_table",
+        "port": port,
+        "pids": pids,
+        "moves": moves,
+        "sent": sent,
+        "warn": true,
+    })
+}
+
+/// A change of the OS table's read: its first failure (one warn line) and
+/// the first read after failures (one info line); a failure that goes on
+/// is a debug line only, so a read that keeps failing warns once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadChange {
+    Failed,
+    Back,
+}
+
+/// The read's change from `was_failing` to `failed` now.
+pub fn read_change(was_failing: bool, failed: bool) -> Option<ReadChange> {
+    match (was_failing, failed) {
+        (false, true) => Some(ReadChange::Failed),
+        (true, false) => Some(ReadChange::Back),
+        _ => None,
+    }
+}
+
+/// The OS's UDP table read (`rows`, port and pid; Windows,
+/// `udp_table::rows`): each port of `range` two processes bind and no move
+/// of it within its window gets every kind's move ([`every_move`]) from
+/// `poller`, one `shared_port` record (`found: "os_table"`) and one warn
+/// line, and is polled on for the window for every kind, so the deaf device
+/// is learned. A read that failed is one warn line, nothing moved. How many
+/// ports it moved.
+pub fn os_moves(
+    poller: &std::net::UdpSocket,
+    polls: &mut Polls,
+    rows: io::Result<Vec<(u16, u32)>>,
+    range: &std::ops::Range<u16>,
+    now: Instant,
+    events: &EventLog,
+) -> u64 {
+    let change = read_change(polls.os_failing, rows.is_err());
+    polls.os_failing = rows.is_err();
+    let rows = match rows {
+        Ok(rows) => {
+            if change == Some(ReadChange::Back) {
+                tracing::info!("lufs: the UDP table reads again");
+            }
+            rows
+        }
+        Err(e) => {
+            if change == Some(ReadChange::Failed) {
+                tracing::warn!(error = %e, "lufs: cannot read the UDP table: a poll port shared from before the hub's start stays unmoved");
+            } else {
+                tracing::debug!(error = %e, "lufs: the UDP table still cannot be read");
+            }
+            return 0;
+        }
+    };
+    let mut moved = 0;
+    for port in shared_by_processes(&rows, range) {
+        if !polls.found(port, now) {
+            continue;
+        }
+        let pids = processes_on(&rows, port);
+        let refused: u64 = every_move()
+            .iter()
+            .map(|(_, datagram)| refused_sends(poller, datagram, [port]))
+            .sum();
+        let sent = refused == 0;
+        tracing::warn!(
+            port,
+            pids,
+            sent,
+            "lufs: two processes bind one poll port: moved the device that hears"
+        );
+        events.record("lufs", os_shared_fields(port, pids, sent));
+        moved += 1;
+    }
+    moved
+}
+
+/// One read of the OS's UDP table and its moves ([`os_moves`]), Windows
+/// only: `udp_table::win`, excluded from mutation testing with it.
+#[cfg(windows)]
+use crate::udp_table::check as check_os_table;
+
+/// Off Windows there is no table to read (SimLive's first-binder delivery
+/// covers the hub's side): the tick does nothing.
+#[cfg(not(windows))]
+fn check_os_table(
+    _poller: &std::net::UdpSocket,
+    _polls: &mut Polls,
+    _range: &std::ops::Range<u16>,
+    _events: &EventLog,
+) {
 }
 
 /// The address a poll goes to: the device's port on `127.0.0.1`.
@@ -356,10 +505,14 @@ pub fn spawn_with(
     events.record("lufs", listen_fields(&addr.to_string(), None));
     counters.set_addr(Some(addr.to_string()), None);
     counters.set_poll_from(poller.local_addr().ok().map(|a| a.to_string()));
+    // The OS's table is read over the swept range, right after the sweep
+    // and every `OS_TABLE_EVERY` (#264): on Windows (`check_os_table`; off
+    // Windows the tick reads nothing).
+    let os_range = sweep_ports.clone();
     if let Some(ports) = sweep_ports {
         sweep(&poller, ports, &counters);
     }
-    let polls = Polls::with_table(table);
+    let polls = Polls::with_table(table, os_range);
     let task = tokio::spawn(listen(socket, poller, tx, counters, events, tap, polls));
     Ok((addr, task))
 }
@@ -613,6 +766,7 @@ async fn listen(
     tap: Option<Tap>,
     mut polls: Polls,
 ) {
+    let os_range = polls.os_range.clone();
     // One byte over the limit, so a datagram too long reads as too long.
     let mut buf = vec![0u8; MAX_DATAGRAM + 1];
     let mut bound = Bound::new();
@@ -620,9 +774,16 @@ async fn listen(
     let [lufs, meter] = POLLED_KINDS;
     let mut lufs_clock = round_clock(lufs);
     let mut meter_clock = round_clock(meter);
+    let mut os_clock = grid_clock(OS_TABLE_EVERY);
     loop {
         let received = tokio::select! {
             received = socket.recv(&mut buf) => received,
+            _ = os_clock.tick(), if os_range.is_some() => {
+                if let Some(range) = &os_range {
+                    check_os_table(&poller, &mut polls, range, &events);
+                }
+                continue;
+            }
             _ = lufs_clock.tick() => {
                 poll_round(&poller, &mut polls, lufs, Instant::now(), &counters);
                 continue;
